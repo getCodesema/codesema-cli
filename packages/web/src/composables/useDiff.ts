@@ -1,5 +1,5 @@
-// Strict mirror of FindingSeverity/FindingKind (packages/cli/src/contract.ts):
-// kept aligned so a new value on the CLI side breaks the web build.
+// Hand-copied mirror of FindingSeverity/FindingKind (packages/cli/src/contract.ts).
+// Nothing enforces alignment at compile time: update both sides together.
 export type FindingSeverity = 'critical' | 'major' | 'minor' | 'info'
 export type FindingKind = 'security' | 'perf' | 'convention' | 'design' | 'praise' | 'why'
 
