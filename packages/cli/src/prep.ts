@@ -81,27 +81,33 @@ function targetFromOriginHead(cwd: string): { target: string; source: string } |
   return { target: ref, source: 'origin/HEAD' }
 }
 
-function targetFromHeuristic(current: string, cwd: string): { target: string; source: string } | null {
+function targetFromHeuristic(current: string, headRef: string, cwd: string): { target: string; source: string } | null {
   let best: { target: string; distance: number } | null = null
   for (const name of TARGET_CANDIDATES) {
     const ref = resolveRef(name, cwd)
     if (!ref || sameBranch(ref, current)) continue
-    const mb = mergeBase(ref, 'HEAD', cwd)
+    const mb = mergeBase(ref, headRef, cwd)
     if (!mb) continue
-    const distance = revListCount(`${mb}..HEAD`, cwd)
+    const distance = revListCount(`${mb}..${headRef}`, cwd)
     if (distance === null) continue
     if (!best || distance < best.distance) best = { target: ref, distance }
   }
   return best ? { target: best.target, source: 'heuristic (nearest merge-base)' } : null
 }
 
-export function detectTarget(current: string, flag: string | undefined, cwd: string): { target: string; source: string } {
+export function detectTarget(
+  current: string,
+  flag: string | undefined,
+  cwd: string,
+  headRef = 'HEAD',
+): { target: string; source: string } {
   if (flag) {
     const ref = resolveRef(flag, cwd)
     if (!ref) throw new Error(`--target ${flag}: branch not found (neither local nor origin/${flag})`)
     return { target: ref, source: '--target flag' }
   }
-  const detected = targetFromForge(cwd) ?? targetFromOriginHead(cwd) ?? targetFromHeuristic(current, cwd)
+  const forge = headRef === 'HEAD' ? targetFromForge(cwd) : null
+  const detected = forge ?? targetFromOriginHead(cwd) ?? targetFromHeuristic(current, headRef, cwd)
   if (!detected) {
     throw new Error('could not detect the target branch — pass it explicitly with --target <branch>')
   }
@@ -129,37 +135,42 @@ export function mrDiff(range: string, cwd: string): string {
   return git(['-c', 'core.quotePath=false', 'diff', '--no-color', range, '--', '.', ...excludes], cwd)
 }
 
-export function prep(opts: { target?: string; cwd: string }): PrepInput {
+export function prep(opts: { branch?: string; target?: string; cwd: string; quiet?: boolean }): PrepInput {
   const cwd = repoRoot(opts.cwd)
-  const branch = currentBranch(cwd)
+  const checkedOut = currentBranch(cwd)
+  const branch = opts.branch ?? checkedOut
   if (branch === 'HEAD') {
-    throw new Error('detached HEAD — checkout the branch you want reviewed first')
+    throw new Error('detached HEAD — checkout the branch you want reviewed first, or pass --branch <name>')
   }
+  if (opts.branch && !refExists(`refs/heads/${opts.branch}`, cwd)) {
+    throw new Error(`--branch ${opts.branch}: local branch not found`)
+  }
+  const headRef = opts.branch && opts.branch !== checkedOut ? opts.branch : 'HEAD'
 
-  const { target, source } = detectTarget(branch, opts.target, cwd)
+  const { target, source } = detectTarget(branch, opts.target, cwd, headRef)
   if (sameBranch(target, branch)) {
     throw new Error(
-      `you are on "${branch}", which is the target branch itself — checkout your feature branch, or pass --target <branch>`,
+      `"${branch}" is the target branch itself — pick your feature branch, or pass --target <branch>`,
     )
   }
 
-  const mb = mergeBase(target, 'HEAD', cwd)
+  const mb = mergeBase(target, headRef, cwd)
   if (!mb) {
-    throw new Error(`no merge-base between ${target} and HEAD — pass another base with --target <branch>`)
+    throw new Error(`no merge-base between ${target} and ${branch} — pass another base with --target <branch>`)
   }
 
   const excludes = excludePathspecs(cwd)
-  const range = `${target}...HEAD`
+  const range = `${target}...${headRef}`
   const diff = mrDiff(range, cwd)
   if (!diff.trim()) {
-    const dirty = tryGit(['status', '--porcelain'], cwd)
+    const dirty = headRef === 'HEAD' ? tryGit(['status', '--porcelain'], cwd) : null
     const hint = dirty?.trim()
       ? ' Your working tree has uncommitted changes: commit them first, codesema reviews committed work.'
       : ''
     throw new Error(`empty diff between ${target} and ${branch} — nothing to review.${hint}`)
   }
 
-  const commits = (tryGit(['log', '--pretty=%s', `${target}..HEAD`, '--max-count=30'], cwd) ?? '')
+  const commits = (tryGit(['log', '--pretty=%s', `${target}..${headRef}`, '--max-count=30'], cwd) ?? '')
     .split('\n')
     .filter(Boolean)
 
@@ -186,7 +197,7 @@ export function prep(opts: { target?: string; cwd: string }): PrepInput {
     target,
     target_source: source,
     merge_base: mb,
-    head_sha: headSha(cwd),
+    head_sha: headSha(cwd, headRef),
     repo_root: cwd,
     commits,
     files,
@@ -200,14 +211,16 @@ export function prep(opts: { target?: string; cwd: string }): PrepInput {
 
   const additions = files.reduce((n, f) => n + f.additions, 0)
   const deletions = files.reduce((n, f) => n + f.deletions, 0)
-  console.log('codesema prep')
-  console.log(`  branch : ${branch}`)
-  console.log(`  target : ${target} (${source})`)
-  console.log(`  files  : ${files.length} (+${additions} −${deletions})`)
-  console.log(`  commits: ${commits.length}`)
-  if (custom) console.log('  custom : .codesema/PROMPT.md merged into instructions')
-  console.log(`  input  : ${inputPath}`)
-  console.log('')
-  console.log('Next: have your AI agent write .codesema/review.json (see the codesema skill), then run `codesema show`.')
+  if (!opts.quiet) {
+    console.log('codesema prep')
+    console.log(`  branch : ${branch}`)
+    console.log(`  target : ${target} (${source})`)
+    console.log(`  files  : ${files.length} (+${additions} −${deletions})`)
+    console.log(`  commits: ${commits.length}`)
+    if (custom) console.log('  custom : .codesema/PROMPT.md merged into instructions')
+    console.log(`  input  : ${inputPath}`)
+    console.log('')
+    console.log('Next: have your AI agent write .codesema/review.json (see the codesema skill), then run `codesema show`.')
+  }
   return input
 }

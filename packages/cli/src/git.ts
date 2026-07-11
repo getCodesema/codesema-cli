@@ -50,8 +50,8 @@ export function mergeBase(a: string, b: string, cwd: string): string | null {
   return tryGit(['merge-base', a, b], cwd)
 }
 
-export function headSha(cwd: string): string {
-  return git(['rev-parse', 'HEAD'], cwd)
+export function headSha(cwd: string, ref = 'HEAD'): string {
+  return git(['rev-parse', ref], cwd)
 }
 
 export function isAncestor(a: string, b: string, cwd: string): boolean {
