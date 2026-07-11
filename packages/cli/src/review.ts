@@ -1,16 +1,23 @@
-// `codesema review` : tout-en-un. prep → agent IA headless (claude -p par défaut,
-// l'abonnement de l'utilisateur, aucun LLM embarqué) → review.json → show.
+// `codesema review` : tout-en-un. Onboarding au premier run, sélection
+// interactive de la branche, puis web ouvert immédiatement pendant que l'agent
+// IA (l'abonnement de l'utilisateur, aucun LLM embarqué) review en arrière-plan.
 
-import { spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadConfig, saveConfig } from './config.js'
-import { isAncestor } from './git.js'
+import { runAgent } from './agent.js'
+import { pickBranch } from './branches.js'
+import { ensureWorkDir, loadConfig } from './config.js'
+import { isAncestor, repoRoot } from './git.js'
+import { openBrowser } from './open.js'
+import { parsePartialReview } from './partial.js'
+import type { PrepInput } from './prep.js'
 import { mrDiff, prep } from './prep.js'
-import { findPreviousReview } from './record.js'
-import { show } from './show.js'
-import { printBanner, startSpinner } from './ui.js'
-import { AGENT_DEFS, defaultCommand, detectAgents, runAgentWizard } from './wizard.js'
+import { archiveRecord, findPreviousReview, resolveRecord } from './record.js'
+import type { LiveSession } from './serve.js'
+import { createSession, startServer } from './serve.js'
+import { isInteractive } from './tui.js'
+import { dim, printBanner, startSpinner } from './ui.js'
+import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
 
 const REVIEW_INSTRUCTIONS = `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
 
@@ -64,7 +71,8 @@ Rules for the narrative:
 - chapters: ORDERED logical groups (NOT alphabetical): foundations first (migrations, shared types, contracts), then business logic, then surface (routes, UI).
 - review_first: 2-4 hot spots ordered by risk, highest first.
 - You MUST produce praise findings when the code deserves it; reserve severity "info" for praise/why findings.
-- Do NOT approve changes you cannot justify; prefer "request_changes" when impact is unclear.`
+- Do NOT approve changes you cannot justify; prefer "request_changes" when impact is unclear.
+- Output the top-level fields in this exact order: "verdict", "summary", "findings", "narrative" (the review is displayed live while you write it).`
 
 const INCREMENTAL_INSTRUCTIONS = `An earlier review of this SAME merge request exists. Instead of the full diff, you are given:
 - <previous_review>: the review produced when HEAD was at the commit indicated below
@@ -77,20 +85,17 @@ UPDATE the previous review into a new COMPLETE review of the whole MR:
 - Update verdict, summary and narrative (prologue, chapters, review_first) so they describe the whole MR after these changes; keep the chapter structure stable when possible.
 Output the FULL updated review JSON (exact same schema), and NOTHING else.`
 
-/** Prompt incrémental si une review archivée de cette branche couvre un ancêtre strict de HEAD. */
-function buildIncrementalPrompt(
-  input: { branch: string; target: string; head_sha: string; repo_root: string; diff: string },
-  cwd: string,
-): { prompt: string; sinceSha: string } | null {
+/** Prompt incrémental si une review archivée de cette branche couvre un ancêtre strict du head reviewé. */
+function buildIncrementalPrompt(input: PrepInput, cwd: string): { prompt: string; sinceSha: string } | null {
   const previous = findPreviousReview(cwd, input.branch, input.target)
   const since = previous?.meta.head_sha
   if (!previous || !since) return null
   if (since === input.head_sha) return null
-  if (!isAncestor(since, 'HEAD', cwd)) return null
-  const incrementalDiff = mrDiff(`${since}..HEAD`, cwd)
+  if (!isAncestor(since, input.head_sha, cwd)) return null
+  const incrementalDiff = mrDiff(`${since}..${input.head_sha}`, cwd)
   if (!incrementalDiff.trim()) return null
 
-  const { diff: _fullDiff, ...inputMeta } = input as Record<string, unknown> & { diff: string }
+  const { diff: _fullDiff, ...inputMeta } = input
   const prompt = [
     REVIEW_INSTRUCTIONS,
     INCREMENTAL_INSTRUCTIONS,
@@ -103,50 +108,12 @@ function buildIncrementalPrompt(
   return { prompt, sinceSha: since }
 }
 
-function detectAgent(cwd: string): string {
+function detectAgentCommand(cwd: string): string {
   const [first] = detectAgents(cwd)
   if (first) return defaultCommand(first)
   throw new Error(
     `no supported agent CLI found on PATH (looked for: ${AGENT_DEFS.map((d) => d.bin).join(', ')}) — pass one with --agent '<command>' (it receives the full prompt on stdin and must print the review JSON on stdout)`,
   )
-}
-
-function runAgent(command: string, prompt: string, cwd: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // detached (hors Windows) : l'agent tourne dans son propre groupe de process,
-    // le timeout peut donc tuer le shell ET ses enfants d'un seul kill(-pid).
-    const detached = process.platform !== 'win32'
-    const child = spawn(command, { shell: true, cwd, stdio: ['pipe', 'pipe', 'inherit'], detached })
-    let out = ''
-    let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      try {
-        if (detached && child.pid) process.kill(-child.pid, 'SIGTERM')
-        else child.kill('SIGTERM')
-      } catch {
-        // groupe déjà terminé
-      }
-    }, timeoutMs)
-    child.stdout.on('data', (d: Buffer) => {
-      out += d.toString()
-    })
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      if (timedOut) {
-        reject(new Error(`agent timed out after ${Math.round(timeoutMs / 1000)}s — raise it with --timeout <seconds>`))
-      } else if (code === 0) resolve(out)
-      else reject(new Error(`agent command exited with code ${code}`))
-    })
-    // un agent qui crashe ferme stdin tôt : sans handler, l'EPIPE tuerait tout le process
-    child.stdin.on('error', () => {})
-    child.stdin.write(prompt)
-    child.stdin.end()
-  })
 }
 
 /** Extrait l'objet JSON de la sortie agent (tolère fences et prose autour). */
@@ -199,66 +166,126 @@ function balancedEnd(s: string, start: number): number {
 }
 
 const DEFAULT_TIMEOUT_S = 900
+const PARTIAL_PARSE_INTERVAL_MS = 400
+
+function createPartialForwarder(session: LiveSession): (text: string) => void {
+  let lastParse = 0
+  return (text: string) => {
+    const now = Date.now()
+    if (now - lastParse < PARTIAL_PARSE_INTERVAL_MS) return
+    lastParse = now
+    const partial = parsePartialReview(text)
+    if (partial) session.setPartial(partial)
+  }
+}
 
 export async function review(opts: {
+  branch?: string
   target?: string
   agent?: string
   port?: number
   timeout?: number
   full?: boolean
   open: boolean
+  interactive?: boolean
   cwd: string
 }): Promise<void> {
   printBanner()
-  const input = prep({ target: opts.target, cwd: opts.cwd })
+  const cwd = repoRoot(opts.cwd)
+  const config = loadConfig(cwd)
 
-  const cwd = input.repo_root
-  const dir = join(cwd, '.codesema')
+  let agentCommand = opts.agent ?? config.agent
+  if (!agentCommand && isInteractive()) {
+    agentCommand = (await runOnboarding(cwd)) ?? undefined
+    if (agentCommand) console.log('')
+  }
+  agentCommand ??= detectAgentCommand(cwd)
 
-  let agentCommand = opts.agent
-  if (!agentCommand) {
-    // Premier run interactif sans config : wizard agent/modèle/effort, persisté.
-    if (process.stdin.isTTY && process.stdout.isTTY) {
-      console.log('')
-      const chosen = await runAgentWizard(cwd)
-      if (chosen) {
-        agentCommand = chosen
-        saveConfig(cwd, { ...loadConfig(cwd), agent: chosen })
-        console.log('saved to .codesema/config.json — reused next time (change it with `codesema config`)')
-      }
-    }
-    agentCommand ??= detectAgent(cwd)
+  let branch = opts.branch
+  if (!branch && opts.interactive !== false && isInteractive()) {
+    const picked = await pickBranch(cwd)
+    if (picked === null) return
+    branch = picked
   }
-  const incremental = opts.full ? null : buildIncrementalPrompt(input, cwd)
-  if (incremental) {
-    console.log(`incremental review: updating the previous review (since ${incremental.sinceSha.slice(0, 8)}) — pass --full to review from scratch`)
-  }
+
+  const input = prep({ branch, target: opts.target ?? config.target, cwd, quiet: true })
+  const dir = ensureWorkDir(input.repo_root)
+
+  const incremental = opts.full ? null : buildIncrementalPrompt(input, input.repo_root)
   const prompt =
     incremental?.prompt ??
     `${REVIEW_INSTRUCTIONS}\n\n<input>\n${JSON.stringify(input, null, 2)}\n</input>\n\nOutput ONLY the JSON object now.`
 
+  const additions = input.files.reduce((n, f) => n + f.additions, 0)
+  const deletions = input.files.reduce((n, f) => n + f.deletions, 0)
+  console.log(`  ${input.branch} → ${input.target} ${dim(`(${input.target_source})`)}`)
+  console.log(`  ${input.files.length} files ${dim(`+${additions} −${deletions}`)} · ${input.commits.length} commits`)
+  if (incremental) {
+    console.log(`  ${dim(`incremental: updating the review done at ${incremental.sinceSha.slice(0, 8)} — pass --full to start over`)}`)
+  }
+
+  const session = createSession()
+  session.setAgent(agentCommand)
+  session.setInput({
+    branch: input.branch,
+    target: input.target,
+    commits: input.commits,
+    files: input.files,
+    additions,
+    deletions,
+    incremental: Boolean(incremental),
+  })
+
+  const { url } = await startServer(session, { port: opts.port ?? config.port })
+  console.log(`  ${url} ${dim('— live, findings appear as the agent works')}`)
   console.log('')
+  if (opts.open) openBrowser(url)
+
   const shortCmd = agentCommand.length > 40 ? `${agentCommand.slice(0, 37)}…` : agentCommand
   const spinner = startSpinner(`reviewing with ${shortCmd}`)
 
   let out: string
   try {
-    out = await runAgent(agentCommand, prompt, cwd, (opts.timeout ?? DEFAULT_TIMEOUT_S) * 1000)
+    out = await runAgent({
+      command: agentCommand,
+      prompt,
+      cwd: input.repo_root,
+      timeoutMs: (opts.timeout ?? config.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
+      onText: createPartialForwarder(session),
+    })
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
     spinner.stop('  ✘ agent run failed')
-    throw new Error(`agent run failed: ${err instanceof Error ? err.message : String(err)}`)
+    session.setError(message)
+    console.error(`codesema: agent run failed: ${message}`)
+    console.log(`  ${url} still up — Ctrl+C to stop`)
+    process.exitCode = 1
+    return
   }
 
-  let json: string
+  let record
   try {
-    json = extractReviewJson(out)
+    const json = extractReviewJson(out)
+    writeFileSync(join(dir, 'review.json'), json)
+    record = resolveRecord({ cwd: input.repo_root }).record
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
     spinner.stop('  ✘ unusable agent output')
     writeFileSync(join(dir, 'agent-output.txt'), out)
-    throw err
+    session.setError(message)
+    console.error(`codesema: ${message}`)
+    console.log(`  ${url} still up — Ctrl+C to stop`)
+    process.exitCode = 1
+    return
   }
-  writeFileSync(join(dir, 'review.json'), json)
-  spinner.stop('  ✔ review received')
 
-  await show({ port: opts.port, open: opts.open, cwd })
+  const savedPath = archiveRecord(record, input.repo_root)
+  session.setDone(record)
+
+  const findingsCount = record.review.findings.length
+  spinner.stop(`  ✔ review ready — ${findingsCount} finding${findingsCount === 1 ? '' : 's'} · ${record.review.verdict}`)
+  console.log(`  ${dim(`archived: ${savedPath}`)}`)
+  console.log('')
+  console.log(`  ${url}`)
+  console.log('  Ctrl+C to stop')
 }

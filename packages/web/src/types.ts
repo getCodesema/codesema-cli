@@ -54,3 +54,41 @@ export type ReviewRecord = {
     narrative: ReviewNarrative | null
   }
 }
+
+// Session live servie par `codesema review` (/api/status, /api/events).
+// Miroir de packages/cli/src/serve.ts et partial.ts.
+
+export type LiveInput = {
+  branch: string
+  target: string
+  commits: string[]
+  files: { path: string; additions: number; deletions: number }[]
+  additions: number
+  deletions: number
+  incremental: boolean
+}
+
+export type LiveStatus = {
+  phase: 'reviewing' | 'done' | 'error'
+  started_at: string
+  agent?: string
+  input?: LiveInput
+  error?: string
+}
+
+export type PartialFinding = {
+  file: string
+  message: string
+  title?: string
+  severity?: string
+  kind?: string
+  line?: number
+}
+
+export type PartialReview = {
+  verdict?: 'approve' | 'request_changes' | 'comment'
+  summary?: string
+  intent?: string
+  findings: PartialFinding[]
+  chapterTitles: string[]
+}

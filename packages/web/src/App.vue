@@ -1,27 +1,64 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import type { ReviewRecord } from './types'
+import { onMounted, onUnmounted, ref } from 'vue'
+import type { LiveStatus, PartialReview, ReviewRecord } from './types'
+import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
 
 const record = ref<ReviewRecord | null>(null)
+const status = ref<LiveStatus | null>(null)
+const partial = ref<PartialReview | null>(null)
 const error = ref<string | null>(null)
+let events: EventSource | null = null
+
+async function loadRecord(): Promise<boolean> {
+  const res = await fetch('/api/review')
+  if (res.status === 202) return false
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  record.value = (await res.json()) as ReviewRecord
+  return true
+}
+
+function closeEvents() {
+  events?.close()
+  events = null
+}
+
+function openEvents() {
+  events = new EventSource('/api/events')
+  events.addEventListener('status', (e) => {
+    status.value = JSON.parse((e as MessageEvent).data) as LiveStatus
+  })
+  events.addEventListener('partial', (e) => {
+    partial.value = JSON.parse((e as MessageEvent).data) as PartialReview
+  })
+  events.addEventListener('done', async () => {
+    closeEvents()
+    try {
+      await loadRecord()
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e)
+    }
+  })
+  // serveur arrêté (Ctrl+C) : on garde le dernier état affiché, EventSource retente seul
+}
 
 async function load() {
   error.value = null
   try {
-    const res = await fetch('/api/review')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    record.value = (await res.json()) as ReviewRecord
+    if (await loadRecord()) return
+    openEvents()
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }
 }
 
 onMounted(load)
+onUnmounted(closeEvents)
 </script>
 
 <template>
   <ReviewShell v-if="record" :record="record" />
+  <ReviewLive v-else-if="status && !error" :status="status" :partial="partial" />
   <div v-else class="app-state">
     <template v-if="error">
       <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>

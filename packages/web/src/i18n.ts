@@ -14,6 +14,19 @@ const messages: Record<string, string> = {
   'header.copyPrompt': 'Copy for Claude Code ({n})',
   'header.copied': 'Copied ✓',
 
+  // Live review (codesema review en cours)
+  'live.title': 'Review in progress',
+  'live.errorTitle': 'The review failed',
+  'live.filesChanged': '{n} file changed | {n} files changed',
+  'live.commits': '{n} commit | {n} commits',
+  'live.incremental': 'incremental update',
+  'live.summary': 'Summary',
+  'live.findings': 'Findings so far',
+  'live.chapters': 'Chapters taking shape',
+  'live.moreFiles': '+ {n} more files',
+  'live.reading': 'The agent is reading the diff — the review fills in here as it is written.',
+  'live.streaming': 'The agent is still writing —',
+
   // Prologue
   'reviews.prologue.why': 'Why this MR',
   'reviews.prologue.what': 'What it does',

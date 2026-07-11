@@ -1,11 +1,29 @@
 // Résolution du ReviewRecord consommé par `show` et `export` : sortie agent
 // fraîche (.codesema/review.json ou --review) sinon dernière review archivée.
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ReviewRecord } from './contract.js'
 import { sanitizeReview } from './contract.js'
 import type { PrepInput } from './prep.js'
+
+function slug(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'review'
+}
+
+function stamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+}
+
+/** Archive la review dans .codesema/reviews/ et renvoie le chemin écrit. */
+export function archiveRecord(record: ReviewRecord, cwd: string): string {
+  const reviewsDir = join(cwd, '.codesema', 'reviews')
+  mkdirSync(reviewsDir, { recursive: true })
+  const savedPath = join(reviewsDir, `${slug(record.meta.branch)}-${stamp(new Date())}.json`)
+  writeFileSync(savedPath, JSON.stringify(record, null, 2))
+  return savedPath
+}
 
 export function readJson(path: string): unknown {
   const raw = readFileSync(path, 'utf8')
