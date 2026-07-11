@@ -5,6 +5,7 @@ web-dist/
 *.log
 .DS_Store
 CLAUDE.md
+DESIGN.md
 
 # prepack copies (source = repo root)
 packages/cli/LICENSE
