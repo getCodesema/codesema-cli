@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
 import { loadConfig } from './config.js'
+import { exportCommand } from './export.js'
 import { tryGit } from './git.js'
 import { prep } from './prep.js'
 import { review } from './review.js'
@@ -18,6 +19,8 @@ Usage:
   mr-review show [--review <file>] [--port <n>] [--no-open]
                                        Display the review (agent output) in a local web UI
   mr-review config                     Pick the AI agent, model and effort for this repo (interactive)
+  mr-review export [--review <file>] [--out <file>]
+                                       Export the review as Markdown (--out - for stdout)
 
 Options:
   --target <branch>   Target branch of the MR (default: auto-detected via glab/gh, origin/HEAD, then heuristic)
@@ -47,6 +50,7 @@ async function main(): Promise<void> {
       target: { type: 'string' },
       agent: { type: 'string' },
       review: { type: 'string' },
+      out: { type: 'string' },
       port: { type: 'string' },
       timeout: { type: 'string' },
       'no-open': { type: 'boolean' },
@@ -94,6 +98,9 @@ async function main(): Promise<void> {
     case 'config':
       if (!repoRoot) throw new Error('not inside a git repository — run `mr-review config` from your repo')
       await configCommand(repoRoot)
+      break
+    case 'export':
+      exportCommand({ review: values.review, out: values.out, cwd: process.cwd() })
       break
     default:
       console.error(`unknown command: ${command}\n`)
