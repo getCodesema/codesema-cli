@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { t } from './i18n.js'
 
 const CLAUDE_STREAM_FLAGS = '--output-format stream-json --include-partial-messages --verbose'
 
@@ -117,11 +118,11 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     child.on('close', (code) => {
       clearTimeout(timer)
       if (timedOut) {
-        reject(new Error(`agent timed out after ${Math.round(opts.timeoutMs / 1000)}s — raise it with --timeout <seconds>`))
+        reject(new Error(t('agent.timeout', { s: Math.round(opts.timeoutMs / 1000) })))
       } else if (code === 0) {
         resolve(parser ? (parser.finalText() ?? out) : out)
       } else {
-        reject(new Error(`agent command exited with code ${code}`))
+        reject(new Error(t('agent.exitCode', { code })))
       }
     })
     // an agent that crashes closes stdin early: without a handler, the EPIPE would kill the whole process

@@ -1,3 +1,4 @@
+import { t } from './i18n.js'
 import type { PartialReview } from './partial.js'
 import { VERSION, isNewerVersion } from './version.js'
 
@@ -60,21 +61,21 @@ export function printBanner(): void {
 
 export function printUpdateNotice(latest: string | null): void {
   if (!latest || !isNewerVersion(VERSION, latest)) return
-  console.log(`  ${paint(`update available: ${VERSION} => ${latest}`, AMBER)} ${dim('npm i -g codesema@latest')}`)
+  console.log(`  ${paint(t('ui.updateAvailable', { current: VERSION, latest }), AMBER)} ${dim('npm i -g codesema@latest')}`)
 }
 
 const WAVE_CHARS = '▁▂▃▄▅▆▇█'
 const WAVE_WIDTH = 22
 
-const PHASES = [
-  'reading the diff…',
-  'following the call chains…',
-  'grouping changes into steps…',
-  'weighing the risks…',
-  'writing the story…',
-  'collecting praise…',
-  'sharpening the findings…',
-]
+const PHASE_KEYS = [
+  'ui.phaseReading',
+  'ui.phaseCalls',
+  'ui.phaseGrouping',
+  'ui.phaseRisks',
+  'ui.phaseStory',
+  'ui.phasePraise',
+  'ui.phaseSharpening',
+] as const
 
 const STATUS_MAX = 56
 
@@ -85,13 +86,12 @@ function truncateStatus(text: string): string {
 export function progressLabel(partial: PartialReview): string | null {
   if (partial.stepTitles.length > 0) {
     const current = partial.stepTitles[partial.stepTitles.length - 1]!
-    return truncateStatus(`step ${partial.stepTitles.length}: ${current}`)
+    return truncateStatus(t('ui.progressStep', { n: partial.stepTitles.length, title: current }))
   }
   if (partial.findings.length > 0) {
-    const n = partial.findings.length
-    return `${n} finding${n === 1 ? '' : 's'} drafted`
+    return t('ui.progressFindings', { n: partial.findings.length })
   }
-  if (partial.verdict) return `verdict ${partial.verdict} · drafting findings`
+  if (partial.verdict) return t('ui.progressVerdict', { verdict: partial.verdict })
   return null
 }
 
@@ -140,7 +140,7 @@ export function startSpinner(label: string): Spinner {
       wave += paint(WAVE_CHARS[h]!, color)
     }
     const secs = Math.floor((Date.now() - startedAt) / 1000)
-    const status = liveStatus ?? PHASES[Math.floor(secs / 7) % PHASES.length]!
+    const status = liveStatus ?? t(PHASE_KEYS[Math.floor(secs / 7) % PHASE_KEYS.length]!)
     process.stdout.write(`\r\x1b[2K  ${wave}  ${label} ${dim(`${elapsed(startedAt)} · ${status}`)}`)
   }
 

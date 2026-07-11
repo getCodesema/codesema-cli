@@ -4,6 +4,7 @@ import { runAgent } from './agent.js'
 import { pickBranch } from './branches.js'
 import { ensureWorkDir, isRepoAgentTrusted, loadConfig, loadRepoConfig, trustRepoAgent } from './config.js'
 import { isAncestor, repoRoot } from './git.js'
+import { reviewLanguage, t, uiLocale } from './i18n.js'
 import { notifyDesktop } from './notify.js'
 import { openBrowser } from './open.js'
 import type { PartialReview } from './partial.js'
@@ -19,12 +20,19 @@ import { ACCENT, GREEN, RED, bold, dim, fieldLabel, paint, printBanner, printUpd
 import { startUpdateCheck } from './version.js'
 import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
 
-const REVIEW_INSTRUCTIONS = `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
+function languageRule(): string {
+  const language = reviewLanguage()
+  return language
+    ? `write all human-readable text (summary, messages, narrative) in ${language}`
+    : 'write all human-readable text (summary, messages, narrative) in the language of the commit messages when clearly identifiable, otherwise in English'
+}
+
+const reviewInstructions = (): string => `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
 
 Review guidelines:
 - Judge the change on: correctness, regressions and breaking changes, security, error handling, missing tests, and whether it matches its stated intent (inferred from the branch name and commit messages). Ground EVERY finding in the diff; never speculate. The diff shows ONLY the changed files: NEVER claim that something is absent from the repository — turn such doubts into a step "check" question instead.
 - If the input has non-null custom_instructions, apply them on top of these guidelines; they win on conflicts.
-- Language: write all human-readable text (summary, messages, narrative) in the language of the commit messages when clearly identifiable, otherwise in English. Keep code identifiers and file paths verbatim.
+- Language: ${languageRule()}. Keep code identifiers and file paths verbatim.
 
 Output JSON shape (exactly these fields):
 {
@@ -97,7 +105,7 @@ function buildIncrementalPrompt(input: PrepInput, cwd: string): { prompt: string
 
   const { diff: _fullDiff, ...inputMeta } = input
   const prompt = [
-    REVIEW_INSTRUCTIONS,
+    reviewInstructions(),
     INCREMENTAL_INSTRUCTIONS,
     `Previous review done at commit: ${since}`,
     `<input>\n${JSON.stringify(inputMeta, null, 2)}\n</input>`,
@@ -111,9 +119,7 @@ function buildIncrementalPrompt(input: PrepInput, cwd: string): { prompt: string
 function detectAgentCommand(cwd: string): string {
   const [first] = detectAgents(cwd)
   if (first) return defaultCommand(first)
-  throw new Error(
-    `no supported agent CLI found on PATH (looked for: ${AGENT_DEFS.map((d) => d.bin).join(', ')}) — pass one with --agent '<command>' (it receives the full prompt on stdin and must print the review JSON on stdout)`,
-  )
+  throw new Error(t('agent.noneFound', { bins: AGENT_DEFS.map((d) => d.bin).join(', ') }))
 }
 
 /** Extracts the JSON object from the agent output (tolerates code fences and surrounding prose). */
@@ -131,7 +137,7 @@ export function extractReviewJson(raw: string): string {
     fallback ??= candidate
   }
   if (fallback) return fallback
-  throw new Error('the agent did not return a JSON review (raw output saved to .codesema/agent-output.txt)')
+  throw new Error(t('agent.noJsonReview'))
 }
 
 /** Candidates in priority order: the whole output, fence contents, then each balanced {...} object. */
@@ -189,19 +195,17 @@ function createPartialForwarder(session: LiveSession): (text: string) => Partial
 async function ensureRepoAgentTrusted(cwd: string, command: string): Promise<boolean> {
   if (isRepoAgentTrusted(cwd, command)) return true
   if (!isInteractive()) {
-    throw new Error(
-      `this repository ships its own agent command via .codesema/config.json (${command}) — refusing to run it unattended. Approve it once in an interactive terminal, or pass --agent '<command>' explicitly.`,
-    )
+    throw new Error(t('review.repoAgentUnattended', { command }))
   }
   console.log('')
-  console.log(`  ${bold('This repository provides its own review agent command:')}`)
+  console.log(`  ${bold(t('review.trustTitle'))}`)
   console.log(`    ${bold(command)}`)
-  console.log(`  ${dim('It runs on your machine, in your shell. Approve it only if you trust this repo.')}`)
+  console.log(`  ${dim(t('review.trustWarning'))}`)
   const choice = await select<'run' | 'cancel'>({
-    title: 'Run this repo-provided agent command?',
+    title: t('review.trustQuestion'),
     options: [
-      { label: 'Cancel', hint: 'do not run', value: 'cancel' },
-      { label: 'Approve and run', hint: 'remembered for this repo', value: 'run' },
+      { label: t('review.trustCancel'), hint: t('review.trustCancelHint'), value: 'cancel' },
+      { label: t('review.trustApprove'), hint: t('review.trustApproveHint'), value: 'run' },
     ],
     initialIndex: 0,
   })
@@ -238,7 +242,7 @@ export async function review(opts: {
   if (!opts.agent && cwd && repoAgent && repoAgent === agentCommand) {
     const approved = await ensureRepoAgentTrusted(cwd, agentCommand)
     if (!approved) {
-      console.log('  aborted — repo-provided agent not approved')
+      console.log(`  ${t('review.trustAborted')}`)
       return
     }
   }
@@ -256,17 +260,21 @@ export async function review(opts: {
   const incremental = opts.full ? null : buildIncrementalPrompt(input, input.repo_root)
   const prompt =
     incremental?.prompt ??
-    `${REVIEW_INSTRUCTIONS}\n\n<input>\n${JSON.stringify(input, null, 2)}\n</input>\n\nOutput ONLY the JSON object now.`
+    `${reviewInstructions()}\n\n<input>\n${JSON.stringify(input, null, 2)}\n</input>\n\nOutput ONLY the JSON object now.`
 
   const additions = input.files.reduce((n, f) => n + f.additions, 0)
   const deletions = input.files.reduce((n, f) => n + f.deletions, 0)
-  console.log(`  ${fieldLabel('branch')}${bold(input.branch)} ${dim('→')} ${input.target} ${dim(`(${input.target_source})`)}`)
-  console.log(`  ${fieldLabel('changes')}${input.files.length} files · ${paint(`+${additions}`, GREEN)} ${paint(`−${deletions}`, RED)} · ${input.commits.length} commits`)
+  console.log(`  ${fieldLabel(t('field.branch'))}${bold(input.branch)} ${dim('→')} ${input.target} ${dim(`(${input.target_source})`)}`)
+  console.log(
+    `  ${fieldLabel(t('field.changes'))}${t('review.files', { n: input.files.length })} · ${paint(`+${additions}`, GREEN)} ${paint(`−${deletions}`, RED)} · ${t('review.commits', { n: input.commits.length })}`,
+  )
   if (incremental) {
-    console.log(`  ${fieldLabel('mode')}incremental ${dim(`· updating the review done at ${incremental.sinceSha.slice(0, 8)} · pass --full to start over`)}`)
+    console.log(
+      `  ${fieldLabel(t('field.mode'))}${t('review.modeIncremental')} ${dim(t('review.modeIncrementalHint', { sha: incremental.sinceSha.slice(0, 8) }))}`,
+    )
   }
   if (input.custom_instructions) {
-    console.log(`  ${fieldLabel('prompt')}${dim('custom instructions from .codesema/PROMPT.md merged into the agent prompt')}`)
+    console.log(`  ${fieldLabel(t('field.prompt'))}${dim(t('review.customPrompt'))}`)
   }
 
   const session = createSession()
@@ -281,13 +289,13 @@ export async function review(opts: {
     incremental: Boolean(incremental),
   })
 
-  const { url } = await startServer(session, { port: opts.port ?? config.port })
-  console.log(`  ${fieldLabel('web')}${underline(paint(url, ACCENT))} ${dim('· live, findings appear as the agent works')}`)
+  const { url } = await startServer(session, { port: opts.port ?? config.port, locale: uiLocale() })
+  console.log(`  ${fieldLabel(t('field.web'))}${underline(paint(url, ACCENT))} ${dim(t('review.webLiveHint'))}`)
   console.log('')
   if (opts.open) openBrowser(url)
 
   const shortCmd = agentCommand.length > 40 ? `${agentCommand.slice(0, 37)}…` : agentCommand
-  const spinner = startSpinner(`reviewing with ${shortCmd}`)
+  const spinner = startSpinner(t('review.spinner', { cmd: shortCmd }))
   const forwardPartial = createPartialForwarder(session)
 
   let out: string
@@ -306,11 +314,11 @@ export async function review(opts: {
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    spinner.stop(`  ${paint('✘', RED)} agent run failed`)
+    spinner.stop(`  ${paint('✘', RED)} ${t('review.runFailed')}`)
     session.setError(message)
-    if (isInteractive()) notifyDesktop('codesema', 'review failed: agent run failed')
-    console.error(`codesema: agent run failed: ${message}`)
-    console.log(`  ${url} still up · Ctrl+C to stop`)
+    if (isInteractive()) notifyDesktop('codesema', t('notify.failedRun'))
+    console.error(`codesema: ${t('review.runFailedDetail', { message })}`)
+    console.log(`  ${t('review.stillUp', { url })}`)
     process.exitCode = 1
     return
   }
@@ -322,12 +330,12 @@ export async function review(opts: {
     record = resolveRecord({ cwd: input.repo_root }).record
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    spinner.stop(`  ${paint('✘', RED)} unusable agent output`)
+    spinner.stop(`  ${paint('✘', RED)} ${t('review.unusableOutput')}`)
     writeFileSync(join(dir, 'agent-output.txt'), out)
     session.setError(message)
-    if (isInteractive()) notifyDesktop('codesema', 'review failed: unusable agent output')
+    if (isInteractive()) notifyDesktop('codesema', t('notify.failedOutput'))
     console.error(`codesema: ${message}`)
-    console.log(`  ${url} still up · Ctrl+C to stop`)
+    console.log(`  ${t('review.stillUp', { url })}`)
     process.exitCode = 1
     return
   }
@@ -336,14 +344,20 @@ export async function review(opts: {
   session.setDone(record)
 
   const findingsCount = record.review.findings.length
-  spinner.stop(`  ${paint('✔', GREEN)} review ready`)
+  spinner.stop(`  ${paint('✔', GREEN)} ${t('review.ready')}`)
   printReviewSummary(record)
   console.log('')
-  console.log(`  ${fieldLabel('web')}${underline(paint(url, ACCENT))}`)
-  console.log(`  ${dim(`archived: ${savedPath}`)}`)
-  console.log(`  ${dim('Ctrl+C to stop')}`)
+  console.log(`  ${fieldLabel(t('field.web'))}${underline(paint(url, ACCENT))}`)
+  console.log(`  ${dim(t('review.archivedAt', { path: savedPath }))}`)
+  console.log(`  ${dim(t('review.ctrlc'))}`)
   printUpdateNotice(await latestVersion)
   if (isInteractive()) {
-    notifyDesktop('codesema', `review ready · ${findingsCount} finding${findingsCount === 1 ? '' : 's'} · ${record.review.verdict}`)
+    notifyDesktop(
+      'codesema',
+      t('notify.ready', {
+        findings: t('review.findingCount', { n: findingsCount }),
+        verdict: t(`verdict.${record.review.verdict}`),
+      }),
+    )
   }
 }

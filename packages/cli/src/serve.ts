@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ReviewRecord } from './contract.js'
+import { t } from './i18n.js'
 import type { PartialReview } from './partial.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
@@ -250,17 +251,18 @@ async function listen(
     })
     if (ok) return { server, port }
   }
-  throw new Error(`no free port between ${startPort} and ${startPort + 19}`)
+  throw new Error(t('serve.noFreePort', { start: startPort, end: startPort + 19 }))
 }
 
 export async function startServer(
   session: LiveSession,
-  opts: { port?: number },
+  opts: { port?: number; locale?: string },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
-    throw new Error(`embedded web UI not found at ${WEB_DIST}: broken install or build`)
+    throw new Error(t('serve.noWebUi', { path: WEB_DIST }))
   }
-  const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8')
+  const localeScript = `<script>window.__CODESEMA_LOCALE__=${JSON.stringify(opts.locale ?? 'en')}</script>`
+  const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8').replace('</head>', `${localeScript}</head>`)
 
   const { server, port } = await listen(createRequestHandler(session, indexHtml), opts.port ?? 4400)
   const stop = () =>

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ensureWorkDir } from './config.js'
 import { currentBranch, git, headSha, mergeBase, refExists, repoRoot, revListCount, tryExec, tryGit } from './git.js'
+import { t } from './i18n.js'
 
 const TARGET_CANDIDATES = ['develop', 'main', 'master'] as const
 
@@ -105,13 +106,13 @@ export function detectTarget(
 ): { target: string; source: string } {
   if (flag) {
     const ref = resolveRef(flag, cwd)
-    if (!ref) throw new Error(`--target ${flag}: branch not found (neither local nor origin/${flag})`)
+    if (!ref) throw new Error(t('prep.targetFlagNotFound', { flag }))
     return { target: ref, source: '--target flag' }
   }
   const forge = headRef === 'HEAD' ? targetFromForge(cwd) : null
   const detected = forge ?? targetFromOriginHead(cwd) ?? targetFromHeuristic(current, headRef, cwd)
   if (!detected) {
-    throw new Error('could not detect the target branch — pass it explicitly with --target <branch>')
+    throw new Error(t('prep.noTarget'))
   }
   return detected
 }
@@ -143,23 +144,21 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
   const checkedOut = currentBranch(cwd)
   const branch = opts.branch ?? checkedOut
   if (branch === 'HEAD') {
-    throw new Error('detached HEAD — checkout the branch you want reviewed first, or pass --branch <name>')
+    throw new Error(t('prep.detachedHead'))
   }
   if (opts.branch && !refExists(`refs/heads/${opts.branch}`, cwd)) {
-    throw new Error(`--branch ${opts.branch}: local branch not found`)
+    throw new Error(t('prep.branchNotFound', { branch: opts.branch }))
   }
   const headRef = opts.branch && opts.branch !== checkedOut ? opts.branch : 'HEAD'
 
   const { target, source } = detectTarget(branch, opts.target, cwd, headRef)
   if (sameBranch(target, branch)) {
-    throw new Error(
-      `"${branch}" is the target branch itself — pick your feature branch, or pass --target <branch>`,
-    )
+    throw new Error(t('prep.targetIsSelf', { branch }))
   }
 
   const mb = mergeBase(target, headRef, cwd)
   if (!mb) {
-    throw new Error(`no merge-base between ${target} and ${branch} — pass another base with --target <branch>`)
+    throw new Error(t('prep.noMergeBase', { target, branch }))
   }
 
   const excludes = excludePathspecs(cwd)
@@ -167,10 +166,8 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
   const diff = mrDiff(range, cwd, excludes)
   if (!diff.trim()) {
     const dirty = headRef === 'HEAD' ? tryGit(['status', '--porcelain'], cwd) : null
-    const hint = dirty?.trim()
-      ? ' Your working tree has uncommitted changes: commit them first, codesema reviews committed work.'
-      : ''
-    throw new Error(`empty diff between ${target} and ${branch} — nothing to review.${hint}`)
+    const hint = dirty?.trim() ? t('prep.dirtyHint') : ''
+    throw new Error(t('prep.emptyDiff', { target, branch, hint }))
   }
 
   const commits = (tryGit(['log', '--pretty=%s', `${target}..${headRef}`, '--max-count=30'], cwd) ?? '')
@@ -215,15 +212,16 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
   const additions = files.reduce((n, f) => n + f.additions, 0)
   const deletions = files.reduce((n, f) => n + f.deletions, 0)
   if (!opts.quiet) {
-    console.log('codesema prep')
-    console.log(`  branch : ${branch}`)
-    console.log(`  target : ${target} (${source})`)
-    console.log(`  files  : ${files.length} (+${additions} −${deletions})`)
-    console.log(`  commits: ${commits.length}`)
-    if (custom) console.log('  custom : .codesema/PROMPT.md merged into instructions')
-    console.log(`  input  : ${inputPath}`)
+    const label = (key: Parameters<typeof t>[0]) => `  ${t(key).padEnd(8)}: `
+    console.log(t('prep.title'))
+    console.log(`${label('prep.label.branch')}${branch}`)
+    console.log(`${label('prep.label.target')}${target} (${source})`)
+    console.log(`${label('prep.label.files')}${files.length} (+${additions} −${deletions})`)
+    console.log(`${label('prep.label.commits')}${commits.length}`)
+    if (custom) console.log(`${label('prep.label.custom')}${t('prep.customNote')}`)
+    console.log(`${label('prep.label.input')}${inputPath}`)
     console.log('')
-    console.log('Next: have your AI agent write .codesema/review.json (see the codesema skill), then run `codesema show`.')
+    console.log(t('prep.next'))
   }
   return input
 }

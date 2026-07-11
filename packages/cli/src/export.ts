@@ -3,12 +3,14 @@ import { join } from 'node:path'
 import type { Finding, ReviewRecord } from './contract.js'
 import { ensureWorkDir } from './config.js'
 import { repoRoot } from './git.js'
+import { t } from './i18n.js'
 import { resolveRecord } from './record.js'
 
-const VERDICT_LABEL: Record<string, string> = {
-  approve: 'Approved ✅',
-  request_changes: 'Changes requested ❌',
-  comment: 'Comment 💬',
+function verdictLabel(verdict: string): string {
+  if (verdict === 'approve') return t('export.verdictApprove')
+  if (verdict === 'request_changes') return t('export.verdictChanges')
+  if (verdict === 'comment') return t('export.verdictComment')
+  return verdict
 }
 
 function findingAnchor(f: Finding): string {
@@ -31,50 +33,50 @@ export function renderMarkdown(record: ReviewRecord): string {
   const n = review.narrative
   const out: string[] = []
 
-  out.push(`# Review — ${meta.branch} → ${meta.target}`)
+  out.push(`# ${t('export.title', { branch: meta.branch, target: meta.target })}`)
   out.push(
     [
-      `- **Verdict:** ${VERDICT_LABEL[review.verdict] ?? review.verdict}`,
-      `- **Created:** ${meta.created_at}`,
-      `- **Commits:** ${record.commits.length}`,
-      `- **Findings:** ${review.findings.length}`,
+      `- **${t('export.verdictLabel')}:** ${verdictLabel(review.verdict)}`,
+      `- **${t('export.createdLabel')}:** ${meta.created_at}`,
+      `- **${t('export.commitsLabel')}:** ${record.commits.length}`,
+      `- **${t('export.findingsLabel')}:** ${review.findings.length}`,
     ].join('\n'),
   )
 
   if (review.summary) {
-    out.push('## Summary')
+    out.push(`## ${t('export.summary')}`)
     out.push(review.summary)
   }
 
   if (n) {
-    if (n.intent) out.push(`**Intent:** ${n.intent} _(confidence: ${n.confidence})_`)
+    if (n.intent) out.push(`**${t('export.intent')}:** ${n.intent} _(${t('export.confidence')}: ${n.confidence})_`)
     if (n.prologue) {
-      out.push('## Prologue')
+      out.push(`## ${t('export.prologue')}`)
       const p: string[] = []
-      if (n.prologue.why) p.push(`**Why:** ${n.prologue.why}`)
-      if (n.prologue.what) p.push(`**What:** ${n.prologue.what}`)
+      if (n.prologue.why) p.push(`**${t('export.why')}:** ${n.prologue.why}`)
+      if (n.prologue.what) p.push(`**${t('export.what')}:** ${n.prologue.what}`)
       for (const kc of n.prologue.key_changes) p.push(`- **${kc.title}**${kc.detail ? ` — ${kc.detail}` : ''}`)
       out.push(p.join('\n\n'))
     }
     if (n.review_first.length) {
-      out.push('## Review first')
+      out.push(`## ${t('export.reviewFirst')}`)
       out.push(
         n.review_first
-          .map((rf, i) => `${i + 1}. **[${rf.risk}]** ${rf.point}${rf.file ? ` (\`${rf.file}\`)` : ''}`)
+          .map((rf, i) => `${i + 1}. **[${t(`risk.${rf.risk}`)}]** ${rf.point}${rf.file ? ` (\`${rf.file}\`)` : ''}`)
           .join('\n'),
       )
     }
     if (n.steps.length) {
-      out.push('## Steps')
+      out.push(`## ${t('export.steps')}`)
       n.steps.forEach((ch, i) => {
-        const head = `### ${i + 1}. ${ch.title}${ch.risk ? ` — ${ch.risk} risk` : ''}`
+        const head = `### ${i + 1}. ${ch.title}${ch.risk ? ` — ${t('export.risk', { risk: t(`risk.${ch.risk}`) })}` : ''}`
         const body: string[] = [head]
         if (ch.rationale) body.push(ch.rationale)
         if (ch.take) body.push(`> ${ch.take}`)
-        if (ch.check) body.push(`- [ ] To verify: ${ch.check}`)
-        if (ch.files.length) body.push(`Files: ${ch.files.map((f) => `\`${f}\``).join(', ')}`)
+        if (ch.check) body.push(`- [ ] ${t('export.toVerify')}: ${ch.check}`)
+        if (ch.files.length) body.push(`${t('export.files')}: ${ch.files.map((f) => `\`${f}\``).join(', ')}`)
         if (ch.finding_refs.length) {
-          body.push(`Findings: ${ch.finding_refs.map((r) => `#${r + 1}`).join(', ')}`)
+          body.push(`${t('export.findingsRefs')}: ${ch.finding_refs.map((r) => `#${r + 1}`).join(', ')}`)
         }
         out.push(body.join('\n\n'))
       })
@@ -82,7 +84,7 @@ export function renderMarkdown(record: ReviewRecord): string {
   }
 
   if (review.findings.length) {
-    out.push('## Findings')
+    out.push(`## ${t('export.findingsLabel')}`)
     review.findings.forEach((f, i) => out.push(renderFinding(f, i)))
   }
 
@@ -100,5 +102,5 @@ export function exportCommand(opts: { review?: string; out?: string; cwd: string
   }
   const outPath = opts.out ?? join(ensureWorkDir(cwd), 'review.md')
   writeFileSync(outPath, markdown)
-  console.log(`review exported: ${outPath} (from ${sourcePath})`)
+  console.log(t('export.exported', { outPath, sourcePath }))
 }

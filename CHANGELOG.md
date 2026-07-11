@@ -3,6 +3,17 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.5.0] - unreleased
+
+### Added
+
+- `language` config field (ISO 639-1: `en` or `fr`) driving the whole experience: the CLI, the embedded web UI and the language the agent writes the review in.
+- Onboarding now starts with a language question (`English`, `Français`), preselected from the `LANG` environment. `codesema config` can change it later, with the same global/repo scopes.
+
+### Changed
+
+- Review prompt: when `language` is set, the agent writes the review in that language instead of inferring it from the commit messages (unchanged fallback when unset).
+
 ## [0.4.0] - unreleased
 
 ### Added

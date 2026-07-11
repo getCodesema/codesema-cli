@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { join } from 'node:path'
 import type { ReviewRecord } from './contract.js'
 import { sanitizeRecord } from './contract.js'
+import { t } from './i18n.js'
 
 const ARCHIVES_KEPT_PER_BRANCH = 5
 
@@ -43,14 +44,14 @@ export function readJson(path: string): unknown {
   try {
     return JSON.parse(raw)
   } catch {
-    throw new Error(`${path} is not valid JSON — the agent output must be a single JSON object`)
+    throw new Error(t('record.invalidJson', { path }))
   }
 }
 
 function buildRecord(agentOutputPath: string, dir: string): ReviewRecord {
   const inputPath = join(dir, 'input.json')
   if (!existsSync(inputPath)) {
-    throw new Error('.codesema/input.json not found — run `codesema prep` first')
+    throw new Error(t('record.noInput'))
   }
   const raw = readJson(inputPath)
   const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
@@ -116,11 +117,11 @@ export function resolveRecord(opts: { review?: string; cwd: string }): ResolvedR
     return { record: buildRecord(freshPath, dir), fresh: true, sourcePath: freshPath }
   }
   if (opts.review) {
-    throw new Error(`review file not found: ${opts.review}`)
+    throw new Error(t('record.reviewNotFound', { path: opts.review }))
   }
   const latest = latestSavedRecord(join(dir, 'reviews'))
   if (!latest) {
-    throw new Error('no review to show — run `codesema prep`, let your agent write .codesema/review.json, then retry')
+    throw new Error(t('record.nothingToShow'))
   }
   return { record: latest.record, fresh: false, sourcePath: latest.path }
 }

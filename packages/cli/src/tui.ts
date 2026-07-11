@@ -1,5 +1,6 @@
 import { emitKeypressEvents } from 'node:readline'
 import { createInterface } from 'node:readline/promises'
+import { t } from './i18n.js'
 import { ACCENT, dim, isFancy, paint } from './ui.js'
 
 export type SelectOption<T> = {
@@ -72,16 +73,16 @@ export async function select<T>(opts: {
     const filterPart = opts.filter
       ? query
         ? `  ${color('/', ACCENT)}${query}`
-        : `  ${faint('type to filter')}`
+        : `  ${faint(t('tui.typeToFilter'))}`
       : ''
     lines.push(`  ${color('?', ACCENT)} ${opts.title}${filterPart}`)
 
     if (list.length === 0) {
-      lines.push(`    ${faint('no match — backspace to clear the filter')}`)
+      lines.push(`    ${faint(t('tui.noMatch'))}`)
     } else {
       const start = Math.min(Math.max(0, cursor - MAX_VISIBLE + 2), Math.max(0, list.length - MAX_VISIBLE))
       const visible = list.slice(start, start + MAX_VISIBLE)
-      if (start > 0) lines.push(`    ${faint(`↑ ${start} more`)}`)
+      if (start > 0) lines.push(`    ${faint(t('tui.moreUp', { n: start }))}`)
       visible.forEach((option, i) => {
         const index = start + i
         const active = index === cursor
@@ -90,9 +91,9 @@ export async function select<T>(opts: {
         lines.push(active ? `  ${color('❯', ACCENT)} ${color(label, ACCENT)}${hint}` : `    ${label}${hint}`)
       })
       const rest = list.length - start - visible.length
-      if (rest > 0) lines.push(`    ${faint(`↓ ${rest} more`)}`)
+      if (rest > 0) lines.push(`    ${faint(t('tui.moreDown', { n: rest }))}`)
     }
-    lines.push(`  ${faint(opts.filter ? '↑↓ move · enter select · esc cancel' : '↑↓ move · enter select · esc cancel · 1-9 pick')}`)
+    lines.push(`  ${faint(opts.filter ? t('tui.keysWithFilter') : t('tui.keys'))}`)
 
     clearRendered()
     stdout.write(`${lines.join('\n')}\n`)
@@ -119,7 +120,7 @@ export async function select<T>(opts: {
     }
 
     const cancel = () => {
-      finish(null, `  ${faint('✘')} ${opts.title} ${faint('· cancelled')}`)
+      finish(null, `  ${faint('✘')} ${opts.title} ${faint(`· ${t('tui.cancelled')}`)}`)
     }
 
     const onKeypress = (char: string | undefined, key: KeypressEvent) => {

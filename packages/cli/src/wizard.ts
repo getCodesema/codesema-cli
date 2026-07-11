@@ -10,6 +10,7 @@ import {
   trustRepoAgent,
 } from './config.js'
 import { tryExec } from './git.js'
+import { setLanguage, t, type SupportedLanguage } from './i18n.js'
 import { isInteractive, select, textInput } from './tui.js'
 import { bold, dim } from './ui.js'
 
@@ -91,6 +92,25 @@ export function composeCommand(def: AgentDef, model?: string, effort?: string): 
 const CLI_DEFAULT = Symbol('cli-default')
 const CUSTOM = Symbol('custom')
 
+// Shown before any language is picked, so this stays bilingual by design.
+const LANGUAGE_TITLE = 'Language / Langue?'
+
+function defaultLanguageIndex(current?: SupportedLanguage): number {
+  if (current === 'en') return 0
+  if (current === 'fr') return 1
+  const env = process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || ''
+  return env.toLowerCase().startsWith('fr') ? 1 : 0
+}
+
+/** Language selection (ISO 639-1 codes with a catalog), null if cancelled. */
+export async function pickLanguage(current?: SupportedLanguage): Promise<SupportedLanguage | null> {
+  const options = [
+    { label: 'English', hint: current === 'en' ? t('wizard.current') : undefined, value: 'en' as SupportedLanguage },
+    { label: 'Français', hint: current === 'fr' ? t('wizard.current') : undefined, value: 'fr' as SupportedLanguage },
+  ]
+  return await select({ title: LANGUAGE_TITLE, options, initialIndex: defaultLanguageIndex(current) })
+}
+
 /**
  * Interactive agent -> model -> effort selection. `current` prefills the
  * choices for re-editing via `codesema config`. null if the user cancels.
@@ -101,24 +121,24 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
   const detected = detectAgents(cwd)
   const missing = AGENT_DEFS.filter((d) => !detected.includes(d))
   if (missing.length) {
-    console.log(`  ${dim(`not found on PATH: ${missing.map((d) => d.bin).join(', ')}`)}`)
+    console.log(`  ${dim(t('wizard.notOnPath', { bins: missing.map((d) => d.bin).join(', ') }))}`)
   }
 
   const agentOptions = [
     ...detected.map((def) => ({
       label: def.label,
-      hint: current.agentId === def.id ? `${def.bin} · current` : def.bin,
+      hint: current.agentId === def.id ? `${def.bin} · ${t('wizard.current')}` : def.bin,
       value: def as AgentDef | typeof CUSTOM,
     })),
     {
-      label: 'Custom command',
-      hint: current.agentId === 'custom' ? 'stdin → stdout · current' : 'stdin → stdout',
+      label: t('wizard.customCommand'),
+      hint: current.agentId === 'custom' ? `${t('wizard.stdinStdout')} · ${t('wizard.current')}` : t('wizard.stdinStdout'),
       value: CUSTOM as AgentDef | typeof CUSTOM,
     },
   ]
   const initialAgent = detected.findIndex((d) => d.id === current.agentId)
   const picked = await select({
-    title: 'Which AI agent runs the review?',
+    title: t('wizard.whichAgent'),
     options: agentOptions,
     initialIndex: initialAgent >= 0 ? initialAgent : 0,
   })
@@ -126,8 +146,8 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
 
   if (picked === CUSTOM) {
     const command = await textInput({
-      title: 'Full agent command',
-      placeholder: 'reads the prompt on stdin, prints the review JSON on stdout',
+      title: t('wizard.fullCommandTitle'),
+      placeholder: t('wizard.fullCommandPlaceholder'),
     })
     return command ? { command, agentId: 'custom' } : null
   }
@@ -137,22 +157,22 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
   const modelOptions = [
     ...def.models.map((m) => ({
       label: m,
-      hint: current.model === m ? 'current' : undefined,
+      hint: current.model === m ? t('wizard.current') : undefined,
       value: m as string | typeof CLI_DEFAULT | typeof CUSTOM,
     })),
-    { label: 'CLI default', hint: `let ${def.bin} decide`, value: CLI_DEFAULT as string | typeof CLI_DEFAULT | typeof CUSTOM },
-    { label: 'Other…', hint: 'type a model name', value: CUSTOM as string | typeof CLI_DEFAULT | typeof CUSTOM },
+    { label: t('wizard.cliDefault'), hint: t('wizard.letDecide', { bin: def.bin }), value: CLI_DEFAULT as string | typeof CLI_DEFAULT | typeof CUSTOM },
+    { label: t('wizard.otherOption'), hint: t('wizard.typeModelName'), value: CUSTOM as string | typeof CLI_DEFAULT | typeof CUSTOM },
   ]
   const initialModel = def.models.indexOf(current.model ?? '')
   const modelPick = await select({
-    title: `Model for ${def.label}?`,
+    title: t('wizard.modelFor', { label: def.label }),
     options: modelOptions,
     initialIndex: initialModel >= 0 ? initialModel : 0,
   })
   if (modelPick === null) return null
   let model: string | undefined
   if (modelPick === CUSTOM) {
-    model = (await textInput({ title: 'Model name' })) ?? undefined
+    model = (await textInput({ title: t('wizard.modelName') })) ?? undefined
   } else if (modelPick !== CLI_DEFAULT) {
     model = modelPick
   }
@@ -162,14 +182,14 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
     const effortOptions = [
       ...def.efforts.map((e) => ({
         label: e,
-        hint: current.effort === e ? 'current' : undefined,
+        hint: current.effort === e ? t('wizard.current') : undefined,
         value: e as string | typeof CLI_DEFAULT,
       })),
-      { label: 'CLI default', hint: `let ${def.bin} decide`, value: CLI_DEFAULT as string | typeof CLI_DEFAULT },
+      { label: t('wizard.cliDefault'), hint: t('wizard.letDecide', { bin: def.bin }), value: CLI_DEFAULT as string | typeof CLI_DEFAULT },
     ]
     const initialEffort = def.efforts.indexOf(current.effort ?? '')
     const effortPick = await select({
-      title: 'Reasoning effort?',
+      title: t('wizard.effort'),
       options: effortOptions,
       initialIndex: initialEffort >= 0 ? initialEffort : effortOptions.length - 1,
     })
@@ -194,56 +214,69 @@ function applyResult(config: CodesemaConfig, result: WizardResult): CodesemaConf
  * Returns the agent command, or null if cancelled or non-TTY.
  */
 export async function runOnboarding(cwd: string): Promise<string | null> {
-  console.log(`  ${bold('First run')} — pick the agent that will review your code.`)
-  console.log(`  ${dim('Saved once, for every repo. Change it anytime with `codesema config`.')}`)
+  const language = (await pickLanguage()) ?? undefined
+  if (language) setLanguage(language)
+  console.log(`  ${bold(t('wizard.firstRun'))}`)
+  console.log(`  ${dim(t('wizard.firstRunHint'))}`)
   console.log('')
   const result = await runAgentWizard(cwd)
   if (!result) return null
-  const path = saveGlobalConfig(applyResult(loadGlobalConfig(), result))
-  console.log(`  ${dim(`saved: ${path}`)}`)
+  const config = applyResult(loadGlobalConfig(), result)
+  if (language) config.language = language
+  const path = saveGlobalConfig(config)
+  console.log(`  ${dim(t('wizard.saved', { path }))}`)
   return result.command
 }
 
 export async function configCommand(repoRoot: string | null): Promise<void> {
   if (!isInteractive()) {
-    throw new Error('`codesema config` is interactive — run it from a terminal, or edit the config file directly')
+    throw new Error(t('config.notInteractive'))
   }
 
   const current = loadConfig(repoRoot)
   if (current.agent) {
-    console.log(`  current agent: ${bold(current.agent)}`)
+    console.log(`  ${t('config.currentAgent', { command: bold(current.agent) })}`)
     const repoOverride = repoRoot && loadRepoConfig(repoRoot).agent
-    console.log(`  ${dim(`from ${repoOverride ? repoConfigPath(repoRoot) : globalConfigPath()}`)}`)
+    console.log(`  ${dim(t('config.fromPath', { path: repoOverride ? repoConfigPath(repoRoot) : globalConfigPath() }))}`)
     console.log('')
   }
 
   const result = await runAgentWizard(repoRoot ?? process.cwd(), current)
   if (!result) return
 
+  const language = (await pickLanguage(current.language)) ?? undefined
+  if (language) setLanguage(language)
+
   let scope: 'global' | 'repo' = 'global'
   if (repoRoot) {
     const pickedScope = await select<'global' | 'repo'>({
-      title: 'Save where?',
+      title: t('config.saveWhere'),
       options: [
-        { label: 'Everywhere', hint: 'global config, all repos', value: 'global' },
-        { label: 'This repo only', hint: '.codesema/config.json, overrides global', value: 'repo' },
+        { label: t('config.everywhere'), hint: t('config.everywhereHint'), value: 'global' },
+        { label: t('config.thisRepo'), hint: t('config.thisRepoHint'), value: 'repo' },
       ],
     })
     if (pickedScope === null) return
     scope = pickedScope
   }
 
+  const withResult = (config: CodesemaConfig): CodesemaConfig => {
+    const next = applyResult(config, result)
+    if (language) next.language = language
+    return next
+  }
+
   let path: string
   if (scope === 'repo' && repoRoot) {
-    path = saveRepoConfig(repoRoot, applyResult(loadRepoConfig(repoRoot), result))
+    path = saveRepoConfig(repoRoot, withResult(loadRepoConfig(repoRoot)))
     // The user just chose this command, so trust it now: the approval prompt only
     // targets agent commands inherited from a cloned repo, not ones set here.
     trustRepoAgent(repoRoot, result.command)
   } else {
-    path = saveGlobalConfig(applyResult(loadGlobalConfig(), result))
+    path = saveGlobalConfig(withResult(loadGlobalConfig()))
   }
 
   console.log('')
-  console.log(`  agent command saved: ${bold(result.command)}`)
-  console.log(`  ${dim(`config: ${path}`)}`)
+  console.log(`  ${t('config.agentSaved', { command: bold(result.command) })}`)
+  console.log(`  ${dim(t('config.savedTo', { path }))}`)
 }

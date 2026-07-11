@@ -1,0 +1,466 @@
+// Minimal i18n with no dependency: flat dictionary, {x} interpolation, "a | b" plural.
+// Mirrors packages/web/src/i18n.ts. Every key must exist in every catalog (enforced
+// by the Record<MessageKey, string> type on non-English catalogs).
+
+const en = {
+  'cli.help': `codesema — local merge request review, step by step
+
+Usage:
+  codesema                            Interactive review: pick a local branch, the web UI opens
+                                      immediately and fills in live while your AI agent reviews.
+                                      First run only: a short wizard picks the language, agent,
+                                      model and effort (saved globally — change it with
+                                      \`codesema config\`)
+  codesema review [--branch <name>] [--target <branch>] [--agent <cmd>] [--full] [--no-open]
+                                      Same flow; --branch skips the branch picker (also skipped
+                                      when stdin is not a terminal, e.g. CI). Re-runs on the same
+                                      branch update the previous review incrementally; --full
+                                      forces a review from scratch
+  codesema config                     Change the language, AI agent, model and effort (interactive)
+  codesema prep [--target <branch>]   Only detect branches, compute the MR diff, write
+                                      .codesema/input.json for your own agent flow
+  codesema show [--review <file>]     Only display a review (agent output) in the local web UI
+  codesema export [--review <file>] [--out <file>]
+                                      Export the review as Markdown (--out - for stdout)
+
+Options:
+  --branch <name>     Local branch to review (default: interactive picker, else current branch)
+  --target <branch>   Target branch of the MR (default: auto-detected via glab/gh, origin/HEAD, then heuristic)
+  --agent <cmd>       Agent command override for this run. Receives the prompt on stdin,
+                      must print the review JSON on stdout
+  --review <file>     Agent output to display (default: .codesema/review.json, else last archived review)
+  --port <n>          Preferred port for the local server (default: 4400)
+  --timeout <s>       Agent time budget in seconds for \`review\` (default: 900)
+  --full              Review from scratch instead of updating the previous review
+  --no-open           Do not open the browser
+  -h, --help          Show this help
+  -v, --version       Show version
+
+Config precedence: CLI flags > .codesema/config.json (repo) > ~/.config/codesema/config.json (global).
+
+\`review\` and \`show\` check the npm registry once at startup to tell you when a newer
+version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
+`,
+  'cli.unknownCommand': 'unknown command: {command}',
+  'cli.intFlagError': '--{name} {raw}: expected an integer between {min} and {max}',
+
+  'git.notFound': 'git not found on PATH — install git (https://git-scm.com) and retry',
+
+  'agent.timeout': 'agent timed out after {s}s — raise it with --timeout <seconds>',
+  'agent.exitCode': 'agent command exited with code {code}',
+  'agent.noneFound':
+    "no supported agent CLI found on PATH (looked for: {bins}) — pass one with --agent '<command>' (it receives the full prompt on stdin and must print the review JSON on stdout)",
+  'agent.noJsonReview': 'the agent did not return a JSON review (raw output saved to .codesema/agent-output.txt)',
+
+  'prep.detachedHead': 'detached HEAD — checkout the branch you want reviewed first, or pass --branch <name>',
+  'prep.branchNotFound': '--branch {branch}: local branch not found',
+  'prep.targetFlagNotFound': '--target {flag}: branch not found (neither local nor origin/{flag})',
+  'prep.noTarget': 'could not detect the target branch — pass it explicitly with --target <branch>',
+  'prep.targetIsSelf': '"{branch}" is the target branch itself — pick your feature branch, or pass --target <branch>',
+  'prep.noMergeBase': 'no merge-base between {target} and {branch} — pass another base with --target <branch>',
+  'prep.emptyDiff': 'empty diff between {target} and {branch} — nothing to review.{hint}',
+  'prep.dirtyHint': ' Your working tree has uncommitted changes: commit them first, codesema reviews committed work.',
+  'prep.title': 'codesema prep',
+  'prep.label.branch': 'branch',
+  'prep.label.target': 'target',
+  'prep.label.files': 'files',
+  'prep.label.commits': 'commits',
+  'prep.label.custom': 'custom',
+  'prep.label.input': 'input',
+  'prep.customNote': '.codesema/PROMPT.md merged into instructions',
+  'prep.next': 'Next: have your AI agent write .codesema/review.json (see the codesema skill), then run `codesema show`.',
+
+  'review.trustTitle': 'This repository provides its own review agent command:',
+  'review.trustWarning': 'It runs on your machine, in your shell. Approve it only if you trust this repo.',
+  'review.trustQuestion': 'Run this repo-provided agent command?',
+  'review.trustCancel': 'Cancel',
+  'review.trustCancelHint': 'do not run',
+  'review.trustApprove': 'Approve and run',
+  'review.trustApproveHint': 'remembered for this repo',
+  'review.trustAborted': 'aborted — repo-provided agent not approved',
+  'review.repoAgentUnattended':
+    "this repository ships its own agent command via .codesema/config.json ({command}) — refusing to run it unattended. Approve it once in an interactive terminal, or pass --agent '<command>' explicitly.",
+  'review.files': '{n} file | {n} files',
+  'review.commits': '{n} commit | {n} commits',
+  'review.findingCount': '{n} finding | {n} findings',
+  'review.modeIncremental': 'incremental',
+  'review.modeIncrementalHint': '· updating the review done at {sha} · pass --full to start over',
+  'review.customPrompt': 'custom instructions from .codesema/PROMPT.md merged into the agent prompt',
+  'review.webLiveHint': '· live, findings appear as the agent works',
+  'review.spinner': 'reviewing with {cmd}',
+  'review.runFailed': 'agent run failed',
+  'review.runFailedDetail': 'agent run failed: {message}',
+  'review.stillUp': '{url} still up · Ctrl+C to stop',
+  'review.unusableOutput': 'unusable agent output',
+  'review.ready': 'review ready',
+  'review.archivedAt': 'archived: {path}',
+  'review.ctrlc': 'Ctrl+C to stop',
+
+  'notify.failedRun': 'review failed: agent run failed',
+  'notify.failedOutput': 'review failed: unusable agent output',
+  'notify.ready': 'review ready · {findings} · {verdict}',
+
+  'field.branch': 'branch',
+  'field.changes': 'changes',
+  'field.mode': 'mode',
+  'field.prompt': 'prompt',
+  'field.web': 'web',
+  'field.verdict': 'verdict',
+  'field.findings': 'findings',
+
+  'wizard.firstRun': 'First run — pick the agent that will review your code.',
+  'wizard.firstRunHint': 'Saved once, for every repo. Change it anytime with `codesema config`.',
+  'wizard.notOnPath': 'not found on PATH: {bins}',
+  'wizard.whichAgent': 'Which AI agent runs the review?',
+  'wizard.current': 'current',
+  'wizard.customCommand': 'Custom command',
+  'wizard.stdinStdout': 'stdin → stdout',
+  'wizard.fullCommandTitle': 'Full agent command',
+  'wizard.fullCommandPlaceholder': 'reads the prompt on stdin, prints the review JSON on stdout',
+  'wizard.modelFor': 'Model for {label}?',
+  'wizard.cliDefault': 'CLI default',
+  'wizard.letDecide': 'let {bin} decide',
+  'wizard.otherOption': 'Other…',
+  'wizard.typeModelName': 'type a model name',
+  'wizard.modelName': 'Model name',
+  'wizard.effort': 'Reasoning effort?',
+  'wizard.saved': 'saved: {path}',
+
+  'config.notInteractive': '`codesema config` is interactive — run it from a terminal, or edit the config file directly',
+  'config.currentAgent': 'current agent: {command}',
+  'config.fromPath': 'from {path}',
+  'config.saveWhere': 'Save where?',
+  'config.everywhere': 'Everywhere',
+  'config.everywhereHint': 'global config, all repos',
+  'config.thisRepo': 'This repo only',
+  'config.thisRepoHint': '.codesema/config.json, overrides global',
+  'config.agentSaved': 'agent command saved: {command}',
+  'config.savedTo': 'config: {path}',
+
+  'tui.typeToFilter': 'type to filter',
+  'tui.noMatch': 'no match — backspace to clear the filter',
+  'tui.keysWithFilter': '↑↓ move · enter select · esc cancel',
+  'tui.keys': '↑↓ move · enter select · esc cancel · 1-9 pick',
+  'tui.cancelled': 'cancelled',
+  'tui.moreUp': '↑ {n} more',
+  'tui.moreDown': '↓ {n} more',
+
+  'ui.updateAvailable': 'update available: {current} => {latest}',
+  'ui.phaseReading': 'reading the diff…',
+  'ui.phaseCalls': 'following the call chains…',
+  'ui.phaseGrouping': 'grouping changes into steps…',
+  'ui.phaseRisks': 'weighing the risks…',
+  'ui.phaseStory': 'writing the story…',
+  'ui.phasePraise': 'collecting praise…',
+  'ui.phaseSharpening': 'sharpening the findings…',
+  'ui.progressStep': 'step {n}: {title}',
+  'ui.progressFindings': '{n} finding drafted | {n} findings drafted',
+  'ui.progressVerdict': 'verdict {verdict} · drafting findings',
+
+  'summary.none': 'none',
+  'summary.checkFirst': 'check first',
+  'summary.praiseCount': '{n} praise',
+  'summary.sevCritical': '{n} critical',
+  'summary.sevMajor': '{n} major',
+  'summary.sevMinor': '{n} minor',
+  'summary.sevInfo': '{n} info',
+
+  'verdict.approve': 'approve',
+  'verdict.request_changes': 'request_changes',
+  'verdict.comment': 'comment',
+
+  'risk.high': 'high',
+  'risk.medium': 'medium',
+  'risk.low': 'low',
+
+  'branches.pick': 'Review which branch?',
+
+  'show.archived': 'review archived: {path}',
+  'show.lastArchived': 'showing last archived review: {path}',
+
+  'serve.noWebUi': 'embedded web UI not found at {path}: broken install or build',
+  'serve.noFreePort': 'no free port between {start} and {end}',
+
+  'record.invalidJson': '{path} is not valid JSON — the agent output must be a single JSON object',
+  'record.noInput': '.codesema/input.json not found — run `codesema prep` first',
+  'record.reviewNotFound': 'review file not found: {path}',
+  'record.nothingToShow': 'no review to show — run `codesema prep`, let your agent write .codesema/review.json, then retry',
+
+  'export.verdictApprove': 'Approved ✅',
+  'export.verdictChanges': 'Changes requested ❌',
+  'export.verdictComment': 'Comment 💬',
+  'export.title': 'Review — {branch} → {target}',
+  'export.verdictLabel': 'Verdict',
+  'export.createdLabel': 'Created',
+  'export.commitsLabel': 'Commits',
+  'export.findingsLabel': 'Findings',
+  'export.summary': 'Summary',
+  'export.intent': 'Intent',
+  'export.confidence': 'confidence',
+  'export.prologue': 'Prologue',
+  'export.why': 'Why',
+  'export.what': 'What',
+  'export.reviewFirst': 'Review first',
+  'export.steps': 'Steps',
+  'export.risk': '{risk} risk',
+  'export.toVerify': 'To verify',
+  'export.files': 'Files',
+  'export.findingsRefs': 'Findings',
+  'export.exported': 'review exported: {outPath} (from {sourcePath})',
+}
+
+export type MessageKey = keyof typeof en
+
+const fr: Record<MessageKey, string> = {
+  'cli.help': `codesema : revue de merge request locale, étape par étape
+
+Usage :
+  codesema                            Revue interactive : choisissez une branche locale, l'UI web
+                                      s'ouvre immédiatement et se remplit en direct pendant que
+                                      votre agent IA travaille. Premier lancement uniquement : un
+                                      court assistant choisit la langue, l'agent, le modèle et
+                                      l'effort (sauvegardés globalement, modifiables avec
+                                      \`codesema config\`)
+  codesema review [--branch <nom>] [--target <branche>] [--agent <cmd>] [--full] [--no-open]
+                                      Même flux ; --branch saute le sélecteur de branche (sauté
+                                      aussi quand stdin n'est pas un terminal, ex. CI). Relancer
+                                      sur la même branche met à jour la revue précédente de façon
+                                      incrémentale ; --full force une revue complète
+  codesema config                     Changer la langue, l'agent IA, le modèle et l'effort (interactif)
+  codesema prep [--target <branche>]  Détecte seulement les branches, calcule le diff de la MR,
+                                      écrit .codesema/input.json pour votre propre flux d'agent
+  codesema show [--review <fichier>]  Affiche seulement une revue (sortie d'agent) dans l'UI web locale
+  codesema export [--review <fichier>] [--out <fichier>]
+                                      Exporte la revue en Markdown (--out - pour stdout)
+
+Options :
+  --branch <nom>      Branche locale à passer en revue (défaut : sélecteur interactif, sinon branche courante)
+  --target <branche>  Branche cible de la MR (défaut : auto-détectée via glab/gh, origin/HEAD, puis heuristique)
+  --agent <cmd>       Commande d'agent pour ce lancement. Reçoit le prompt sur stdin,
+                      doit afficher le JSON de la revue sur stdout
+  --review <fichier>  Sortie d'agent à afficher (défaut : .codesema/review.json, sinon dernière revue archivée)
+  --port <n>          Port préféré du serveur local (défaut : 4400)
+  --timeout <s>       Budget de temps de l'agent en secondes pour \`review\` (défaut : 900)
+  --full              Revue complète au lieu de mettre à jour la revue précédente
+  --no-open           Ne pas ouvrir le navigateur
+  -h, --help          Afficher cette aide
+  -v, --version       Afficher la version
+
+Priorité de config : flags CLI > .codesema/config.json (repo) > ~/.config/codesema/config.json (globale).
+
+\`review\` et \`show\` interrogent une fois le registre npm au démarrage pour signaler qu'une nouvelle
+version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
+`,
+  'cli.unknownCommand': 'commande inconnue : {command}',
+  'cli.intFlagError': '--{name} {raw} : entier attendu entre {min} et {max}',
+
+  'git.notFound': 'git introuvable sur le PATH : installez git (https://git-scm.com) et réessayez',
+
+  'agent.timeout': "délai de l'agent dépassé après {s}s : augmentez-le avec --timeout <secondes>",
+  'agent.exitCode': "la commande d'agent a quitté avec le code {code}",
+  'agent.noneFound':
+    "aucune CLI d'agent trouvée sur le PATH (recherchées : {bins}) : passez-en une avec --agent '<commande>' (elle reçoit le prompt complet sur stdin et doit afficher le JSON de la revue sur stdout)",
+  'agent.noJsonReview': "l'agent n'a pas renvoyé de revue JSON (sortie brute sauvegardée dans .codesema/agent-output.txt)",
+
+  'prep.detachedHead': 'HEAD détachée : positionnez-vous d\'abord sur la branche à passer en revue, ou passez --branch <nom>',
+  'prep.branchNotFound': '--branch {branch} : branche locale introuvable',
+  'prep.targetFlagNotFound': '--target {flag} : branche introuvable (ni locale ni origin/{flag})',
+  'prep.noTarget': 'impossible de détecter la branche cible : passez-la explicitement avec --target <branche>',
+  'prep.targetIsSelf': '"{branch}" est la branche cible elle-même : choisissez votre branche de feature, ou passez --target <branche>',
+  'prep.noMergeBase': 'pas de merge-base entre {target} et {branch} : passez une autre base avec --target <branche>',
+  'prep.emptyDiff': 'diff vide entre {target} et {branch} : rien à passer en revue.{hint}',
+  'prep.dirtyHint': ' Votre working tree a des changements non commités : commitez-les d\'abord, codesema passe en revue le travail commité.',
+  'prep.title': 'codesema prep',
+  'prep.label.branch': 'branche',
+  'prep.label.target': 'cible',
+  'prep.label.files': 'fichiers',
+  'prep.label.commits': 'commits',
+  'prep.label.custom': 'custom',
+  'prep.label.input': 'entrée',
+  'prep.customNote': '.codesema/PROMPT.md fusionné dans les instructions',
+  'prep.next': 'Ensuite : faites écrire .codesema/review.json à votre agent IA (voir le skill codesema), puis lancez `codesema show`.',
+
+  'review.trustTitle': 'Ce dépôt fournit sa propre commande d\'agent de revue :',
+  'review.trustWarning': 'Elle s\'exécute sur votre machine, dans votre shell. Approuvez-la seulement si vous faites confiance à ce dépôt.',
+  'review.trustQuestion': 'Exécuter cette commande d\'agent fournie par le dépôt ?',
+  'review.trustCancel': 'Annuler',
+  'review.trustCancelHint': 'ne pas exécuter',
+  'review.trustApprove': 'Approuver et exécuter',
+  'review.trustApproveHint': 'mémorisé pour ce dépôt',
+  'review.trustAborted': 'abandon : agent fourni par le dépôt non approuvé',
+  'review.repoAgentUnattended':
+    "ce dépôt fournit sa propre commande d'agent via .codesema/config.json ({command}) : refus de l'exécuter sans supervision. Approuvez-la une fois dans un terminal interactif, ou passez --agent '<commande>' explicitement.",
+  'review.files': '{n} fichier | {n} fichiers',
+  'review.commits': '{n} commit | {n} commits',
+  'review.findingCount': '{n} note | {n} notes',
+  'review.modeIncremental': 'incrémental',
+  'review.modeIncrementalHint': '· mise à jour de la revue faite à {sha} · passez --full pour repartir de zéro',
+  'review.customPrompt': 'instructions personnalisées de .codesema/PROMPT.md fusionnées dans le prompt de l\'agent',
+  'review.webLiveHint': '· en direct, les notes apparaissent pendant que l\'agent travaille',
+  'review.spinner': 'revue avec {cmd}',
+  'review.runFailed': 'échec de l\'agent',
+  'review.runFailedDetail': 'échec de l\'agent : {message}',
+  'review.stillUp': '{url} toujours actif · Ctrl+C pour arrêter',
+  'review.unusableOutput': 'sortie d\'agent inutilisable',
+  'review.ready': 'revue prête',
+  'review.archivedAt': 'archivée : {path}',
+  'review.ctrlc': 'Ctrl+C pour arrêter',
+
+  'notify.failedRun': 'échec de la revue : échec de l\'agent',
+  'notify.failedOutput': 'échec de la revue : sortie d\'agent inutilisable',
+  'notify.ready': 'revue prête · {findings} · {verdict}',
+
+  'field.branch': 'branche',
+  'field.changes': 'modifs',
+  'field.mode': 'mode',
+  'field.prompt': 'prompt',
+  'field.web': 'web',
+  'field.verdict': 'verdict',
+  'field.findings': 'notes',
+
+  'wizard.firstRun': 'Premier lancement : choisissez l\'agent qui fera la revue de votre code.',
+  'wizard.firstRunHint': 'Sauvegardé une fois, pour tous les dépôts. Modifiable à tout moment avec `codesema config`.',
+  'wizard.notOnPath': 'introuvable sur le PATH : {bins}',
+  'wizard.whichAgent': 'Quel agent IA fait la revue ?',
+  'wizard.current': 'actuel',
+  'wizard.customCommand': 'Commande personnalisée',
+  'wizard.stdinStdout': 'stdin → stdout',
+  'wizard.fullCommandTitle': 'Commande d\'agent complète',
+  'wizard.fullCommandPlaceholder': 'lit le prompt sur stdin, affiche le JSON de la revue sur stdout',
+  'wizard.modelFor': 'Modèle pour {label} ?',
+  'wizard.cliDefault': 'Défaut CLI',
+  'wizard.letDecide': 'laisser {bin} décider',
+  'wizard.otherOption': 'Autre…',
+  'wizard.typeModelName': 'saisir un nom de modèle',
+  'wizard.modelName': 'Nom du modèle',
+  'wizard.effort': 'Effort de raisonnement ?',
+  'wizard.saved': 'sauvegardé : {path}',
+
+  'config.notInteractive': '`codesema config` est interactif : lancez-le depuis un terminal, ou éditez directement le fichier de config',
+  'config.currentAgent': 'agent actuel : {command}',
+  'config.fromPath': 'depuis {path}',
+  'config.saveWhere': 'Sauvegarder où ?',
+  'config.everywhere': 'Partout',
+  'config.everywhereHint': 'config globale, tous les dépôts',
+  'config.thisRepo': 'Ce dépôt uniquement',
+  'config.thisRepoHint': '.codesema/config.json, prime sur la globale',
+  'config.agentSaved': 'commande d\'agent sauvegardée : {command}',
+  'config.savedTo': 'config : {path}',
+
+  'tui.typeToFilter': 'tapez pour filtrer',
+  'tui.noMatch': 'aucun résultat : retour arrière pour effacer le filtre',
+  'tui.keysWithFilter': '↑↓ naviguer · entrée valider · échap annuler',
+  'tui.keys': '↑↓ naviguer · entrée valider · échap annuler · 1-9 choisir',
+  'tui.cancelled': 'annulé',
+  'tui.moreUp': '↑ {n} de plus',
+  'tui.moreDown': '↓ {n} de plus',
+
+  'ui.updateAvailable': 'mise à jour disponible : {current} => {latest}',
+  'ui.phaseReading': 'lecture du diff…',
+  'ui.phaseCalls': 'suivi des chaînes d\'appel…',
+  'ui.phaseGrouping': 'regroupement des changements en étapes…',
+  'ui.phaseRisks': 'évaluation des risques…',
+  'ui.phaseStory': 'écriture du récit…',
+  'ui.phasePraise': 'collecte des éloges…',
+  'ui.phaseSharpening': 'affûtage des notes…',
+  'ui.progressStep': 'étape {n} : {title}',
+  'ui.progressFindings': '{n} note rédigée | {n} notes rédigées',
+  'ui.progressVerdict': 'verdict {verdict} · rédaction des notes',
+
+  'summary.none': 'aucune',
+  'summary.checkFirst': 'à vérifier d\'abord',
+  'summary.praiseCount': '{n} éloge | {n} éloges',
+  'summary.sevCritical': '{n} critique | {n} critiques',
+  'summary.sevMajor': '{n} majeure | {n} majeures',
+  'summary.sevMinor': '{n} mineure | {n} mineures',
+  'summary.sevInfo': '{n} info | {n} infos',
+
+  'verdict.approve': 'approuvée',
+  'verdict.request_changes': 'changements demandés',
+  'verdict.comment': 'commentaire',
+
+  'risk.high': 'élevé',
+  'risk.medium': 'moyen',
+  'risk.low': 'faible',
+
+  'branches.pick': 'Quelle branche passer en revue ?',
+
+  'show.archived': 'revue archivée : {path}',
+  'show.lastArchived': 'affichage de la dernière revue archivée : {path}',
+
+  'serve.noWebUi': 'UI web embarquée introuvable dans {path} : installation ou build cassé',
+  'serve.noFreePort': 'aucun port libre entre {start} et {end}',
+
+  'record.invalidJson': '{path} n\'est pas du JSON valide : la sortie de l\'agent doit être un unique objet JSON',
+  'record.noInput': '.codesema/input.json introuvable : lancez d\'abord `codesema prep`',
+  'record.reviewNotFound': 'fichier de revue introuvable : {path}',
+  'record.nothingToShow': 'aucune revue à afficher : lancez `codesema prep`, laissez votre agent écrire .codesema/review.json, puis réessayez',
+
+  'export.verdictApprove': 'Approuvée ✅',
+  'export.verdictChanges': 'Changements demandés ❌',
+  'export.verdictComment': 'Commentaire 💬',
+  'export.title': 'Revue : {branch} → {target}',
+  'export.verdictLabel': 'Verdict',
+  'export.createdLabel': 'Créée',
+  'export.commitsLabel': 'Commits',
+  'export.findingsLabel': 'Notes',
+  'export.summary': 'Résumé',
+  'export.intent': 'Intention',
+  'export.confidence': 'confiance',
+  'export.prologue': 'Prologue',
+  'export.why': 'Pourquoi',
+  'export.what': 'Quoi',
+  'export.reviewFirst': 'À vérifier en premier',
+  'export.steps': 'Étapes',
+  'export.risk': 'risque {risk}',
+  'export.toVerify': 'À vérifier',
+  'export.files': 'Fichiers',
+  'export.findingsRefs': 'Notes',
+  'export.exported': 'revue exportée : {outPath} (depuis {sourcePath})',
+}
+
+const CATALOGS = { en, fr } satisfies Record<string, Record<MessageKey, string>>
+
+/** ISO 639-1 codes of the languages codesema ships catalogs for. */
+export type SupportedLanguage = keyof typeof CATALOGS
+
+export function isSupportedLanguage(value: unknown): value is SupportedLanguage {
+  return typeof value === 'string' && value in CATALOGS
+}
+
+/** English names the review prompt understands. */
+const PROMPT_LANGUAGE_NAMES: Record<SupportedLanguage, string> = { en: 'English', fr: 'French' }
+
+let configured: SupportedLanguage | null = null
+let catalog: Record<MessageKey, string> = en
+
+export function setLanguage(value: SupportedLanguage | null | undefined): void {
+  configured = value ?? null
+  catalog = configured ? CATALOGS[configured] : en
+}
+
+/** Locale the CLI and web UI render in. */
+export function uiLocale(): SupportedLanguage {
+  return configured ?? 'en'
+}
+
+/**
+ * Language the agent must write the review in, null when unconfigured
+ * (the prompt then falls back to the commit-message language rule).
+ */
+export function reviewLanguage(): string | null {
+  return configured ? PROMPT_LANGUAGE_NAMES[configured] : null
+}
+
+export function t(key: MessageKey, params?: Record<string, unknown>, count?: number): string {
+  let msg = catalog[key] ?? en[key]
+  if (msg.includes(' | ')) {
+    const n = count ?? (typeof params?.n === 'number' ? params.n : undefined)
+    const parts = msg.split(' | ')
+    msg = (n === 1 ? parts[0] : parts[1] ?? parts[0]) ?? msg
+  }
+  if (params) {
+    for (const [k, v] of Object.entries(params)) msg = msg.replaceAll(`{${k}}`, String(v))
+  }
+  return msg
+}

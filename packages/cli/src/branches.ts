@@ -1,4 +1,5 @@
 import { currentBranch, tryGit } from './git.js'
+import { t } from './i18n.js'
 import { select } from './tui.js'
 
 export type LocalBranch = {
@@ -37,7 +38,7 @@ export async function pickBranch(cwd: string): Promise<string | null> {
 
   const initialIndex = Math.max(0, branches.findIndex((b) => b.isCurrent))
   const picked = await select({
-    title: 'Review which branch?',
+    title: t('branches.pick'),
     options: branches.map((b) => ({
       label: b.isCurrent ? `${b.name} *` : b.name,
       hint: [b.lastCommitRelative, b.subject].filter(Boolean).join(' · '),

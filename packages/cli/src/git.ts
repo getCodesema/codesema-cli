@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { t } from './i18n.js'
 
 export function git(args: string[], cwd: string): string {
   try {
@@ -11,7 +12,7 @@ export function git(args: string[], cwd: string): string {
     }).trimEnd()
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error('git not found on PATH — install git (https://git-scm.com) and retry')
+      throw new Error(t('git.notFound'))
     }
     throw err
   }

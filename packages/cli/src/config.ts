@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { isSupportedLanguage, type SupportedLanguage } from './i18n.js'
 
 export type CodesemaConfig = {
   /** Full headless agent shell command (e.g. "claude -p --model opus"). */
@@ -12,6 +13,8 @@ export type CodesemaConfig = {
   target?: string
   port?: number
   timeout?: number
+  /** UI and review language (ISO 639-1). */
+  language?: SupportedLanguage
 }
 
 function parseConfig(path: string): CodesemaConfig {
@@ -25,6 +28,7 @@ function parseConfig(path: string): CodesemaConfig {
       ...(str(raw.model) ? { model: str(raw.model) } : {}),
       ...(str(raw.effort) ? { effort: str(raw.effort) } : {}),
       ...(str(raw.target) ? { target: str(raw.target) } : {}),
+      ...(isSupportedLanguage(raw.language) ? { language: raw.language } : {}),
       ...(Number.isInteger(raw.port) ? { port: raw.port as number } : {}),
       ...(Number.isInteger(raw.timeout) ? { timeout: raw.timeout as number } : {}),
     }

@@ -53,14 +53,18 @@ Re-running on the same branch reviews **incrementally**: the agent gets the prev
 npx -y codesema config
 ```
 
-Interactive: agent → model → effort, then where to save. Two levels, field by field:
+Interactive: language → agent → model → effort, then where to save. Two levels, field by field:
 
 | Level  | File                             | When                                   |
 | ------ | -------------------------------- | -------------------------------------- |
 | Global | `~/.config/codesema/config.json` | Your default, every repo (onboarding)  |
 | Repo   | `.codesema/config.json`          | Team/project override, wins over global |
 
-CLI flags always win over both. `target`, `port` and `timeout` can also be set in either file.
+CLI flags always win over both. `target`, `port`, `timeout` and `language` can also be set in either file.
+
+### Language
+
+Onboarding starts with a language question, stored as `language` (ISO 639-1: `en` or `fr`). It drives the CLI output, the web UI and the language the agent writes the review in. Without it, the interface stays in English and the review follows the language of the commit messages.
 
 `review` and `show` check the npm registry once at startup (a read-only `dist-tags` lookup, nothing about you or your code is sent) to print a one-line notice when a newer version exists. Set `CODESEMA_NO_UPDATE_CHECK=1` to disable it; it is also skipped when stdout is not a terminal.
 
@@ -73,7 +77,7 @@ An `agent` command coming from a repo's `.codesema/config.json` runs on your mac
 ```bash
 codesema                       # interactive review (default command)
 codesema review --branch feat/x --target develop   # non-interactive, CI-friendly
-codesema config                # change agent / model / effort
+codesema config                # change language / agent / model / effort
 codesema prep                  # only write .codesema/input.json for your own agent flow
 codesema show                  # only display .codesema/review.json (or the last archived review)
 codesema export --out review.md   # Markdown export (--out - for stdout)

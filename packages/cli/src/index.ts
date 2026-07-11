@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
 import { loadConfig } from './config.js'
+import { setLanguage, t } from './i18n.js'
 import { exportCommand } from './export.js'
 import { tryGit } from './git.js'
 import { prep } from './prep.js'
@@ -9,49 +10,11 @@ import { show } from './show.js'
 import { VERSION } from './version.js'
 import { configCommand } from './wizard.js'
 
-const HELP = `codesema — local merge request review, step by step
-
-Usage:
-  codesema                            Interactive review: pick a local branch, the web UI opens
-                                      immediately and fills in live while your AI agent reviews.
-                                      First run only: a short wizard picks the agent, model and
-                                      effort (saved globally — change it with \`codesema config\`)
-  codesema review [--branch <name>] [--target <branch>] [--agent <cmd>] [--full] [--no-open]
-                                      Same flow; --branch skips the branch picker (also skipped
-                                      when stdin is not a terminal, e.g. CI). Re-runs on the same
-                                      branch update the previous review incrementally; --full
-                                      forces a review from scratch
-  codesema config                     Change the AI agent, model and effort (interactive)
-  codesema prep [--target <branch>]   Only detect branches, compute the MR diff, write
-                                      .codesema/input.json for your own agent flow
-  codesema show [--review <file>]     Only display a review (agent output) in the local web UI
-  codesema export [--review <file>] [--out <file>]
-                                      Export the review as Markdown (--out - for stdout)
-
-Options:
-  --branch <name>     Local branch to review (default: interactive picker, else current branch)
-  --target <branch>   Target branch of the MR (default: auto-detected via glab/gh, origin/HEAD, then heuristic)
-  --agent <cmd>       Agent command override for this run. Receives the prompt on stdin,
-                      must print the review JSON on stdout
-  --review <file>     Agent output to display (default: .codesema/review.json, else last archived review)
-  --port <n>          Preferred port for the local server (default: 4400)
-  --timeout <s>       Agent time budget in seconds for \`review\` (default: 900)
-  --full              Review from scratch instead of updating the previous review
-  --no-open           Do not open the browser
-  -h, --help          Show this help
-  -v, --version       Show version
-
-Config precedence: CLI flags > .codesema/config.json (repo) > ~/.config/codesema/config.json (global).
-
-\`review\` and \`show\` check the npm registry once at startup to tell you when a newer
-version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
-`
-
 function parseIntFlag(name: string, raw: string | undefined, min: number, max: number): number | undefined {
   if (raw === undefined) return undefined
   const n = Number(raw)
   if (!Number.isInteger(n) || n < min || n > max) {
-    throw new Error(`--${name} ${raw}: expected an integer between ${min} and ${max}`)
+    throw new Error(t('cli.intFlagError', { name, raw, min, max }))
   }
   return n
 }
@@ -78,12 +41,13 @@ async function main(): Promise<void> {
     console.log(VERSION)
     return
   }
+  const repoRoot = tryGit(['rev-parse', '--show-toplevel'], process.cwd())
+  setLanguage(loadConfig(repoRoot).language)
   if (values.help) {
-    console.log(HELP)
+    console.log(t('cli.help'))
     return
   }
   const command = positionals[0] ?? 'review'
-  const repoRoot = tryGit(['rev-parse', '--show-toplevel'], process.cwd())
 
   switch (command) {
     case 'review':
@@ -116,8 +80,8 @@ async function main(): Promise<void> {
       exportCommand({ review: values.review, out: values.out, cwd: process.cwd() })
       break
     default:
-      console.error(`unknown command: ${command}\n`)
-      console.log(HELP)
+      console.error(`${t('cli.unknownCommand', { command })}\n`)
+      console.log(t('cli.help'))
       process.exitCode = 1
   }
 }
