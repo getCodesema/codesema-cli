@@ -1,12 +1,8 @@
-// `codesema review` : tout-en-un. Onboarding au premier run, sélection
-// interactive de la branche, puis web ouvert immédiatement pendant que l'agent
-// IA (l'abonnement de l'utilisateur, aucun LLM embarqué) review en arrière-plan.
-
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { runAgent } from './agent.js'
 import { pickBranch } from './branches.js'
-import { ensureWorkDir, loadConfig } from './config.js'
+import { ensureWorkDir, isRepoAgentTrusted, loadConfig, loadRepoConfig, trustRepoAgent } from './config.js'
 import { isAncestor, repoRoot } from './git.js'
 import { openBrowser } from './open.js'
 import { parsePartialReview } from './partial.js'
@@ -15,8 +11,8 @@ import { mrDiff, prep } from './prep.js'
 import { archiveRecord, findPreviousReview, resolveRecord } from './record.js'
 import type { LiveSession } from './serve.js'
 import { createSession, startServer } from './serve.js'
-import { isInteractive } from './tui.js'
-import { dim, printBanner, startSpinner } from './ui.js'
+import { isInteractive, select } from './tui.js'
+import { bold, dim, printBanner, startSpinner } from './ui.js'
 import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
 
 const REVIEW_INSTRUCTIONS = `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
@@ -85,7 +81,7 @@ UPDATE the previous review into a new COMPLETE review of the whole MR:
 - Update verdict, summary and narrative (prologue, chapters, review_first) so they describe the whole MR after these changes; keep the chapter structure stable when possible.
 Output the FULL updated review JSON (exact same schema), and NOTHING else.`
 
-/** Prompt incrémental si une review archivée de cette branche couvre un ancêtre strict du head reviewé. */
+/** Incremental prompt when an archived review of this branch covers a strict ancestor of the reviewed head. */
 function buildIncrementalPrompt(input: PrepInput, cwd: string): { prompt: string; sinceSha: string } | null {
   const previous = findPreviousReview(cwd, input.branch, input.target)
   const since = previous?.meta.head_sha
@@ -116,7 +112,7 @@ function detectAgentCommand(cwd: string): string {
   )
 }
 
-/** Extrait l'objet JSON de la sortie agent (tolère fences et prose autour). */
+/** Extracts the JSON object from the agent output (tolerates code fences and surrounding prose). */
 export function extractReviewJson(raw: string): string {
   let fallback: string | null = null
   for (const candidate of jsonCandidates(raw.trim())) {
@@ -134,7 +130,7 @@ export function extractReviewJson(raw: string): string {
   throw new Error('the agent did not return a JSON review (raw output saved to .codesema/agent-output.txt)')
 }
 
-/** Candidats par priorité : sortie entière, contenu des fences, chaque objet {…} balancé. */
+/** Candidates in priority order: the whole output, fence contents, then each balanced {...} object. */
 function* jsonCandidates(s: string): Generator<string> {
   yield s
   for (const m of s.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) {
@@ -146,7 +142,7 @@ function* jsonCandidates(s: string): Generator<string> {
   }
 }
 
-/** Index de la '}' fermant l'objet ouvert à `start`, en respectant strings et échappements. */
+/** Index of the '}' that closes the object opened at `start`, string- and escape-aware. */
 function balancedEnd(s: string, start: number): number {
   let depth = 0
   let inString = false
@@ -179,6 +175,36 @@ function createPartialForwarder(session: LiveSession): (text: string) => void {
   }
 }
 
+/**
+ * A repo-provided agent command (.codesema/config.json) runs in the user's shell,
+ * so a hostile cloned repo could execute arbitrary code. Require explicit approval
+ * (TOFU) before running it, and refuse outright when non-interactive (CI). Returns
+ * true if execution may proceed, false if the user cancels.
+ */
+async function ensureRepoAgentTrusted(cwd: string, command: string): Promise<boolean> {
+  if (isRepoAgentTrusted(cwd, command)) return true
+  if (!isInteractive()) {
+    throw new Error(
+      `this repository ships its own agent command via .codesema/config.json (${command}) — refusing to run it unattended. Approve it once in an interactive terminal, or pass --agent '<command>' explicitly.`,
+    )
+  }
+  console.log('')
+  console.log(`  ${bold('This repository provides its own review agent command:')}`)
+  console.log(`    ${bold(command)}`)
+  console.log(`  ${dim('It runs on your machine, in your shell. Approve it only if you trust this repo.')}`)
+  const choice = await select<'run' | 'cancel'>({
+    title: 'Run this repo-provided agent command?',
+    options: [
+      { label: 'Cancel', hint: 'do not run', value: 'cancel' },
+      { label: 'Approve and run', hint: 'remembered for this repo', value: 'run' },
+    ],
+    initialIndex: 0,
+  })
+  if (choice !== 'run') return false
+  trustRepoAgent(cwd, command)
+  return true
+}
+
 export async function review(opts: {
   branch?: string
   target?: string
@@ -201,6 +227,16 @@ export async function review(opts: {
   }
   agentCommand ??= detectAgentCommand(cwd)
 
+  // Agent inherited from the repo config (neither --agent nor global): require approval.
+  const repoAgent = cwd ? loadRepoConfig(cwd).agent : undefined
+  if (!opts.agent && cwd && repoAgent && repoAgent === agentCommand) {
+    const approved = await ensureRepoAgentTrusted(cwd, agentCommand)
+    if (!approved) {
+      console.log('  aborted — repo-provided agent not approved')
+      return
+    }
+  }
+
   let branch = opts.branch
   if (!branch && opts.interactive !== false && isInteractive()) {
     const picked = await pickBranch(cwd)
@@ -222,6 +258,9 @@ export async function review(opts: {
   console.log(`  ${input.files.length} files ${dim(`+${additions} −${deletions}`)} · ${input.commits.length} commits`)
   if (incremental) {
     console.log(`  ${dim(`incremental: updating the review done at ${incremental.sinceSha.slice(0, 8)} — pass --full to start over`)}`)
+  }
+  if (input.custom_instructions) {
+    console.log(`  ${dim('custom instructions from .codesema/PROMPT.md merged into the agent prompt')}`)
   }
 
   const session = createSession()

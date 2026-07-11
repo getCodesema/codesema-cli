@@ -1,7 +1,3 @@
-// Wizard interactif : provider IA (parmi ceux détectés sur le PATH) → modèle →
-// effort (si le provider le supporte) → commande agent persistée en config.
-// Onboarding au premier run seulement ; `codesema config` pour modifier ensuite.
-
 import type { CodesemaConfig } from './config.js'
 import {
   globalConfigPath,
@@ -11,6 +7,7 @@ import {
   repoConfigPath,
   saveGlobalConfig,
   saveRepoConfig,
+  trustRepoAgent,
 } from './config.js'
 import { tryExec } from './git.js'
 import { isInteractive, select, textInput } from './tui.js'
@@ -19,24 +16,21 @@ import { bold, dim } from './ui.js'
 export type AgentDef = {
   id: string
   label: string
-  /** Binaire sondé sur le PATH. */
   bin: string
-  /** Base de la commande headless : lit le prompt sur stdin, écrit sur stdout. */
+  /** Base headless command: reads the prompt on stdin, writes to stdout. */
   base: string
-  /** Argument final placé après les flags (ex : "-" de `codex exec -`). */
+  /** Trailing argument placed after the flags (e.g. the "-" in `codex exec -`). */
   suffix?: string
-  /** Flag modèle (la valeur est ajoutée juste après). */
   modelFlag: string
-  /** Modèles suggérés (saisie libre toujours possible). */
+  /** Suggested models (free text entry is always possible). */
   models: string[]
-  /** Construction du flag effort, si le provider le supporte. */
   effortFlag?: (value: string) => string
   efforts?: string[]
 }
 
-// Invocations headless vérifiées dans la doc officielle de chaque CLI (2026-07) :
-// claude -p / codex exec - / gemini lisent le prompt sur stdin et écrivent sur stdout.
-// opencode n'a pas de lecture stdin documentée → utilisable via la commande custom.
+// Headless invocations verified against each CLI's official docs (2026-07):
+// claude -p / codex exec - / gemini read the prompt on stdin and write to stdout.
+// opencode has no documented stdin mode, so it is only usable via a custom command.
 export const AGENT_DEFS: AgentDef[] = [
   {
     id: 'claude',
@@ -66,7 +60,7 @@ export const AGENT_DEFS: AgentDef[] = [
     base: 'gemini',
     modelFlag: '-m',
     models: ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'],
-    // pas de flag effort CLI (seulement settings.json côté gemini)
+    // no CLI effort flag: gemini only supports it via settings.json
   },
 ]
 
@@ -74,7 +68,7 @@ export function detectAgents(cwd: string): AgentDef[] {
   return AGENT_DEFS.filter((def) => tryExec(def.bin, ['--version'], cwd) !== null)
 }
 
-/** Commande headless par défaut d'un provider (sans modèle ni effort). */
+/** Default headless command for a provider (no model or effort). */
 export function defaultCommand(def: AgentDef): string {
   return def.suffix ? `${def.base} ${def.suffix}` : def.base
 }
@@ -98,8 +92,8 @@ const CLI_DEFAULT = Symbol('cli-default')
 const CUSTOM = Symbol('custom')
 
 /**
- * Sélections interactives agent → modèle → effort. `current` préremplit les
- * choix (réédition via `codesema config`). null si l'utilisateur annule.
+ * Interactive agent -> model -> effort selection. `current` prefills the
+ * choices for re-editing via `codesema config`. null if the user cancels.
  */
 export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}): Promise<WizardResult | null> {
   if (!isInteractive()) return null
@@ -196,8 +190,8 @@ function applyResult(config: CodesemaConfig, result: WizardResult): CodesemaConf
 }
 
 /**
- * Onboarding du premier run : wizard puis sauvegarde GLOBALE (une seule fois,
- * tous repos confondus). Renvoie la commande agent, ou null si annulé/non-TTY.
+ * First-run onboarding: wizard then a GLOBAL save, once, across all repos.
+ * Returns the agent command, or null if cancelled or non-TTY.
  */
 export async function runOnboarding(cwd: string): Promise<string | null> {
   console.log(`  ${bold('First run')} — pick the agent that will review your code.`)
@@ -210,7 +204,6 @@ export async function runOnboarding(cwd: string): Promise<string | null> {
   return result.command
 }
 
-/** `codesema config` : réédite agent/modèle/effort, scope global ou repo. */
 export async function configCommand(repoRoot: string | null): Promise<void> {
   if (!isInteractive()) {
     throw new Error('`codesema config` is interactive — run it from a terminal, or edit the config file directly')
@@ -240,10 +233,15 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
     scope = pickedScope
   }
 
-  const path =
-    scope === 'repo' && repoRoot
-      ? saveRepoConfig(repoRoot, applyResult(loadRepoConfig(repoRoot), result))
-      : saveGlobalConfig(applyResult(loadGlobalConfig(), result))
+  let path: string
+  if (scope === 'repo' && repoRoot) {
+    path = saveRepoConfig(repoRoot, applyResult(loadRepoConfig(repoRoot), result))
+    // The user just chose this command, so trust it now: the approval prompt only
+    // targets agent commands inherited from a cloned repo, not ones set here.
+    trustRepoAgent(repoRoot, result.command)
+  } else {
+    path = saveGlobalConfig(applyResult(loadGlobalConfig(), result))
+  }
 
   console.log('')
   console.log(`  agent command saved: ${bold(result.command)}`)
