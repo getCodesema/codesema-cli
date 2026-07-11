@@ -5,19 +5,12 @@
 
 import { computed } from 'vue'
 import type { ParsedDiff } from '../composables/useDiff'
-
-type Chapter = {
-  title: string
-  rationale: string
-  files: string[]
-  finding_refs: number[]
-  risk?: 'high' | 'medium' | 'low'
-  take?: string
-  check?: string
-}
+import { sameFile } from '../composables/useDiff'
+import { riskMeta } from '../risk'
+import type { ChapterView } from '../types'
 
 const props = defineProps<{
-  chapters: Chapter[]
+  chapters: ChapterView[]
   parsedDiff: ParsedDiff
   readSet?: Set<number>
 }>()
@@ -28,49 +21,16 @@ const emit = defineEmits<{
 
 // ── Delta par chapitre (calculé depuis parsedDiff) ────────
 
-function sameFile(a: string, b: string): boolean {
-  return a === b || a.endsWith('/' + b) || b.endsWith('/' + a)
-}
-
-function chapterDelta(ch: Chapter): { add: number; del: number } {
+function chapterDelta(ch: ChapterView): { add: number; del: number } {
   let add = 0
   let del = 0
   for (const chFile of ch.files) {
     const diffFile = props.parsedDiff.files.find((df) => sameFile(df.path, chFile))
     if (!diffFile) continue
-    for (const row of diffFile.rows) {
-      if (row.kind === 'add') add++
-      else if (row.kind === 'del') del++
-    }
+    add += diffFile.addCount
+    del += diffFile.delCount
   }
   return { add, del }
-}
-
-// ── Risque ─────────────────────────────────────────────────────
-
-const RISK_META: Record<string, { label: string; textCls: string; bgCls: string; dotColor: string }> = {
-  high: {
-    label: 'reviews.riskHigh',
-    textCls: 'chapter-risk--high',
-    bgCls: 'chapter-risk-bg--high',
-    dotColor: 'var(--nolyra-risk-high)',
-  },
-  medium: {
-    label: 'reviews.riskMedium',
-    textCls: 'chapter-risk--med',
-    bgCls: 'chapter-risk-bg--med',
-    dotColor: 'var(--nolyra-risk-med)',
-  },
-  low: {
-    label: 'reviews.riskLow',
-    textCls: 'chapter-risk--low',
-    bgCls: 'chapter-risk-bg--low',
-    dotColor: 'var(--nolyra-risk-low)',
-  },
-}
-
-function riskMeta(risk?: string) {
-  return RISK_META[risk ?? ''] ?? null
 }
 
 // ── Premier chapitre non lu ────────────────────────────────────
@@ -392,7 +352,8 @@ function onCardClick(index: number) {
   border-radius: 8px;
   border: 0;
   background: var(--nolyra-accent);
-  color: #fff;
+  /* encre sombre sur orange : ~7.6:1, le blanc plafonnait à 2.6:1 (AA = 4.5:1) */
+  color: var(--nolyra-bg);
   font-size: 12.5px;
   font-weight: 600;
   font-family: inherit;

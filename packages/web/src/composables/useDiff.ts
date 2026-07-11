@@ -93,9 +93,19 @@ function stripPrefix(p: string): string {
   return t
 }
 
-function sameFile(a: string, b: string): boolean {
+export function sameFile(a: string, b: string): boolean {
   if (a === b) return true
   return a.endsWith('/' + b) || b.endsWith('/' + a)
+}
+
+/** Sous-ensemble de fichiers parsés correspondant à `only`, dans l'ordre de `only`. */
+export function pickFiles(files: DiffFile[], only: string[]): DiffFile[] {
+  const picked: DiffFile[] = []
+  for (const p of only) {
+    const f = files.find((df) => sameFile(df.path, p))
+    if (f && !picked.includes(f)) picked.push(f)
+  }
+  return picked
 }
 
 const HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/

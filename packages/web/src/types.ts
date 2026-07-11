@@ -13,6 +13,9 @@ export type NarrativeChapter = {
   check?: string | null
 }
 
+/** Chapitre normalisé pour l'affichage (check: null → undefined, cf. ReviewShell). */
+export type ChapterView = Omit<NarrativeChapter, 'check'> & { check?: string }
+
 export type ReviewFirstItem = {
   point: string
   risk: 'high' | 'medium' | 'low'

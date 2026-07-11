@@ -4,10 +4,10 @@
 
 import { computed, onUnmounted, ref } from 'vue'
 import type { Finding } from '../composables/useDiff'
-import { parseDiff } from '../composables/useDiff'
+import { parseDiff, sameFile } from '../composables/useDiff'
 import { buildFixPrompt, isActionable } from '../composables/useFixPrompt'
 import { useReviewProgress } from '../composables/useReviewProgress'
-import type { NarrativeChapter, ReviewRecord } from '../types'
+import type { ReviewRecord } from '../types'
 import ReviewPrologue from './ReviewPrologue.vue'
 import ChapterList from './ChapterList.vue'
 import ChapterReview from './ChapterReview.vue'
@@ -114,24 +114,12 @@ if (isClient) {
   else if (m && Number(m[1]) < chapters.value.length) guidedIndex.value = Number(m[1])
 }
 
-// ── Findings d'un chapitre ─────────────────────────────────────
-
-function chapterFindings(ch: NarrativeChapter): Finding[] {
-  return ch.finding_refs.map((i) => findings.value[i]).filter((f): f is Finding => !!f)
-}
-
 // ── Fichiers hors chapitres (vue d'ensemble sans chapitre) ─────
-
-function sameFile(a: string, b: string): boolean {
-  return a === b || a.endsWith('/' + b) || b.endsWith('/' + a)
-}
 
 const otherFiles = computed(() => {
   if (!hasChapters.value) return []
   const covered = chapters.value.flatMap((ch) => ch.files)
-  return parsedDiff.value.files
-    .map((f) => f.path)
-    .filter((p) => !covered.some((c) => sameFile(c, p)))
+  return parsedDiff.value.files.filter((f) => !covered.some((c) => sameFile(c, f.path)))
 })
 
 // ── Onglet Fichiers : split/unifié + replier + scroll-to-file ──
@@ -282,13 +270,13 @@ const SEV_CLS: Record<string, string> = {
         <!-- Sans chapitres : diff annoté complet -->
         <div v-if="!hasChapters && record.diff" class="sr-flat-diff">
           <div class="sr-general-tag">{{ $t('reviews.annotatedDiff') }}</div>
-          <DiffView :diff="record.diff" :findings="findings" />
+          <DiffView :files="parsedDiff.files" />
         </div>
 
         <!-- Fichiers non couverts par les chapitres -->
         <div v-if="hasChapters && otherFiles.length" class="sr-flat-diff">
           <div class="sr-general-tag">{{ $t('reviews.otherChanges') }}</div>
-          <DiffView :diff="record.diff" :findings="findings" :only="otherFiles" />
+          <DiffView :files="otherFiles" />
         </div>
       </template>
 
@@ -330,9 +318,7 @@ const SEV_CLS: Record<string, string> = {
               :ref="(el) => setFileScrollRef(file.path, el)"
             >
               <DiffView
-                :diff="record.diff"
-                :findings="findings"
-                :only="[file.path]"
+                :files="[file]"
                 :mode="filesDiffMode"
                 :collapse-key="filesCollapseKey"
                 hide-toolbar

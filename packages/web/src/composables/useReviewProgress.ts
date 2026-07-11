@@ -1,6 +1,6 @@
 // useReviewProgress — progression lu/non-lu + checks persistés en localStorage
 
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 
 const isClient = typeof window !== 'undefined'
 
@@ -66,14 +66,9 @@ export function useReviewProgress(reviewId: string) {
     saveState(readSet.value, checkedSet.value)
   }
 
-  // ── Compteur ───────────────────────────────────────────────
-
-  const readCount = computed(() => readSet.value.size)
-
   return {
     readSet,
     checkedSet,
-    readCount,
     toggleRead,
     toggleChecked,
   }

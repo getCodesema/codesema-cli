@@ -5,20 +5,13 @@
 
 import { computed, ref, watch } from 'vue'
 import type { Finding } from '../composables/useDiff'
+import { parseDiff, pickFiles, sameFile } from '../composables/useDiff'
+import { riskMeta } from '../risk'
+import type { ChapterView } from '../types'
 import DiffView from './DiffView.vue'
 
-type Chapter = {
-  title: string
-  rationale: string
-  files: string[]
-  finding_refs: number[]
-  risk?: 'high' | 'medium' | 'low'
-  take?: string
-  check?: string
-}
-
 const props = defineProps<{
-  chapters: Chapter[]
+  chapters: ChapterView[]
   findings: Finding[]
   diff: string
   selectedIndex: number
@@ -74,46 +67,7 @@ function shortName(path: string): string {
   return idx >= 0 ? path.slice(idx + 1) : path
 }
 
-// ── Delta par chapitre (calculé depuis le diff brut) ──────
-
-function sameFile(a: string, b: string): boolean {
-  return a === b || a.endsWith('/' + b) || b.endsWith('/' + a)
-}
-
-function stripPrefix(p: string): string {
-  return p.replace(/^[ab]\//, '')
-}
-
-const chapterDelta = computed(() => {
-  if (!chapter.value || !props.diff) return { add: 0, del: 0 }
-  let add = 0
-  let del = 0
-  const lines = props.diff.split('\n')
-  let inChapterFile = false
-  for (const line of lines) {
-    if (line.startsWith('diff --git ')) {
-      inChapterFile = false
-    } else if (line.startsWith('+++ ')) {
-      const path = stripPrefix(line.slice(4).trim())
-      inChapterFile = chapter.value.files.some((f) => sameFile(f, path))
-    } else if (inChapterFile) {
-      if (line.startsWith('+') && !line.startsWith('+++')) add++
-      else if (line.startsWith('-') && !line.startsWith('---')) del++
-    }
-  }
-  return { add, del }
-})
-
-// ── Compteur de remarques du chapitre ──────────────────────────
-
-const chapterFindingCount = computed(() => {
-  if (!chapter.value) return 0
-  return chapter.value.finding_refs
-    .map((i) => props.findings[i])
-    .filter((f): f is Finding => !!f).length
-})
-
-// ── Findings filtrés pour DiffView ─────────────────────────────
+// ── Findings du chapitre (pour le parse et le compteur) ────────
 
 const chapterFindings = computed((): Finding[] => {
   if (!chapter.value) return []
@@ -122,32 +76,25 @@ const chapterFindings = computed((): Finding[] => {
     .filter((f): f is Finding => !!f)
 })
 
-// ── Risque ──────────────────────────────────────────────────────
+const chapterFindingCount = computed(() => chapterFindings.value.length)
 
-const RISK_META: Record<string, { label: string; textCls: string; bgCls: string; dotColor: string }> = {
-  high: {
-    label: 'reviews.riskHigh',
-    textCls: 'chapter-risk--high',
-    bgCls: 'chapter-risk-bg--high',
-    dotColor: 'var(--nolyra-risk-high)',
-  },
-  medium: {
-    label: 'reviews.riskMedium',
-    textCls: 'chapter-risk--med',
-    bgCls: 'chapter-risk-bg--med',
-    dotColor: 'var(--nolyra-risk-med)',
-  },
-  low: {
-    label: 'reviews.riskLow',
-    textCls: 'chapter-risk--low',
-    bgCls: 'chapter-risk-bg--low',
-    dotColor: 'var(--nolyra-risk-low)',
-  },
-}
+// ── Diff du chapitre : un seul parse, filtré sur ses fichiers ──
 
-function riskMeta(risk?: string) {
-  return RISK_META[risk ?? ''] ?? null
-}
+const chapterFiles = computed(() => {
+  if (!chapter.value || !props.diff) return []
+  const parsed = parseDiff(props.diff, chapterFindings.value)
+  return pickFiles(parsed.files, chapter.value.files)
+})
+
+const chapterDelta = computed(() => {
+  let add = 0
+  let del = 0
+  for (const f of chapterFiles.value) {
+    add += f.addCount
+    del += f.delCount
+  }
+  return { add, del }
+})
 
 // ── Scroll vers un fichier dans le diff ────────────────────────
 
@@ -206,6 +153,7 @@ function scrollToFile(filePath: string) {
           class="chrev-arrow"
           :disabled="!canPrev"
           :title="$t('reviews.guidedPrev')"
+          :aria-label="$t('reviews.guidedPrev')"
           @click="goPrev"
         >
           ‹
@@ -214,6 +162,7 @@ function scrollToFile(filePath: string) {
           class="chrev-arrow"
           :disabled="!canNext"
           :title="$t('reviews.guidedNext')"
+          :aria-label="$t('reviews.guidedNext')"
           @click="goNext"
         >
           ›
@@ -312,11 +261,7 @@ function scrollToFile(filePath: string) {
 
       <!-- DiffView filtré sur les fichiers du chapitre -->
       <div v-if="diff" class="chrev-diff">
-        <DiffView
-          :diff="diff"
-          :findings="chapterFindings"
-          :only="chapter.files"
-        />
+        <DiffView :files="chapterFiles" />
       </div>
       <p v-else class="nolyra-muted chrev-nodiff">{{ $t('reviews.noDiff') }}</p>
 

@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { Finding, HunkBlock, HunkLine, SplitRow } from '../composables/useDiff'
-import { parseDiff, toSplit } from '../composables/useDiff'
+import type { DiffFile, Finding, HunkBlock, HunkLine, SplitRow } from '../composables/useDiff'
+import { toSplit } from '../composables/useDiff'
 import { t } from '../i18n'
 
 const props = defineProps<{
-  diff: string
-  findings: Finding[]
-  only?: string[]
+  /** Fichiers déjà parsés (parseDiff/pickFiles chez l'appelant : un seul parse par vue). */
+  files: DiffFile[]
   /** Mode split/unifié piloté depuis l'extérieur (toolbar onglet Fichiers).
    *  Si absent, DiffView gère son propre état localStorage. */
   mode?: 'split' | 'unified'
@@ -37,23 +36,6 @@ function setMode(m: 'split' | 'unified') {
   if (isClient) localStorage.setItem(SPLIT_KEY, m)
 }
 
-// ── Fichiers parsés ────────────────────────────────────────────────────────
-
-function sameFile(a: string, b: string): boolean {
-  return a === b || a.endsWith('/' + b) || b.endsWith('/' + a)
-}
-
-const files = computed(() => {
-  const all = parseDiff(props.diff, props.findings).files
-  if (!props.only || props.only.length === 0) return all
-  const picked: typeof all = []
-  for (const p of props.only) {
-    const f = all.find((df) => sameFile(df.path, p))
-    if (f && !picked.includes(f)) picked.push(f)
-  }
-  return picked
-})
-
 // ── Repliage des fichiers ──────────────────────────────────────────────────
 
 const collapsed = ref<Set<string>>(new Set())
@@ -63,12 +45,7 @@ watch(
   () => props.collapseKey,
   (k) => {
     if (k == null) return
-    if (k % 2 === 1) {
-      collapsed.value = new Set(files.value.map((f) => f.path))
-    } else {
-      collapsed.value = new Set()
-    }
-    collapsed.value = new Set(collapsed.value)
+    collapsed.value = k % 2 === 1 ? new Set(props.files.map((f) => f.path)) : new Set()
   },
 )
 

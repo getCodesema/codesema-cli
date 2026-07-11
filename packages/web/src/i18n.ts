@@ -7,6 +7,7 @@ const messages: Record<string, string> = {
   'app.tabFiles': 'Files',
   'app.loading': 'Loading review…',
   'app.loadError': 'Could not load the review.',
+  'app.retry': 'Retry',
   'verdict.approve': 'Approved',
   'verdict.request_changes': 'Changes requested',
   'verdict.comment': 'Comment',
