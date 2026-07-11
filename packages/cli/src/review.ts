@@ -4,21 +4,24 @@ import { runAgent } from './agent.js'
 import { pickBranch } from './branches.js'
 import { ensureWorkDir, isRepoAgentTrusted, loadConfig, loadRepoConfig, trustRepoAgent } from './config.js'
 import { isAncestor, repoRoot } from './git.js'
+import { notifyDesktop } from './notify.js'
 import { openBrowser } from './open.js'
+import type { PartialReview } from './partial.js'
 import { parsePartialReview } from './partial.js'
 import type { PrepInput } from './prep.js'
 import { mrDiff, prep } from './prep.js'
 import { archiveRecord, findPreviousReview, resolveRecord } from './record.js'
 import type { LiveSession } from './serve.js'
 import { createSession, startServer } from './serve.js'
+import { printReviewSummary } from './summary.js'
 import { isInteractive, select } from './tui.js'
-import { bold, dim, printBanner, startSpinner } from './ui.js'
+import { ACCENT, GREEN, RED, bold, dim, fieldLabel, paint, printBanner, progressLabel, startSpinner, underline } from './ui.js'
 import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
 
 const REVIEW_INSTRUCTIONS = `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
 
 Review guidelines:
-- Judge the change on: correctness, regressions and breaking changes, security, error handling, missing tests, and whether it matches its stated intent (inferred from the branch name and commit messages). Ground EVERY finding in the diff; never speculate. The diff shows ONLY the changed files: NEVER claim that something is absent from the repository — turn such doubts into a chapter "check" question instead.
+- Judge the change on: correctness, regressions and breaking changes, security, error handling, missing tests, and whether it matches its stated intent (inferred from the branch name and commit messages). Ground EVERY finding in the diff; never speculate. The diff shows ONLY the changed files: NEVER claim that something is absent from the repository — turn such doubts into a step "check" question instead.
 - If the input has non-null custom_instructions, apply them on top of these guidelines; they win on conflicts.
 - Language: write all human-readable text (summary, messages, narrative) in the language of the commit messages when clearly identifiable, otherwise in English. Keep code identifiers and file paths verbatim.
 
@@ -46,25 +49,25 @@ Output JSON shape (exactly these fields):
       "what": "what it concretely changes (max 3 sentences)",
       "key_changes": [{ "title": "short label", "detail": "one sentence" }]
     },
-    "chapters": [
+    "steps": [
       {
-        "title": "concise chapter name",
-        "rationale": "the PURPOSE of the chapter",
+        "title": "concise step name",
+        "rationale": "the PURPOSE of the step",
         "files": ["ordered diff paths"],
         "finding_refs": [<0-based indices into findings>],
         "risk": "high" | "medium" | "low",
-        "take": "your opinion on the chapter (max 2 sentences)",
+        "take": "your opinion on the step (max 2 sentences)",
         "check": "one question the human should verify, or omit"
       }
     ],
     "review_first": [
-      { "point": "what to check and why it is risky (one sentence)", "risk": "high" | "medium" | "low", "chapter_ref": <0-based chapter index>, "file": "path" }
+      { "point": "what to check and why it is risky (one sentence)", "risk": "high" | "medium" | "low", "step_ref": <0-based step index>, "file": "path" }
     ]
   }
 }
 
 Rules for the narrative:
-- chapters: ORDERED logical groups (NOT alphabetical): foundations first (migrations, shared types, contracts), then business logic, then surface (routes, UI).
+- steps: ORDERED logical groups (NOT alphabetical): foundations first (migrations, shared types, contracts), then business logic, then surface (routes, UI).
 - review_first: 2-4 hot spots ordered by risk, highest first.
 - You MUST produce praise findings when the code deserves it; reserve severity "info" for praise/why findings.
 - Do NOT approve changes you cannot justify; prefer "request_changes" when impact is unclear.
@@ -78,7 +81,7 @@ UPDATE the previous review into a new COMPLETE review of the whole MR:
 - Remove findings that the incremental changes fix or make obsolete.
 - Keep still-relevant findings as they are (same file/line anchors), unless the incremental diff moved that code.
 - Add findings for problems introduced by the incremental diff, grounded in it.
-- Update verdict, summary and narrative (prologue, chapters, review_first) so they describe the whole MR after these changes; keep the chapter structure stable when possible.
+- Update verdict, summary and narrative (prologue, steps, review_first) so they describe the whole MR after these changes; keep the step structure stable when possible.
 Output the FULL updated review JSON (exact same schema), and NOTHING else.`
 
 /** Incremental prompt when an archived review of this branch covers a strict ancestor of the reviewed head. */
@@ -164,14 +167,15 @@ function balancedEnd(s: string, start: number): number {
 const DEFAULT_TIMEOUT_S = 900
 const PARTIAL_PARSE_INTERVAL_MS = 400
 
-function createPartialForwarder(session: LiveSession): (text: string) => void {
+function createPartialForwarder(session: LiveSession): (text: string) => PartialReview | null {
   let lastParse = 0
   return (text: string) => {
     const now = Date.now()
-    if (now - lastParse < PARTIAL_PARSE_INTERVAL_MS) return
+    if (now - lastParse < PARTIAL_PARSE_INTERVAL_MS) return null
     lastParse = now
     const partial = parsePartialReview(text)
     if (partial) session.setPartial(partial)
+    return partial
   }
 }
 
@@ -254,13 +258,13 @@ export async function review(opts: {
 
   const additions = input.files.reduce((n, f) => n + f.additions, 0)
   const deletions = input.files.reduce((n, f) => n + f.deletions, 0)
-  console.log(`  ${input.branch} → ${input.target} ${dim(`(${input.target_source})`)}`)
-  console.log(`  ${input.files.length} files ${dim(`+${additions} −${deletions}`)} · ${input.commits.length} commits`)
+  console.log(`  ${fieldLabel('branch')}${bold(input.branch)} ${dim('→')} ${input.target} ${dim(`(${input.target_source})`)}`)
+  console.log(`  ${fieldLabel('changes')}${input.files.length} files · ${paint(`+${additions}`, GREEN)} ${paint(`−${deletions}`, RED)} · ${input.commits.length} commits`)
   if (incremental) {
-    console.log(`  ${dim(`incremental: updating the review done at ${incremental.sinceSha.slice(0, 8)} — pass --full to start over`)}`)
+    console.log(`  ${fieldLabel('mode')}incremental ${dim(`· updating the review done at ${incremental.sinceSha.slice(0, 8)} · pass --full to start over`)}`)
   }
   if (input.custom_instructions) {
-    console.log(`  ${dim('custom instructions from .codesema/PROMPT.md merged into the agent prompt')}`)
+    console.log(`  ${fieldLabel('prompt')}${dim('custom instructions from .codesema/PROMPT.md merged into the agent prompt')}`)
   }
 
   const session = createSession()
@@ -276,12 +280,13 @@ export async function review(opts: {
   })
 
   const { url } = await startServer(session, { port: opts.port ?? config.port })
-  console.log(`  ${url} ${dim('— live, findings appear as the agent works')}`)
+  console.log(`  ${fieldLabel('web')}${underline(paint(url, ACCENT))} ${dim('· live, findings appear as the agent works')}`)
   console.log('')
   if (opts.open) openBrowser(url)
 
   const shortCmd = agentCommand.length > 40 ? `${agentCommand.slice(0, 37)}…` : agentCommand
   const spinner = startSpinner(`reviewing with ${shortCmd}`)
+  const forwardPartial = createPartialForwarder(session)
 
   let out: string
   try {
@@ -290,14 +295,20 @@ export async function review(opts: {
       prompt,
       cwd: input.repo_root,
       timeoutMs: (opts.timeout ?? config.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
-      onText: createPartialForwarder(session),
+      onText: (text) => {
+        const partial = forwardPartial(text)
+        if (!partial) return
+        const status = progressLabel(partial)
+        if (status) spinner.update(status)
+      },
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    spinner.stop('  ✘ agent run failed')
+    spinner.stop(`  ${paint('✘', RED)} agent run failed`)
     session.setError(message)
+    if (isInteractive()) notifyDesktop('codesema', 'review failed: agent run failed')
     console.error(`codesema: agent run failed: ${message}`)
-    console.log(`  ${url} still up — Ctrl+C to stop`)
+    console.log(`  ${url} still up · Ctrl+C to stop`)
     process.exitCode = 1
     return
   }
@@ -309,11 +320,12 @@ export async function review(opts: {
     record = resolveRecord({ cwd: input.repo_root }).record
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    spinner.stop('  ✘ unusable agent output')
+    spinner.stop(`  ${paint('✘', RED)} unusable agent output`)
     writeFileSync(join(dir, 'agent-output.txt'), out)
     session.setError(message)
+    if (isInteractive()) notifyDesktop('codesema', 'review failed: unusable agent output')
     console.error(`codesema: ${message}`)
-    console.log(`  ${url} still up — Ctrl+C to stop`)
+    console.log(`  ${url} still up · Ctrl+C to stop`)
     process.exitCode = 1
     return
   }
@@ -322,9 +334,13 @@ export async function review(opts: {
   session.setDone(record)
 
   const findingsCount = record.review.findings.length
-  spinner.stop(`  ✔ review ready — ${findingsCount} finding${findingsCount === 1 ? '' : 's'} · ${record.review.verdict}`)
-  console.log(`  ${dim(`archived: ${savedPath}`)}`)
+  spinner.stop(`  ${paint('✔', GREEN)} review ready`)
+  printReviewSummary(record)
   console.log('')
-  console.log(`  ${url}`)
-  console.log('  Ctrl+C to stop')
+  console.log(`  ${fieldLabel('web')}${underline(paint(url, ACCENT))}`)
+  console.log(`  ${dim(`archived: ${savedPath}`)}`)
+  console.log(`  ${dim('Ctrl+C to stop')}`)
+  if (isInteractive()) {
+    notifyDesktop('codesema', `review ready · ${findingsCount} finding${findingsCount === 1 ? '' : 's'} · ${record.review.verdict}`)
+  }
 }

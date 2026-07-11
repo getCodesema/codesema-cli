@@ -12,7 +12,7 @@ export type PartialReview = {
   summary?: string
   intent?: string
   findings: PartialFinding[]
-  chapterTitles: string[]
+  stepTitles: string[]
 }
 
 const LITERAL_TAIL = /^(true|false|null|-?\d+(\.\d+)?([eE][+-]?\d+)?)$/
@@ -157,13 +157,15 @@ export function parsePartialReview(raw: string): PartialReview | null {
   }
 
   const narrative = r.narrative && typeof r.narrative === 'object' ? (r.narrative as Record<string, unknown>) : undefined
-  const chapterTitles = Array.isArray(narrative?.chapters)
-    ? narrative.chapters
+  // Streams from pre-rename agent prompts used "chapters".
+  const rawSteps = narrative?.steps ?? narrative?.chapters
+  const stepTitles = Array.isArray(rawSteps)
+    ? rawSteps
         .map((c) => (c && typeof c === 'object' && typeof (c as { title?: unknown }).title === 'string' ? (c as { title: string }).title : null))
         .filter((t): t is string => Boolean(t))
     : []
   const intent = typeof narrative?.intent === 'string' && narrative.intent.trim() ? narrative.intent.trim() : undefined
 
-  if (!verdict && !summary && !intent && findings.length === 0 && chapterTitles.length === 0) return null
-  return { verdict, summary, intent, findings, chapterTitles }
+  if (!verdict && !summary && !intent && findings.length === 0 && stepTitles.length === 0) return null
+  return { verdict, summary, intent, findings, stepTitles }
 }

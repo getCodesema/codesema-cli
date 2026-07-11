@@ -1,7 +1,7 @@
 {
   "name": "codesema",
   "version": "0.2.2",
-  "description": "Local merge request review, told as chapters. Your AI agent reviews, codesema displays.",
+  "description": "Local merge request review, step by step. Your AI agent reviews, codesema displays.",
   "license": "MIT",
   "author": "Hasan TASKIN",
   "keywords": [

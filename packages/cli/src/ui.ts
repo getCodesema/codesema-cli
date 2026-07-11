@@ -1,33 +1,57 @@
-export const EMBER = [124, 160, 196, 202, 208, 214, 220] as const
+import type { PartialReview } from './partial.js'
 
-export function paint(text: string, color: number): string {
-  return `\x1b[38;5;${color}m${text}\x1b[0m`
-}
+export const OCEAN = [24, 30, 36, 37, 43, 44, 50] as const
 
-export function dim(text: string): string {
-  return `\x1b[2m${text}\x1b[0m`
-}
-
-export function bold(text: string): string {
-  return `\x1b[1m${text}\x1b[0m`
-}
+export const ACCENT = OCEAN[4]
+export const GREEN = 42
+export const RED = 203
+export const AMBER = 214
+export const GRAY = 245
 
 export function isFancy(): boolean {
   return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
 }
 
-// Compact wordmark (Calvin S style): regenerate if the product is renamed.
+export function paint(text: string, color: number): string {
+  return isFancy() ? `\x1b[38;5;${color}m${text}\x1b[0m` : text
+}
+
+export function dim(text: string): string {
+  return isFancy() ? `\x1b[2m${text}\x1b[0m` : text
+}
+
+export function bold(text: string): string {
+  return isFancy() ? `\x1b[1m${text}\x1b[0m` : text
+}
+
+export function underline(text: string): string {
+  return isFancy() ? `\x1b[4m${text}\x1b[0m` : text
+}
+
+export function fieldLabel(name: string): string {
+  return paint(name.padEnd(9), ACCENT)
+}
+
+// ANSI Shadow wordmark, 68 columns: regenerate if the product is renamed.
 const BANNER = [
-  '┌─┐┌─┐┌┬┐┌─┐┌─┐┌─┐┌┬┐┌─┐',
-  '│  │ │ ││├┤ └─┐├┤ │││├─┤',
-  '└─┘└─┘─┴┘└─┘└─┘└─┘┴ ┴┴ ┴',
+  ' ██████╗ ██████╗ ██████╗ ███████╗███████╗███████╗███╗   ███╗ █████╗ ',
+  '██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔════╝██╔════╝████╗ ████║██╔══██╗',
+  '██║     ██║   ██║██║  ██║█████╗  ███████╗█████╗  ██╔████╔██║███████║',
+  '██║     ██║   ██║██║  ██║██╔══╝  ╚════██║██╔══╝  ██║╚██╔╝██║██╔══██║',
+  '╚██████╗╚██████╔╝██████╔╝███████╗███████║███████╗██║ ╚═╝ ██║██║  ██║',
+  ' ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝',
 ]
 
 export function printBanner(): void {
   if (!isFancy()) return
   console.log('')
+  if ((process.stdout.columns ?? 80) < BANNER[0]!.length + 4) {
+    console.log(`  ${paint('◆', ACCENT)} ${bold('codesema')}`)
+    console.log('')
+    return
+  }
   BANNER.forEach((line, i) => {
-    console.log('  ' + paint(line, EMBER[Math.min(2 + i * 2, EMBER.length - 1)]!))
+    console.log('  ' + paint(line, OCEAN[Math.min(1 + i, OCEAN.length - 1)]!))
   })
   console.log('')
 }
@@ -38,12 +62,31 @@ const WAVE_WIDTH = 22
 const PHASES = [
   'reading the diff…',
   'following the call chains…',
-  'grouping changes into chapters…',
+  'grouping changes into steps…',
   'weighing the risks…',
   'writing the story…',
   'collecting praise…',
   'sharpening the findings…',
 ]
+
+const STATUS_MAX = 56
+
+function truncateStatus(text: string): string {
+  return text.length > STATUS_MAX ? `${text.slice(0, STATUS_MAX - 1)}…` : text
+}
+
+export function progressLabel(partial: PartialReview): string | null {
+  if (partial.stepTitles.length > 0) {
+    const current = partial.stepTitles[partial.stepTitles.length - 1]!
+    return truncateStatus(`step ${partial.stepTitles.length}: ${current}`)
+  }
+  if (partial.findings.length > 0) {
+    const n = partial.findings.length
+    return `${n} finding${n === 1 ? '' : 's'} drafted`
+  }
+  if (partial.verdict) return `verdict ${partial.verdict} · drafting findings`
+  return null
+}
 
 function elapsed(startedAt: number): string {
   const secs = Math.floor((Date.now() - startedAt) / 1000)
@@ -52,7 +95,10 @@ function elapsed(startedAt: number): string {
   return `${mm}:${ss}`
 }
 
-export type Spinner = { stop: (finalLine: string) => void }
+export type Spinner = {
+  stop: (finalLine: string) => void
+  update: (status: string) => void
+}
 
 export function startSpinner(label: string): Spinner {
   if (!isFancy()) {
@@ -61,11 +107,13 @@ export function startSpinner(label: string): Spinner {
       stop(finalLine) {
         console.log(finalLine)
       },
+      update() {},
     }
   }
 
   const startedAt = Date.now()
   let tick = 0
+  let liveStatus: string | null = null
   const showCursor = () => process.stdout.write('\x1b[?25h')
   const onSigint = () => {
     showCursor()
@@ -81,12 +129,12 @@ export function startSpinner(label: string): Spinner {
     for (let i = 0; i < WAVE_WIDTH; i++) {
       const level = (Math.sin(i * 0.55 - tick * 0.18) + 1) / 2
       const h = Math.round(level * (WAVE_CHARS.length - 1))
-      const color = EMBER[Math.min(Math.round(level * (EMBER.length - 1)), EMBER.length - 1)]!
+      const color = OCEAN[Math.min(Math.round(level * (OCEAN.length - 1)), OCEAN.length - 1)]!
       wave += paint(WAVE_CHARS[h]!, color)
     }
     const secs = Math.floor((Date.now() - startedAt) / 1000)
-    const phase = PHASES[Math.floor(secs / 7) % PHASES.length]!
-    process.stdout.write(`\r\x1b[2K  ${wave}  ${label} ${dim(`${elapsed(startedAt)} · ${phase}`)}`)
+    const status = liveStatus ?? PHASES[Math.floor(secs / 7) % PHASES.length]!
+    process.stdout.write(`\r\x1b[2K  ${wave}  ${label} ${dim(`${elapsed(startedAt)} · ${status}`)}`)
   }
 
   render()
@@ -99,6 +147,9 @@ export function startSpinner(label: string): Spinner {
       process.stdout.write('\r\x1b[2K')
       showCursor()
       console.log(`${finalLine} ${dim(`(${elapsed(startedAt)})`)}`)
+    },
+    update(status) {
+      liveStatus = status
     },
   }
 }

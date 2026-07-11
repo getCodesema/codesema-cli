@@ -53,43 +53,62 @@ describe('sanitizeFindings', () => {
 describe('sanitizeNarrative', () => {
   test('non-object or empty: null', () => {
     expect(sanitizeNarrative(null, 0)).toBeNull()
-    expect(sanitizeNarrative({ chapters: [], intent: '' }, 0)).toBeNull()
+    expect(sanitizeNarrative({ steps: [], intent: '' }, 0)).toBeNull()
   })
 
-  test('chapter without title ignored, finding_refs bounded and deduplicated', () => {
+  test('step without title ignored, finding_refs bounded and deduplicated', () => {
     const n = sanitizeNarrative(
       {
         intent: 'i',
-        chapters: [
+        steps: [
           { title: '', files: [] },
           { title: 'Ch', files: ['a.ts', 7], finding_refs: [0, 0, 2, -1, 99] },
         ],
       },
       3,
     )
-    expect(n?.chapters).toHaveLength(1)
-    expect(n?.chapters[0]?.files).toEqual(['a.ts'])
-    expect(n?.chapters[0]?.finding_refs).toEqual([0, 2])
+    expect(n?.steps).toHaveLength(1)
+    expect(n?.steps[0]?.files).toEqual(['a.ts'])
+    expect(n?.steps[0]?.finding_refs).toEqual([0, 2])
   })
 
   test('invalid risk absent, null check kept', () => {
-    const n = sanitizeNarrative({ chapters: [{ title: 'Ch', risk: 'extreme', check: null }] }, 0)
-    expect(n?.chapters[0]?.risk).toBeUndefined()
-    expect(n?.chapters[0]?.check).toBeNull()
+    const n = sanitizeNarrative({ steps: [{ title: 'Ch', risk: 'extreme', check: null }] }, 0)
+    expect(n?.steps[0]?.risk).toBeUndefined()
+    expect(n?.steps[0]?.check).toBeNull()
   })
 
-  test('review_first: capped at 4, default risk medium, chapter_ref bounded', () => {
-    const items = Array.from({ length: 6 }, (_, i) => ({ point: `p${i}`, risk: 'weird', chapter_ref: i }))
-    const n = sanitizeNarrative({ chapters: [{ title: 'Ch' }], review_first: items }, 0)
+  test('review_first: capped at 4, default risk medium, step_ref bounded', () => {
+    const items = Array.from({ length: 6 }, (_, i) => ({ point: `p${i}`, risk: 'weird', step_ref: i }))
+    const n = sanitizeNarrative({ steps: [{ title: 'Ch' }], review_first: items }, 0)
     expect(n?.review_first).toHaveLength(4)
-    expect(n?.review_first[0]).toEqual({ point: 'p0', risk: 'medium', chapter_ref: 0, file: null })
-    expect(n?.review_first[1]?.chapter_ref).toBeNull()
+    expect(n?.review_first[0]).toEqual({ point: 'p0', risk: 'medium', step_ref: 0, file: null })
+    expect(n?.review_first[1]?.step_ref).toBeNull()
+  })
+
+  test('legacy archives: chapters and chapter_ref accepted as steps and step_ref', () => {
+    const n = sanitizeNarrative(
+      {
+        intent: 'i',
+        chapters: [{ title: 'Legacy group', files: ['a.ts'] }],
+        review_first: [{ point: 'p', risk: 'high', chapter_ref: 0 }],
+      },
+      0,
+    )
+    expect(n?.steps).toHaveLength(1)
+    expect(n?.steps[0]?.title).toBe('Legacy group')
+    expect(n?.review_first[0]?.step_ref).toBe(0)
+  })
+
+  test('steps win over legacy chapters when both are present', () => {
+    const n = sanitizeNarrative({ steps: [{ title: 'New' }], chapters: [{ title: 'Old' }] }, 0)
+    expect(n?.steps.map((s) => s.title)).toEqual(['New'])
   })
 
   test('prologue without why/what absent, key_changes capped at 5 and title required', () => {
-    expect(sanitizeNarrative({ chapters: [{ title: 'Ch' }], prologue: {} }, 0)?.prologue).toBeUndefined()
+    expect(sanitizeNarrative({ steps: [{ title: 'Ch' }], prologue: {} }, 0)?.prologue).toBeUndefined()
     const kcs = Array.from({ length: 7 }, (_, i) => ({ title: `t${i}`, detail: 'd' }))
-    const n = sanitizeNarrative({ chapters: [{ title: 'Ch' }], prologue: { why: 'w', key_changes: [...kcs, { detail: 'orphan' }] } }, 0)
+    const n = sanitizeNarrative({ steps: [{ title: 'Ch' }], prologue: { why: 'w', key_changes: [...kcs, { detail: 'orphan' }] } }, 0)
     expect(n?.prologue?.key_changes).toHaveLength(5)
   })
 })

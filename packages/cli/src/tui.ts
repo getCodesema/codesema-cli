@@ -1,6 +1,6 @@
 import { emitKeypressEvents } from 'node:readline'
 import { createInterface } from 'node:readline/promises'
-import { EMBER, dim, isFancy, paint } from './ui.js'
+import { ACCENT, dim, isFancy, paint } from './ui.js'
 
 export type SelectOption<T> = {
   label: string
@@ -12,7 +12,6 @@ export function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY)
 }
 
-const ACCENT = EMBER[4]!
 const MAX_VISIBLE = 10
 
 type KeypressEvent = {

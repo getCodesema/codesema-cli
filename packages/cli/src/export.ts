@@ -64,9 +64,9 @@ export function renderMarkdown(record: ReviewRecord): string {
           .join('\n'),
       )
     }
-    if (n.chapters.length) {
-      out.push('## Chapters')
-      n.chapters.forEach((ch, i) => {
+    if (n.steps.length) {
+      out.push('## Steps')
+      n.steps.forEach((ch, i) => {
         const head = `### ${i + 1}. ${ch.title}${ch.risk ? ` — ${ch.risk} risk` : ''}`
         const body: string[] = [head]
         if (ch.rationale) body.push(ch.rationale)

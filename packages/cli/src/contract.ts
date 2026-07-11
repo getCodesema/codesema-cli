@@ -14,7 +14,7 @@ export type NarrativePrologue = {
   key_changes: NarrativePrologueKeyChange[]
 }
 
-export type NarrativeChapter = {
+export type NarrativeStep = {
   title: string
   rationale: string
   files: string[]
@@ -29,7 +29,7 @@ export type ReviewFirstRisk = NarrativeRisk
 export type ReviewFirstItem = {
   point: string
   risk: ReviewFirstRisk
-  chapter_ref: number | null
+  step_ref: number | null
   file: string | null
 }
 
@@ -37,7 +37,7 @@ export type ReviewNarrative = {
   intent: string
   confidence: NarrativeConfidence
   prologue?: NarrativePrologue
-  chapters: NarrativeChapter[]
+  steps: NarrativeStep[]
   review_first: ReviewFirstItem[]
 }
 
@@ -89,7 +89,7 @@ const TITLE_MAX = 200
 const MESSAGE_MAX = 2000
 const SUGGESTION_MAX = 4000
 
-function sanitizeReviewFirst(raw: unknown, chaptersCount: number): ReviewFirstItem[] {
+function sanitizeReviewFirst(raw: unknown, stepsCount: number): ReviewFirstItem[] {
   if (!Array.isArray(raw)) return []
   const out: ReviewFirstItem[] = []
   for (const item of raw) {
@@ -99,12 +99,14 @@ function sanitizeReviewFirst(raw: unknown, chaptersCount: number): ReviewFirstIt
     const point = typeof it.point === 'string' ? it.point.trim().slice(0, REVIEW_FIRST_POINT_MAX) : ''
     if (!point) continue
     const risk: ReviewFirstRisk = it.risk === 'high' || it.risk === 'low' ? it.risk : 'medium'
-    const chapterRef =
-      Number.isInteger(it.chapter_ref) && (it.chapter_ref as number) >= 0 && (it.chapter_ref as number) < chaptersCount
-        ? (it.chapter_ref as number)
+    // Archives written before the step rename used "chapter_ref".
+    const rawRef = it.step_ref ?? it.chapter_ref
+    const stepRef =
+      Number.isInteger(rawRef) && (rawRef as number) >= 0 && (rawRef as number) < stepsCount
+        ? (rawRef as number)
         : null
     const file = typeof it.file === 'string' && it.file.trim() ? it.file.trim() : null
-    out.push({ point, risk, chapter_ref: chapterRef, file })
+    out.push({ point, risk, step_ref: stepRef, file })
   }
   return out
 }
@@ -142,10 +144,11 @@ export function sanitizeNarrative(raw: unknown, findingsCount: number): ReviewNa
   const intent = typeof r.intent === 'string' ? r.intent.trim() : ''
   const confidence: NarrativeConfidence = r.confidence === 'high' || r.confidence === 'low' ? r.confidence : 'medium'
   const prologue = sanitizePrologue(r.prologue)
-  const rawChapters = Array.isArray(r.chapters) ? r.chapters : []
+  // Archives written before the step rename used "chapters".
+  const rawSteps = Array.isArray(r.steps) ? r.steps : Array.isArray(r.chapters) ? r.chapters : []
 
-  const chapters: NarrativeChapter[] = []
-  for (const c of rawChapters) {
+  const steps: NarrativeStep[] = []
+  for (const c of rawSteps) {
     if (!c || typeof c !== 'object') continue
     const cc = c as Record<string, unknown>
     const title = typeof cc.title === 'string' ? cc.title.trim() : ''
@@ -168,7 +171,7 @@ export function sanitizeNarrative(raw: unknown, findingsCount: number): ReviewNa
         : typeof cc.check === 'string'
           ? cc.check.trim().slice(0, CHECK_MAX) || undefined
           : undefined
-    chapters.push({
+    steps.push({
       title,
       rationale,
       files,
@@ -179,9 +182,9 @@ export function sanitizeNarrative(raw: unknown, findingsCount: number): ReviewNa
     })
   }
 
-  if (chapters.length === 0 && !intent) return null
-  const review_first = sanitizeReviewFirst(r.review_first, chapters.length)
-  return { intent, confidence, ...(prologue ? { prologue } : {}), chapters, review_first }
+  if (steps.length === 0 && !intent) return null
+  const review_first = sanitizeReviewFirst(r.review_first, steps.length)
+  return { intent, confidence, ...(prologue ? { prologue } : {}), steps, review_first }
 }
 
 const SEVERITIES: readonly FindingSeverity[] = ['critical', 'major', 'minor', 'info']

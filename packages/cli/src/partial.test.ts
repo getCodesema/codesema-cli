@@ -8,7 +8,7 @@ const FULL = JSON.stringify({
     { file: 'src/a.ts', line: 12, severity: 'major', kind: 'design', title: 'Erreur avalée', message: 'Le catch vide masque la panne.' },
     { file: 'src/b.ts', severity: 'minor', kind: 'convention', title: 'Nommage', message: 'Renommer x en userCount.' },
   ],
-  narrative: { intent: 'Fiabiliser les erreurs', confidence: 'high', chapters: [{ title: 'Fondations' }] },
+  narrative: { intent: 'Fiabiliser les erreurs', confidence: 'high', steps: [{ title: 'Fondations' }] },
 })
 
 describe('repairTruncatedJson', () => {
@@ -68,7 +68,7 @@ describe('parsePartialReview', () => {
     expect(partial.summary).toContain('gestion d’erreur')
     expect(partial.findings).toHaveLength(2)
     expect(partial.findings[0]).toMatchObject({ file: 'src/a.ts', line: 12, severity: 'major' })
-    expect(partial.chapterTitles).toEqual(['Fondations'])
+    expect(partial.stepTitles).toEqual(['Fondations'])
     expect(partial.intent).toBe('Fiabiliser les erreurs')
   })
 

@@ -12,7 +12,7 @@ import { configCommand } from './wizard.js'
 declare const __CODESEMA_VERSION__: string
 const VERSION = typeof __CODESEMA_VERSION__ !== 'undefined' ? __CODESEMA_VERSION__ : '0.0.0-dev'
 
-const HELP = `codesema — local merge request review, told as chapters
+const HELP = `codesema — local merge request review, step by step
 
 Usage:
   codesema                            Interactive review: pick a local branch, the web UI opens
