@@ -1,6 +1,3 @@
-// Serveur local : UI web embarquée + session live (statut, aperçu partiel,
-// événements SSE). `review` pousse l'avancement, `show` sert un état final.
-
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -97,6 +94,16 @@ export function createSession(initial?: { record?: ReviewRecord }): LiveSession 
   }
 }
 
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+
+/** Whether the Host header points to loopback (hostname before the port, IPv6 in brackets). */
+export function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false
+  const match = /^(\[[^\]]+\]|[^:]+)(?::\d+)?$/.exec(host.trim())
+  if (!match) return false
+  return LOOPBACK_HOSTNAMES.has(match[1]!.toLowerCase())
+}
+
 async function listen(app: Hono, startPort: number): Promise<number> {
   for (let port = startPort; port < startPort + 20; port++) {
     const ok = await new Promise<boolean>((resolve) => {
@@ -119,6 +126,15 @@ export async function startServer(session: LiveSession, opts: { port?: number })
   const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8')
 
   const app = new Hono()
+
+  // The server only binds to loopback, but a malicious site could still reach
+  // 127.0.0.1 via DNS rebinding (a domain that later resolves to loopback) and
+  // read the diff/review. Accept only requests whose Host header is loopback, so
+  // a rebound domain is rejected.
+  app.use('/api/*', async (c, next) => {
+    if (!isLoopbackHost(c.req.header('host'))) return c.text('forbidden', 403)
+    await next()
+  })
 
   app.get('/api/status', (c) => c.json({ ...session.status(), partial: session.partial() }))
 
