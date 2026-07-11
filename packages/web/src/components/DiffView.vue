@@ -38,7 +38,13 @@ function setMode(m: 'split' | 'unified') {
 
 // ── Repliage des fichiers ──────────────────────────────────────────────────
 
-const collapsed = ref<Set<string>>(new Set())
+// Les très gros fichiers démarrent repliés : leur DOM (v-if) n'est créé qu'au
+// dépliage, ce qui garde le premier rendu fluide sur les diffs énormes.
+const BIG_FILE_LINES = 500
+
+const collapsed = ref<Set<string>>(
+  new Set(props.files.filter((f) => f.addCount + f.delCount > BIG_FILE_LINES).map((f) => f.path)),
+)
 
 // Quand collapseKey change : force l'état replié (pair = déplié, impair = replié)
 watch(
@@ -445,6 +451,9 @@ function extraNotes(byLine: Record<number, Finding[]>, lineNo: number | null): F
   border-radius: 10px;
   overflow: hidden;
   background: var(--nolyra-panel);
+  /* saute layout/paint des fichiers hors viewport sur les gros diffs */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 
 .srd-file-head {
