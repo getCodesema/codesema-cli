@@ -1,14 +1,18 @@
 // Habillage terminal zéro dépendance : bannière + vague de lave animée (thème braise).
 // Ne s'active que sur un vrai TTY couleur ; sinon repli sur des lignes statiques.
 
-const EMBER = [124, 160, 196, 202, 208, 214, 220] as const
+export const EMBER = [124, 160, 196, 202, 208, 214, 220] as const
 
-function paint(text: string, color: number): string {
+export function paint(text: string, color: number): string {
   return `\x1b[38;5;${color}m${text}\x1b[0m`
 }
 
-function dim(text: string): string {
+export function dim(text: string): string {
   return `\x1b[2m${text}\x1b[0m`
+}
+
+export function bold(text: string): string {
+  return `\x1b[1m${text}\x1b[0m`
 }
 
 export function isFancy(): boolean {
@@ -17,9 +21,9 @@ export function isFancy(): boolean {
 
 // Wordmark compact (style Calvin S) — à régénérer au renommage du produit.
 const BANNER = [
-  '┌┬┐┬─┐   ┬─┐┌─┐┬  ┬┬┌─┐┬ ┬',
-  '│││├┬┘───├┬┘├┤ └┐┌┘│├┤ │││',
-  '┴ ┴┴└─   ┴└─└─┘ └┘ ┴└─┘└┴┘',
+  '┌─┐┌─┐┌┬┐┌─┐┌─┐┌─┐┌┬┐┌─┐',
+  '│  │ │ ││├┤ └─┐├┤ │││├─┤',
+  '└─┘└─┘─┴┘└─┘└─┘└─┘┴ ┴┴ ┴',
 ]
 
 export function printBanner(): void {
