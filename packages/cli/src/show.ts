@@ -1,6 +1,3 @@
-// `codesema show` : sanitize la sortie de l'agent, archive la review en JSON,
-// sert l'UI web embarquée sur un serveur local éphémère et ouvre le navigateur.
-
 import { repoRoot } from './git.js'
 import { openBrowser } from './open.js'
 import { archiveRecord, resolveRecord } from './record.js'

@@ -1,6 +1,3 @@
-// Branches locales pour le sélecteur interactif : triées par dernier commit,
-// branche courante en tête de pré-sélection.
-
 import { currentBranch, tryGit } from './git.js'
 import { select } from './tui.js'
 
@@ -33,10 +30,7 @@ export function listLocalBranches(cwd: string): LocalBranch[] {
     .filter((b) => b.name)
 }
 
-/**
- * Sélection interactive de la branche à reviewer (filtre au clavier).
- * null si annulé ; branche courante si non-TTY ou liste vide.
- */
+/** Interactive branch picker (keyboard filter). Returns null if cancelled, the current branch if non-TTY or the list is empty. */
 export async function pickBranch(cwd: string): Promise<string | null> {
   const branches = listLocalBranches(cwd)
   if (branches.length <= 1) return branches[0]?.name ?? currentBranch(cwd)

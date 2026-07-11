@@ -17,8 +17,8 @@ function commitFile(name: string, content: string, msg: string) {
   run(['commit', '-m', msg])
 }
 
-// Repo : main (2 commits) → develop (1 commit) → feature/x (1 commit).
-// develop est le merge-base le plus proche de la feature.
+// Fixture repo topology: main (2 commits) -> develop (1 commit) -> feature/x (1 commit).
+// develop is the closest merge-base to the feature branch.
 beforeAll(() => {
   repo = mkdtempSync(join(tmpdir(), 'codesema-test-'))
   run(['init', '-b', 'main'])
@@ -35,15 +35,15 @@ afterAll(() => {
 })
 
 describe('detectTarget', () => {
-  test('--target valide résolu, source = flag', () => {
+  test('valid --target resolved, source = flag', () => {
     expect(detectTarget('feature/x', 'develop', repo)).toEqual({ target: 'develop', source: '--target flag' })
   })
 
-  test('--target introuvable → erreur explicite', () => {
+  test('--target not found: explicit error', () => {
     expect(() => detectTarget('feature/x', 'nope', repo)).toThrow(/branch not found/)
   })
 
-  test('heuristique : branche au merge-base le plus proche (develop, pas main)', () => {
+  test('heuristic: branch at the closest merge-base (develop, not main)', () => {
     const { target, source } = detectTarget('feature/x', undefined, repo)
     expect(target).toBe('develop')
     expect(source).toContain('heuristic')
@@ -51,7 +51,7 @@ describe('detectTarget', () => {
 })
 
 describe('prep', () => {
-  test('input complet, chemins non-ASCII intacts', () => {
+  test('complete input, non-ASCII paths intact', () => {
     const input = prep({ target: 'develop', cwd: repo })
     expect(input.branch).toBe('feature/x')
     expect(input.target).toBe('develop')
@@ -61,7 +61,7 @@ describe('prep', () => {
     expect(input.diff).not.toContain('\\303')
   })
 
-  test('branche courante = cible → erreur', () => {
+  test('current branch = target: error', () => {
     run(['checkout', 'develop'])
     try {
       expect(() => prep({ target: 'develop', cwd: repo })).toThrow(/target branch itself/)
@@ -70,7 +70,7 @@ describe('prep', () => {
     }
   })
 
-  test('detached HEAD → erreur', () => {
+  test('detached HEAD: error', () => {
     run(['checkout', '--detach'])
     try {
       expect(() => prep({ target: 'develop', cwd: repo })).toThrow(/detached HEAD/)

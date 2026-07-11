@@ -1,10 +1,8 @@
-// Prompt de fix : findings actionnables du record -> JSON prêt à coller dans Claude Code CLI.
-
 import type { Finding } from './useDiff'
 import type { ReviewRecord } from '../types'
 
 const INSTRUCTION =
-  'Corrige les points suivants relevés en code review. Ne modifie que ce qui est nécessaire pour chaque point.'
+  'Fix the following code review findings. Change only what each finding requires.'
 
 export function isActionable(f: Finding): boolean {
   if (f.kind === 'praise' || f.kind === 'why') return false

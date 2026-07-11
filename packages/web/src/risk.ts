@@ -1,5 +1,4 @@
-// Métadonnées d'affichage des niveaux de risque, partagées entre ChapterList et
-// ChapterReview (les classes CSS restent définies dans le <style scoped> de chacun).
+// Risk display classes are defined in each consuming component's own scoped <style>, not here.
 
 export type RiskMeta = { label: string; textCls: string; bgCls: string; dotColor: string }
 

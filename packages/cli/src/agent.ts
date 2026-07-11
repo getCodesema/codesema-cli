@@ -1,12 +1,7 @@
-// Exécution de l'agent headless : prompt sur stdin, review JSON sur stdout.
-// Claude Code bascule en stream-json (aperçu temps réel) ; les autres agents
-// remontent leur stdout brut au fil de l'eau.
-
 import { spawn } from 'node:child_process'
 
 const CLAUDE_STREAM_FLAGS = '--output-format stream-json --include-partial-messages --verbose'
 
-/** Variante streaming d'une commande claude -p, ou null si non applicable. */
 export function claudeStreamCommand(command: string): string | null {
   if (!/^claude(\s|$)/.test(command)) return null
   if (!/(^|\s)(-p|--print)(\s|$)/.test(command)) return null
@@ -19,7 +14,7 @@ type ClaudeStreamParser = {
   finalText: () => string | null
 }
 
-/** Parse la sortie JSONL de claude : text_delta au fil de l'eau, result à la fin. */
+/** Parses claude's JSONL stream: text_delta events while streaming, result at the end. */
 export function createClaudeStreamParser(onText?: (text: string) => void): ClaudeStreamParser {
   let lineBuffer = ''
   let streamedText = ''
@@ -83,7 +78,7 @@ export type AgentRunOptions = {
   prompt: string
   cwd: string
   timeoutMs: number
-  /** Texte cumulé de la review en cours, à chaque avancée de l'agent. */
+  /** Cumulative review text so far, called on every update from the agent. */
   onText?: (text: string) => void
 }
 
@@ -93,8 +88,8 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
   const parser = streamCommand ? createClaudeStreamParser(opts.onText) : null
 
   return new Promise((resolve, reject) => {
-    // detached (hors Windows) : l'agent tourne dans son propre groupe de process,
-    // le timeout peut donc tuer le shell ET ses enfants d'un seul kill(-pid).
+    // detached (non-Windows): the agent runs in its own process group, so the
+    // timeout can kill the shell AND its children with a single kill(-pid).
     const detached = process.platform !== 'win32'
     const child = spawn(command, { shell: true, cwd: opts.cwd, stdio: ['pipe', 'pipe', 'inherit'], detached })
     let out = ''
@@ -105,7 +100,7 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
         if (detached && child.pid) process.kill(-child.pid, 'SIGTERM')
         else child.kill('SIGTERM')
       } catch {
-        // groupe déjà terminé
+        // process group already gone
       }
     }, opts.timeoutMs)
 
@@ -129,7 +124,7 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
         reject(new Error(`agent command exited with code ${code}`))
       }
     })
-    // un agent qui crashe ferme stdin tôt : sans handler, l'EPIPE tuerait tout le process
+    // an agent that crashes closes stdin early: without a handler, the EPIPE would kill the whole process
     child.stdin.on('error', () => {})
     child.stdin.write(opts.prompt)
     child.stdin.end()

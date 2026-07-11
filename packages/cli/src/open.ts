@@ -10,6 +10,6 @@ export function openBrowser(url: string): void {
   try {
     spawn(cmd, args, { stdio: 'ignore', detached: true }).unref()
   } catch {
-    // pas de navigateur ouvrable : l'URL est déjà affichée sur stdout
+    // no browser could be opened: the URL is already printed on stdout
   }
 }

@@ -1,6 +1,3 @@
-// `codesema prep` : détecte la branche courante et la branche cible, calcule le
-// diff de la MR, et écrit .codesema/input.json pour l'agent IA.
-
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ensureWorkDir } from './config.js'
@@ -40,7 +37,6 @@ export type PrepInput = {
   diff: string
 }
 
-/** Résout un nom de branche court vers une ref locale ou origin/<nom>. */
 function resolveRef(name: string, cwd: string): string | null {
   if (refExists(name, cwd)) return name
   if (refExists(`origin/${name}`, cwd)) return `origin/${name}`
@@ -62,7 +58,7 @@ function targetFromForge(cwd: string): { target: string; source: string } | null
         if (ref) return { target: ref, source: 'gitlab (glab mr view)' }
       }
     } catch {
-      // sortie glab inattendue : on passe au fallback suivant
+      // unexpected glab output: fall through to the next fallback
     }
   }
   const ghOut = tryExec('gh', ['pr', 'view', '--json', 'baseRefName', '--jq', '.baseRefName'], cwd)
@@ -127,9 +123,11 @@ function excludePathspecs(cwd: string): string[] {
   return patterns.map((p) => (p.includes('/') ? `:(exclude,glob)${p}` : `:(exclude,glob)**/${p}`))
 }
 
-/** Diff MR sur un range, mêmes exclusions que prep (lockfiles, .codesema-ignore).
- *  quotePath=false : sans lui, git échappe les chemins non-ASCII ("caf\303\251.txt")
- *  et le matching finding↔fichier casse dans l'UI. */
+/**
+ * MR diff over a range, same exclusions as prep (lockfiles, .codesema-ignore).
+ * quotePath=false: without it, git escapes non-ASCII filenames as octal
+ * sequences (e.g. "caf\303\251.txt"), and finding-to-file matching breaks in the UI.
+ */
 export function mrDiff(range: string, cwd: string): string {
   const excludes = excludePathspecs(cwd)
   return git(['-c', 'core.quotePath=false', 'diff', '--no-color', range, '--', '.', ...excludes], cwd)

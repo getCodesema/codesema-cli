@@ -26,7 +26,7 @@ function finding(over: Partial<Finding> = {}): Finding {
 }
 
 describe('parseDiff', () => {
-  test('fichiers, compteurs et numérotation', () => {
+  test('files, counters and line numbering', () => {
     const { files } = parseDiff(DIFF)
     expect(files.map((f) => f.path)).toEqual(['src/a.ts', 'b.txt'])
     expect(files[0]).toMatchObject({ addCount: 2, delCount: 1 })
@@ -38,7 +38,7 @@ describe('parseDiff', () => {
     expect(rows[5]).toMatchObject({ kind: 'ctx', oldNo: 12, newNo: 13 })
   })
 
-  test('findings : ligne ajoutée → byLine, ligne supprimée → clé négative, hors diff → topFindings, fichier inconnu → unmatched', () => {
+  test('findings: added line -> byLine, deleted line -> negative key, outside diff -> topFindings, unknown file -> unmatched', () => {
     const onAdd = finding({ line: 11 })
     const noLine = finding({ line: 999 })
     const wrongFile = finding({ file: 'zzz.go' })
@@ -46,7 +46,7 @@ describe('parseDiff', () => {
     expect(files[0]!.byLine[11]).toEqual([onAdd])
     expect(files[0]!.topFindings).toEqual([noLine])
     expect(unmatched).toEqual([wrongFile])
-    // fichier supprimé : aucun newNo ne matche → rattachement par clé négative (-oldNo)
+    // deleted file: no newNo matches, so attachment falls back to the negative key (-oldNo)
     const deleted = `diff --git a/gone.txt b/gone.txt
 deleted file mode 100644
 --- a/gone.txt
@@ -61,7 +61,7 @@ deleted file mode 100644
     expect(onlyDel.files[0]!.byLine[-2]).toEqual([onDel])
   })
 
-  test('gaps : avant le premier hunk et notes rattachées aux hunks', () => {
+  test('gaps: before the first hunk and notes attached to hunks', () => {
     const { files } = parseDiff(DIFF, [finding({ line: 11 })])
     const blocks = files[0]!.hunks
     expect(blocks[0]).toEqual({ gap: 9 })
@@ -71,13 +71,13 @@ deleted file mode 100644
 })
 
 describe('sameFile / pickFiles', () => {
-  test('sameFile : exact et suffixe de chemin', () => {
+  test('sameFile: exact match and path suffix', () => {
     expect(sameFile('src/a.ts', 'src/a.ts')).toBe(true)
     expect(sameFile('repo/src/a.ts', 'src/a.ts')).toBe(true)
     expect(sameFile('src/a.ts', 'b.ts')).toBe(false)
   })
 
-  test('pickFiles : ordre de only, dédup, absents ignorés', () => {
+  test('pickFiles: order of only, dedup, missing entries ignored', () => {
     const { files } = parseDiff(DIFF)
     const picked = pickFiles(files, ['b.txt', 'src/a.ts', 'b.txt', 'missing.md'])
     expect(picked.map((f) => f.path)).toEqual(['b.txt', 'src/a.ts'])
@@ -85,7 +85,7 @@ describe('sameFile / pickFiles', () => {
 })
 
 describe('toSplit', () => {
-  test('appariement positionnel del/add et note émise après le bloc', () => {
+  test('positional del/add pairing and note emitted after the block', () => {
     const note = finding()
     const rows = [
       { t: 'ctx' as const, o: 1, n: 1, c: 'a' },

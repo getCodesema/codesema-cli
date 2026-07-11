@@ -1,6 +1,3 @@
-// Primitives TUI zéro dépendance : select à flèches (filtre optionnel) et
-// saisie texte, thème braise partagé avec ui.ts. Repli null hors TTY.
-
 import { emitKeypressEvents } from 'node:readline'
 import { createInterface } from 'node:readline/promises'
 import { EMBER, dim, isFancy, paint } from './ui.js'

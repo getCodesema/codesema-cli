@@ -1,6 +1,3 @@
-// Aperçu temps réel de la review : répare le JSON tronqué que l'agent est en
-// train d'écrire et en extrait verdict/summary/findings best-effort.
-
 export type PartialFinding = {
   file: string
   message: string
@@ -40,9 +37,9 @@ function stringStartBackwards(s: string): number {
 }
 
 /**
- * Rend parsable un JSON en cours d'écriture : ferme la string ouverte, coupe
- * le token incomplet en fin de buffer, retire clé/virgule pendantes, referme
- * la pile d'objets/tableaux. null si aucun objet n'a commencé.
+ * Makes an in-progress JSON write parsable: closes the open string, trims the
+ * incomplete token at the end of the buffer, drops a dangling key or comma,
+ * and closes the object/array stack. Returns null if no object has started.
  */
 export function repairTruncatedJson(raw: string): string | null {
   const start = raw.indexOf('{')
@@ -124,7 +121,7 @@ export function repairTruncatedJson(raw: string): string | null {
   return s
 }
 
-/** Extraction tolérante des champs déjà lisibles de la review en cours. */
+/** Tolerant extraction of the fields already readable from the review in progress. */
 export function parsePartialReview(raw: string): PartialReview | null {
   const repaired = repairTruncatedJson(raw)
   if (!repaired) return null

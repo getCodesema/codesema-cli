@@ -2,27 +2,27 @@ import { describe, expect, test } from 'bun:test'
 import { claudeStreamCommand, createClaudeStreamParser } from './agent.js'
 
 describe('claudeStreamCommand', () => {
-  test('claude -p basique → flags stream ajoutés', () => {
+  test('claude -p basic: stream flags added', () => {
     expect(claudeStreamCommand('claude -p')).toBe(
       'claude -p --output-format stream-json --include-partial-messages --verbose',
     )
   })
 
-  test('claude -p avec modèle et effort', () => {
+  test('claude -p with model and effort', () => {
     expect(claudeStreamCommand('claude -p --model opus --effort high')).toContain('--output-format stream-json')
   })
 
-  test('commande non claude → null', () => {
+  test('non-claude command: null', () => {
     expect(claudeStreamCommand('codex exec -')).toBeNull()
     expect(claudeStreamCommand('gemini -m gemini-2.5-pro')).toBeNull()
     expect(claudeStreamCommand('my-claude-wrapper -p')).toBeNull()
   })
 
-  test('claude sans -p → null', () => {
+  test('claude without -p: null', () => {
     expect(claudeStreamCommand('claude --model opus')).toBeNull()
   })
 
-  test('output-format déjà présent → null (commande custom respectée)', () => {
+  test('output-format already present: null (custom command respected)', () => {
     expect(claudeStreamCommand('claude -p --output-format json')).toBeNull()
   })
 })
@@ -31,7 +31,7 @@ describe('createClaudeStreamParser', () => {
   const delta = (text: string) =>
     `${JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })}\n`
 
-  test('text_delta cumulés et onText appelé', () => {
+  test('text_delta accumulated and onText called', () => {
     const seen: string[] = []
     const parser = createClaudeStreamParser((text) => seen.push(text))
     parser.push(delta('{"verdict":'))
@@ -40,7 +40,7 @@ describe('createClaudeStreamParser', () => {
     expect(parser.finalText()).toBe('{"verdict":"approve"}')
   })
 
-  test('chunk coupé au milieu d’une ligne JSONL', () => {
+  test('chunk cut in the middle of a JSONL line', () => {
     const parser = createClaudeStreamParser()
     const line = delta('hello')
     parser.push(line.slice(0, 20))
@@ -48,14 +48,14 @@ describe('createClaudeStreamParser', () => {
     expect(parser.finalText()).toBe('hello')
   })
 
-  test('événement result prioritaire sur le cumul', () => {
+  test('result event takes priority over the accumulation', () => {
     const parser = createClaudeStreamParser()
     parser.push(delta('partial'))
     parser.push(`${JSON.stringify({ type: 'result', result: '{"verdict":"comment"}' })}\n`)
     expect(parser.finalText()).toBe('{"verdict":"comment"}')
   })
 
-  test('thinking_delta et lignes non JSON ignorés', () => {
+  test('thinking_delta and non-JSON lines ignored', () => {
     const parser = createClaudeStreamParser()
     parser.push(
       `${JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'hmm' } } })}\n`,
@@ -65,7 +65,7 @@ describe('createClaudeStreamParser', () => {
     expect(parser.finalText()).toBe('ok')
   })
 
-  test('message assistant complet resynchronise le texte', () => {
+  test('complete assistant message resynchronizes the text', () => {
     const parser = createClaudeStreamParser()
     parser.push(delta('partial tex'))
     parser.push(`${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'full text' }] } })}\n`)

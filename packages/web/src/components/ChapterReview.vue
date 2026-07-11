@@ -1,7 +1,5 @@
 <script setup lang="ts">
-// ChapterReview — mode review guidé, chapitre par chapitre
-// Layout 2 colonnes, panneau contexte ~384px gauche, diff filtré droite
-// Tous les champs optionnels (risk/take/check/rationale) ont des fallbacks
+// All optional fields (risk/take/check/rationale) have fallbacks.
 
 import { computed, ref, watch } from 'vue'
 import type { Finding } from '../composables/useDiff'
@@ -26,8 +24,6 @@ const emit = defineEmits<{
   navigate: [index: number]
 }>()
 
-// ── Chapitre courant ────────────────────────────────────────────
-
 const chapter = computed(() => props.chapters[props.selectedIndex])
 const chapterNumber = computed(() => props.selectedIndex + 1)
 const totalChapters = computed(() => props.chapters.length)
@@ -45,11 +41,8 @@ function goNext() {
   if (canNext.value) emit('navigate', props.selectedIndex + 1)
 }
 
-// ── Filtre fichiers ─────────────────────────────────────────────
-
 const fileFilter = ref('')
 
-// Reset du filtre à chaque changement de chapitre
 watch(() => props.selectedIndex, () => {
   fileFilter.value = ''
 })
@@ -61,13 +54,10 @@ const filteredFiles = computed(() => {
   return chapter.value.files.filter((f) => f.toLowerCase().includes(q))
 })
 
-// Nom court du fichier pour l'affichage
 function shortName(path: string): string {
   const idx = path.lastIndexOf('/')
   return idx >= 0 ? path.slice(idx + 1) : path
 }
-
-// ── Findings du chapitre (pour le parse et le compteur) ────────
 
 const chapterFindings = computed((): Finding[] => {
   if (!chapter.value) return []
@@ -77,8 +67,6 @@ const chapterFindings = computed((): Finding[] => {
 })
 
 const chapterFindingCount = computed(() => chapterFindings.value.length)
-
-// ── Diff du chapitre : un seul parse, filtré sur ses fichiers ──
 
 const chapterFiles = computed(() => {
   if (!chapter.value || !props.diff) return []
@@ -96,11 +84,9 @@ const chapterDelta = computed(() => {
   return { add, del }
 })
 
-// ── Scroll vers un fichier dans le diff ────────────────────────
-
 function scrollToFile(filePath: string) {
   if (typeof document === 'undefined') return
-  // DiffView rend des en-têtes de fichiers avec un data-diff-file dérivé du chemin
+  // DiffView renders file headers with a data-diff-file attribute derived from the path
   const allHeaders = document.querySelectorAll<HTMLElement>('[data-diff-file]')
   for (const el of allHeaders) {
     const attr = el.dataset.diffFile ?? ''
@@ -109,7 +95,6 @@ function scrollToFile(filePath: string) {
       return
     }
   }
-  // Fallback : cherche par texte du path dans le diff
   const allMono = document.querySelectorAll<HTMLElement>('.diff-file-path')
   for (const el of allMono) {
     if (el.textContent?.includes(shortName(filePath))) {
@@ -123,15 +108,12 @@ function scrollToFile(filePath: string) {
 <template>
   <div v-if="chapter" class="chrev-root">
 
-    <!-- ── Colonne gauche : panneau contexte ──────────────────── -->
     <div class="chrev-left">
 
-      <!-- Retour -->
       <button class="chrev-back" @click="emit('back')">
         {{ $t('reviews.guidedBack') }}
       </button>
 
-      <!-- Navigation + toggle lu -->
       <div class="chrev-nav">
         <button
           class="chrev-radio-btn"
@@ -169,10 +151,8 @@ function scrollToFile(filePath: string) {
         </button>
       </div>
 
-      <!-- Titre -->
       <h2 class="chrev-title">{{ chapter.title }}</h2>
 
-      <!-- Badge risque + delta -->
       <div class="chrev-meta">
         <template v-if="chapter.risk && riskMeta(chapter.risk)">
           <span
@@ -189,10 +169,8 @@ function scrollToFile(filePath: string) {
         </span>
       </div>
 
-      <!-- Rationale / purpose -->
       <p v-if="chapter.rationale" class="chrev-rationale">{{ chapter.rationale }}</p>
 
-      <!-- Encadré ambre « À revoir » (masqué si pas de check) -->
       <div v-if="chapter.check" class="chrev-towatch">
         <div class="chrev-towatch-tag">{{ $t('reviews.guidedToWatch') }}</div>
         <div class="chrev-towatch-row">
@@ -207,7 +185,6 @@ function scrollToFile(filePath: string) {
         </div>
       </div>
 
-      <!-- Liste filtrable des fichiers -->
       <div class="chrev-files">
         <div class="chrev-files-head">
           {{ $t('reviews.guidedFiles') }}
@@ -240,12 +217,9 @@ function scrollToFile(filePath: string) {
       </div>
 
     </div>
-    <!-- /colonne gauche -->
 
-    <!-- ── Colonne droite : bannière + diff ─────────────────── -->
     <div class="chrev-right">
 
-      <!-- Bannière « ce chapitre a été relu » -->
       <div class="chrev-banner">
         <span class="chrev-banner-mark">✦</span>
         <div class="chrev-banner-body">
@@ -259,32 +233,29 @@ function scrollToFile(filePath: string) {
         </div>
       </div>
 
-      <!-- DiffView filtré sur les fichiers du chapitre -->
       <div v-if="diff" class="chrev-diff">
         <DiffView :files="chapterFiles" />
       </div>
       <p v-else class="nolyra-muted chrev-nodiff">{{ $t('reviews.noDiff') }}</p>
 
     </div>
-    <!-- /colonne droite -->
 
   </div>
 
-  <!-- Fallback : review sans chapitres ou index invalide -->
   <div v-else class="chrev-empty">
     <p class="nolyra-muted">{{ $t('reviews.chaptersEmpty') }}</p>
   </div>
 </template>
 
 <style scoped>
-/* ── Layout 2 colonnes ──────────────────────────────────────── */
+/* 2-column layout */
 .chrev-root {
   display: flex;
   align-items: flex-start;
   min-height: 0;
 }
 
-/* ── Colonne gauche ─────────────────────────────────────────── */
+/* left column */
 .chrev-left {
   width: 384px;
   flex-shrink: 0;
@@ -300,7 +271,7 @@ function scrollToFile(filePath: string) {
   background: color-mix(in srgb, var(--nolyra-panel) 60%, var(--nolyra-bg));
 }
 
-/* Bouton retour */
+/* back button */
 .chrev-back {
   display: inline-flex;
   align-items: center;
@@ -319,14 +290,14 @@ function scrollToFile(filePath: string) {
   color: var(--nolyra-accent);
 }
 
-/* Navigation toggle + flèches */
+/* nav toggle + arrows */
 .chrev-nav {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-/* Gros radio toggle lu */
+/* big read toggle */
 .chrev-radio-btn {
   width: 22px;
   height: 22px;
@@ -386,7 +357,7 @@ function scrollToFile(filePath: string) {
   cursor: not-allowed;
 }
 
-/* Titre chapitre */
+/* chapter title */
 .chrev-title {
   font-family: var(--font-display);
   font-size: 23px;
@@ -397,7 +368,7 @@ function scrollToFile(filePath: string) {
   line-height: 1.15;
 }
 
-/* Méta risque + delta */
+/* risk + delta meta */
 .chrev-meta {
   display: flex;
   align-items: center;
@@ -438,7 +409,7 @@ function scrollToFile(filePath: string) {
 .chrev-delta-add { color: var(--nolyra-risk-low); }
 .chrev-delta-del { color: var(--nolyra-risk-high); }
 
-/* Rationale */
+/* rationale */
 .chrev-rationale {
   font-size: 13.5px;
   color: var(--nolyra-ink-2);
@@ -447,7 +418,7 @@ function scrollToFile(filePath: string) {
   text-wrap: pretty;
 }
 
-/* Encadré ambre « À revoir » */
+/* to-watch amber box */
 .chrev-towatch {
   border: 1px solid color-mix(in srgb, var(--nolyra-amber) 30%, transparent);
   border-radius: 10px;
@@ -494,7 +465,7 @@ function scrollToFile(filePath: string) {
   font-weight: 700;
 }
 
-/* Liste fichiers */
+/* file list */
 .chrev-files {
   display: flex;
   flex-direction: column;
@@ -586,7 +557,7 @@ function scrollToFile(filePath: string) {
   padding: 6px 0;
 }
 
-/* ── Colonne droite ─────────────────────────────────────────── */
+/* right column */
 .chrev-right {
   flex: 1;
   min-width: 0;
@@ -596,7 +567,7 @@ function scrollToFile(filePath: string) {
   overflow-y: auto;
 }
 
-/* Bannière review */
+/* review banner */
 .chrev-banner {
   display: flex;
   align-items: flex-start;
@@ -655,7 +626,7 @@ function scrollToFile(filePath: string) {
   text-wrap: pretty;
 }
 
-/* Diff */
+/* diff */
 .chrev-diff {
   padding: 20px 20px 60px;
 }
@@ -664,13 +635,13 @@ function scrollToFile(filePath: string) {
   font-size: 13px;
 }
 
-/* ── Empty fallback ─────────────────────────────────────────── */
+/* empty fallback */
 .chrev-empty {
   padding: 32px 24px;
   font-size: 13px;
 }
 
-/* ── Responsive : empilement sous 900px ─────────────────────── */
+/* responsive: stack below 900px */
 @media (max-width: 900px) {
   .chrev-root {
     flex-direction: column;
@@ -684,7 +655,7 @@ function scrollToFile(filePath: string) {
   }
 }
 
-/* ── Densité mobile (≤ 640px) ────────────────────────────────── */
+/* mobile density (<= 640px) */
 @media (max-width: 640px) {
   .chrev-left { padding: 16px 14px 24px; }
   .chrev-title { font-size: 20px; }

@@ -1,6 +1,3 @@
-// `codesema export` : rend la review courante (ou la dernière archivée) en
-// Markdown lisible — partageable dans une MR, un ticket ou un chat d'équipe.
-
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Finding, ReviewRecord } from './contract.js'

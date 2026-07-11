@@ -12,57 +12,57 @@ const FULL = JSON.stringify({
 })
 
 describe('repairTruncatedJson', () => {
-  test('JSON complet rendu tel quel', () => {
+  test('complete JSON returned as-is', () => {
     expect(JSON.parse(repairTruncatedJson(FULL)!)).toEqual(JSON.parse(FULL))
   })
 
-  test('ignore la prose et le fence avant l’objet', () => {
+  test('ignores prose and fence before the object', () => {
     const repaired = repairTruncatedJson('Sure!\n```json\n{"verdict":"approve"}\n```')
     expect(JSON.parse(repaired!)).toEqual({ verdict: 'approve' })
   })
 
-  test('string ouverte fermée proprement', () => {
+  test('open string closed properly', () => {
     const repaired = repairTruncatedJson('{"verdict":"approve","summary":"tout va bi')
     expect(JSON.parse(repaired!)).toEqual({ verdict: 'approve', summary: 'tout va bi' })
   })
 
-  test('clé partielle en fin de buffer supprimée', () => {
+  test('partial key at end of buffer removed', () => {
     const repaired = repairTruncatedJson('{"verdict":"approve","summ')
     expect(JSON.parse(repaired!)).toEqual({ verdict: 'approve' })
   })
 
-  test('clé complète sans valeur supprimée', () => {
+  test('complete key without value removed', () => {
     const repaired = repairTruncatedJson('{"verdict":"approve","summary":')
     expect(JSON.parse(repaired!)).toEqual({ verdict: 'approve' })
   })
 
-  test('tableau tronqué au milieu d’un objet', () => {
+  test('array truncated in the middle of an object', () => {
     const repaired = repairTruncatedJson('{"findings":[{"file":"a.ts","message":"ok"},{"file":"b.ts","mess')
     expect(JSON.parse(repaired!)).toEqual({ findings: [{ file: 'a.ts', message: 'ok' }, { file: 'b.ts' }] })
   })
 
-  test('échappement coupé en fin de string', () => {
+  test('escape sequence cut at end of string', () => {
     const repaired = repairTruncatedJson('{"summary":"avec \\')
     expect(JSON.parse(repaired!)).toEqual({ summary: 'avec ' })
   })
 
-  test('séquence unicode incomplète purgée', () => {
+  test('incomplete unicode sequence purged', () => {
     const repaired = repairTruncatedJson('{"summary":"caf\\u00e')
     expect(JSON.parse(repaired!)).toEqual({ summary: 'caf' })
   })
 
-  test('littéral incomplet coupé', () => {
+  test('incomplete literal cut off', () => {
     const repaired = repairTruncatedJson('{"verdict":"approve","line":12,"ok":tru')
     expect(JSON.parse(repaired!)).toEqual({ verdict: 'approve', line: 12 })
   })
 
-  test('aucun objet commencé → null', () => {
+  test('no object started: null', () => {
     expect(repairTruncatedJson('The review is coming')).toBeNull()
   })
 })
 
 describe('parsePartialReview', () => {
-  test('review complète', () => {
+  test('complete review', () => {
     const partial = parsePartialReview(FULL)!
     expect(partial.verdict).toBe('request_changes')
     expect(partial.summary).toContain('gestion d’erreur')
@@ -72,19 +72,19 @@ describe('parsePartialReview', () => {
     expect(partial.intent).toBe('Fiabiliser les erreurs')
   })
 
-  test('préfixe progressif : chaque tranche parse ou rend null, sans throw', () => {
+  test('progressive prefix: each slice parses or returns null, without throwing', () => {
     for (let cut = 1; cut <= FULL.length; cut++) {
       const partial = parsePartialReview(FULL.slice(0, cut))
       if (cut === FULL.length) expect(partial?.findings).toHaveLength(2)
     }
   })
 
-  test('finding sans file/message ignoré', () => {
+  test('finding without file/message ignored', () => {
     const partial = parsePartialReview('{"verdict":"comment","findings":[{"file":"a.ts"},{"file":"b.ts","message":"ok"}]}')!
     expect(partial.findings).toEqual([{ file: 'b.ts', message: 'ok' }])
   })
 
-  test('buffer sans aucun champ utile → null', () => {
+  test('buffer without any useful field: null', () => {
     expect(parsePartialReview('{"foo":1}')).toBeNull()
     expect(parsePartialReview('')).toBeNull()
   })

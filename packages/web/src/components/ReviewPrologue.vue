@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// ReviewPrologue — blocs étiquetés (v2) avec fallback v1 (intent + summary)
-// review_first provient du parent (narrative) ; tous les champs optionnels, aucun throw sur absent
+// review_first comes from the parent (narrative); all fields optional, never throws on missing data.
 
 import { computed } from 'vue'
 
@@ -13,7 +12,7 @@ type ReviewFirstItem = {
 }
 
 const props = defineProps<{
-  // v2 — prologue structuré
+  // v2 prologue fields
   prologue?: {
     why?: string
     what?: string
@@ -40,8 +39,7 @@ const hasPrologue = computed(() =>
   !!(props.prologue?.why || props.prologue?.what || props.prologue?.key_changes?.length),
 )
 
-// Rendu markdown minimal (pre-wrap + code inline mono, sans dépendance externe)
-// Transforme `code` → <code> et échappe le HTML
+// Minimal markdown rendering (code spans, HTML-escaped) with no external dependency.
 function renderInline(text: string): string {
   if (!text) return ''
   return text
@@ -55,24 +53,20 @@ function renderInline(text: string): string {
 <template>
   <div class="prologue-root">
 
-    <!-- ── Vue v2 : prologue structuré ─────────────────────────── -->
     <template v-if="hasPrologue">
 
-      <!-- Pourquoi cette MR ? -->
       <section v-if="prologue?.why" class="prologue-block">
         <div class="prologue-block-tag">{{ $t('reviews.prologue.why') }}</div>
         <!-- eslint-disable-next-line vue/no-v-html -->
         <p class="prologue-block-body" v-html="renderInline(prologue.why)" />
       </section>
 
-      <!-- Ce que ça fait -->
       <section v-if="prologue?.what" class="prologue-block">
         <div class="prologue-block-tag">{{ $t('reviews.prologue.what') }}</div>
         <!-- eslint-disable-next-line vue/no-v-html -->
         <p class="prologue-block-body" v-html="renderInline(prologue.what)" />
       </section>
 
-      <!-- Changements clés -->
       <section v-if="prologue?.key_changes?.length" class="prologue-block">
         <div class="prologue-block-tag">{{ $t('reviews.prologue.keyChanges') }}</div>
         <ul class="prologue-keys">
@@ -85,7 +79,6 @@ function renderInline(text: string): string {
         </ul>
       </section>
 
-      <!-- À revoir en priorité -->
       <section v-if="reviewFirst?.length" class="prologue-block">
         <div class="prologue-block-tag">{{ $t('reviews.prologue.reviewFirst') }}</div>
         <div class="prologue-focus">
@@ -108,7 +101,6 @@ function renderInline(text: string): string {
 
     </template>
 
-    <!-- ── Fallback v1 : intent + summary ──────────────────────── -->
     <template v-else>
 
       <section v-if="intent" class="prologue-block">
@@ -156,7 +148,6 @@ function renderInline(text: string): string {
   padding: 24px 26px;
 }
 
-/* ── Bloc étiquette uppercase ───────────────────────────────── */
 .prologue-block {
   display: flex;
   flex-direction: column;
@@ -193,7 +184,6 @@ function renderInline(text: string): string {
   color: var(--nolyra-accent);
 }
 
-/* ── Changements clés ───────────────────────────────────────── */
 .prologue-keys {
   list-style: none;
   margin: 0;
@@ -239,7 +229,6 @@ function renderInline(text: string): string {
   margin-top: 2px;
 }
 
-/* ── À revoir en priorité ───────────────────────────────────── */
 .prologue-focus {
   display: flex;
   flex-direction: column;
@@ -273,7 +262,6 @@ function renderInline(text: string): string {
   line-height: 1.5;
 }
 
-/* ── Confiance (fallback v1) ────────────────────────────────── */
 .prologue-confidence {
   font-size: 11.5px;
   margin: 0;
@@ -291,7 +279,6 @@ function renderInline(text: string): string {
   color: var(--nolyra-risk-high);
 }
 
-/* ── Vide ───────────────────────────────────────────────────── */
 .prologue-empty {
   font-size: 13px;
   padding: 16px 0;

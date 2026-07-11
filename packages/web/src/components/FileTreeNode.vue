@@ -44,7 +44,6 @@ const paddingLeft = computed(() => {
 </script>
 
 <template>
-  <!-- Dossier -->
   <div v-if="node.kind === 'dir'" class="ftn-dir-wrap">
     <button
       class="ftn-dir"
@@ -70,7 +69,6 @@ const paddingLeft = computed(() => {
     </template>
   </div>
 
-  <!-- Fichier -->
   <button
     v-else
     class="ftn-file"

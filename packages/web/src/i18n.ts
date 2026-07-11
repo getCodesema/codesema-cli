@@ -1,8 +1,6 @@
-// i18n minimal sans dépendance : dictionnaire plat + interpolation {n} + pluriel "a | b".
-// Exposé globalement comme $t dans les templates (voir main.ts).
+// Minimal i18n with no dependency: flat dictionary, {n} interpolation, "a | b" plural.
 
 const messages: Record<string, string> = {
-  // App shell
   'app.tabChapters': 'Chapters',
   'app.tabFiles': 'Files',
   'app.loading': 'Loading review…',
@@ -14,7 +12,6 @@ const messages: Record<string, string> = {
   'header.copyPrompt': 'Copy for Claude Code ({n})',
   'header.copied': 'Copied ✓',
 
-  // Live review (codesema review en cours)
   'live.title': 'Review in progress',
   'live.errorTitle': 'The review failed',
   'live.filesChanged': '{n} file changed | {n} files changed',
@@ -27,7 +24,6 @@ const messages: Record<string, string> = {
   'live.reading': 'The agent is reading the diff — the review fills in here as it is written.',
   'live.streaming': 'The agent is still writing —',
 
-  // Prologue
   'reviews.prologue.why': 'Why this MR',
   'reviews.prologue.what': 'What it does',
   'reviews.prologue.keyChanges': 'Key changes',
@@ -41,7 +37,6 @@ const messages: Record<string, string> = {
   'reviews.summary': 'Summary',
   'reviews.generalNotes': 'General notes',
 
-  // Chapters
   'reviews.chaptersTitle': 'Chapters',
   'reviews.chaptersBy': 'chaptered by AI',
   'reviews.chaptersFiles': '{n} file | {n} files',
@@ -55,7 +50,6 @@ const messages: Record<string, string> = {
   'reviews.annotatedDiff': 'Annotated diff',
   'reviews.otherChanges': 'Other changes',
 
-  // Guided mode
   'reviews.guidedBack': '← Back to overview',
   'reviews.guidedMarkRead': 'Mark as read',
   'reviews.guidedMarkUnread': 'Mark as unread',
@@ -69,7 +63,6 @@ const messages: Record<string, string> = {
   'reviews.guidedBannerTitle': 'This chapter was reviewed',
   'reviews.guidedBannerCount': '{n} note | {n} notes',
 
-  // Diff view
   'diffView.modeUnified': 'Unified',
   'diffView.modeSplit': 'Split',
   'diffView.noteCount': '{n} note | {n} notes',
@@ -87,7 +80,6 @@ const messages: Record<string, string> = {
   'diffView.sevInfo': 'Info',
   'note.author': 'Reviewer',
 
-  // File tree
   'fileTree.files': 'Files',
   'fileTree.filterPlaceholder': 'Filter…',
   'fileTree.filterEmpty': 'No matching file.',

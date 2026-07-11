@@ -1,6 +1,3 @@
-// Habillage terminal zéro dépendance : bannière + vague de lave animée (thème braise).
-// Ne s'active que sur un vrai TTY couleur ; sinon repli sur des lignes statiques.
-
 export const EMBER = [124, 160, 196, 202, 208, 214, 220] as const
 
 export function paint(text: string, color: number): string {
@@ -19,7 +16,7 @@ export function isFancy(): boolean {
   return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
 }
 
-// Wordmark compact (style Calvin S) — à régénérer au renommage du produit.
+// Compact wordmark (Calvin S style): regenerate if the product is renamed.
 const BANNER = [
   '┌─┐┌─┐┌┬┐┌─┐┌─┐┌─┐┌┬┐┌─┐',
   '│  │ │ ││├┤ └─┐├┤ │││├─┤',

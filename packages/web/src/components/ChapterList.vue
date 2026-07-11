@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// ChapterList — colonne droite de la vue d'ensemble des chapitres
-// Deltas calculés depuis parsedDiff (prop), jamais depuis l'agent
-// risk/take/check optionnels ; findingCount peut être 0
+// Deltas are computed from parsedDiff (prop), never from the agent.
+// risk/take/check are optional; findingCount may be 0.
 
 import { computed } from 'vue'
 import type { ParsedDiff } from '../composables/useDiff'
@@ -19,8 +18,6 @@ const emit = defineEmits<{
   select: [index: number]
 }>()
 
-// ── Delta par chapitre (calculé depuis parsedDiff) ────────
-
 function chapterDelta(ch: ChapterView): { add: number; del: number } {
   let add = 0
   let del = 0
@@ -33,14 +30,12 @@ function chapterDelta(ch: ChapterView): { add: number; del: number } {
   return { add, del }
 }
 
-// ── Premier chapitre non lu ────────────────────────────────────
-
 const firstUnreadIndex = computed(() => {
   const readSet = props.readSet ?? new Set<number>()
   for (let i = 0; i < props.chapters.length; i++) {
     if (!readSet.has(i)) return i
   }
-  return -1 // tous lus
+  return -1
 })
 
 function isRead(index: number): boolean {
@@ -55,13 +50,11 @@ function onCardClick(index: number) {
 <template>
   <div class="chlist-root">
 
-    <!-- Étiquette « chapitré par l'IA » -->
     <div class="chlist-header">
       <span class="chlist-title">{{ $t('reviews.chaptersTitle') }}</span>
       <span class="chlist-by">· {{ $t('reviews.chaptersBy') }}</span>
     </div>
 
-    <!-- Liste des chapitres -->
     <div class="chlist-cards">
       <div
         v-for="(ch, i) in chapters"
@@ -74,7 +67,6 @@ function onCardClick(index: number) {
         @keydown.enter="onCardClick(i)"
         @keydown.space.prevent="onCardClick(i)"
       >
-        <!-- Ligne principale : radio ✓ + numéro + titre -->
         <div class="chlist-card-top">
           <span class="chlist-radio" :class="{ 'chlist-radio--done': isRead(i) }">
             <span v-if="isRead(i)" class="chlist-radio-check">✓</span>
@@ -86,9 +78,7 @@ function onCardClick(index: number) {
               <span>{{ ch.title }}</span>
             </div>
 
-            <!-- Métadonnées : risque + delta + fichiers + remarques -->
             <div class="chlist-card-meta">
-              <!-- Badge risque (masqué si absent) -->
               <template v-if="ch.risk && riskMeta(ch.risk)">
                 <span
                   class="chlist-risk-badge"
@@ -102,7 +92,6 @@ function onCardClick(index: number) {
                 </span>
               </template>
 
-              <!-- Delta +add −del calculé depuis parsedDiff -->
               <span class="chlist-delta">
                 <template v-if="chapterDelta(ch).add > 0">
                   <span class="chlist-delta-add">+{{ chapterDelta(ch).add }}</span>
@@ -112,19 +101,16 @@ function onCardClick(index: number) {
                 </template>
               </span>
 
-              <!-- Nombre de fichiers -->
               <span class="chlist-files-count">
                 ▤ {{ $t('reviews.chaptersFiles', { n: ch.files.length }) }}
               </span>
 
-              <!-- Nombre de remarques -->
               <span v-if="ch.finding_refs.length > 0" class="chlist-findings-count">
                 💬 {{ $t('reviews.chaptersFindings', { n: ch.finding_refs.length }) }}
               </span>
             </div>
           </div>
 
-          <!-- CTA "Commencer la review →" sur le PREMIER chapitre non lu uniquement -->
           <button
             v-if="i === firstUnreadIndex"
             class="chlist-cta"
@@ -137,7 +123,6 @@ function onCardClick(index: number) {
       </div>
     </div>
 
-    <!-- Vide (aucun chapitre) -->
     <p v-if="chapters.length === 0" class="chlist-empty nolyra-muted">
       {{ $t('reviews.chaptersEmpty') }}
     </p>
@@ -153,7 +138,7 @@ function onCardClick(index: number) {
   padding: 24px 22px;
 }
 
-/* ── En-tête ────────────────────────────────────────────────── */
+/* header */
 .chlist-header {
   display: flex;
   align-items: center;
@@ -177,7 +162,7 @@ function onCardClick(index: number) {
   color: var(--nolyra-ink-3);
 }
 
-/* ── Cartes ─────────────────────────────────────────────────── */
+/* cards */
 .chlist-cards {
   display: flex;
   flex-direction: column;
@@ -204,7 +189,6 @@ function onCardClick(index: number) {
   outline-offset: 2px;
 }
 
-/* Carte lue : atténuée */
 .chlist-card--read {
   opacity: 0.6;
 }
@@ -213,14 +197,14 @@ function onCardClick(index: number) {
   opacity: 0.8;
 }
 
-/* ── Ligne principale ───────────────────────────────────────── */
+/* main row */
 .chlist-card-top {
   display: flex;
   align-items: flex-start;
   gap: 12px;
 }
 
-/* Radio ✓ */
+/* radio check */
 .chlist-radio {
   flex: 0 0 18px;
   width: 18px;
@@ -246,7 +230,7 @@ function onCardClick(index: number) {
   font-weight: 700;
 }
 
-/* Corps */
+/* body */
 .chlist-card-main {
   flex: 1;
   min-width: 0;
@@ -274,7 +258,7 @@ function onCardClick(index: number) {
   flex-shrink: 0;
 }
 
-/* Métadonnées */
+/* meta */
 .chlist-card-meta {
   display: flex;
   align-items: center;
@@ -283,7 +267,7 @@ function onCardClick(index: number) {
   margin-top: 9px;
 }
 
-/* Badge risque */
+/* risk badge */
 .chlist-risk-badge {
   display: inline-flex;
   align-items: center;
@@ -320,7 +304,7 @@ function onCardClick(index: number) {
   background: var(--nolyra-risk-low-soft);
 }
 
-/* Delta */
+/* delta */
 .chlist-delta {
   display: inline-flex;
   align-items: center;
@@ -337,14 +321,14 @@ function onCardClick(index: number) {
   color: var(--nolyra-risk-high);
 }
 
-/* Fichiers / remarques */
+/* files / notes */
 .chlist-files-count,
 .chlist-findings-count {
   font-size: 11.5px;
   color: var(--nolyra-ink-3);
 }
 
-/* ── CTA ────────────────────────────────────────────────────── */
+/* cta */
 .chlist-cta {
   flex-shrink: 0;
   align-self: center;
@@ -352,7 +336,7 @@ function onCardClick(index: number) {
   border-radius: 8px;
   border: 0;
   background: var(--nolyra-accent);
-  /* encre sombre sur orange : ~7.6:1, le blanc plafonnait à 2.6:1 (AA = 4.5:1) */
+  /* dark ink on orange: ~7.6:1 contrast, white capped at 2.6:1 (AA = 4.5:1) */
   color: var(--nolyra-bg);
   font-size: 12.5px;
   font-weight: 600;
@@ -366,7 +350,7 @@ function onCardClick(index: number) {
   filter: brightness(1.05);
 }
 
-/* ── Vide ───────────────────────────────────────────────────── */
+/* empty */
 .chlist-empty {
   font-size: 13px;
   padding: 16px 0;

@@ -1,13 +1,9 @@
-// useReviewProgress — progression lu/non-lu + checks persistés en localStorage
-
 import { ref } from 'vue'
 
 const isClient = typeof window !== 'undefined'
 
 export function useReviewProgress(reviewId: string) {
   const storageKey = `codesema-progress:${reviewId}`
-
-  // ── Helpers lecture/écriture localStorage ──────────────────
 
   function loadState(): { read: number[]; checked: number[] } {
     if (!isClient) return { read: [], checked: [] }
@@ -32,17 +28,13 @@ export function useReviewProgress(reviewId: string) {
         JSON.stringify({ read: [...read], checked: [...checked] }),
       )
     } catch {
-      // localStorage indisponible (mode privé saturé, etc.)
+      // localStorage unavailable (private mode quota, etc.)
     }
   }
-
-  // ── State réactif ──────────────────────────────────────────
 
   const initial = loadState()
   const readSet = ref<Set<number>>(new Set(initial.read))
   const checkedSet = ref<Set<number>>(new Set(initial.checked))
-
-  // ── Opérations ─────────────────────────────────────────────
 
   function toggleRead(index: number) {
     const next = new Set(readSet.value)

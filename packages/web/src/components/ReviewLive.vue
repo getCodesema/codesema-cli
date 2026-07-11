@@ -1,7 +1,4 @@
 <script setup lang="ts">
-// ReviewLive — état « review en cours » : stats du diff dès la prep, puis
-// verdict/summary/findings qui se remplissent au fil de la sortie de l'agent.
-
 import { computed, onUnmounted, ref } from 'vue'
 import type { LiveStatus, PartialReview } from '../types'
 

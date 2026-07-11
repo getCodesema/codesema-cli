@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 
 export function git(args: string[], cwd: string): string {
   try {
-    // stderr capturé (pas hérité) : les sondes qui échouent ne polluent pas la sortie
+    // stderr captured, not inherited: failing probes don't pollute the output
     return execFileSync('git', args, {
       cwd,
       encoding: 'utf8',
@@ -25,7 +25,7 @@ export function tryGit(args: string[], cwd: string): string | null {
   }
 }
 
-/** Commande externe optionnelle (gh, glab) : null si absente, en échec ou trop lente. */
+/** Optional external command (gh, glab): null if missing, failing, or too slow. */
 export function tryExec(cmd: string, args: string[], cwd: string): string | null {
   try {
     return execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()

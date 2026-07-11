@@ -12,17 +12,11 @@ const emit = defineEmits<{
   pick: [path: string]
 }>()
 
-// ── Filtre texte ─────────────────────────────────────────────────
-
 const filter = ref('')
-
-// ── Compteur de findings par fichier ────────────────────────────
 
 function fileFindingCount(file: DiffFile): number {
   return file.topFindings.length + Object.values(file.byLine).reduce((n, arr) => n + arr.length, 0)
 }
-
-// ── Construction de l'arbre depuis les paths ─────────────────────
 
 type FileLeaf = {
   kind: 'file'
@@ -62,8 +56,6 @@ function buildTree(files: DiffFile[]): TreeNode[] {
 
 const tree = computed(() => buildTree(props.files))
 
-// ── Liste plate ordonnée (même ordre que l'arbre) ───────────────
-
 function flattenTree(nodes: TreeNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
     if (n.kind === 'dir') flattenTree(n.children, acc)
@@ -74,23 +66,17 @@ function flattenTree(nodes: TreeNode[], acc: string[] = []): string[] {
 
 const orderedPaths = computed(() => flattenTree(tree.value))
 
-// ── Filtre → liste plate ─────────────────────────────────────────
-
 const filteredPaths = computed(() => {
   const q = filter.value.toLowerCase()
   if (!q) return []
   return orderedPaths.value.filter((p) => p.toLowerCase().includes(q))
 })
 
-// ── Map path → DiffFile pour accès O(1) ─────────────────────────
-
 const fileMap = computed(() => {
   const m = new Map<string, DiffFile>()
   for (const f of props.files) m.set(f.path, f)
   return m
 })
-
-// ── Repliage des répertoires ─────────────────────────────────────
 
 const collapsedDirs = ref<Set<string>>(new Set())
 
@@ -103,13 +89,11 @@ function toggleDir(path: string) {
 
 <template>
   <div class="ft-root">
-    <!-- En-tête : titre + compteur -->
     <div class="ft-head">
       <span class="ft-head-label">{{ $t('fileTree.files') }}</span>
       <span class="ft-head-count">{{ files.length }}</span>
     </div>
 
-    <!-- Filtre texte -->
     <div class="ft-filter-wrap">
       <input
         v-model="filter"
@@ -121,9 +105,7 @@ function toggleDir(path: string) {
       />
     </div>
 
-    <!-- Corps : arbre OU liste plate filtrée -->
     <div class="ft-body">
-      <!-- Liste plate filtrée -->
       <template v-if="filter">
         <button
           v-for="path in filteredPaths"
@@ -145,7 +127,6 @@ function toggleDir(path: string) {
         <p v-if="filteredPaths.length === 0" class="ft-empty">{{ $t('fileTree.filterEmpty') }}</p>
       </template>
 
-      <!-- Arbre complet -->
       <template v-else>
         <FileTreeNode
           v-for="(node, i) in tree"
@@ -235,7 +216,6 @@ function toggleDir(path: string) {
   padding: 4px 0;
 }
 
-/* Nœud fichier */
 .ft-file {
   display: flex;
   align-items: center;
