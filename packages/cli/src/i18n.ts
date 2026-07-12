@@ -22,6 +22,9 @@ Usage:
   codesema show [--review <file>]     Only display a review (agent output) in the local web UI
   codesema export [--review <file>] [--out <file>]
                                       Export the review as Markdown (--out - for stdout)
+  codesema sync              Push the latest review to your codesema.com workspace
+  codesema sync delete       Delete all synced data (unlinked workspaces only)
+  codesema link <code>       Link this workspace to your codesema.com account
 
 Options:
   --branch <name>     Local branch to review (default: interactive picker, else current branch)
@@ -95,6 +98,7 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'review.ready': 'review ready',
   'review.archivedAt': 'archived: {path}',
   'review.ctrlc': 'Ctrl+C to stop',
+  'review.syncHint': 'codesema sync  saves this review to your codesema.com workspace',
 
   'notify.failedRun': 'review failed: agent run failed',
   'notify.failedOutput': 'review failed: unusable agent output',
@@ -207,6 +211,25 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'export.files': 'Files',
   'export.findingsRefs': 'Findings',
   'export.exported': 'review exported: {outPath} (from {sourcePath})',
+
+  'sync.firstRunTitle': 'Sync this review to codesema.com?',
+  'sync.firstRunDetail':
+    'This sends the review record (including the diff) to {url}. An anonymous workspace is created; no account needed. Run `codesema sync delete` anytime to erase everything.',
+  'sync.firstRunQuestion': 'Create an anonymous workspace and sync?',
+  'sync.firstRunCancel': 'No, stay local',
+  'sync.firstRunAccept': 'Yes, sync this review',
+  'sync.aborted': 'Sync cancelled: everything stays local.',
+  'sync.pushed': 'Review of {branch} synced.',
+  'sync.alreadySynced': 'Review of {branch} was already synced (no duplicate created).',
+  'sync.linkHint':
+    'Tip: create an account on codesema.com, generate a pairing code in Settings, then run `codesema link <code>` to see your reviews online.',
+  'sync.linked': 'Workspace linked to your account on {url}.',
+  'sync.linkUsage': 'usage: codesema link <code> (generate the code in codesema.com Settings)',
+  'sync.deleted': 'All synced data deleted and local credentials cleared.',
+  'sync.noCredentials': 'no synced workspace on this machine (run `codesema sync` first)',
+  'sync.nonInteractiveSetup': 'sync is not set up: run `codesema sync` once in an interactive terminal to opt in',
+  'sync.unknownAction': 'unknown sync action: {action} (expected `codesema sync` or `codesema sync delete`)',
+  'sync.unreachable': 'could not reach {url}: check your connection or CODESEMA_SYNC_URL',
 }
 
 export type MessageKey = keyof typeof en
@@ -232,6 +255,9 @@ Usage :
   codesema show [--review <fichier>]  Affiche seulement une revue (sortie d'agent) dans l'UI web locale
   codesema export [--review <fichier>] [--out <fichier>]
                                       Exporte la revue en Markdown (--out - pour stdout)
+  codesema sync              Pousse la dernière review vers votre workspace codesema.com
+  codesema sync delete       Supprime toutes les données synchronisées (workspaces non rattachés)
+  codesema link <code>       Rattache ce workspace à votre compte codesema.com
 
 Options :
   --branch <nom>      Branche locale à passer en revue (défaut : sélecteur interactif, sinon branche courante)
@@ -305,6 +331,7 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'review.ready': 'revue prête',
   'review.archivedAt': 'archivée : {path}',
   'review.ctrlc': 'Ctrl+C pour arrêter',
+  'review.syncHint': 'codesema sync  enregistre cette review dans votre workspace codesema.com',
 
   'notify.failedRun': 'échec de la revue : échec de l\'agent',
   'notify.failedOutput': 'échec de la revue : sortie d\'agent inutilisable',
@@ -417,6 +444,25 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'export.files': 'Fichiers',
   'export.findingsRefs': 'Notes',
   'export.exported': 'revue exportée : {outPath} (depuis {sourcePath})',
+
+  'sync.firstRunTitle': 'Synchroniser cette review vers codesema.com ?',
+  'sync.firstRunDetail':
+    'Ceci envoie le review record (diff inclus) vers {url}. Un workspace anonyme est créé, aucun compte requis. `codesema sync delete` efface tout à tout moment.',
+  'sync.firstRunQuestion': 'Créer un workspace anonyme et synchroniser ?',
+  'sync.firstRunCancel': 'Non, rester en local',
+  'sync.firstRunAccept': 'Oui, synchroniser cette review',
+  'sync.aborted': 'Sync annulée : tout reste en local.',
+  'sync.pushed': 'Review de {branch} synchronisée.',
+  'sync.alreadySynced': 'Review de {branch} déjà synchronisée (pas de doublon créé).',
+  'sync.linkHint':
+    'Astuce : créez un compte sur codesema.com, générez un code d\'appairage dans Settings, puis lancez `codesema link <code>` pour retrouver vos reviews en ligne.',
+  'sync.linked': 'Workspace rattaché à votre compte sur {url}.',
+  'sync.linkUsage': 'usage : codesema link <code> (générez le code dans les Settings de codesema.com)',
+  'sync.deleted': 'Données synchronisées supprimées et credentials locaux effacés.',
+  'sync.noCredentials': 'aucun workspace synchronisé sur cette machine (lancez `codesema sync` d\'abord)',
+  'sync.nonInteractiveSetup': 'sync non configuré : lancez `codesema sync` une fois dans un terminal interactif pour l\'activer',
+  'sync.unknownAction': 'action sync inconnue : {action} (attendu `codesema sync` ou `codesema sync delete`)',
+  'sync.unreachable': 'impossible de joindre {url} : vérifiez votre connexion ou CODESEMA_SYNC_URL',
 }
 
 const CATALOGS = { en, fr } satisfies Record<string, Record<MessageKey, string>>

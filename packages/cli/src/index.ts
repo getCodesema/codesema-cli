@@ -7,6 +7,7 @@ import { tryGit } from './git.js'
 import { prep } from './prep.js'
 import { review } from './review.js'
 import { show } from './show.js'
+import { linkCommand, syncCommand } from './sync.js'
 import { VERSION } from './version.js'
 import { configCommand } from './wizard.js'
 
@@ -78,6 +79,12 @@ async function main(): Promise<void> {
       break
     case 'export':
       exportCommand({ review: values.review, out: values.out, cwd: process.cwd() })
+      break
+    case 'sync':
+      await syncCommand({ action: positionals[1], cwd: process.cwd() })
+      break
+    case 'link':
+      await linkCommand({ code: positionals[1] })
       break
     default:
       console.error(`${t('cli.unknownCommand', { command })}\n`)

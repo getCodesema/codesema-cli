@@ -349,6 +349,7 @@ export async function review(opts: {
   console.log('')
   console.log(`  ${fieldLabel(t('field.web'))}${underline(paint(url, ACCENT))}`)
   console.log(`  ${dim(t('review.archivedAt', { path: savedPath }))}`)
+  console.log(`  ${dim(t('review.syncHint'))}`)
   console.log(`  ${dim(t('review.ctrlc'))}`)
   printUpdateNotice(await latestVersion)
   if (isInteractive()) {
