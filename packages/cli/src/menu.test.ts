@@ -15,14 +15,17 @@ describe('buildMenuItems', () => {
     expect(items.map((item) => item.id)).toEqual(['review', 'show', 'sync', 'config', 'quit'])
   })
 
-  test('review, show and sync are hidden outside a repo', () => {
+  test('review, show and sync stay visible outside a repo, hinted to run inside one', () => {
     const items = buildMenuItems({ hasSyncCredentials: false, inRepo: false })
-    expect(items.map((item) => item.id)).toEqual(['config', 'quit'])
+    expect(items.map((item) => item.id)).toEqual(['review', 'show', 'sync', 'config', 'quit'])
+    for (const id of ['review', 'show', 'sync'] as const) {
+      expect(items.find((item) => item.id === id)?.hint).toBe(t('menu.needRepo'))
+    }
   })
 
   test('link and syncDelete are available outside a repo when sync credentials exist, since sync is workspace-wide, not repo-scoped', () => {
     const items = buildMenuItems({ hasSyncCredentials: true, inRepo: false })
-    expect(items.map((item) => item.id)).toEqual(['link', 'syncDelete', 'config', 'quit'])
+    expect(items.map((item) => item.id)).toEqual(['review', 'show', 'sync', 'link', 'syncDelete', 'config', 'quit'])
   })
 
   test('quit is always present and always last', () => {

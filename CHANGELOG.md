@@ -16,6 +16,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ### Changed
 
 - More readable CLI output: dynamically aligned field blocks, clear section spacing, hotspot files on their own line.
+- `codesema config` opens a submenu (agent & model, language) instead of one linear wizard; the language can now be changed on its own.
+- The interactive menu keeps review/show/sync visible outside a git repository, with a hint saying where to run them.
 
 ## [0.5.0] - unreleased
 

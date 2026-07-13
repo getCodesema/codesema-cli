@@ -143,6 +143,13 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'config.thisRepoHint': '.codesema/config.json, overrides global',
   'config.agentSaved': 'agent command saved: {command}',
   'config.savedTo': 'config: {path}',
+  'config.menuTitle': 'What do you want to configure?',
+  'config.agentEntry': 'Agent & model',
+  'config.agentEntryUnset': 'not configured yet',
+  'config.languageEntry': 'Language',
+  'config.languageAuto': 'auto-detected',
+  'config.back': 'Back',
+  'config.languageSaved': 'language saved: {path}',
 
   'tui.typeToFilter': 'type to filter',
   'tui.noMatch': 'no match — backspace to clear the filter',
@@ -256,6 +263,8 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'menu.config': 'Config',
   'menu.configHint': 'change language, agent, model and effort',
   'menu.quit': 'Quit',
+  'menu.needRepo': 'run codesema inside a git repository',
+  'menu.notInRepo': 'not inside a git repository: cd into your project first',
 }
 
 export type MessageKey = keyof typeof en
@@ -402,6 +411,13 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'config.thisRepoHint': '.codesema/config.json, prime sur la globale',
   'config.agentSaved': 'commande d\'agent sauvegardée : {command}',
   'config.savedTo': 'config : {path}',
+  'config.menuTitle': 'Que voulez-vous configurer ?',
+  'config.agentEntry': 'Agent & modèle',
+  'config.agentEntryUnset': 'pas encore configuré',
+  'config.languageEntry': 'Langue',
+  'config.languageAuto': 'auto-détectée',
+  'config.back': 'Retour',
+  'config.languageSaved': 'langue enregistrée : {path}',
 
   'tui.typeToFilter': 'tapez pour filtrer',
   'tui.noMatch': 'aucun résultat : retour arrière pour effacer le filtre',
@@ -515,6 +531,8 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'menu.config': 'Configuration',
   'menu.configHint': 'changer la langue, l\'agent, le modèle et l\'effort',
   'menu.quit': 'Quitter',
+  'menu.needRepo': 'à lancer dans un repo git',
+  'menu.notInRepo': 'pas dans un repo git : placez-vous d\'abord dans votre projet',
 }
 
 const CATALOGS = { en, fr } satisfies Record<string, Record<MessageKey, string>>

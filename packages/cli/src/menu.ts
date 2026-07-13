@@ -21,16 +21,21 @@ export type MenuContext = {
 }
 
 export function buildMenuItems(context: MenuContext): MenuItem[] {
-  const items: MenuItem[] = []
-  if (context.inRepo) {
-    items.push({ id: 'review', label: t('menu.review'), hint: t('menu.reviewHint') })
-    items.push({ id: 'show', label: t('menu.show'), hint: t('menu.showHint') })
-    items.push({
+  // Repo-scoped actions stay visible outside a repo (hiding the product's main
+  // action reads as a regression); the hint says where to run them instead.
+  const items: MenuItem[] = [
+    { id: 'review', label: t('menu.review'), hint: context.inRepo ? t('menu.reviewHint') : t('menu.needRepo') },
+    { id: 'show', label: t('menu.show'), hint: context.inRepo ? t('menu.showHint') : t('menu.needRepo') },
+    {
       id: 'sync',
       label: t('menu.sync'),
-      hint: context.hasSyncCredentials ? t('menu.syncHintPush') : t('menu.syncHintSetup'),
-    })
-  }
+      hint: !context.inRepo
+        ? t('menu.needRepo')
+        : context.hasSyncCredentials
+          ? t('menu.syncHintPush')
+          : t('menu.syncHintSetup'),
+    },
+  ]
   if (context.hasSyncCredentials) {
     items.push({ id: 'link', label: t('menu.link'), hint: t('menu.linkHint') })
     items.push({ id: 'syncDelete', label: t('menu.syncDelete'), hint: t('menu.syncDeleteHint') })
@@ -55,6 +60,9 @@ export function dispatchMenuAction(id: Exclude<MenuItemId, 'quit'>, actions: Men
 
 /** Actions that report their result and redisplay the menu; review/show block on the local web server. */
 const LOOPING_ACTIONS: ReadonlySet<MenuItemId> = new Set(['sync', 'link', 'syncDelete', 'config'])
+
+/** Actions that only make sense inside a git repository. */
+const REPO_ACTIONS: ReadonlySet<MenuItemId> = new Set(['review', 'show', 'sync'])
 
 async function confirmSyncDelete(): Promise<boolean> {
   const choice = await select<'cancel' | 'delete'>({
@@ -100,6 +108,11 @@ export async function runMenu(opts: { cwd: string }): Promise<void> {
       options: items.map((item) => ({ label: item.label, hint: item.hint, value: item.id })),
     })
     if (picked === null || picked === 'quit') return
+
+    if (REPO_ACTIONS.has(picked) && !inRepo) {
+      console.log(`  ${t('menu.notInRepo')}`)
+      continue
+    }
 
     if (!LOOPING_ACTIONS.has(picked)) {
       await dispatchMenuAction(picked, actions)

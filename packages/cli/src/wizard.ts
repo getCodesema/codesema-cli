@@ -228,13 +228,63 @@ export async function runOnboarding(cwd: string): Promise<string | null> {
   return result.command
 }
 
+export type ConfigEntryId = 'agent' | 'language' | 'back'
+
+export type ConfigEntry = {
+  id: ConfigEntryId
+  label: string
+  hint: string
+}
+
+function languageLabel(language?: SupportedLanguage): string {
+  if (language === 'en') return 'English'
+  if (language === 'fr') return 'Français'
+  return t('config.languageAuto')
+}
+
+/** Entries of the `codesema config` submenu, current values shown as hints. */
+export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
+  return [
+    { id: 'agent', label: t('config.agentEntry'), hint: current.agent ?? t('config.agentEntryUnset') },
+    { id: 'language', label: t('config.languageEntry'), hint: languageLabel(current.language) },
+    { id: 'back', label: t('config.back'), hint: '' },
+  ]
+}
+
 export async function configCommand(repoRoot: string | null): Promise<void> {
   if (!isInteractive()) {
     throw new Error(t('config.notInteractive'))
   }
 
-  const current = loadConfig(repoRoot)
+  for (;;) {
+    const current = loadConfig(repoRoot)
+    const entries = describeConfigEntries(current)
+    console.log('')
+    const picked = await select<ConfigEntryId>({
+      title: t('config.menuTitle'),
+      options: entries.map((entry) => ({ label: entry.label, hint: entry.hint, value: entry.id })),
+    })
+    if (picked === null || picked === 'back') return
+
+    if (picked === 'language') {
+      const language = await pickLanguage(current.language)
+      if (!language) continue
+      setLanguage(language)
+      // The UI language is global by nature; a per-repo override remains possible
+      // by hand in .codesema/config.json but is not offered here.
+      const path = saveGlobalConfig({ ...loadGlobalConfig(), language })
+      console.log('')
+      console.log(`  ${t('config.languageSaved', { path })}`)
+      continue
+    }
+
+    await configureAgent(repoRoot, current)
+  }
+}
+
+async function configureAgent(repoRoot: string | null, current: CodesemaConfig): Promise<void> {
   if (current.agent) {
+    console.log('')
     console.log(`  ${t('config.currentAgent', { command: bold(current.agent) })}`)
     const repoOverride = repoRoot && loadRepoConfig(repoRoot).agent
     console.log(`  ${dim(t('config.fromPath', { path: repoOverride ? repoConfigPath(repoRoot) : globalConfigPath() }))}`)
@@ -243,9 +293,6 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
 
   const result = await runAgentWizard(repoRoot ?? process.cwd(), current)
   if (!result) return
-
-  const language = (await pickLanguage(current.language)) ?? undefined
-  if (language) setLanguage(language)
 
   let scope: 'global' | 'repo' = 'global'
   if (repoRoot) {
@@ -260,20 +307,14 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
     scope = pickedScope
   }
 
-  const withResult = (config: CodesemaConfig): CodesemaConfig => {
-    const next = applyResult(config, result)
-    if (language) next.language = language
-    return next
-  }
-
   let path: string
   if (scope === 'repo' && repoRoot) {
-    path = saveRepoConfig(repoRoot, withResult(loadRepoConfig(repoRoot)))
+    path = saveRepoConfig(repoRoot, applyResult(loadRepoConfig(repoRoot), result))
     // The user just chose this command, so trust it now: the approval prompt only
     // targets agent commands inherited from a cloned repo, not ones set here.
     trustRepoAgent(repoRoot, result.command)
   } else {
-    path = saveGlobalConfig(withResult(loadGlobalConfig()))
+    path = saveGlobalConfig(applyResult(loadGlobalConfig(), result))
   }
 
   console.log('')
