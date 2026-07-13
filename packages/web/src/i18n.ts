@@ -13,6 +13,20 @@ const en = {
   'verdict.comment': 'Comment',
   'header.copyPrompt': 'Copy for agent ({n})',
   'header.copied': 'Copied ✓',
+  'header.runFixes': 'Run the fixes ({n})',
+
+  'mode.explain': 'Explanation',
+  'mode.focus': 'Focus problems',
+
+  'focus.title': 'Problems',
+  'focus.selectAll': 'All',
+  'focus.selectNone': 'None',
+  'focus.problem': 'Problem',
+  'focus.prev': 'Previous problem',
+  'focus.next': 'Next problem',
+  'focus.copySelected': 'Copy selection for agent ({n})',
+  'focus.empty': 'No actionable finding in this review.',
+  'focus.noExcerpt': 'This note is not anchored to a specific line.',
 
   'live.title': 'Review in progress',
   'live.errorTitle': 'The review failed',
@@ -112,6 +126,20 @@ const fr: Record<MessageKey, string> = {
   'verdict.comment': 'Commentaire',
   'header.copyPrompt': "Copier pour l'agent ({n})",
   'header.copied': 'Copié ✓',
+  'header.runFixes': 'Lancer les fix ({n})',
+
+  'mode.explain': 'Explication',
+  'mode.focus': 'Focus problèmes',
+
+  'focus.title': 'Problèmes',
+  'focus.selectAll': 'Tout',
+  'focus.selectNone': 'Aucun',
+  'focus.problem': 'Problème',
+  'focus.prev': 'Problème précédent',
+  'focus.next': 'Problème suivant',
+  'focus.copySelected': "Copier la sélection pour l'agent ({n})",
+  'focus.empty': 'Aucun problème à corriger dans cette revue.',
+  'focus.noExcerpt': "Cette note n'est pas ancrée à une ligne précise.",
 
   'live.title': 'Revue en cours',
   'live.errorTitle': 'La revue a échoué',

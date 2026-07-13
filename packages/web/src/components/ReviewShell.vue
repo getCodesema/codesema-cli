@@ -2,10 +2,12 @@
 import { computed, nextTick, onUnmounted, ref } from 'vue'
 import type { Finding } from '../composables/useDiff'
 import { collapsedByBudget, parseDiff, sameFile } from '../composables/useDiff'
+import { actionableFindings } from '../composables/useFocusList'
 import { buildFixPrompt, isActionable } from '../composables/useFixPrompt'
 import { buildNoteTour } from '../composables/useNoteTour'
 import { useReviewProgress } from '../composables/useReviewProgress'
 import type { ReviewRecord } from '../types'
+import FocusView from './FocusView.vue'
 import ReviewPrologue from './ReviewPrologue.vue'
 import StepList from './StepList.vue'
 import StepRail from './StepRail.vue'
@@ -53,6 +55,14 @@ const VERDICT_META: Record<string, { labelKey: string; cls: string }> = {
 const verdictMeta = computed(() => VERDICT_META[props.record.review.verdict] ?? VERDICT_META.comment!)
 
 const actionableCount = computed(() => findings.value.filter(isActionable).length)
+const focusList = computed(() => actionableFindings(findings.value))
+
+const viewMode = ref<'explain' | 'focus'>('explain')
+
+function setViewMode(mode: 'explain' | 'focus') {
+  viewMode.value = mode
+  syncHash()
+}
 
 const copied = ref(false)
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
@@ -158,13 +168,21 @@ function realignTour(stepIndex: number) {
 
 function syncHash() {
   if (!isClient) return
-  const hash = activeTab.value === 'files' ? '#files' : guidedIndex.value !== null ? `#step-${guidedIndex.value}` : ''
+  const hash =
+    viewMode.value === 'focus'
+      ? '#focus'
+      : activeTab.value === 'files'
+        ? '#files'
+        : guidedIndex.value !== null
+          ? `#step-${guidedIndex.value}`
+          : ''
   history.replaceState(null, '', hash || location.pathname)
 }
 
 if (isClient) {
   const m = /^#step-(\d+)$/.exec(location.hash)
-  if (location.hash === '#files') activeTab.value = 'files'
+  if (location.hash === '#focus') viewMode.value = 'focus'
+  else if (location.hash === '#files') activeTab.value = 'files'
   else if (m && Number(m[1]) < steps.value.length) guidedIndex.value = Number(m[1])
 }
 
@@ -232,6 +250,13 @@ const SEV_CLS: Record<string, string> = {
       >
         {{ copied ? $t('header.copied') : $t('header.copyPrompt', { n: actionableCount }) }}
       </button>
+      <button
+        v-if="actionableCount > 0 && viewMode === 'explain'"
+        class="sr-fix-btn"
+        @click="setViewMode('focus')"
+      >
+        {{ $t('header.runFixes', { n: actionableCount }) }}
+      </button>
       <span class="sr-verdict-group">
         <span class="sr-semaphore" :class="`sr-semaphore--${record.review.verdict}`" aria-hidden="true">
           <span class="sr-sem-dot sr-sem-dot--stop" />
@@ -243,34 +268,49 @@ const SEV_CLS: Record<string, string> = {
     </header>
 
     <div class="sr-tabs" role="tablist">
-      <button
-        role="tab"
-        class="sr-tab"
-        :class="{ on: activeTab === 'steps' }"
-        :aria-selected="activeTab === 'steps'"
-        @click="activeTab = 'steps'; syncHash()"
-      >
-        {{ $t('app.tabSteps') }}
-        <span v-if="steps.length > 0" class="sr-tab-n">{{ steps.length }}</span>
-      </button>
-      <button
-        role="tab"
-        class="sr-tab"
-        :class="{ on: activeTab === 'files' }"
-        :aria-selected="activeTab === 'files'"
-        @click="activeTab = 'files'; guidedIndex = null; syncHash()"
-      >
-        {{ $t('app.tabFiles') }}
-        <span v-if="filesCount > 0" class="sr-tab-n">{{ filesCount }}</span>
-      </button>
+      <template v-if="viewMode === 'explain'">
+        <button
+          role="tab"
+          class="sr-tab"
+          :class="{ on: activeTab === 'steps' }"
+          :aria-selected="activeTab === 'steps'"
+          @click="activeTab = 'steps'; syncHash()"
+        >
+          {{ $t('app.tabSteps') }}
+          <span v-if="steps.length > 0" class="sr-tab-n">{{ steps.length }}</span>
+        </button>
+        <button
+          role="tab"
+          class="sr-tab"
+          :class="{ on: activeTab === 'files' }"
+          :aria-selected="activeTab === 'files'"
+          @click="activeTab = 'files'; guidedIndex = null; syncHash()"
+        >
+          {{ $t('app.tabFiles') }}
+          <span v-if="filesCount > 0" class="sr-tab-n">{{ filesCount }}</span>
+        </button>
+      </template>
       <span class="sr-tabs-spacer" />
+      <div class="sr-mode">
+        <button :class="{ on: viewMode === 'explain' }" @click="setViewMode('explain')">
+          {{ $t('mode.explain') }}
+        </button>
+        <button :class="{ on: viewMode === 'focus' }" @click="setViewMode('focus')">
+          {{ $t('mode.focus') }}
+          <span v-if="actionableCount > 0" class="sr-mode-n">{{ actionableCount }}</span>
+        </button>
+      </div>
       <span class="sr-tabs-delta">
         <span class="sr-add">+{{ globalDelta.add }}</span>
         <span class="sr-del">−{{ globalDelta.del }}</span>
       </span>
     </div>
 
-    <div v-show="activeTab === 'steps'" class="sr-stage">
+    <div v-if="viewMode === 'focus'" class="sr-stage">
+      <FocusView :record="record" :list="focusList" :files="parsedDiff.files" />
+    </div>
+
+    <div v-show="viewMode === 'explain' && activeTab === 'steps'" class="sr-stage">
 
       <StepRail
         v-if="hasSteps"
@@ -343,7 +383,7 @@ const SEV_CLS: Record<string, string> = {
 
     </div>
 
-    <div v-show="activeTab === 'files'" class="sr-stage sr-files-stage">
+    <div v-show="viewMode === 'explain' && activeTab === 'files'" class="sr-stage sr-files-stage">
       <div v-if="record.diff" class="sr-files-layout">
         <FileTree
           :files="parsedDiff.files"
@@ -391,7 +431,7 @@ const SEV_CLS: Record<string, string> = {
       <p v-else class="codesema-muted sr-empty-msg">{{ $t('reviews.noDiff') }}</p>
     </div>
 
-    <div v-if="activeTab === 'steps' && hasSteps && tour.length" class="sr-tour">
+    <div v-if="viewMode === 'explain' && activeTab === 'steps' && hasSteps && tour.length" class="sr-tour">
       <button v-if="tourIndex === null" class="sr-tour-start" @click="startTour">
         <span class="sr-tour-mark">✦</span>
         {{ $t('tour.start') }}
@@ -585,6 +625,25 @@ const SEV_CLS: Record<string, string> = {
   border-color: var(--codesema-risk-low);
 }
 
+.sr-fix-btn {
+  flex-shrink: 0;
+  margin-top: 4px;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--codesema-accent) 45%, transparent);
+  background: var(--codesema-accent-soft);
+  color: var(--codesema-accent);
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.sr-fix-btn:hover {
+  border-color: var(--codesema-accent);
+}
+
 /* ── Onglets ────────────────────────────────────────────────── */
 .sr-tabs {
   display: flex;
@@ -631,6 +690,47 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-tabs-spacer {
   flex: 1;
+}
+
+.sr-mode {
+  display: inline-flex;
+  align-items: center;
+  background: var(--codesema-panel);
+  border: 1px solid var(--codesema-line);
+  border-radius: 9px;
+  padding: 2px;
+  gap: 2px;
+  margin: 4px 12px 4px 0;
+}
+
+.sr-mode button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  color: var(--codesema-ink-2);
+  font-weight: 500;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s;
+}
+
+.sr-mode button.on {
+  background: var(--codesema-ink);
+  color: var(--codesema-bg);
+}
+
+.sr-mode-n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--codesema-risk-high);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 6px;
 }
 
 .sr-tabs-delta {
