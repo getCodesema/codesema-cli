@@ -7,10 +7,12 @@ import { linkCommand, loadSyncCredentials, syncCommand } from './sync.js'
 import { select, textInput } from './tui.js'
 import { configCommand } from './wizard.js'
 
-export type MenuItemId = 'review' | 'show' | 'sync' | 'link' | 'syncDelete' | 'config' | 'quit'
+export type MenuItemId = 'review' | 'show' | 'cloud' | 'config' | 'quit'
+export type CloudItemId = 'sync' | 'link' | 'syncDelete' | 'back'
+export type MenuActionId = 'review' | 'show' | 'sync' | 'link' | 'syncDelete' | 'config'
 
-export type MenuItem = {
-  id: MenuItemId
+export type MenuItem<Id extends string> = {
+  id: Id
   label: string
   hint: string
 }
@@ -20,12 +22,24 @@ export type MenuContext = {
   inRepo: boolean
 }
 
-export function buildMenuItems(context: MenuContext): MenuItem[] {
+export function buildMenuItems(context: MenuContext): MenuItem<MenuItemId>[] {
   // Repo-scoped actions stay visible outside a repo (hiding the product's main
   // action reads as a regression); the hint says where to run them instead.
-  const items: MenuItem[] = [
+  return [
     { id: 'review', label: t('menu.review'), hint: context.inRepo ? t('menu.reviewHint') : t('menu.needRepo') },
     { id: 'show', label: t('menu.show'), hint: context.inRepo ? t('menu.showHint') : t('menu.needRepo') },
+    {
+      id: 'cloud',
+      label: t('menu.cloud'),
+      hint: context.hasSyncCredentials ? t('menu.cloudHintActive') : t('menu.cloudHintSetup'),
+    },
+    { id: 'config', label: t('menu.config'), hint: t('menu.configHint') },
+    { id: 'quit', label: t('menu.quit'), hint: '' },
+  ]
+}
+
+export function buildCloudMenuItems(context: MenuContext): MenuItem<CloudItemId>[] {
+  const items: MenuItem<CloudItemId>[] = [
     {
       id: 'sync',
       label: t('menu.sync'),
@@ -40,29 +54,22 @@ export function buildMenuItems(context: MenuContext): MenuItem[] {
     items.push({ id: 'link', label: t('menu.link'), hint: t('menu.linkHint') })
     items.push({ id: 'syncDelete', label: t('menu.syncDelete'), hint: t('menu.syncDeleteHint') })
   }
-  items.push({ id: 'config', label: t('menu.config'), hint: t('menu.configHint') })
-  items.push({ id: 'quit', label: t('menu.quit'), hint: '' })
+  items.push({ id: 'back', label: t('menu.back'), hint: '' })
   return items
 }
 
-export type MenuActions = {
-  review: () => Promise<void>
-  show: () => Promise<void>
-  sync: () => Promise<void>
-  link: () => Promise<void>
-  syncDelete: () => Promise<void>
-  config: () => Promise<void>
-}
+export type MenuActions = Record<MenuActionId, () => Promise<void>>
 
-export function dispatchMenuAction(id: Exclude<MenuItemId, 'quit'>, actions: MenuActions): Promise<void> {
+export function dispatchMenuAction(id: MenuActionId, actions: MenuActions): Promise<void> {
   return actions[id]()
 }
 
-/** Actions that report their result and redisplay the menu; review/show block on the local web server. */
-const LOOPING_ACTIONS: ReadonlySet<MenuItemId> = new Set(['sync', 'link', 'syncDelete', 'config'])
-
-/** Actions that only make sense inside a git repository. */
-const REPO_ACTIONS: ReadonlySet<MenuItemId> = new Set(['review', 'show', 'sync'])
+function currentContext(cwd: string): MenuContext {
+  return {
+    inRepo: tryGit(['rev-parse', '--show-toplevel'], cwd) !== null,
+    hasSyncCredentials: loadSyncCredentials() !== null,
+  }
+}
 
 async function confirmSyncDelete(): Promise<boolean> {
   const choice = await select<'cancel' | 'delete'>({
@@ -72,6 +79,7 @@ async function confirmSyncDelete(): Promise<boolean> {
       { label: t('menu.syncDeleteConfirmDelete'), hint: t('menu.syncDeleteConfirmDeleteHint'), value: 'delete' },
     ],
     initialIndex: 0,
+    summary: false,
   })
   return choice === 'delete'
 }
@@ -94,35 +102,80 @@ function buildActions(cwd: string): MenuActions {
   }
 }
 
-export async function runMenu(opts: { cwd: string }): Promise<void> {
-  const actions = buildActions(opts.cwd)
+function printActionError(err: unknown): void {
+  console.error(`codesema: ${err instanceof Error ? err.message : String(err)}`)
+}
 
+function printNotInRepo(): void {
+  console.log('')
+  console.log(`  ${t('menu.notInRepo')}`)
+  console.log('')
+}
+
+/** Cloud submenu: loops on itself after each action; back returns to the main menu. */
+async function runCloudMenu(cwd: string, actions: MenuActions): Promise<void> {
   for (;;) {
-    const inRepo = tryGit(['rev-parse', '--show-toplevel'], opts.cwd) !== null
-    const hasSyncCredentials = loadSyncCredentials() !== null
-    const items = buildMenuItems({ hasSyncCredentials, inRepo })
-
-    console.log('')
-    const picked = await select<MenuItemId>({
-      title: t('menu.title'),
+    const context = currentContext(cwd)
+    const items = buildCloudMenuItems(context)
+    const picked = await select<CloudItemId>({
+      title: t('menu.cloudTitle'),
       options: items.map((item) => ({ label: item.label, hint: item.hint, value: item.id })),
+      summary: false,
     })
-    if (picked === null || picked === 'quit') return
+    if (picked === null || picked === 'back') return
 
-    if (REPO_ACTIONS.has(picked) && !inRepo) {
-      console.log(`  ${t('menu.notInRepo')}`)
+    if (picked === 'sync' && !context.inRepo) {
+      printNotInRepo()
       continue
-    }
-
-    if (!LOOPING_ACTIONS.has(picked)) {
-      await dispatchMenuAction(picked, actions)
-      return
     }
 
     try {
       await dispatchMenuAction(picked, actions)
     } catch (err) {
-      console.error(`codesema: ${err instanceof Error ? err.message : String(err)}`)
+      printActionError(err)
     }
+    console.log('')
+  }
+}
+
+export async function runMenu(opts: { cwd: string }): Promise<void> {
+  const actions = buildActions(opts.cwd)
+
+  // Menus render with summary: false and erase themselves on selection, so the
+  // UI redraws in place instead of stacking one list per navigation step.
+  console.log('')
+  for (;;) {
+    const context = currentContext(opts.cwd)
+    const items = buildMenuItems(context)
+    const picked = await select<MenuItemId>({
+      title: t('menu.title'),
+      options: items.map((item) => ({ label: item.label, hint: item.hint, value: item.id })),
+      summary: false,
+    })
+    if (picked === null || picked === 'quit') return
+
+    if ((picked === 'review' || picked === 'show') && !context.inRepo) {
+      printNotInRepo()
+      continue
+    }
+
+    if (picked === 'cloud') {
+      await runCloudMenu(opts.cwd, actions)
+      continue
+    }
+
+    if (picked === 'config') {
+      try {
+        await dispatchMenuAction(picked, actions)
+      } catch (err) {
+        printActionError(err)
+      }
+      console.log('')
+      continue
+    }
+
+    // review/show block on the local web server: leave the menu loop.
+    await dispatchMenuAction(picked, actions)
+    return
   }
 }

@@ -38,6 +38,8 @@ export async function select<T>(opts: {
   options: SelectOption<T>[]
   initialIndex?: number
   filter?: boolean
+  /** false = erase the prompt entirely on resolve, leaving no trace (stable in-place menus). */
+  summary?: boolean
 }): Promise<T | null> {
   if (!isInteractive() || opts.options.length === 0) return null
 
@@ -107,7 +109,7 @@ export async function select<T>(opts: {
       stdin.pause()
       clearRendered()
       renderedLines = 0
-      stdout.write(`${summary}\n`)
+      if (opts.summary !== false) stdout.write(`${summary}\n`)
       stdout.write('\x1b[?25h')
       resolve(value)
     }

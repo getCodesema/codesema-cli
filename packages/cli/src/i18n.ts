@@ -265,6 +265,11 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'menu.quit': 'Quit',
   'menu.needRepo': 'run codesema inside a git repository',
   'menu.notInRepo': 'not inside a git repository: cd into your project first',
+  'menu.cloud': 'Cloud',
+  'menu.cloudTitle': 'Cloud · codesema.com',
+  'menu.cloudHintActive': 'workspace connected',
+  'menu.cloudHintSetup': 'sync your reviews to codesema.com',
+  'menu.back': 'Back',
 }
 
 export type MessageKey = keyof typeof en
@@ -533,6 +538,11 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'menu.quit': 'Quitter',
   'menu.needRepo': 'à lancer dans un repo git',
   'menu.notInRepo': 'pas dans un repo git : placez-vous d\'abord dans votre projet',
+  'menu.cloud': 'Cloud',
+  'menu.cloudTitle': 'Cloud · codesema.com',
+  'menu.cloudHintActive': 'workspace connecté',
+  'menu.cloudHintSetup': 'synchronisez vos reviews sur codesema.com',
+  'menu.back': 'Retour',
 }
 
 const CATALOGS = { en, fr } satisfies Record<string, Record<MessageKey, string>>
