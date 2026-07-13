@@ -7,7 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
-- `codesema-contract` package: the review contract (types + sanitizers) extracted from the CLI and published so codesema.com can validate synced reviews with the same code.
+- `@codesema/contract` package: the review contract (types + sanitizers) extracted from the CLI and published so codesema.com can validate synced reviews with the same code.
 
 ## [0.5.0] - unreleased
 

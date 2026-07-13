@@ -1,5 +1,5 @@
 {
-  "name": "codesema-contract",
+  "name": "@codesema/contract",
   "version": "0.1.0",
   "description": "Shared review contract (types + sanitizers) between the codesema CLI and codesema.com.",
   "license": "MIT",

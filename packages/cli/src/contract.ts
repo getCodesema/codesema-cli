@@ -1,1 +1,1 @@
-export * from 'codesema-contract'
+export * from '@codesema/contract'
