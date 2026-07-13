@@ -3,7 +3,7 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
-## [0.6.0] - unreleased
+## [0.6.0] - 2026-07-13
 
 ### Added
 
@@ -21,7 +21,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Select prompts breathe: a blank line under the question, answers indented deeper to make the question stand out, and back/quit entries visually detached below the list.
 - The menu groups online actions (sync, link account, delete synced data) under a single Cloud entry with its own submenu; repo actions stay visible outside a git repository with a hint saying where to run them.
 
-## [0.5.0] - unreleased
+## [0.5.0] - 2026-07-11
 
 ### Added
 
