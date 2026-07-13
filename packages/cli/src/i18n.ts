@@ -233,6 +233,10 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'sync.alreadySynced': 'Review of {branch} was already synced (no duplicate created).',
   'sync.statusNew': 'new',
   'sync.statusExisting': 'already synced',
+  'sync.secretsBlocked': 'refusing to sync: the diff looks like it contains secrets',
+  'sync.secretFilenameTag': 'sensitive filename',
+  'sync.secretsHint': 'remove them from the diff, or pass --force to sync anyway',
+  'sync.secretsForced': 'secrets detected in the diff, syncing anyway (--force)',
   'sync.linkHint':
     'Tip: create an account on codesema.com, generate a pairing code in Settings, then run `codesema link <code>` to see your reviews online.',
   'sync.linked': 'Workspace linked to your account on {url}.',
@@ -507,6 +511,10 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'sync.alreadySynced': 'Review de {branch} déjà synchronisée (pas de doublon créé).',
   'sync.statusNew': 'nouvelle',
   'sync.statusExisting': 'déjà synchronisée',
+  'sync.secretsBlocked': 'synchronisation refusée : le diff semble contenir des secrets',
+  'sync.secretFilenameTag': 'nom de fichier sensible',
+  'sync.secretsHint': 'retirez-les du diff, ou passez --force pour synchroniser quand même',
+  'sync.secretsForced': 'secrets détectés dans le diff, synchronisation quand même (--force)',
   'sync.linkHint':
     'Astuce : créez un compte sur codesema.com, générez un code d\'appairage dans Settings, puis lancez `codesema link <code>` pour retrouver vos reviews en ligne.',
   'sync.linked': 'Workspace rattaché à votre compte sur {url}.',

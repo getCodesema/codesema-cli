@@ -201,6 +201,15 @@ function makeRepoWithArchivedReview(): ArchivedRepo {
   return { repoDir, remoteUrl, record }
 }
 
+function setArchivedDiff(repoDir: string, diff: string): void {
+  const archivePath = join(repoDir, '.codesema', 'reviews', 'feat-x-20260713-100000.json')
+  const archived = JSON.parse(readFileSync(archivePath, 'utf8')) as ReviewRecord
+  archived.diff = diff
+  writeFileSync(archivePath, JSON.stringify(archived, null, 2))
+}
+
+const SECRET_DIFF = 'diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -0,0 +1 @@\n+AWS_SECRET=1\n'
+
 describe('sync and link commands', () => {
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   const previousSyncUrl = process.env.CODESEMA_SYNC_URL
@@ -360,5 +369,25 @@ describe('sync and link commands', () => {
     await expect(syncCommand({ action: 'wat', cwd: repoDir })).rejects.toThrow(
       t('sync.unknownAction', { action: 'wat' }),
     )
+  })
+
+  test('syncCommand refuses to push a diff that looks like it holds secrets', async () => {
+    seedCredentials()
+    setArchivedDiff(repoDir, SECRET_DIFF)
+
+    await expect(syncCommand({ cwd: repoDir })).rejects.toThrow(t('sync.secretsBlocked'))
+
+    const pushed = stub.requests.find((r) => r.path === '/api/cli/reviews')
+    expect(pushed).toBeUndefined()
+  })
+
+  test('syncCommand --force pushes a diff with secrets anyway', async () => {
+    seedCredentials()
+    setArchivedDiff(repoDir, SECRET_DIFF)
+
+    await syncCommand({ cwd: repoDir, force: true })
+
+    const pushed = stub.requests.find((r) => r.method === 'POST' && r.path === '/api/cli/reviews')
+    expect(pushed).toBeDefined()
   })
 })

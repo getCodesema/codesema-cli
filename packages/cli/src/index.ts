@@ -34,6 +34,7 @@ async function main(): Promise<void> {
       port: { type: 'string' },
       timeout: { type: 'string' },
       full: { type: 'boolean' },
+      force: { type: 'boolean' },
       'no-open': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
@@ -87,7 +88,7 @@ async function main(): Promise<void> {
       exportCommand({ review: values.review, out: values.out, cwd: process.cwd() })
       break
     case 'sync':
-      await syncCommand({ action: positionals[1], cwd: process.cwd() })
+      await syncCommand({ action: positionals[1], cwd: process.cwd(), force: values.force })
       break
     case 'link':
       await linkCommand({ code: positionals[1] })

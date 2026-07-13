@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
-import type { ReviewRecord } from './contract.js'
+import { detectDiffSecrets, type ReviewRecord, type SecretMatch } from './contract.js'
 import { repoRoot, tryGit } from './git.js'
 import { t } from './i18n.js'
 import { resolveRecord } from './record.js'
@@ -16,6 +16,15 @@ function printOperationResult(statusMessage: string, rows: FieldRow[]): void {
   console.log('')
   console.log(`  ${paint('✔', GREEN)} ${statusMessage}`)
   for (const line of renderFieldRows(rows)) console.log(`  ${line}`)
+}
+
+// The diff carried by a review record is uploaded verbatim on sync. A committed
+// secret would leave the machine, so hold it back and let the user decide.
+function secretsBlockedMessage(matches: SecretMatch[]): string {
+  const lines = matches.map(
+    (m) => `    - ${m.file}  (${m.reason === 'filename' ? t('sync.secretFilenameTag') : m.detail})`,
+  )
+  return [t('sync.secretsBlocked'), ...lines, `  ${t('sync.secretsHint')}`].join('\n')
 }
 
 const DEFAULT_SYNC_URL = 'https://codesema.com'
@@ -178,7 +187,7 @@ async function confirmSyncDelete(): Promise<boolean> {
   return choice === 'delete'
 }
 
-export async function syncCommand(opts: { action?: string; cwd: string }): Promise<void> {
+export async function syncCommand(opts: { action?: string; cwd: string; force?: boolean }): Promise<void> {
   if (opts.action === 'delete') {
     const creds = loadSyncCredentials()
     if (!creds) throw new Error(t('sync.noCredentials'))
@@ -192,11 +201,16 @@ export async function syncCommand(opts: { action?: string; cwd: string }): Promi
   }
   const cwd = repoRoot(opts.cwd)
   const { record } = resolveRecord({ cwd })
+  const secrets = detectDiffSecrets(record.diff)
+  if (secrets.length > 0 && !opts.force) {
+    throw new Error(secretsBlockedMessage(secrets))
+  }
   const creds = await ensureCredentials()
   if (!creds) {
     console.log(`  ${t('sync.aborted')}`)
     return
   }
+  if (secrets.length > 0) console.log(`  ${dim(t('sync.secretsForced'))}`)
   const remoteUrl = tryGit(['remote', 'get-url', 'origin'], cwd)
   const result = await pushReview({ record, remoteUrl, repoName: basename(cwd) }, creds)
   const doneKey = result.deduplicated ? 'sync.alreadySynced' : 'sync.pushed'
