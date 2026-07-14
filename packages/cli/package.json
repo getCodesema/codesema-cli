@@ -6,7 +6,7 @@
   "author": "Hasan TASKIN",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/getCodesema/codesema-tools.git",
+    "url": "git+https://github.com/getCodesema/cli.git",
     "directory": "packages/cli"
   },
   "keywords": [

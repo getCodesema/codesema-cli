@@ -7,7 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
-- `repository` field in the published `package.json` files (`codesema`, `@codesema/contract`), pointing to the repo's new home at `github.com/getCodesema/codesema-tools`.
+- `repository` field in the published `package.json` files (`codesema`, `@codesema/contract`), pointing to the repo's new home at `github.com/getCodesema/cli`.
 - `codesema link` without a code now links through the browser: the CLI opens a codesema.com confirmation page for the workspace and waits until you approve it there — no pairing code to copy. `codesema link <code>` keeps working as the no-browser fallback, and the menu's "Link account" entry uses the browser flow.
 
 - Focus mode: a problems-first view of the review. Actionable findings on the left with checkboxes, the selected problem's note and its code excerpt on the right, previous/next stepping, and "Copy selection for agent" scoped to the checked findings.
