@@ -233,7 +233,7 @@ export async function runOnboarding(cwd: string): Promise<string | null> {
   return result.command
 }
 
-export type ConfigEntryId = 'agent' | 'language' | 'back'
+export type ConfigEntryId = 'agent' | 'language' | 'autoSync' | 'back'
 
 export type ConfigEntry = {
   id: ConfigEntryId
@@ -247,11 +247,17 @@ function languageLabel(language?: SupportedLanguage): string {
   return t('config.languageAuto')
 }
 
+function autoSyncLabel(syncAutoPush: boolean | undefined): string {
+  if (syncAutoPush === undefined) return t('config.autoSyncUnset')
+  return syncAutoPush ? t('config.autoSyncOn') : t('config.autoSyncOff')
+}
+
 /** Entries of the `codesema config` submenu, current values shown as hints. */
 export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
   return [
     { id: 'agent', label: t('config.agentEntry'), hint: current.agent ?? t('config.agentEntryUnset') },
     { id: 'language', label: t('config.languageEntry'), hint: languageLabel(current.language) },
+    { id: 'autoSync', label: t('config.autoSyncEntry'), hint: autoSyncLabel(current.syncAutoPush) },
     { id: 'back', label: t('config.back'), hint: '' },
   ]
 }
@@ -288,6 +294,26 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
       const path = saveGlobalConfig({ ...loadGlobalConfig(), language })
       console.log('')
       console.log(`  ${t('config.languageSaved', { path })}`)
+      console.log('')
+      continue
+    }
+
+    if (picked === 'autoSync') {
+      const choice = await select<'on' | 'off'>({
+        title: t('config.autoSyncQuestion'),
+        options: [
+          { label: t('sync.autoPushDecline'), hint: '', value: 'off' },
+          { label: t('sync.autoPushAccept'), hint: t('sync.autoPushAcceptHint'), value: 'on' },
+        ],
+        initialIndex: current.syncAutoPush === true ? 1 : 0,
+        summary: false,
+      })
+      if (choice === null) continue
+      // Auto-sync is global-only, like the sync credentials it depends on: a
+      // repo config must never be able to turn on pushing diffs off the machine.
+      const path = saveGlobalConfig({ ...loadGlobalConfig(), syncAutoPush: choice === 'on' })
+      console.log('')
+      console.log(`  ${t('config.autoSyncSaved', { state: autoSyncLabel(choice === 'on'), path })}`)
       console.log('')
       continue
     }
