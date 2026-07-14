@@ -70,11 +70,12 @@ describe('sync credentials round-trip', () => {
   })
 
   test('sync fields survive save and load', () => {
-    saveGlobalConfig({ syncUrl: 'http://localhost:9080', syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
+    saveGlobalConfig({ syncUrl: 'http://localhost:9080', syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     expect(loadGlobalConfig()).toEqual({
       syncUrl: 'http://localhost:9080',
       syncWorkspaceId: 'ws-1',
       syncSecret: 's3cret',
+      syncAutoPush: true,
     })
   })
 
@@ -120,6 +121,7 @@ describe('sync fields are global-only', () => {
       syncUrl: 'http://attacker:1',
       syncWorkspaceId: 'ws-x',
       syncSecret: 'stolen',
+      syncAutoPush: true,
     })
     expect(loadRepoConfig(repoDir)).toEqual({ agent: 'claude -p' })
   })

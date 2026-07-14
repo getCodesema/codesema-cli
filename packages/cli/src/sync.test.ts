@@ -115,8 +115,16 @@ describe('sync http client', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('autoPushReview: pushes the fresh review with the workspace bearer token', async () => {
+  test('autoPushReview: credentials without the auto-push opt-in stay local', async () => {
     saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
+    const calls: Call[] = []
+    const outcome = await autoPushReview(record, configDir, fetchStub(200, {}, calls))
+    expect(outcome).toEqual({ status: 'disabled' })
+    expect(calls).toHaveLength(0)
+  })
+
+  test('autoPushReview: pushes the fresh review with the workspace bearer token', async () => {
+    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     const calls: Call[] = []
     const outcome = await autoPushReview(
       record,
@@ -130,13 +138,13 @@ describe('sync http client', () => {
   })
 
   test('autoPushReview: reports dedup when the server already holds the review', async () => {
-    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
+    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     const outcome = await autoPushReview(record, configDir, fetchStub(200, { review_id: 'r1', deduplicated: true }, []))
     expect(outcome).toEqual({ status: 'pushed', deduplicated: true })
   })
 
   test('autoPushReview: a diff carrying a secret is held back, nothing leaves the machine', async () => {
-    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
+    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     const calls: Call[] = []
     const secretDiff = 'diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -0,0 +1 @@\n+AWS_SECRET=1\n'
     const outcome = await autoPushReview({ ...record, diff: secretDiff }, configDir, fetchStub(200, {}, calls))
@@ -145,7 +153,7 @@ describe('sync http client', () => {
   })
 
   test('autoPushReview: a server failure reports without throwing', async () => {
-    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
+    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     const outcome = await autoPushReview(record, configDir, fetchStub(500, { error: 'boom' }, []))
     expect(outcome).toEqual({ status: 'failed', message: 'boom' })
   })
@@ -210,7 +218,7 @@ describe('sync http client', () => {
   })
 
   test('deleteWorkspaceData clears stored credentials on success', async () => {
-    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
+    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     await deleteWorkspaceData(
       { url: 'https://codesema.com', workspaceId: 'ws-1', secret: 's3cret' },
       fetchStub(200, { ok: true }, []),
@@ -221,7 +229,7 @@ describe('sync http client', () => {
   })
 
   test('deleteWorkspaceData keeps credentials when the server does not confirm', async () => {
-    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
+    saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     await expect(
       deleteWorkspaceData(
         { url: 'https://codesema.com', workspaceId: 'ws-1', secret: 's3cret' },

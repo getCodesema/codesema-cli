@@ -19,6 +19,8 @@ export type CodesemaConfig = {
   syncUrl?: string
   syncWorkspaceId?: string
   syncSecret?: string
+  /** Explicit opt-in for pushing every completed review; credentials alone never auto-push. */
+  syncAutoPush?: boolean
 }
 
 type ConfigScope = 'global' | 'repo'
@@ -40,6 +42,7 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       ...(scope === 'global' && str(raw.syncUrl) ? { syncUrl: str(raw.syncUrl) } : {}),
       ...(scope === 'global' && str(raw.syncWorkspaceId) ? { syncWorkspaceId: str(raw.syncWorkspaceId) } : {}),
       ...(scope === 'global' && str(raw.syncSecret) ? { syncSecret: str(raw.syncSecret) } : {}),
+      ...(scope === 'global' && typeof raw.syncAutoPush === 'boolean' ? { syncAutoPush: raw.syncAutoPush } : {}),
       ...(Number.isInteger(raw.port) ? { port: raw.port as number } : {}),
       ...(Number.isInteger(raw.timeout) ? { timeout: raw.timeout as number } : {}),
     }

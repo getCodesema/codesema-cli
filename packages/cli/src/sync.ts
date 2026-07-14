@@ -129,9 +129,10 @@ export type AutoPushOutcome =
   | { status: 'failed'; message: string }
 
 /**
- * Best-effort push of a fresh review when the workspace is already set up:
- * never interactive, never throws, so a sync failure cannot fail the review
- * run. The manual `codesema sync` secret gate applies unchanged: a diff
+ * Best-effort push of a fresh review, only when the user explicitly opted in
+ * (syncAutoPush): workspace credentials alone never send a diff off the
+ * machine. Never interactive, never throws, so a sync failure cannot fail the
+ * review run. The manual `codesema sync` secret gate applies unchanged: a diff
  * carrying secrets stays on the machine.
  */
 export async function autoPushReview(
@@ -140,7 +141,7 @@ export async function autoPushReview(
   fetchImpl: typeof fetch = fetch,
 ): Promise<AutoPushOutcome> {
   const creds = loadSyncCredentials()
-  if (!creds) return { status: 'disabled' }
+  if (!creds || loadGlobalConfig().syncAutoPush !== true) return { status: 'disabled' }
   const secrets = detectDiffSecrets(record.diff)
   if (secrets.length > 0) return { status: 'blocked_secrets', count: secrets.length }
   try {
@@ -252,6 +253,22 @@ async function ensureCredentials(): Promise<SyncCredentials | null> {
   return createWorkspace()
 }
 
+// Asked once, after the first successful manual push: a dismissed prompt
+// (null) leaves the choice open for the next sync instead of recording a "no".
+async function offerAutoPush(): Promise<void> {
+  if (!isInteractive() || loadGlobalConfig().syncAutoPush !== undefined) return
+  const choice = await select<'yes' | 'no'>({
+    title: t('sync.autoPushQuestion'),
+    options: [
+      { label: t('sync.autoPushDecline'), hint: '', value: 'no' },
+      { label: t('sync.autoPushAccept'), hint: t('sync.autoPushAcceptHint'), value: 'yes' },
+    ],
+    initialIndex: 0,
+  })
+  if (choice === null) return
+  saveGlobalConfig({ ...loadGlobalConfig(), syncAutoPush: choice === 'yes' })
+}
+
 // Deleting remote data is irreversible: every interactive path (menu or direct
 // `codesema sync delete`) confirms first; non-interactive runs stay scriptable.
 async function confirmSyncDelete(): Promise<boolean> {
@@ -299,6 +316,7 @@ export async function syncCommand(opts: { action?: string; cwd: string; force?: 
     { label: t('field.branch'), value: record.meta.branch },
     { label: t('field.status'), value: result.deduplicated ? t('sync.statusExisting') : t('sync.statusNew') },
   ])
+  await offerAutoPush()
   console.log('')
   console.log(`  ${dim(t('sync.linkHint'))}`)
 }
