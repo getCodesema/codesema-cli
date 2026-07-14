@@ -24,6 +24,11 @@ describe('judgeCommandFor', () => {
     expect(judgeCommandFor('claude -p')).toBe('claude -p --model sonnet')
   })
 
+  test('claude: --model=value form swapped too, never doubled', () => {
+    expect(judgeCommandFor('claude -p --model=opus --effort high')).toBe('claude -p --model sonnet --effort high')
+    expect(judgeCommandFor('codex exec -m=gpt-5.6-sol -')).toBe('codex exec -m gpt-5.5 -')
+  })
+
   test('codex: model swapped, stdin marker stays last', () => {
     expect(judgeCommandFor('codex exec -m gpt-5.6-sol -')).toBe('codex exec -m gpt-5.5 -')
     expect(judgeCommandFor('codex exec -')).toBe('codex exec -m gpt-5.5 -')

@@ -25,7 +25,7 @@ export function judgeCommandFor(command: string): string {
   const bin = first.split('/').pop() ?? ''
   const def = AGENT_DEFS.find((d) => d.bin === bin)
   if (!def) return command
-  const flagPattern = new RegExp(`(^|\\s)${escapeRegExp(def.modelFlag)}\\s+\\S+`)
+  const flagPattern = new RegExp(`(^|\\s)${escapeRegExp(def.modelFlag)}(?:=|\\s+)\\S+`)
   if (flagPattern.test(command)) {
     return command.replace(flagPattern, `$1${def.modelFlag} ${def.judgeModel}`)
   }
