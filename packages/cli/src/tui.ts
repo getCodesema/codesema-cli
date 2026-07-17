@@ -185,3 +185,31 @@ export async function textInput(opts: { title: string; placeholder?: string }): 
     rl.close()
   }
 }
+
+/** Accepts y/yes/o/oui as true and n/no/non as false, anything else is unanswered. */
+export function parseYesNo(input: string): boolean | null {
+  const normalized = input.trim().toLowerCase()
+  if (normalized === 'y' || normalized === 'yes' || normalized === 'o' || normalized === 'oui') return true
+  if (normalized === 'n' || normalized === 'no' || normalized === 'non') return false
+  return null
+}
+
+/** Typed yes/no question, re-asked until answered; false when not interactive. */
+export async function confirm(opts: { title: string }): Promise<boolean> {
+  if (!isInteractive()) return false
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    for (;;) {
+      const answer = await rl.question(`  ${color('?', ACCENT)} ${opts.title} ${faint(t('tui.confirmHint'))} `)
+      const parsed = parseYesNo(answer)
+      if (parsed === null) continue
+      if (isFancy()) {
+        process.stdout.write('\x1b[1A\x1b[2K')
+        process.stdout.write(`  ${color('✔', ACCENT)} ${opts.title} ${faint('·')} ${t(parsed ? 'tui.yes' : 'tui.no')}\n`)
+      }
+      return parsed
+    }
+  } finally {
+    rl.close()
+  }
+}

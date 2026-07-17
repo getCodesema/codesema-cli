@@ -1,6 +1,6 @@
 import { t } from './i18n.js'
 import type { PartialReview } from './partial.js'
-import { VERSION, isNewerVersion } from './version.js'
+import { VERSION } from './version.js'
 
 export const OCEAN = [24, 30, 36, 37, 43, 44, 50] as const
 
@@ -75,11 +75,6 @@ export function printBanner(): void {
     console.log('  ' + paint(line, OCEAN[Math.min(1 + i, OCEAN.length - 1)]!) + version)
   })
   console.log('')
-}
-
-export function printUpdateNotice(latest: string | null): void {
-  if (!latest || !isNewerVersion(VERSION, latest)) return
-  console.log(`  ${paint(t('ui.updateAvailable', { current: VERSION, latest }), AMBER)} ${dim('npm i -g codesema@latest')}`)
 }
 
 const WAVE_CHARS = '▁▂▃▄▅▆▇█'

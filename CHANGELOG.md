@@ -3,6 +3,16 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.9.0] - unreleased
+
+### Added
+
+- Startup upgrade prompt: when a newer version is published on npm, the CLI announces it ("A new version x.y.z of codesema is available!") and asks whether to upgrade now (typed yes/no answer). On acceptance it runs the matching global install command, detecting how codesema was installed (npm, pnpm, yarn or bun); on refusal or failure the current invocation continues unchanged. Interactive terminals only, and still opt-out via `CODESEMA_NO_UPDATE_CHECK`.
+
+### Changed
+
+- The passive "update available" one-liner printed after `codesema review` and `codesema show` is replaced by the startup upgrade prompt.
+
 ## [0.8.0] - 2026-07-16
 
 ### Added

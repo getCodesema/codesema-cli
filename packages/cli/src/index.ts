@@ -10,6 +10,7 @@ import { review, REVIEW_GATE_VALUES, type ReviewGate } from './review.js'
 import { show } from './show.js'
 import { linkCommand, syncCommand } from './sync.js'
 import { isInteractive } from './tui.js'
+import { maybeOfferUpgrade } from './upgrade.js'
 import { VERSION } from './version.js'
 import { configCommand } from './wizard.js'
 
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
     console.log(t('cli.help'))
     return
   }
+  await maybeOfferUpgrade()
   if (positionals[0] === undefined && !reviewFlagsPassed(values) && isInteractive()) {
     await runMenu({ cwd: process.cwd() })
     return
