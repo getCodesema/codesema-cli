@@ -3,6 +3,17 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.9.0] - unreleased
+
+### Added
+
+- Team rules grid: `.codesema/RULES.md` holds one review rule per line, optionally extended with `|`-separated grid segments (`Scope`, `Where to look`, `Bad`, `Good`, `Exceptions`). Rules are injected as `[C1]`, `[C2]`, ... (file order) and the reviewer hunts them FIRST, jumping straight to the code each rule's `Where to look` targets, before the regular file-by-file sweep. Convention findings must cite the rule id; deviations must be introduced by the diff itself, and code covered by a rule's `Exceptions` is never flagged.
+- Per-file coverage verdict: `files_reviewed` entries are now `{ path, status }` with `status` `clean` or `findings` (`@codesema/contract` 0.4.0), forcing the reviewer to settle every diff file explicitly instead of drifting past it. The persisted status is recomputed deterministically from the findings that survive grounding, never trusted from the agent; bare string entries from older agents and archives are still accepted. In dual mode the merged review carries the per-path union of both lanes, `findings` winning.
+
+### Changed
+
+- The final self-check in every review prompt (simple, both dual lanes) became an adversarial refutation pass: the reviewer must actively try to REFUTE each finding (file in the diff, line inside a hunk, failure scenario named, the diff really produces the claimed outcome, cited rule really violated) and delete what it cannot defend: report boldly during the sweep, refute hard before emitting.
+
 ## [0.8.0] - 2026-07-16
 
 ### Added
