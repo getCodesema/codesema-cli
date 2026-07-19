@@ -13,6 +13,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ### Changed
 
 - The final self-check in every review prompt (simple, both dual lanes) became an adversarial refutation pass: the reviewer must actively try to REFUTE each finding (file in the diff, line inside a hunk, failure scenario named, the diff really produces the claimed outcome, cited rule really violated) and delete what it cannot defend: report boldly during the sweep, refute hard before emitting.
+- The fix prompt now demands verification, mirroring the server-side fix agent: a regression test written red-first when a finding describes a reproducible bug, a run of the repo's cheap checks (typecheck, unit tests, lint) after the edits with a fallback note when the agent environment cannot run commands, and a summary that states how each fix was verified.
 
 ## [0.8.0] - 2026-07-16
 

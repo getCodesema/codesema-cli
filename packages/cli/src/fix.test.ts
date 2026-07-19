@@ -55,6 +55,23 @@ describe('buildAgentFixPrompt', () => {
     expect(prompt).toContain('feature/x')
     expect(prompt).toContain('Do NOT commit')
   })
+
+  test('demands a red-first regression test for reproducible bugs', () => {
+    const prompt = buildAgentFixPrompt(record(), [0])
+    expect(prompt).toContain('write the regression test FIRST')
+    expect(prompt).toContain('it must fail on the current code')
+    expect(prompt).toContain('part of applying the finding, not an extra change')
+    expect(prompt).toContain('tautological test')
+  })
+
+  test('demands a post-edit check run with a fallback when commands are unavailable', () => {
+    const prompt = buildAgentFixPrompt(record(), [0])
+    expect(prompt).toContain('cheap checks (typecheck, unit tests, lint)')
+    expect(prompt).toContain('fix what YOUR change broke')
+    expect(prompt).toContain('Do not chase pre-existing failures')
+    expect(prompt).toContain('skip this step and say so in the summary')
+    expect(prompt).toContain('how you verified')
+  })
 })
 
 describe('createFixRunner', () => {
