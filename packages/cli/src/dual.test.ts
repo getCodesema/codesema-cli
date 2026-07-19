@@ -377,6 +377,12 @@ describe('prompt hardening', () => {
     expect(p).toContain('[Cn]')
   })
 
+  test('prosecutor verdict is scoped to what the input can prove', () => {
+    const p = prosecutorInstructions('English')
+    expect(p).toContain('weighs ONLY what you could verify in the provided input')
+    expect(p).toContain('never lowers the verdict')
+  })
+
   test('judge prompt requires citing the disproving diff lines and shares the severity scale', () => {
     const j = judgeInstructions('English')
     expect(j).toContain('cite the exact diff line')

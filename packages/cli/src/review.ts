@@ -152,7 +152,8 @@ Rules for the narrative:
 - steps: ORDERED logical groups (NOT alphabetical): foundations first (migrations, shared types, contracts), then business logic, then surface (routes, UI).
 - review_first: 2-4 hot spots ordered by risk, highest first.
 - You MUST produce praise findings when the code deserves it; reserve severity "info" for praise/why findings.
-- Do NOT approve changes you cannot justify; prefer "request_changes" when impact is unclear.
+- Do NOT approve changes you cannot justify from the diff; prefer "request_changes" when the diff itself shows an unresolved risk.
+- The verdict weighs ONLY what you could verify in the provided input. A concern that lives outside it (another repository, an external consumer of a published package, a deployment) is never a finding and never lowers the verdict: raise it as a step "check" question and judge the change on what you can see.
 - Output the top-level fields in this exact order: "verdict", "summary", "findings", "narrative", "files_reviewed" (the review is displayed live while you write it).`
 
 const INCREMENTAL_INSTRUCTIONS = `An earlier review of this SAME merge request exists. Instead of the full diff, you are given:

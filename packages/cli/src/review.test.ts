@@ -152,6 +152,13 @@ describe('reviewInstructions', () => {
     expect(p).toContain('HUNT them first')
     expect(p).toContain('[Cn]')
   })
+
+  test('scopes the verdict to what the input can prove', () => {
+    const p = reviewInstructions()
+    expect(p).toContain('weighs ONLY what you could verify in the provided input')
+    expect(p).toContain('never lowers the verdict')
+    expect(p).toContain('raise it as a step "check" question')
+  })
 })
 
 describe('missingReviewedFiles', () => {
