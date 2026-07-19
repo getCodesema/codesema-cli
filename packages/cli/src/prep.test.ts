@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { detectTarget, prep } from './prep.js'
@@ -59,6 +59,19 @@ describe('prep', () => {
     expect(input.files.map((f) => f.path)).toEqual(['café.txt'])
     expect(input.diff).toContain('+++ b/café.txt')
     expect(input.diff).not.toContain('\\303')
+  })
+
+  test('rules: null without RULES.md, formatted [Cn] grid lines with it', () => {
+    expect(prep({ target: 'develop', cwd: repo, quiet: true }).rules).toBeNull()
+    mkdirSync(join(repo, '.codesema'), { recursive: true })
+    const rulesPath = join(repo, '.codesema', 'RULES.md')
+    writeFileSync(rulesPath, '# Rules\n- no any | Where to look: exported APIs\n')
+    try {
+      const input = prep({ target: 'develop', cwd: repo, quiet: true })
+      expect(input.rules).toEqual(['[C1] no any | Where to look: exported APIs'])
+    } finally {
+      rmSync(rulesPath, { force: true })
+    }
   })
 
   test('current branch = target: error', () => {

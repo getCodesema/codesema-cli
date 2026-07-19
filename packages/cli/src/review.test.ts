@@ -77,6 +77,7 @@ describe('agentVisibleInput', () => {
       commits: ['feat: a'],
       files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
       custom_instructions: null,
+      rules: ['[C1] no any'],
       impact_candidates: { note: 'best-effort', symbols: [], imported_by: { 'a.ts': ['b.ts'] } },
       diff: 'diff --git a/a.ts b/a.ts',
     }
@@ -86,6 +87,7 @@ describe('agentVisibleInput', () => {
       commits: ['feat: a'],
       files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
       custom_instructions: null,
+      rules: ['[C1] no any'],
       impact_candidates: { note: 'best-effort', symbols: [], imported_by: { 'a.ts': ['b.ts'] } },
     })
   })
@@ -144,6 +146,11 @@ describe('reviewInstructions', () => {
     expect(p).toContain('critical = data loss')
     expect(p).toContain('omit "line" rather than guessing')
     expect(p).toContain('"verdict", "summary", "findings", "narrative", "files_reviewed"')
+    expect(p).toContain('settle EVERY file explicitly')
+    expect(p).toContain('"status": "clean" | "findings"')
+    expect(p).toContain('REFUTE every finding')
+    expect(p).toContain('HUNT them first')
+    expect(p).toContain('[Cn]')
   })
 })
 
@@ -155,11 +162,16 @@ describe('missingReviewedFiles', () => {
   })
 
   test('empty when every diff file was examined', () => {
-    expect(missingReviewedFiles(files, ['a.ts', 'b.ts', 'extra.ts'])).toEqual([])
+    const reviewed = [
+      { path: 'a.ts', status: 'clean' as const },
+      { path: 'b.ts', status: 'findings' as const },
+      { path: 'extra.ts', status: 'clean' as const },
+    ]
+    expect(missingReviewedFiles(files, reviewed)).toEqual([])
   })
 
   test('lists diff files the reviewer skipped', () => {
-    expect(missingReviewedFiles(files, ['a.ts'])).toEqual(['b.ts'])
+    expect(missingReviewedFiles(files, [{ path: 'a.ts', status: 'clean' }])).toEqual(['b.ts'])
   })
 })
 
@@ -239,6 +251,7 @@ describe('runDualFlow', () => {
       commits: ['feat: a'],
       files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
       custom_instructions: null,
+      rules: null,
       impact_candidates: null,
       diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
     }

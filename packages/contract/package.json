@@ -1,6 +1,6 @@
 {
   "name": "@codesema/contract",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Shared review contract (types + sanitizers) between the codesema CLI and codesema.com.",
   "license": "MIT",
   "author": "Hasan TASKIN",

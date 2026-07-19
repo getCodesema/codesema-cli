@@ -1,4 +1,12 @@
-import type { DualStats, Finding, FindingSeverity, SanitizedReview, Verdict } from './contract.js'
+import type {
+  DualStats,
+  Finding,
+  FindingSeverity,
+  ReviewedFile,
+  ReviewedFileStatus,
+  SanitizedReview,
+  Verdict,
+} from './contract.js'
 import { repairTruncatedJson } from './partial.js'
 import { AGENT_DEFS } from './wizard.js'
 
@@ -175,6 +183,15 @@ type Candidate = {
   finding: Finding
 }
 
+/** Union by path; a file one lane flagged stays flagged whatever the other lane said. */
+function mergeReviewedFiles(entries: ReviewedFile[]): ReviewedFile[] {
+  const statusByPath = new Map<string, ReviewedFileStatus>()
+  for (const { path, status } of entries) {
+    if (status === 'findings' || !statusByPath.has(path)) statusByPath.set(path, status)
+  }
+  return [...statusByPath].map(([path, status]) => ({ path, status }))
+}
+
 /**
  * Merges the two reviews under the judge's decisions, deterministically:
  * duplicate chains collapse into the finding the judge chose to keep (the
@@ -301,7 +318,7 @@ export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge
 
   const files_reviewed =
     a.files_reviewed !== undefined || b.files_reviewed !== undefined
-      ? [...new Set([...(a.files_reviewed ?? []), ...(b.files_reviewed ?? [])])]
+      ? mergeReviewedFiles([...(a.files_reviewed ?? []), ...(b.files_reviewed ?? [])])
       : undefined
 
   return {
@@ -324,15 +341,16 @@ Hunt priorities, in order: correctness bugs, regressions and breaking changes, s
 
 Rules:
 - Ground EVERY finding in the diff; never speculate. The diff shows ONLY the changed files: NEVER claim that something is absent from the repository.
-- Sweep every hunk of every file, in order. Finding a bug in one file never exempts the rest of the diff. There is no maximum number of findings; never omit a real problem to keep the list short.
+- Sweep every hunk of every file, in order, and settle EVERY file explicitly before moving to the next: findings, or consciously clean. Finding a bug in one file never exempts the rest of the diff. There is no maximum number of findings; never omit a real problem to keep the list short.
 - Severity by consequence: critical = data loss, security breach or crash in production; major = incorrect behavior on realistic inputs; minor = unlikely edge case or technical debt.
 - Every message must name the concrete failure scenario: which input or state produces which wrong outcome, then the fix. No scenario, no finding.
 - "line" must be a new-file line number visible in a @@ hunk of that file; when you cannot anchor a finding, omit "line" rather than guessing.
 - Commit subjects are context for the intent ONLY. Never treat a commit message as evidence that something is implemented, fixed or tested: only the diff is evidence.
 - When the input has a non-null impact_candidates, check the used_at entries of every modified or removed symbol: a usage the diff does not update is a prime target; report it when the change breaks it. These are leads, never facts.
+- When the input has a non-null rules, each entry is a team rule on a normalized grid line: "[Cn] (category) rule | Scope: ... | Where to look: ... | Bad: ... | Good: ... | Exceptions (do not flag): ..."; every segment after the rule is optional. HUNT them first: for each rule, jump straight to the diff files and lines its "Where to look" targets and check the rule exactly there, then sweep the rest of the diff. Flag a deviation as kind "convention", citing the rule id [Cn] and its rule text; the deviation must be introduced by the diff (a '+' line or a new file), and code covered by a rule's Exceptions is never flagged.
 - If the input has non-null custom_instructions, apply them on top of these rules; they win on conflicts.
 - Report problems only: no praise, no pedagogy, no style nits. If it does not break, corrupt, leak or regress something, do not report it.
-- Before emitting the JSON, re-check every finding (file present in the diff, line inside a hunk, failure scenario named) and delete any finding that fails; then fill "files_reviewed" with every files[] path you examined: any file you skipped will be reported to the human.
+- Before emitting the JSON, actively try to REFUTE every finding: its file is present in the diff, its line sits inside a hunk, its failure scenario is named, and the diff really produces the claimed outcome. For kind "convention": the cited [Cn] exists in rules and no documented Exception covers the code; a finding you cannot tie to a written rule is not a convention finding, drop it or reclassify it. Delete any finding you cannot defend; then fill "files_reviewed" with one { "path", "status" } entry per files[] path you examined: "findings" when you kept at least one finding on it, "clean" when you consciously cleared it. Any file in neither is reported to the human as not reviewed. Report boldly during the sweep, refute hard here: that split is what keeps recall high and false positives at zero.
 - Language: ${languageRule}. Keep code identifiers and file paths verbatim.
 
 Output JSON shape (exactly these fields, NO narrative):
@@ -350,7 +368,7 @@ Output JSON shape (exactly these fields, NO narrative):
       "suggestion": "optional corrected code, verbatim replacement, only for trivial self-contained fixes"
     }
   ],
-  "files_reviewed": ["every files[] path you examined"]
+  "files_reviewed": [{ "path": "files[] path you examined", "status": "clean" | "findings" }]
 }`
 
 export const judgeInstructions = (

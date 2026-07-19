@@ -121,6 +121,7 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 ## Customize
 
 - `.codesema/PROMPT.md`: your team's review instructions, merged into the agent prompt.
+- `.codesema/RULES.md`: your team's review rules, one per line, hunted first by the reviewer. Put the highest-yield rules on top; each line may extend the rule with optional `|`-separated segments the reviewer knows how to use: `(category) rule | Scope: where in the repo it applies | Where to look: files, imports or code shapes to inspect | Bad: literal rejected form | Good: literal expected form | Exceptions: tolerated legacy, never flagged`. Rules are cited as `[C1]`, `[C2]`, ... (file order) in convention findings. Telling the reviewer *where to look* is what makes a rule catch violations.
 - `.codesema-ignore`: glob patterns excluded from the diff (lockfiles, minified files and sourcemaps are excluded by default).
 
 ## Troubleshooting
@@ -150,6 +151,7 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 | `.codesema/review.json`           | The latest review written by the agent.                                     |
 | `.codesema/reviews/`              | Archived reviews (5 kept per branch, used for incremental re-review).         |
 | `.codesema/PROMPT.md`             | Your team's extra review instructions, merged into the prompt.               |
+| `.codesema/RULES.md`              | Your team's review rules (one `[Cn]` grid line each), hunted first.          |
 | `.codesema-ignore`                | Glob patterns excluded from the diff.                                        |
 
 ## Exit codes

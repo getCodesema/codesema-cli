@@ -58,13 +58,25 @@ export type Finding = {
   consensus?: boolean
 }
 
+export type ReviewedFileStatus = 'clean' | 'findings'
+
+/** Per-file coverage verdict: the reviewer settles every examined file explicitly. */
+export type ReviewedFile = {
+  path: string
+  status: ReviewedFileStatus
+}
+
 export type SanitizedReview = {
   verdict: Verdict
   summary: string
   findings: Finding[]
   narrative: ReviewNarrative | null
-  /** Diff files the reviewer claims to have examined, for coverage reporting. */
-  files_reviewed?: string[]
+  /**
+   * Files the reviewer claims to have examined, for coverage reporting. The
+   * status is always recomputed from the surviving findings, never trusted
+   * from the agent: the declaration only forces a per-file decision.
+   */
+  files_reviewed?: ReviewedFile[]
 }
 
 export type DualStats = {
@@ -248,17 +260,38 @@ export function sanitizeFindings(raw: unknown): Finding[] {
 
 const FILES_REVIEWED_MAX = 500
 
-function sanitizeFilesReviewed(raw: unknown): string[] | undefined {
+/** Bare strings are accepted for reviews written by pre-0.9 agents and archives. */
+function sanitizeReviewedPaths(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const seen = new Set<string>()
   for (const item of raw) {
-    if (typeof item !== 'string') continue
-    const path = item.trim().slice(0, FILE_MAX)
+    const value =
+      typeof item === 'string'
+        ? item
+        : item !== null && typeof item === 'object' && typeof (item as Record<string, unknown>).path === 'string'
+          ? ((item as Record<string, unknown>).path as string)
+          : null
+    if (value === null) continue
+    const path = value.trim().slice(0, FILE_MAX)
     if (!path) continue
     seen.add(path)
     if (seen.size >= FILES_REVIEWED_MAX) break
   }
   return [...seen]
+}
+
+/**
+ * A file carrying a finding but missing from the declaration was necessarily
+ * examined, so it is appended; a declared status is never kept when the
+ * findings contradict it.
+ */
+function reviewedFilesFrom(paths: string[], findings: Finding[]): ReviewedFile[] {
+  const withFindings = new Set(findings.map((f) => f.file))
+  const all = [...paths]
+  for (const file of withFindings) {
+    if (!all.includes(file) && all.length < FILES_REVIEWED_MAX) all.push(file)
+  }
+  return all.map((path) => ({ path, status: withFindings.has(path) ? 'findings' : 'clean' }))
 }
 
 export function sanitizeReview(raw: unknown): SanitizedReview {
@@ -268,8 +301,14 @@ export function sanitizeReview(raw: unknown): SanitizedReview {
   const summary = typeof r.summary === 'string' ? r.summary.trim().slice(0, MESSAGE_MAX) : ''
   const findings = sanitizeFindings(r.findings)
   const narrative = sanitizeNarrative(r.narrative, findings.length)
-  const files_reviewed = sanitizeFilesReviewed(r.files_reviewed)
-  return { verdict, summary, findings, narrative, ...(files_reviewed !== undefined ? { files_reviewed } : {}) }
+  const reviewedPaths = sanitizeReviewedPaths(r.files_reviewed)
+  return {
+    verdict,
+    summary,
+    findings,
+    narrative,
+    ...(reviewedPaths !== undefined ? { files_reviewed: reviewedFilesFrom(reviewedPaths, findings) } : {}),
+  }
 }
 
 /**
@@ -455,7 +494,8 @@ function lineInHunks(ranges: [number, number][] | undefined, line: number): bool
  * and kind) merge into the first, keeping the highest severity and the
  * consensus flag of either copy, and an approve verdict cannot survive a
  * critical finding. Narrative finding_refs are
- * remapped accordingly. Never throws; an unparseable diff returns the
+ * remapped accordingly, and files_reviewed statuses are recomputed from the
+ * surviving findings. Never throws; an unparseable diff returns the
  * review untouched.
  */
 export function groundReview(
@@ -527,7 +567,23 @@ export function groundReview(
     report.verdict_escalated = true
   }
 
-  return { review: { ...review, verdict, findings, narrative }, report }
+  const files_reviewed =
+    review.files_reviewed !== undefined
+      ? reviewedFilesFrom(
+          review.files_reviewed.map((f) => f.path),
+          findings,
+        )
+      : undefined
+  return {
+    review: {
+      ...review,
+      verdict,
+      findings,
+      narrative,
+      ...(files_reviewed !== undefined ? { files_reviewed } : {}),
+    },
+    report,
+  }
 }
 
 const RISK_ENUM = { enum: ['high', 'medium', 'low'] } as const
@@ -580,7 +636,19 @@ export const reviewRecordSchema = {
         summary: { type: 'string' },
         findings: { type: 'array', items: { $ref: '#/$defs/finding' } },
         narrative: { anyOf: [{ type: 'null' }, { $ref: '#/$defs/narrative' }] },
-        files_reviewed: { type: 'array', items: { type: 'string' } },
+        files_reviewed: {
+          type: 'array',
+          items: { anyOf: [{ type: 'string' }, { $ref: '#/$defs/reviewedFile' }] },
+        },
+      },
+    },
+    reviewedFile: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path', 'status'],
+      properties: {
+        path: { type: 'string' },
+        status: { enum: ['clean', 'findings'] },
       },
     },
     finding: {

@@ -4,6 +4,7 @@ import { ensureWorkDir } from './config.js'
 import { currentBranch, git, headSha, mergeBase, refExists, repoRoot, revListCount, tryExec, tryGit } from './git.js'
 import { buildImpactCandidates, type ImpactCandidates } from './impact.js'
 import { t } from './i18n.js'
+import { loadRules } from './rules.js'
 import { renderFieldRows, type FieldRow } from './ui.js'
 
 const TARGET_CANDIDATES = ['develop', 'main', 'master'] as const
@@ -39,6 +40,8 @@ export type PrepInput = {
   commits: string[]
   files: { path: string; additions: number; deletions: number }[]
   custom_instructions: string | null
+  /** Team rules from .codesema/RULES.md, one "[Cn] rule" grid line each. */
+  rules: string[] | null
   impact_candidates: ImpactCandidates | null
   diff: string
 }
@@ -201,6 +204,7 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
 
   const promptFile = join(cwd, '.codesema', 'PROMPT.md')
   const custom = existsSync(promptFile) ? readFileSync(promptFile, 'utf8').trim() || null : null
+  const rules = loadRules(cwd)
 
   const input: PrepInput = {
     version: 1,
@@ -215,6 +219,7 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
     commits,
     files,
     custom_instructions: custom,
+    rules,
     impact_candidates: buildImpactCandidates(diff, cwd),
     diff,
   }
@@ -234,6 +239,7 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
       { label: t('prep.label.files'), value: `${files.length} (+${additions} −${deletions})` },
       { label: t('prep.label.commits'), value: String(commits.length) },
       ...(custom ? [{ label: t('prep.label.custom'), value: t('prep.customNote') }] : []),
+      ...(rules ? [{ label: t('prep.label.rules'), value: t('prep.rulesNote', { n: rules.length }) }] : []),
       { label: t('prep.label.input'), value: inputPath },
     ]
     for (const line of renderFieldRows(rows)) console.log(line)

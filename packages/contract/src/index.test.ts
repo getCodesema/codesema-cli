@@ -29,11 +29,41 @@ describe('sanitizeReview', () => {
     expect(sanitizeReview({ summary: 'x'.repeat(3000) }).summary.length).toBe(2000)
   })
 
-  test('files_reviewed: strings kept trimmed and deduped, absent otherwise', () => {
-    const r = sanitizeReview({ files_reviewed: [' a.ts ', 'b.ts', 'a.ts', 42, ''] })
-    expect(r.files_reviewed).toEqual(['a.ts', 'b.ts'])
+  test('files_reviewed: strings and { path } entries normalized, trimmed, deduped, absent otherwise', () => {
+    const r = sanitizeReview({
+      files_reviewed: [' a.ts ', { path: 'b.ts', status: 'clean' }, 'a.ts', { status: 'clean' }, 42, ''],
+    })
+    expect(r.files_reviewed).toEqual([
+      { path: 'a.ts', status: 'clean' },
+      { path: 'b.ts', status: 'clean' },
+    ])
     expect(sanitizeReview({}).files_reviewed).toBeUndefined()
     expect(sanitizeReview({ files_reviewed: 'a.ts' }).files_reviewed).toBeUndefined()
+  })
+
+  test('files_reviewed: status recomputed from findings, the declaration is never trusted', () => {
+    const r = sanitizeReview({
+      findings: [{ file: 'b.ts', message: 'boom', severity: 'major' }],
+      files_reviewed: [
+        { path: 'a.ts', status: 'findings' },
+        { path: 'b.ts', status: 'clean' },
+      ],
+    })
+    expect(r.files_reviewed).toEqual([
+      { path: 'a.ts', status: 'clean' },
+      { path: 'b.ts', status: 'findings' },
+    ])
+  })
+
+  test('files_reviewed: a file carrying a finding but missing from the declaration is appended', () => {
+    const r = sanitizeReview({
+      findings: [{ file: 'c.ts', message: 'boom', severity: 'major' }],
+      files_reviewed: ['a.ts'],
+    })
+    expect(r.files_reviewed).toEqual([
+      { path: 'a.ts', status: 'clean' },
+      { path: 'c.ts', status: 'findings' },
+    ])
   })
 
   test('files_reviewed: capped at 500 entries', () => {
@@ -423,6 +453,46 @@ describe('groundReview', () => {
     expect(review).toEqual(input)
     expect(report.dropped).toEqual([])
     expect(report.verdict_escalated).toBe(false)
+  })
+
+  test('a deanchored finding still marks its file as findings', () => {
+    const { review } = groundReview(
+      reviewWith(
+        [{ file: 'src/auth.ts', line: 99999, severity: 'major', message: 'm' }],
+        {
+          files_reviewed: [
+            { path: 'src/auth.ts', status: 'findings' },
+            { path: 'docs/removed.md', status: 'clean' },
+          ],
+        },
+      ),
+      GROUND_DIFF,
+    )
+    expect(review.findings).toHaveLength(1)
+    expect(review.files_reviewed).toEqual([
+      { path: 'src/auth.ts', status: 'findings' },
+      { path: 'docs/removed.md', status: 'clean' },
+    ])
+  })
+
+  test('files_reviewed statuses follow the surviving findings after a drop', () => {
+    const { review } = groundReview(
+      reviewWith(
+        [{ file: 'src/ghost.ts', severity: 'major', message: 'dropped with its file' }],
+        { files_reviewed: [{ path: 'src/ghost.ts', status: 'findings' }] },
+      ),
+      GROUND_DIFF,
+    )
+    expect(review.findings).toEqual([])
+    expect(review.files_reviewed).toEqual([{ path: 'src/ghost.ts', status: 'clean' }])
+  })
+
+  test('files_reviewed stays absent when the reviewer declared nothing', () => {
+    const { review } = groundReview(
+      reviewWith([{ file: 'src/auth.ts', line: 11, severity: 'minor', message: 'm' }]),
+      GROUND_DIFF,
+    )
+    expect(review.files_reviewed).toBeUndefined()
   })
 })
 
