@@ -31,8 +31,7 @@ import { createSession, startServer } from './serve.js'
 import { printReviewSummary } from './summary.js'
 import { autoPushReview } from './sync.js'
 import { isInteractive, select } from './tui.js'
-import { ACCENT, GREEN, RED, bold, dim, paint, printBanner, printUpdateNotice, progressLabel, renderFieldRows, startSpinner, underline } from './ui.js'
-import { startUpdateCheck } from './version.js'
+import { ACCENT, GREEN, RED, bold, dim, paint, printBanner, progressLabel, renderFieldRows, startSpinner, underline } from './ui.js'
 import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
 
 export const REVIEW_GATE_EXIT_CODE = 2
@@ -519,7 +518,6 @@ export async function review(opts: {
   cwd: string
 }): Promise<void> {
   printBanner()
-  const latestVersion = startUpdateCheck()
   const cwd = repoRoot(opts.cwd)
   const config = loadConfig(cwd)
 
@@ -725,7 +723,6 @@ export async function review(opts: {
           : null
   console.log(`  ${dim(syncLine ?? t('review.syncHint'))}`)
   console.log(`  ${dim(t('review.ctrlc'))}`)
-  printUpdateNotice(await latestVersion)
   if (isInteractive()) {
     notifyDesktop(
       'codesema',

@@ -20,6 +20,11 @@ export function isNewerVersion(current: string, latest: string): boolean {
   return false
 }
 
+/** Strict x.y.z(-prerelease) shape: the tag ends up in a shell command, anything else is dropped. */
+export function isValidVersionTag(tag: string): boolean {
+  return /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(tag)
+}
+
 /**
  * Latest published version from the npm registry (dist-tags only, nothing sent).
  * Best-effort: returns null when offline, slow, or opted out via CODESEMA_NO_UPDATE_CHECK.
@@ -32,7 +37,7 @@ export function startUpdateCheck(): Promise<string | null> {
     .then(async (res) => {
       if (!res.ok) return null
       const tags = (await res.json()) as { latest?: unknown }
-      return typeof tags.latest === 'string' ? tags.latest : null
+      return typeof tags.latest === 'string' && isValidVersionTag(tags.latest) ? tags.latest : null
     })
     .catch(() => null)
 }

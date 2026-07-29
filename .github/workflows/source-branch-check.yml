@@ -1,0 +1,21 @@
+name: Source branch check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  from-develop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require develop as the source branch
+        run: |
+          if [ "$GITHUB_HEAD_REF" != "develop" ]; then
+            echo "PRs to main must come from develop (got $GITHUB_HEAD_REF)" >&2
+            exit 1
+          fi
+          echo "ok: source branch is develop"
