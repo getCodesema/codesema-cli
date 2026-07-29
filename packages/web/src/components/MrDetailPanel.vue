@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { ForgeMr } from '../types'
 
-defineProps<{ mr: ForgeMr }>()
-const emit = defineEmits<{ back: [] }>()
+defineProps<{ mr: ForgeMr; running: boolean; runError?: string | null }>()
+const emit = defineEmits<{ back: []; run: [mode: 'simple' | 'dual'] }>()
 </script>
 
 <template>
@@ -28,9 +28,18 @@ const emit = defineEmits<{ back: [] }>()
         </div>
       </dl>
 
-      <a class="mrd-link-btn" :href="mr.url" target="_blank" rel="noopener noreferrer">
-        {{ $t('mrs.detailOpenInForge') }}
-      </a>
+      <div class="mrd-actions">
+        <button class="mrd-run-btn" :disabled="running" @click="emit('run', 'simple')">
+          {{ $t('mrs.runReview') }}
+        </button>
+        <button class="mrd-run-btn" :disabled="running" @click="emit('run', 'dual')">
+          {{ $t('mrs.runDualReview') }}
+        </button>
+        <a class="mrd-link-btn" :href="mr.url" target="_blank" rel="noopener noreferrer">
+          {{ $t('mrs.detailOpenInForge') }}
+        </a>
+      </div>
+      <p v-if="runError" class="mrd-error">{{ runError }}</p>
     </section>
   </div>
 </template>
@@ -112,6 +121,35 @@ const emit = defineEmits<{ back: [] }>()
   font-size: 12.5px;
 }
 
+.mrd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.mrd-run-btn {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--codesema-line);
+  background: var(--codesema-panel);
+  color: var(--codesema-ink);
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.mrd-run-btn:hover:not(:disabled) {
+  border-color: var(--codesema-ink-3);
+}
+
+.mrd-run-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .mrd-link-btn {
   display: inline-block;
   font-size: 12.5px;
@@ -128,5 +166,11 @@ const emit = defineEmits<{ back: [] }>()
 
 .mrd-link-btn:hover {
   border-color: var(--codesema-accent);
+}
+
+.mrd-error {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  color: var(--codesema-risk-high);
 }
 </style>

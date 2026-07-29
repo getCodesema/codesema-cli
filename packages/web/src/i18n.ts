@@ -165,6 +165,11 @@ const en = {
   'mrs.detailAuthor': 'Author',
   'mrs.detailOpenInForge': 'Open in forge ↗',
   'mrs.detailBack': '← Back',
+  'mrs.runReview': 'Run review',
+  'mrs.runDualReview': 'Run dual review',
+  'mrs.reviewRunning': 'Reviewing…',
+  'mrs.runBusy': 'Another MR review is already running.',
+  'mrs.runError': 'Could not start the review.',
 }
 
 export type MessageKey = keyof typeof en
@@ -333,6 +338,11 @@ const fr: Record<MessageKey, string> = {
   'mrs.detailAuthor': 'Auteur',
   'mrs.detailOpenInForge': 'Ouvrir dans la forge ↗',
   'mrs.detailBack': '← Retour',
+  'mrs.runReview': 'Lancer la revue',
+  'mrs.runDualReview': 'Lancer la revue double',
+  'mrs.reviewRunning': 'Revue en cours…',
+  'mrs.runBusy': 'Une autre revue de MR est déjà en cours.',
+  'mrs.runError': "Impossible de démarrer la revue.",
 }
 
 const catalogs: Record<string, Record<MessageKey, string>> = { en, fr }

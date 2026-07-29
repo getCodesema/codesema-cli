@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import type { ForgeMr, ForgeMrsResult } from '../types'
 
-const props = defineProps<{ selectedNumber: number | null }>()
+const props = defineProps<{ selectedNumber: number | null; runningNumber?: number | null }>()
 const emit = defineEmits<{ select: [mr: ForgeMr] }>()
 
 const loading = ref(true)
@@ -83,6 +83,7 @@ defineExpose({ reload: load })
           </span>
           <span class="mrs-item-title">{{ mr.title }}</span>
           <span class="mrs-item-meta codesema-muted">{{ mr.author }} · {{ formatUpdatedAt(mr.updatedAt) }}</span>
+          <span v-if="mr.number === props.runningNumber" class="mrs-item-running">{{ $t('mrs.reviewRunning') }}</span>
         </button>
       </li>
     </ul>
@@ -243,5 +244,12 @@ defineExpose({ reload: load })
 
 .mrs-item-meta {
   font-size: 11px;
+}
+
+.mrs-item-running {
+  align-self: flex-start;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--codesema-accent);
 }
 </style>

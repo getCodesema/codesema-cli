@@ -106,6 +106,24 @@ describe('createSession dual mode', () => {
     session.setJudge({ total: 3, decisions: [{ id: 'A0', action: 'keep' }] })
     expect(session.judge()?.decisions).toHaveLength(1)
   })
+
+  test('reset clears the record and partials and returns to a fresh reviewing phase', () => {
+    const record = sanitizeRecord({
+      meta: { title: 't', branch: 'feature/x', target: 'develop' },
+      review: { verdict: 'approve', summary: 'looks good' },
+    })
+    const session = createSession({ record: record! })
+    session.setPartial(partial)
+    session.setJudging(2)
+    expect(session.status().phase).toBe('judging')
+
+    session.reset()
+
+    expect(session.record()).toBeNull()
+    expect(session.partial()).toBeNull()
+    expect(session.judge()).toBeNull()
+    expect(session.status().phase).toBe('reviewing')
+  })
 })
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
@@ -224,6 +242,15 @@ describe('startServer', () => {
     expect(start.status).toBe(501)
   })
 
+  test('reports the MR review endpoint as unavailable without a runner', async () => {
+    const status = await rawRequest(port, '/api/mrs/review/status')
+    expect(status.status).toBe(200)
+    expect(JSON.parse(status.body)).toEqual({ available: false })
+
+    const start = await rawRequest(port, '/api/mrs/review', { method: 'POST', body: '{"number":1,"mode":"simple"}' })
+    expect(start.status).toBe(501)
+  })
+
   test('rejects any request whose Host is not loopback', async () => {
     expect((await rawRequest(port, '/api/status', { headers: { host: 'evil.com' } })).status).toBe(403)
     expect((await rawRequest(port, '/', { headers: { host: 'evil.com' } })).status).toBe(403)
@@ -313,6 +340,74 @@ describe('startServer', () => {
         method: 'POST',
         headers: { 'x-codesema-fix-token': token },
         body: '{"findings":[1]}',
+      })
+      expect(busy.status).toBe(409)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('secures and routes the MR review endpoint when a runner is attached', async () => {
+    const calls: { number: number; mode: string }[] = []
+    let startResult: { ok: true } | { ok: false; code: number; error: string } = { ok: true }
+    const runner = {
+      status: () => ({ available: true as const, phase: 'idle' as const }),
+      start: async (number: number, mode: 'simple' | 'dual') => {
+        calls.push({ number, mode })
+        return startResult
+      },
+    }
+    const mrSession = createSession()
+    const started = await startServer(mrSession, { cwd: repoDir, port: 4931, mrReviewRunner: runner })
+    try {
+      const html = await rawRequest(started.port, '/')
+      const tokenMatch = /__CODESEMA_MRREVIEW_TOKEN__="([a-f0-9]{32})"/.exec(html.body)
+      expect(tokenMatch).not.toBeNull()
+      const token = tokenMatch![1]!
+
+      const status = await rawRequest(started.port, '/api/mrs/review/status')
+      expect(JSON.parse(status.body)).toMatchObject({ available: true, phase: 'idle' })
+
+      const noToken = await rawRequest(started.port, '/api/mrs/review', {
+        method: 'POST',
+        body: '{"number":1,"mode":"simple"}',
+      })
+      expect(noToken.status).toBe(403)
+      const badToken = await rawRequest(started.port, '/api/mrs/review', {
+        method: 'POST',
+        headers: { 'x-codesema-mrreview-token': 'wrong' },
+        body: '{"number":1,"mode":"simple"}',
+      })
+      expect(badToken.status).toBe(403)
+      expect(calls).toHaveLength(0)
+
+      const badBody = await rawRequest(started.port, '/api/mrs/review', {
+        method: 'POST',
+        headers: { 'x-codesema-mrreview-token': token },
+        body: '{"number":"1","mode":"simple"}',
+      })
+      expect(badBody.status).toBe(400)
+
+      const badMode = await rawRequest(started.port, '/api/mrs/review', {
+        method: 'POST',
+        headers: { 'x-codesema-mrreview-token': token },
+        body: '{"number":1,"mode":"bogus"}',
+      })
+      expect(badMode.status).toBe(400)
+
+      const ok = await rawRequest(started.port, '/api/mrs/review', {
+        method: 'POST',
+        headers: { 'x-codesema-mrreview-token': token },
+        body: '{"number":1,"mode":"dual"}',
+      })
+      expect(ok.status).toBe(202)
+      expect(calls).toEqual([{ number: 1, mode: 'dual' }])
+
+      startResult = { ok: false, code: 409, error: 'a review is already running' }
+      const busy = await rawRequest(started.port, '/api/mrs/review', {
+        method: 'POST',
+        headers: { 'x-codesema-mrreview-token': token },
+        body: '{"number":2,"mode":"simple"}',
       })
       expect(busy.status).toBe(409)
     } finally {

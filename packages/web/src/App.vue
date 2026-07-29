@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
-import type { ForgeMr, JudgeLive, LiveStatus, PartialReview, ReviewRecord } from './types'
+import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import type { ForgeMr, JudgeLive, LiveStatus, MrReviewMode, MrReviewStatus, PartialReview, ReviewRecord } from './types'
 import MrDetailPanel from './components/MrDetailPanel.vue'
 import MrSidebar from './components/MrSidebar.vue'
 import RepoSettings from './components/RepoSettings.vue'
@@ -77,13 +77,83 @@ async function load() {
   }
 }
 
+// ── Run a review on an open MR through the local CLI server ───
+const isClient = typeof window !== 'undefined'
+const mrReviewToken = isClient
+  ? (window as { __CODESEMA_MRREVIEW_TOKEN__?: string }).__CODESEMA_MRREVIEW_TOKEN__
+  : undefined
+
+const mrReviewStatus = ref<MrReviewStatus | null>(null)
+const mrReviewStartError = ref<string | null>(null)
+let mrReviewPollTimer: ReturnType<typeof setInterval> | undefined
+
+const mrReviewRunningNumber = computed(() =>
+  mrReviewStatus.value?.available && mrReviewStatus.value.phase === 'running' ? mrReviewStatus.value.number : null,
+)
+const mrReviewRunning = computed(() => mrReviewRunningNumber.value !== null)
+
+function stopMrReviewPolling() {
+  if (!mrReviewPollTimer) return
+  clearInterval(mrReviewPollTimer)
+  mrReviewPollTimer = undefined
+}
+
+function startMrReviewPolling() {
+  if (!mrReviewPollTimer) mrReviewPollTimer = setInterval(() => void refreshMrReviewStatus(), 1500)
+}
+
+async function refreshMrReviewStatus(): Promise<void> {
+  try {
+    const res = await fetch('/api/mrs/review/status')
+    if (!res.ok) return
+    const next = (await res.json()) as MrReviewStatus
+    mrReviewStatus.value = next
+    if (next.available && next.phase === 'running') startMrReviewPolling()
+    else stopMrReviewPolling()
+  } catch {
+    // local server stopped (Ctrl+C): keep the last known state
+  }
+}
+
+async function runMrReview(mr: ForgeMr, mode: MrReviewMode) {
+  if (!mrReviewToken || mrReviewRunning.value) return
+  mrReviewStartError.value = null
+  try {
+    const res = await fetch('/api/mrs/review', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-codesema-mrreview-token': mrReviewToken },
+      body: JSON.stringify({ number: mr.number, mode }),
+    })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: string } | null
+      mrReviewStartError.value = body?.error ?? `HTTP ${res.status}`
+      return
+    }
+    await refreshMrReviewStatus()
+    startMrReviewPolling()
+    view.value = 'review'
+    record.value = null
+    status.value = null
+    error.value = null
+    await load()
+  } catch (err) {
+    mrReviewStartError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 onMounted(load)
+onMounted(() => void refreshMrReviewStatus())
 onUnmounted(closeEvents)
+onUnmounted(stopMrReviewPolling)
 </script>
 
 <template>
   <div class="app-layout">
-    <MrSidebar :selected-number="view === 'mr' ? (selectedMr?.number ?? null) : null" @select="selectMr" />
+    <MrSidebar
+      :selected-number="view === 'mr' ? (selectedMr?.number ?? null) : null"
+      :running-number="mrReviewRunningNumber"
+      @select="selectMr"
+    />
 
     <div class="app-main">
       <nav class="app-nav">
@@ -92,7 +162,14 @@ onUnmounted(closeEvents)
         </button>
       </nav>
 
-      <MrDetailPanel v-if="view === 'mr' && selectedMr" :mr="selectedMr" @back="backFromMr" />
+      <MrDetailPanel
+        v-if="view === 'mr' && selectedMr"
+        :mr="selectedMr"
+        :running="mrReviewRunning"
+        :run-error="mrReviewStartError"
+        @back="backFromMr"
+        @run="(mode) => runMrReview(selectedMr!, mode)"
+      />
       <RepoSettings v-else-if="view === 'settings'" />
       <template v-else>
         <ReviewShell v-if="record" :record="record" />

@@ -9,6 +9,7 @@ import type { FixRunner } from './fix.js'
 import { listOpenMrs } from './forge-mrs.js'
 import { t } from './i18n.js'
 import type { JudgeDecision } from './dual.js'
+import type { MrReviewRunner } from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
 import { RULES_CONTENT_MAX_BYTES, readRulesContent, readSyncAutoPush, setSyncAutoPush, writeRulesContent } from './repo-config.js'
 
@@ -63,6 +64,8 @@ export type LiveSession = {
   setJudge: (judge: JudgeLive) => void
   setDone: (record: ReviewRecord) => void
   setError: (message: string) => void
+  /** Clears record/partials/judge and returns status to a fresh 'reviewing' phase, for a new run reusing this session (e.g. an MR review). */
+  reset: () => void
   subscribe: (listener: (event: SessionEvent) => void) => () => void
 }
 
@@ -126,6 +129,14 @@ export function createSession(initial?: { record?: ReviewRecord }): LiveSession 
     },
     setError(message) {
       status = { ...status, phase: 'error', error: message }
+      emitStatus()
+    },
+    reset() {
+      record = null
+      partial = null
+      partialB = null
+      judge = null
+      status = { phase: 'reviewing', started_at: new Date().toISOString() }
       emitStatus()
     },
     subscribe(listener) {
@@ -256,6 +267,7 @@ function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> 
 }
 
 type FixEndpoint = { runner: FixRunner; token: string }
+type MrReviewEndpoint = { runner: MrReviewRunner; token: string }
 type RepoConfigEndpoint = { cwd: string; token: string }
 
 /**
@@ -277,6 +289,35 @@ async function handleFixStart(req: IncomingMessage, res: ServerResponse, fix: Fi
     return sendText(res, 400, 'bad request')
   }
   const started = fix.runner.start(findings)
+  if (!started.ok) return sendJson(res, started.code, { error: started.error })
+  return sendJson(res, 202, { ok: true })
+}
+
+const MAX_MR_REVIEW_BODY_BYTES = 1024
+
+/**
+ * POST /api/mrs/review triggers an agent run (fetch, disposable worktree, review
+ * agent) that writes to the repo's .codesema/reviews, so it needs the same
+ * per-server CSRF token as /api/fix (see handleFixStart).
+ */
+async function handleMrReviewStart(
+  req: IncomingMessage,
+  res: ServerResponse,
+  mrReview: MrReviewEndpoint | undefined,
+): Promise<void> {
+  if (!mrReview) return sendJson(res, 501, { error: 'MR review runner unavailable' })
+  if (req.headers['x-codesema-mrreview-token'] !== mrReview.token) return sendText(res, 403, 'forbidden')
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_MR_REVIEW_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const b = body as { number?: unknown; mode?: unknown } | null
+  if (typeof b?.number !== 'number' || (b.mode !== 'simple' && b.mode !== 'dual')) {
+    return sendText(res, 400, 'bad request')
+  }
+  const started = await mrReview.runner.start(b.number, b.mode)
   if (!started.ok) return sendJson(res, started.code, { error: started.error })
   return sendJson(res, 202, { ok: true })
 }
@@ -343,6 +384,7 @@ function createRequestHandler(
   cwd: string,
   configToken: string,
   fix?: FixEndpoint,
+  mrReview?: MrReviewEndpoint,
 ) {
   let sseClients = 0
   const repoConfig: RepoConfigEndpoint = { cwd, token: configToken }
@@ -363,6 +405,7 @@ function createRequestHandler(
 
     if (req.method === 'POST') {
       if (pathname === '/api/fix') return void handleFixStart(req, res, fix)
+      if (pathname === '/api/mrs/review') return void handleMrReviewStart(req, res, mrReview)
       return sendText(res, 405, 'method not allowed')
     }
     if (req.method === 'PUT') {
@@ -390,6 +433,10 @@ function createRequestHandler(
       if (pathname === '/api/fix/status') {
         if (!fix) return sendJson(res, 200, { available: false })
         return sendJson(res, 200, fix.runner.status())
+      }
+      if (pathname === '/api/mrs/review/status') {
+        if (!mrReview) return sendJson(res, 200, { available: false })
+        return sendJson(res, 200, mrReview.runner.status())
       }
       if (pathname === '/api/events') {
         if (sseClients >= MAX_SSE_CLIENTS) return sendText(res, 503, 'too many event streams')
@@ -427,7 +474,7 @@ async function listen(
 
 export async function startServer(
   session: LiveSession,
-  opts: { cwd: string; port?: number; locale?: string; fixRunner?: FixRunner },
+  opts: { cwd: string; port?: number; locale?: string; fixRunner?: FixRunner; mrReviewRunner?: MrReviewRunner },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
     throw new Error(t('serve.noWebUi', { path: WEB_DIST }))
@@ -436,10 +483,14 @@ export async function startServer(
   const fix: FixEndpoint | undefined = opts.fixRunner
     ? { runner: opts.fixRunner, token: randomBytes(16).toString('hex') }
     : undefined
+  const mrReview: MrReviewEndpoint | undefined = opts.mrReviewRunner
+    ? { runner: opts.mrReviewRunner, token: randomBytes(16).toString('hex') }
+    : undefined
   const bootScript = [
     `window.__CODESEMA_LOCALE__=${JSON.stringify(opts.locale ?? 'en')}`,
     `window.__CODESEMA_CONFIG_TOKEN__=${JSON.stringify(configToken)}`,
     ...(fix ? [`window.__CODESEMA_FIX_TOKEN__=${JSON.stringify(fix.token)}`] : []),
+    ...(mrReview ? [`window.__CODESEMA_MRREVIEW_TOKEN__=${JSON.stringify(mrReview.token)}`] : []),
   ].join(';')
   const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8').replace(
     '</head>',
@@ -447,7 +498,7 @@ export async function startServer(
   )
 
   const { server, port } = await listen(
-    createRequestHandler(session, indexHtml, opts.cwd, configToken, fix),
+    createRequestHandler(session, indexHtml, opts.cwd, configToken, fix, mrReview),
     opts.port ?? 4400,
   )
   const stop = () =>

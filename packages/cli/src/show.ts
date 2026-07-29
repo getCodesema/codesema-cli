@@ -2,6 +2,7 @@ import { isRepoAgentTrusted, loadConfig, loadRepoConfig } from './config.js'
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
 import { repoRoot } from './git.js'
 import { t, uiLocale } from './i18n.js'
+import { createMrReviewRunner } from './mr-review-runner.js'
 import { openBrowser } from './open.js'
 import { archiveRecord, resolveRecord } from './record.js'
 import { createSession, startServer } from './serve.js'
@@ -27,16 +28,25 @@ export async function show(opts: { review?: string; port?: number; open: boolean
   const untrustedRepoAgent = Boolean(
     agentCommand && repoAgent === agentCommand && !isRepoAgentTrusted(cwd, agentCommand),
   )
+  const timeoutMs = (config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
   const fixRunner =
     agentCommand && !untrustedRepoAgent
       ? createFixRunner({
           getRecord: () => session.record(),
           cwd,
           command: agentCommand,
-          timeoutMs: (config.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
+          timeoutMs,
         })
       : undefined
-  const { url } = await startServer(session, { cwd, port: opts.port ?? config.port, locale: uiLocale(), fixRunner })
+  const mrReviewRunner =
+    agentCommand && !untrustedRepoAgent ? createMrReviewRunner({ cwd, session, agentCommand, timeoutMs }) : undefined
+  const { url } = await startServer(session, {
+    cwd,
+    port: opts.port ?? config.port,
+    locale: uiLocale(),
+    fixRunner,
+    mrReviewRunner,
+  })
   console.log('')
   console.log(`codesema — ${record.meta.branch} → ${record.meta.target}`)
   console.log(`  ${url}`)

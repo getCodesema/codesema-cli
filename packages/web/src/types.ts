@@ -149,3 +149,14 @@ export type ForgeMr = {
 export type ForgeMrsResult =
   | { available: true; mrs: ForgeMr[] }
   | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
+
+// Mirrors packages/cli/src/mr-review-runner.ts and the /api/mrs/review endpoints.
+
+export type MrReviewMode = 'simple' | 'dual'
+
+export type MrReviewStatus =
+  | { available: false }
+  | { available: true; phase: 'idle' }
+  | { available: true; phase: 'running'; number: number; mode: MrReviewMode; started_at: string }
+  | { available: true; phase: 'done'; number: number; mode: MrReviewMode }
+  | { available: true; phase: 'error'; number: number; mode: MrReviewMode; error: string }

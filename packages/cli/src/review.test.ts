@@ -8,6 +8,7 @@ import type { PrepInput } from './prep.js'
 import {
   AgentOutputError,
   agentVisibleInput,
+  buildFullReviewPrompt,
   extractReviewJson,
   groundingReportLines,
   missingReviewedFiles,
@@ -15,6 +16,7 @@ import {
   reviewInstructions,
   runAgentJsonWithRetry,
   runDualFlow,
+  runSimpleFlow,
 } from './review.js'
 import { createSession } from './serve.js'
 
@@ -307,5 +309,135 @@ describe('runDualFlow', () => {
     expect(outcome.record.review.findings).toHaveLength(1)
     expect(outcome.record.review.findings[0]?.consensus).toBe(true)
     expect(outcome.record.meta.dual).toEqual({ merged: 1, rejected: 0, added_by_b: 0 })
+  }, 20000)
+})
+
+describe('buildFullReviewPrompt', () => {
+  test('embeds the reviewer instructions, the input and the diff', () => {
+    const input: PrepInput = {
+      version: 1,
+      generated_by: 'codesema prep',
+      title: 'feature/x',
+      branch: 'feature/x',
+      target: 'develop',
+      target_source: 'heuristic',
+      merge_base: 'abc123',
+      head_sha: 'def456',
+      repo_root: '/tmp/x',
+      commits: ['feat: a'],
+      files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
+      custom_instructions: null,
+      rules: null,
+      impact_candidates: null,
+      diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
+    }
+    const prompt = buildFullReviewPrompt(input)
+    expect(prompt).toContain('You are a senior code reviewer')
+    expect(prompt).toContain('"branch": "feature/x"')
+    expect(prompt).toContain('-old\\n+new')
+    expect(prompt).toContain('Output ONLY the JSON object now.')
+  })
+})
+
+describe('runSimpleFlow', () => {
+  const tempDirs: string[] = []
+
+  afterAll(() => {
+    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
+  })
+
+  function setupSimpleRepo(agentPayload: string, exitCode = 0) {
+    const repo = mkdtempSync(join(tmpdir(), 'codesema-simple-'))
+    tempDirs.push(repo)
+    const workDir = join(repo, '.codesema')
+    mkdirSync(workDir)
+    const agentScript = join(repo, 'agent.sh')
+    writeFileSync(
+      agentScript,
+      `#!/bin/sh\ncat > /dev/null\nprintf '%s' '${agentPayload}'\nexit ${exitCode}\n`,
+    )
+    const input: PrepInput = {
+      version: 1,
+      generated_by: 'codesema prep',
+      title: 'feature/x',
+      branch: 'feature/x',
+      target: 'develop',
+      target_source: 'heuristic',
+      merge_base: 'abc123',
+      head_sha: 'def456',
+      repo_root: repo,
+      commits: ['feat: a'],
+      files: [{ path: 'a.ts', additions: 1, deletions: 0 }],
+      custom_instructions: null,
+      rules: null,
+      impact_candidates: null,
+      diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
+    }
+    writeFileSync(join(workDir, 'input.json'), JSON.stringify(input))
+    return { repo, workDir, agentScript, input }
+  }
+
+  const flowOpts = (fixture: ReturnType<typeof setupSimpleRepo>) => ({
+    agentCommand: `sh "${fixture.agentScript}"`,
+    input: fixture.input,
+    dir: fixture.workDir,
+    timeoutMs: 15000,
+    session: createSession(),
+    prompt: buildFullReviewPrompt(fixture.input),
+    incremental: false,
+  })
+
+  test('returns the grounded record on a valid agent response', async () => {
+    const fixture = setupSimpleRepo(REVIEW)
+
+    const outcome = await runSimpleFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+    expect(outcome.record.review.verdict).toBe('approve')
+    expect(readFileSync(join(fixture.workDir, 'review.json'), 'utf8')).toContain('"verdict"')
+  }, 20000)
+
+  test('reports a coverage gap line when files_reviewed omits a diffed file', async () => {
+    const payload = '{"verdict":"approve","summary":"ok","findings":[],"files_reviewed":[]}'
+    const fixture = setupSimpleRepo(payload)
+
+    const outcome = await runSimpleFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+    expect(outcome.reportLines.some((line) => line.includes('did not examine'))).toBe(true)
+  }, 20000)
+
+  test('an incremental run never reports a coverage gap', async () => {
+    const payload = '{"verdict":"approve","summary":"ok","findings":[],"files_reviewed":[]}'
+    const fixture = setupSimpleRepo(payload)
+
+    const outcome = await runSimpleFlow({ ...flowOpts(fixture), incremental: true })
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+    expect(outcome.reportLines.some((line) => line.includes('did not examine'))).toBe(false)
+  }, 20000)
+
+  test('a crashing agent surfaces a run failure', async () => {
+    const fixture = setupSimpleRepo('', 1)
+
+    const outcome = await runSimpleFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(false)
+    if (outcome.ok) return
+    expect(outcome.failure).toBe('run')
+  }, 20000)
+
+  test('unparseable agent output surfaces an output failure with the raw text', async () => {
+    const fixture = setupSimpleRepo('not json at all')
+
+    const outcome = await runSimpleFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(false)
+    if (outcome.ok) return
+    expect(outcome.failure).toBe('output')
+    expect(outcome.rawOutput).toContain('not json at all')
   }, 20000)
 })
