@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { computeDiffSummary, computePrepInput, detectTarget, prep } from './prep.js'
@@ -178,7 +178,7 @@ describe('computePrepInput', () => {
   test('prep still writes input.json by consuming computePrepInput', () => {
     const input = prep({ target: 'develop', cwd: repo, quiet: true })
     expect(existsSync(join(repo, '.codesema', 'input.json'))).toBe(true)
-    expect(JSON.parse(execFileSync('cat', [join(repo, '.codesema', 'input.json')], { encoding: 'utf8' })).branch).toBe(input.branch)
+    expect(JSON.parse(readFileSync(join(repo, '.codesema', 'input.json'), 'utf8')).branch).toBe(input.branch)
   })
 })
 
