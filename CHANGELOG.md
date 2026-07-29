@@ -3,7 +3,7 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
-## [0.9.0] - 2026-07-29
+## [0.10.0] - 2026-07-29
 
 ### Added
 
