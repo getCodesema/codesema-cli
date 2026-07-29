@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { detectTarget, prep } from './prep.js'
+import { computeDiffSummary, computePrepInput, detectTarget, prep } from './prep.js'
 
 let repo: string
 
@@ -162,5 +162,37 @@ describe('prep', () => {
     } finally {
       run(['checkout', 'feature/x'])
     }
+  })
+})
+
+describe('computePrepInput', () => {
+  test('computes the exact same input as prep, without writing .codesema/input.json', () => {
+    rmSync(join(repo, '.codesema'), { recursive: true, force: true })
+    const input = computePrepInput({ target: 'develop', cwd: repo })
+    expect(input.branch).toBe('feature/x')
+    expect(input.target).toBe('develop')
+    expect(input.commits).toEqual(['feat: fichier accentué'])
+    expect(existsSync(join(repo, '.codesema', 'input.json'))).toBe(false)
+  })
+
+  test('prep still writes input.json by consuming computePrepInput', () => {
+    const input = prep({ target: 'develop', cwd: repo, quiet: true })
+    expect(existsSync(join(repo, '.codesema', 'input.json'))).toBe(true)
+    expect(JSON.parse(execFileSync('cat', [join(repo, '.codesema', 'input.json')], { encoding: 'utf8' })).branch).toBe(input.branch)
+  })
+})
+
+describe('computeDiffSummary', () => {
+  test('pure diff computation between two refs, no target detection and no disk writes', () => {
+    rmSync(join(repo, '.codesema'), { recursive: true, force: true })
+    const summary = computeDiffSummary('feature/x', 'develop', repo)
+    expect(summary.commits).toEqual(['feat: fichier accentué'])
+    expect(summary.files.map((f) => f.path)).toEqual(['café.txt'])
+    expect(summary.diff).toContain('+++ b/café.txt')
+    expect(existsSync(join(repo, '.codesema'))).toBe(false)
+  })
+
+  test('throws when there is no merge base between the two refs', () => {
+    expect(() => computeDiffSummary('feature/x', 'does-not-exist', repo)).toThrow(/no merge-base/)
   })
 })

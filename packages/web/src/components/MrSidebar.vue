@@ -51,7 +51,7 @@ defineExpose({ reload: load })
 </script>
 
 <template>
-  <aside class="mrs-sidebar">
+  <section class="mrs-sidebar">
     <div class="mrs-header">
       <h2 class="mrs-title">{{ $t('mrs.title') }}</h2>
       <button class="mrs-refresh-btn" :disabled="loading" @click="load" :aria-label="$t('mrs.refresh')">
@@ -87,20 +87,15 @@ defineExpose({ reload: load })
         </button>
       </li>
     </ul>
-  </aside>
+  </section>
 </template>
 
 <style scoped>
 .mrs-sidebar {
-  width: 280px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
   padding: 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow-y: auto;
 }
 
 .mrs-header {

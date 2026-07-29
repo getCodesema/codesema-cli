@@ -1,21 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
-import type { ForgeMr, JudgeLive, LiveStatus, MrReviewMode, MrReviewStatus, PartialReview, ReviewRecord } from './types'
-import MrDetailPanel from './components/MrDetailPanel.vue'
+import type { ForgeMr, JudgeLive, LiveStatus, LocalBranch, MrReviewMode, MrReviewStatus, PartialReview, ReviewRecord, ReviewSource } from './types'
+import BranchSidebar from './components/BranchSidebar.vue'
+import MrDetailPanel, { type DetailSource } from './components/MrDetailPanel.vue'
 import MrSidebar from './components/MrSidebar.vue'
 import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
 
-const view = ref<'review' | 'settings' | 'mr'>('review')
-const selectedMr = shallowRef<ForgeMr | null>(null)
+const view = ref<'review' | 'settings' | 'detail'>('review')
+const selectedDetail = shallowRef<DetailSource | null>(null)
 
 function selectMr(mr: ForgeMr) {
-  selectedMr.value = mr
-  view.value = 'mr'
+  selectedDetail.value = { kind: 'mr', mr }
+  view.value = 'detail'
 }
 
-function backFromMr() {
+function selectBranch(branch: LocalBranch) {
+  selectedDetail.value = { kind: 'branch', branch }
+  view.value = 'detail'
+}
+
+function backFromDetail() {
   view.value = 'review'
 }
 
@@ -87,10 +93,16 @@ const mrReviewStatus = ref<MrReviewStatus | null>(null)
 const mrReviewStartError = ref<string | null>(null)
 let mrReviewPollTimer: ReturnType<typeof setInterval> | undefined
 
-const mrReviewRunningNumber = computed(() =>
-  mrReviewStatus.value?.available && mrReviewStatus.value.phase === 'running' ? mrReviewStatus.value.number : null,
+const runningSource = computed<ReviewSource | null>(() =>
+  mrReviewStatus.value?.available && mrReviewStatus.value.phase === 'running' ? mrReviewStatus.value.source : null,
 )
-const mrReviewRunning = computed(() => mrReviewRunningNumber.value !== null)
+const mrReviewRunningNumber = computed(() =>
+  runningSource.value?.kind === 'mr' ? runningSource.value.number : null,
+)
+const branchReviewRunningName = computed(() =>
+  runningSource.value?.kind === 'branch' ? runningSource.value.name : null,
+)
+const mrReviewRunning = computed(() => runningSource.value !== null)
 
 function stopMrReviewPolling() {
   if (!mrReviewPollTimer) return
@@ -115,14 +127,14 @@ async function refreshMrReviewStatus(): Promise<void> {
   }
 }
 
-async function runMrReview(mr: ForgeMr, mode: MrReviewMode) {
+async function runReview(source: ReviewSource, mode: MrReviewMode) {
   if (!mrReviewToken || mrReviewRunning.value) return
   mrReviewStartError.value = null
   try {
     const res = await fetch('/api/mrs/review', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-codesema-mrreview-token': mrReviewToken },
-      body: JSON.stringify({ number: mr.number, mode }),
+      body: JSON.stringify({ source, mode }),
     })
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: string } | null
@@ -149,11 +161,19 @@ onUnmounted(stopMrReviewPolling)
 
 <template>
   <div class="app-layout">
-    <MrSidebar
-      :selected-number="view === 'mr' ? (selectedMr?.number ?? null) : null"
-      :running-number="mrReviewRunningNumber"
-      @select="selectMr"
-    />
+    <aside class="app-sidebar">
+      <MrSidebar
+        :selected-number="view === 'detail' && selectedDetail?.kind === 'mr' ? selectedDetail.mr.number : null"
+        :running-number="mrReviewRunningNumber"
+        @select="selectMr"
+      />
+      <div class="app-sidebar-divider" />
+      <BranchSidebar
+        :selected-name="view === 'detail' && selectedDetail?.kind === 'branch' ? selectedDetail.branch.name : null"
+        :running-name="branchReviewRunningName"
+        @select="selectBranch"
+      />
+    </aside>
 
     <div class="app-main">
       <nav class="app-nav">
@@ -163,12 +183,12 @@ onUnmounted(stopMrReviewPolling)
       </nav>
 
       <MrDetailPanel
-        v-if="view === 'mr' && selectedMr"
-        :mr="selectedMr"
+        v-if="view === 'detail' && selectedDetail"
+        :source="selectedDetail"
         :running="mrReviewRunning"
         :run-error="mrReviewStartError"
-        @back="backFromMr"
-        @run="(mode) => runMrReview(selectedMr!, mode)"
+        @back="backFromDetail"
+        @run="(mode) => runReview(selectedDetail!.kind === 'mr' ? { kind: 'mr', number: selectedDetail!.mr.number } : { kind: 'branch', name: selectedDetail!.branch.name }, mode)"
       />
       <RepoSettings v-else-if="view === 'settings'" />
       <template v-else>
@@ -194,6 +214,22 @@ onUnmounted(stopMrReviewPolling)
   display: flex;
   align-items: stretch;
   min-height: 100vh;
+}
+
+.app-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--codesema-line);
+  background: var(--codesema-panel);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.app-sidebar-divider {
+  height: 1px;
+  background: var(--codesema-line);
+  margin: 0 12px;
 }
 
 .app-main {

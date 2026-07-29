@@ -170,6 +170,27 @@ const en = {
   'mrs.reviewRunning': 'Reviewing…',
   'mrs.runBusy': 'Another MR review is already running.',
   'mrs.runError': 'Could not start the review.',
+
+  'branches.title': 'Branches',
+  'branches.refresh': 'Refresh',
+  'branches.loading': 'Loading…',
+  'branches.empty': 'No local branch.',
+  'branches.loadError': 'Could not load branches.',
+  'branches.current': 'current',
+  'branches.inWorktree': 'in worktree',
+  'branches.collapse': 'Collapse',
+  'branches.expand': 'Expand',
+  'branches.detailTitle': 'Branch',
+  'branches.lastCommit': 'Last commit',
+
+  'preview.loading': 'Loading preview…',
+  'preview.loadError': 'Could not load the preview.',
+  'preview.commits': '{n} commit | {n} commits',
+  'preview.filesChanged': '{n} file | {n} files',
+  'preview.noFiles': 'No changed file.',
+  'preview.selectFileHint': 'Select a file to see its diff.',
+  'preview.diffLoadError': 'Could not load the diff.',
+  'preview.diffTruncated': 'This diff is too large and was truncated.',
 }
 
 export type MessageKey = keyof typeof en
@@ -343,6 +364,27 @@ const fr: Record<MessageKey, string> = {
   'mrs.reviewRunning': 'Revue en cours…',
   'mrs.runBusy': 'Une autre revue de MR est déjà en cours.',
   'mrs.runError': "Impossible de démarrer la revue.",
+
+  'branches.title': 'Branches',
+  'branches.refresh': 'Rafraîchir',
+  'branches.loading': 'Chargement…',
+  'branches.empty': 'Aucune branche locale.',
+  'branches.loadError': 'Impossible de charger les branches.',
+  'branches.current': 'courante',
+  'branches.inWorktree': 'en worktree',
+  'branches.collapse': 'Replier',
+  'branches.expand': 'Déplier',
+  'branches.detailTitle': 'Branche',
+  'branches.lastCommit': 'Dernier commit',
+
+  'preview.loading': "Chargement de l'aperçu…",
+  'preview.loadError': "Impossible de charger l'aperçu.",
+  'preview.commits': '{n} commit | {n} commits',
+  'preview.filesChanged': '{n} fichier | {n} fichiers',
+  'preview.noFiles': 'Aucun fichier modifié.',
+  'preview.selectFileHint': 'Sélectionne un fichier pour voir son diff.',
+  'preview.diffLoadError': 'Impossible de charger le diff.',
+  'preview.diffTruncated': 'Ce diff est trop volumineux et a été tronqué.',
 }
 
 const catalogs: Record<string, Record<MessageKey, string>> = { en, fr }

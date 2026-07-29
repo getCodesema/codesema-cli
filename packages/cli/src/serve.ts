@@ -4,13 +4,15 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { listLocalBranches } from './branches.js'
 import type { ReviewRecord } from './contract.js'
 import type { FixRunner } from './fix.js'
 import { listOpenMrs } from './forge-mrs.js'
 import { t } from './i18n.js'
 import type { JudgeDecision } from './dual.js'
-import type { MrReviewRunner } from './mr-review-runner.js'
+import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
+import { buildFileDiff, buildPreview, parsePreviewPath, parsePreviewSource } from './preview.js'
 import { RULES_CONTENT_MAX_BYTES, readRulesContent, readSyncAutoPush, setSyncAutoPush, writeRulesContent } from './repo-config.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
@@ -295,10 +297,20 @@ async function handleFixStart(req: IncomingMessage, res: ServerResponse, fix: Fi
 
 const MAX_MR_REVIEW_BODY_BYTES = 1024
 
+/** Body-level shape check for the discriminated ReviewSource; null on any mismatch. */
+function parseReviewSourceBody(raw: unknown): ReviewSource | null {
+  if (!raw || typeof raw !== 'object') return null
+  const b = raw as { kind?: unknown; number?: unknown; name?: unknown }
+  if (b.kind === 'mr' && typeof b.number === 'number' && Number.isInteger(b.number)) return { kind: 'mr', number: b.number }
+  if (b.kind === 'branch' && typeof b.name === 'string' && b.name.length > 0) return { kind: 'branch', name: b.name }
+  return null
+}
+
 /**
- * POST /api/mrs/review triggers an agent run (fetch, disposable worktree, review
- * agent) that writes to the repo's .codesema/reviews, so it needs the same
- * per-server CSRF token as /api/fix (see handleFixStart).
+ * POST /api/mrs/review triggers an agent run (fetch or local checkout, disposable
+ * worktree, review agent) that writes to the repo's .codesema/reviews, so it needs
+ * the same per-server CSRF token as /api/fix (see handleFixStart). One route for
+ * both an open MR and a local branch: the body's `source.kind` discriminates.
  */
 async function handleMrReviewStart(
   req: IncomingMessage,
@@ -313,11 +325,12 @@ async function handleMrReviewStart(
   } catch {
     return sendText(res, 400, 'bad request')
   }
-  const b = body as { number?: unknown; mode?: unknown } | null
-  if (typeof b?.number !== 'number' || (b.mode !== 'simple' && b.mode !== 'dual')) {
+  const b = body as { source?: unknown; mode?: unknown } | null
+  const source = parseReviewSourceBody(b?.source)
+  if (!source || (b?.mode !== 'simple' && b?.mode !== 'dual')) {
     return sendText(res, 400, 'bad request')
   }
-  const started = await mrReview.runner.start(b.number, b.mode)
+  const started = await mrReview.runner.start(source, b?.mode as MrReviewMode)
   if (!started.ok) return sendJson(res, started.code, { error: started.error })
   return sendJson(res, 202, { ok: true })
 }
@@ -364,6 +377,33 @@ async function handleMrsList(res: ServerResponse, cwd: string): Promise<void> {
   sendJson(res, 200, result)
 }
 
+/** GET /api/preview?source=mr&number=N | ?source=branch&name=X: deterministic (no agent) MR/branch preview. */
+async function handlePreview(res: ServerResponse, cwd: string, params: URLSearchParams): Promise<void> {
+  const source = parsePreviewSource(params)
+  if (!source) return sendText(res, 400, 'bad request')
+  try {
+    const preview = await buildPreview(cwd, source)
+    return sendJson(res, 200, preview)
+  } catch (err) {
+    return sendJson(res, 404, { error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/** GET /api/preview/diff?source=...&path=<file>: diff of a single file from the preview's own file list,
+ *  capped in size (see PREVIEW_DIFF_MAX_CHARS); `path` is only ever used as a git pathspec, never as a
+ *  filesystem path. */
+async function handlePreviewDiff(res: ServerResponse, cwd: string, params: URLSearchParams): Promise<void> {
+  const source = parsePreviewSource(params)
+  const path = parsePreviewPath(params)
+  if (!source || !path) return sendText(res, 400, 'bad request')
+  try {
+    const result = await buildFileDiff(cwd, source, path)
+    return sendJson(res, 200, result)
+  } catch (err) {
+    return sendJson(res, 404, { error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
 async function serveStaticFile(res: ServerResponse, pathname: string): Promise<void> {
   const filePath = resolveStaticPath(WEB_DIST, pathname)
   if (!filePath) return sendText(res, 404, 'not found')
@@ -397,8 +437,11 @@ function createRequestHandler(
     if (!isLoopbackHost(req.headers.host)) return sendText(res, 403, 'forbidden')
 
     let pathname: string
+    let searchParams: URLSearchParams
     try {
-      pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      pathname = url.pathname
+      searchParams = url.searchParams
     } catch {
       return sendText(res, 400, 'bad request')
     }
@@ -429,6 +472,15 @@ function createRequestHandler(
       }
       if (pathname === '/api/mrs') {
         return void handleMrsList(res, cwd)
+      }
+      if (pathname === '/api/branches') {
+        return sendJson(res, 200, listLocalBranches(cwd))
+      }
+      if (pathname === '/api/preview') {
+        return void handlePreview(res, cwd, searchParams)
+      }
+      if (pathname === '/api/preview/diff') {
+        return void handlePreviewDiff(res, cwd, searchParams)
       }
       if (pathname === '/api/fix/status') {
         if (!fix) return sendJson(res, 200, { available: false })

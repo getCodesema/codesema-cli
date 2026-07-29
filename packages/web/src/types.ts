@@ -154,9 +154,42 @@ export type ForgeMrsResult =
 
 export type MrReviewMode = 'simple' | 'dual'
 
+export type ReviewSource = { kind: 'mr'; number: number } | { kind: 'branch'; name: string }
+
 export type MrReviewStatus =
   | { available: false }
   | { available: true; phase: 'idle' }
-  | { available: true; phase: 'running'; number: number; mode: MrReviewMode; started_at: string }
-  | { available: true; phase: 'done'; number: number; mode: MrReviewMode }
-  | { available: true; phase: 'error'; number: number; mode: MrReviewMode; error: string }
+  | { available: true; phase: 'running'; source: ReviewSource; mode: MrReviewMode; started_at: string }
+  | { available: true; phase: 'done'; source: ReviewSource; mode: MrReviewMode }
+  | { available: true; phase: 'error'; source: ReviewSource; mode: MrReviewMode; error: string }
+
+// Mirrors packages/cli/src/branches.ts and the /api/branches endpoint.
+
+export type LocalBranch = {
+  name: string
+  lastCommitRelative: string
+  subject: string
+  isCurrent: boolean
+  worktreePath: string | null
+}
+
+// Mirrors packages/cli/src/preview.ts and the /api/preview* endpoints.
+
+export type PreviewFileStatus = 'added' | 'deleted' | 'modified' | 'renamed'
+
+export type PreviewFile = {
+  path: string
+  additions: number
+  deletions: number
+  status: PreviewFileStatus
+}
+
+export type PreviewResult = {
+  branch: string
+  target: string
+  commits: string[]
+  files: PreviewFile[]
+  diffStats: { files: number; additions: number; deletions: number }
+}
+
+export type PreviewFileDiff = { diff: string; truncated: boolean }

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -247,7 +248,10 @@ describe('startServer', () => {
     expect(status.status).toBe(200)
     expect(JSON.parse(status.body)).toEqual({ available: false })
 
-    const start = await rawRequest(port, '/api/mrs/review', { method: 'POST', body: '{"number":1,"mode":"simple"}' })
+    const start = await rawRequest(port, '/api/mrs/review', {
+      method: 'POST',
+      body: '{"source":{"kind":"mr","number":1},"mode":"simple"}',
+    })
     expect(start.status).toBe(501)
   })
 
@@ -348,12 +352,12 @@ describe('startServer', () => {
   })
 
   test('secures and routes the MR review endpoint when a runner is attached', async () => {
-    const calls: { number: number; mode: string }[] = []
+    const calls: { source: unknown; mode: string }[] = []
     let startResult: { ok: true } | { ok: false; code: number; error: string } = { ok: true }
     const runner = {
       status: () => ({ available: true as const, phase: 'idle' as const }),
-      start: async (number: number, mode: 'simple' | 'dual') => {
-        calls.push({ number, mode })
+      start: async (source: unknown, mode: 'simple' | 'dual') => {
+        calls.push({ source, mode })
         return startResult
       },
     }
@@ -370,13 +374,13 @@ describe('startServer', () => {
 
       const noToken = await rawRequest(started.port, '/api/mrs/review', {
         method: 'POST',
-        body: '{"number":1,"mode":"simple"}',
+        body: '{"source":{"kind":"mr","number":1},"mode":"simple"}',
       })
       expect(noToken.status).toBe(403)
       const badToken = await rawRequest(started.port, '/api/mrs/review', {
         method: 'POST',
         headers: { 'x-codesema-mrreview-token': 'wrong' },
-        body: '{"number":1,"mode":"simple"}',
+        body: '{"source":{"kind":"mr","number":1},"mode":"simple"}',
       })
       expect(badToken.status).toBe(403)
       expect(calls).toHaveLength(0)
@@ -384,30 +388,38 @@ describe('startServer', () => {
       const badBody = await rawRequest(started.port, '/api/mrs/review', {
         method: 'POST',
         headers: { 'x-codesema-mrreview-token': token },
-        body: '{"number":"1","mode":"simple"}',
+        body: '{"source":{"kind":"mr","number":"1"},"mode":"simple"}',
       })
       expect(badBody.status).toBe(400)
 
       const badMode = await rawRequest(started.port, '/api/mrs/review', {
         method: 'POST',
         headers: { 'x-codesema-mrreview-token': token },
-        body: '{"number":1,"mode":"bogus"}',
+        body: '{"source":{"kind":"mr","number":1},"mode":"bogus"}',
       })
       expect(badMode.status).toBe(400)
 
       const ok = await rawRequest(started.port, '/api/mrs/review', {
         method: 'POST',
         headers: { 'x-codesema-mrreview-token': token },
-        body: '{"number":1,"mode":"dual"}',
+        body: '{"source":{"kind":"mr","number":1},"mode":"dual"}',
       })
       expect(ok.status).toBe(202)
-      expect(calls).toEqual([{ number: 1, mode: 'dual' }])
+      expect(calls).toEqual([{ source: { kind: 'mr', number: 1 }, mode: 'dual' }])
+
+      const branchOk = await rawRequest(started.port, '/api/mrs/review', {
+        method: 'POST',
+        headers: { 'x-codesema-mrreview-token': token },
+        body: '{"source":{"kind":"branch","name":"feature/x"},"mode":"simple"}',
+      })
+      expect(branchOk.status).toBe(202)
+      expect(calls[1]).toEqual({ source: { kind: 'branch', name: 'feature/x' }, mode: 'simple' })
 
       startResult = { ok: false, code: 409, error: 'a review is already running' }
       const busy = await rawRequest(started.port, '/api/mrs/review', {
         method: 'POST',
         headers: { 'x-codesema-mrreview-token': token },
-        body: '{"number":2,"mode":"simple"}',
+        body: '{"source":{"kind":"mr","number":2},"mode":"simple"}',
       })
       expect(busy.status).toBe(409)
     } finally {
@@ -488,6 +500,24 @@ describe('startServer', () => {
     expect(JSON.parse(res.body)).toEqual({ available: false, reason: 'no-remote' })
   })
 
+  test('reports no local branches outside a git repo', async () => {
+    const res = await rawRequest(port, '/api/branches')
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual([])
+  })
+
+  test('rejects a malformed preview source', async () => {
+    expect((await rawRequest(port, '/api/preview')).status).toBe(400)
+    expect((await rawRequest(port, '/api/preview?source=branch')).status).toBe(400)
+    expect((await rawRequest(port, '/api/preview?source=mr&number=abc')).status).toBe(400)
+    expect((await rawRequest(port, '/api/preview/diff?source=branch&name=x')).status).toBe(400)
+  })
+
+  test('404s a preview for a branch that does not exist', async () => {
+    const res = await rawRequest(port, '/api/preview?source=branch&name=nope')
+    expect(res.status).toBe(404)
+  })
+
   test('streams session events over SSE', async () => {
     const chunks: string[] = []
     const req = request({ host: '127.0.0.1', port, path: '/api/events' }, (res) => {
@@ -508,5 +538,81 @@ describe('startServer', () => {
     const stream = chunks.join('')
     expect(stream).toContain('data: {"summary":"streaming"')
     req.destroy()
+  })
+})
+
+describe('preview and branches endpoints', () => {
+  let previewRepo: string
+  let previewPort: number
+  let previewStop: () => Promise<void>
+
+  function runGit(args: string[]): void {
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: previewRepo, stdio: 'ignore' })
+  }
+
+  beforeAll(async () => {
+    previewRepo = mkdtempSync(join(tmpdir(), 'codesema-preview-repo-'))
+    runGit(['init', '-b', 'main'])
+    writeFileSync(join(previewRepo, 'a.txt'), 'base\n')
+    runGit(['add', '-A'])
+    runGit(['commit', '-m', 'init'])
+    runGit(['checkout', '-b', 'feature/x'])
+    writeFileSync(join(previewRepo, 'a.txt'), 'changed\n')
+    runGit(['add', '-A'])
+    runGit(['commit', '-m', 'feat: change'])
+    runGit(['checkout', 'main'])
+
+    const started = await startServer(createSession(), { cwd: previewRepo, port: 4941 })
+    previewPort = started.port
+    previewStop = started.stop
+  })
+
+  afterAll(async () => {
+    await previewStop()
+    rmSync(previewRepo, { recursive: true, force: true })
+  })
+
+  test('lists local branches with isCurrent and worktreePath', async () => {
+    const res = await rawRequest(previewPort, '/api/branches')
+    expect(res.status).toBe(200)
+    const branches = JSON.parse(res.body) as { name: string; isCurrent: boolean; worktreePath: string | null }[]
+    const main = branches.find((b) => b.name === 'main')
+    const feature = branches.find((b) => b.name === 'feature/x')
+    expect(main).toMatchObject({ isCurrent: true })
+    expect(main?.worktreePath).not.toBeNull()
+    expect(feature).toMatchObject({ isCurrent: false, worktreePath: null })
+  })
+
+  test('builds a deterministic preview for a local branch, without the full diff', async () => {
+    const res = await rawRequest(previewPort, '/api/preview?source=branch&name=feature/x')
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as {
+      branch: string
+      target: string
+      commits: string[]
+      files: { path: string; additions: number; deletions: number; status: string }[]
+      diffStats: { files: number; additions: number; deletions: number }
+      diff?: unknown
+    }
+    expect(body.branch).toBe('feature/x')
+    expect(body.target).toBe('main')
+    expect(body.commits).toEqual(['feat: change'])
+    expect(body.files).toEqual([{ path: 'a.txt', additions: 1, deletions: 1, status: 'modified' }])
+    expect(body.diffStats).toEqual({ files: 1, additions: 1, deletions: 1 })
+    expect(body.diff).toBeUndefined()
+  })
+
+  test('returns the diff of a single file from the preview', async () => {
+    const res = await rawRequest(previewPort, '/api/preview/diff?source=branch&name=feature/x&path=a.txt')
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as { diff: string; truncated: boolean }
+    expect(body.diff).toContain('-base')
+    expect(body.diff).toContain('+changed')
+    expect(body.truncated).toBe(false)
+  })
+
+  test('rejects a file path that is not part of the diff', async () => {
+    const res = await rawRequest(previewPort, '/api/preview/diff?source=branch&name=feature/x&path=nope.txt')
+    expect(res.status).toBe(404)
   })
 })

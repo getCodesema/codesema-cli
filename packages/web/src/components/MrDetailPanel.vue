@@ -1,8 +1,16 @@
 <script setup lang="ts">
-import type { ForgeMr } from '../types'
+import { computed } from 'vue'
+import type { ForgeMr, LocalBranch, ReviewSource } from '../types'
+import PreviewPanel from './PreviewPanel.vue'
 
-defineProps<{ mr: ForgeMr; running: boolean; runError?: string | null }>()
+export type DetailSource = { kind: 'mr'; mr: ForgeMr } | { kind: 'branch'; branch: LocalBranch }
+
+const props = defineProps<{ source: DetailSource; running: boolean; runError?: string | null }>()
 const emit = defineEmits<{ back: []; run: [mode: 'simple' | 'dual'] }>()
+
+const reviewSource = computed<ReviewSource>(() =>
+  props.source.kind === 'mr' ? { kind: 'mr', number: props.source.mr.number } : { kind: 'branch', name: props.source.branch.name },
+)
 </script>
 
 <template>
@@ -10,23 +18,40 @@ const emit = defineEmits<{ back: []; run: [mode: 'simple' | 'dual'] }>()
     <button class="mrd-back-btn" @click="emit('back')">{{ $t('mrs.detailBack') }}</button>
 
     <section class="mrd-section">
-      <span class="mrd-eyebrow codesema-muted">{{ $t('mrs.detailTitle') }} {{ $t('mrs.number', { n: mr.number }) }}</span>
-      <h1 class="mrd-title">{{ mr.title }}</h1>
+      <template v-if="source.kind === 'mr'">
+        <span class="mrd-eyebrow codesema-muted">{{ $t('mrs.detailTitle') }} {{ $t('mrs.number', { n: source.mr.number }) }}</span>
+        <h1 class="mrd-title">{{ source.mr.title }}</h1>
 
-      <dl class="mrd-fields">
-        <div class="mrd-field">
-          <dt class="codesema-muted">{{ $t('mrs.detailAuthor') }}</dt>
-          <dd>{{ mr.author }}</dd>
-        </div>
-        <div class="mrd-field">
-          <dt class="codesema-muted">{{ $t('mrs.detailSource') }}</dt>
-          <dd class="mrd-branch">{{ mr.sourceBranch }}</dd>
-        </div>
-        <div class="mrd-field">
-          <dt class="codesema-muted">{{ $t('mrs.detailTarget') }}</dt>
-          <dd class="mrd-branch">{{ mr.targetBranch }}</dd>
-        </div>
-      </dl>
+        <dl class="mrd-fields">
+          <div class="mrd-field">
+            <dt class="codesema-muted">{{ $t('mrs.detailAuthor') }}</dt>
+            <dd>{{ source.mr.author }}</dd>
+          </div>
+          <div class="mrd-field">
+            <dt class="codesema-muted">{{ $t('mrs.detailSource') }}</dt>
+            <dd class="mrd-branch">{{ source.mr.sourceBranch }}</dd>
+          </div>
+          <div class="mrd-field">
+            <dt class="codesema-muted">{{ $t('mrs.detailTarget') }}</dt>
+            <dd class="mrd-branch">{{ source.mr.targetBranch }}</dd>
+          </div>
+        </dl>
+      </template>
+      <template v-else>
+        <span class="mrd-eyebrow codesema-muted">{{ $t('branches.detailTitle') }}</span>
+        <h1 class="mrd-title mrd-title-mono">{{ source.branch.name }}</h1>
+
+        <dl class="mrd-fields">
+          <div class="mrd-field">
+            <dt class="codesema-muted">{{ $t('branches.lastCommit') }}</dt>
+            <dd>{{ source.branch.subject }} ({{ source.branch.lastCommitRelative }})</dd>
+          </div>
+          <div v-if="source.branch.worktreePath" class="mrd-field">
+            <dt class="codesema-muted">{{ $t('branches.inWorktree') }}</dt>
+            <dd class="mrd-branch">{{ source.branch.worktreePath }}</dd>
+          </div>
+        </dl>
+      </template>
 
       <div class="mrd-actions">
         <button class="mrd-run-btn" :disabled="running" @click="emit('run', 'simple')">
@@ -35,11 +60,15 @@ const emit = defineEmits<{ back: []; run: [mode: 'simple' | 'dual'] }>()
         <button class="mrd-run-btn" :disabled="running" @click="emit('run', 'dual')">
           {{ $t('mrs.runDualReview') }}
         </button>
-        <a class="mrd-link-btn" :href="mr.url" target="_blank" rel="noopener noreferrer">
+        <a v-if="source.kind === 'mr'" class="mrd-link-btn" :href="source.mr.url" target="_blank" rel="noopener noreferrer">
           {{ $t('mrs.detailOpenInForge') }}
         </a>
       </div>
       <p v-if="runError" class="mrd-error">{{ runError }}</p>
+    </section>
+
+    <section class="mrd-section mrd-preview">
+      <PreviewPanel :source="reviewSource" />
     </section>
   </div>
 </template>
@@ -89,6 +118,15 @@ const emit = defineEmits<{ back: []; run: [mode: 'simple' | 'dual'] }>()
   color: var(--codesema-ink);
   margin: 6px 0 20px;
   line-height: 1.4;
+}
+
+.mrd-title-mono {
+  font-family: var(--font-mono);
+  font-size: 16px;
+}
+
+.mrd-preview {
+  margin-top: 20px;
 }
 
 .mrd-fields {
