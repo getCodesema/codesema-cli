@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import type { JudgeLive, LiveStatus, PartialReview, ReviewRecord } from './types'
+import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
+
+const view = ref<'review' | 'settings'>('review')
 
 // shallowRef: the record is written once then never mutated; deep reactivity over
 // its diff + findings would only add proxy overhead on every read during render.
@@ -67,21 +70,53 @@ onUnmounted(closeEvents)
 </script>
 
 <template>
-  <ReviewShell v-if="record" :record="record" />
-  <ReviewLive v-else-if="status && !error" :status="status" :partial="partial" :partial-b="partialB" :judge="judge" />
-  <div v-else class="app-state">
-    <template v-if="error">
-      <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>
-      <button class="app-retry" @click="load">{{ $t('app.retry') }}</button>
-    </template>
-    <template v-else>
-      <span class="app-spinner" aria-hidden="true" />
-      <p class="codesema-muted">{{ $t('app.loading') }}</p>
-    </template>
-  </div>
+  <nav class="app-nav">
+    <button class="app-nav-btn" @click="view = view === 'settings' ? 'review' : 'settings'">
+      {{ view === 'settings' ? $t('nav.backToReview') : $t('nav.settings') }}
+    </button>
+  </nav>
+
+  <RepoSettings v-if="view === 'settings'" />
+  <template v-else>
+    <ReviewShell v-if="record" :record="record" />
+    <ReviewLive v-else-if="status && !error" :status="status" :partial="partial" :partial-b="partialB" :judge="judge" />
+    <div v-else class="app-state">
+      <template v-if="error">
+        <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>
+        <button class="app-retry" @click="load">{{ $t('app.retry') }}</button>
+      </template>
+      <template v-else>
+        <span class="app-spinner" aria-hidden="true" />
+        <p class="codesema-muted">{{ $t('app.loading') }}</p>
+      </template>
+    </div>
+  </template>
 </template>
 
 <style scoped>
+.app-nav {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 20px 0;
+}
+
+.app-nav-btn {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--codesema-line);
+  background: var(--codesema-panel);
+  color: var(--codesema-ink-2);
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.app-nav-btn:hover {
+  border-color: var(--codesema-ink-3);
+}
+
 .app-state {
   min-height: 60vh;
   display: flex;

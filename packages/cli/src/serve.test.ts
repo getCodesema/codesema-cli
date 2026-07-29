@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { readdirSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sanitizeRecord } from './contract.js'
@@ -153,16 +154,26 @@ describe('startServer', () => {
   let session: LiveSession
   let port: number
   let stop: () => Promise<void>
+  let repoDir: string
+  let configDir: string
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
 
   beforeAll(async () => {
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-serve-repo-'))
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-serve-config-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
     session = createSession()
-    const started = await startServer(session, { port: 4901 })
+    const started = await startServer(session, { cwd: repoDir, port: 4901 })
     port = started.port
     stop = started.stop
   })
 
   afterAll(async () => {
     await stop()
+    if (previousConfigDir === undefined) delete process.env.CODESEMA_CONFIG_DIR
+    else process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    rmSync(repoDir, { recursive: true, force: true })
+    rmSync(configDir, { recursive: true, force: true })
   })
 
   test('serves the embedded index at the root', async () => {
@@ -262,7 +273,7 @@ describe('startServer', () => {
       },
     }
     const fixSession = createSession()
-    const started = await startServer(fixSession, { port: 4921, fixRunner: runner })
+    const started = await startServer(fixSession, { cwd: repoDir, port: 4921, fixRunner: runner })
     try {
       const html = await rawRequest(started.port, '/')
       const tokenMatch = /__CODESEMA_FIX_TOKEN__="([a-f0-9]{32})"/.exec(html.body)
@@ -307,6 +318,73 @@ describe('startServer', () => {
     } finally {
       await started.stop()
     }
+  })
+
+  test('reports the effective repo config as json', async () => {
+    const res = await rawRequest(port, '/api/config')
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ rulesContent: '', syncAutoPush: false })
+  })
+
+  test('rejects config mutations without a valid config token', async () => {
+    const noToken = await rawRequest(port, '/api/config/rules', { method: 'PUT', body: '{"content":"- rule"}' })
+    expect(noToken.status).toBe(403)
+    const badToken = await rawRequest(port, '/api/config/sync-auto-push', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': 'wrong' },
+      body: '{"enabled":true}',
+    })
+    expect(badToken.status).toBe(403)
+  })
+
+  test('writes rules content and toggles sync-auto-push through the config token', async () => {
+    const html = await rawRequest(port, '/')
+    const tokenMatch = /__CODESEMA_CONFIG_TOKEN__="([a-f0-9]{32})"/.exec(html.body)
+    expect(tokenMatch).not.toBeNull()
+    const token = tokenMatch![1]!
+
+    const badBody = await rawRequest(port, '/api/config/rules', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': token },
+      body: '{"content":42}',
+    })
+    expect(badBody.status).toBe(400)
+
+    const tooLarge = await rawRequest(port, '/api/config/rules', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': token },
+      body: JSON.stringify({ content: 'x'.repeat(200 * 1024) }),
+    })
+    expect(tooLarge.status).toBe(400)
+
+    const written = await rawRequest(port, '/api/config/rules', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': token },
+      body: JSON.stringify({ content: '- no any\n- errors carry a cause\n' }),
+    })
+    expect(written.status).toBe(200)
+    expect(readFileSync(join(repoDir, '.codesema', 'RULES.md'), 'utf8')).toBe('- no any\n- errors carry a cause\n')
+
+    const afterWrite = await rawRequest(port, '/api/config')
+    expect(JSON.parse(afterWrite.body)).toMatchObject({ rulesContent: '- no any\n- errors carry a cause\n' })
+
+    const badToggle = await rawRequest(port, '/api/config/sync-auto-push', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': token },
+      body: '{"enabled":"yes"}',
+    })
+    expect(badToggle.status).toBe(400)
+
+    const toggled = await rawRequest(port, '/api/config/sync-auto-push', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': token },
+      body: '{"enabled":true}',
+    })
+    expect(toggled.status).toBe(200)
+    expect(JSON.parse(toggled.body)).toEqual({ ok: true, syncAutoPush: true })
+
+    const afterToggle = await rawRequest(port, '/api/config')
+    expect(JSON.parse(afterToggle.body)).toMatchObject({ syncAutoPush: true })
   })
 
   test('streams session events over SSE', async () => {

@@ -3,6 +3,12 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.11.0] - unreleased
+
+### Added
+
+- Repo settings page in the web UI: a "Repo settings" link switches the local server's view to edit `.codesema/RULES.md` (full content, one rule per line, optional `|`-separated grid segments) and toggle `syncAutoPush`. New endpoints `GET /api/config`, `PUT /api/config/rules` and `PUT /api/config/sync-auto-push`, protected by the same per-server CSRF token pattern as `POST /api/fix`.
+
 ## [0.10.0] - 2026-07-29
 
 ### Added

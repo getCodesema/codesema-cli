@@ -574,6 +574,7 @@ export async function review(opts: {
 
   const timeoutMs = (opts.timeout ?? config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
   const { url, stop } = await startServer(session, {
+    cwd: input.repo_root,
     port: opts.port ?? config.port,
     locale: uiLocale(),
     fixRunner: createFixRunner({

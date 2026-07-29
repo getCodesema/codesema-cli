@@ -131,6 +131,23 @@ const en = {
   'fileTree.noteCount': '{n} note | {n} notes',
   'fileTree.expandAll': 'Expand all',
   'fileTree.collapseAll': 'Collapse all',
+
+  'nav.settings': 'Repo settings',
+  'nav.backToReview': '← Back to review',
+
+  'settings.title': 'Repo settings',
+  'settings.loading': 'Loading repo settings…',
+  'settings.loadError': 'Could not load the repo settings.',
+  'settings.rulesTitle': 'Review rules',
+  'settings.rulesHint': 'One rule per line, saved to .codesema/RULES.md. Optional | -separated segments (Scope, Where to look, Bad, Good, Exceptions).',
+  'settings.save': 'Save',
+  'settings.saved': 'Saved ✓',
+  'settings.saveError': 'Could not save the rules.',
+  'settings.autoSyncTitle': 'Auto-sync',
+  'settings.autoSyncHint': 'Automatically push every completed review to codesema.com.',
+  'settings.autoSyncOn': 'Auto-sync: on',
+  'settings.autoSyncOff': 'Auto-sync: off',
+  'settings.autoSyncError': 'Could not update auto-sync.',
 }
 
 export type MessageKey = keyof typeof en
@@ -264,6 +281,24 @@ const fr: Record<MessageKey, string> = {
   'fileTree.noteCount': '{n} note | {n} notes',
   'fileTree.expandAll': 'Tout déplier',
   'fileTree.collapseAll': 'Tout replier',
+
+  'nav.settings': 'Paramètres du dépôt',
+  'nav.backToReview': '← Retour à la revue',
+
+  'settings.title': 'Paramètres du dépôt',
+  'settings.loading': 'Chargement des paramètres…',
+  'settings.loadError': 'Impossible de charger les paramètres du dépôt.',
+  'settings.rulesTitle': 'Règles de revue',
+  'settings.rulesHint':
+    'Une règle par ligne, enregistrée dans .codesema/RULES.md. Segments optionnels séparés par | (Scope, Where to look, Bad, Good, Exceptions).',
+  'settings.save': 'Enregistrer',
+  'settings.saved': 'Enregistré ✓',
+  'settings.saveError': "Impossible d'enregistrer les règles.",
+  'settings.autoSyncTitle': 'Synchronisation automatique',
+  'settings.autoSyncHint': 'Pousser automatiquement chaque revue terminée vers codesema.com.',
+  'settings.autoSyncOn': 'Auto-sync : activée',
+  'settings.autoSyncOff': 'Auto-sync : désactivée',
+  'settings.autoSyncError': 'Impossible de mettre à jour la synchronisation automatique.',
 }
 
 const catalogs: Record<string, Record<MessageKey, string>> = { en, fr }

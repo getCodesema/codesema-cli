@@ -9,6 +9,7 @@ import type { FixRunner } from './fix.js'
 import { t } from './i18n.js'
 import type { JudgeDecision } from './dual.js'
 import type { PartialReview } from './partial.js'
+import { RULES_CONTENT_MAX_BYTES, readRulesContent, readSyncAutoPush, setSyncAutoPush, writeRulesContent } from './repo-config.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
 
@@ -227,17 +228,22 @@ const MAX_FIX_BODY_BYTES = 64 * 1024
 function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   return new Promise((resolveBody, reject) => {
     let size = 0
+    // Rejecting keeps the socket alive to write the response; destroying it here
+    // would reset the connection before the caller's error response goes out.
+    let tooLarge = false
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => {
+      if (tooLarge) return
       size += chunk.length
       if (size > maxBytes) {
+        tooLarge = true
         reject(new Error('body too large'))
-        req.destroy()
         return
       }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (tooLarge) return
       try {
         resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       } catch {
@@ -249,6 +255,7 @@ function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> 
 }
 
 type FixEndpoint = { runner: FixRunner; token: string }
+type RepoConfigEndpoint = { cwd: string; token: string }
 
 /**
  * POST /api/fix triggers an agent that EDITS the working tree, so it needs more
@@ -273,6 +280,43 @@ async function handleFixStart(req: IncomingMessage, res: ServerResponse, fix: Fi
   return sendJson(res, 202, { ok: true })
 }
 
+const MAX_RULES_BODY_BYTES = RULES_CONTENT_MAX_BYTES + 1024
+const MAX_SYNC_TOGGLE_BODY_BYTES = 1024
+
+/**
+ * PUT /api/config/* writes to the repo's .codesema/RULES.md or the global config
+ * file, so it needs the same per-server CSRF token as /api/fix (see handleFixStart).
+ */
+async function handleRulesUpdate(req: IncomingMessage, res: ServerResponse, repoConfig: RepoConfigEndpoint): Promise<void> {
+  if (req.headers['x-codesema-config-token'] !== repoConfig.token) return sendText(res, 403, 'forbidden')
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_RULES_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const content = (body as { content?: unknown } | null)?.content
+  if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > RULES_CONTENT_MAX_BYTES) {
+    return sendText(res, 400, 'bad request')
+  }
+  writeRulesContent(repoConfig.cwd, content)
+  return sendJson(res, 200, { ok: true })
+}
+
+async function handleSyncAutoPushUpdate(req: IncomingMessage, res: ServerResponse, repoConfig: RepoConfigEndpoint): Promise<void> {
+  if (req.headers['x-codesema-config-token'] !== repoConfig.token) return sendText(res, 403, 'forbidden')
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_SYNC_TOGGLE_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const enabled = (body as { enabled?: unknown } | null)?.enabled
+  if (typeof enabled !== 'boolean') return sendText(res, 400, 'bad request')
+  setSyncAutoPush(enabled)
+  return sendJson(res, 200, { ok: true, syncAutoPush: enabled })
+}
+
 async function serveStaticFile(res: ServerResponse, pathname: string): Promise<void> {
   const filePath = resolveStaticPath(WEB_DIST, pathname)
   if (!filePath) return sendText(res, 404, 'not found')
@@ -287,8 +331,15 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
-function createRequestHandler(session: LiveSession, indexHtml: string, fix?: FixEndpoint) {
+function createRequestHandler(
+  session: LiveSession,
+  indexHtml: string,
+  cwd: string,
+  configToken: string,
+  fix?: FixEndpoint,
+) {
   let sseClients = 0
+  const repoConfig: RepoConfigEndpoint = { cwd, token: configToken }
 
   return (req: IncomingMessage, res: ServerResponse): void => {
     // The server only binds to loopback, but a malicious site could still reach
@@ -308,6 +359,11 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
       if (pathname === '/api/fix') return void handleFixStart(req, res, fix)
       return sendText(res, 405, 'method not allowed')
     }
+    if (req.method === 'PUT') {
+      if (pathname === '/api/config/rules') return void handleRulesUpdate(req, res, repoConfig)
+      if (pathname === '/api/config/sync-auto-push') return void handleSyncAutoPushUpdate(req, res, repoConfig)
+      return sendText(res, 405, 'method not allowed')
+    }
     if (req.method !== 'GET') return sendText(res, 405, 'method not allowed')
 
     if (pathname.startsWith('/api/')) {
@@ -318,6 +374,9 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
         const record = session.record()
         if (!record) return sendJson(res, 202, session.status())
         return sendJson(res, 200, record)
+      }
+      if (pathname === '/api/config') {
+        return sendJson(res, 200, { rulesContent: readRulesContent(cwd), syncAutoPush: readSyncAutoPush(cwd) })
       }
       if (pathname === '/api/fix/status') {
         if (!fix) return sendJson(res, 200, { available: false })
@@ -359,16 +418,18 @@ async function listen(
 
 export async function startServer(
   session: LiveSession,
-  opts: { port?: number; locale?: string; fixRunner?: FixRunner },
+  opts: { cwd: string; port?: number; locale?: string; fixRunner?: FixRunner },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
     throw new Error(t('serve.noWebUi', { path: WEB_DIST }))
   }
+  const configToken = randomBytes(16).toString('hex')
   const fix: FixEndpoint | undefined = opts.fixRunner
     ? { runner: opts.fixRunner, token: randomBytes(16).toString('hex') }
     : undefined
   const bootScript = [
     `window.__CODESEMA_LOCALE__=${JSON.stringify(opts.locale ?? 'en')}`,
+    `window.__CODESEMA_CONFIG_TOKEN__=${JSON.stringify(configToken)}`,
     ...(fix ? [`window.__CODESEMA_FIX_TOKEN__=${JSON.stringify(fix.token)}`] : []),
   ].join(';')
   const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8').replace(
@@ -376,7 +437,10 @@ export async function startServer(
     `<script>${bootScript}</script></head>`,
   )
 
-  const { server, port } = await listen(createRequestHandler(session, indexHtml, fix), opts.port ?? 4400)
+  const { server, port } = await listen(
+    createRequestHandler(session, indexHtml, opts.cwd, configToken, fix),
+    opts.port ?? 4400,
+  )
   const stop = () =>
     new Promise<void>((resolveClose) => {
       server.closeAllConnections()

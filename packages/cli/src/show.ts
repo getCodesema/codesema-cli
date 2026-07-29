@@ -36,7 +36,7 @@ export async function show(opts: { review?: string; port?: number; open: boolean
           timeoutMs: (config.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
         })
       : undefined
-  const { url } = await startServer(session, { port: opts.port ?? config.port, locale: uiLocale(), fixRunner })
+  const { url } = await startServer(session, { cwd, port: opts.port ?? config.port, locale: uiLocale(), fixRunner })
   console.log('')
   console.log(`codesema — ${record.meta.branch} → ${record.meta.target}`)
   console.log(`  ${url}`)
