@@ -65,3 +65,13 @@ export function revListCount(range: string, cwd: string): number | null {
   const n = Number(out)
   return Number.isFinite(n) ? n : null
 }
+
+export type ForgeHint = 'github' | 'gitlab' | 'unknown'
+
+/** Best-effort forge guess from the origin remote URL, used to skip an irrelevant CLI probe. */
+export function detectForgeHint(cwd: string): ForgeHint {
+  const remote = (tryGit(['remote', 'get-url', 'origin'], cwd) ?? '').toLowerCase()
+  if (remote.includes('github')) return 'github'
+  if (remote.includes('gitlab')) return 'gitlab'
+  return 'unknown'
+}

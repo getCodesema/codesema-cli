@@ -148,6 +148,23 @@ const en = {
   'settings.autoSyncOn': 'Auto-sync: on',
   'settings.autoSyncOff': 'Auto-sync: off',
   'settings.autoSyncError': 'Could not update auto-sync.',
+
+  'mrs.title': 'Open MRs',
+  'mrs.refresh': 'Refresh',
+  'mrs.loading': 'Loading…',
+  'mrs.empty': 'No open merge request.',
+  'mrs.loadError': 'Could not load merge requests.',
+  'mrs.reasonNoRemote': 'No forge remote configured for this repo.',
+  'mrs.reasonNoCli': 'Install gh (GitHub) or glab (GitLab) to list merge requests.',
+  'mrs.reasonCliError': 'The forge CLI returned an unexpected response.',
+  'mrs.number': '#{n}',
+  'mrs.updated': 'Updated {date}',
+  'mrs.detailTitle': 'Merge request',
+  'mrs.detailSource': 'Source branch',
+  'mrs.detailTarget': 'Target branch',
+  'mrs.detailAuthor': 'Author',
+  'mrs.detailOpenInForge': 'Open in forge ↗',
+  'mrs.detailBack': '← Back',
 }
 
 export type MessageKey = keyof typeof en
@@ -299,6 +316,23 @@ const fr: Record<MessageKey, string> = {
   'settings.autoSyncOn': 'Auto-sync : activée',
   'settings.autoSyncOff': 'Auto-sync : désactivée',
   'settings.autoSyncError': 'Impossible de mettre à jour la synchronisation automatique.',
+
+  'mrs.title': 'MRs ouvertes',
+  'mrs.refresh': 'Rafraîchir',
+  'mrs.loading': 'Chargement…',
+  'mrs.empty': 'Aucune merge request ouverte.',
+  'mrs.loadError': 'Impossible de charger les merge requests.',
+  'mrs.reasonNoRemote': 'Aucun remote de forge configuré pour ce dépôt.',
+  'mrs.reasonNoCli': 'Installe gh (GitHub) ou glab (GitLab) pour lister les merge requests.',
+  'mrs.reasonCliError': "La CLI de la forge a renvoyé une réponse inattendue.",
+  'mrs.number': '#{n}',
+  'mrs.updated': 'Mise à jour {date}',
+  'mrs.detailTitle': 'Merge request',
+  'mrs.detailSource': 'Branche source',
+  'mrs.detailTarget': 'Branche cible',
+  'mrs.detailAuthor': 'Auteur',
+  'mrs.detailOpenInForge': 'Ouvrir dans la forge ↗',
+  'mrs.detailBack': '← Retour',
 }
 
 const catalogs: Record<string, Record<MessageKey, string>> = { en, fr }

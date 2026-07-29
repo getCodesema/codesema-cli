@@ -133,3 +133,19 @@ export type PartialReview = {
   findings: PartialFinding[]
   stepTitles: string[]
 }
+
+// Mirrors packages/cli/src/forge-mrs.ts and the /api/mrs endpoint.
+
+export type ForgeMr = {
+  number: number
+  title: string
+  author: string
+  sourceBranch: string
+  targetBranch: string
+  updatedAt: string
+  url: string
+}
+
+export type ForgeMrsResult =
+  | { available: true; mrs: ForgeMr[] }
+  | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }

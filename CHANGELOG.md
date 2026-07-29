@@ -8,6 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ### Added
 
 - Repo settings page in the web UI: a "Repo settings" link switches the local server's view to edit `.codesema/RULES.md` (full content, one rule per line, optional `|`-separated grid segments) and toggle `syncAutoPush`. New endpoints `GET /api/config`, `PUT /api/config/rules` and `PUT /api/config/sync-auto-push`, protected by the same per-server CSRF token pattern as `POST /api/fix`.
+- Read-only sidebar listing the repo's open merge requests in the web UI, backed by the forge CLI (`gh pr list` on GitHub, `glab mr list` on GitLab), sorted by last update. Selecting one opens a minimal detail panel (title, branches, author, link to the forge). New `GET /api/mrs` endpoint reporting `{ available: true, mrs }` or `{ available: false, reason }` (`no-remote`, `no-cli`, `cli-error`) when the forge CLI is missing, unauthenticated, or the repo has no remote.
 
 ## [0.10.0] - 2026-07-29
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ensureWorkDir } from './config.js'
-import { currentBranch, git, headSha, mergeBase, refExists, repoRoot, revListCount, tryExec, tryGit } from './git.js'
+import { currentBranch, detectForgeHint, git, headSha, mergeBase, refExists, repoRoot, revListCount, tryExec, tryGit } from './git.js'
 import { buildImpactCandidates, type ImpactCandidates } from './impact.js'
 import { t } from './i18n.js'
 import { loadRules } from './rules.js'
@@ -60,9 +60,9 @@ function sameBranch(a: string, b: string): boolean {
 function targetFromForge(cwd: string): { target: string; source: string } | null {
   // Each probe blocks up to 8s; when origin clearly names one forge, skip the other.
   // An unrecognized remote (self-hosted on a custom domain) still probes both.
-  const remote = (tryGit(['remote', 'get-url', 'origin'], cwd) ?? '').toLowerCase()
-  const skipGitlab = remote.includes('github')
-  const skipGithub = remote.includes('gitlab')
+  const hint = detectForgeHint(cwd)
+  const skipGitlab = hint === 'github'
+  const skipGithub = hint === 'gitlab'
 
   const glabOut = skipGitlab ? null : tryExec('glab', ['mr', 'view', '--output', 'json'], cwd)
   if (glabOut) {

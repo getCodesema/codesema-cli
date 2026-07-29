@@ -6,6 +6,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ReviewRecord } from './contract.js'
 import type { FixRunner } from './fix.js'
+import { listOpenMrs } from './forge-mrs.js'
 import { t } from './i18n.js'
 import type { JudgeDecision } from './dual.js'
 import type { PartialReview } from './partial.js'
@@ -317,6 +318,11 @@ async function handleSyncAutoPushUpdate(req: IncomingMessage, res: ServerRespons
   return sendJson(res, 200, { ok: true, syncAutoPush: enabled })
 }
 
+async function handleMrsList(res: ServerResponse, cwd: string): Promise<void> {
+  const result = await listOpenMrs(cwd)
+  sendJson(res, 200, result)
+}
+
 async function serveStaticFile(res: ServerResponse, pathname: string): Promise<void> {
   const filePath = resolveStaticPath(WEB_DIST, pathname)
   if (!filePath) return sendText(res, 404, 'not found')
@@ -377,6 +383,9 @@ function createRequestHandler(
       }
       if (pathname === '/api/config') {
         return sendJson(res, 200, { rulesContent: readRulesContent(cwd), syncAutoPush: readSyncAutoPush(cwd) })
+      }
+      if (pathname === '/api/mrs') {
+        return void handleMrsList(res, cwd)
       }
       if (pathname === '/api/fix/status') {
         if (!fix) return sendJson(res, 200, { available: false })

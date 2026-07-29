@@ -387,6 +387,12 @@ describe('startServer', () => {
     expect(JSON.parse(afterToggle.body)).toMatchObject({ syncAutoPush: true })
   })
 
+  test('reports the open MRs as unavailable when the repo has no remote', async () => {
+    const res = await rawRequest(port, '/api/mrs')
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ available: false, reason: 'no-remote' })
+  })
+
   test('streams session events over SSE', async () => {
     const chunks: string[] = []
     const req = request({ host: '127.0.0.1', port, path: '/api/events' }, (res) => {

@@ -1,11 +1,23 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
-import type { JudgeLive, LiveStatus, PartialReview, ReviewRecord } from './types'
+import type { ForgeMr, JudgeLive, LiveStatus, PartialReview, ReviewRecord } from './types'
+import MrDetailPanel from './components/MrDetailPanel.vue'
+import MrSidebar from './components/MrSidebar.vue'
 import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
 
-const view = ref<'review' | 'settings'>('review')
+const view = ref<'review' | 'settings' | 'mr'>('review')
+const selectedMr = shallowRef<ForgeMr | null>(null)
+
+function selectMr(mr: ForgeMr) {
+  selectedMr.value = mr
+  view.value = 'mr'
+}
+
+function backFromMr() {
+  view.value = 'review'
+}
 
 // shallowRef: the record is written once then never mutated; deep reactivity over
 // its diff + findings would only add proxy overhead on every read during render.
@@ -70,30 +82,48 @@ onUnmounted(closeEvents)
 </script>
 
 <template>
-  <nav class="app-nav">
-    <button class="app-nav-btn" @click="view = view === 'settings' ? 'review' : 'settings'">
-      {{ view === 'settings' ? $t('nav.backToReview') : $t('nav.settings') }}
-    </button>
-  </nav>
+  <div class="app-layout">
+    <MrSidebar :selected-number="view === 'mr' ? (selectedMr?.number ?? null) : null" @select="selectMr" />
 
-  <RepoSettings v-if="view === 'settings'" />
-  <template v-else>
-    <ReviewShell v-if="record" :record="record" />
-    <ReviewLive v-else-if="status && !error" :status="status" :partial="partial" :partial-b="partialB" :judge="judge" />
-    <div v-else class="app-state">
-      <template v-if="error">
-        <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>
-        <button class="app-retry" @click="load">{{ $t('app.retry') }}</button>
-      </template>
+    <div class="app-main">
+      <nav class="app-nav">
+        <button class="app-nav-btn" @click="view = view === 'settings' ? 'review' : 'settings'">
+          {{ view === 'settings' ? $t('nav.backToReview') : $t('nav.settings') }}
+        </button>
+      </nav>
+
+      <MrDetailPanel v-if="view === 'mr' && selectedMr" :mr="selectedMr" @back="backFromMr" />
+      <RepoSettings v-else-if="view === 'settings'" />
       <template v-else>
-        <span class="app-spinner" aria-hidden="true" />
-        <p class="codesema-muted">{{ $t('app.loading') }}</p>
+        <ReviewShell v-if="record" :record="record" />
+        <ReviewLive v-else-if="status && !error" :status="status" :partial="partial" :partial-b="partialB" :judge="judge" />
+        <div v-else class="app-state">
+          <template v-if="error">
+            <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>
+            <button class="app-retry" @click="load">{{ $t('app.retry') }}</button>
+          </template>
+          <template v-else>
+            <span class="app-spinner" aria-hidden="true" />
+            <p class="codesema-muted">{{ $t('app.loading') }}</p>
+          </template>
+        </div>
       </template>
     </div>
-  </template>
+  </div>
 </template>
 
 <style scoped>
+.app-layout {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+}
+
 .app-nav {
   display: flex;
   justify-content: flex-end;
