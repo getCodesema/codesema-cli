@@ -317,13 +317,27 @@ describe('assembleDualReview', () => {
     expect(review.findings[0]?.consensus).toBe(true)
   })
 
-  test('merged review carries the union of both lanes files_reviewed', () => {
+  test('merged review carries the union of both lanes files_reviewed, findings status winning', () => {
     const { review } = assembleDualReview(
-      reviewWith([], { files_reviewed: ['a.ts', 'b.ts'] }),
-      reviewWith([], { files_reviewed: ['b.ts', 'c.ts'] }),
+      reviewWith([], {
+        files_reviewed: [
+          { path: 'a.ts', status: 'clean' },
+          { path: 'b.ts', status: 'findings' },
+        ],
+      }),
+      reviewWith([], {
+        files_reviewed: [
+          { path: 'b.ts', status: 'clean' },
+          { path: 'c.ts', status: 'clean' },
+        ],
+      }),
       { decisions: [] },
     )
-    expect(review.files_reviewed).toEqual(['a.ts', 'b.ts', 'c.ts'])
+    expect(review.files_reviewed).toEqual([
+      { path: 'a.ts', status: 'clean' },
+      { path: 'b.ts', status: 'findings' },
+      { path: 'c.ts', status: 'clean' },
+    ])
   })
 
   test('files_reviewed stays absent when neither lane reported it', () => {
@@ -414,6 +428,17 @@ describe('prompt hardening', () => {
     expect(p).toContain('no maximum number of findings')
     expect(p).toContain('critical = data loss')
     expect(p).toContain('omit "line" rather than guessing')
+    expect(p).toContain('settle EVERY file explicitly')
+    expect(p).toContain('"status": "clean" | "findings"')
+    expect(p).toContain('REFUTE every finding')
+    expect(p).toContain('HUNT them first')
+    expect(p).toContain('[Cn]')
+  })
+
+  test('prosecutor verdict is scoped to what the input can prove', () => {
+    const p = prosecutorInstructions('English')
+    expect(p).toContain('weighs ONLY what you could verify in the provided input')
+    expect(p).toContain('never lowers the verdict')
   })
 
   test('judge prompt requires citing the disproving diff lines and shares the severity scale', () => {

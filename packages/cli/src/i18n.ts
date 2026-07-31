@@ -80,6 +80,9 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'prep.label.custom': 'custom',
   'prep.label.input': 'input',
   'prep.customNote': '.codesema/PROMPT.md merged into instructions',
+  'prep.label.rules': 'rules',
+  'prep.rulesNote':
+    '{n} team rule from .codesema/RULES.md | {n} team rules from .codesema/RULES.md',
   'prep.next':
     'Next: have your AI agent write .codesema/review.json (see the codesema skill), then run `codesema show`.',
 
@@ -113,6 +116,8 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'review.dualJudgeFailed': 'judge unusable ({message}); kept the union of both reviews',
   'review.customPrompt':
     'custom instructions from .codesema/PROMPT.md merged into the agent prompt',
+  'review.teamRules':
+    '{n} team rule from .codesema/RULES.md drives the hunt pass | {n} team rules from .codesema/RULES.md drive the hunt pass',
   'review.webLiveHint': '· live, findings appear as the agent works',
   'review.spinner': 'reviewing with {cmd}',
   'review.runFailed': 'agent run failed',
@@ -145,6 +150,7 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'field.changes': 'changes',
   'field.mode': 'mode',
   'field.prompt': 'prompt',
+  'field.rules': 'rules',
   'field.web': 'web',
   'field.archived': 'archived',
   'field.verdict': 'verdict',
@@ -203,8 +209,15 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'tui.cancelled': 'cancelled',
   'tui.moreUp': '↑ {n} more',
   'tui.moreDown': '↓ {n} more',
+  'tui.confirmHint': '(yes/no)',
+  'tui.yes': 'yes',
+  'tui.no': 'no',
 
-  'ui.updateAvailable': 'update available: {current} => {latest}',
+  'upgrade.available': 'A new version {latest} of codesema is available!',
+  'upgrade.question': 'Do you want to upgrade codesema now?',
+  'upgrade.running': 'Running {command} ...',
+  'upgrade.done': 'codesema upgraded to {latest}',
+  'upgrade.failed': 'upgrade failed: run {command} manually',
   'ui.phaseReading': 'reading the diff…',
   'ui.phaseCalls': 'following the call chains…',
   'ui.phaseGrouping': 'grouping changes into steps…',
@@ -415,6 +428,9 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'prep.label.custom': 'custom',
   'prep.label.input': 'entrée',
   'prep.customNote': '.codesema/PROMPT.md fusionné dans les instructions',
+  'prep.label.rules': 'règles',
+  'prep.rulesNote':
+    "{n} règle d'équipe depuis .codesema/RULES.md | {n} règles d'équipe depuis .codesema/RULES.md",
   'prep.next':
     'Ensuite : faites écrire .codesema/review.json à votre agent IA (voir le skill codesema), puis lancez `codesema show`.',
 
@@ -450,6 +466,8 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'review.dualJudgeFailed': 'juge inutilisable ({message}) ; union des deux revues conservée',
   'review.customPrompt':
     "instructions personnalisées de .codesema/PROMPT.md fusionnées dans le prompt de l'agent",
+  'review.teamRules':
+    "{n} règle d'équipe de .codesema/RULES.md guide la passe de chasse | {n} règles d'équipe de .codesema/RULES.md guident la passe de chasse",
   'review.webLiveHint': "· en direct, les notes apparaissent pendant que l'agent travaille",
   'review.spinner': 'revue avec {cmd}',
   'review.runFailed': "échec de l'agent",
@@ -482,6 +500,7 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'field.changes': 'modifs',
   'field.mode': 'mode',
   'field.prompt': 'prompt',
+  'field.rules': 'règles',
   'field.web': 'web',
   'field.archived': 'archivée',
   'field.verdict': 'verdict',
@@ -542,8 +561,15 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'tui.cancelled': 'annulé',
   'tui.moreUp': '↑ {n} de plus',
   'tui.moreDown': '↓ {n} de plus',
+  'tui.confirmHint': '(oui/non)',
+  'tui.yes': 'oui',
+  'tui.no': 'non',
 
-  'ui.updateAvailable': 'mise à jour disponible : {current} => {latest}',
+  'upgrade.available': 'Une nouvelle version {latest} de codesema est disponible !',
+  'upgrade.question': 'Voulez-vous mettre à jour codesema maintenant ?',
+  'upgrade.running': 'Exécution de {command} ...',
+  'upgrade.done': 'codesema mis à jour en {latest}',
+  'upgrade.failed': 'échec de la mise à jour : lancez {command} manuellement',
   'ui.phaseReading': 'lecture du diff…',
   'ui.phaseCalls': "suivi des chaînes d'appel…",
   'ui.phaseGrouping': 'regroupement des changements en étapes…',

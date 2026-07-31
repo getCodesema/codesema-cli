@@ -144,7 +144,7 @@ export async function select<T>(opts: {
       resolve(value)
     }
 
-    const confirm = () => {
+    const confirmSelection = () => {
       const list = filtered()
       const chosen = list[cursor]
       if (!chosen) {
@@ -165,7 +165,7 @@ export async function select<T>(opts: {
         process.exit(130)
       }
       if (key.name === 'return' || key.name === 'enter') {
-        return confirm()
+        return confirmSelection()
       }
       if (key.name === 'escape') {
         return cancel()
@@ -193,7 +193,7 @@ export async function select<T>(opts: {
         const index = Number(char) - 1
         if (index < list.length) {
           cursor = index
-          return confirm()
+          return confirmSelection()
         }
         return
       }
@@ -227,6 +227,46 @@ export async function textInput(opts: {
     const suffix = opts.placeholder ? ` ${faint(`(${opts.placeholder})`)}` : ''
     const answer = (await rl.question(`  ${color('?', ACCENT)} ${opts.title}${suffix} `)).trim()
     return answer || null
+  } finally {
+    rl.close()
+  }
+}
+
+/** Accepts y/yes/o/oui as true and n/no/non as false, anything else is unanswered. */
+export function parseYesNo(input: string): boolean | null {
+  const normalized = input.trim().toLowerCase()
+  if (normalized === 'y' || normalized === 'yes' || normalized === 'o' || normalized === 'oui') {
+    return true
+  }
+  if (normalized === 'n' || normalized === 'no' || normalized === 'non') {
+    return false
+  }
+  return null
+}
+
+/** Typed yes/no question, re-asked until answered; false when not interactive. */
+export async function confirm(opts: { title: string }): Promise<boolean> {
+  if (!isInteractive()) {
+    return false
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    for (;;) {
+      const answer = await rl.question(
+        `  ${color('?', ACCENT)} ${opts.title} ${faint(t('tui.confirmHint'))} `,
+      )
+      const parsed = parseYesNo(answer)
+      if (parsed === null) {
+        continue
+      }
+      if (isFancy()) {
+        process.stdout.write('\x1b[1A\x1b[2K')
+        process.stdout.write(
+          `  ${color('✔', ACCENT)} ${opts.title} ${faint('·')} ${t(parsed ? 'tui.yes' : 'tui.no')}\n`,
+        )
+      }
+      return parsed
+    }
   } finally {
     rl.close()
   }

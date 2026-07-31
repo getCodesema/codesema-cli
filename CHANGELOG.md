@@ -3,6 +3,21 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.10.0] - 2026-07-29
+
+### Added
+
+- Startup upgrade prompt: when a newer version is published on npm, the CLI announces it ("A new version x.y.z of codesema is available!") and asks whether to upgrade now (typed yes/no answer). On acceptance it runs the matching global install command, detecting how codesema was installed (npm, pnpm, yarn or bun); on refusal or failure the current invocation continues unchanged. Interactive terminals only, and still opt-out via `CODESEMA_NO_UPDATE_CHECK`.
+- Team rules grid: `.codesema/RULES.md` holds one review rule per line, optionally extended with `|`-separated grid segments (`Scope`, `Where to look`, `Bad`, `Good`, `Exceptions`). Rules are injected as `[C1]`, `[C2]`, ... (file order) and the reviewer hunts them FIRST, jumping straight to the code each rule's `Where to look` targets, before the regular file-by-file sweep. Convention findings must cite the rule id; deviations must be introduced by the diff itself, and code covered by a rule's `Exceptions` is never flagged.
+- Per-file coverage verdict: `files_reviewed` entries are now `{ path, status }` with `status` `clean` or `findings` (`@codesema/contract` 0.4.0), forcing the reviewer to settle every diff file explicitly instead of drifting past it. The persisted status is recomputed deterministically from the findings that survive grounding, never trusted from the agent; bare string entries from older agents and archives are still accepted. In dual mode the merged review carries the per-path union of both lanes, `findings` winning.
+
+### Changed
+
+- The passive "update available" one-liner printed after `codesema review` and `codesema show` is replaced by the startup upgrade prompt.
+- The final self-check in every review prompt (simple, both dual lanes) became an adversarial refutation pass: the reviewer must actively try to REFUTE each finding (file in the diff, line inside a hunk, failure scenario named, the diff really produces the claimed outcome, cited rule really violated) and delete what it cannot defend: report boldly during the sweep, refute hard before emitting.
+- The fix prompt now demands verification, mirroring the server-side fix agent: a regression test written red-first when a finding describes a reproducible bug, a run of the repo's cheap checks (typecheck, unit tests, lint) after the edits with a fallback note when the agent environment cannot run commands, and a summary that states how each fix was verified.
+- The verdict is now scoped to what the reviewer can actually verify: a concern living outside the provided input (another repository, an external consumer of a published package, a deployment) never becomes a finding and never holds back an approve; the simple reviewer surfaces it as a step "check" question for the human, and the prosecutor carries the same verdict rule. Previously any contract-touching MR could never be approved because the reviewer withheld the verdict over code it cannot see.
+
 ## [0.8.0] - 2026-07-16
 
 ### Added

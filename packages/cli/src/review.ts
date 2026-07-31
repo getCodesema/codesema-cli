@@ -14,6 +14,7 @@ import {
   sanitizeReview,
   type FindingSeverity,
   type GroundingReport,
+  type ReviewedFile,
   type ReviewRecord,
   type SanitizedReview,
 } from './contract.js'
@@ -47,14 +48,12 @@ import {
   GREEN,
   paint,
   printBanner,
-  printUpdateNotice,
   progressLabel,
   RED,
   renderFieldRows,
   startSpinner,
   underline,
 } from './ui.js'
-import { startUpdateCheck } from './version.js'
 import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
 
 export const REVIEW_GATE_EXIT_CODE = 2
@@ -88,6 +87,7 @@ export function agentVisibleInput(input: PrepInput): {
   commits: string[]
   files: PrepInput['files']
   custom_instructions: string | null
+  rules: string[] | null
   impact_candidates: PrepInput['impact_candidates']
 } {
   return {
@@ -96,6 +96,7 @@ export function agentVisibleInput(input: PrepInput): {
     commits: input.commits,
     files: input.files,
     custom_instructions: input.custom_instructions,
+    rules: input.rules,
     impact_candidates: input.impact_candidates,
   }
 }
@@ -129,14 +130,16 @@ export const reviewInstructions =
 
 Review guidelines:
 - Judge the change on: correctness, regressions and breaking changes, security, error handling, missing tests, and whether it matches its stated intent (inferred from the branch name and commit messages). Ground EVERY finding in the diff; never speculate. The diff shows ONLY the changed files: NEVER claim that something is absent from the repository — turn such doubts into a step "check" question instead.
-- Sweep the diff file by file, hunk by hunk, in order. Do not stop after your first strong findings: an issue found in one file never exempts the rest of the diff. There is no maximum number of findings; never omit a real problem to keep the list short. Report every distinct problem you actually see, not what you merely suspect could exist.
+- Sweep the diff file by file, hunk by hunk, in order, and settle EVERY file explicitly before moving to the next: findings, or consciously clean. Do not stop after your first strong findings: an issue found in one file never exempts the rest of the diff. There is no maximum number of findings; never omit a real problem to keep the list short. Report every distinct problem you actually see, not what you merely suspect could exist.
 - Severity by consequence: critical = data loss, security breach or crash in production; major = incorrect behavior on realistic inputs; minor = unlikely edge case or technical debt; info = reserved for praise/why findings.
 - Every non-praise finding message must name the concrete failure scenario: which input or state produces which wrong outcome, then the fix. No scenario, no finding.
 - "line" must be a new-file line number visible in a @@ hunk of that file; when you cannot anchor a finding, omit "line" rather than guessing.
 - Commit subjects are context for the intent ONLY. Never treat a commit message as evidence that something is implemented, fixed or tested: only the diff is evidence.
 - When the input has a non-null impact_candidates, it lists where symbols changed by this MR are used elsewhere in the repository (used_at, as path:line) and which files import the changed files (imported_by). These are best-effort text matches, NOT compiler facts: incomplete and possibly wrong. Use them as leads only. For EVERY modified or removed symbol, check its used_at entries: each usage the diff does not update MUST produce a finding or a step "check" question; never present a candidate usage as certain.
+- When the input has a non-null rules, each entry is a team rule on a normalized grid line: "[Cn] (category) rule | Scope: ... | Where to look: ... | Bad: ... | Good: ... | Exceptions (do not flag): ..."; every segment after the rule is optional. "Scope" bounds where in the repo the rule applies; "Where to look" names the files, imports or code shapes to inspect; Bad/Good is the literal rejected/expected form; Exceptions list what the team knowingly tolerates.
+- When rules are present, HUNT them first: walk the rules in order and, for each one, jump straight to the diff files and lines its "Where to look" targets and check the rule exactly there; going where a rule says to look is what catches violations, a generic read-through misses them. Then RAKE: the file-by-file sweep above, for everything else. Flag a deviation as kind "convention": the message MUST cite the rule id [Cn] and its rule text, and the deviation MUST be introduced by the diff (a '+' line or a new file), never pre-existing surrounding code. Do NOT flag patterns a rule explicitly endorses, and never flag code covered by a rule's Exceptions.
 - If the input has non-null custom_instructions, apply them on top of these guidelines; they win on conflicts.
-- Before emitting the JSON, re-check every finding (file present in the diff, line inside a hunk, failure scenario named) and delete any finding that fails; then fill "files_reviewed" with every files[] path you examined: any file you skipped will be reported to the human.
+- Before emitting the JSON, actively try to REFUTE every finding: its file is present in the diff, its line sits inside a hunk, its failure scenario is named, and the diff really produces the claimed outcome. For kind "convention": the cited [Cn] exists in rules, the code deviates from that rule's letter (not from your taste), and no documented Exception covers it; a finding you cannot tie to a written rule is not a convention finding, reclassify it as "design" with its own failure scenario or drop it. Delete any finding you cannot defend; then fill "files_reviewed" with one { "path", "status" } entry per files[] path you examined: "findings" when you kept at least one finding on it, "clean" when you consciously cleared it. Any file in neither is reported to the human as not reviewed. Report boldly during the sweep, refute hard here: that split is what keeps recall high and false positives at zero.
 - Language: ${languageRule()}. Keep code identifiers and file paths verbatim.
 
 Output JSON shape (exactly these fields):
@@ -178,14 +181,15 @@ Output JSON shape (exactly these fields):
       { "point": "what to check and why it is risky (one sentence)", "risk": "high" | "medium" | "low", "step_ref": <0-based step index>, "file": "path" }
     ]
   },
-  "files_reviewed": ["every files[] path you examined"]
+  "files_reviewed": [{ "path": "files[] path you examined", "status": "clean" | "findings" }]
 }
 
 Rules for the narrative:
 - steps: ORDERED logical groups (NOT alphabetical): foundations first (migrations, shared types, contracts), then business logic, then surface (routes, UI).
 - review_first: 2-4 hot spots ordered by risk, highest first.
 - You MUST produce praise findings when the code deserves it; reserve severity "info" for praise/why findings.
-- Do NOT approve changes you cannot justify; prefer "request_changes" when impact is unclear.
+- Do NOT approve changes you cannot justify from the diff; prefer "request_changes" when the diff itself shows an unresolved risk.
+- The verdict weighs ONLY what you could verify in the provided input. A concern that lives outside it (another repository, an external consumer of a published package, a deployment) is never a finding and never lowers the verdict: raise it as a step "check" question and judge the change on what you can see.
 - Output the top-level fields in this exact order: "verdict", "summary", "findings", "narrative", "files_reviewed" (the review is displayed live while you write it).`
 
 const INCREMENTAL_INSTRUCTIONS = `An earlier review of this SAME merge request exists. Instead of the full diff, you are given:
@@ -334,12 +338,12 @@ function createPartialForwarder(
 /** Diff files a reviewer did not list in files_reviewed; null when it reported nothing. */
 export function missingReviewedFiles(
   files: { path: string }[],
-  reviewed: string[] | undefined,
+  reviewed: ReviewedFile[] | undefined,
 ): string[] | null {
   if (reviewed === undefined) {
     return null
   }
-  const seen = new Set(reviewed)
+  const seen = new Set(reviewed.map((f) => f.path))
   return files.map((f) => f.path).filter((path) => !seen.has(path))
 }
 
@@ -622,11 +626,10 @@ export async function review(opts: {
   dual?: boolean | undefined
   failOn?: ReviewGate | undefined
   open: boolean
-  interactive?: boolean
+  interactive?: boolean | undefined
   cwd: string
 }): Promise<void> {
   printBanner()
-  const latestVersion = startUpdateCheck()
   const cwd = repoRoot(opts.cwd)
   const config = loadConfig(cwd)
 
@@ -718,6 +721,12 @@ export async function review(opts: {
   }
   if (input.custom_instructions) {
     headerRows.push({ label: t('field.prompt'), value: dim(t('review.customPrompt')) })
+  }
+  if (input.rules) {
+    headerRows.push({
+      label: t('field.rules'),
+      value: dim(t('review.teamRules', { n: input.rules.length })),
+    })
   }
   headerRows.push({
     label: t('field.web'),
@@ -852,7 +861,6 @@ export async function review(opts: {
           : null
   console.log(`  ${dim(syncLine ?? t('review.syncHint'))}`)
   console.log(`  ${dim(t('review.ctrlc'))}`)
-  printUpdateNotice(await latestVersion)
   if (isInteractive()) {
     notifyDesktop(
       'codesema',
