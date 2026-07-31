@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { Finding } from './useDiff'
-import { parseDiff } from './useDiff'
+import { parseDiff, type Finding } from './useDiff'
 import { actionableFindings, excerptFor } from './useFocusList'
 
 function finding(partial: Partial<Finding>): Finding {
@@ -40,13 +39,25 @@ describe('excerptFor', () => {
     const parsed = parseDiff(DIFF, [])
     const rows = excerptFor(parsed.files, finding({ line: 3 }), 2)
     expect(rows).not.toBeNull()
-    expect(rows!.map((r) => r.c)).toEqual(['line two', 'old three', 'new three', 'new four', 'line five'])
+    expect(rows!.map((r) => r.c)).toEqual([
+      'line two',
+      'old three',
+      'new three',
+      'new four',
+      'line five',
+    ])
   })
 
   test('extends the window to endLine', () => {
     const parsed = parseDiff(DIFF, [])
     const rows = excerptFor(parsed.files, finding({ line: 3, endLine: 5 }), 1)
-    expect(rows!.map((r) => r.c)).toEqual(['old three', 'new three', 'new four', 'line five', 'line six'])
+    expect(rows!.map((r) => r.c)).toEqual([
+      'old three',
+      'new three',
+      'new four',
+      'line five',
+      'line six',
+    ])
   })
 
   test('null when the line is outside the hunks', () => {

@@ -21,7 +21,9 @@ const STAMP_LABEL_KEY: Record<Stamp, string> = {
 }
 
 function stampFor(d: JudgeDecision): Stamp {
-  if (d.duplicate_of) return 'merged'
+  if (d.duplicate_of) {
+    return 'merged'
+  }
   return d.action === 'reject' ? 'rejected' : 'kept'
 }
 
@@ -34,7 +36,7 @@ const done = computed(() => props.judge?.decisions.length ?? 0)
 const pct = computed(() => (total.value > 0 ? Math.round((done.value / total.value) * 100) : 0))
 
 // Newest decision first: the judge appends to the cumulative list as it resolves each one.
-const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].reverse())
+const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toReversed())
 </script>
 
 <template>
@@ -47,7 +49,12 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].rev
     </div>
 
     <TransitionGroup name="djp-fade" tag="div" class="djp-list">
-      <div v-for="d in reversedDecisions" :key="d.id" class="djp-row" :class="`djp-row--${stampFor(d)}`">
+      <div
+        v-for="d in reversedDecisions"
+        :key="d.id"
+        class="djp-row"
+        :class="`djp-row--${stampFor(d)}`"
+      >
         <span class="djp-stamp" aria-hidden="true">{{ STAMP_GLYPH[stampFor(d)] }}</span>
         <span class="djp-id">{{ d.id }}</span>
         <span class="djp-source">{{ $t(sourceLabelKey(d.id)) }}</span>
@@ -55,7 +62,9 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].rev
           {{ $t(STAMP_LABEL_KEY.merged, { id: d.duplicate_of }) }}
         </span>
         <span v-else-if="d.reason" class="djp-detail djp-detail--muted">{{ d.reason }}</span>
-        <span v-else class="djp-detail djp-detail--muted">{{ $t(STAMP_LABEL_KEY[stampFor(d)]) }}</span>
+        <span v-else class="djp-detail djp-detail--muted">{{
+          $t(STAMP_LABEL_KEY[stampFor(d)])
+        }}</span>
       </div>
     </TransitionGroup>
   </section>
@@ -154,7 +163,9 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].rev
 }
 
 .djp-fade-enter-active {
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
 }
 
 .djp-fade-enter-from {

@@ -2,8 +2,7 @@
 // All optional fields (risk/take/check/rationale) have fallbacks.
 
 import { computed, ref, watch } from 'vue'
-import type { Finding } from '../composables/useDiff'
-import { parseDiff, pickFiles, sameFile } from '../composables/useDiff'
+import { parseDiff, pickFiles, sameFile, type Finding } from '../composables/useDiff'
 import { riskMeta } from '../risk'
 import type { StepView } from '../types'
 import DiffView from './DiffView.vue'
@@ -36,22 +35,33 @@ const canPrev = computed(() => props.selectedIndex > 0)
 const canNext = computed(() => props.selectedIndex < props.steps.length - 1)
 
 function goPrev() {
-  if (canPrev.value) emit('navigate', props.selectedIndex - 1)
+  if (canPrev.value) {
+    emit('navigate', props.selectedIndex - 1)
+  }
 }
 function goNext() {
-  if (canNext.value) emit('navigate', props.selectedIndex + 1)
+  if (canNext.value) {
+    emit('navigate', props.selectedIndex + 1)
+  }
 }
 
 const fileFilter = ref('')
 
-watch(() => props.selectedIndex, () => {
-  fileFilter.value = ''
-})
+watch(
+  () => props.selectedIndex,
+  () => {
+    fileFilter.value = ''
+  },
+)
 
 const filteredFiles = computed(() => {
-  if (!step.value) return []
+  if (!step.value) {
+    return []
+  }
   const q = fileFilter.value.toLowerCase().trim()
-  if (!q) return step.value.files
+  if (!q) {
+    return step.value.files
+  }
   return step.value.files.filter((f) => f.toLowerCase().includes(q))
 })
 
@@ -61,16 +71,18 @@ function shortName(path: string): string {
 }
 
 const stepFindings = computed((): Finding[] => {
-  if (!step.value) return []
-  return step.value.finding_refs
-    .map((i) => props.findings[i])
-    .filter((f): f is Finding => !!f)
+  if (!step.value) {
+    return []
+  }
+  return step.value.finding_refs.map((i) => props.findings[i]).filter((f): f is Finding => !!f)
 })
 
 const stepFindingCount = computed(() => stepFindings.value.length)
 
 const stepFiles = computed(() => {
-  if (!step.value || !props.diff) return []
+  if (!step.value || !props.diff) {
+    return []
+  }
   const parsed = parseDiff(props.diff, stepFindings.value)
   // Findings can reference a file the step forgot to list: include it so every
   // note of the step stays reachable (guided tour scrolls to note anchors).
@@ -89,7 +101,9 @@ const stepDelta = computed(() => {
 })
 
 function scrollToFile(filePath: string) {
-  if (typeof document === 'undefined') return
+  if (typeof document === 'undefined') {
+    return
+  }
   // DiffView renders file headers with a data-diff-file attribute derived from the path
   const allHeaders = document.querySelectorAll<HTMLElement>('[data-diff-file]')
   for (const el of allHeaders) {
@@ -111,9 +125,7 @@ function scrollToFile(filePath: string) {
 
 <template>
   <div v-if="step" class="steprev-root">
-
     <div class="steprev-left">
-
       <button class="steprev-back" @click="emit('back')">
         {{ $t('reviews.guidedBack') }}
       </button>
@@ -185,7 +197,9 @@ function scrollToFile(filePath: string) {
           >
             <span v-if="isChecked" class="steprev-check-mark">✓</span>
           </button>
-          <span class="steprev-towatch-text" @click="emit('toggleChecked', selectedIndex)">{{ step.check }}</span>
+          <span class="steprev-towatch-text" @click="emit('toggleChecked', selectedIndex)">{{
+            step.check
+          }}</span>
         </div>
       </div>
 
@@ -219,11 +233,9 @@ function scrollToFile(filePath: string) {
           </p>
         </div>
       </div>
-
     </div>
 
     <div class="steprev-right">
-
       <div class="steprev-banner">
         <span class="steprev-banner-mark">✦</span>
         <div class="steprev-banner-body">
@@ -241,9 +253,7 @@ function scrollToFile(filePath: string) {
         <DiffView :files="stepFiles" :reveal="reveal" />
       </div>
       <p v-else class="codesema-muted steprev-nodiff">{{ $t('reviews.noDiff') }}</p>
-
     </div>
-
   </div>
 
   <div v-else class="steprev-empty">
@@ -312,7 +322,9 @@ function scrollToFile(filePath: string) {
   place-items: center;
   cursor: pointer;
   flex-shrink: 0;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
 }
 .steprev-radio-btn--done {
   border-color: var(--codesema-risk-low);
@@ -396,12 +408,24 @@ function scrollToFile(filePath: string) {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.step-risk--high { color: var(--codesema-risk-high); }
-.step-risk-bg--high { background: var(--codesema-risk-high-soft); }
-.step-risk--med { color: var(--codesema-risk-med); }
-.step-risk-bg--med { background: var(--codesema-risk-med-soft); }
-.step-risk--low { color: var(--codesema-risk-low); }
-.step-risk-bg--low { background: var(--codesema-risk-low-soft); }
+.step-risk--high {
+  color: var(--codesema-risk-high);
+}
+.step-risk-bg--high {
+  background: var(--codesema-risk-high-soft);
+}
+.step-risk--med {
+  color: var(--codesema-risk-med);
+}
+.step-risk-bg--med {
+  background: var(--codesema-risk-med-soft);
+}
+.step-risk--low {
+  color: var(--codesema-risk-low);
+}
+.step-risk-bg--low {
+  background: var(--codesema-risk-low-soft);
+}
 
 .steprev-delta {
   display: inline-flex;
@@ -410,8 +434,12 @@ function scrollToFile(filePath: string) {
   font-family: var(--font-mono);
   font-size: 11.5px;
 }
-.steprev-delta-add { color: var(--codesema-risk-low); }
-.steprev-delta-del { color: var(--codesema-risk-high); }
+.steprev-delta-add {
+  color: var(--codesema-risk-low);
+}
+.steprev-delta-del {
+  color: var(--codesema-risk-high);
+}
 
 /* rationale */
 .steprev-rationale {
@@ -661,9 +689,18 @@ function scrollToFile(filePath: string) {
 
 /* mobile density (<= 640px) */
 @media (max-width: 640px) {
-  .steprev-left { padding: 16px 14px 24px; }
-  .steprev-title { font-size: 20px; }
-  .steprev-banner { margin: 14px 12px 0; padding: 12px 13px; }
-  .steprev-diff { padding: 14px 12px 48px; }
+  .steprev-left {
+    padding: 16px 14px 24px;
+  }
+  .steprev-title {
+    font-size: 20px;
+  }
+  .steprev-banner {
+    margin: 14px 12px 0;
+    padding: 12px 13px;
+  }
+  .steprev-diff {
+    padding: 14px 12px 48px;
+  }
 }
 </style>

@@ -17,8 +17,12 @@ const emit = defineEmits<{
 type RailState = 'passed' | 'active' | 'pending'
 
 function stateOf(index: number): RailState {
-  if (props.readSet?.has(index)) return 'passed'
-  if (props.currentIndex === index) return 'active'
+  if (props.readSet?.has(index)) {
+    return 'passed'
+  }
+  if (props.currentIndex === index) {
+    return 'active'
+  }
   return 'pending'
 }
 
@@ -28,7 +32,9 @@ function toneOf(index: number): string {
 }
 
 function linkPassed(index: number): boolean {
-  if (index === 0) return stateOf(0) === 'passed'
+  if (index === 0) {
+    return stateOf(0) === 'passed'
+  }
   return stateOf(index - 1) === 'passed'
 }
 
@@ -58,7 +64,9 @@ function allPassed(): boolean {
     </template>
 
     <span class="rail-link" :class="{ 'rail-link--passed': allPassed() }" />
-    <span class="rail-edge" :class="{ 'rail-edge--merged': allPassed() }">{{ $t('rail.merge') }}</span>
+    <span class="rail-edge" :class="{ 'rail-edge--merged': allPassed() }">{{
+      $t('rail.merge')
+    }}</span>
   </nav>
 </template>
 
@@ -109,7 +117,9 @@ function allPassed(): boolean {
   padding: 5px 12px 5px 6px;
   font-family: inherit;
   cursor: pointer;
-  transition: border-color 0.5s ease, box-shadow 0.25s ease;
+  transition:
+    border-color 0.5s ease,
+    box-shadow 0.25s ease;
 }
 
 .rail-node:hover {
@@ -137,7 +147,9 @@ function allPassed(): boolean {
   font-weight: 700;
   background: var(--codesema-dot-idle);
   color: #fff;
-  transition: background 0.5s ease, box-shadow 0.25s ease;
+  transition:
+    background 0.5s ease,
+    box-shadow 0.25s ease;
 }
 
 /* The dot carries the verdict tone; read state stays on the ✓ and node border. */

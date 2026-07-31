@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { subprocessEnv } from './git.js'
 import { buildImpactCandidates, changedSymbolsFromDiff } from './impact.js'
 
 function tsDiff(file: string, minusLines: string[], plusLines: string[]): string {
@@ -50,7 +51,12 @@ describe('changedSymbolsFromDiff', () => {
     const diff = tsDiff(
       'app/models.py',
       [],
-      ['def compute_score(user):', 'class Invoice:', '    def method_inside(self):', 'def _private_thing():'],
+      [
+        'def compute_score(user):',
+        'class Invoice:',
+        '    def method_inside(self):',
+        'def _private_thing():',
+      ],
     )
     expect(changedSymbolsFromDiff(diff)).toEqual([
       { name: 'compute_score', file: 'app/models.py', change: 'added' },
@@ -65,7 +71,9 @@ describe('changedSymbolsFromDiff', () => {
 
   test('names shorter than 3 chars are filtered out', () => {
     const diff = tsDiff('src/tiny.ts', [], ['export const pi = 3.14', 'export const abc = 1'])
-    expect(changedSymbolsFromDiff(diff)).toEqual([{ name: 'abc', file: 'src/tiny.ts', change: 'added' }])
+    expect(changedSymbolsFromDiff(diff)).toEqual([
+      { name: 'abc', file: 'src/tiny.ts', change: 'added' },
+    ])
   })
 })
 
@@ -73,7 +81,11 @@ describe('buildImpactCandidates', () => {
   let repo: string
 
   function run(args: string[]) {
-    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      cwd: repo,
+      stdio: 'ignore',
+      env: subprocessEnv(),
+    })
   }
 
   beforeAll(() => {
@@ -88,12 +100,18 @@ describe('buildImpactCandidates', () => {
       join(repo, 'src/checkout.ts'),
       "import { computeTotal } from './price'\n\nconst total = computeTotal(cart.items)\n",
     )
-    writeFileSync(join(repo, 'src/invoice.ts'), "import { computeTotal } from './price'\nexport const x = computeTotal(lines)\n")
+    writeFileSync(
+      join(repo, 'src/invoice.ts'),
+      "import { computeTotal } from './price'\nexport const x = computeTotal(lines)\n",
+    )
     writeFileSync(
       join(repo, 'src/usages.ts'),
       `import { formatLabel } from './hot'\n${Array.from({ length: 25 }, (_, i) => `formatLabel(${i})`).join('\n')}\n`,
     )
-    writeFileSync(join(repo, 'src/hot.ts'), 'export function formatLabel(n: number): string {\n  return String(n)\n}\n')
+    writeFileSync(
+      join(repo, 'src/hot.ts'),
+      'export function formatLabel(n: number): string {\n  return String(n)\n}\n',
+    )
     writeFileSync(join(repo, 'notes.txt'), 'computeTotal is documented here\n')
     run(['add', '-A'])
     run(['commit', '-m', 'init'])

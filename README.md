@@ -71,9 +71,9 @@ npx -y codesema config
 
 Interactive: language → agent → model → effort, then where to save. Two levels, field by field:
 
-| Level  | File                             | When                                   |
-| ------ | -------------------------------- | -------------------------------------- |
-| Global | `~/.config/codesema/config.json` | Your default, every repo (onboarding)  |
+| Level  | File                             | When                                    |
+| ------ | -------------------------------- | --------------------------------------- |
+| Global | `~/.config/codesema/config.json` | Your default, every repo (onboarding)   |
 | Repo   | `.codesema/config.json`          | Team/project override, wins over global |
 
 CLI flags always win over both. `target`, `port`, `timeout` and `language` can also be set in either file.
@@ -121,7 +121,7 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 ## Customize
 
 - `.codesema/PROMPT.md`: your team's review instructions, merged into the agent prompt.
-- `.codesema/RULES.md`: your team's review rules, one per line, hunted first by the reviewer. Put the highest-yield rules on top; each line may extend the rule with optional `|`-separated segments the reviewer knows how to use: `(category) rule | Scope: where in the repo it applies | Where to look: files, imports or code shapes to inspect | Bad: literal rejected form | Good: literal expected form | Exceptions: tolerated legacy, never flagged`. Rules are cited as `[C1]`, `[C2]`, ... (file order) in convention findings. Telling the reviewer *where to look* is what makes a rule catch violations.
+- `.codesema/RULES.md`: your team's review rules, one per line, hunted first by the reviewer. Put the highest-yield rules on top; each line may extend the rule with optional `|`-separated segments the reviewer knows how to use: `(category) rule | Scope: where in the repo it applies | Where to look: files, imports or code shapes to inspect | Bad: literal rejected form | Good: literal expected form | Exceptions: tolerated legacy, never flagged`. Rules are cited as `[C1]`, `[C2]`, ... (file order) in convention findings. Telling the reviewer _where to look_ is what makes a rule catch violations.
 - `.codesema-ignore`: glob patterns excluded from the diff (lockfiles, minified files and sourcemaps are excluded by default).
 
 ## Troubleshooting
@@ -135,33 +135,33 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 
 ## Environment variables
 
-| Variable                   | Effect                                                                            |
-| -------------------------- | --------------------------------------------------------------------------------- |
-| `CODESEMA_CONFIG_DIR`      | Override the global config directory (default `~/.config/codesema`).               |
-| `CODESEMA_NO_UPDATE_CHECK` | Set to `1` to skip the startup npm version check (also skipped when not a TTY).    |
-| `CODESEMA_SYNC_URL`        | Point `sync`/`link` at a different codesema.com host (self-hosted or staging).     |
+| Variable                   | Effect                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `CODESEMA_CONFIG_DIR`      | Override the global config directory (default `~/.config/codesema`).            |
+| `CODESEMA_NO_UPDATE_CHECK` | Set to `1` to skip the startup npm version check (also skipped when not a TTY). |
+| `CODESEMA_SYNC_URL`        | Point `sync`/`link` at a different codesema.com host (self-hosted or staging).  |
 
 ## Files
 
-| Path                              | Contents                                                                     |
-| --------------------------------- | ---------------------------------------------------------------------------- |
-| `~/.config/codesema/config.json`  | Global config (language, agent, model, effort, sync credentials), mode `0600`. |
-| `.codesema/config.json`           | Repo config, overrides the global one.                                       |
-| `.codesema/input.json`            | The prepared MR diff handed to the agent (`prep`).                           |
-| `.codesema/review.json`           | The latest review written by the agent.                                     |
-| `.codesema/reviews/`              | Archived reviews (5 kept per branch, used for incremental re-review).         |
-| `.codesema/PROMPT.md`             | Your team's extra review instructions, merged into the prompt.               |
-| `.codesema/RULES.md`              | Your team's review rules (one `[Cn]` grid line each), hunted first.          |
-| `.codesema-ignore`                | Glob patterns excluded from the diff.                                        |
+| Path                             | Contents                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------ |
+| `~/.config/codesema/config.json` | Global config (language, agent, model, effort, sync credentials), mode `0600`. |
+| `.codesema/config.json`          | Repo config, overrides the global one.                                         |
+| `.codesema/input.json`           | The prepared MR diff handed to the agent (`prep`).                             |
+| `.codesema/review.json`          | The latest review written by the agent.                                        |
+| `.codesema/reviews/`             | Archived reviews (5 kept per branch, used for incremental re-review).          |
+| `.codesema/PROMPT.md`            | Your team's extra review instructions, merged into the prompt.                 |
+| `.codesema/RULES.md`             | Your team's review rules (one `[Cn]` grid line each), hunted first.            |
+| `.codesema-ignore`               | Glob patterns excluded from the diff.                                          |
 
 ## Exit codes
 
-| Code  | Meaning                                                                                        |
-| ----- | ---------------------------------------------------------------------------------------------- |
-| `0`   | Success (review completed; with `--fail-on`, nothing tripped the gate).                        |
-| `1`   | Error (bad invocation, agent failure, unusable output, or a blocked secret sync).              |
+| Code  | Meaning                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------ |
+| `0`   | Success (review completed; with `--fail-on`, nothing tripped the gate).                          |
+| `1`   | Error (bad invocation, agent failure, unusable output, or a blocked secret sync).                |
 | `2`   | `review --fail-on <level>` gate tripped (a finding at or above the level, or changes requested). |
-| `130` | Interrupted with Ctrl-C.                                                                        |
+| `130` | Interrupted with Ctrl-C.                                                                         |
 
 ## Development
 

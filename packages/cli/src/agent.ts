@@ -39,22 +39,37 @@ export function hardenedReviewCommand(command: string): string {
   const agent = knownAgent(command)
   if (agent === 'claude') {
     const flags: string[] = []
-    if (!flagPresent(command, '--tools')) flags.push('--tools ""')
-    if (!flagPresent(command, '--strict-mcp-config')) flags.push('--strict-mcp-config')
-    if (!flagPresent(command, '--setting-sources')) flags.push('--setting-sources user')
+    if (!flagPresent(command, '--tools')) {
+      flags.push('--tools ""')
+    }
+    if (!flagPresent(command, '--strict-mcp-config')) {
+      flags.push('--strict-mcp-config')
+    }
+    if (!flagPresent(command, '--setting-sources')) {
+      flags.push('--setting-sources user')
+    }
     return flags.length > 0 ? `${command} ${flags.join(' ')}` : command
   }
   if (agent === 'codex') {
-    if (flagPresent(command, '--dangerously-bypass-approvals-and-sandbox') || flagPresent(command, '--yolo')) {
+    if (
+      flagPresent(command, '--dangerously-bypass-approvals-and-sandbox') ||
+      flagPresent(command, '--yolo')
+    ) {
       return command
     }
     const flags: string[] = []
-    if (!flagPresent(command, '--sandbox') && !flagPresent(command, '-s')) flags.push('--sandbox read-only')
+    if (!flagPresent(command, '--sandbox') && !flagPresent(command, '-s')) {
+      flags.push('--sandbox read-only')
+    }
     if (!flagPresent(command, '--ask-for-approval') && !flagPresent(command, '-a')) {
       flags.push('--ask-for-approval never')
     }
-    if (!flagPresent(command, 'project_doc_max_bytes')) flags.push('-c project_doc_max_bytes=0')
-    if (flags.length === 0) return command
+    if (!flagPresent(command, 'project_doc_max_bytes')) {
+      flags.push('-c project_doc_max_bytes=0')
+    }
+    if (flags.length === 0) {
+      return command
+    }
     const stdinMarker = /\s-$/.test(command)
     const base = stdinMarker ? command.slice(0, -2) : command
     return [base, ...flags, ...(stdinMarker ? ['-'] : [])].join(' ')
@@ -112,15 +127,21 @@ export function agentEnv(
 ): NodeJS.ProcessEnv | undefined {
   // cmd.exe needs SystemRoot/ComSpec and Windows env names are case-insensitive:
   // narrowing there can break the spawn itself, so Windows inherits the full env.
-  if (platform === 'win32') return undefined
+  if (platform === 'win32') {
+    return undefined
+  }
   const agent = knownAgent(command)
-  if (!agent) return undefined
+  if (!agent) {
+    return undefined
+  }
   const prefixes = [...AGENT_ENV_PREFIXES[agent]]
   const names = new Set(BASE_ENV_VARS)
   // Claude Code on Bedrock/Vertex authenticates through the cloud SDK env,
   // not ANTHROPIC_*: widen only when those modes are switched on.
   if (agent === 'claude') {
-    if (source.CLAUDE_CODE_USE_BEDROCK) prefixes.push('AWS_')
+    if (source.CLAUDE_CODE_USE_BEDROCK) {
+      prefixes.push('AWS_')
+    }
     if (source.CLAUDE_CODE_USE_VERTEX) {
       prefixes.push('GOOGLE_', 'GCP_')
       names.add('CLOUD_ML_REGION')
@@ -128,16 +149,26 @@ export function agentEnv(
   }
   const env: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(source)) {
-    if (value === undefined) continue
-    if (names.has(key) || prefixes.some((prefix) => key.startsWith(prefix))) env[key] = value
+    if (value === undefined) {
+      continue
+    }
+    if (names.has(key) || prefixes.some((prefix) => key.startsWith(prefix))) {
+      env[key] = value
+    }
   }
   return env
 }
 
 export function claudeStreamCommand(command: string): string | null {
-  if (!/^claude(\s|$)/.test(command)) return null
-  if (!/(^|\s)(-p|--print)(\s|$)/.test(command)) return null
-  if (command.includes('--output-format') || command.includes('--input-format')) return null
+  if (!/^claude(\s|$)/.test(command)) {
+    return null
+  }
+  if (!/(^|\s)(-p|--print)(\s|$)/.test(command)) {
+    return null
+  }
+  if (command.includes('--output-format') || command.includes('--input-format')) {
+    return null
+  }
   return `${command} ${CLAUDE_STREAM_FLAGS}`
 }
 
@@ -153,7 +184,9 @@ export function createClaudeStreamParser(onText?: (text: string) => void): Claud
   let resultText: string | null = null
 
   const handleLine = (line: string) => {
-    if (!line.trim()) return
+    if (!line.trim()) {
+      return
+    }
     let event: Record<string, unknown>
     try {
       event = JSON.parse(line) as Record<string, unknown>
@@ -161,8 +194,15 @@ export function createClaudeStreamParser(onText?: (text: string) => void): Claud
       return
     }
     if (event.type === 'stream_event') {
-      const inner = (event.event ?? {}) as { type?: string; delta?: { type?: string; text?: string } }
-      if (inner.type === 'content_block_delta' && inner.delta?.type === 'text_delta' && inner.delta.text) {
+      const inner = (event.event ?? {}) as {
+        type?: string
+        delta?: { type?: string; text?: string }
+      }
+      if (
+        inner.type === 'content_block_delta' &&
+        inner.delta?.type === 'text_delta' &&
+        inner.delta.text
+      ) {
         streamedText += inner.delta.text
         onText?.(streamedText)
       }
@@ -190,7 +230,9 @@ export function createClaudeStreamParser(onText?: (text: string) => void): Claud
       lineBuffer += chunk
       for (;;) {
         const nl = lineBuffer.indexOf('\n')
-        if (nl < 0) break
+        if (nl < 0) {
+          break
+        }
         handleLine(lineBuffer.slice(0, nl))
         lineBuffer = lineBuffer.slice(nl + 1)
       }
@@ -211,7 +253,7 @@ export type AgentRunOptions = {
   cwd: string
   timeoutMs: number
   /** Environment for the subprocess; undefined inherits the full process env. */
-  env?: NodeJS.ProcessEnv
+  env?: NodeJS.ProcessEnv | undefined
   /** Cumulative review text so far, called on every update from the agent. */
   onText?: (text: string) => void
 }
@@ -237,8 +279,11 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     const timer = setTimeout(() => {
       timedOut = true
       try {
-        if (detached && child.pid) process.kill(-child.pid, 'SIGTERM')
-        else child.kill('SIGTERM')
+        if (detached && child.pid) {
+          process.kill(-child.pid, 'SIGTERM')
+        } else {
+          child.kill('SIGTERM')
+        }
       } catch {
         // process group already gone
       }
@@ -247,8 +292,11 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     child.stdout.on('data', (d: Buffer) => {
       const chunk = d.toString()
       out += chunk
-      if (parser) parser.push(chunk)
-      else opts.onText?.(out)
+      if (parser) {
+        parser.push(chunk)
+      } else {
+        opts.onText?.(out)
+      }
     })
     child.on('error', (err) => {
       clearTimeout(timer)

@@ -15,15 +15,21 @@ export function parseRules(content: string): string[] {
   const rules: string[] = []
   for (const raw of content.split('\n')) {
     const line = raw.trim()
-    if (!line || line.startsWith('#') || line.startsWith('<!--')) continue
+    if (!line || line.startsWith('#') || line.startsWith('<!--')) {
+      continue
+    }
     const rule = line
       .replace(/^(?:[-*+]|\d+[.)])\s+/, '')
       .replace(/^\[C\d+\]\s*/, '')
       .slice(0, RULE_LENGTH_MAX)
       .trim()
-    if (!rule) continue
+    if (!rule) {
+      continue
+    }
     rules.push(rule)
-    if (rules.length >= RULES_MAX) break
+    if (rules.length >= RULES_MAX) {
+      break
+    }
   }
   return rules
 }
@@ -35,7 +41,9 @@ export function formatRules(rules: string[]): string[] {
 
 export function loadRules(cwd: string): string[] | null {
   const file = join(cwd, '.codesema', 'RULES.md')
-  if (!existsSync(file)) return null
+  if (!existsSync(file)) {
+    return null
+  }
   const rules = parseRules(readFileSync(file, 'utf8'))
   return rules.length > 0 ? formatRules(rules) : null
 }

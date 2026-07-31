@@ -30,6 +30,7 @@ export function underline(text: string): string {
   return isFancy() ? `\x1b[4m${text}\x1b[0m` : text
 }
 
+// oxlint-disable-next-line no-control-regex -- deliberately matches ANSI color escapes
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g
 
 function visibleLength(text: string): number {
@@ -62,17 +63,24 @@ const BANNER = [
   ' ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝',
 ]
 
+/** Clamped lookup: any index past the palette maps to its last (lightest) color. */
+function oceanColor(index: number): number {
+  return OCEAN[Math.min(index, OCEAN.length - 1)] ?? ACCENT
+}
+
 export function printBanner(): void {
-  if (!isFancy()) return
+  if (!isFancy()) {
+    return
+  }
   console.log('')
-  if ((process.stdout.columns ?? 80) < BANNER[0]!.length + 4) {
+  if ((process.stdout.columns ?? 80) < (BANNER[0] ?? '').length + 4) {
     console.log(`  ${paint('◆', ACCENT)} ${bold('codesema')} ${dim(`v${VERSION}`)}`)
     console.log('')
     return
   }
   BANNER.forEach((line, i) => {
     const version = i === BANNER.length - 1 ? ` ${dim(`v${VERSION}`)}` : ''
-    console.log('  ' + paint(line, OCEAN[Math.min(1 + i, OCEAN.length - 1)]!) + version)
+    console.log('  ' + paint(line, oceanColor(1 + i)) + version)
   })
   console.log('')
 }
@@ -98,13 +106,15 @@ function truncateStatus(text: string): string {
 
 export function progressLabel(partial: PartialReview): string | null {
   if (partial.stepTitles.length > 0) {
-    const current = partial.stepTitles[partial.stepTitles.length - 1]!
+    const current = partial.stepTitles.at(-1) ?? ''
     return truncateStatus(t('ui.progressStep', { n: partial.stepTitles.length, title: current }))
   }
   if (partial.findings.length > 0) {
     return t('ui.progressFindings', { n: partial.findings.length })
   }
-  if (partial.verdict) return t('ui.progressVerdict', { verdict: partial.verdict })
+  if (partial.verdict) {
+    return t('ui.progressVerdict', { verdict: partial.verdict })
+  }
   return null
 }
 
@@ -149,11 +159,12 @@ export function startSpinner(label: string): Spinner {
     for (let i = 0; i < WAVE_WIDTH; i++) {
       const level = (Math.sin(i * 0.55 - tick * 0.18) + 1) / 2
       const h = Math.round(level * (WAVE_CHARS.length - 1))
-      const color = OCEAN[Math.min(Math.round(level * (OCEAN.length - 1)), OCEAN.length - 1)]!
-      wave += paint(WAVE_CHARS[h]!, color)
+      const color = oceanColor(Math.round(level * (OCEAN.length - 1)))
+      wave += paint(WAVE_CHARS.charAt(h), color)
     }
     const secs = Math.floor((Date.now() - startedAt) / 1000)
-    const status = liveStatus ?? t(PHASE_KEYS[Math.floor(secs / 7) % PHASE_KEYS.length]!)
+    const status =
+      liveStatus ?? t(PHASE_KEYS[Math.floor(secs / 7) % PHASE_KEYS.length] ?? PHASE_KEYS[0])
     process.stdout.write(`\r\x1b[2K  ${wave}  ${label} ${dim(`${elapsed(startedAt)} · ${status}`)}`)
   }
 

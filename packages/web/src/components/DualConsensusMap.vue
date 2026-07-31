@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { sameFile } from '../composables/useDiff'
 import { buildConsensusTree } from '../composables/useConsensusTree'
+import { sameFile } from '../composables/useDiff'
 import type { LiveInput, PartialReview } from '../types'
 import DualMapNode from './DualMapNode.vue'
 

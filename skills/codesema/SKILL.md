@@ -84,18 +84,32 @@ Write the complete review as a single JSON object to `.codesema/review.json`:
   "verdict": "request_changes",
   "summary": "…",
   "findings": [
-    { "file": "src/x.ts", "line": 42, "severity": "major", "kind": "security", "title": "…", "message": "…", "suggestion": "…" }
+    {
+      "file": "src/x.ts",
+      "line": 42,
+      "severity": "major",
+      "kind": "security",
+      "title": "…",
+      "message": "…",
+      "suggestion": "…"
+    }
   ],
   "narrative": {
     "intent": "…",
     "confidence": "high",
     "prologue": { "why": "…", "what": "…", "key_changes": [{ "title": "…", "detail": "…" }] },
     "chapters": [
-      { "title": "…", "rationale": "…", "files": ["src/x.ts"], "finding_refs": [0], "risk": "medium", "take": "…", "check": "…" }
+      {
+        "title": "…",
+        "rationale": "…",
+        "files": ["src/x.ts"],
+        "finding_refs": [0],
+        "risk": "medium",
+        "take": "…",
+        "check": "…"
+      }
     ],
-    "review_first": [
-      { "point": "…", "risk": "high", "chapter_ref": 0, "file": "src/x.ts" }
-    ]
+    "review_first": [{ "point": "…", "risk": "high", "chapter_ref": 0, "file": "src/x.ts" }]
   }
 }
 ```

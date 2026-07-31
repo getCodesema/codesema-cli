@@ -11,7 +11,9 @@ const TONE_BY_SEVERITY: Partial<Record<FindingSeverity, StepTone>> = {
 }
 
 export function findingTone(finding: Finding): StepTone | null {
-  if (finding.kind === 'praise' || finding.kind === 'why') return null
+  if (finding.kind === 'praise' || finding.kind === 'why') {
+    return null
+  }
   return TONE_BY_SEVERITY[finding.severity] ?? null
 }
 
@@ -23,12 +25,22 @@ export function stepTone(
   let worst: StepTone | null = null
   for (const ref of step.finding_refs) {
     const referenced = findings[ref]
-    if (!referenced) continue
+    if (!referenced) {
+      continue
+    }
     const tone = findingTone(referenced)
-    if (tone === 'high') return 'high'
-    if (tone === 'medium') worst = 'medium'
+    if (tone === 'high') {
+      return 'high'
+    }
+    if (tone === 'medium') {
+      worst = 'medium'
+    }
   }
-  if (worst) return worst
-  if (step.risk === 'high' || step.risk === 'medium') return step.risk
+  if (worst) {
+    return worst
+  }
+  if (step.risk === 'high' || step.risk === 'medium') {
+    return step.risk
+  }
   return 'low'
 }

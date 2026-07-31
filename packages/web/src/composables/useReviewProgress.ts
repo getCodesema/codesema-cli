@@ -6,14 +6,22 @@ export function useReviewProgress(reviewId: string) {
   const storageKey = `codesema-progress:${reviewId}`
 
   function loadState(): { read: number[]; checked: number[] } {
-    if (!isClient) return { read: [], checked: [] }
+    if (!isClient) {
+      return { read: [], checked: [] }
+    }
     try {
       const raw = localStorage.getItem(storageKey)
-      if (!raw) return { read: [], checked: [] }
+      if (!raw) {
+        return { read: [], checked: [] }
+      }
       const parsed = JSON.parse(raw)
       return {
-        read: Array.isArray(parsed.read) ? (parsed.read as unknown[]).filter((v): v is number => typeof v === 'number') : [],
-        checked: Array.isArray(parsed.checked) ? (parsed.checked as unknown[]).filter((v): v is number => typeof v === 'number') : [],
+        read: Array.isArray(parsed.read)
+          ? (parsed.read as unknown[]).filter((v): v is number => typeof v === 'number')
+          : [],
+        checked: Array.isArray(parsed.checked)
+          ? (parsed.checked as unknown[]).filter((v): v is number => typeof v === 'number')
+          : [],
       }
     } catch {
       return { read: [], checked: [] }
@@ -21,12 +29,11 @@ export function useReviewProgress(reviewId: string) {
   }
 
   function saveState(read: Set<number>, checked: Set<number>) {
-    if (!isClient) return
+    if (!isClient) {
+      return
+    }
     try {
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify({ read: [...read], checked: [...checked] }),
-      )
+      localStorage.setItem(storageKey, JSON.stringify({ read: [...read], checked: [...checked] }))
     } catch {
       // localStorage unavailable (private mode quota, etc.)
     }
@@ -48,7 +55,9 @@ export function useReviewProgress(reviewId: string) {
   }
 
   function markRead(index: number) {
-    if (readSet.value.has(index)) return
+    if (readSet.value.has(index)) {
+      return
+    }
     const next = new Set(readSet.value)
     next.add(index)
     readSet.value = next

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
-import type { JudgeLive, LiveStatus, PartialReview, ReviewRecord } from './types'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
+import type { JudgeLive, LiveStatus, PartialReview, ReviewRecord } from './types'
 
 // shallowRef: the record is written once then never mutated; deep reactivity over
 // its diff + findings would only add proxy overhead on every read during render.
@@ -16,8 +16,12 @@ let events: EventSource | null = null
 
 async function loadRecord(): Promise<boolean> {
   const res = await fetch('/api/review')
-  if (res.status === 202) return false
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (res.status === 202) {
+    return false
+  }
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`)
+  }
   record.value = (await res.json()) as ReviewRecord
   return true
 }
@@ -55,7 +59,9 @@ function openEvents() {
 async function load() {
   error.value = null
   try {
-    if (await loadRecord()) return
+    if (await loadRecord()) {
+      return
+    }
     openEvents()
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -68,7 +74,13 @@ onUnmounted(closeEvents)
 
 <template>
   <ReviewShell v-if="record" :record="record" />
-  <ReviewLive v-else-if="status && !error" :status="status" :partial="partial" :partial-b="partialB" :judge="judge" />
+  <ReviewLive
+    v-else-if="status && !error"
+    :status="status"
+    :partial="partial"
+    :partial-b="partialB"
+    :judge="judge"
+  />
   <div v-else class="app-state">
     <template v-if="error">
       <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>

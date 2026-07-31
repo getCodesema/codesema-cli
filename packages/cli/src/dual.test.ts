@@ -11,13 +11,18 @@ import {
   worstVerdict,
 } from './dual.js'
 
-function reviewWith(findings: Finding[], overrides: Partial<SanitizedReview> = {}): SanitizedReview {
+function reviewWith(
+  findings: Finding[],
+  overrides: Partial<SanitizedReview> = {},
+): SanitizedReview {
   return { verdict: 'comment', summary: 'summary A', findings, narrative: null, ...overrides }
 }
 
 describe('judgeCommandFor', () => {
   test('claude: model swapped for sonnet', () => {
-    expect(judgeCommandFor('claude -p --model opus --effort high')).toBe('claude -p --model sonnet --effort high')
+    expect(judgeCommandFor('claude -p --model opus --effort high')).toBe(
+      'claude -p --model sonnet --effort high',
+    )
   })
 
   test('claude without a model flag: sonnet appended', () => {
@@ -25,7 +30,9 @@ describe('judgeCommandFor', () => {
   })
 
   test('claude: --model=value form swapped too, never doubled', () => {
-    expect(judgeCommandFor('claude -p --model=opus --effort high')).toBe('claude -p --model sonnet --effort high')
+    expect(judgeCommandFor('claude -p --model=opus --effort high')).toBe(
+      'claude -p --model sonnet --effort high',
+    )
     expect(judgeCommandFor('codex exec -m=gpt-5.6-sol -')).toBe('codex exec -m gpt-5.5 -')
   })
 
@@ -134,10 +141,34 @@ describe('worstVerdict', () => {
 })
 
 describe('assembleDualReview', () => {
-  const a0: Finding = { file: 'src/x.ts', line: 5, severity: 'major', kind: 'design', message: 'A0 issue' }
-  const a1: Finding = { file: 'src/x.ts', line: 9, severity: 'minor', kind: 'convention', message: 'A1 nit' }
-  const b0: Finding = { file: 'src/x.ts', line: 5, severity: 'critical', kind: 'design', message: 'B0 same as A0' }
-  const b1: Finding = { file: 'src/y.ts', line: 2, severity: 'major', kind: 'perf', message: 'B1 new issue' }
+  const a0: Finding = {
+    file: 'src/x.ts',
+    line: 5,
+    severity: 'major',
+    kind: 'design',
+    message: 'A0 issue',
+  }
+  const a1: Finding = {
+    file: 'src/x.ts',
+    line: 9,
+    severity: 'minor',
+    kind: 'convention',
+    message: 'A1 nit',
+  }
+  const b0: Finding = {
+    file: 'src/x.ts',
+    line: 5,
+    severity: 'critical',
+    kind: 'design',
+    message: 'B0 same as A0',
+  }
+  const b1: Finding = {
+    file: 'src/y.ts',
+    line: 2,
+    severity: 'major',
+    kind: 'perf',
+    message: 'B1 new issue',
+  }
 
   test('duplicates merge into the A finding with consensus and the highest severity', () => {
     const { review, stats } = assembleDualReview(
@@ -163,18 +194,20 @@ describe('assembleDualReview', () => {
   })
 
   test('rejected findings are dropped, except security ones', () => {
-    const secure: Finding = { file: 'src/x.ts', line: 5, severity: 'major', kind: 'security', message: 'injection' }
-    const { review, stats } = assembleDualReview(
-      reviewWith([a0, secure]),
-      reviewWith([b1]),
-      {
-        decisions: [
-          { id: 'A0', action: 'reject', reason: 'not a real problem' },
-          { id: 'A1', action: 'reject', reason: 'the judge cannot silence security' },
-          { id: 'B0', action: 'reject', reason: 'noise' },
-        ],
-      },
-    )
+    const secure: Finding = {
+      file: 'src/x.ts',
+      line: 5,
+      severity: 'major',
+      kind: 'security',
+      message: 'injection',
+    }
+    const { review, stats } = assembleDualReview(reviewWith([a0, secure]), reviewWith([b1]), {
+      decisions: [
+        { id: 'A0', action: 'reject', reason: 'not a real problem' },
+        { id: 'A1', action: 'reject', reason: 'the judge cannot silence security' },
+        { id: 'B0', action: 'reject', reason: 'noise' },
+      ],
+    })
     expect(review.findings).toEqual([secure])
     expect(stats.rejected).toBe(2)
   })
@@ -198,17 +231,13 @@ describe('assembleDualReview', () => {
       steps: [{ title: 'S', rationale: 'r', files: ['src/x.ts'], finding_refs: [0, 1] }],
       review_first: [],
     }
-    const { review } = assembleDualReview(
-      reviewWith([a0, a1], { narrative }),
-      reviewWith([b1]),
-      {
-        decisions: [
-          { id: 'A0', action: 'reject', reason: 'noise' },
-          { id: 'A1', action: 'keep' },
-          { id: 'B0', action: 'keep' },
-        ],
-      },
-    )
+    const { review } = assembleDualReview(reviewWith([a0, a1], { narrative }), reviewWith([b1]), {
+      decisions: [
+        { id: 'A0', action: 'reject', reason: 'noise' },
+        { id: 'A1', action: 'keep' },
+        { id: 'B0', action: 'keep' },
+      ],
+    })
     expect(review.findings).toEqual([a1, b1])
     expect(review.narrative?.steps[0]?.finding_refs).toEqual([0])
   })
@@ -269,7 +298,13 @@ describe('assembleDualReview', () => {
   })
 
   test('security member becomes the representative when the judge rejected the group root', () => {
-    const secure: Finding = { file: 'src/x.ts', line: 5, severity: 'major', kind: 'security', message: 'injection' }
+    const secure: Finding = {
+      file: 'src/x.ts',
+      line: 5,
+      severity: 'major',
+      kind: 'security',
+      message: 'injection',
+    }
     const { review } = assembleDualReview(reviewWith([a0]), reviewWith([secure]), {
       decisions: [
         { id: 'A0', action: 'reject', reason: 'noise' },
@@ -332,11 +367,23 @@ describe('assembleDualReview', () => {
 })
 
 describe('dedupeExactCrossLane', () => {
-  const anchored: Finding = { file: 'src/x.ts', line: 5, severity: 'major', kind: 'design', message: 'A side' }
+  const anchored: Finding = {
+    file: 'src/x.ts',
+    line: 5,
+    severity: 'major',
+    kind: 'design',
+    message: 'A side',
+  }
 
   test('exact file+line+kind duplicate: B copy removed, A copy tagged consensus with max severity', () => {
     const twin: Finding = { ...anchored, severity: 'critical', message: 'B side' }
-    const other: Finding = { file: 'src/y.ts', line: 2, severity: 'minor', kind: 'perf', message: 'B only' }
+    const other: Finding = {
+      file: 'src/y.ts',
+      line: 2,
+      severity: 'minor',
+      kind: 'perf',
+      message: 'B only',
+    }
     const { a, b, merged } = dedupeExactCrossLane(reviewWith([anchored]), reviewWith([twin, other]))
     expect(a.findings).toEqual([{ ...anchored, severity: 'critical', consensus: true }])
     expect(b.findings).toEqual([other])
@@ -346,15 +393,26 @@ describe('dedupeExactCrossLane', () => {
   test('different line or kind: nothing merges', () => {
     const shifted: Finding = { ...anchored, line: 6 }
     const otherKind: Finding = { ...anchored, kind: 'perf' }
-    const { a, b, merged } = dedupeExactCrossLane(reviewWith([anchored]), reviewWith([shifted, otherKind]))
+    const { a, b, merged } = dedupeExactCrossLane(
+      reviewWith([anchored]),
+      reviewWith([shifted, otherKind]),
+    )
     expect(a.findings).toEqual([anchored])
     expect(b.findings).toEqual([shifted, otherKind])
     expect(merged).toBe(0)
   })
 
   test('unanchored findings never merge', () => {
-    const fileLevel: Finding = { file: 'src/x.ts', severity: 'major', kind: 'design', message: 'no line' }
-    const { a, b, merged } = dedupeExactCrossLane(reviewWith([fileLevel]), reviewWith([{ ...fileLevel }]))
+    const fileLevel: Finding = {
+      file: 'src/x.ts',
+      severity: 'major',
+      kind: 'design',
+      message: 'no line',
+    }
+    const { a, b, merged } = dedupeExactCrossLane(
+      reviewWith([fileLevel]),
+      reviewWith([{ ...fileLevel }]),
+    )
     expect(a.findings).toEqual([fileLevel])
     expect(b.findings).toEqual([{ ...fileLevel }])
     expect(merged).toBe(0)
@@ -392,7 +450,8 @@ describe('prompt hardening', () => {
 
 describe('parsePartialJudge', () => {
   test('complete decision objects extracted from a truncated stream', () => {
-    const text = '{"summary":"s","decisions":[{"id":"A0","action":"keep"},{"id":"B0","action":"reject","reason":"no"},{"id":"B1","act'
+    const text =
+      '{"summary":"s","decisions":[{"id":"A0","action":"keep"},{"id":"B0","action":"reject","reason":"no"},{"id":"B1","act'
     const partial = parsePartialJudge(text, 2, 2)
     expect(partial?.decisions).toEqual([
       { id: 'A0', action: 'keep' },

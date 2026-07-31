@@ -1,4 +1,3 @@
-import type { CodesemaConfig } from './config.js'
 import {
   globalConfigPath,
   loadConfig,
@@ -8,6 +7,7 @@ import {
   saveGlobalConfig,
   saveRepoConfig,
   trustRepoAgent,
+  type CodesemaConfig,
 } from './config.js'
 import { tryExec } from './git.js'
 import { setLanguage, t, type SupportedLanguage } from './i18n.js'
@@ -82,15 +82,21 @@ export function defaultCommand(def: AgentDef): string {
 export type WizardResult = {
   command: string
   agentId: string
-  model?: string
-  effort?: string
+  model?: string | undefined
+  effort?: string | undefined
 }
 
 export function composeCommand(def: AgentDef, model?: string, effort?: string): string {
   let command = def.base
-  if (model) command += ` ${def.modelFlag} ${model}`
-  if (effort && def.effortFlag) command += ` ${def.effortFlag(effort)}`
-  if (def.suffix) command += ` ${def.suffix}`
+  if (model) {
+    command += ` ${def.modelFlag} ${model}`
+  }
+  if (effort && def.effortFlag) {
+    command += ` ${def.effortFlag(effort)}`
+  }
+  if (def.suffix) {
+    command += ` ${def.suffix}`
+  }
   return command
 }
 
@@ -101,8 +107,12 @@ const CUSTOM = Symbol('custom')
 const LANGUAGE_TITLE = 'Language / Langue?'
 
 function defaultLanguageIndex(current?: SupportedLanguage): number {
-  if (current === 'en') return 0
-  if (current === 'fr') return 1
+  if (current === 'en') {
+    return 0
+  }
+  if (current === 'fr') {
+    return 1
+  }
   const env = process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || ''
   return env.toLowerCase().startsWith('fr') ? 1 : 0
 }
@@ -110,18 +120,35 @@ function defaultLanguageIndex(current?: SupportedLanguage): number {
 /** Language selection (ISO 639-1 codes with a catalog), null if cancelled. */
 export async function pickLanguage(current?: SupportedLanguage): Promise<SupportedLanguage | null> {
   const options = [
-    { label: 'English', hint: current === 'en' ? t('wizard.current') : undefined, value: 'en' as SupportedLanguage },
-    { label: 'Français', hint: current === 'fr' ? t('wizard.current') : undefined, value: 'fr' as SupportedLanguage },
+    {
+      label: 'English',
+      hint: current === 'en' ? t('wizard.current') : undefined,
+      value: 'en' as SupportedLanguage,
+    },
+    {
+      label: 'Français',
+      hint: current === 'fr' ? t('wizard.current') : undefined,
+      value: 'fr' as SupportedLanguage,
+    },
   ]
-  return await select({ title: LANGUAGE_TITLE, options, initialIndex: defaultLanguageIndex(current) })
+  return await select({
+    title: LANGUAGE_TITLE,
+    options,
+    initialIndex: defaultLanguageIndex(current),
+  })
 }
 
 /**
  * Interactive agent -> model -> effort selection. `current` prefills the
  * choices for re-editing via `codesema config`. null if the user cancels.
  */
-export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}): Promise<WizardResult | null> {
-  if (!isInteractive()) return null
+export async function runAgentWizard(
+  cwd: string,
+  current: CodesemaConfig = {},
+): Promise<WizardResult | null> {
+  if (!isInteractive()) {
+    return null
+  }
 
   const detected = detectAgents(cwd)
   const missing = AGENT_DEFS.filter((d) => !detected.includes(d))
@@ -137,7 +164,10 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
     })),
     {
       label: t('wizard.customCommand'),
-      hint: current.agentId === 'custom' ? `${t('wizard.stdinStdout')} · ${t('wizard.current')}` : t('wizard.stdinStdout'),
+      hint:
+        current.agentId === 'custom'
+          ? `${t('wizard.stdinStdout')} · ${t('wizard.current')}`
+          : t('wizard.stdinStdout'),
       value: CUSTOM as AgentDef | typeof CUSTOM,
     },
   ]
@@ -147,7 +177,9 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
     options: agentOptions,
     initialIndex: initialAgent >= 0 ? initialAgent : 0,
   })
-  if (picked === null) return null
+  if (picked === null) {
+    return null
+  }
 
   if (picked === CUSTOM) {
     const command = await textInput({
@@ -165,8 +197,16 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
       hint: current.model === m ? t('wizard.current') : undefined,
       value: m as string | typeof CLI_DEFAULT | typeof CUSTOM,
     })),
-    { label: t('wizard.cliDefault'), hint: t('wizard.letDecide', { bin: def.bin }), value: CLI_DEFAULT as string | typeof CLI_DEFAULT | typeof CUSTOM },
-    { label: t('wizard.otherOption'), hint: t('wizard.typeModelName'), value: CUSTOM as string | typeof CLI_DEFAULT | typeof CUSTOM },
+    {
+      label: t('wizard.cliDefault'),
+      hint: t('wizard.letDecide', { bin: def.bin }),
+      value: CLI_DEFAULT as string | typeof CLI_DEFAULT | typeof CUSTOM,
+    },
+    {
+      label: t('wizard.otherOption'),
+      hint: t('wizard.typeModelName'),
+      value: CUSTOM as string | typeof CLI_DEFAULT | typeof CUSTOM,
+    },
   ]
   const initialModel = def.models.indexOf(current.model ?? '')
   const modelPick = await select({
@@ -174,7 +214,9 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
     options: modelOptions,
     initialIndex: initialModel >= 0 ? initialModel : 0,
   })
-  if (modelPick === null) return null
+  if (modelPick === null) {
+    return null
+  }
   let model: string | undefined
   if (modelPick === CUSTOM) {
     model = (await textInput({ title: t('wizard.modelName') })) ?? undefined
@@ -190,7 +232,11 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
         hint: current.effort === e ? t('wizard.current') : undefined,
         value: e as string | typeof CLI_DEFAULT,
       })),
-      { label: t('wizard.cliDefault'), hint: t('wizard.letDecide', { bin: def.bin }), value: CLI_DEFAULT as string | typeof CLI_DEFAULT },
+      {
+        label: t('wizard.cliDefault'),
+        hint: t('wizard.letDecide', { bin: def.bin }),
+        value: CLI_DEFAULT as string | typeof CLI_DEFAULT,
+      },
     ]
     const initialEffort = def.efforts.indexOf(current.effort ?? '')
     const effortPick = await select({
@@ -198,8 +244,12 @@ export async function runAgentWizard(cwd: string, current: CodesemaConfig = {}):
       options: effortOptions,
       initialIndex: initialEffort >= 0 ? initialEffort : effortOptions.length - 1,
     })
-    if (effortPick === null) return null
-    if (effortPick !== CLI_DEFAULT) effort = effortPick
+    if (effortPick === null) {
+      return null
+    }
+    if (effortPick !== CLI_DEFAULT) {
+      effort = effortPick
+    }
   }
 
   return { command: composeCommand(def, model, effort), agentId: def.id, model, effort }
@@ -209,8 +259,12 @@ function applyResult(config: CodesemaConfig, result: WizardResult): CodesemaConf
   const next: CodesemaConfig = { ...config, agent: result.command, agentId: result.agentId }
   delete next.model
   delete next.effort
-  if (result.model) next.model = result.model
-  if (result.effort) next.effort = result.effort
+  if (result.model) {
+    next.model = result.model
+  }
+  if (result.effort) {
+    next.effort = result.effort
+  }
   return next
 }
 
@@ -220,14 +274,20 @@ function applyResult(config: CodesemaConfig, result: WizardResult): CodesemaConf
  */
 export async function runOnboarding(cwd: string): Promise<string | null> {
   const language = (await pickLanguage()) ?? undefined
-  if (language) setLanguage(language)
+  if (language) {
+    setLanguage(language)
+  }
   console.log(`  ${bold(t('wizard.firstRun'))}`)
   console.log(`  ${dim(t('wizard.firstRunHint'))}`)
   console.log('')
   const result = await runAgentWizard(cwd)
-  if (!result) return null
+  if (!result) {
+    return null
+  }
   const config = applyResult(loadGlobalConfig(), result)
-  if (language) config.language = language
+  if (language) {
+    config.language = language
+  }
   const path = saveGlobalConfig(config)
   console.log(`  ${dim(t('wizard.saved', { path }))}`)
   return result.command
@@ -242,20 +302,30 @@ export type ConfigEntry = {
 }
 
 function languageLabel(language?: SupportedLanguage): string {
-  if (language === 'en') return 'English'
-  if (language === 'fr') return 'Français'
+  if (language === 'en') {
+    return 'English'
+  }
+  if (language === 'fr') {
+    return 'Français'
+  }
   return t('config.languageAuto')
 }
 
 function autoSyncLabel(syncAutoPush: boolean | undefined): string {
-  if (syncAutoPush === undefined) return t('config.autoSyncUnset')
+  if (syncAutoPush === undefined) {
+    return t('config.autoSyncUnset')
+  }
   return syncAutoPush ? t('config.autoSyncOn') : t('config.autoSyncOff')
 }
 
 /** Entries of the `codesema config` submenu, current values shown as hints. */
 export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
   return [
-    { id: 'agent', label: t('config.agentEntry'), hint: current.agent ?? t('config.agentEntryUnset') },
+    {
+      id: 'agent',
+      label: t('config.agentEntry'),
+      hint: current.agent ?? t('config.agentEntryUnset'),
+    },
     { id: 'language', label: t('config.languageEntry'), hint: languageLabel(current.language) },
     { id: 'autoSync', label: t('config.autoSyncEntry'), hint: autoSyncLabel(current.syncAutoPush) },
     { id: 'back', label: t('config.back'), hint: '' },
@@ -283,11 +353,15 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
       })),
       summary: false,
     })
-    if (picked === null || picked === 'back') return
+    if (picked === null || picked === 'back') {
+      return
+    }
 
     if (picked === 'language') {
       const language = await pickLanguage(current.language)
-      if (!language) continue
+      if (!language) {
+        continue
+      }
       setLanguage(language)
       // The UI language is global by nature; a per-repo override remains possible
       // by hand in .codesema/config.json but is not offered here.
@@ -308,7 +382,9 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
         initialIndex: current.syncAutoPush === true ? 1 : 0,
         summary: false,
       })
-      if (choice === null) continue
+      if (choice === null) {
+        continue
+      }
       // Auto-sync is global-only, like the sync credentials it depends on: a
       // repo config must never be able to turn on pushing diffs off the machine.
       const path = saveGlobalConfig({ ...loadGlobalConfig(), syncAutoPush: choice === 'on' })
@@ -327,12 +403,16 @@ async function configureAgent(repoRoot: string | null, current: CodesemaConfig):
     console.log('')
     console.log(`  ${t('config.currentAgent', { command: bold(current.agent) })}`)
     const repoOverride = repoRoot && loadRepoConfig(repoRoot).agent
-    console.log(`  ${dim(t('config.fromPath', { path: repoOverride ? repoConfigPath(repoRoot) : globalConfigPath() }))}`)
+    console.log(
+      `  ${dim(t('config.fromPath', { path: repoOverride ? repoConfigPath(repoRoot) : globalConfigPath() }))}`,
+    )
     console.log('')
   }
 
   const result = await runAgentWizard(repoRoot ?? process.cwd(), current)
-  if (!result) return
+  if (!result) {
+    return
+  }
 
   let scope: 'global' | 'repo' = 'global'
   if (repoRoot) {
@@ -343,7 +423,9 @@ async function configureAgent(repoRoot: string | null, current: CodesemaConfig):
         { label: t('config.thisRepo'), hint: t('config.thisRepoHint'), value: 'repo' },
       ],
     })
-    if (pickedScope === null) return
+    if (pickedScope === null) {
+      return
+    }
     scope = pickedScope
   }
 

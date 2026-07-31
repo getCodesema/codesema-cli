@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
 import { loadConfig } from './config.js'
-import { setLanguage, t } from './i18n.js'
 import { exportCommand } from './export.js'
 import { tryGit } from './git.js'
+import { setLanguage, t } from './i18n.js'
 import { reviewFlagsPassed, runMenu } from './menu.js'
 import { prep } from './prep.js'
 import { review, REVIEW_GATE_VALUES, type ReviewGate } from './review.js'
@@ -14,8 +14,15 @@ import { maybeOfferUpgrade } from './upgrade.js'
 import { VERSION } from './version.js'
 import { configCommand } from './wizard.js'
 
-function parseIntFlag(name: string, raw: string | undefined, min: number, max: number): number | undefined {
-  if (raw === undefined) return undefined
+function parseIntFlag(
+  name: string,
+  raw: string | undefined,
+  min: number,
+  max: number,
+): number | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
   const n = Number(raw)
   if (!Number.isInteger(n) || n < min || n > max) {
     throw new Error(t('cli.intFlagError', { name, raw, min, max }))
@@ -24,8 +31,12 @@ function parseIntFlag(name: string, raw: string | undefined, min: number, max: n
 }
 
 function parseFailOn(raw: string | undefined): ReviewGate | undefined {
-  if (raw === undefined) return undefined
-  if ((REVIEW_GATE_VALUES as readonly string[]).includes(raw)) return raw as ReviewGate
+  if (raw === undefined) {
+    return undefined
+  }
+  if ((REVIEW_GATE_VALUES as readonly string[]).includes(raw)) {
+    return raw as ReviewGate
+  }
   throw new Error(t('cli.failOnError', { raw, values: REVIEW_GATE_VALUES.join(', ') }))
 }
 
@@ -83,7 +94,11 @@ async function main(): Promise<void> {
       })
       break
     case 'prep':
-      prep({ branch: values.branch, target: values.target ?? loadConfig(repoRoot).target, cwd: process.cwd() })
+      prep({
+        branch: values.branch,
+        target: values.target ?? loadConfig(repoRoot).target,
+        cwd: process.cwd(),
+      })
       break
     case 'show':
       await show({

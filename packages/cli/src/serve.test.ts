@@ -1,11 +1,18 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { request } from 'node:http'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { sanitizeRecord } from './contract.js'
 import { parsePartialReview } from './partial.js'
-import { createSession, isLoopbackHost, resolveStaticPath, startServer, type LiveSession, type SessionEvent } from './serve.js'
+import {
+  createSession,
+  isLoopbackHost,
+  resolveStaticPath,
+  startServer,
+  type LiveSession,
+  type SessionEvent,
+} from './serve.js'
 
 describe('isLoopbackHost', () => {
   test('accepts loopback hosts, with and without a port', () => {
@@ -136,7 +143,9 @@ function rawRequest(
       },
     )
     req.on('error', reject)
-    if (opts.body !== undefined) req.write(opts.body)
+    if (opts.body !== undefined) {
+      req.write(opts.body)
+    }
     req.end()
   })
 }
@@ -144,7 +153,9 @@ function rawRequest(
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
   const startedAt = Date.now()
   while (!predicate()) {
-    if (Date.now() - startedAt > timeoutMs) throw new Error('timed out waiting for condition')
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('timed out waiting for condition')
+    }
     await new Promise((r) => setTimeout(r, 20))
   }
 }
@@ -214,7 +225,9 @@ describe('startServer', () => {
   })
 
   test('rejects any request whose Host is not loopback', async () => {
-    expect((await rawRequest(port, '/api/status', { headers: { host: 'evil.com' } })).status).toBe(403)
+    expect((await rawRequest(port, '/api/status', { headers: { host: 'evil.com' } })).status).toBe(
+      403,
+    )
     expect((await rawRequest(port, '/', { headers: { host: 'evil.com' } })).status).toBe(403)
   })
 
@@ -255,7 +268,12 @@ describe('startServer', () => {
     const calls: number[][] = []
     let startResult: { ok: true } | { ok: false; code: number; error: string } = { ok: true }
     const runner = {
-      status: () => ({ available: true as const, phase: 'idle' as const, selected: [], head_moved: false }),
+      status: () => ({
+        available: true as const,
+        phase: 'idle' as const,
+        selected: [],
+        head_moved: false,
+      }),
       start: (ids: number[]) => {
         calls.push(ids)
         return startResult
@@ -272,7 +290,10 @@ describe('startServer', () => {
       const status = await rawRequest(started.port, '/api/fix/status')
       expect(JSON.parse(status.body)).toMatchObject({ available: true, phase: 'idle' })
 
-      const noToken = await rawRequest(started.port, '/api/fix', { method: 'POST', body: '{"findings":[0]}' })
+      const noToken = await rawRequest(started.port, '/api/fix', {
+        method: 'POST',
+        body: '{"findings":[0]}',
+      })
       expect(noToken.status).toBe(403)
       const badToken = await rawRequest(started.port, '/api/fix', {
         method: 'POST',

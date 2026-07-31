@@ -3,8 +3,7 @@
 // risk/take/check are optional; findingCount may be 0.
 
 import { computed } from 'vue'
-import type { ParsedDiff } from '../composables/useDiff'
-import { sameFile } from '../composables/useDiff'
+import { sameFile, type ParsedDiff } from '../composables/useDiff'
 import { riskMeta } from '../risk'
 import type { StepView } from '../types'
 
@@ -23,7 +22,9 @@ function stepDelta(ch: StepView): { add: number; del: number } {
   let del = 0
   for (const chFile of ch.files) {
     const diffFile = props.parsedDiff.files.find((df) => sameFile(df.path, chFile))
-    if (!diffFile) continue
+    if (!diffFile) {
+      continue
+    }
     add += diffFile.addCount
     del += diffFile.delCount
   }
@@ -33,7 +34,9 @@ function stepDelta(ch: StepView): { add: number; del: number } {
 const firstUnreadIndex = computed(() => {
   const readSet = props.readSet ?? new Set<number>()
   for (let i = 0; i < props.steps.length; i++) {
-    if (!readSet.has(i)) return i
+    if (!readSet.has(i)) {
+      return i
+    }
   }
   return -1
 })
@@ -49,7 +52,6 @@ function onCardClick(index: number) {
 
 <template>
   <div class="steplist-root">
-
     <div class="steplist-header">
       <span class="steplist-title">{{ $t('reviews.stepsTitle') }}</span>
       <span class="steplist-by">· {{ $t('reviews.stepsBy') }}</span>
@@ -111,22 +113,16 @@ function onCardClick(index: number) {
             </div>
           </div>
 
-          <button
-            v-if="i === firstUnreadIndex"
-            class="steplist-cta"
-            @click.stop="onCardClick(i)"
-          >
+          <button v-if="i === firstUnreadIndex" class="steplist-cta" @click.stop="onCardClick(i)">
             {{ $t('reviews.stepsStart') }}
           </button>
         </div>
-
       </div>
     </div>
 
     <p v-if="steps.length === 0" class="steplist-empty codesema-muted">
       {{ $t('reviews.stepsEmpty') }}
     </p>
-
   </div>
 </template>
 
@@ -175,7 +171,9 @@ function onCardClick(index: number) {
   background: var(--codesema-panel);
   padding: 14px 15px;
   cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
   outline: none;
 }
 

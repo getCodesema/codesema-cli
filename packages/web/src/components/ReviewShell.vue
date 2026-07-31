@@ -1,19 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref } from 'vue'
-import type { Finding } from '../composables/useDiff'
-import { collapsedByBudget, parseDiff, sameFile } from '../composables/useDiff'
-import { actionableFindings } from '../composables/useFocusList'
+import { collapsedByBudget, parseDiff, sameFile, type Finding } from '../composables/useDiff'
 import { buildFixPrompt, isActionable } from '../composables/useFixPrompt'
+import { actionableFindings } from '../composables/useFocusList'
 import { buildNoteTour } from '../composables/useNoteTour'
 import { useReviewProgress } from '../composables/useReviewProgress'
 import type { ReviewRecord } from '../types'
+import DiffView from './DiffView.vue'
+import FileTree from './FileTree.vue'
 import FocusView from './FocusView.vue'
 import ReviewPrologue from './ReviewPrologue.vue'
 import StepList from './StepList.vue'
 import StepRail from './StepRail.vue'
 import StepReview from './StepReview.vue'
-import DiffView from './DiffView.vue'
-import FileTree from './FileTree.vue'
 
 const props = defineProps<{
   record: ReviewRecord
@@ -23,7 +22,9 @@ const isClient = typeof window !== 'undefined'
 
 const meta = computed(() => props.record.meta)
 // Findings get their global index as id so note anchors survive per-step re-parsing.
-const findings = computed<Finding[]>(() => props.record.review.findings.map((f, i) => ({ ...f, id: i })))
+const findings = computed<Finding[]>(() =>
+  props.record.review.findings.map((f, i) => ({ ...f, id: i })),
+)
 const narrative = computed(() => props.record.review.narrative)
 // check: null (contract) normalized to undefined (expected by the child components)
 const steps = computed(() =>
@@ -46,13 +47,16 @@ const globalDelta = computed(() => {
   return { add, del }
 })
 
+const VERDICT_META_COMMENT = { labelKey: 'verdict.comment', cls: 'sr-verdict--comment' }
 const VERDICT_META: Record<string, { labelKey: string; cls: string }> = {
   approve: { labelKey: 'verdict.approve', cls: 'sr-verdict--approve' },
   request_changes: { labelKey: 'verdict.request_changes', cls: 'sr-verdict--changes' },
-  comment: { labelKey: 'verdict.comment', cls: 'sr-verdict--comment' },
+  comment: VERDICT_META_COMMENT,
 }
 
-const verdictMeta = computed(() => VERDICT_META[props.record.review.verdict] ?? VERDICT_META.comment!)
+const verdictMeta = computed(
+  () => VERDICT_META[props.record.review.verdict] ?? VERDICT_META_COMMENT,
+)
 
 const actionableCount = computed(() => findings.value.filter(isActionable).length)
 const focusList = computed(() => actionableFindings(findings.value))
@@ -71,7 +75,9 @@ async function copyFixPrompt() {
   try {
     await navigator.clipboard.writeText(buildFixPrompt(props.record))
     copied.value = true
-    if (copiedTimer) clearTimeout(copiedTimer)
+    if (copiedTimer) {
+      clearTimeout(copiedTimer)
+    }
     copiedTimer = setTimeout(() => {
       copied.value = false
     }, 2000)
@@ -86,6 +92,16 @@ const progressKey = `${props.record.meta.branch}:${props.record.meta.created_at}
 const { readSet, checkedSet, toggleRead, toggleChecked, markRead } = useReviewProgress(progressKey)
 
 const activeTab = ref<'steps' | 'files'>('steps')
+
+function selectStepsTab() {
+  activeTab.value = 'steps'
+  syncHash()
+}
+function selectFilesTab() {
+  activeTab.value = 'files'
+  guidedIndex.value = null
+  syncHash()
+}
 
 const guidedIndex = ref<number | null>(null)
 const isGuidedMode = computed(() => guidedIndex.value !== null)
@@ -112,15 +128,23 @@ const tourIndex = ref<number | null>(null)
 const reveal = ref<{ id: number; nonce: number } | null>(null)
 let revealNonce = 0
 
-const tourStop = computed(() => (tourIndex.value === null ? null : (tour.value[tourIndex.value] ?? null)))
+const tourStop = computed(() =>
+  tourIndex.value === null ? null : (tour.value[tourIndex.value] ?? null),
+)
 const tourHasPrev = computed(() => tourIndex.value !== null && tourIndex.value > 0)
-const tourHasNext = computed(() => tourIndex.value !== null && tourIndex.value < tour.value.length - 1)
+const tourHasNext = computed(
+  () => tourIndex.value !== null && tourIndex.value < tour.value.length - 1,
+)
 
 async function applyTourStop(index: number) {
   const stop = tour.value[index]
-  if (!stop) return
+  if (!stop) {
+    return
+  }
   const previous = tourStop.value
-  if (previous && stop.stepIndex > previous.stepIndex) markRead(previous.stepIndex)
+  if (previous && stop.stepIndex > previous.stepIndex) {
+    markRead(previous.stepIndex)
+  }
   tourIndex.value = index
   if (guidedIndex.value !== stop.stepIndex) {
     guidedIndex.value = stop.stepIndex
@@ -128,7 +152,9 @@ async function applyTourStop(index: number) {
   }
   await nextTick()
   if (stop.findingId === null) {
-    if (isClient) window.scrollTo({ top: 0, behavior: 'smooth' })
+    if (isClient) {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
     return
   }
   reveal.value = { id: stop.findingId, nonce: ++revealNonce }
@@ -139,7 +165,9 @@ function startTour() {
 }
 
 function tourNext() {
-  if (tourIndex.value === null) return
+  if (tourIndex.value === null) {
+    return
+  }
   if (tourHasNext.value) {
     void applyTourStop(tourIndex.value + 1)
     return
@@ -148,12 +176,16 @@ function tourNext() {
 }
 
 function tourPrev() {
-  if (tourIndex.value !== null && tourHasPrev.value) void applyTourStop(tourIndex.value - 1)
+  if (tourIndex.value !== null && tourHasPrev.value) {
+    void applyTourStop(tourIndex.value - 1)
+  }
 }
 
 function finishTour() {
   const stop = tourStop.value
-  if (stop) markRead(stop.stepIndex)
+  if (stop) {
+    markRead(stop.stepIndex)
+  }
   tourIndex.value = null
   guidedIndex.value = null
   syncHash()
@@ -161,13 +193,17 @@ function finishTour() {
 
 /** Manual step navigation during a tour: snap the tour onto the chosen step. */
 function realignTour(stepIndex: number) {
-  if (tourIndex.value === null) return
+  if (tourIndex.value === null) {
+    return
+  }
   const at = tour.value.findIndex((s) => s.stepIndex === stepIndex && s.findingId === null)
   tourIndex.value = at >= 0 ? at : null
 }
 
 function syncHash() {
-  if (!isClient) return
+  if (!isClient) {
+    return
+  }
   const hash =
     viewMode.value === 'focus'
       ? '#focus'
@@ -181,13 +217,19 @@ function syncHash() {
 
 if (isClient) {
   const m = /^#step-(\d+)$/.exec(location.hash)
-  if (location.hash === '#focus') viewMode.value = 'focus'
-  else if (location.hash === '#files') activeTab.value = 'files'
-  else if (m && Number(m[1]) < steps.value.length) guidedIndex.value = Number(m[1])
+  if (location.hash === '#focus') {
+    viewMode.value = 'focus'
+  } else if (location.hash === '#files') {
+    activeTab.value = 'files'
+  } else if (m && Number(m[1]) < steps.value.length) {
+    guidedIndex.value = Number(m[1])
+  }
 }
 
 const otherFiles = computed(() => {
-  if (!hasSteps.value) return []
+  if (!hasSteps.value) {
+    return []
+  }
   const covered = steps.value.flatMap((ch) => ch.files)
   return parsedDiff.value.files.filter((f) => !covered.some((c) => sameFile(c, f.path)))
 })
@@ -195,12 +237,16 @@ const otherFiles = computed(() => {
 const FILES_SPLIT_KEY = 'codesema-diff-mode'
 
 const filesDiffMode = ref<'split' | 'unified'>(
-  isClient ? ((localStorage.getItem(FILES_SPLIT_KEY) as 'split' | 'unified') ?? 'unified') : 'unified',
+  isClient
+    ? ((localStorage.getItem(FILES_SPLIT_KEY) as 'split' | 'unified') ?? 'unified')
+    : 'unified',
 )
 
 function setFilesDiffMode(m: 'split' | 'unified') {
   filesDiffMode.value = m
-  if (isClient) localStorage.setItem(FILES_SPLIT_KEY, m)
+  if (isClient) {
+    localStorage.setItem(FILES_SPLIT_KEY, m)
+  }
 }
 
 // Each per-file DiffView sees a single file, so it can't judge the page-wide total.
@@ -215,8 +261,11 @@ function toggleFilesCollapse() {
 
 const fileScrollRefs = new Map<string, HTMLElement>()
 function setFileScrollRef(path: string, el: unknown) {
-  if (el instanceof HTMLElement) fileScrollRefs.set(path, el)
-  else fileScrollRefs.delete(path)
+  if (el instanceof HTMLElement) {
+    fileScrollRefs.set(path, el)
+  } else {
+    fileScrollRefs.delete(path)
+  }
 }
 function onFilePick(path: string) {
   fileScrollRefs.get(path)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -232,7 +281,6 @@ const SEV_CLS: Record<string, string> = {
 
 <template>
   <div class="sr-root">
-
     <header class="sr-header">
       <div class="sr-header-main">
         <h1 class="sr-title">{{ meta.title }}</h1>
@@ -242,7 +290,13 @@ const SEV_CLS: Record<string, string> = {
           <code>{{ meta.target }}</code>
         </div>
         <p v-if="meta.dual" class="sr-dual-stat codesema-muted">
-          {{ $t('reviews.dualStat', { merged: meta.dual.merged, rejected: meta.dual.rejected, added: meta.dual.added_by_b }) }}
+          {{
+            $t('reviews.dualStat', {
+              merged: meta.dual.merged,
+              rejected: meta.dual.rejected,
+              added: meta.dual.added_by_b,
+            })
+          }}
         </p>
       </div>
       <button
@@ -261,7 +315,11 @@ const SEV_CLS: Record<string, string> = {
         {{ $t('header.runFixes', { n: actionableCount }) }}
       </button>
       <span class="sr-verdict-group">
-        <span class="sr-semaphore" :class="`sr-semaphore--${record.review.verdict}`" aria-hidden="true">
+        <span
+          class="sr-semaphore"
+          :class="`sr-semaphore--${record.review.verdict}`"
+          aria-hidden="true"
+        >
           <span class="sr-sem-dot sr-sem-dot--stop" />
           <span class="sr-sem-dot sr-sem-dot--check" />
           <span class="sr-sem-dot sr-sem-dot--go" />
@@ -277,7 +335,7 @@ const SEV_CLS: Record<string, string> = {
           class="sr-tab"
           :class="{ on: activeTab === 'steps' }"
           :aria-selected="activeTab === 'steps'"
-          @click="activeTab = 'steps'; syncHash()"
+          @click="selectStepsTab"
         >
           {{ $t('app.tabSteps') }}
           <span v-if="steps.length > 0" class="sr-tab-n">{{ steps.length }}</span>
@@ -287,7 +345,7 @@ const SEV_CLS: Record<string, string> = {
           class="sr-tab"
           :class="{ on: activeTab === 'files' }"
           :aria-selected="activeTab === 'files'"
-          @click="activeTab = 'files'; guidedIndex = null; syncHash()"
+          @click="selectFilesTab"
         >
           {{ $t('app.tabFiles') }}
           <span v-if="filesCount > 0" class="sr-tab-n">{{ filesCount }}</span>
@@ -314,7 +372,6 @@ const SEV_CLS: Record<string, string> = {
     </div>
 
     <div v-show="viewMode === 'explain' && activeTab === 'steps'" class="sr-stage">
-
       <StepRail
         v-if="hasSteps"
         :steps="steps"
@@ -354,12 +411,16 @@ const SEV_CLS: Record<string, string> = {
               <div class="sr-general-tag">{{ $t('reviews.generalNotes') }}</div>
               <ul class="sr-general-list">
                 <li v-for="(f, i) in unmatched" :key="i" class="sr-general-item">
-                  <span class="sr-sev" :class="SEV_CLS[f.severity] ?? 'sr-sev--info'">{{ f.severity }}</span>
+                  <span class="sr-sev" :class="SEV_CLS[f.severity] ?? 'sr-sev--info'">{{
+                    f.severity
+                  }}</span>
                   <span v-if="f.consensus" class="sr-consensus" :title="$t('finding.consensus')">
                     <span class="sr-consensus-dots" aria-hidden="true"><span /><span /></span>
                     {{ $t('finding.consensus') }}
                   </span>
-                  <code v-if="f.file" class="sr-general-file">{{ f.file }}<template v-if="f.line">:{{ f.line }}</template></code>
+                  <code v-if="f.file" class="sr-general-file"
+                    >{{ f.file }}<template v-if="f.line">:{{ f.line }}</template></code
+                  >
                   {{ f.message }}
                   <pre v-if="f.suggestion" class="sr-general-sugg">{{ f.suggestion }}</pre>
                 </li>
@@ -387,16 +448,11 @@ const SEV_CLS: Record<string, string> = {
           <DiffView :files="otherFiles" />
         </div>
       </template>
-
     </div>
 
     <div v-show="viewMode === 'explain' && activeTab === 'files'" class="sr-stage sr-files-stage">
       <div v-if="record.diff" class="sr-files-layout">
-        <FileTree
-          :files="parsedDiff.files"
-          :findings="findings"
-          @pick="onFilePick"
-        />
+        <FileTree :files="parsedDiff.files" :findings="findings" @pick="onFilePick" />
 
         <div class="sr-files-right">
           <div class="sr-files-toolbar">
@@ -404,7 +460,10 @@ const SEV_CLS: Record<string, string> = {
               {{ filesAllCollapsed ? $t('fileTree.expandAll') : $t('fileTree.collapseAll') }}
             </button>
             <div class="sr-files-seg">
-              <button :class="{ on: filesDiffMode === 'unified' }" @click="setFilesDiffMode('unified')">
+              <button
+                :class="{ on: filesDiffMode === 'unified' }"
+                @click="setFilesDiffMode('unified')"
+              >
                 {{ $t('diffView.modeUnified') }}
               </button>
               <button :class="{ on: filesDiffMode === 'split' }" @click="setFilesDiffMode('split')">
@@ -438,7 +497,10 @@ const SEV_CLS: Record<string, string> = {
       <p v-else class="codesema-muted sr-empty-msg">{{ $t('reviews.noDiff') }}</p>
     </div>
 
-    <div v-if="viewMode === 'explain' && activeTab === 'steps' && hasSteps && tour.length" class="sr-tour">
+    <div
+      v-if="viewMode === 'explain' && activeTab === 'steps' && hasSteps && tour.length"
+      class="sr-tour"
+    >
       <button v-if="tourIndex === null" class="sr-tour-start" @click="startTour">
         <span class="sr-tour-mark">✦</span>
         {{ $t('tour.start') }}
@@ -453,7 +515,9 @@ const SEV_CLS: Record<string, string> = {
         >
           ‹
         </button>
-        <span class="sr-tour-count">{{ tourIndex + 1 }}<span class="sr-tour-total"> / {{ tour.length }}</span></span>
+        <span class="sr-tour-count"
+          >{{ tourIndex + 1 }}<span class="sr-tour-total"> / {{ tour.length }}</span></span
+        >
         <button
           v-if="tourHasNext"
           class="sr-tour-btn"
@@ -474,7 +538,6 @@ const SEV_CLS: Record<string, string> = {
         </button>
       </template>
     </div>
-
   </div>
 </template>
 
@@ -625,7 +688,9 @@ const SEV_CLS: Record<string, string> = {
   font-family: inherit;
   font-weight: 600;
   cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .sr-copy-btn:hover {
@@ -728,7 +793,9 @@ const SEV_CLS: Record<string, string> = {
   background: none;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .sr-mode button.on {
@@ -968,7 +1035,9 @@ const SEV_CLS: Record<string, string> = {
   background: none;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .sr-files-seg button.on {
