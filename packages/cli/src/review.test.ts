@@ -80,6 +80,7 @@ describe('agentVisibleInput', () => {
       rules: ['[C1] no any'],
       impact_candidates: { note: 'best-effort', symbols: [], imported_by: { 'a.ts': ['b.ts'] } },
       diff: 'diff --git a/a.ts b/a.ts',
+      server_context: null,
     }
     expect(agentVisibleInput(input)).toEqual({
       branch: 'feature/x',
@@ -89,7 +90,38 @@ describe('agentVisibleInput', () => {
       custom_instructions: null,
       rules: ['[C1] no any'],
       impact_candidates: { note: 'best-effort', symbols: [], imported_by: { 'a.ts': ['b.ts'] } },
+      server_context: null,
     })
+  })
+
+  test('carries a populated server_context through unchanged', () => {
+    const input: PrepInput = {
+      version: 1,
+      generated_by: 'codesema prep',
+      title: 'feature/x',
+      branch: 'feature/x',
+      target: 'develop',
+      target_source: 'heuristic',
+      merge_base: 'abc123',
+      head_sha: 'def456',
+      repo_root: '/home/someone/secret-project',
+      commits: [],
+      files: [],
+      custom_instructions: null,
+      rules: null,
+      impact_candidates: null,
+      diff: '',
+      server_context: {
+        version: 1,
+        repo: { remote_url: 'git@github.com:acme/widgets.git' },
+        freshness: { scan_sha: 'abc', scanned_at: '2026-08-01T00:00:00.000Z' },
+        conventions: [{ id: 'c1', rule: 'no any', category: 'types', scope: null }],
+        learned_rules: [{ id: 'l1', rule: 'prefer composables' }],
+        facts: ['uses Elysia'],
+        stale_warning: null,
+      },
+    }
+    expect(agentVisibleInput(input).server_context).toEqual(input.server_context)
   })
 })
 
@@ -151,6 +183,13 @@ describe('reviewInstructions', () => {
     expect(p).toContain('REFUTE every finding')
     expect(p).toContain('HUNT them first')
     expect(p).toContain('[Cn]')
+  })
+
+  test('describes server_context and its precedence under the local rules', () => {
+    const p = reviewInstructions()
+    expect(p).toContain('server_context')
+    expect(p).toContain('rules wins')
+    expect(p).toContain('stale_warning')
   })
 
   test('scopes the verdict to what the input can prove', () => {
@@ -261,6 +300,7 @@ describe('runDualFlow', () => {
       rules: null,
       impact_candidates: null,
       diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
+      server_context: null,
     }
     writeFileSync(join(workDir, 'input.json'), JSON.stringify(input))
     return { repo, workDir, callsPath, agentScript, input }
