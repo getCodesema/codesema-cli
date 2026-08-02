@@ -1,4 +1,4 @@
-import { isAncestor } from './git.js'
+import { isAncestor, tryGit } from './git.js'
 import { authHeader, loadSyncCredentials } from './sync.js'
 
 export type ServerConvention = {
@@ -131,19 +131,24 @@ export function parseServerContextPayload(raw: unknown): ServerContextPayload | 
 
 /**
  * Best-effort GET, gated by loadSyncCredentials() exactly like pushReview: no
- * stored workspace credentials, no request. Any network error, non-200 or
- * malformed body silently degrades to null; this function never throws.
+ * stored workspace credentials, no request. `remote_url` is a required query
+ * param on the real route (GET /api/cli/context resolves the repo by
+ * normalized remote URL): no known origin remote, no request either, same
+ * degrade-to-null contract. Any network error, non-200 or malformed body
+ * silently degrades to null; this function never throws.
  */
 async function fetchServerContextPayload(
+  remoteUrl: string | null,
   fetchImpl: typeof fetch,
   timeoutMs: number,
 ): Promise<ServerContextPayload | null> {
   const creds = loadSyncCredentials()
-  if (!creds) {
+  if (!creds || !remoteUrl) {
     return null
   }
   try {
-    const res = await fetchImpl(`${creds.url}/api/cli/context`, {
+    const url = `${creds.url}/api/cli/context?remote_url=${encodeURIComponent(remoteUrl)}`
+    const res = await fetchImpl(url, {
       method: 'GET',
       headers: authHeader(creds),
       signal: AbortSignal.timeout(timeoutMs),
@@ -177,17 +182,21 @@ function staleWarning(payload: ServerContextPayload, cwd: string): string | null
 }
 
 /**
- * Never blocking, never throwing: offline, unlinked workspace (403), a
- * non-200, a timeout or a malformed response all silently degrade to null,
- * same contract as autoPushReview (sync.ts). `.codesema/RULES.md` is loaded
- * and applied entirely separately (rules.ts) and always takes precedence.
+ * Never blocking, never throwing: offline, unlinked workspace (403), no
+ * origin remote, a non-200, a timeout or a malformed response all silently
+ * degrade to null, same contract as autoPushReview (sync.ts). The remote URL
+ * is derived from `origin` the same way autoPushReview does (tryGit(['remote',
+ * 'get-url', 'origin'], cwd)) and sent as-is; the server normalizes it.
+ * `.codesema/RULES.md` is loaded and applied entirely separately (rules.ts)
+ * and always takes precedence.
  */
 export async function buildServerContext(
   cwd: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs: number = SERVER_CONTEXT_TIMEOUT_MS,
 ): Promise<ServerContext | null> {
-  const payload = await fetchServerContextPayload(fetchImpl, timeoutMs)
+  const remoteUrl = tryGit(['remote', 'get-url', 'origin'], cwd)
+  const payload = await fetchServerContextPayload(remoteUrl, fetchImpl, timeoutMs)
   if (!payload) {
     return null
   }
