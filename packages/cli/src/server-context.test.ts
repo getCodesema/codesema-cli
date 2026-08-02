@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
+import { subprocessEnv } from './git.js'
 import {
   buildServerContext,
   parseServerContextPayload,
@@ -51,15 +52,23 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
+// Same guard as git.ts's own subprocessEnv(): a pre-push hook (this CLI's own,
+// including from a worktree) sets GIT_DIR/GIT_WORK_TREE, which would otherwise
+// redirect these calls away from the throwaway `cwd` repo made in makeRepo().
 function runGit(args: string[], cwd: string): void {
   execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
     cwd,
     stdio: 'ignore',
+    env: subprocessEnv(),
   })
 }
 
 function headSha(cwd: string): string {
-  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim()
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+    env: subprocessEnv(),
+  }).trim()
 }
 
 function makeRepo(): string {
