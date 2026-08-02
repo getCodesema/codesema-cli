@@ -17,7 +17,7 @@ const AUTH_PATTERN = /^Bearer csk_[^.]+\.[^.]+$/
 
 type StubServer = {
   url: string
-  requests: { path: string; headers: Record<string, string> }[]
+  requests: { path: string; search: URLSearchParams; headers: Record<string, string> }[]
   close: () => Promise<void>
 }
 
@@ -27,12 +27,12 @@ function startStubServer(
 ): Promise<StubServer> {
   const requests: StubServer['requests'] = []
   const server: Server = createServer((req, res) => {
-    const path = new URL(req.url ?? '/', 'http://stub.local').pathname
+    const url = new URL(req.url ?? '/', 'http://stub.local')
     const headers: Record<string, string> = {}
     for (const [key, value] of Object.entries(req.headers)) {
       headers[key] = Array.isArray(value) ? value.join(',') : (value ?? '')
     }
-    requests.push({ path, headers })
+    requests.push({ path: url.pathname, search: url.searchParams, headers })
     handler(req, res)
   })
   return new Promise((resolve) => {
@@ -71,10 +71,16 @@ function headSha(cwd: string): string {
   }).trim()
 }
 
-function makeRepo(): string {
+const ORIGIN_REMOTE_URL = 'https://example.com/acme/widgets.git'
+
+/** A repo with an `origin` remote by default: buildServerContext derives remote_url from it. */
+function makeRepo(opts: { withRemote?: boolean } = {}): string {
   const repo = mkdtempSync(join(tmpdir(), 'codesema-context-repo-'))
   runGit(['init', '-b', 'main'], repo)
   runGit(['commit', '--allow-empty', '-m', 'chore: init'], repo)
+  if (opts.withRemote !== false) {
+    runGit(['remote', 'add', 'origin', ORIGIN_REMOTE_URL], repo)
+  }
   return repo
 }
 
@@ -179,6 +185,50 @@ describe('buildServerContext', () => {
     expect(context).toEqual({ ...VALID_PAYLOAD, stale_warning: null })
     expect(stub.requests[0]?.path).toBe('/api/cli/context')
     expect(AUTH_PATTERN.test(stub.requests[0]?.headers.authorization ?? '')).toBe(true)
+  })
+
+  // The real route (GET /api/cli/context) resolves the repo by remote_url and
+  // rejects the request without it: the CLI must send the origin remote it
+  // already knows from prep, exactly like autoPushReview does for pushReview.
+  test('sends the origin remote as a remote_url query param', async () => {
+    stub = await startStubServer((_req, res) => sendJson(res, 200, VALID_PAYLOAD))
+    seedCredentials(stub.url)
+
+    await buildServerContext(repo, fetch)
+
+    expect(stub.requests[0]?.path).toBe('/api/cli/context')
+    expect(stub.requests[0]?.search.get('remote_url')).toBe(ORIGIN_REMOTE_URL)
+  })
+
+  test('no origin remote configured locally: no request goes out, degrades to null', async () => {
+    const repoNoRemote = makeRepo({ withRemote: false })
+    let called = false
+    stub = await startStubServer((_req, res) => {
+      called = true
+      sendJson(res, 200, VALID_PAYLOAD)
+    })
+    seedCredentials(stub.url)
+
+    try {
+      const context = await buildServerContext(repoNoRemote, fetch)
+
+      expect(context).toBeNull()
+      expect(called).toBe(false)
+    } finally {
+      rmSync(repoNoRemote, { recursive: true, force: true })
+    }
+  })
+
+  // The route's `remote_url` query param is required (t.String({ minLength: 1
+  // })) and rejects an unresolved repo with a plain 400: same degrade-to-null
+  // contract as the 403 unlinked-workspace case below, never a throw.
+  test('400 from the server (e.g. missing or unresolved remote_url): degrades to null, never throws', async () => {
+    stub = await startStubServer((_req, res) => sendJson(res, 400, { error: 'unknown repo' }))
+    seedCredentials(stub.url)
+
+    const context = await buildServerContext(repo, fetch)
+
+    expect(context).toBeNull()
   })
 
   test('freshness ancestor of HEAD: no staleness warning', async () => {

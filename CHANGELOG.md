@@ -3,6 +3,13 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.11.0] - 2026-08-02
+
+### Added
+
+- Server context download: `codesema review` fetches `GET /api/cli/context` (conventions, learned rules, facts, last-scan freshness) for the current repo and hands it to the agent alongside the diff. The origin remote (`git remote get-url origin`) is sent as the `remote_url` query param the route requires to resolve the repo. Strictly best-effort and never blocking, same contract as auto-sync: no stored workspace credentials, no origin remote, offline, an unlinked workspace (403) or any malformed response all silently degrade to no server context, and the local review runs unchanged. `.codesema/RULES.md` stays local and always takes precedence.
+- Staleness warning: when the server's last scan commit is not an ancestor of the current `HEAD`, the context is prefixed with an explicit warning naming the scan date, so the agent treats the conventions, learned rules and facts as advisory rather than ground truth about the current diff.
+
 ## [0.10.0] - 2026-07-29
 
 ### Added
