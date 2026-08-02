@@ -15,6 +15,7 @@ import {
 import { t } from './i18n.js'
 import { buildImpactCandidates, type ImpactCandidates } from './impact.js'
 import { loadRules } from './rules.js'
+import type { ServerContext } from './server-context.js'
 import { renderFieldRows, type FieldRow } from './ui.js'
 
 const TARGET_CANDIDATES = ['develop', 'main', 'master'] as const
@@ -54,6 +55,14 @@ export type PrepInput = {
   rules: string[] | null
   impact_candidates: ImpactCandidates | null
   diff: string
+  /**
+   * Best-effort context fetched from the codesema server (conventions, learned
+   * rules, facts, freshness); null when offline, unlinked or on any failure.
+   * Always null right out of prep() (pure git computation): populated
+   * separately by review() via buildServerContext(). Never a substitute for
+   * `rules`, which stays local and takes precedence.
+   */
+  server_context: ServerContext | null
 }
 
 function resolveRef(name: string, cwd: string): string | null {
@@ -277,6 +286,7 @@ export function prep(opts: {
     rules,
     impact_candidates: buildImpactCandidates(diff, cwd),
     diff,
+    server_context: null,
   }
 
   const dir = ensureWorkDir(cwd)

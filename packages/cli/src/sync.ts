@@ -97,7 +97,7 @@ async function api<T>(
   return parsed
 }
 
-function authHeader(creds: SyncCredentials): Record<string, string> {
+export function authHeader(creds: SyncCredentials): Record<string, string> {
   return { authorization: `Bearer csk_${creds.workspaceId}.${creds.secret}` }
 }
 
