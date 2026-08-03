@@ -2,8 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { agentEnv, hardenedReviewCommand, runAgent } from '../src/agent.js'
-import type { SanitizedReview } from '../src/contract.js'
-import { groundReview, sanitizeReview } from '../src/contract.js'
+import { groundReview, sanitizeReview, type SanitizedReview } from '../src/contract.js'
 import { prosecutorInstructions } from '../src/dual.js'
 import { extractReviewJson, reviewInstructions } from '../src/review.js'
 import { scoreFindings, type ExpectedBug } from './score.js'
@@ -25,7 +24,12 @@ type Fixture = {
 const LANES = { a: 'reviewer', b: 'prosecutor' } as const
 type Lane = keyof typeof LANES
 
-async function runLane(agent: string, lane: Lane, fixture: Fixture, timeoutMs: number): Promise<SanitizedReview> {
+async function runLane(
+  agent: string,
+  lane: Lane,
+  fixture: Fixture,
+  timeoutMs: number,
+): Promise<SanitizedReview> {
   const instructions = lane === 'a' ? reviewInstructions() : prosecutorInstructions('English')
   const prompt = [
     instructions,
@@ -51,7 +55,9 @@ const { values } = parseArgs({
 })
 
 if (!values.agent || (values.lane !== 'both' && values.lane !== 'a' && values.lane !== 'b')) {
-  console.error('usage: bun eval/run.ts --agent "<agent command>" [--lane a|b|both] [--timeout seconds]')
+  console.error(
+    'usage: bun eval/run.ts --agent "<agent command>" [--lane a|b|both] [--timeout seconds]',
+  )
   process.exit(1)
 }
 
@@ -59,7 +65,7 @@ const lanes: Lane[] = values.lane === 'both' ? ['a', 'b'] : [values.lane]
 const fixturesDir = join(import.meta.dir, 'fixtures')
 const fixtures = readdirSync(fixturesDir)
   .filter((name) => name.endsWith('.json'))
-  .sort()
+  .toSorted()
   .map((name) => JSON.parse(readFileSync(join(fixturesDir, name), 'utf8')) as Fixture)
 
 let totalExpected = 0

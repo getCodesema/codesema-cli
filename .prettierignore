@@ -1,0 +1,6 @@
+node_modules
+dist
+web-dist
+coverage
+bun.lock
+CHANGELOG.md

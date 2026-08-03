@@ -6,7 +6,7 @@ import { ACCENT, dim, isFancy, paint } from './ui.js'
 export type SelectOption<T> = {
   label: string
   value: T
-  hint?: string
+  hint?: string | undefined
   /** Render a blank line above this option (visually detaches back/quit entries). */
   separatorBefore?: boolean
 }
@@ -43,7 +43,9 @@ export async function select<T>(opts: {
   /** false = erase the prompt entirely on resolve, leaving no trace (stable in-place menus). */
   summary?: boolean
 }): Promise<T | null> {
-  if (!isInteractive() || opts.options.length === 0) return null
+  if (!isInteractive() || opts.options.length === 0) {
+    return null
+  }
 
   const { stdin, stdout } = process
   emitKeypressEvents(stdin)
@@ -59,19 +61,25 @@ export async function select<T>(opts: {
   const width = () => Math.max(40, stdout.columns || 80)
 
   const filtered = (): SelectOption<T>[] => {
-    if (!query) return opts.options
+    if (!query) {
+      return opts.options
+    }
     const q = query.toLowerCase()
     return opts.options.filter((o) => o.label.toLowerCase().includes(q))
   }
 
   const clearRendered = () => {
-    if (renderedLines > 0) stdout.write(`\x1b[${renderedLines}A`)
+    if (renderedLines > 0) {
+      stdout.write(`\x1b[${renderedLines}A`)
+    }
     stdout.write('\x1b[0J')
   }
 
   const render = () => {
     const list = filtered()
-    if (cursor >= list.length) cursor = Math.max(0, list.length - 1)
+    if (cursor >= list.length) {
+      cursor = Math.max(0, list.length - 1)
+    }
 
     const lines: string[] = []
     const filterPart = opts.filter
@@ -86,19 +94,34 @@ export async function select<T>(opts: {
     if (list.length === 0) {
       lines.push(`        ${faint(t('tui.noMatch'))}`)
     } else {
-      const start = Math.min(Math.max(0, cursor - MAX_VISIBLE + 2), Math.max(0, list.length - MAX_VISIBLE))
+      const start = Math.min(
+        Math.max(0, cursor - MAX_VISIBLE + 2),
+        Math.max(0, list.length - MAX_VISIBLE),
+      )
       const visible = list.slice(start, start + MAX_VISIBLE)
-      if (start > 0) lines.push(`        ${faint(t('tui.moreUp', { n: start }))}`)
+      if (start > 0) {
+        lines.push(`        ${faint(t('tui.moreUp', { n: start }))}`)
+      }
       visible.forEach((option, i) => {
         const index = start + i
         const active = index === cursor
         const label = truncate(option.label, Math.floor(width() * 0.5))
-        const hint = option.hint ? `  ${faint(truncate(option.hint, Math.floor(width() * 0.35)))}` : ''
-        if (option.separatorBefore && lines.at(-1) !== '') lines.push('')
-        lines.push(active ? `      ${color('❯', ACCENT)} ${color(label, ACCENT)}${hint}` : `        ${label}${hint}`)
+        const hint = option.hint
+          ? `  ${faint(truncate(option.hint, Math.floor(width() * 0.35)))}`
+          : ''
+        if (option.separatorBefore && lines.at(-1) !== '') {
+          lines.push('')
+        }
+        lines.push(
+          active
+            ? `      ${color('❯', ACCENT)} ${color(label, ACCENT)}${hint}`
+            : `        ${label}${hint}`,
+        )
       })
       const rest = list.length - start - visible.length
-      if (rest > 0) lines.push(`        ${faint(t('tui.moreDown', { n: rest }))}`)
+      if (rest > 0) {
+        lines.push(`        ${faint(t('tui.moreDown', { n: rest }))}`)
+      }
     }
     lines.push(`  ${faint(opts.filter ? t('tui.keysWithFilter') : t('tui.keys'))}`)
 
@@ -114,15 +137,19 @@ export async function select<T>(opts: {
       stdin.pause()
       clearRendered()
       renderedLines = 0
-      if (opts.summary !== false) stdout.write(`${summary}\n`)
+      if (opts.summary !== false) {
+        stdout.write(`${summary}\n`)
+      }
       stdout.write('\x1b[?25h')
       resolve(value)
     }
 
-    const confirm = () => {
+    const confirmSelection = () => {
       const list = filtered()
       const chosen = list[cursor]
-      if (!chosen) return
+      if (!chosen) {
+        return
+      }
       finish(chosen.value, `  ${color('✔', ACCENT)} ${opts.title} ${faint('·')} ${chosen.label}`)
     }
 
@@ -137,22 +164,36 @@ export async function select<T>(opts: {
         stdout.write('\x1b[?25h\n')
         process.exit(130)
       }
-      if (key.name === 'return' || key.name === 'enter') return confirm()
-      if (key.name === 'escape') return cancel()
-      if (key.name === 'up' || (key.ctrl && key.name === 'p') || (!opts.filter && key.name === 'k')) {
+      if (key.name === 'return' || key.name === 'enter') {
+        return confirmSelection()
+      }
+      if (key.name === 'escape') {
+        return cancel()
+      }
+      if (
+        key.name === 'up' ||
+        (key.ctrl && key.name === 'p') ||
+        (!opts.filter && key.name === 'k')
+      ) {
         cursor = list.length ? (cursor - 1 + list.length) % list.length : 0
         return render()
       }
-      if (key.name === 'down' || (key.ctrl && key.name === 'n') || (!opts.filter && key.name === 'j')) {
+      if (
+        key.name === 'down' ||
+        (key.ctrl && key.name === 'n') ||
+        (!opts.filter && key.name === 'j')
+      ) {
         cursor = list.length ? (cursor + 1) % list.length : 0
         return render()
       }
-      if (!opts.filter && key.name === 'q') return cancel()
+      if (!opts.filter && key.name === 'q') {
+        return cancel()
+      }
       if (!opts.filter && char && /^[1-9]$/.test(char)) {
         const index = Number(char) - 1
         if (index < list.length) {
           cursor = index
-          return confirm()
+          return confirmSelection()
         }
         return
       }
@@ -174,8 +215,13 @@ export async function select<T>(opts: {
   })
 }
 
-export async function textInput(opts: { title: string; placeholder?: string }): Promise<string | null> {
-  if (!isInteractive()) return null
+export async function textInput(opts: {
+  title: string
+  placeholder?: string
+}): Promise<string | null> {
+  if (!isInteractive()) {
+    return null
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   try {
     const suffix = opts.placeholder ? ` ${faint(`(${opts.placeholder})`)}` : ''
@@ -189,23 +235,35 @@ export async function textInput(opts: { title: string; placeholder?: string }): 
 /** Accepts y/yes/o/oui as true and n/no/non as false, anything else is unanswered. */
 export function parseYesNo(input: string): boolean | null {
   const normalized = input.trim().toLowerCase()
-  if (normalized === 'y' || normalized === 'yes' || normalized === 'o' || normalized === 'oui') return true
-  if (normalized === 'n' || normalized === 'no' || normalized === 'non') return false
+  if (normalized === 'y' || normalized === 'yes' || normalized === 'o' || normalized === 'oui') {
+    return true
+  }
+  if (normalized === 'n' || normalized === 'no' || normalized === 'non') {
+    return false
+  }
   return null
 }
 
 /** Typed yes/no question, re-asked until answered; false when not interactive. */
 export async function confirm(opts: { title: string }): Promise<boolean> {
-  if (!isInteractive()) return false
+  if (!isInteractive()) {
+    return false
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   try {
     for (;;) {
-      const answer = await rl.question(`  ${color('?', ACCENT)} ${opts.title} ${faint(t('tui.confirmHint'))} `)
+      const answer = await rl.question(
+        `  ${color('?', ACCENT)} ${opts.title} ${faint(t('tui.confirmHint'))} `,
+      )
       const parsed = parseYesNo(answer)
-      if (parsed === null) continue
+      if (parsed === null) {
+        continue
+      }
       if (isFancy()) {
         process.stdout.write('\x1b[1A\x1b[2K')
-        process.stdout.write(`  ${color('✔', ACCENT)} ${opts.title} ${faint('·')} ${t(parsed ? 'tui.yes' : 'tui.no')}\n`)
+        process.stdout.write(
+          `  ${color('✔', ACCENT)} ${opts.title} ${faint('·')} ${t(parsed ? 'tui.yes' : 'tui.no')}\n`,
+        )
       }
       return parsed
     }

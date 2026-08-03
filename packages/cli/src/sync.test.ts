@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
+import type { ReviewRecord } from './contract.js'
 import {
   autoPushReview,
   createWorkspace,
@@ -12,7 +13,6 @@ import {
   pushReview,
   syncBaseUrl,
 } from './sync.js'
-import type { ReviewRecord } from './contract.js'
 
 type Call = { url: string; init: RequestInit }
 
@@ -20,7 +20,10 @@ function fetchStub(status: number, body: unknown, calls: Call[]): typeof fetch {
   return ((url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} })
     return Promise.resolve(
-      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      }),
     )
   }) as typeof fetch
 }
@@ -53,10 +56,16 @@ describe('sync http client', () => {
   })
 
   afterEach(() => {
-    if (previousConfigDir === undefined) delete process.env.CODESEMA_CONFIG_DIR
-    else process.env.CODESEMA_CONFIG_DIR = previousConfigDir
-    if (previousSyncUrl === undefined) delete process.env.CODESEMA_SYNC_URL
-    else process.env.CODESEMA_SYNC_URL = previousSyncUrl
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    if (previousSyncUrl === undefined) {
+      delete process.env.CODESEMA_SYNC_URL
+    } else {
+      process.env.CODESEMA_SYNC_URL = previousSyncUrl
+    }
     rmSync(configDir, { recursive: true, force: true })
   })
 
@@ -70,7 +79,9 @@ describe('sync http client', () => {
 
   test('createWorkspace stores credentials in the global config', async () => {
     const calls: Call[] = []
-    const creds = await createWorkspace(fetchStub(200, { workspace_id: 'ws-1', secret: 's3cret' }, calls))
+    const creds = await createWorkspace(
+      fetchStub(200, { workspace_id: 'ws-1', secret: 's3cret' }, calls),
+    )
     expect(calls[0]!.url).toBe('https://codesema.com/api/cli/workspaces')
     expect(creds).toEqual({ url: 'https://codesema.com', workspaceId: 'ws-1', secret: 's3cret' })
     expect(loadGlobalConfig()).toMatchObject({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret' })
@@ -81,7 +92,11 @@ describe('sync http client', () => {
     await createWorkspace(fetchStub(200, { workspace_id: 'ws-1', secret: 's3cret' }, []))
     delete process.env.CODESEMA_SYNC_URL
     expect(loadGlobalConfig().syncUrl).toBe('http://staging:9080')
-    expect(loadSyncCredentials()).toEqual({ url: 'http://staging:9080', workspaceId: 'ws-1', secret: 's3cret' })
+    expect(loadSyncCredentials()).toEqual({
+      url: 'http://staging:9080',
+      workspaceId: 'ws-1',
+      secret: 's3cret',
+    })
   })
 
   test('credentials stay bound to their creation host when the env later changes', async () => {
@@ -97,15 +112,17 @@ describe('sync http client', () => {
   })
 
   test('a malformed 2xx creation response fails instead of storing broken credentials', async () => {
-    await expect(createWorkspace(fetchStub(200, {}, []))).rejects.toThrow('unexpected response from')
+    await expect(createWorkspace(fetchStub(200, {}, []))).rejects.toThrow(
+      'unexpected response from',
+    )
     expect(loadGlobalConfig().syncWorkspaceId).toBeUndefined()
     expect(loadGlobalConfig().syncSecret).toBeUndefined()
   })
 
   test('a creation response with empty fields is rejected too', async () => {
-    await expect(createWorkspace(fetchStub(200, { workspace_id: '', secret: '' }, []))).rejects.toThrow(
-      'unexpected response from',
-    )
+    await expect(
+      createWorkspace(fetchStub(200, { workspace_id: '', secret: '' }, [])),
+    ).rejects.toThrow('unexpected response from')
   })
 
   test('autoPushReview: disabled without stored credentials, no request goes out', async () => {
@@ -139,15 +156,24 @@ describe('sync http client', () => {
 
   test('autoPushReview: reports dedup when the server already holds the review', async () => {
     saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
-    const outcome = await autoPushReview(record, configDir, fetchStub(200, { review_id: 'r1', deduplicated: true }, []))
+    const outcome = await autoPushReview(
+      record,
+      configDir,
+      fetchStub(200, { review_id: 'r1', deduplicated: true }, []),
+    )
     expect(outcome).toEqual({ status: 'pushed', deduplicated: true })
   })
 
   test('autoPushReview: a diff carrying a secret is held back, nothing leaves the machine', async () => {
     saveGlobalConfig({ syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
     const calls: Call[] = []
-    const secretDiff = 'diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -0,0 +1 @@\n+AWS_SECRET=1\n'
-    const outcome = await autoPushReview({ ...record, diff: secretDiff }, configDir, fetchStub(200, {}, calls))
+    const secretDiff =
+      'diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -0,0 +1 @@\n+AWS_SECRET=1\n'
+    const outcome = await autoPushReview(
+      { ...record, diff: secretDiff },
+      configDir,
+      fetchStub(200, {}, calls),
+    )
     expect(outcome.status).toBe('blocked_secrets')
     expect(calls).toHaveLength(0)
   })
@@ -169,7 +195,10 @@ describe('sync http client', () => {
     expect(calls[0]!.url).toBe('https://codesema.com/api/cli/reviews')
     const headers = calls[0]!.init.headers as Record<string, string>
     expect(headers.authorization).toBe('Bearer csk_ws-1.s3cret')
-    const body = JSON.parse(String(calls[0]!.init.body)) as { schema_version: number; repo: { remote_url: string } }
+    const body = JSON.parse(String(calls[0]!.init.body)) as {
+      schema_version: number
+      repo: { remote_url: string }
+    }
     expect(body.schema_version).toBe(1)
     expect(body.repo.remote_url).toBe('git@gitlab.com:acme/api.git')
   })

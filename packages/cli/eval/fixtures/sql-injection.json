@@ -1,7 +1,11 @@
 {
   "name": "sql-injection",
   "expected": [
-    { "id": "sql-injection", "file": "src/users.js", "pattern": "injection|interpolat|parameteriz|escap|sanitiz" }
+    {
+      "id": "sql-injection",
+      "file": "src/users.js",
+      "pattern": "injection|interpolat|parameteriz|escap|sanitiz"
+    }
   ],
   "input": {
     "branch": "refactor/user-query",

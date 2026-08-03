@@ -25,7 +25,10 @@ function captureLog(fn: () => void): string[] {
   return lines
 }
 
-function buildRecord(overrides: { findings?: Finding[]; narrative?: ReviewNarrative | null }): ReviewRecord {
+function buildRecord(overrides: {
+  findings?: Finding[]
+  narrative?: ReviewNarrative | null
+}): ReviewRecord {
   return {
     version: 1,
     meta: {
@@ -76,7 +79,11 @@ describe('printReviewSummary', () => {
 
   test('no hotspot section when narrative has no review_first items', () => {
     const lines = captureLog(() =>
-      printReviewSummary(buildRecord({ narrative: { intent: 'x', confidence: 'high', steps: [], review_first: [] } })),
+      printReviewSummary(
+        buildRecord({
+          narrative: { intent: 'x', confidence: 'high', steps: [], review_first: [] },
+        }),
+      ),
     )
     expect(lines.some((l) => l.includes('check first'))).toBe(false)
   })
@@ -89,7 +96,9 @@ describe('printReviewSummary', () => {
             intent: 'x',
             confidence: 'high',
             steps: [],
-            review_first: [{ point: 'watch the auth check', risk: 'high', step_ref: null, file: null }],
+            review_first: [
+              { point: 'watch the auth check', risk: 'high', step_ref: null, file: null },
+            ],
           },
         }),
       ),
@@ -106,7 +115,9 @@ describe('printReviewSummary', () => {
             intent: 'x',
             confidence: 'high',
             steps: [],
-            review_first: [{ point: 'watch the auth check', risk: 'high', step_ref: null, file: 'src/auth.ts' }],
+            review_first: [
+              { point: 'watch the auth check', risk: 'high', step_ref: null, file: 'src/auth.ts' },
+            ],
           },
         }),
       ),

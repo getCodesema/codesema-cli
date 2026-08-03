@@ -1,10 +1,21 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ensureWorkDir } from './config.js'
-import { currentBranch, git, headSha, mergeBase, refExists, repoRoot, revListCount, tryExec, tryGit } from './git.js'
-import { buildImpactCandidates, type ImpactCandidates } from './impact.js'
+import {
+  currentBranch,
+  git,
+  headSha,
+  mergeBase,
+  refExists,
+  repoRoot,
+  revListCount,
+  tryExec,
+  tryGit,
+} from './git.js'
 import { t } from './i18n.js'
+import { buildImpactCandidates, type ImpactCandidates } from './impact.js'
 import { loadRules } from './rules.js'
+import type { ServerContext } from './server-context.js'
 import { renderFieldRows, type FieldRow } from './ui.js'
 
 const TARGET_CANDIDATES = ['develop', 'main', 'master'] as const
@@ -44,11 +55,23 @@ export type PrepInput = {
   rules: string[] | null
   impact_candidates: ImpactCandidates | null
   diff: string
+  /**
+   * Best-effort context fetched from the codesema server (conventions, learned
+   * rules, facts, freshness); null when offline, unlinked or on any failure.
+   * Always null right out of prep() (pure git computation): populated
+   * separately by review() via buildServerContext(). Never a substitute for
+   * `rules`, which stays local and takes precedence.
+   */
+  server_context: ServerContext | null
 }
 
 function resolveRef(name: string, cwd: string): string | null {
-  if (refExists(name, cwd)) return name
-  if (refExists(`origin/${name}`, cwd)) return `origin/${name}`
+  if (refExists(name, cwd)) {
+    return name
+  }
+  if (refExists(`origin/${name}`, cwd)) {
+    return `origin/${name}`
+  }
   return null
 }
 
@@ -70,38 +93,60 @@ function targetFromForge(cwd: string): { target: string; source: string } | null
       const name = (JSON.parse(glabOut) as { target_branch?: string }).target_branch
       if (name) {
         const ref = resolveRef(name, cwd)
-        if (ref) return { target: ref, source: 'gitlab (glab mr view)' }
+        if (ref) {
+          return { target: ref, source: 'gitlab (glab mr view)' }
+        }
       }
     } catch {
       // unexpected glab output: fall through to the next fallback
     }
   }
-  const ghOut = skipGithub ? null : tryExec('gh', ['pr', 'view', '--json', 'baseRefName', '--jq', '.baseRefName'], cwd)
+  const ghOut = skipGithub
+    ? null
+    : tryExec('gh', ['pr', 'view', '--json', 'baseRefName', '--jq', '.baseRefName'], cwd)
   if (ghOut) {
     const ref = resolveRef(ghOut, cwd)
-    if (ref) return { target: ref, source: 'github (gh pr view)' }
+    if (ref) {
+      return { target: ref, source: 'github (gh pr view)' }
+    }
   }
   return null
 }
 
 function targetFromOriginHead(cwd: string): { target: string; source: string } | null {
   const sym = tryGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], cwd)
-  if (!sym) return null
+  if (!sym) {
+    return null
+  }
   const ref = sym.replace('refs/remotes/', '')
-  if (!refExists(ref, cwd)) return null
+  if (!refExists(ref, cwd)) {
+    return null
+  }
   return { target: ref, source: 'origin/HEAD' }
 }
 
-function targetFromHeuristic(current: string, headRef: string, cwd: string): { target: string; source: string } | null {
+function targetFromHeuristic(
+  current: string,
+  headRef: string,
+  cwd: string,
+): { target: string; source: string } | null {
   let best: { target: string; distance: number } | null = null
   for (const name of TARGET_CANDIDATES) {
     const ref = resolveRef(name, cwd)
-    if (!ref || sameBranch(ref, current)) continue
+    if (!ref || sameBranch(ref, current)) {
+      continue
+    }
     const mb = mergeBase(ref, headRef, cwd)
-    if (!mb) continue
+    if (!mb) {
+      continue
+    }
     const distance = revListCount(`${mb}..${headRef}`, cwd)
-    if (distance === null) continue
-    if (!best || distance < best.distance) best = { target: ref, distance }
+    if (distance === null) {
+      continue
+    }
+    if (!best || distance < best.distance) {
+      best = { target: ref, distance }
+    }
   }
   return best ? { target: best.target, source: 'heuristic (nearest merge-base)' } : null
 }
@@ -114,7 +159,9 @@ export function detectTarget(
 ): { target: string; source: string } {
   if (flag) {
     const ref = resolveRef(flag, cwd)
-    if (!ref) throw new Error(t('prep.targetFlagNotFound', { flag }))
+    if (!ref) {
+      throw new Error(t('prep.targetFlagNotFound', { flag }))
+    }
     return { target: ref, source: '--target flag' }
   }
   const forge = headRef === 'HEAD' ? targetFromForge(cwd) : null
@@ -131,7 +178,9 @@ function excludePathspecs(cwd: string): string[] {
   if (existsSync(ignoreFile)) {
     for (const raw of readFileSync(ignoreFile, 'utf8').split('\n')) {
       const line = raw.trim()
-      if (!line || line.startsWith('#')) continue
+      if (!line || line.startsWith('#')) {
+        continue
+      }
       patterns.push(line)
     }
   }
@@ -145,10 +194,18 @@ function excludePathspecs(cwd: string): string[] {
  * -U10: reviewers judge changes against the enclosing code, not three bare lines.
  */
 export function mrDiff(range: string, cwd: string, excludes = excludePathspecs(cwd)): string {
-  return git(['-c', 'core.quotePath=false', 'diff', '--no-color', '-U10', range, '--', '.', ...excludes], cwd)
+  return git(
+    ['-c', 'core.quotePath=false', 'diff', '--no-color', '-U10', range, '--', '.', ...excludes],
+    cwd,
+  )
 }
 
-export function prep(opts: { branch?: string; target?: string; cwd: string; quiet?: boolean }): PrepInput {
+export function prep(opts: {
+  branch?: string | undefined
+  target?: string | undefined
+  cwd: string
+  quiet?: boolean | undefined
+}): PrepInput {
   const cwd = repoRoot(opts.cwd)
   const checkedOut = currentBranch(cwd)
   const branch = opts.branch ?? checkedOut
@@ -179,7 +236,9 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
     throw new Error(t('prep.emptyDiff', { target, branch, hint }))
   }
 
-  const commits = (tryGit(['log', '--pretty=%s', `${target}..${headRef}`, '--max-count=30'], cwd) ?? '')
+  const commits = (
+    tryGit(['log', '--pretty=%s', `${target}..${headRef}`, '--max-count=30'], cwd) ?? ''
+  )
     .split('\n')
     .filter(Boolean)
     .map((subject) => {
@@ -190,7 +249,12 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
         : subject
     })
 
-  const files = (tryGit(['-c', 'core.quotePath=false', 'diff', '--numstat', range, '--', '.', ...excludes], cwd) ?? '')
+  const files = (
+    tryGit(
+      ['-c', 'core.quotePath=false', 'diff', '--numstat', range, '--', '.', ...excludes],
+      cwd,
+    ) ?? ''
+  )
     .split('\n')
     .filter(Boolean)
     .map((line) => {
@@ -222,6 +286,7 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
     rules,
     impact_candidates: buildImpactCandidates(diff, cwd),
     diff,
+    server_context: null,
   }
 
   const dir = ensureWorkDir(cwd)
@@ -239,10 +304,14 @@ export function prep(opts: { branch?: string; target?: string; cwd: string; quie
       { label: t('prep.label.files'), value: `${files.length} (+${additions} −${deletions})` },
       { label: t('prep.label.commits'), value: String(commits.length) },
       ...(custom ? [{ label: t('prep.label.custom'), value: t('prep.customNote') }] : []),
-      ...(rules ? [{ label: t('prep.label.rules'), value: t('prep.rulesNote', { n: rules.length }) }] : []),
+      ...(rules
+        ? [{ label: t('prep.label.rules'), value: t('prep.rulesNote', { n: rules.length }) }]
+        : []),
       { label: t('prep.label.input'), value: inputPath },
     ]
-    for (const line of renderFieldRows(rows)) console.log(line)
+    for (const line of renderFieldRows(rows)) {
+      console.log(line)
+    }
     console.log('')
     console.log(t('prep.next'))
   }

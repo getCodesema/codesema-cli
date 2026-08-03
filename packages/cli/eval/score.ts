@@ -16,7 +16,9 @@ export function scoreFindings(expected: ExpectedBug[], findings: Finding[]): Fix
     const pattern = new RegExp(bug.pattern, 'i')
     const hit = findings.find(
       (finding) =>
-        !claimed.has(finding) && finding.file === bug.file && pattern.test(`${finding.title ?? ''} ${finding.message}`),
+        !claimed.has(finding) &&
+        finding.file === bug.file &&
+        pattern.test(`${finding.title ?? ''} ${finding.message}`),
     )
     if (hit) {
       claimed.add(hit)

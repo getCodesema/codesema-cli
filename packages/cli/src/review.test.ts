@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterAll, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import type { Finding, GroundingReport, SanitizedReview, Verdict } from './contract.js'
 import type { PrepInput } from './prep.js'
@@ -80,6 +80,7 @@ describe('agentVisibleInput', () => {
       rules: ['[C1] no any'],
       impact_candidates: { note: 'best-effort', symbols: [], imported_by: { 'a.ts': ['b.ts'] } },
       diff: 'diff --git a/a.ts b/a.ts',
+      server_context: null,
     }
     expect(agentVisibleInput(input)).toEqual({
       branch: 'feature/x',
@@ -89,7 +90,38 @@ describe('agentVisibleInput', () => {
       custom_instructions: null,
       rules: ['[C1] no any'],
       impact_candidates: { note: 'best-effort', symbols: [], imported_by: { 'a.ts': ['b.ts'] } },
+      server_context: null,
     })
+  })
+
+  test('carries a populated server_context through unchanged', () => {
+    const input: PrepInput = {
+      version: 1,
+      generated_by: 'codesema prep',
+      title: 'feature/x',
+      branch: 'feature/x',
+      target: 'develop',
+      target_source: 'heuristic',
+      merge_base: 'abc123',
+      head_sha: 'def456',
+      repo_root: '/home/someone/secret-project',
+      commits: [],
+      files: [],
+      custom_instructions: null,
+      rules: null,
+      impact_candidates: null,
+      diff: '',
+      server_context: {
+        version: 1,
+        repo: { remote_url: 'git@github.com:acme/widgets.git' },
+        freshness: { scan_sha: 'abc', scanned_at: '2026-08-01T00:00:00.000Z' },
+        conventions: [{ id: 'c1', rule: 'no any', category: 'types', scope: null }],
+        learned_rules: [{ id: 'l1', rule: 'prefer composables' }],
+        facts: ['uses Elysia'],
+        stale_warning: null,
+      },
+    }
+    expect(agentVisibleInput(input).server_context).toEqual(input.server_context)
   })
 })
 
@@ -97,7 +129,12 @@ describe('groundingReportLines', () => {
   const finding: Finding = { file: 'a.ts', severity: 'major', message: 'm' }
 
   test('untouched review: no lines', () => {
-    const report: GroundingReport = { dropped: [], deanchored: [], merged: 0, verdict_escalated: false }
+    const report: GroundingReport = {
+      dropped: [],
+      deanchored: [],
+      merged: 0,
+      verdict_escalated: false,
+    }
     expect(groundingReportLines(report)).toEqual([])
   })
 
@@ -153,6 +190,13 @@ describe('reviewInstructions', () => {
     expect(p).toContain('[Cn]')
   })
 
+  test('describes server_context and its precedence under the local rules', () => {
+    const p = reviewInstructions()
+    expect(p).toContain('server_context')
+    expect(p).toContain('rules wins')
+    expect(p).toContain('stale_warning')
+  })
+
   test('scopes the verdict to what the input can prove', () => {
     const p = reviewInstructions()
     expect(p).toContain('weighs ONLY what you could verify in the provided input')
@@ -191,7 +235,11 @@ describe('runAgentJsonWithRetry', () => {
       calls.push(o.prompt)
       return '{"n":1}'
     }
-    const value = await runAgentJsonWithRetry(opts, (raw) => JSON.parse(raw) as { n: number }, runner)
+    const value = await runAgentJsonWithRetry(
+      opts,
+      (raw) => JSON.parse(raw) as { n: number },
+      runner,
+    )
     expect(value).toEqual({ n: 1 })
     expect(calls).toHaveLength(1)
   })
@@ -202,7 +250,11 @@ describe('runAgentJsonWithRetry', () => {
       calls.push(o.prompt)
       return calls.length === 1 ? 'garbage' : '{"n":2}'
     }
-    const value = await runAgentJsonWithRetry(opts, (raw) => JSON.parse(raw) as { n: number }, runner)
+    const value = await runAgentJsonWithRetry(
+      opts,
+      (raw) => JSON.parse(raw) as { n: number },
+      runner,
+    )
     expect(value).toEqual({ n: 2 })
     expect(calls).toHaveLength(2)
     expect(calls[1]).toContain('P')
@@ -231,7 +283,9 @@ describe('runDualFlow', () => {
   const tempDirs: string[] = []
 
   afterAll(() => {
-    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
+    for (const dir of tempDirs) {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   function setupDualRepo(agentPayload: string) {
@@ -261,6 +315,7 @@ describe('runDualFlow', () => {
       rules: null,
       impact_candidates: null,
       diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
+      server_context: null,
     }
     writeFileSync(join(workDir, 'input.json'), JSON.stringify(input))
     return { repo, workDir, callsPath, agentScript, input }
@@ -291,19 +346,24 @@ describe('runDualFlow', () => {
     const outcome = await runDualFlow(flowOpts(fixture))
 
     expect(outcome.ok).toBe(true)
-    if (!outcome.ok) return
+    if (!outcome.ok) {
+      return
+    }
     expect(outcome.reportLines.filter((line) => line.includes('did not examine'))).toHaveLength(2)
   }, 20000)
 
   test('identical lane findings merge deterministically into a consensus finding', async () => {
-    const finding = '{"file":"a.ts","line":1,"severity":"major","kind":"design","title":"t","message":"broken"}'
+    const finding =
+      '{"file":"a.ts","line":1,"severity":"major","kind":"design","title":"t","message":"broken"}'
     const payload = `{"verdict":"comment","summary":"ok","findings":[${finding}],"decisions":[{"id":"A0","action":"keep"}]}`
     const fixture = setupDualRepo(payload)
 
     const outcome = await runDualFlow(flowOpts(fixture))
 
     expect(outcome.ok).toBe(true)
-    if (!outcome.ok) return
+    if (!outcome.ok) {
+      return
+    }
     expect(outcome.record.review.findings).toHaveLength(1)
     expect(outcome.record.review.findings[0]?.consensus).toBe(true)
     expect(outcome.record.meta.dual).toEqual({ merged: 1, rejected: 0, added_by_b: 0 })

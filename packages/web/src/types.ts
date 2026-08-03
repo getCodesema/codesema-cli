@@ -13,7 +13,7 @@ export type NarrativeStep = {
 }
 
 /** Step normalized for display (check: null becomes undefined; see ReviewShell). */
-export type StepView = Omit<NarrativeStep, 'check'> & { check?: string }
+export type StepView = Omit<NarrativeStep, 'check'> & { check?: string | undefined }
 
 export type ReviewFirstItem = {
   point: string

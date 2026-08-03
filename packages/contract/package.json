@@ -9,7 +9,11 @@
     "url": "git+https://github.com/getCodesema/codesema-cli.git",
     "directory": "packages/contract"
   },
-  "keywords": ["code-review", "codesema", "contract"],
+  "keywords": [
+    "code-review",
+    "codesema",
+    "contract"
+  ],
   "type": "module",
   "main": "dist/index.mjs",
   "types": "dist/index.d.mts",
@@ -19,13 +23,17 @@
       "default": "./dist/index.mjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "tsdown": "^0.22.5",

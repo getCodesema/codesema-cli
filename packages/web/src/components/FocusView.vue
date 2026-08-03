@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { DiffFile, Finding, FindingSeverity } from '../composables/useDiff'
-import { excerptFor } from '../composables/useFocusList'
 import { buildFixPrompt } from '../composables/useFixPrompt'
+import { excerptFor } from '../composables/useFocusList'
 import type { FixStatus, ReviewRecord } from '../types'
 
 const props = defineProps<{
@@ -12,7 +12,11 @@ const props = defineProps<{
   files: DiffFile[]
 }>()
 
-const selected = ref<Set<number>>(new Set(props.list.map((f) => f.id!)))
+function listIds(): number[] {
+  return props.list.flatMap((f) => (f.id == null ? [] : [f.id]))
+}
+
+const selected = ref<Set<number>>(new Set(listIds()))
 const cursor = ref(0)
 
 const current = computed(() => props.list[cursor.value] ?? null)
@@ -21,13 +25,16 @@ const selectedCount = computed(() => selected.value.size)
 
 function toggle(id: number) {
   const next = new Set(selected.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
   selected.value = next
 }
 
 function selectAll() {
-  selected.value = new Set(props.list.map((f) => f.id!))
+  selected.value = new Set(listIds())
 }
 
 function selectNone() {
@@ -38,16 +45,22 @@ const canPrev = computed(() => cursor.value > 0)
 const canNext = computed(() => cursor.value < props.list.length - 1)
 
 function goPrev() {
-  if (canPrev.value) cursor.value--
+  if (canPrev.value) {
+    cursor.value--
+  }
 }
 function goNext() {
-  if (canNext.value) cursor.value++
+  if (canNext.value) {
+    cursor.value++
+  }
 }
 
 watch(
   () => props.list,
   (list) => {
-    if (cursor.value >= list.length) cursor.value = Math.max(0, list.length - 1)
+    if (cursor.value >= list.length) {
+      cursor.value = Math.max(0, list.length - 1)
+    }
   },
 )
 
@@ -58,7 +71,9 @@ async function copySelection() {
   try {
     await navigator.clipboard.writeText(buildFixPrompt(props.record, [...selected.value]))
     copied.value = true
-    if (copiedTimer) clearTimeout(copiedTimer)
+    if (copiedTimer) {
+      clearTimeout(copiedTimer)
+    }
     copiedTimer = setTimeout(() => {
       copied.value = false
     }, 2000)
@@ -69,7 +84,9 @@ async function copySelection() {
 
 // ── Run fixes through the local CLI server ─────────────────────
 const isClient = typeof window !== 'undefined'
-const fixToken = isClient ? (window as { __CODESEMA_FIX_TOKEN__?: string }).__CODESEMA_FIX_TOKEN__ : undefined
+const fixToken = isClient
+  ? (window as { __CODESEMA_FIX_TOKEN__?: string }).__CODESEMA_FIX_TOKEN__
+  : undefined
 
 const fixStatus = ref<FixStatus | null>(null)
 const fixRequestError = ref<string | null>(null)
@@ -80,30 +97,41 @@ const fixAvailable = computed(() => Boolean(fixToken) && fixDetail.value !== nul
 const fixRunning = computed(() => fixDetail.value?.phase === 'running')
 
 function stopPolling() {
-  if (!pollTimer) return
+  if (!pollTimer) {
+    return
+  }
   clearInterval(pollTimer)
   pollTimer = undefined
 }
 
 function startPolling() {
-  if (!pollTimer) pollTimer = setInterval(() => void refreshFixStatus(), 1500)
+  if (!pollTimer) {
+    pollTimer = setInterval(() => void refreshFixStatus(), 1500)
+  }
 }
 
 async function refreshFixStatus(): Promise<void> {
   try {
     const res = await fetch('/api/fix/status')
-    if (!res.ok) return
+    if (!res.ok) {
+      return
+    }
     const status = (await res.json()) as FixStatus
     fixStatus.value = status
-    if (status.available && status.phase === 'running') startPolling()
-    else stopPolling()
+    if (status.available && status.phase === 'running') {
+      startPolling()
+    } else {
+      stopPolling()
+    }
   } catch {
     // local server stopped (Ctrl+C): keep the last known state
   }
 }
 
 async function runFixes() {
-  if (!fixToken || selectedCount.value === 0 || fixRunning.value) return
+  if (!fixToken || selectedCount.value === 0 || fixRunning.value) {
+    return
+  }
   fixRequestError.value = null
   try {
     const res = await fetch('/api/fix', {
@@ -148,9 +176,13 @@ const KIND_LABEL: Partial<Record<string, string>> = {
 
 function isTarget(rowLine: number | null, rowOld: number | null, rowKind: string): boolean {
   const f = current.value
-  if (!f || f.line == null) return false
+  if (!f || f.line == null) {
+    return false
+  }
   const end = f.endLine ?? f.line
-  if (rowLine != null) return rowLine >= f.line && rowLine <= end
+  if (rowLine != null) {
+    return rowLine >= f.line && rowLine <= end
+  }
   return rowKind === 'del' && rowOld === f.line
 }
 
@@ -200,19 +232,26 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
           </button>
           <div class="fv-item-body">
             <div class="fv-item-top">
-              <span class="fv-sev" :class="SEV_META[f.severity].cls">{{ $t(SEV_META[f.severity].labelKey) }}</span>
+              <span class="fv-sev" :class="SEV_META[f.severity].cls">{{
+                $t(SEV_META[f.severity].labelKey)
+              }}</span>
               <span v-if="f.consensus" class="fv-consensus" :title="$t('finding.consensus')">
                 <span class="fv-consensus-dots" aria-hidden="true"><span /><span /></span>
               </span>
               <span class="fv-item-title">{{ f.title ?? f.message }}</span>
             </div>
-            <code class="fv-item-file">{{ f.file }}<template v-if="f.line">:{{ f.line }}</template></code>
+            <code class="fv-item-file"
+              >{{ f.file }}<template v-if="f.line">:{{ f.line }}</template></code
+            >
           </div>
         </div>
       </div>
 
       <div class="fv-list-foot">
-        <div v-if="fixAvailable && fixDetail?.head_moved && fixDetail.phase !== 'done'" class="fv-warn">
+        <div
+          v-if="fixAvailable && fixDetail?.head_moved && fixDetail.phase !== 'done'"
+          class="fv-warn"
+        >
           {{ $t('focus.headMoved') }}
         </div>
         <button
@@ -224,16 +263,24 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
           <span v-if="fixRunning" class="fv-run-spin" aria-hidden="true" />
           {{ fixRunning ? $t('focus.fixRunning') : $t('focus.runFixes', { n: selectedCount }) }}
         </button>
-        <button class="fv-copy" :class="{ 'fv-copy--done': copied }" :disabled="selectedCount === 0" @click="copySelection">
+        <button
+          class="fv-copy"
+          :class="{ 'fv-copy--done': copied }"
+          :disabled="selectedCount === 0"
+          @click="copySelection"
+        >
           {{ copied ? $t('header.copied') : $t('focus.copySelected', { n: selectedCount }) }}
         </button>
-        <p v-if="fixRequestError" class="fv-fix-error">{{ $t('focus.fixFailed') }} · {{ fixRequestError }}</p>
+        <p v-if="fixRequestError" class="fv-fix-error">
+          {{ $t('focus.fixFailed') }} · {{ fixRequestError }}
+        </p>
         <div v-if="fixDetail?.phase === 'done'" class="fv-fix-done">
           <div class="fv-fix-done-head">✓ {{ $t('focus.fixDone') }}</div>
           <pre v-if="fixDetail.summary" class="fv-fix-summary">{{ fixDetail.summary }}</pre>
         </div>
         <p v-else-if="fixDetail?.phase === 'error'" class="fv-fix-error">
-          {{ $t('focus.fixFailed') }}<template v-if="fixDetail.error"> · {{ fixDetail.error }}</template>
+          {{ $t('focus.fixFailed')
+          }}<template v-if="fixDetail.error"> · {{ fixDetail.error }}</template>
         </p>
       </div>
     </aside>
@@ -245,19 +292,41 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
           <span class="fv-count-total">/ {{ list.length }}</span>
         </span>
         <span class="fv-nav-spacer" />
-        <button class="fv-arrow" :disabled="!canPrev" :title="$t('focus.prev')" :aria-label="$t('focus.prev')" @click="goPrev">‹</button>
-        <button class="fv-arrow" :disabled="!canNext" :title="$t('focus.next')" :aria-label="$t('focus.next')" @click="goNext">›</button>
+        <button
+          class="fv-arrow"
+          :disabled="!canPrev"
+          :title="$t('focus.prev')"
+          :aria-label="$t('focus.prev')"
+          @click="goPrev"
+        >
+          ‹
+        </button>
+        <button
+          class="fv-arrow"
+          :disabled="!canNext"
+          :title="$t('focus.next')"
+          :aria-label="$t('focus.next')"
+          @click="goNext"
+        >
+          ›
+        </button>
       </div>
 
       <div class="fv-note">
         <div class="fv-note-head">
-          <span class="fv-sev" :class="SEV_META[current.severity].cls">{{ $t(SEV_META[current.severity].labelKey) }}</span>
-          <span v-if="current.kind && KIND_LABEL[current.kind]" class="fv-kind">{{ $t(KIND_LABEL[current.kind]!) }}</span>
+          <span class="fv-sev" :class="SEV_META[current.severity].cls">{{
+            $t(SEV_META[current.severity].labelKey)
+          }}</span>
+          <span v-if="current.kind && KIND_LABEL[current.kind]" class="fv-kind">{{
+            $t(KIND_LABEL[current.kind]!)
+          }}</span>
           <span v-if="current.consensus" class="fv-consensus fv-consensus--pill">
             <span class="fv-consensus-dots" aria-hidden="true"><span /><span /></span>
             {{ $t('finding.consensus') }}
           </span>
-          <code class="fv-note-file">{{ current.file }}<template v-if="current.line">:{{ current.line }}</template></code>
+          <code class="fv-note-file"
+            >{{ current.file }}<template v-if="current.line">:{{ current.line }}</template></code
+          >
         </div>
         <p v-if="current.title" class="fv-note-title">
           <template v-for="(part, j) in richParts(current.title)" :key="j">
@@ -389,7 +458,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   border-radius: 10px;
   cursor: pointer;
   outline: none;
-  transition: background 0.1s ease, border-color 0.1s ease;
+  transition:
+    background 0.1s ease,
+    border-color 0.1s ease;
 }
 
 .fv-item:hover,
@@ -416,7 +487,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   font-size: 10px;
   color: #fff;
   font-weight: 700;
-  transition: background 0.1s ease, border-color 0.1s ease;
+  transition:
+    background 0.1s ease,
+    border-color 0.1s ease;
 }
 
 .fv-check--done {
@@ -543,7 +616,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   background: var(--codesema-panel);
   color: var(--codesema-ink-2);
   cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .fv-copy:hover:not(:disabled) {

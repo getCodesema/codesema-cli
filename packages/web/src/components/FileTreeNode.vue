@@ -31,14 +31,18 @@ const emit = defineEmits<{
 }>()
 
 const dirPath = computed(() => {
-  if (props.node.kind !== 'dir') return ''
+  if (props.node.kind !== 'dir') {
+    return ''
+  }
   return [...props.ancestors, (props.node as DirNode).dir].join('/')
 })
 
 const isCollapsed = computed(() => props.collapsedDirs.has(dirPath.value))
 
 const paddingLeft = computed(() => {
-  if (props.node.kind === 'dir') return 8 + props.depth * 14
+  if (props.node.kind === 'dir') {
+    return 8 + props.depth * 14
+  }
   return 12 + props.depth * 14
 })
 </script>

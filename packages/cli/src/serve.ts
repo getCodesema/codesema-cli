@@ -5,9 +5,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ReviewRecord } from './contract.js'
+import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
 import { t } from './i18n.js'
-import type { JudgeDecision } from './dual.js'
 import type { PartialReview } from './partial.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
@@ -76,7 +76,9 @@ export function createSession(initial?: { record?: ReviewRecord }): LiveSession 
   }
 
   const emit = (event: SessionEvent) => {
-    for (const listener of listeners) listener(event)
+    for (const listener of listeners) {
+      listener(event)
+    }
   }
   const emitStatus = () => emit({ name: 'status', data: status })
 
@@ -137,10 +139,14 @@ const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 
 /** Whether the Host header points to loopback (hostname before the port, IPv6 in brackets). */
 export function isLoopbackHost(host: string | undefined): boolean {
-  if (!host) return false
+  if (!host) {
+    return false
+  }
   const match = /^(\[[^\]]+\]|[^:]+)(?::\d+)?$/.exec(host.trim())
-  if (!match) return false
-  return LOOPBACK_HOSTNAMES.has(match[1]!.toLowerCase())
+  if (!match) {
+    return false
+  }
+  return LOOPBACK_HOSTNAMES.has((match[1] ?? '').toLowerCase())
 }
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -165,30 +171,48 @@ export function resolveStaticPath(root: string, pathname: string): string | null
   } catch {
     return null
   }
-  if (decoded.includes('\0')) return null
+  if (decoded.includes('\0')) {
+    return null
+  }
   const resolved = resolve(root, '.' + decoded)
-  if (resolved !== root && !resolved.startsWith(root + sep)) return null
+  if (resolved !== root && !resolved.startsWith(root + sep)) {
+    return null
+  }
   return resolved
 }
 
 const MAX_SSE_CLIENTS = 16
 
 function sendText(res: ServerResponse, status: number, body: string): void {
-  res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' })
+  res.writeHead(status, {
+    'content-type': 'text/plain; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  })
   res.end(body)
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'x-content-type-options': 'nosniff' })
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  })
   res.end(JSON.stringify(body))
 }
 
 function sendHtml(res: ServerResponse, html: string): void {
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' })
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  })
   res.end(html)
 }
 
-function serveEvents(session: LiveSession, req: IncomingMessage, res: ServerResponse, onClose: () => void): void {
+function serveEvents(
+  session: LiveSession,
+  req: IncomingMessage,
+  res: ServerResponse,
+  onClose: () => void,
+): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
@@ -208,12 +232,20 @@ function serveEvents(session: LiveSession, req: IncomingMessage, res: ServerResp
 
   send({ name: 'status', data: session.status() })
   const partial = session.partial()
-  if (partial) send({ name: 'partial', data: partial })
+  if (partial) {
+    send({ name: 'partial', data: partial })
+  }
   const partialB = session.partialB()
-  if (partialB) send({ name: 'partial_b', data: partialB })
+  if (partialB) {
+    send({ name: 'partial_b', data: partialB })
+  }
   const judge = session.judge()
-  if (judge) send({ name: 'judge', data: judge })
-  if (session.status().phase === 'done') send({ name: 'done', data: {} })
+  if (judge) {
+    send({ name: 'judge', data: judge })
+  }
+  if (session.status().phase === 'done') {
+    send({ name: 'done', data: {} })
+  }
 
   req.on('close', () => {
     clearInterval(heartbeat)
@@ -255,9 +287,17 @@ type FixEndpoint = { runner: FixRunner; token: string }
  * than the loopback + Host guards: a per-server random token (injected into the
  * served page, unreadable cross-origin) blocks blind CSRF posts to 127.0.0.1.
  */
-async function handleFixStart(req: IncomingMessage, res: ServerResponse, fix: FixEndpoint | undefined): Promise<void> {
-  if (!fix) return sendJson(res, 501, { error: 'fix runner unavailable' })
-  if (req.headers['x-codesema-fix-token'] !== fix.token) return sendText(res, 403, 'forbidden')
+async function handleFixStart(
+  req: IncomingMessage,
+  res: ServerResponse,
+  fix: FixEndpoint | undefined,
+): Promise<void> {
+  if (!fix) {
+    return sendJson(res, 501, { error: 'fix runner unavailable' })
+  }
+  if (req.headers['x-codesema-fix-token'] !== fix.token) {
+    return sendText(res, 403, 'forbidden')
+  }
   let body: unknown
   try {
     body = await readJsonBody(req, MAX_FIX_BODY_BYTES)
@@ -269,13 +309,17 @@ async function handleFixStart(req: IncomingMessage, res: ServerResponse, fix: Fi
     return sendText(res, 400, 'bad request')
   }
   const started = fix.runner.start(findings)
-  if (!started.ok) return sendJson(res, started.code, { error: started.error })
+  if (!started.ok) {
+    return sendJson(res, started.code, { error: started.error })
+  }
   return sendJson(res, 202, { ok: true })
 }
 
 async function serveStaticFile(res: ServerResponse, pathname: string): Promise<void> {
   const filePath = resolveStaticPath(WEB_DIST, pathname)
-  if (!filePath) return sendText(res, 404, 'not found')
+  if (!filePath) {
+    return sendText(res, 404, 'not found')
+  }
   let content: Buffer
   try {
     content = await readFile(filePath)
@@ -295,7 +339,9 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
     // 127.0.0.1 via DNS rebinding (a domain that later resolves to loopback) and
     // read the diff/review. Accept only requests whose Host header is loopback, so
     // a rebound domain is rejected.
-    if (!isLoopbackHost(req.headers.host)) return sendText(res, 403, 'forbidden')
+    if (!isLoopbackHost(req.headers.host)) {
+      return sendText(res, 403, 'forbidden')
+    }
 
     let pathname: string
     try {
@@ -305,10 +351,14 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
     }
 
     if (req.method === 'POST') {
-      if (pathname === '/api/fix') return void handleFixStart(req, res, fix)
+      if (pathname === '/api/fix') {
+        return void handleFixStart(req, res, fix)
+      }
       return sendText(res, 405, 'method not allowed')
     }
-    if (req.method !== 'GET') return sendText(res, 405, 'method not allowed')
+    if (req.method !== 'GET') {
+      return sendText(res, 405, 'method not allowed')
+    }
 
     if (pathname.startsWith('/api/')) {
       if (pathname === '/api/status') {
@@ -316,15 +366,21 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
       }
       if (pathname === '/api/review') {
         const record = session.record()
-        if (!record) return sendJson(res, 202, session.status())
+        if (!record) {
+          return sendJson(res, 202, session.status())
+        }
         return sendJson(res, 200, record)
       }
       if (pathname === '/api/fix/status') {
-        if (!fix) return sendJson(res, 200, { available: false })
+        if (!fix) {
+          return sendJson(res, 200, { available: false })
+        }
         return sendJson(res, 200, fix.runner.status())
       }
       if (pathname === '/api/events') {
-        if (sseClients >= MAX_SSE_CLIENTS) return sendText(res, 503, 'too many event streams')
+        if (sseClients >= MAX_SSE_CLIENTS) {
+          return sendText(res, 503, 'too many event streams')
+        }
         sseClients++
         return serveEvents(session, req, res, () => {
           sseClients--
@@ -333,7 +389,9 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
       return sendText(res, 404, 'not found')
     }
 
-    if (pathname === '/') return sendHtml(res, indexHtml)
+    if (pathname === '/') {
+      return sendHtml(res, indexHtml)
+    }
     void serveStaticFile(res, pathname)
   }
 }
@@ -347,19 +405,27 @@ async function listen(
     const ok = await new Promise<boolean>((resolveListen) => {
       server.once('error', (err: NodeJS.ErrnoException) => {
         server.close()
-        if (err.code !== 'EADDRINUSE') console.error(err.message)
+        if (err.code !== 'EADDRINUSE') {
+          console.error(err.message)
+        }
         resolveListen(false)
       })
       server.listen(port, '127.0.0.1', () => resolveListen(true))
     })
-    if (ok) return { server, port }
+    if (ok) {
+      return { server, port }
+    }
   }
   throw new Error(t('serve.noFreePort', { start: startPort, end: startPort + 19 }))
 }
 
 export async function startServer(
   session: LiveSession,
-  opts: { port?: number; locale?: string; fixRunner?: FixRunner },
+  opts: {
+    port?: number | undefined
+    locale?: string | undefined
+    fixRunner?: FixRunner | undefined
+  },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
     throw new Error(t('serve.noWebUi', { path: WEB_DIST }))
@@ -376,7 +442,10 @@ export async function startServer(
     `<script>${bootScript}</script></head>`,
   )
 
-  const { server, port } = await listen(createRequestHandler(session, indexHtml, fix), opts.port ?? 4400)
+  const { server, port } = await listen(
+    createRequestHandler(session, indexHtml, fix),
+    opts.port ?? 4400,
+  )
   const stop = () =>
     new Promise<void>((resolveClose) => {
       server.closeAllConnections()

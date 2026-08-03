@@ -9,7 +9,8 @@ import { configCommand } from './wizard.js'
 
 export type MenuItemId = 'review' | 'dualReview' | 'show' | 'cloud' | 'config' | 'quit'
 export type CloudItemId = 'sync' | 'link' | 'syncDelete' | 'back'
-export type MenuActionId = 'review' | 'dualReview' | 'show' | 'sync' | 'link' | 'syncDelete' | 'config'
+export type MenuActionId =
+  'review' | 'dualReview' | 'show' | 'sync' | 'link' | 'syncDelete' | 'config'
 
 export type MenuItem<Id extends string> = {
   id: Id
@@ -26,13 +27,21 @@ export function buildMenuItems(context: MenuContext): MenuItem<MenuItemId>[] {
   // Repo-scoped actions stay visible outside a repo (hiding the product's main
   // action reads as a regression); the hint says where to run them instead.
   return [
-    { id: 'review', label: t('menu.review'), hint: context.inRepo ? t('menu.reviewHint') : t('menu.needRepo') },
+    {
+      id: 'review',
+      label: t('menu.review'),
+      hint: context.inRepo ? t('menu.reviewHint') : t('menu.needRepo'),
+    },
     {
       id: 'dualReview',
       label: t('menu.dualReview'),
       hint: context.inRepo ? t('menu.dualReviewHint') : t('menu.needRepo'),
     },
-    { id: 'show', label: t('menu.show'), hint: context.inRepo ? t('menu.showHint') : t('menu.needRepo') },
+    {
+      id: 'show',
+      label: t('menu.show'),
+      hint: context.inRepo ? t('menu.showHint') : t('menu.needRepo'),
+    },
     {
       id: 'cloud',
       label: t('menu.cloud'),
@@ -63,7 +72,16 @@ export function buildCloudMenuItems(context: MenuContext): MenuItem<CloudItemId>
   return items
 }
 
-const REVIEW_FLAGS = ['branch', 'target', 'agent', 'full', 'dual', 'no-open', 'port', 'timeout'] as const
+const REVIEW_FLAGS = [
+  'branch',
+  'target',
+  'agent',
+  'full',
+  'dual',
+  'no-open',
+  'port',
+  'timeout',
+] as const
 
 // Bare `codesema` opens the menu, but `codesema --branch x` has always meant
 // "review that branch": any review flag falls through to the review command
@@ -89,7 +107,12 @@ function buildActions(cwd: string): MenuActions {
   return {
     review: () => review({ open: true, cwd }),
     dualReview: () => review({ open: true, cwd, dual: true }),
-    show: () => show({ open: true, cwd, port: loadConfig(tryGit(['rev-parse', '--show-toplevel'], cwd)).port }),
+    show: () =>
+      show({
+        open: true,
+        cwd,
+        port: loadConfig(tryGit(['rev-parse', '--show-toplevel'], cwd)).port,
+      }),
     sync: () => syncCommand({ cwd }),
     link: () => linkCommand({}),
     syncDelete: () => syncCommand({ action: 'delete', cwd }),
@@ -122,7 +145,9 @@ async function runCloudMenu(cwd: string, actions: MenuActions): Promise<void> {
       })),
       summary: false,
     })
-    if (picked === null || picked === 'back') return
+    if (picked === null || picked === 'back') {
+      return
+    }
 
     if (picked === 'sync' && !context.inRepo) {
       printNotInRepo()
@@ -157,7 +182,9 @@ export async function runMenu(opts: { cwd: string }): Promise<void> {
       })),
       summary: false,
     })
-    if (picked === null || picked === 'quit') return
+    if (picked === null || picked === 'quit') {
+      return
+    }
 
     if ((picked === 'review' || picked === 'dualReview' || picked === 'show') && !context.inRepo) {
       printNotInRepo()

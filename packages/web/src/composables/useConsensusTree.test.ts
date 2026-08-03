@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { ConsensusDirNode, ConsensusRow } from './useConsensusTree'
-import { buildConsensusTree } from './useConsensusTree'
+import { buildConsensusTree, type ConsensusDirNode, type ConsensusRow } from './useConsensusTree'
 
 function row(over: Partial<ConsensusRow> & { path: string }): ConsensusRow {
   return { additions: 1, deletions: 0, a: false, b: false, hot: false, ...over }
@@ -8,7 +7,9 @@ function row(over: Partial<ConsensusRow> & { path: string }): ConsensusRow {
 
 function dirNamed(nodes: ReturnType<typeof buildConsensusTree>, dir: string): ConsensusDirNode {
   const found = nodes.find((n) => n.kind === 'dir' && n.dir === dir)
-  if (!found || found.kind !== 'dir') throw new Error(`dir ${dir} not found`)
+  if (!found || found.kind !== 'dir') {
+    throw new Error(`dir ${dir} not found`)
+  }
   return found
 }
 
@@ -22,8 +23,12 @@ describe('buildConsensusTree', () => {
     expect(tree.map((n) => (n.kind === 'dir' ? n.dir : n.name))).toEqual(['src', 'README.md'])
     const src = dirNamed(tree, 'src')
     expect(src.children.map((n) => (n.kind === 'dir' ? n.dir : n.name))).toEqual(['a.ts', 'nested'])
-    const nested = src.children.find((n) => n.kind === 'dir' && n.dir === 'nested') as ConsensusDirNode
-    expect(nested.children).toEqual([{ kind: 'file', name: 'b.ts', row: expect.objectContaining({ path: 'src/nested/b.ts' }) }])
+    const nested = src.children.find(
+      (n) => n.kind === 'dir' && n.dir === 'nested',
+    ) as ConsensusDirNode
+    expect(nested.children).toEqual([
+      { kind: 'file', name: 'b.ts', row: expect.objectContaining({ path: 'src/nested/b.ts' }) },
+    ])
   })
 
   test('a folder lights up on a lane when any descendant does, even a deeply nested one', () => {

@@ -2,14 +2,22 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { agentEnv, hardenedReviewCommand, runAgent, type AgentRunOptions } from './agent.js'
 import { pickBranch } from './branches.js'
-import { ensureWorkDir, isRepoAgentTrusted, loadConfig, loadRepoConfig, trustRepoAgent } from './config.js'
-import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
-import { isAncestor, repoRoot } from './git.js'
-import { reviewLanguage, t, uiLocale } from './i18n.js'
-import { notifyDesktop } from './notify.js'
-import { openBrowser } from './open.js'
-import type { FindingSeverity, GroundingReport, ReviewedFile, ReviewRecord, SanitizedReview } from './contract.js'
-import { groundReview, sanitizeReview } from './contract.js'
+import {
+  ensureWorkDir,
+  isRepoAgentTrusted,
+  loadConfig,
+  loadRepoConfig,
+  trustRepoAgent,
+} from './config.js'
+import {
+  groundReview,
+  sanitizeReview,
+  type FindingSeverity,
+  type GroundingReport,
+  type ReviewedFile,
+  type ReviewRecord,
+  type SanitizedReview,
+} from './contract.js'
 import {
   assembleDualReview,
   dedupeExactCrossLane,
@@ -21,31 +29,52 @@ import {
   sanitizeJudgeOutput,
   type JudgeOutput,
 } from './dual.js'
-import type { PartialReview } from './partial.js'
-import { parsePartialReview } from './partial.js'
-import type { PrepInput } from './prep.js'
-import { mrDiff, prep } from './prep.js'
+import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
+import { isAncestor, repoRoot } from './git.js'
+import { reviewLanguage, t, uiLocale } from './i18n.js'
+import { notifyDesktop } from './notify.js'
+import { openBrowser } from './open.js'
+import { parsePartialReview, type PartialReview } from './partial.js'
+import { mrDiff, prep, type PrepInput } from './prep.js'
 import { archiveRecord, findPreviousReview, resolveRecord } from './record.js'
-import type { LiveSession } from './serve.js'
-import { createSession, startServer } from './serve.js'
+import { createSession, startServer, type LiveSession } from './serve.js'
+import { buildServerContext, type ServerContext } from './server-context.js'
 import { printReviewSummary } from './summary.js'
 import { autoPushReview } from './sync.js'
 import { isInteractive, select } from './tui.js'
-import { ACCENT, GREEN, RED, bold, dim, paint, printBanner, progressLabel, renderFieldRows, startSpinner, underline } from './ui.js'
+import {
+  ACCENT,
+  bold,
+  dim,
+  GREEN,
+  paint,
+  printBanner,
+  progressLabel,
+  RED,
+  renderFieldRows,
+  startSpinner,
+  underline,
+} from './ui.js'
 import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
 
 export const REVIEW_GATE_EXIT_CODE = 2
 export type ReviewGate = FindingSeverity | 'request_changes'
-export const REVIEW_GATE_VALUES: readonly ReviewGate[] = ['critical', 'major', 'minor', 'info', 'request_changes']
+export const REVIEW_GATE_VALUES: readonly ReviewGate[] = [
+  'critical',
+  'major',
+  'minor',
+  'info',
+  'request_changes',
+]
 const SEVERITY_RANK: Record<FindingSeverity, number> = { info: 0, minor: 1, major: 2, critical: 3 }
 
 /** Returns a human reason when the review trips the gate, or null when it passes. */
-export function reviewGateReason(review: SanitizedReview, gate: ReviewGate): string | null {
+export function reviewGateReason(sanitized: SanitizedReview, gate: ReviewGate): string | null {
   if (gate === 'request_changes') {
-    return review.verdict === 'request_changes' ? t('review.gateReasonVerdict') : null
+    return sanitized.verdict === 'request_changes' ? t('review.gateReasonVerdict') : null
   }
   const threshold = SEVERITY_RANK[gate]
-  const count = review.findings.filter((f) => SEVERITY_RANK[f.severity] >= threshold).length
+  const count = sanitized.findings.filter((f) => SEVERITY_RANK[f.severity] >= threshold).length
   return count > 0 ? t('review.gateReasonSeverity', { n: count, level: gate }) : null
 }
 
@@ -61,6 +90,7 @@ export function agentVisibleInput(input: PrepInput): {
   custom_instructions: string | null
   rules: string[] | null
   impact_candidates: PrepInput['impact_candidates']
+  server_context: ServerContext | null
 } {
   return {
     branch: input.branch,
@@ -70,15 +100,24 @@ export function agentVisibleInput(input: PrepInput): {
     custom_instructions: input.custom_instructions,
     rules: input.rules,
     impact_candidates: input.impact_candidates,
+    server_context: input.server_context,
   }
 }
 
 export function groundingReportLines(report: GroundingReport): string[] {
   const lines: string[] = []
-  if (report.dropped.length > 0) lines.push(t('review.groundedDropped', { n: report.dropped.length }))
-  if (report.deanchored.length > 0) lines.push(t('review.groundedDeanchored', { n: report.deanchored.length }))
-  if (report.merged > 0) lines.push(t('review.groundedMerged', { n: report.merged }))
-  if (report.verdict_escalated) lines.push(t('review.groundedVerdict'))
+  if (report.dropped.length > 0) {
+    lines.push(t('review.groundedDropped', { n: report.dropped.length }))
+  }
+  if (report.deanchored.length > 0) {
+    lines.push(t('review.groundedDeanchored', { n: report.deanchored.length }))
+  }
+  if (report.merged > 0) {
+    lines.push(t('review.groundedMerged', { n: report.merged }))
+  }
+  if (report.verdict_escalated) {
+    lines.push(t('review.groundedVerdict'))
+  }
   return lines
 }
 
@@ -89,7 +128,8 @@ function languageRule(): string {
     : 'write all human-readable text (summary, messages, narrative) in the language of the commit messages when clearly identifiable, otherwise in English'
 }
 
-export const reviewInstructions = (): string => `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
+export const reviewInstructions =
+  (): string => `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
 
 Review guidelines:
 - Judge the change on: correctness, regressions and breaking changes, security, error handling, missing tests, and whether it matches its stated intent (inferred from the branch name and commit messages). Ground EVERY finding in the diff; never speculate. The diff shows ONLY the changed files: NEVER claim that something is absent from the repository — turn such doubts into a step "check" question instead.
@@ -101,6 +141,7 @@ Review guidelines:
 - When the input has a non-null impact_candidates, it lists where symbols changed by this MR are used elsewhere in the repository (used_at, as path:line) and which files import the changed files (imported_by). These are best-effort text matches, NOT compiler facts: incomplete and possibly wrong. Use them as leads only. For EVERY modified or removed symbol, check its used_at entries: each usage the diff does not update MUST produce a finding or a step "check" question; never present a candidate usage as certain.
 - When the input has a non-null rules, each entry is a team rule on a normalized grid line: "[Cn] (category) rule | Scope: ... | Where to look: ... | Bad: ... | Good: ... | Exceptions (do not flag): ..."; every segment after the rule is optional. "Scope" bounds where in the repo the rule applies; "Where to look" names the files, imports or code shapes to inspect; Bad/Good is the literal rejected/expected form; Exceptions list what the team knowingly tolerates.
 - When rules are present, HUNT them first: walk the rules in order and, for each one, jump straight to the diff files and lines its "Where to look" targets and check the rule exactly there; going where a rule says to look is what catches violations, a generic read-through misses them. Then RAKE: the file-by-file sweep above, for everything else. Flag a deviation as kind "convention": the message MUST cite the rule id [Cn] and its rule text, and the deviation MUST be introduced by the diff (a '+' line or a new file), never pre-existing surrounding code. Do NOT flag patterns a rule explicitly endorses, and never flag code covered by a rule's Exceptions.
+- When the input has a non-null server_context, it carries repo knowledge fetched from the codesema server: "conventions" (team rules, each with id/rule/category/scope), "learned_rules" proposed by the team's auto-learning, and standalone "facts" about the repo. Use it as background only, never as a substitute for "rules": .codesema/RULES.md is local and authoritative, so on any conflict between server_context and rules, rules wins. When server_context.stale_warning is non-null, the server data predates the current HEAD: treat every field under server_context as possibly outdated, never cite it alone as evidence.
 - If the input has non-null custom_instructions, apply them on top of these guidelines; they win on conflicts.
 - Before emitting the JSON, actively try to REFUTE every finding: its file is present in the diff, its line sits inside a hunk, its failure scenario is named, and the diff really produces the claimed outcome. For kind "convention": the cited [Cn] exists in rules, the code deviates from that rule's letter (not from your taste), and no documented Exception covers it; a finding you cannot tie to a written rule is not a convention finding, reclassify it as "design" with its own failure scenario or drop it. Delete any finding you cannot defend; then fill "files_reviewed" with one { "path", "status" } entry per files[] path you examined: "findings" when you kept at least one finding on it, "clean" when you consciously cleared it. Any file in neither is reported to the human as not reviewed. Report boldly during the sweep, refute hard here: that split is what keeps recall high and false positives at zero.
 - Language: ${languageRule()}. Keep code identifiers and file paths verbatim.
@@ -167,14 +208,25 @@ UPDATE the previous review into a new COMPLETE review of the whole MR:
 Output the FULL updated review JSON (exact same schema), and NOTHING else.`
 
 /** Incremental prompt when an archived review of this branch covers a strict ancestor of the reviewed head. */
-function buildIncrementalPrompt(input: PrepInput, cwd: string): { prompt: string; sinceSha: string } | null {
+function buildIncrementalPrompt(
+  input: PrepInput,
+  cwd: string,
+): { prompt: string; sinceSha: string } | null {
   const previous = findPreviousReview(cwd, input.branch, input.target)
   const since = previous?.meta.head_sha
-  if (!previous || !since) return null
-  if (since === input.head_sha) return null
-  if (!isAncestor(since, input.head_sha, cwd)) return null
+  if (!previous || !since) {
+    return null
+  }
+  if (since === input.head_sha) {
+    return null
+  }
+  if (!isAncestor(since, input.head_sha, cwd)) {
+    return null
+  }
   const incrementalDiff = mrDiff(`${since}..${input.head_sha}`, cwd)
-  if (!incrementalDiff.trim()) return null
+  if (!incrementalDiff.trim()) {
+    return null
+  }
 
   const prompt = [
     reviewInstructions(),
@@ -190,7 +242,9 @@ function buildIncrementalPrompt(input: PrepInput, cwd: string): { prompt: string
 
 function detectAgentCommand(cwd: string): string {
   const [first] = detectAgents(cwd)
-  if (first) return defaultCommand(first)
+  if (first) {
+    return defaultCommand(first)
+  }
   throw new Error(t('agent.noneFound', { bins: AGENT_DEFS.map((d) => d.bin).join(', ') }))
 }
 
@@ -204,11 +258,17 @@ export function extractReviewJson(raw: string): string {
     } catch {
       continue
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue
-    if ('verdict' in (parsed as Record<string, unknown>)) return candidate
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      continue
+    }
+    if ('verdict' in (parsed as Record<string, unknown>)) {
+      return candidate
+    }
     fallback ??= candidate
   }
-  if (fallback) return fallback
+  if (fallback) {
+    return fallback
+  }
   throw new Error(t('agent.noJsonReview'))
 }
 
@@ -216,11 +276,15 @@ export function extractReviewJson(raw: string): string {
 function* jsonCandidates(s: string): Generator<string> {
   yield s
   for (const m of s.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) {
-    if (m[1]) yield m[1].trim()
+    if (m[1]) {
+      yield m[1].trim()
+    }
   }
   for (let i = s.indexOf('{'); i >= 0; i = s.indexOf('{', i + 1)) {
     const end = balancedEnd(s, i)
-    if (end > i) yield s.slice(i, end + 1)
+    if (end > i) {
+      yield s.slice(i, end + 1)
+    }
   }
 }
 
@@ -231,13 +295,20 @@ function balancedEnd(s: string, start: number): number {
   for (let i = start; i < s.length; i++) {
     const ch = s[i]
     if (inString) {
-      if (ch === '\\') i++
-      else if (ch === '"') inString = false
-    } else if (ch === '"') inString = true
-    else if (ch === '{') depth++
-    else if (ch === '}') {
+      if (ch === '\\') {
+        i++
+      } else if (ch === '"') {
+        inString = false
+      }
+    } else if (ch === '"') {
+      inString = true
+    } else if (ch === '{') {
+      depth++
+    } else if (ch === '}') {
       depth--
-      if (depth === 0) return i
+      if (depth === 0) {
+        return i
+      }
     }
   }
   return -1
@@ -245,16 +316,24 @@ function balancedEnd(s: string, start: number): number {
 
 const PARTIAL_PARSE_INTERVAL_MS = 400
 
-function createPartialForwarder(session: LiveSession, lane: 'a' | 'b' = 'a'): (text: string) => PartialReview | null {
+function createPartialForwarder(
+  session: LiveSession,
+  lane: 'a' | 'b' = 'a',
+): (text: string) => PartialReview | null {
   let lastParse = 0
   return (text: string) => {
     const now = Date.now()
-    if (now - lastParse < PARTIAL_PARSE_INTERVAL_MS) return null
+    if (now - lastParse < PARTIAL_PARSE_INTERVAL_MS) {
+      return null
+    }
     lastParse = now
     const partial = parsePartialReview(text)
     if (partial) {
-      if (lane === 'a') session.setPartial(partial)
-      else session.setPartialB(partial)
+      if (lane === 'a') {
+        session.setPartial(partial)
+      } else {
+        session.setPartialB(partial)
+      }
     }
     return partial
   }
@@ -265,16 +344,28 @@ export function missingReviewedFiles(
   files: { path: string }[],
   reviewed: ReviewedFile[] | undefined,
 ): string[] | null {
-  if (reviewed === undefined) return null
+  if (reviewed === undefined) {
+    return null
+  }
   const seen = new Set(reviewed.map((f) => f.path))
   return files.map((f) => f.path).filter((path) => !seen.has(path))
 }
 
-function coverageGapLine(input: PrepInput, lane: string, review: SanitizedReview): string | null {
-  const missing = missingReviewedFiles(input.files, review.files_reviewed)
-  if (!missing || missing.length === 0) return null
+function coverageGapLine(
+  input: PrepInput,
+  lane: string,
+  sanitized: SanitizedReview,
+): string | null {
+  const missing = missingReviewedFiles(input.files, sanitized.files_reviewed)
+  if (!missing || missing.length === 0) {
+    return null
+  }
   const shown = missing.slice(0, 3).join(', ')
-  return t('review.coverageGap', { lane, n: missing.length, files: missing.length > 3 ? `${shown}, …` : shown })
+  return t('review.coverageGap', {
+    lane,
+    n: missing.length,
+    files: missing.length > 3 ? `${shown}, …` : shown,
+  })
 }
 
 const INVALID_JSON_RETRY_NOTE =
@@ -304,7 +395,10 @@ export async function runAgentJsonWithRetry<T>(
   try {
     return parse(raw)
   } catch {
-    const retried = await runner({ ...opts, prompt: `${opts.prompt}\n\n${INVALID_JSON_RETRY_NOTE}` })
+    const retried = await runner({
+      ...opts,
+      prompt: `${opts.prompt}\n\n${INVALID_JSON_RETRY_NOTE}`,
+    })
     try {
       return parse(retried)
     } catch (err) {
@@ -333,7 +427,9 @@ export async function runDualFlow(opts: {
 
   const lanes: { a: string | null; b: string | null } = { a: null, b: null }
   const updateLanes = () =>
-    spinner.update(`${t('review.dualLaneA')} ${lanes.a ?? '…'} · ${t('review.dualLaneB')} ${lanes.b ?? '…'}`)
+    spinner.update(
+      `${t('review.dualLaneA')} ${lanes.a ?? '…'} · ${t('review.dualLaneB')} ${lanes.b ?? '…'}`,
+    )
   const laneRun = (lane: 'a' | 'b', prompt: string): Promise<SanitizedReview> => {
     const forward = createPartialForwarder(session, lane)
     return runAgentJsonWithRetry(
@@ -345,7 +441,9 @@ export async function runDualFlow(opts: {
         timeoutMs,
         onText: (text) => {
           const partial = forward(text)
-          if (!partial) return
+          if (!partial) {
+            return
+          }
           lanes[lane] = progressLabel(partial)
           updateLanes()
         },
@@ -362,9 +460,15 @@ export async function runDualFlow(opts: {
   const settle = (
     res: PromiseSettledResult<SanitizedReview>,
   ): { review: SanitizedReview | null; error: string | null; raw: string | null } => {
-    if (res.status === 'fulfilled') return { review: res.value, error: null, raw: null }
+    if (res.status === 'fulfilled') {
+      return { review: res.value, error: null, raw: null }
+    }
     const message = res.reason instanceof Error ? res.reason.message : String(res.reason)
-    return { review: null, error: message, raw: res.reason instanceof AgentOutputError ? res.reason.raw : null }
+    return {
+      review: null,
+      error: message,
+      raw: res.reason instanceof AgentOutputError ? res.reason.raw : null,
+    }
   }
   const a = settle(resA)
   const b = settle(resB)
@@ -379,8 +483,8 @@ export async function runDualFlow(opts: {
     }
   }
 
-  const buildRecord = (review: SanitizedReview): ReviewRecord => {
-    writeFileSync(join(dir, 'review.json'), JSON.stringify(review, null, 2))
+  const buildRecord = (sanitized: SanitizedReview): ReviewRecord => {
+    writeFileSync(join(dir, 'review.json'), JSON.stringify(sanitized, null, 2))
     return resolveRecord({ cwd: input.repo_root }).record
   }
 
@@ -427,10 +531,14 @@ export async function runDualFlow(opts: {
           timeoutMs,
           onText: (text) => {
             const now = Date.now()
-            if (now - lastJudgeParse < PARTIAL_PARSE_INTERVAL_MS) return
+            if (now - lastJudgeParse < PARTIAL_PARSE_INTERVAL_MS) {
+              return
+            }
             lastJudgeParse = now
             const partial = parsePartialJudge(text, aCount, bCount)
-            if (!partial) return
+            if (!partial) {
+              return
+            }
             session.setJudge({ total, decisions: partial.decisions })
             spinner.update(t('review.dualJudgeProgress', { done: partial.decisions.length, total }))
           },
@@ -452,7 +560,11 @@ export async function runDualFlow(opts: {
   const consensusCount = final.review.findings.filter((f) => f.consensus).length
   const grounding: GroundingReport = {
     dropped: [...groundedA.report.dropped, ...groundedB.report.dropped, ...final.report.dropped],
-    deanchored: [...groundedA.report.deanchored, ...groundedB.report.deanchored, ...final.report.deanchored],
+    deanchored: [
+      ...groundedA.report.deanchored,
+      ...groundedB.report.deanchored,
+      ...final.report.deanchored,
+    ],
     merged: groundedA.report.merged + groundedB.report.merged + final.report.merged,
     verdict_escalated: final.report.verdict_escalated,
   }
@@ -483,7 +595,9 @@ export async function runDualFlow(opts: {
  * true if execution may proceed, false if the user cancels.
  */
 async function ensureRepoAgentTrusted(cwd: string, command: string): Promise<boolean> {
-  if (isRepoAgentTrusted(cwd, command)) return true
+  if (isRepoAgentTrusted(cwd, command)) {
+    return true
+  }
   if (!isInteractive()) {
     throw new Error(t('review.repoAgentUnattended', { command }))
   }
@@ -499,22 +613,24 @@ async function ensureRepoAgentTrusted(cwd: string, command: string): Promise<boo
     ],
     initialIndex: 0,
   })
-  if (choice !== 'run') return false
+  if (choice !== 'run') {
+    return false
+  }
   trustRepoAgent(cwd, command)
   return true
 }
 
 export async function review(opts: {
-  branch?: string
-  target?: string
-  agent?: string
-  port?: number
-  timeout?: number
-  full?: boolean
-  dual?: boolean
-  failOn?: ReviewGate
+  branch?: string | undefined
+  target?: string | undefined
+  agent?: string | undefined
+  port?: number | undefined
+  timeout?: number | undefined
+  full?: boolean | undefined
+  dual?: boolean | undefined
+  failOn?: ReviewGate | undefined
   open: boolean
-  interactive?: boolean
+  interactive?: boolean | undefined
   cwd: string
 }): Promise<void> {
   printBanner()
@@ -524,7 +640,9 @@ export async function review(opts: {
   let agentCommand = opts.agent ?? config.agent
   if (!agentCommand && isInteractive()) {
     agentCommand = (await runOnboarding(cwd)) ?? undefined
-    if (agentCommand) console.log('')
+    if (agentCommand) {
+      console.log('')
+    }
   }
   agentCommand ??= detectAgentCommand(cwd)
 
@@ -541,11 +659,19 @@ export async function review(opts: {
   let branch = opts.branch
   if (!branch && opts.interactive !== false && isInteractive()) {
     const picked = await pickBranch(cwd)
-    if (picked === null) return
+    if (picked === null) {
+      return
+    }
     branch = picked
   }
 
-  const input = prep({ branch, target: opts.target ?? config.target, cwd, quiet: true })
+  const prepared = prep({ branch, target: opts.target ?? config.target, cwd, quiet: true })
+  // Best-effort, never blocking: offline, unlinked workspace, a non-200 or a
+  // timeout all silently degrade to null (local review unchanged).
+  const input: PrepInput = {
+    ...prepared,
+    server_context: await buildServerContext(prepared.repo_root),
+  }
   const dir = ensureWorkDir(input.repo_root)
 
   // Dual reviews always start from scratch: the incremental prompt updates ONE
@@ -607,14 +733,22 @@ export async function review(opts: {
     headerRows.push({ label: t('field.prompt'), value: dim(t('review.customPrompt')) })
   }
   if (input.rules) {
-    headerRows.push({ label: t('field.rules'), value: dim(t('review.teamRules', { n: input.rules.length })) })
+    headerRows.push({
+      label: t('field.rules'),
+      value: dim(t('review.teamRules', { n: input.rules.length })),
+    })
   }
-  headerRows.push({ label: t('field.web'), value: `${underline(paint(url, ACCENT))} ${dim(t('review.webLiveHint'))}` })
+  headerRows.push({
+    label: t('field.web'),
+    value: `${underline(paint(url, ACCENT))} ${dim(t('review.webLiveHint'))}`,
+  })
 
   console.log('')
   renderFieldRows(headerRows).forEach((line) => console.log(line))
   console.log('')
-  if (opts.open && !opts.failOn) openBrowser(url)
+  if (opts.open && !opts.failOn) {
+    openBrowser(url)
+  }
 
   const shortCmd = agentCommand.length > 40 ? `${agentCommand.slice(0, 37)}…` : agentCommand
   const spinner = startSpinner(t('review.spinner', { cmd: shortCmd }))
@@ -623,11 +757,17 @@ export async function review(opts: {
     const heading = kind === 'run' ? t('review.runFailed') : t('review.unusableOutput')
     spinner.stop(`  ${paint('✘', RED)} ${heading}`)
     session.setError(message)
-    if (isInteractive()) notifyDesktop('codesema', t(kind === 'run' ? 'notify.failedRun' : 'notify.failedOutput'))
-    console.error(`codesema: ${kind === 'run' ? t('review.runFailedDetail', { message }) : message}`)
+    if (isInteractive()) {
+      notifyDesktop('codesema', t(kind === 'run' ? 'notify.failedRun' : 'notify.failedOutput'))
+    }
+    console.error(
+      `codesema: ${kind === 'run' ? t('review.runFailedDetail', { message }) : message}`,
+    )
     console.log(`  ${t('review.stillUp', { url })}`)
     process.exitCode = 1
-    if (opts.failOn) await stop()
+    if (opts.failOn) {
+      await stop()
+    }
   }
 
   let record: ReviewRecord
@@ -635,7 +775,9 @@ export async function review(opts: {
   if (dual) {
     const outcome = await runDualFlow({ agentCommand, input, dir, timeoutMs, session, spinner })
     if (!outcome.ok) {
-      if (outcome.rawOutput !== undefined) writeFileSync(join(dir, 'agent-output.txt'), outcome.rawOutput)
+      if (outcome.rawOutput !== undefined) {
+        writeFileSync(join(dir, 'agent-output.txt'), outcome.rawOutput)
+      }
       await failRun(outcome.failure, outcome.message)
       return
     }
@@ -654,9 +796,13 @@ export async function review(opts: {
           timeoutMs,
           onText: (text) => {
             const partial = forwardPartial(text)
-            if (!partial) return
+            if (!partial) {
+              return
+            }
             const status = progressLabel(partial)
-            if (status) spinner.update(status)
+            if (status) {
+              spinner.update(status)
+            }
           },
         },
         (raw) => {
@@ -686,7 +832,9 @@ export async function review(opts: {
       // against the full file list would cry wolf.
       if (!incremental) {
         const coverage = coverageGapLine(input, t('review.dualLaneA'), grounded.review)
-        if (coverage) reportLines.push(coverage)
+        if (coverage) {
+          reportLines.push(coverage)
+        }
       }
     } catch (err) {
       writeFileSync(join(dir, 'agent-output.txt'), out)

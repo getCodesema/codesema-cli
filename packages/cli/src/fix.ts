@@ -1,5 +1,4 @@
-import type { AgentRunOptions } from './agent.js'
-import { runAgent } from './agent.js'
+import { runAgent, type AgentRunOptions } from './agent.js'
 import type { Finding, ReviewRecord } from './contract.js'
 import { tryGit } from './git.js'
 
@@ -15,28 +14,39 @@ const MAX_SUMMARY_CHARS = 4000
  */
 export function fixCommandFor(command: string): string {
   if (/^claude(\s|$)/.test(command)) {
-    if (command.includes('--permission-mode')) return command
+    if (command.includes('--permission-mode')) {
+      return command
+    }
     return `${command} --permission-mode acceptEdits`
   }
   if (/^codex\s+exec(\s|$)/.test(command)) {
-    if (command.includes('--sandbox') || command.includes('--full-auto')) return command
+    if (command.includes('--sandbox') || command.includes('--full-auto')) {
+      return command
+    }
     return command.replace(/^codex\s+exec/, 'codex exec --sandbox workspace-write')
   }
   if (/^gemini(\s|$)/.test(command)) {
-    if (command.includes('--approval-mode') || command.includes('--yolo')) return command
+    if (command.includes('--approval-mode') || command.includes('--yolo')) {
+      return command
+    }
     return `${command} --approval-mode auto_edit`
   }
   return command
 }
 
 function isFixable(finding: Finding): boolean {
-  if (finding.kind === 'praise' || finding.kind === 'why') return false
+  if (finding.kind === 'praise' || finding.kind === 'why') {
+    return false
+  }
   return finding.severity !== 'info'
 }
 
 export function buildAgentFixPrompt(record: ReviewRecord, ids: number[]): string {
-  const findings = ids.map((id) => {
-    const f = record.review.findings[id]!
+  const findings = ids.flatMap((id) => {
+    const f = record.review.findings[id]
+    if (!f) {
+      return []
+    }
     return {
       file: f.file,
       ...(f.line !== undefined ? { line: f.line } : {}),
@@ -104,18 +114,28 @@ export function createFixRunner(opts: {
 
   function headMoved(): boolean {
     const reviewedSha = opts.getRecord()?.meta.head_sha
-    if (!reviewedSha) return false
+    if (!reviewedSha) {
+      return false
+    }
     const head = currentHead()
     return head !== null && head.trim() !== reviewedSha
   }
 
   function validate(record: ReviewRecord, ids: number[]): string | null {
-    if (!Array.isArray(ids) || ids.length === 0) return 'no findings selected'
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return 'no findings selected'
+    }
     for (const id of ids) {
-      if (!Number.isInteger(id)) return 'invalid finding id'
+      if (!Number.isInteger(id)) {
+        return 'invalid finding id'
+      }
       const finding = record.review.findings[id]
-      if (!finding) return 'unknown finding id'
-      if (!isFixable(finding)) return 'finding has nothing to fix'
+      if (!finding) {
+        return 'unknown finding id'
+      }
+      if (!isFixable(finding)) {
+        return 'finding has nothing to fix'
+      }
     }
     return null
   }
@@ -131,11 +151,17 @@ export function createFixRunner(opts: {
       head_moved: headMoved(),
     }),
     start(ids) {
-      if (phase === 'running') return { ok: false, code: 409, error: 'a fix is already running' }
+      if (phase === 'running') {
+        return { ok: false, code: 409, error: 'a fix is already running' }
+      }
       const record = opts.getRecord()
-      if (!record) return { ok: false, code: 409, error: 'no review available yet' }
+      if (!record) {
+        return { ok: false, code: 409, error: 'no review available yet' }
+      }
       const invalid = validate(record, ids)
-      if (invalid) return { ok: false, code: 400, error: invalid }
+      if (invalid) {
+        return { ok: false, code: 400, error: invalid }
+      }
 
       phase = 'running'
       selected = [...ids]

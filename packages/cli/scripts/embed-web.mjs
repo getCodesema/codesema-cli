@@ -6,7 +6,9 @@ const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url))
 const target = fileURLToPath(new URL('../web-dist', import.meta.url))
 
 if (!existsSync(webDist)) {
-  console.error('[embed-web] packages/web/dist not found — run the web build first (bun run build:web)')
+  console.error(
+    '[embed-web] packages/web/dist not found — run the web build first (bun run build:web)',
+  )
   process.exit(1)
 }
 

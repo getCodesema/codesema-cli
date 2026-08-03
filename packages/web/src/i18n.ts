@@ -31,7 +31,8 @@ const en = {
   'focus.fixRunning': 'The agent is applying the fixes…',
   'focus.fixDone': 'Fixes applied. Run a new review to verify.',
   'focus.fixFailed': 'Fix run failed',
-  'focus.headMoved': 'The branch has moved since this review; the agent will patch the files as they are now.',
+  'focus.headMoved':
+    'The branch has moved since this review; the agent will patch the files as they are now.',
 
   'live.title': 'Review in progress',
   'live.errorTitle': 'The review failed',
@@ -58,7 +59,8 @@ const en = {
   'live.judgeRejected': 'rejected',
 
   'finding.consensus': 'both reviewers',
-  'reviews.dualStat': 'dual review · {merged} merged · {rejected} rejected · {added} added by the prosecutor',
+  'reviews.dualStat':
+    'dual review · {merged} merged · {rejected} rejected · {added} added by the prosecutor',
 
   'reviews.prologue.why': 'Why this MR',
   'reviews.prologue.what': 'What it does',
@@ -164,7 +166,8 @@ const fr: Record<MessageKey, string> = {
   'focus.fixRunning': "L'agent applique les fix…",
   'focus.fixDone': 'Fix appliqués. Relance une review pour vérifier.',
   'focus.fixFailed': 'Le lancement des fix a échoué',
-  'focus.headMoved': "La branche a bougé depuis cette revue ; l'agent corrigera les fichiers dans leur état actuel.",
+  'focus.headMoved':
+    "La branche a bougé depuis cette revue ; l'agent corrigera les fichiers dans leur état actuel.",
 
   'live.title': 'Revue en cours',
   'live.errorTitle': 'La revue a échoué',
@@ -191,7 +194,8 @@ const fr: Record<MessageKey, string> = {
   'live.judgeRejected': 'rejeté',
 
   'finding.consensus': 'les 2 reviewers',
-  'reviews.dualStat': 'revue duale · {merged} fusionnées · {rejected} rejetées · {added} ajoutées par le procureur',
+  'reviews.dualStat':
+    'revue duale · {merged} fusionnées · {rejected} rejetées · {added} ajoutées par le procureur',
 
   'reviews.prologue.why': 'Pourquoi cette MR',
   'reviews.prologue.what': "Ce qu'elle fait",
@@ -269,7 +273,9 @@ const fr: Record<MessageKey, string> = {
 const catalogs: Record<string, Record<MessageKey, string>> = { en, fr }
 
 function detectLocale(): string {
-  if (typeof window === 'undefined') return 'en'
+  if (typeof window === 'undefined') {
+    return 'en'
+  }
   const injected = (window as { __CODESEMA_LOCALE__?: string }).__CODESEMA_LOCALE__
   return injected && catalogs[injected] ? injected : 'en'
 }
@@ -281,10 +287,12 @@ export function t(key: string, params?: Record<string, unknown>, count?: number)
   if (msg.includes(' | ')) {
     const n = count ?? (typeof params?.n === 'number' ? (params.n as number) : undefined)
     const parts = msg.split(' | ')
-    msg = (n === 1 ? parts[0] : parts[1] ?? parts[0]) ?? msg
+    msg = (n === 1 ? parts[0] : (parts[1] ?? parts[0])) ?? msg
   }
   if (params) {
-    for (const [k, v] of Object.entries(params)) msg = msg.replaceAll(`{${k}}`, String(v))
+    for (const [k, v] of Object.entries(params)) {
+      msg = msg.replaceAll(`{${k}}`, String(v))
+    }
   }
   return msg
 }

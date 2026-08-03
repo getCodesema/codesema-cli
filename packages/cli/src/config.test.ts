@@ -1,9 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
-  type CodesemaConfig,
   globalConfigPath,
   isRepoAgentTrusted,
   loadConfig,
@@ -13,6 +12,7 @@ import {
   saveRepoConfig,
   trustRepoAgent,
   trustStorePath,
+  type CodesemaConfig,
 } from './config.js'
 
 describe('repo agent trust store', () => {
@@ -25,8 +25,11 @@ describe('repo agent trust store', () => {
   })
 
   afterEach(() => {
-    if (previousConfigDir === undefined) delete process.env.CODESEMA_CONFIG_DIR
-    else process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
     rmSync(configDir, { recursive: true, force: true })
   })
 
@@ -64,13 +67,21 @@ describe('sync credentials round-trip', () => {
   })
 
   afterEach(() => {
-    if (previousConfigDir === undefined) delete process.env.CODESEMA_CONFIG_DIR
-    else process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
     rmSync(configDir, { recursive: true, force: true })
   })
 
   test('sync fields survive save and load', () => {
-    saveGlobalConfig({ syncUrl: 'http://localhost:9080', syncWorkspaceId: 'ws-1', syncSecret: 's3cret', syncAutoPush: true })
+    saveGlobalConfig({
+      syncUrl: 'http://localhost:9080',
+      syncWorkspaceId: 'ws-1',
+      syncSecret: 's3cret',
+      syncAutoPush: true,
+    })
     expect(loadGlobalConfig()).toEqual({
       syncUrl: 'http://localhost:9080',
       syncWorkspaceId: 'ws-1',
@@ -109,8 +120,11 @@ describe('sync fields are global-only', () => {
   })
 
   afterEach(() => {
-    if (previousConfigDir === undefined) delete process.env.CODESEMA_CONFIG_DIR
-    else process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
     rmSync(configDir, { recursive: true, force: true })
     rmSync(repoDir, { recursive: true, force: true })
   })

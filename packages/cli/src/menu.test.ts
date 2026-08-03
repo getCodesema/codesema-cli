@@ -4,9 +4,9 @@ import {
   buildCloudMenuItems,
   buildMenuItems,
   dispatchMenuAction,
+  reviewFlagsPassed,
   type MenuActionId,
   type MenuActions,
-  reviewFlagsPassed,
 } from './menu.js'
 
 afterEach(() => setLanguage(null))
@@ -16,7 +16,14 @@ describe('buildMenuItems', () => {
     for (const hasSyncCredentials of [true, false]) {
       for (const inRepo of [true, false]) {
         const items = buildMenuItems({ hasSyncCredentials, inRepo })
-        expect(items.map((item) => item.id)).toEqual(['review', 'dualReview', 'show', 'cloud', 'config', 'quit'])
+        expect(items.map((item) => item.id)).toEqual([
+          'review',
+          'dualReview',
+          'show',
+          'cloud',
+          'config',
+          'quit',
+        ])
       }
     }
   })
@@ -29,8 +36,12 @@ describe('buildMenuItems', () => {
   })
 
   test('the cloud hint reflects whether a workspace exists', () => {
-    const withCredentials = buildMenuItems({ hasSyncCredentials: true, inRepo: true }).find((i) => i.id === 'cloud')
-    const withoutCredentials = buildMenuItems({ hasSyncCredentials: false, inRepo: true }).find((i) => i.id === 'cloud')
+    const withCredentials = buildMenuItems({ hasSyncCredentials: true, inRepo: true }).find(
+      (i) => i.id === 'cloud',
+    )
+    const withoutCredentials = buildMenuItems({ hasSyncCredentials: false, inRepo: true }).find(
+      (i) => i.id === 'cloud',
+    )
     expect(withCredentials?.hint).toBe(t('menu.cloudHintActive'))
     expect(withoutCredentials?.hint).toBe(t('menu.cloudHintSetup'))
   })
@@ -67,10 +78,13 @@ describe('buildCloudMenuItems', () => {
   })
 
   test('the sync hint depends on whether credentials exist', () => {
-    const withCredentials = buildCloudMenuItems({ hasSyncCredentials: true, inRepo: true }).find((i) => i.id === 'sync')
-    const withoutCredentials = buildCloudMenuItems({ hasSyncCredentials: false, inRepo: true }).find(
+    const withCredentials = buildCloudMenuItems({ hasSyncCredentials: true, inRepo: true }).find(
       (i) => i.id === 'sync',
     )
+    const withoutCredentials = buildCloudMenuItems({
+      hasSyncCredentials: false,
+      inRepo: true,
+    }).find((i) => i.id === 'sync')
     expect(withCredentials?.hint).toBe(t('menu.syncHintPush'))
     expect(withoutCredentials?.hint).toBe(t('menu.syncHintSetup'))
   })
@@ -129,7 +143,15 @@ describe('dispatchMenuAction', () => {
   }
 
   test('routes each id to its matching action and none other', async () => {
-    const ids: MenuActionId[] = ['review', 'dualReview', 'show', 'sync', 'link', 'syncDelete', 'config']
+    const ids: MenuActionId[] = [
+      'review',
+      'dualReview',
+      'show',
+      'sync',
+      'link',
+      'syncDelete',
+      'config',
+    ]
     for (const id of ids) {
       const { actions, calls } = spyActions()
       await dispatchMenuAction(id, actions)
@@ -139,7 +161,10 @@ describe('dispatchMenuAction', () => {
 
   test('propagates a rejection from the underlying action', async () => {
     const { actions } = spyActions()
-    const failing: MenuActions = { ...actions, link: async () => Promise.reject(new Error('bad pairing code')) }
+    const failing: MenuActions = {
+      ...actions,
+      link: async () => Promise.reject(new Error('bad pairing code')),
+    }
     await expect(dispatchMenuAction('link', failing)).rejects.toThrow('bad pairing code')
   })
 })
