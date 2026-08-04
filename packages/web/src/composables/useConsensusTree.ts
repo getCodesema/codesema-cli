@@ -41,9 +41,9 @@ export function buildConsensusTree(rows: ConsensusRow[]): ConsensusNode[] {
 
   for (const row of rows) {
     const parts = row.path.split('/')
+    const name = parts.at(-1) ?? row.path
     let node = root
-    for (let i = 0; i < parts.length - 1; i++) {
-      const seg = parts[i]!
+    for (const seg of parts.slice(0, -1)) {
       let child = node.children.find((c): c is MutableDir => c.kind === 'dir' && c.dir === seg)
       if (!child) {
         child = { kind: 'dir', dir: seg, children: [] }
@@ -51,7 +51,6 @@ export function buildConsensusTree(rows: ConsensusRow[]): ConsensusNode[] {
       }
       node = child
     }
-    const name = parts[parts.length - 1]!
     node.children.push({ kind: 'file', name, row })
   }
 

@@ -18,7 +18,13 @@ export type ReviewSource = { kind: 'mr'; number: number } | { kind: 'branch'; na
 
 export type MrReviewStatus =
   | { available: true; phase: 'idle' }
-  | { available: true; phase: 'running'; source: ReviewSource; mode: MrReviewMode; started_at: string }
+  | {
+      available: true
+      phase: 'running'
+      source: ReviewSource
+      mode: MrReviewMode
+      started_at: string
+    }
   | { available: true; phase: 'done'; source: ReviewSource; mode: MrReviewMode }
   | { available: true; phase: 'error'; source: ReviewSource; mode: MrReviewMode; error: string }
 
@@ -47,7 +53,10 @@ function fetchMrBranch(cwd: string, sourceBranch: string): void {
  * out in another worktree, which is an acceptable rare edge case.
  */
 function addMrWorktree(cwd: string, worktreeDir: string, sourceBranch: string): void {
-  git(['worktree', 'add', '-B', sourceBranch, worktreeDir, `refs/remotes/origin/${sourceBranch}`], cwd)
+  git(
+    ['worktree', 'add', '-B', sourceBranch, worktreeDir, `refs/remotes/origin/${sourceBranch}`],
+    cwd,
+  )
 }
 
 function addLocalBranchWorktree(cwd: string, worktreeDir: string, branch: string): void {
@@ -80,8 +89,7 @@ export function createMrReviewRunner(opts: {
   const listMrs = opts.listMrs ?? listOpenMrs
 
   let phase: MrReviewPhase = 'idle'
-  let current: { source: ReviewSource; mode: MrReviewMode } | undefined
-  let startedAt: string | undefined
+  let current: { source: ReviewSource; mode: MrReviewMode; started_at: string } | undefined
   let error: string | undefined
 
   async function run(resolved: ResolvedSource, mode: MrReviewMode): Promise<void> {
@@ -89,7 +97,8 @@ export function createMrReviewRunner(opts: {
     opts.session.setAgent(opts.agentCommand)
     opts.session.setMode(mode)
 
-    const label = resolved.kind === 'mr' ? `mr-${resolved.mr.number}` : `branch-${slug(resolved.name)}`
+    const label =
+      resolved.kind === 'mr' ? `mr-${resolved.mr.number}` : `branch-${slug(resolved.name)}`
     const worktreeDir = join(tmpdir(), `codesema-review-${label}-${randomBytes(4).toString('hex')}`)
 
     let branchForPrep: string
@@ -114,7 +123,12 @@ export function createMrReviewRunner(opts: {
     }
 
     try {
-      const input = prep({ branch: branchForPrep, target: targetForPrep, cwd: worktreeDir, quiet: true })
+      const input = prep({
+        branch: branchForPrep,
+        target: targetForPrep,
+        cwd: worktreeDir,
+        quiet: true,
+      })
       const additions = input.files.reduce((n, f) => n + f.additions, 0)
       const deletions = input.files.reduce((n, f) => n + f.deletions, 0)
       opts.session.setInput({
@@ -148,7 +162,9 @@ export function createMrReviewRunner(opts: {
               incremental: false,
             })
 
-      if (!outcome.ok) throw new Error(outcome.message)
+      if (!outcome.ok) {
+        throw new Error(outcome.message)
+      }
 
       // Archived in the MAIN repo (opts.cwd), never in the disposable worktree:
       // `codesema show` reads .codesema/reviews from the repo the server was started in.
@@ -161,17 +177,28 @@ export function createMrReviewRunner(opts: {
 
   return {
     status() {
-      if (phase === 'idle') return { available: true, phase: 'idle' }
-      if (phase === 'running') {
-        return { available: true, phase: 'running', source: current!.source, mode: current!.mode, started_at: startedAt! }
+      if (phase === 'idle' || current === undefined) {
+        return { available: true, phase: 'idle' }
       }
-      if (phase === 'done') return { available: true, phase: 'done', source: current!.source, mode: current!.mode }
-      return { available: true, phase: 'error', source: current!.source, mode: current!.mode, error: error! }
+      const { source, mode, started_at } = current
+      if (phase === 'running') {
+        return { available: true, phase: 'running', source, mode, started_at }
+      }
+      if (phase === 'done') {
+        return { available: true, phase: 'done', source, mode }
+      }
+      return { available: true, phase: 'error', source, mode, error: error ?? 'unknown error' }
     },
     async start(source, mode) {
-      if (phase === 'running') return { ok: false, code: 409, error: 'a review is already running' }
-      if (mode !== 'simple' && mode !== 'dual') return { ok: false, code: 400, error: 'invalid mode' }
-      if (source.kind === 'mr' && !Number.isInteger(source.number)) return { ok: false, code: 400, error: 'invalid MR number' }
+      if (phase === 'running') {
+        return { ok: false, code: 409, error: 'a review is already running' }
+      }
+      if (mode !== 'simple' && mode !== 'dual') {
+        return { ok: false, code: 400, error: 'invalid mode' }
+      }
+      if (source.kind === 'mr' && !Number.isInteger(source.number)) {
+        return { ok: false, code: 400, error: 'invalid MR number' }
+      }
       if (source.kind === 'branch' && (!source.name || source.name.startsWith('-'))) {
         return { ok: false, code: 400, error: 'invalid branch name' }
       }
@@ -180,24 +207,30 @@ export function createMrReviewRunner(opts: {
       // start() must hit the 409 above, not slip past it during the await.
       const previousPhase = phase
       phase = 'running'
-      current = { source, mode }
-      startedAt = new Date().toISOString()
+      current = { source, mode, started_at: new Date().toISOString() }
       error = undefined
 
       let resolved: ResolvedSource | undefined
       try {
         if (source.kind === 'mr') {
           const mrsResult = await listMrs(opts.cwd)
-          const mr = mrsResult.available ? mrsResult.mrs.find((m) => m.number === source.number) : undefined
-          if (mr) resolved = { kind: 'mr', mr }
+          const mr = mrsResult.available
+            ? mrsResult.mrs.find((m) => m.number === source.number)
+            : undefined
+          if (mr) {
+            resolved = { kind: 'mr', mr }
+          }
         } else if (refExists(`refs/heads/${source.name}`, opts.cwd)) {
           resolved = { kind: 'branch', name: source.name }
         }
       } finally {
-        if (!resolved) phase = previousPhase
+        if (!resolved) {
+          phase = previousPhase
+        }
       }
       if (!resolved) {
-        const notFound = source.kind === 'mr' ? `no open MR #${source.number}` : `branch not found: ${source.name}`
+        const notFound =
+          source.kind === 'mr' ? `no open MR #${source.number}` : `branch not found: ${source.name}`
         return { ok: false, code: 404, error: notFound }
       }
 

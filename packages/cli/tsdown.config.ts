@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { defineConfig } from 'tsdown'
 
-const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+const { version } = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as {
   version: string
 }
 

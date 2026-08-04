@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import type { DiffFile, Finding, FindingSeverity, HunkBlock, HunkLine, SplitRow } from '../composables/useDiff'
-import { collapsedByBudget, toSplit } from '../composables/useDiff'
+import {
+  collapsedByBudget,
+  toSplit,
+  type DiffFile,
+  type Finding,
+  type FindingSeverity,
+  type HunkBlock,
+  type HunkLine,
+  type SplitRow,
+} from '../composables/useDiff'
 import { t } from '../i18n'
 
 const props = defineProps<{
@@ -13,7 +21,7 @@ const props = defineProps<{
    *  budget when each DiffView gets a single file and can't see the page-wide total. */
   initialCollapsed?: boolean
   /** Scroll to (and flash) the note with this finding id; nonce retriggers the same id. */
-  reveal?: { id: number; nonce: number } | null
+  reveal?: { id: number; nonce: number } | null | undefined
 }>()
 
 const isClient = typeof window !== 'undefined'
@@ -21,7 +29,9 @@ const isClient = typeof window !== 'undefined'
 const SPLIT_KEY = 'codesema-diff-mode'
 
 function loadMode(): 'split' | 'unified' {
-  if (!isClient) return 'unified'
+  if (!isClient) {
+    return 'unified'
+  }
   return (localStorage.getItem(SPLIT_KEY) as 'split' | 'unified') ?? 'unified'
 }
 
@@ -31,14 +41,20 @@ const diffMode = computed<'split' | 'unified'>(() => props.mode ?? internalMode.
 
 function setMode(m: 'split' | 'unified') {
   internalMode.value = m
-  if (isClient) localStorage.setItem(SPLIT_KEY, m)
+  if (isClient) {
+    localStorage.setItem(SPLIT_KEY, m)
+  }
 }
 
 // Large files (or files past the page's cumulative budget) start collapsed: their
 // DOM (v-if) is only created on expand, keeping the first render smooth on huge diffs.
 function initialCollapsedSet(): Set<string> {
   const collapsed = collapsedByBudget(props.files)
-  if (props.initialCollapsed) for (const f of props.files) collapsed.add(f.path)
+  if (props.initialCollapsed) {
+    for (const f of props.files) {
+      collapsed.add(f.path)
+    }
+  }
   return collapsed
 }
 
@@ -48,14 +64,19 @@ const collapsed = ref<Set<string>>(initialCollapsedSet())
 watch(
   () => props.collapseKey,
   (k) => {
-    if (k == null) return
+    if (k == null) {
+      return
+    }
     collapsed.value = k % 2 === 1 ? new Set(props.files.map((f) => f.path)) : new Set()
   },
 )
 
 function toggleFile(path: string) {
-  if (collapsed.value.has(path)) collapsed.value.delete(path)
-  else collapsed.value.add(path)
+  if (collapsed.value.has(path)) {
+    collapsed.value.delete(path)
+  } else {
+    collapsed.value.add(path)
+  }
   // force reactivity
   collapsed.value = new Set(collapsed.value)
 }
@@ -64,34 +85,83 @@ function isCollapsed(path: string): boolean {
   return collapsed.value.has(path)
 }
 
-function fileFindingCount(file: { topFindings: Finding[]; byLine: Record<number, Finding[]> }): number {
+function fileFindingCount(file: {
+  topFindings: Finding[]
+  byLine: Record<number, Finding[]>
+}): number {
   return file.topFindings.length + Object.values(file.byLine).reduce((n, arr) => n + arr.length, 0)
 }
 
 type KindMeta = { label: string; color: string; bg: string }
 
 const NL_KIND: Partial<Record<string, KindMeta>> = {
-  security:   { label: t('diffView.kindSecurity'),   color: 'var(--codesema-kind-security)',   bg: 'var(--codesema-kind-security-soft)' },
-  perf:       { label: t('diffView.kindPerf'),        color: 'var(--codesema-kind-perf)',        bg: 'var(--codesema-kind-perf-soft)' },
-  convention: { label: t('diffView.kindConvention'),  color: 'var(--codesema-kind-convention)',  bg: 'var(--codesema-kind-convention-soft)' },
-  design:     { label: t('diffView.kindDesign'),      color: 'var(--codesema-kind-design)',      bg: 'var(--codesema-kind-design-soft)' },
-  praise:     { label: t('diffView.kindPraise'),      color: 'var(--codesema-kind-praise)',      bg: 'var(--codesema-kind-praise-soft)' },
-  why:        { label: t('diffView.kindWhy'),         color: 'var(--codesema-kind-why)',         bg: 'var(--codesema-kind-why-soft)' },
+  security: {
+    label: t('diffView.kindSecurity'),
+    color: 'var(--codesema-kind-security)',
+    bg: 'var(--codesema-kind-security-soft)',
+  },
+  perf: {
+    label: t('diffView.kindPerf'),
+    color: 'var(--codesema-kind-perf)',
+    bg: 'var(--codesema-kind-perf-soft)',
+  },
+  convention: {
+    label: t('diffView.kindConvention'),
+    color: 'var(--codesema-kind-convention)',
+    bg: 'var(--codesema-kind-convention-soft)',
+  },
+  design: {
+    label: t('diffView.kindDesign'),
+    color: 'var(--codesema-kind-design)',
+    bg: 'var(--codesema-kind-design-soft)',
+  },
+  praise: {
+    label: t('diffView.kindPraise'),
+    color: 'var(--codesema-kind-praise)',
+    bg: 'var(--codesema-kind-praise-soft)',
+  },
+  why: {
+    label: t('diffView.kindWhy'),
+    color: 'var(--codesema-kind-why)',
+    bg: 'var(--codesema-kind-why-soft)',
+  },
 }
 
 const SEV_KIND: Record<FindingSeverity, KindMeta> = {
-  critical: { label: t('diffView.sevCritical'), color: 'var(--codesema-risk-high)',     bg: 'var(--codesema-risk-high-soft)' },
-  major:    { label: t('diffView.sevMajor'),    color: 'var(--codesema-risk-high)',     bg: 'var(--codesema-risk-high-soft)' },
-  minor:    { label: t('diffView.sevMinor'),    color: 'var(--codesema-risk-med)',      bg: 'var(--codesema-risk-med-soft)' },
-  info:     { label: t('diffView.sevInfo'),     color: 'var(--codesema-ink-3)',         bg: 'var(--codesema-line-2)' },
+  critical: {
+    label: t('diffView.sevCritical'),
+    color: 'var(--codesema-risk-high)',
+    bg: 'var(--codesema-risk-high-soft)',
+  },
+  major: {
+    label: t('diffView.sevMajor'),
+    color: 'var(--codesema-risk-high)',
+    bg: 'var(--codesema-risk-high-soft)',
+  },
+  minor: {
+    label: t('diffView.sevMinor'),
+    color: 'var(--codesema-risk-med)',
+    bg: 'var(--codesema-risk-med-soft)',
+  },
+  info: {
+    label: t('diffView.sevInfo'),
+    color: 'var(--codesema-ink-3)',
+    bg: 'var(--codesema-line-2)',
+  },
 }
 
-const FALLBACK_KIND: KindMeta = { label: t('diffView.sevInfo'), color: 'var(--codesema-ink-3)', bg: 'var(--codesema-line-2)' }
+const FALLBACK_KIND: KindMeta = {
+  label: t('diffView.sevInfo'),
+  color: 'var(--codesema-ink-3)',
+  bg: 'var(--codesema-line-2)',
+}
 
 function resolveKind(f: Finding): KindMeta {
   if (f.kind) {
     const k = NL_KIND[f.kind]
-    if (k) return k
+    if (k) {
+      return k
+    }
   }
   return SEV_KIND[f.severity] ?? FALLBACK_KIND
 }
@@ -111,10 +181,16 @@ function splitRows(rows: HunkLine[]): SplitRow[] {
   return toSplit(rows)
 }
 
-function cellClass(t: 'add' | 'del' | 'ctx' | 'nil'): string {
-  if (t === 'add') return 'srd-cell-add'
-  if (t === 'del') return 'srd-cell-del'
-  if (t === 'nil') return 'srd-cell-nil'
+function cellClass(kind: 'add' | 'del' | 'ctx' | 'nil'): string {
+  if (kind === 'add') {
+    return 'srd-cell-add'
+  }
+  if (kind === 'del') {
+    return 'srd-cell-del'
+  }
+  if (kind === 'nil') {
+    return 'srd-cell-nil'
+  }
   return 'srd-cell-ctx'
 }
 
@@ -135,7 +211,9 @@ function hunkRows(block: HunkBlock): HunkLine[] {
 }
 
 function extraNotes(byLine: Record<number, Finding[]>, lineNo: number | null): Finding[] {
-  if (lineNo == null) return []
+  if (lineNo == null) {
+    return []
+  }
   return (byLine[lineNo] ?? []).slice(1)
 }
 
@@ -157,7 +235,9 @@ async function revealFinding(id: number): Promise<void> {
   }
   await nextTick()
   const anchor = rootEl.value?.querySelector(`[data-finding-id="${id}"]`)
-  if (!(anchor instanceof HTMLElement)) return
+  if (!(anchor instanceof HTMLElement)) {
+    return
+  }
   anchor.scrollIntoView({ behavior: 'smooth', block: 'center' })
   const card = anchor.closest('.nlr-note') ?? anchor
   card.classList.add('nlr-note--flash')
@@ -167,7 +247,9 @@ async function revealFinding(id: number): Promise<void> {
 watch(
   () => props.reveal,
   (r) => {
-    if (r) void revealFinding(r.id)
+    if (r) {
+      void revealFinding(r.id)
+    }
   },
 )
 </script>
@@ -187,11 +269,7 @@ watch(
     </div>
 
     <div class="diff-files">
-      <div
-        v-for="file in files"
-        :key="file.path"
-        class="srd-file"
-      >
+      <div v-for="file in files" :key="file.path" class="srd-file">
         <div class="srd-file-head" :data-diff-file="file.path" @click="toggleFile(file.path)">
           <span class="srd-chev" :class="{ open: !isCollapsed(file.path) }">▸</span>
           <code class="srd-path diff-file-path">{{ file.path }}</code>
@@ -221,7 +299,8 @@ watch(
                 <span
                   class="nlr-kind"
                   :style="{ color: resolveKind(f).color, background: resolveKind(f).bg }"
-                >{{ resolveKind(f).label }}</span>
+                  >{{ resolveKind(f).label }}</span
+                >
                 <span v-if="f.consensus" class="nlr-consensus" :title="$t('finding.consensus')">
                   <span class="nlr-consensus-dots" aria-hidden="true"><span /><span /></span>
                   {{ $t('finding.consensus') }}
@@ -259,11 +338,19 @@ watch(
                 <template v-for="(row, ri) in hunkRows(block)" :key="ri">
                   <div
                     class="srd-uline"
-                    :class="row.t === 'add' ? 'srd-uline-add' : row.t === 'del' ? 'srd-uline-del' : 'srd-uline-ctx'"
+                    :class="
+                      row.t === 'add'
+                        ? 'srd-uline-add'
+                        : row.t === 'del'
+                          ? 'srd-uline-del'
+                          : 'srd-uline-ctx'
+                    "
                   >
                     <span class="srd-no">{{ row.o ?? '' }}</span>
                     <span class="srd-no">{{ row.n ?? '' }}</span>
-                    <span class="srd-sign">{{ row.t === 'add' ? '+' : row.t === 'del' ? '−' : ' ' }}</span>
+                    <span class="srd-sign">{{
+                      row.t === 'add' ? '+' : row.t === 'del' ? '−' : ' '
+                    }}</span>
                     <span class="srd-code">{{ row.c || ' ' }}</span>
                   </div>
                   <div
@@ -277,9 +364,17 @@ watch(
                       <span class="nlr-name">{{ $t('note.author') }}</span>
                       <span
                         class="nlr-kind"
-                        :style="{ color: resolveKind(row.note).color, background: resolveKind(row.note).bg }"
-                      >{{ resolveKind(row.note).label }}</span>
-                      <span v-if="row.note.consensus" class="nlr-consensus" :title="$t('finding.consensus')">
+                        :style="{
+                          color: resolveKind(row.note).color,
+                          background: resolveKind(row.note).bg,
+                        }"
+                        >{{ resolveKind(row.note).label }}</span
+                      >
+                      <span
+                        v-if="row.note.consensus"
+                        class="nlr-consensus"
+                        :title="$t('finding.consensus')"
+                      >
                         <span class="nlr-consensus-dots" aria-hidden="true"><span /><span /></span>
                         {{ $t('finding.consensus') }}
                       </span>
@@ -313,10 +408,20 @@ watch(
                           <span class="nlr-name">{{ $t('note.author') }}</span>
                           <span
                             class="nlr-kind"
-                            :style="{ color: resolveKind(extraNote).color, background: resolveKind(extraNote).bg }"
-                          >{{ resolveKind(extraNote).label }}</span>
-                          <span v-if="extraNote.consensus" class="nlr-consensus" :title="$t('finding.consensus')">
-                            <span class="nlr-consensus-dots" aria-hidden="true"><span /><span /></span>
+                            :style="{
+                              color: resolveKind(extraNote).color,
+                              background: resolveKind(extraNote).bg,
+                            }"
+                            >{{ resolveKind(extraNote).label }}</span
+                          >
+                          <span
+                            v-if="extraNote.consensus"
+                            class="nlr-consensus"
+                            :title="$t('finding.consensus')"
+                          >
+                            <span class="nlr-consensus-dots" aria-hidden="true"
+                              ><span /><span
+                            /></span>
                             {{ $t('finding.consensus') }}
                           </span>
                         </div>
@@ -359,10 +464,20 @@ watch(
                         <span class="nlr-name">{{ $t('note.author') }}</span>
                         <span
                           class="nlr-kind"
-                          :style="{ color: resolveKind(srow.note).color, background: resolveKind(srow.note).bg }"
-                        >{{ resolveKind(srow.note).label }}</span>
-                        <span v-if="srow.note.consensus" class="nlr-consensus" :title="$t('finding.consensus')">
-                          <span class="nlr-consensus-dots" aria-hidden="true"><span /><span /></span>
+                          :style="{
+                            color: resolveKind(srow.note).color,
+                            background: resolveKind(srow.note).bg,
+                          }"
+                          >{{ resolveKind(srow.note).label }}</span
+                        >
+                        <span
+                          v-if="srow.note.consensus"
+                          class="nlr-consensus"
+                          :title="$t('finding.consensus')"
+                        >
+                          <span class="nlr-consensus-dots" aria-hidden="true"
+                            ><span /><span
+                          /></span>
                           {{ $t('finding.consensus') }}
                         </span>
                       </div>
@@ -390,23 +505,43 @@ watch(
                   <div v-else class="srd-row">
                     <div
                       class="srd-cell"
-                      :class="srow.kind === 'ctx'
-                        ? cellClass('ctx')
-                        : srow.left ? cellClass('del') : cellClass('nil')"
+                      :class="
+                        srow.kind === 'ctx'
+                          ? cellClass('ctx')
+                          : srow.left
+                            ? cellClass('del')
+                            : cellClass('nil')
+                      "
                     >
-                      <span class="srd-no">{{ srow.kind === 'ctx' ? srow.left.o ?? '' : (srow.left?.o ?? '') }}</span>
-                      <span class="srd-sign">{{ srow.kind !== 'ctx' && srow.left ? '−' : ' ' }}</span>
-                      <span class="srd-code">{{ srow.kind === 'ctx' ? (srow.left.c || ' ') : (srow.left?.c ?? ' ') }}</span>
+                      <span class="srd-no">{{
+                        srow.kind === 'ctx' ? (srow.left.o ?? '') : (srow.left?.o ?? '')
+                      }}</span>
+                      <span class="srd-sign">{{
+                        srow.kind !== 'ctx' && srow.left ? '−' : ' '
+                      }}</span>
+                      <span class="srd-code">{{
+                        srow.kind === 'ctx' ? srow.left.c || ' ' : (srow.left?.c ?? ' ')
+                      }}</span>
                     </div>
                     <div
                       class="srd-cell"
-                      :class="srow.kind === 'ctx'
-                        ? cellClass('ctx')
-                        : srow.right ? cellClass('add') : cellClass('nil')"
+                      :class="
+                        srow.kind === 'ctx'
+                          ? cellClass('ctx')
+                          : srow.right
+                            ? cellClass('add')
+                            : cellClass('nil')
+                      "
                     >
-                      <span class="srd-no">{{ srow.kind === 'ctx' ? srow.right.n ?? '' : (srow.right?.n ?? '') }}</span>
-                      <span class="srd-sign">{{ srow.kind !== 'ctx' && srow.right ? '+' : ' ' }}</span>
-                      <span class="srd-code">{{ srow.kind === 'ctx' ? (srow.right.c || ' ') : (srow.right?.c ?? ' ') }}</span>
+                      <span class="srd-no">{{
+                        srow.kind === 'ctx' ? (srow.right.n ?? '') : (srow.right?.n ?? '')
+                      }}</span>
+                      <span class="srd-sign">{{
+                        srow.kind !== 'ctx' && srow.right ? '+' : ' '
+                      }}</span>
+                      <span class="srd-code">{{
+                        srow.kind === 'ctx' ? srow.right.c || ' ' : (srow.right?.c ?? ' ')
+                      }}</span>
                     </div>
                   </div>
                 </template>
@@ -454,7 +589,9 @@ watch(
   background: none;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .diff-seg button.on {
@@ -909,9 +1046,19 @@ watch(
 
 /* mobile density (<= 640px) */
 @media (max-width: 640px) {
-  .srd-body { font-size: 11.5px; }
-  .srd-no { width: 30px; padding: 0 5px; }
-  .srd-uline .srd-no { width: 28px; }
-  .nlr-note { margin: 8px 8px 10px; padding: 10px 11px; }
+  .srd-body {
+    font-size: 11.5px;
+  }
+  .srd-no {
+    width: 30px;
+    padding: 0 5px;
+  }
+  .srd-uline .srd-no {
+    width: 28px;
+  }
+  .nlr-note {
+    margin: 8px 8px 10px;
+    padding: 10px 11px;
+  }
 }
 </style>

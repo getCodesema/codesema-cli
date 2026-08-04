@@ -7,7 +7,9 @@ import DiffView from './DiffView.vue'
 const props = defineProps<{ source: ReviewSource }>()
 
 function sourceQuery(source: ReviewSource): string {
-  return source.kind === 'mr' ? `source=mr&number=${source.number}` : `source=branch&name=${encodeURIComponent(source.name)}`
+  return source.kind === 'mr'
+    ? `source=mr&number=${source.number}`
+    : `source=branch&name=${encodeURIComponent(source.name)}`
 }
 
 async function errorFrom(res: Response): Promise<string> {
@@ -32,7 +34,9 @@ async function load() {
   diffResult.value = null
   try {
     const res = await fetch(`/api/preview?${sourceQuery(props.source)}`)
-    if (!res.ok) throw new Error(await errorFrom(res))
+    if (!res.ok) {
+      throw new Error(await errorFrom(res))
+    }
     preview.value = (await res.json()) as PreviewResult
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
@@ -47,8 +51,12 @@ async function pickFile(path: string) {
   diffError.value = null
   diffResult.value = null
   try {
-    const res = await fetch(`/api/preview/diff?${sourceQuery(props.source)}&path=${encodeURIComponent(path)}`)
-    if (!res.ok) throw new Error(await errorFrom(res))
+    const res = await fetch(
+      `/api/preview/diff?${sourceQuery(props.source)}&path=${encodeURIComponent(path)}`,
+    )
+    if (!res.ok) {
+      throw new Error(await errorFrom(res))
+    }
     diffResult.value = (await res.json()) as PreviewFileDiff
   } catch (e) {
     diffError.value = e instanceof Error ? e.message : String(e)
@@ -61,7 +69,12 @@ const diffFiles = computed(() => (diffResult.value ? parseDiff(diffResult.value.
 
 watch(() => props.source, load, { immediate: true, deep: true })
 
-const STATUS_LABEL: Record<string, string> = { added: 'A', deleted: 'D', modified: 'M', renamed: 'R' }
+const STATUS_LABEL: Record<string, string> = {
+  added: 'A',
+  deleted: 'D',
+  modified: 'M',
+  renamed: 'R',
+}
 </script>
 
 <template>
@@ -80,8 +93,12 @@ const STATUS_LABEL: Record<string, string> = { added: 'A', deleted: 'D', modifie
       </div>
 
       <div class="pv-summary codesema-muted">
-        <span>{{ $t('preview.commits', { n: preview.commits.length }, preview.commits.length) }}</span>
-        <span>{{ $t('preview.filesChanged', { n: preview.diffStats.files }, preview.diffStats.files) }}</span>
+        <span>{{
+          $t('preview.commits', { n: preview.commits.length }, preview.commits.length)
+        }}</span>
+        <span>{{
+          $t('preview.filesChanged', { n: preview.diffStats.files }, preview.diffStats.files)
+        }}</span>
         <span class="pv-add">+{{ preview.diffStats.additions }}</span>
         <span class="pv-del">−{{ preview.diffStats.deletions }}</span>
       </div>
@@ -90,7 +107,9 @@ const STATUS_LABEL: Record<string, string> = { added: 'A', deleted: 'D', modifie
         <li v-for="(subject, i) in preview.commits" :key="i">{{ subject }}</li>
       </ul>
 
-      <p v-if="preview.files.length === 0" class="codesema-muted pv-empty">{{ $t('preview.noFiles') }}</p>
+      <p v-if="preview.files.length === 0" class="codesema-muted pv-empty">
+        {{ $t('preview.noFiles') }}
+      </p>
       <ul v-else class="pv-files">
         <li v-for="file in preview.files" :key="file.path">
           <button
@@ -98,7 +117,9 @@ const STATUS_LABEL: Record<string, string> = { added: 'A', deleted: 'D', modifie
             :class="{ 'pv-file--selected': file.path === selectedPath }"
             @click="pickFile(file.path)"
           >
-            <span class="pv-file-status" :class="`pv-file-status--${file.status}`">{{ STATUS_LABEL[file.status] }}</span>
+            <span class="pv-file-status" :class="`pv-file-status--${file.status}`">{{
+              STATUS_LABEL[file.status]
+            }}</span>
             <span class="pv-file-path">{{ file.path }}</span>
             <span class="pv-file-delta">
               <span class="pv-add">+{{ file.additions }}</span>
@@ -112,12 +133,16 @@ const STATUS_LABEL: Record<string, string> = { added: 'A', deleted: 'D', modifie
         <div v-if="diffLoading" class="pv-state">
           <span class="pv-spinner" aria-hidden="true" />
         </div>
-        <p v-else-if="diffError" class="pv-error">{{ $t('preview.diffLoadError') }} ({{ diffError }})</p>
+        <p v-else-if="diffError" class="pv-error">
+          {{ $t('preview.diffLoadError') }} ({{ diffError }})
+        </p>
         <template v-else-if="diffResult">
           <p v-if="diffResult.truncated" class="pv-truncated">{{ $t('preview.diffTruncated') }}</p>
           <DiffView :files="diffFiles" :findings="[]" hide-toolbar />
         </template>
-        <p v-else-if="preview.files.length" class="codesema-muted pv-empty">{{ $t('preview.selectFileHint') }}</p>
+        <p v-else-if="preview.files.length" class="codesema-muted pv-empty">
+          {{ $t('preview.selectFileHint') }}
+        </p>
       </div>
     </template>
   </div>

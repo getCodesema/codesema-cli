@@ -28,14 +28,18 @@ describe('scoreFindings', () => {
 
   test('one finding cannot satisfy two expected bugs', () => {
     const twin: ExpectedBug = { ...bug, id: 'zero-div-2' }
-    const findings: Finding[] = [{ file: 'src/stats.js', severity: 'major', message: 'divide by zero' }]
+    const findings: Finding[] = [
+      { file: 'src/stats.js', severity: 'major', message: 'divide by zero' },
+    ]
     const score = scoreFindings([bug, twin], findings)
     expect(score.found).toHaveLength(1)
     expect(score.missed).toHaveLength(1)
   })
 
   test('pattern also matches the finding title', () => {
-    const findings: Finding[] = [{ file: 'src/stats.js', severity: 'major', title: 'NaN on empty input', message: 'm' }]
+    const findings: Finding[] = [
+      { file: 'src/stats.js', severity: 'major', title: 'NaN on empty input', message: 'm' },
+    ]
     expect(scoreFindings([bug], findings).found).toHaveLength(1)
   })
 })

@@ -1,7 +1,7 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { sanitizeRecord } from './contract.js'
 import { archiveRecord, findPreviousReview } from './record.js'
 
@@ -35,7 +35,7 @@ describe('archiveRecord', () => {
     archiveRecord(record({ branch: 'feat/x', target: 'develop' }), dir)
 
     const names = readdirSync(reviewsDir)
-    const kept = names.filter((n) => /^feat-x-\d{8}-\d{6}\.json$/.test(n)).sort()
+    const kept = names.filter((n) => /^feat-x-\d{8}-\d{6}\.json$/.test(n)).toSorted()
     expect(kept.length).toBe(5)
     expect(kept).not.toContain('feat-x-20260101-000000.json')
     expect(kept).not.toContain('feat-x-20260102-000000.json')

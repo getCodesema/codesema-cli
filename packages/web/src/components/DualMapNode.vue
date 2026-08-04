@@ -15,7 +15,11 @@ const padding = paddingFor(props.depth, props.node.kind)
 
 <template>
   <div v-if="node.kind === 'dir'" class="dmn-dir-wrap">
-    <div class="dmn-row dmn-dir" :class="{ 'dmn-row--hot': node.hot }" :style="{ paddingLeft: `${padding}px` }">
+    <div
+      class="dmn-row dmn-dir"
+      :class="{ 'dmn-row--hot': node.hot }"
+      :style="{ paddingLeft: `${padding}px` }"
+    >
       <span class="dmn-dot" :title="node.hot ? $t('live.consensusHotZone') : undefined">
         <span class="dmn-dot-half dmn-dot-half--a" :class="{ 'dmn-dot-half--on': node.a }" />
         <span class="dmn-dot-half dmn-dot-half--b" :class="{ 'dmn-dot-half--on': node.b }" />
@@ -25,7 +29,12 @@ const padding = paddingFor(props.depth, props.node.kind)
     <DualMapNode v-for="(child, i) in node.children" :key="i" :node="child" :depth="depth + 1" />
   </div>
 
-  <div v-else class="dmn-row dmn-file" :class="{ 'dmn-row--hot': node.row.hot }" :style="{ paddingLeft: `${padding}px` }">
+  <div
+    v-else
+    class="dmn-row dmn-file"
+    :class="{ 'dmn-row--hot': node.row.hot }"
+    :style="{ paddingLeft: `${padding}px` }"
+  >
     <span class="dmn-dot" :title="node.row.hot ? $t('live.consensusHotZone') : undefined">
       <span class="dmn-dot-half dmn-dot-half--a" :class="{ 'dmn-dot-half--on': node.row.a }" />
       <span class="dmn-dot-half dmn-dot-half--b" :class="{ 'dmn-dot-half--on': node.row.b }" />

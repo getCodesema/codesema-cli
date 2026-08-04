@@ -3,7 +3,7 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
-## [0.11.0] - unreleased
+## [0.12.0] - unreleased
 
 ### Added
 
@@ -12,6 +12,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - "Run review" and "Run dual review" buttons on the MR detail panel: fetches the MR's source branch, reviews it (simple or dual) in a disposable `git worktree` under the OS temp dir, archives the result in the main repo's `.codesema/reviews`, and always removes the worktree afterwards, success or failure. The run streams into the same live web UI as `codesema review` (status, partials, judge decisions). Only one review can run at a time; the sidebar marks which MR or branch is currently under review. `POST /api/mrs/review` (body `{ source: { kind: 'mr', number } | { kind: 'branch', name }, mode }`) and `GET /api/mrs/review/status`, protected by the same per-server CSRF token pattern as `POST /api/fix`.
 - Local branches sidebar, under the MR sidebar: lists local branches (name, current/worktree markers, last commit subject and date) from a new `GET /api/branches` endpoint. Selecting a branch opens the same detail panel as an MR, with the same "Run review" / "Run dual review" buttons. Reviewing a branch already checked out elsewhere (the current branch included) uses a detached disposable worktree (`git worktree add --detach`) instead of failing on git's "already checked out" restriction.
 - Deterministic (no agent) preview in the MR/branch detail panel: source and target branches, commit list, changed files with +/- and status, and a per-file diff on click, rendered with the same annotated diff view as a finished review. New `GET /api/preview?source=mr&number=N` (`?source=branch&name=X`) returning branch/target/commits/files/diffStats without the full diff, and `GET /api/preview/diff?source=...&path=<file>` returning one file's diff, capped in size and truncated past the cap. The pure git computation behind `codesema prep` (target detection, commits, files, diff) is extracted into `computePrepInput`/`computeDiffSummary` (no disk writes), reused by both `prep` and the preview endpoints.
+
+## [0.11.0] - 2026-08-02
+
+### Added
+
+- Server context download: `codesema review` fetches `GET /api/cli/context` (conventions, learned rules, facts, last-scan freshness) for the current repo and hands it to the agent alongside the diff. The origin remote (`git remote get-url origin`) is sent as the `remote_url` query param the route requires to resolve the repo. Strictly best-effort and never blocking, same contract as auto-sync: no stored workspace credentials, no origin remote, offline, an unlinked workspace (403) or any malformed response all silently degrade to no server context, and the local review runs unchanged. `.codesema/RULES.md` stays local and always takes precedence.
+- Staleness warning: when the server's last scan commit is not an ancestor of the current `HEAD`, the context is prefixed with an explicit warning naming the scan date, so the agent treats the conventions, learned rules and facts as advisory rather than ground truth about the current diff.
 
 ## [0.10.0] - 2026-07-29
 

@@ -11,7 +11,9 @@ export type ForgeMr = {
   url: string
 }
 
-export type ForgeMrsResult = { available: true; mrs: ForgeMr[] } | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
+export type ForgeMrsResult =
+  | { available: true; mrs: ForgeMr[] }
+  | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
 
 const GH_JSON_FIELDS = 'number,title,author,headRefName,baseRefName,updatedAt,url'
 const EXEC_TIMEOUT_MS = 8000
@@ -36,14 +38,21 @@ export function parseGhMrList(raw: string): ForgeMr[] | null {
   } catch {
     return null
   }
-  if (!Array.isArray(data)) return null
+  if (!Array.isArray(data)) {
+    return null
+  }
 
   const mrs: ForgeMr[] = []
   for (const entry of data) {
-    if (typeof entry !== 'object' || entry === null) return null
+    if (typeof entry !== 'object' || entry === null) {
+      return null
+    }
     const e = entry as Record<string, unknown>
     const author = readRecordProp(e, 'author')
-    const login = typeof author === 'object' && author !== null ? readRecordProp(author as Record<string, unknown>, 'login') : undefined
+    const login =
+      typeof author === 'object' && author !== null
+        ? readRecordProp(author as Record<string, unknown>, 'login')
+        : undefined
     if (
       typeof e.number !== 'number' ||
       !isNonEmptyString(e.title) ||
@@ -76,14 +85,21 @@ export function parseGlabMrList(raw: string): ForgeMr[] | null {
   } catch {
     return null
   }
-  if (!Array.isArray(data)) return null
+  if (!Array.isArray(data)) {
+    return null
+  }
 
   const mrs: ForgeMr[] = []
   for (const entry of data) {
-    if (typeof entry !== 'object' || entry === null) return null
+    if (typeof entry !== 'object' || entry === null) {
+      return null
+    }
     const e = entry as Record<string, unknown>
     const author = readRecordProp(e, 'author')
-    const username = typeof author === 'object' && author !== null ? readRecordProp(author as Record<string, unknown>, 'username') : undefined
+    const username =
+      typeof author === 'object' && author !== null
+        ? readRecordProp(author as Record<string, unknown>, 'username')
+        : undefined
     if (
       typeof e.iid !== 'number' ||
       !isNonEmptyString(e.title) ||
@@ -121,7 +137,11 @@ function runForgeCli(cmd: string, args: string[], cwd: string): Promise<CliOutco
   return new Promise((resolve) => {
     execFile(cmd, args, { cwd, encoding: 'utf8', timeout: EXEC_TIMEOUT_MS }, (err, stdout) => {
       if (err) {
-        resolve((err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'missing' } : { kind: 'error' })
+        resolve(
+          (err as NodeJS.ErrnoException).code === 'ENOENT'
+            ? { kind: 'missing' }
+            : { kind: 'error' },
+        )
         return
       }
       resolve({ kind: 'ok', stdout })
@@ -133,17 +153,33 @@ type Candidate = { cli: string; args: string[]; parse: (raw: string) => ForgeMr[
 
 export async function listOpenMrs(cwd: string): Promise<ForgeMrsResult> {
   const hasRemote = tryGit(['remote', 'get-url', 'origin'], cwd) !== null
-  if (!hasRemote) return { available: false, reason: 'no-remote' }
+  if (!hasRemote) {
+    return { available: false, reason: 'no-remote' }
+  }
 
   const hint = detectForgeHint(cwd)
   const candidates: Candidate[] = []
-  if (hint !== 'gitlab') candidates.push({ cli: 'gh', args: ['pr', 'list', '--json', GH_JSON_FIELDS], parse: parseGhMrList })
-  if (hint !== 'github') candidates.push({ cli: 'glab', args: ['mr', 'list', '--output', 'json'], parse: parseGlabMrList })
+  if (hint !== 'gitlab') {
+    candidates.push({
+      cli: 'gh',
+      args: ['pr', 'list', '--json', GH_JSON_FIELDS],
+      parse: parseGhMrList,
+    })
+  }
+  if (hint !== 'github') {
+    candidates.push({
+      cli: 'glab',
+      args: ['mr', 'list', '--output', 'json'],
+      parse: parseGlabMrList,
+    })
+  }
 
   let sawCliError = false
   for (const candidate of candidates) {
     const outcome = await runForgeCli(candidate.cli, candidate.args, cwd)
-    if (outcome.kind === 'missing') continue
+    if (outcome.kind === 'missing') {
+      continue
+    }
     if (outcome.kind === 'error') {
       sawCliError = true
       continue

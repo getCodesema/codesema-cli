@@ -1,0 +1,16 @@
+pre-commit:
+  commands:
+    format:
+      glob: '*'
+      run: bunx prettier --write --ignore-unknown {staged_files}
+      stage_fixed: true
+    lint:
+      glob: '*.{ts,mjs,vue}'
+      run: bunx oxlint {staged_files}
+
+pre-push:
+  commands:
+    typecheck:
+      run: bun run typecheck
+    test:
+      run: bun run test

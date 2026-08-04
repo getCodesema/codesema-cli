@@ -1,8 +1,8 @@
-import { afterAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterAll, describe, expect, test } from 'bun:test'
 import type { ForgeMr, ForgeMrsResult } from './forge-mrs.js'
 import { tryGit } from './git.js'
 import { createMrReviewRunner } from './mr-review-runner.js'
@@ -17,7 +17,9 @@ function git(args: string[], cwd: string): void {
 const tempDirs: string[] = []
 
 afterAll(() => {
-  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
+  for (const dir of tempDirs) {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 /** origin (bare) + a clone with a `main` branch and a `feature/x` branch pushed to origin. */
@@ -85,14 +87,18 @@ async function waitForPhase(
 ): Promise<void> {
   const startedAt = Date.now()
   while (runner.status().phase === 'running') {
-    if (Date.now() - startedAt > timeoutMs) throw new Error('timed out waiting for the run to settle')
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('timed out waiting for the run to settle')
+    }
     await new Promise((r) => setTimeout(r, 20))
   }
   expect(runner.status().phase).toBe(phase)
 }
 
 function worktreeCount(cwd: string): number {
-  return (tryGit(['worktree', 'list', '--porcelain'], cwd) ?? '').split('\n\n').filter((s) => s.trim()).length
+  return (tryGit(['worktree', 'list', '--porcelain'], cwd) ?? '')
+    .split('\n\n')
+    .filter((s) => s.trim()).length
 }
 
 describe('createMrReviewRunner (MR source)', () => {
@@ -208,7 +214,12 @@ describe('createMrReviewRunner (MR source)', () => {
 describe('createMrReviewRunner (branch source)', () => {
   test('rejects a branch name starting with a dash without touching git', async () => {
     const { cwd } = setupBranchRepo()
-    const runner = createMrReviewRunner({ cwd, session: createSession(), agentCommand: agentScriptFor(cwd, REVIEW), timeoutMs: 15000 })
+    const runner = createMrReviewRunner({
+      cwd,
+      session: createSession(),
+      agentCommand: agentScriptFor(cwd, REVIEW),
+      timeoutMs: 15000,
+    })
 
     const result = await runner.start({ kind: 'branch', name: '-x' }, 'simple')
     expect(result).toMatchObject({ ok: false, code: 400 })
@@ -217,7 +228,12 @@ describe('createMrReviewRunner (branch source)', () => {
 
   test('404s when the local branch does not exist', async () => {
     const { cwd } = setupBranchRepo()
-    const runner = createMrReviewRunner({ cwd, session: createSession(), agentCommand: agentScriptFor(cwd, REVIEW), timeoutMs: 15000 })
+    const runner = createMrReviewRunner({
+      cwd,
+      session: createSession(),
+      agentCommand: agentScriptFor(cwd, REVIEW),
+      timeoutMs: 15000,
+    })
 
     const result = await runner.start({ kind: 'branch', name: 'nope' }, 'simple')
     expect(result).toMatchObject({ ok: false, code: 404 })
@@ -226,7 +242,12 @@ describe('createMrReviewRunner (branch source)', () => {
   test('reviews a non-checked-out local branch in a disposable worktree, no fetch needed', async () => {
     const { cwd } = setupBranchRepo()
     const session = createSession()
-    const runner = createMrReviewRunner({ cwd, session, agentCommand: agentScriptFor(cwd, REVIEW), timeoutMs: 15000 })
+    const runner = createMrReviewRunner({
+      cwd,
+      session,
+      agentCommand: agentScriptFor(cwd, REVIEW),
+      timeoutMs: 15000,
+    })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
     expect(started).toEqual({ ok: true })
@@ -241,7 +262,12 @@ describe('createMrReviewRunner (branch source)', () => {
     const { cwd } = setupBranchRepo()
     git(['checkout', 'feature/y'], cwd)
     const session = createSession()
-    const runner = createMrReviewRunner({ cwd, session, agentCommand: agentScriptFor(cwd, REVIEW), timeoutMs: 15000 })
+    const runner = createMrReviewRunner({
+      cwd,
+      session,
+      agentCommand: agentScriptFor(cwd, REVIEW),
+      timeoutMs: 15000,
+    })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
     expect(started).toEqual({ ok: true })
@@ -258,7 +284,12 @@ describe('createMrReviewRunner (branch source)', () => {
     git(['worktree', 'add', otherWorktree, 'feature/y'], cwd)
 
     const session = createSession()
-    const runner = createMrReviewRunner({ cwd, session, agentCommand: agentScriptFor(cwd, REVIEW), timeoutMs: 15000 })
+    const runner = createMrReviewRunner({
+      cwd,
+      session,
+      agentCommand: agentScriptFor(cwd, REVIEW),
+      timeoutMs: 15000,
+    })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
     expect(started).toEqual({ ok: true })

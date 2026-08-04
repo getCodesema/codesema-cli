@@ -13,7 +13,7 @@ export type NarrativeStep = {
 }
 
 /** Step normalized for display (check: null becomes undefined; see ReviewShell). */
-export type StepView = Omit<NarrativeStep, 'check'> & { check?: string }
+export type StepView = Omit<NarrativeStep, 'check'> & { check?: string | undefined }
 
 export type ReviewFirstItem = {
   point: string
@@ -159,7 +159,13 @@ export type ReviewSource = { kind: 'mr'; number: number } | { kind: 'branch'; na
 export type MrReviewStatus =
   | { available: false }
   | { available: true; phase: 'idle' }
-  | { available: true; phase: 'running'; source: ReviewSource; mode: MrReviewMode; started_at: string }
+  | {
+      available: true
+      phase: 'running'
+      source: ReviewSource
+      mode: MrReviewMode
+      started_at: string
+    }
   | { available: true; phase: 'done'; source: ReviewSource; mode: MrReviewMode }
   | { available: true; phase: 'error'; source: ReviewSource; mode: MrReviewMode; error: string }
 

@@ -17,13 +17,17 @@ export type GitWorktree = { path: string; branch: string | null }
  *  optional `branch refs/heads/<name>` line each (absent when detached). */
 export function listWorktrees(cwd: string): GitWorktree[] {
   const out = tryGit(['worktree', 'list', '--porcelain'], cwd)
-  if (!out) return []
+  if (!out) {
+    return []
+  }
 
   const worktrees: GitWorktree[] = []
   let path: string | null = null
   let branch: string | null = null
   const flush = () => {
-    if (path) worktrees.push({ path, branch })
+    if (path) {
+      worktrees.push({ path, branch })
+    }
     path = null
     branch = null
   }
@@ -43,14 +47,23 @@ export function listWorktrees(cwd: string): GitWorktree[] {
 
 export function listLocalBranches(cwd: string): LocalBranch[] {
   const out = tryGit(
-    ['for-each-ref', 'refs/heads', '--sort=-committerdate', '--format=%(refname:short)%09%(committerdate:relative)%09%(subject)'],
+    [
+      'for-each-ref',
+      'refs/heads',
+      '--sort=-committerdate',
+      '--format=%(refname:short)%09%(committerdate:relative)%09%(subject)',
+    ],
     cwd,
   )
-  if (!out) return []
+  if (!out) {
+    return []
+  }
   const current = tryGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
   const worktreeByBranch = new Map<string, string>()
   for (const wt of listWorktrees(cwd)) {
-    if (wt.branch) worktreeByBranch.set(wt.branch, wt.path)
+    if (wt.branch) {
+      worktreeByBranch.set(wt.branch, wt.path)
+    }
   }
   return out
     .split('\n')
@@ -71,9 +84,14 @@ export function listLocalBranches(cwd: string): LocalBranch[] {
 /** Interactive branch picker (keyboard filter). Returns null if cancelled, the current branch if non-TTY or the list is empty. */
 export async function pickBranch(cwd: string): Promise<string | null> {
   const branches = listLocalBranches(cwd)
-  if (branches.length <= 1) return branches[0]?.name ?? currentBranch(cwd)
+  if (branches.length <= 1) {
+    return branches[0]?.name ?? currentBranch(cwd)
+  }
 
-  const initialIndex = Math.max(0, branches.findIndex((b) => b.isCurrent))
+  const initialIndex = Math.max(
+    0,
+    branches.findIndex((b) => b.isCurrent),
+  )
   const picked = await select({
     title: t('branches.pick'),
     options: branches.map((b) => ({

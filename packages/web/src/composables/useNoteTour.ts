@@ -16,7 +16,9 @@ export function buildNoteTour(
     tour.push({ stepIndex, findingId: null })
     const seen = new Set<number>()
     for (const ref of step.finding_refs) {
-      if (ref < 0 || ref >= findingCount || seen.has(ref)) continue
+      if (ref < 0 || ref >= findingCount || seen.has(ref)) {
+        continue
+      }
       seen.add(ref)
       tour.push({ stepIndex, findingId: ref })
     }

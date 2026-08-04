@@ -10,7 +10,7 @@ import type {
 import { repairTruncatedJson } from './partial.js'
 import { AGENT_DEFS } from './wizard.js'
 
-const SEVERITIES: readonly FindingSeverity[] = ['critical', 'major', 'minor', 'info']
+const SEVERITIES: ReadonlySet<FindingSeverity> = new Set(['critical', 'major', 'minor', 'info'])
 const SEVERITY_ORDER: Record<FindingSeverity, number> = { info: 0, minor: 1, major: 2, critical: 3 }
 const VERDICT_ORDER: Record<Verdict, number> = { approve: 0, comment: 1, request_changes: 2 }
 const JUDGE_REASON_MAX = 300
@@ -32,7 +32,9 @@ export function judgeCommandFor(command: string): string {
   const first = command.trim().split(/\s+/)[0] ?? ''
   const bin = first.split('/').pop() ?? ''
   const def = AGENT_DEFS.find((d) => d.bin === bin)
-  if (!def) return command
+  if (!def) {
+    return command
+  }
   const flagPattern = new RegExp(`(^|\\s)${escapeRegExp(def.modelFlag)}(?:=|\\s+)\\S+`)
   if (flagPattern.test(command)) {
     return command.replace(flagPattern, `$1${def.modelFlag} ${def.judgeModel}`)
@@ -56,9 +58,13 @@ export type JudgeOutput = {
 }
 
 function validCandidateId(id: unknown, aCount: number, bCount: number): id is string {
-  if (typeof id !== 'string') return false
+  if (typeof id !== 'string') {
+    return false
+  }
   const match = /^([AB])(\d+)$/.exec(id)
-  if (!match) return false
+  if (!match) {
+    return false
+  }
   const index = Number(match[2])
   return match[1] === 'A' ? index < aCount : index < bCount
 }
@@ -73,23 +79,44 @@ export function sanitizeJudgeOutput(raw: unknown, aCount: number, bCount: number
   // fragment's representative sits outside its own group): the link closing
   // a cycle is dropped, first link wins.
   const closesCycle = (from: string, to: string): boolean => {
-    for (let current: string | undefined = to; current !== undefined; current = duplicateLinks.get(current)) {
-      if (current === from) return true
+    for (
+      let current: string | undefined = to;
+      current !== undefined;
+      current = duplicateLinks.get(current)
+    ) {
+      if (current === from) {
+        return true
+      }
     }
     return false
   }
   for (const item of Array.isArray(r.decisions) ? r.decisions : []) {
-    if (!item || typeof item !== 'object') continue
+    if (!item || typeof item !== 'object') {
+      continue
+    }
     const d = item as Record<string, unknown>
-    if (!validCandidateId(d.id, aCount, bCount) || seen.has(d.id)) continue
-    if (d.action !== 'keep' && d.action !== 'reject') continue
+    if (!validCandidateId(d.id, aCount, bCount) || seen.has(d.id)) {
+      continue
+    }
+    if (d.action !== 'keep' && d.action !== 'reject') {
+      continue
+    }
     seen.add(d.id)
     const target =
-      validCandidateId(d.duplicate_of, aCount, bCount) && d.duplicate_of !== d.id ? d.duplicate_of : undefined
+      validCandidateId(d.duplicate_of, aCount, bCount) && d.duplicate_of !== d.id
+        ? d.duplicate_of
+        : undefined
     const duplicateOf = target !== undefined && !closesCycle(d.id, target) ? target : undefined
-    if (duplicateOf !== undefined) duplicateLinks.set(d.id, duplicateOf)
-    const reason = typeof d.reason === 'string' ? d.reason.trim().slice(0, JUDGE_REASON_MAX) || undefined : undefined
-    const severity = SEVERITIES.includes(d.severity as FindingSeverity) ? (d.severity as FindingSeverity) : undefined
+    if (duplicateOf !== undefined) {
+      duplicateLinks.set(d.id, duplicateOf)
+    }
+    const reason =
+      typeof d.reason === 'string'
+        ? d.reason.trim().slice(0, JUDGE_REASON_MAX) || undefined
+        : undefined
+    const severity = SEVERITIES.has(d.severity as FindingSeverity)
+      ? (d.severity as FindingSeverity)
+      : undefined
     decisions.push({
       id: d.id,
       action: d.action,
@@ -108,7 +135,9 @@ export function parsePartialJudge(
   bCount: number,
 ): { decisions: JudgeDecision[] } | null {
   const repaired = repairTruncatedJson(text)
-  if (!repaired) return null
+  if (!repaired) {
+    return null
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(repaired)
@@ -138,7 +167,9 @@ export function dedupeExactCrossLane(a: SanitizedReview, b: SanitizedReview): Cr
   const aIndexByKey = new Map<string, number>()
   a.findings.forEach((finding, index) => {
     const key = keyOf(finding)
-    if (key !== null && !aIndexByKey.has(key)) aIndexByKey.set(key, index)
+    if (key !== null && !aIndexByKey.has(key)) {
+      aIndexByKey.set(key, index)
+    }
   })
 
   const aFindings = [...a.findings]
@@ -156,7 +187,9 @@ export function dedupeExactCrossLane(a: SanitizedReview, b: SanitizedReview): Cr
     merged++
     const kept = aFindings[aIndex] as Finding
     const severity =
-      SEVERITY_ORDER[finding.severity] > SEVERITY_ORDER[kept.severity] ? finding.severity : kept.severity
+      SEVERITY_ORDER[finding.severity] > SEVERITY_ORDER[kept.severity]
+        ? finding.severity
+        : kept.severity
     aFindings[aIndex] = { ...kept, severity, consensus: true }
   })
 
@@ -173,7 +206,11 @@ export function dedupeExactCrossLane(a: SanitizedReview, b: SanitizedReview): Cr
     }
   }
 
-  return { a: { ...a, findings: aFindings }, b: { ...b, findings: bFindings, narrative: bNarrative }, merged }
+  return {
+    a: { ...a, findings: aFindings },
+    b: { ...b, findings: bFindings, narrative: bNarrative },
+    merged,
+  }
 }
 
 type Candidate = {
@@ -187,7 +224,9 @@ type Candidate = {
 function mergeReviewedFiles(entries: ReviewedFile[]): ReviewedFile[] {
   const statusByPath = new Map<string, ReviewedFileStatus>()
   for (const { path, status } of entries) {
-    if (status === 'findings' || !statusByPath.has(path)) statusByPath.set(path, status)
+    if (status === 'findings' || !statusByPath.has(path)) {
+      statusByPath.set(path, status)
+    }
   }
   return [...statusByPath].map(([path, status]) => ({ path, status }))
 }
@@ -202,10 +241,24 @@ function mergeReviewedFiles(entries: ReviewedFile[]): ReviewedFile[] {
  * of the two reviews; the narrative is reviewer A's, refs remapped to the
  * merged findings even when the kept representative is a B finding.
  */
-export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge: JudgeOutput): DualAssembly {
+export function assembleDualReview(
+  a: SanitizedReview,
+  b: SanitizedReview,
+  judge: JudgeOutput,
+): DualAssembly {
   const candidates: Candidate[] = [
-    ...a.findings.map((finding, index) => ({ id: `A${index}`, side: 'A' as const, index, finding })),
-    ...b.findings.map((finding, index) => ({ id: `B${index}`, side: 'B' as const, index, finding })),
+    ...a.findings.map((finding, index) => ({
+      id: `A${index}`,
+      side: 'A' as const,
+      index,
+      finding,
+    })),
+    ...b.findings.map((finding, index) => ({
+      id: `B${index}`,
+      side: 'B' as const,
+      index,
+      finding,
+    })),
   ]
   const candidateById = new Map(candidates.map((c) => [c.id, c]))
   const decisionById = new Map(judge.decisions.map((d) => [d.id, d]))
@@ -215,7 +268,9 @@ export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge
     let current = id
     for (;;) {
       const next = decisionById.get(current)?.duplicate_of
-      if (!next || !candidateById.has(next) || visited.has(next)) return current
+      if (!next || !candidateById.has(next) || visited.has(next)) {
+        return current
+      }
       visited.add(next)
       current = next
     }
@@ -229,7 +284,12 @@ export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge
     membersByRoot.set(root, members)
   }
 
-  type Group = { representative: Candidate; members: Candidate[]; consensus: boolean; survives: boolean }
+  type Group = {
+    representative: Candidate
+    members: Candidate[]
+    consensus: boolean
+    survives: boolean
+  }
   const groupByMemberId = new Map<string, Group>()
   const groups: Group[] = []
   for (const [rootId, members] of membersByRoot) {
@@ -241,7 +301,9 @@ export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge
     // A rejected root must not speak for members it absorbed: a security
     // finding, or one the judge explicitly kept, takes over instead of being
     // silently dropped with the root.
-    if (rejected) representative = securityMember ?? keptMember ?? representative
+    if (rejected) {
+      representative = securityMember ?? keptMember ?? representative
+    }
     const group: Group = {
       representative,
       members,
@@ -249,19 +311,28 @@ export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge
       survives: !rejected || securityMember !== undefined || keptMember !== undefined,
     }
     groups.push(group)
-    for (const member of members) groupByMemberId.set(member.id, group)
+    for (const member of members) {
+      groupByMemberId.set(member.id, group)
+    }
   }
 
   const stats: DualStats = { merged: 0, rejected: 0, added_by_b: 0 }
   for (const group of groups) {
-    if (!group.survives) stats.rejected += group.members.length
-    else stats.merged += group.members.length - 1
+    if (!group.survives) {
+      stats.rejected += group.members.length
+    } else {
+      stats.merged += group.members.length - 1
+    }
   }
-  stats.added_by_b = groups.filter((g) => g.survives && g.representative.side === 'B' && !g.consensus).length
+  stats.added_by_b = groups.filter(
+    (g) => g.survives && g.representative.side === 'B' && !g.consensus,
+  ).length
 
   const mergedFinding = (group: Group): Finding => {
     const severities = group.members.map((m) => m.finding.severity)
-    const maxSeverity = severities.reduce((worst, s) => (SEVERITY_ORDER[s] > SEVERITY_ORDER[worst] ? s : worst))
+    const maxSeverity = severities.reduce((worst, s) =>
+      SEVERITY_ORDER[s] > SEVERITY_ORDER[worst] ? s : worst,
+    )
     const severity = decisionById.get(group.representative.id)?.severity ?? maxSeverity
     return {
       ...group.representative.finding,
@@ -274,15 +345,21 @@ export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge
   const finalIndexByGroup = new Map<Group, number>()
   for (const candidate of candidates) {
     const group = groupByMemberId.get(candidate.id) as Group
-    if (!group.survives || group.representative.id !== candidate.id) continue
+    if (!group.survives || group.representative.id !== candidate.id) {
+      continue
+    }
     finalIndexByGroup.set(group, findings.length)
     findings.push(mergedFinding(group))
   }
   const newIndexByAIndex = new Map<number, number>()
   for (const candidate of candidates) {
-    if (candidate.side !== 'A') continue
+    if (candidate.side !== 'A') {
+      continue
+    }
     const finalIndex = finalIndexByGroup.get(groupByMemberId.get(candidate.id) as Group)
-    if (finalIndex !== undefined) newIndexByAIndex.set(candidate.index, finalIndex)
+    if (finalIndex !== undefined) {
+      newIndexByAIndex.set(candidate.index, finalIndex)
+    }
   }
 
   let narrative = a.narrative
@@ -309,11 +386,17 @@ export function assembleDualReview(a: SanitizedReview, b: SanitizedReview, judge
   // all still speaks (an approve without findings is legitimate).
   const laneSurvived = { A: false, B: false }
   for (const candidate of candidates) {
-    if ((groupByMemberId.get(candidate.id) as Group).survives) laneSurvived[candidate.side] = true
+    if ((groupByMemberId.get(candidate.id) as Group).survives) {
+      laneSurvived[candidate.side] = true
+    }
   }
   const verdicts: Verdict[] = []
-  if (a.findings.length === 0 || laneSurvived.A) verdicts.push(a.verdict)
-  if (b.findings.length === 0 || laneSurvived.B) verdicts.push(b.verdict)
+  if (a.findings.length === 0 || laneSurvived.A) {
+    verdicts.push(a.verdict)
+  }
+  if (b.findings.length === 0 || laneSurvived.B) {
+    verdicts.push(b.verdict)
+  }
   const verdict = verdicts.length > 0 ? verdicts.reduce(worstVerdict) : 'comment'
 
   const files_reviewed =

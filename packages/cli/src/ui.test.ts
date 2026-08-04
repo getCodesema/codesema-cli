@@ -13,11 +13,15 @@ describe('progressLabel', () => {
   })
 
   test('verdict alone', () => {
-    expect(progressLabel({ ...empty, verdict: 'approve' })).toBe('verdict approve · drafting findings')
+    expect(progressLabel({ ...empty, verdict: 'approve' })).toBe(
+      'verdict approve · drafting findings',
+    )
   })
 
   test('findings win over verdict', () => {
-    expect(progressLabel({ ...empty, verdict: 'comment', findings: [finding, finding] })).toBe('2 findings drafted')
+    expect(progressLabel({ ...empty, verdict: 'comment', findings: [finding, finding] })).toBe(
+      '2 findings drafted',
+    )
   })
 
   test('singular finding', () => {
@@ -79,13 +83,17 @@ describe('renderFieldRows', () => {
         { label: 'branch', value: 'main' },
         { label: 'changes', value: '3 files' },
       ])
+      // oxlint-disable-next-line no-control-regex -- strips ANSI color escapes
       const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '')
       expect(stripAnsi(lines[0]!)).toBe(`  ${'branch'.padEnd(10)}main`)
       expect(stripAnsi(lines[1]!)).toBe(`  ${'changes'.padEnd(10)}3 files`)
     } finally {
       process.stdout.isTTY = originalIsTTY
-      if (originalNoColor === undefined) delete process.env.NO_COLOR
-      else process.env.NO_COLOR = originalNoColor
+      if (originalNoColor === undefined) {
+        delete process.env.NO_COLOR
+      } else {
+        process.env.NO_COLOR = originalNoColor
+      }
     }
   })
 })

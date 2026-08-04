@@ -57,16 +57,21 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'agent.exitCode': 'agent command exited with code {code}',
   'agent.noneFound':
     "no supported agent CLI found on PATH (looked for: {bins}) — pass one with --agent '<command>' (it receives the full prompt on stdin and must print the review JSON on stdout)",
-  'agent.noJsonReview': 'the agent did not return a JSON review (raw output saved to .codesema/agent-output.txt)',
+  'agent.noJsonReview':
+    'the agent did not return a JSON review (raw output saved to .codesema/agent-output.txt)',
 
-  'prep.detachedHead': 'detached HEAD — checkout the branch you want reviewed first, or pass --branch <name>',
+  'prep.detachedHead':
+    'detached HEAD — checkout the branch you want reviewed first, or pass --branch <name>',
   'prep.branchNotFound': '--branch {branch}: local branch not found',
   'prep.targetFlagNotFound': '--target {flag}: branch not found (neither local nor origin/{flag})',
   'prep.noTarget': 'could not detect the target branch — pass it explicitly with --target <branch>',
-  'prep.targetIsSelf': '"{branch}" is the target branch itself — pick your feature branch, or pass --target <branch>',
-  'prep.noMergeBase': 'no merge-base between {target} and {branch} — pass another base with --target <branch>',
+  'prep.targetIsSelf':
+    '"{branch}" is the target branch itself — pick your feature branch, or pass --target <branch>',
+  'prep.noMergeBase':
+    'no merge-base between {target} and {branch} — pass another base with --target <branch>',
   'prep.emptyDiff': 'empty diff between {target} and {branch} — nothing to review.{hint}',
-  'prep.dirtyHint': ' Your working tree has uncommitted changes: commit them first, codesema reviews committed work.',
+  'prep.dirtyHint':
+    ' Your working tree has uncommitted changes: commit them first, codesema reviews committed work.',
   'prep.title': 'codesema prep',
   'prep.label.branch': 'branch',
   'prep.label.target': 'target',
@@ -76,11 +81,14 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'prep.label.input': 'input',
   'prep.customNote': '.codesema/PROMPT.md merged into instructions',
   'prep.label.rules': 'rules',
-  'prep.rulesNote': '{n} team rule from .codesema/RULES.md | {n} team rules from .codesema/RULES.md',
-  'prep.next': 'Next: have your AI agent write .codesema/review.json (see the codesema skill), then run `codesema show`.',
+  'prep.rulesNote':
+    '{n} team rule from .codesema/RULES.md | {n} team rules from .codesema/RULES.md',
+  'prep.next':
+    'Next: have your AI agent write .codesema/review.json (see the codesema skill), then run `codesema show`.',
 
   'review.trustTitle': 'This repository provides its own review agent command:',
-  'review.trustWarning': 'It runs on your machine, in your shell. Approve it only if you trust this repo.',
+  'review.trustWarning':
+    'It runs on your machine, in your shell. Approve it only if you trust this repo.',
   'review.trustQuestion': 'Run this repo-provided agent command?',
   'review.trustCancel': 'Cancel',
   'review.trustCancelHint': 'do not run',
@@ -99,13 +107,17 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'review.dualLaneB': 'prosecutor',
   'review.dualJudging': 'deliberation · {n} notes on the bench',
   'review.dualJudgeProgress': 'deliberation · {done}/{total} adjudicated',
-  'review.dualStats': 'dual review: {merged} merged · {rejected} rejected by the judge · {added} added by the prosecutor',
+  'review.dualStats':
+    'dual review: {merged} merged · {rejected} rejected by the judge · {added} added by the prosecutor',
   'review.dualConsensus': '{n} note raised by both reviewers | {n} notes raised by both reviewers',
   'review.coverageGap': '⚠ {lane} did not examine {n} file(s): {files}',
-  'review.dualReviewerFailed': 'one reviewer failed ({message}); finished with the surviving review',
+  'review.dualReviewerFailed':
+    'one reviewer failed ({message}); finished with the surviving review',
   'review.dualJudgeFailed': 'judge unusable ({message}); kept the union of both reviews',
-  'review.customPrompt': 'custom instructions from .codesema/PROMPT.md merged into the agent prompt',
-  'review.teamRules': '{n} team rule from .codesema/RULES.md drives the hunt pass | {n} team rules from .codesema/RULES.md drive the hunt pass',
+  'review.customPrompt':
+    'custom instructions from .codesema/PROMPT.md merged into the agent prompt',
+  'review.teamRules':
+    '{n} team rule from .codesema/RULES.md drives the hunt pass | {n} team rules from .codesema/RULES.md drive the hunt pass',
   'review.webLiveHint': '· live, findings appear as the agent works',
   'review.spinner': 'reviewing with {cmd}',
   'review.runFailed': 'agent run failed',
@@ -115,8 +127,10 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'review.gateReasonSeverity': '{n} finding(s) at or above {level}',
   'review.gateReasonVerdict': 'changes requested',
   'review.unusableOutput': 'unusable agent output',
-  'review.groundedDropped': '{n} finding dropped: file not in the diff | {n} findings dropped: file not in the diff',
-  'review.groundedDeanchored': '{n} line anchor removed: line outside the diff | {n} line anchors removed: lines outside the diff',
+  'review.groundedDropped':
+    '{n} finding dropped: file not in the diff | {n} findings dropped: file not in the diff',
+  'review.groundedDeanchored':
+    '{n} line anchor removed: line outside the diff | {n} line anchors removed: lines outside the diff',
   'review.groundedMerged': '{n} duplicate finding merged | {n} duplicate findings merged',
   'review.groundedVerdict': 'verdict escalated to request_changes: critical finding on an approve',
   'review.ready': 'review ready',
@@ -124,7 +138,8 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'review.syncHint': 'codesema sync  saves this review to your codesema.com workspace',
   'review.syncPushed': '☁ review synced to your linked codesema.com workspace',
   'review.syncAlready': '☁ review already synced (identical content)',
-  'review.syncBlockedSecrets': '☁ sync skipped: {n} potential secret(s) in the diff · codesema sync --force to override',
+  'review.syncBlockedSecrets':
+    '☁ sync skipped: {n} potential secret(s) in the diff · codesema sync --force to override',
   'review.syncFailed': '☁ sync failed: {message} · the review stays archived locally',
 
   'notify.failedRun': 'review failed: agent run failed',
@@ -161,7 +176,8 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'wizard.effort': 'Reasoning effort?',
   'wizard.saved': 'saved: {path}',
 
-  'config.notInteractive': '`codesema config` is interactive — run it from a terminal, or edit the config file directly',
+  'config.notInteractive':
+    '`codesema config` is interactive — run it from a terminal, or edit the config file directly',
   'config.currentAgent': 'current agent: {command}',
   'config.fromPath': 'from {path}',
   'config.saveWhere': 'Save where?',
@@ -180,7 +196,8 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'config.autoSyncOn': 'on',
   'config.autoSyncOff': 'off',
   'config.autoSyncUnset': 'not chosen yet (asked after the first `codesema sync`)',
-  'config.autoSyncQuestion': 'Push every completed review to your codesema.com workspace automatically?',
+  'config.autoSyncQuestion':
+    'Push every completed review to your codesema.com workspace automatically?',
   'config.autoSyncSaved': 'auto-sync {state}: {path}',
   'config.back': 'Back',
   'config.languageSaved': 'language saved: {path}',
@@ -239,7 +256,8 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'record.invalidJson': '{path} is not valid JSON — the agent output must be a single JSON object',
   'record.noInput': '.codesema/input.json not found — run `codesema prep` first',
   'record.reviewNotFound': 'review file not found: {path}',
-  'record.nothingToShow': 'no review to show — run `codesema prep`, let your agent write .codesema/review.json, then retry',
+  'record.nothingToShow':
+    'no review to show — run `codesema prep`, let your agent write .codesema/review.json, then retry',
 
   'export.verdictApprove': 'Approved ✅',
   'export.verdictChanges': 'Changes requested ❌',
@@ -291,8 +309,10 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'sync.linkExpired': 'the link request expired before being confirmed: run `codesema link` again',
   'sync.deleted': 'All synced data deleted and local credentials cleared.',
   'sync.noCredentials': 'no synced workspace on this machine (run `codesema sync` first)',
-  'sync.nonInteractiveSetup': 'sync is not set up: run `codesema sync` once in an interactive terminal to opt in',
-  'sync.unknownAction': 'unknown sync action: {action} (expected `codesema sync` or `codesema sync delete`)',
+  'sync.nonInteractiveSetup':
+    'sync is not set up: run `codesema sync` once in an interactive terminal to opt in',
+  'sync.unknownAction':
+    'unknown sync action: {action} (expected `codesema sync` or `codesema sync delete`)',
   'sync.unreachable': 'could not reach {url}: check your connection or CODESEMA_SYNC_URL',
   'sync.badResponse': 'unexpected response from {url}: required fields are missing or invalid',
 
@@ -376,7 +396,7 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
 `,
   'cli.unknownCommand': 'commande inconnue : {command}',
   'cli.intFlagError': '--{name} {raw} : entier attendu entre {min} et {max}',
-  'cli.failOnError': '--fail-on {raw} invalide : attendu l\'un de {values}',
+  'cli.failOnError': "--fail-on {raw} invalide : attendu l'un de {values}",
 
   'git.notFound': 'git introuvable sur le PATH : installez git (https://git-scm.com) et réessayez',
 
@@ -384,16 +404,22 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'agent.exitCode': "la commande d'agent a quitté avec le code {code}",
   'agent.noneFound':
     "aucune CLI d'agent trouvée sur le PATH (recherchées : {bins}) : passez-en une avec --agent '<commande>' (elle reçoit le prompt complet sur stdin et doit afficher le JSON de la revue sur stdout)",
-  'agent.noJsonReview': "l'agent n'a pas renvoyé de revue JSON (sortie brute sauvegardée dans .codesema/agent-output.txt)",
+  'agent.noJsonReview':
+    "l'agent n'a pas renvoyé de revue JSON (sortie brute sauvegardée dans .codesema/agent-output.txt)",
 
-  'prep.detachedHead': 'HEAD détachée : positionnez-vous d\'abord sur la branche à passer en revue, ou passez --branch <nom>',
+  'prep.detachedHead':
+    "HEAD détachée : positionnez-vous d'abord sur la branche à passer en revue, ou passez --branch <nom>",
   'prep.branchNotFound': '--branch {branch} : branche locale introuvable',
   'prep.targetFlagNotFound': '--target {flag} : branche introuvable (ni locale ni origin/{flag})',
-  'prep.noTarget': 'impossible de détecter la branche cible : passez-la explicitement avec --target <branche>',
-  'prep.targetIsSelf': '"{branch}" est la branche cible elle-même : choisissez votre branche de feature, ou passez --target <branche>',
-  'prep.noMergeBase': 'pas de merge-base entre {target} et {branch} : passez une autre base avec --target <branche>',
+  'prep.noTarget':
+    'impossible de détecter la branche cible : passez-la explicitement avec --target <branche>',
+  'prep.targetIsSelf':
+    '"{branch}" est la branche cible elle-même : choisissez votre branche de feature, ou passez --target <branche>',
+  'prep.noMergeBase':
+    'pas de merge-base entre {target} et {branch} : passez une autre base avec --target <branche>',
   'prep.emptyDiff': 'diff vide entre {target} et {branch} : rien à passer en revue.{hint}',
-  'prep.dirtyHint': ' Votre working tree a des changements non commités : commitez-les d\'abord, codesema passe en revue le travail commité.',
+  'prep.dirtyHint':
+    " Votre working tree a des changements non commités : commitez-les d'abord, codesema passe en revue le travail commité.",
   'prep.title': 'codesema prep',
   'prep.label.branch': 'branche',
   'prep.label.target': 'cible',
@@ -403,12 +429,15 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'prep.label.input': 'entrée',
   'prep.customNote': '.codesema/PROMPT.md fusionné dans les instructions',
   'prep.label.rules': 'règles',
-  'prep.rulesNote': '{n} règle d\'équipe depuis .codesema/RULES.md | {n} règles d\'équipe depuis .codesema/RULES.md',
-  'prep.next': 'Ensuite : faites écrire .codesema/review.json à votre agent IA (voir le skill codesema), puis lancez `codesema show`.',
+  'prep.rulesNote':
+    "{n} règle d'équipe depuis .codesema/RULES.md | {n} règles d'équipe depuis .codesema/RULES.md",
+  'prep.next':
+    'Ensuite : faites écrire .codesema/review.json à votre agent IA (voir le skill codesema), puis lancez `codesema show`.',
 
-  'review.trustTitle': 'Ce dépôt fournit sa propre commande d\'agent de revue :',
-  'review.trustWarning': 'Elle s\'exécute sur votre machine, dans votre shell. Approuvez-la seulement si vous faites confiance à ce dépôt.',
-  'review.trustQuestion': 'Exécuter cette commande d\'agent fournie par le dépôt ?',
+  'review.trustTitle': "Ce dépôt fournit sa propre commande d'agent de revue :",
+  'review.trustWarning':
+    "Elle s'exécute sur votre machine, dans votre shell. Approuvez-la seulement si vous faites confiance à ce dépôt.",
+  'review.trustQuestion': "Exécuter cette commande d'agent fournie par le dépôt ?",
   'review.trustCancel': 'Annuler',
   'review.trustCancelHint': 'ne pas exécuter',
   'review.trustApprove': 'Approuver et exécuter',
@@ -420,30 +449,38 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'review.commits': '{n} commit | {n} commits',
   'review.findingCount': '{n} note | {n} notes',
   'review.modeIncremental': 'incrémental',
-  'review.modeIncrementalHint': '· mise à jour de la revue faite à {sha} · passez --full pour repartir de zéro',
+  'review.modeIncrementalHint':
+    '· mise à jour de la revue faite à {sha} · passez --full pour repartir de zéro',
   'review.modeDual': 'duale · deux reviewers + un juge',
   'review.dualLaneA': 'reviewer',
   'review.dualLaneB': 'procureur',
   'review.dualJudging': 'délibération · {n} notes à arbitrer',
   'review.dualJudgeProgress': 'délibération · {done}/{total} arbitrées',
-  'review.dualStats': 'revue duale : {merged} fusionnées · {rejected} rejetées par le juge · {added} ajoutées par le procureur',
-  'review.dualConsensus': '{n} note relevée par les deux reviewers | {n} notes relevées par les deux reviewers',
-  'review.coverageGap': '⚠ {lane} n\'a pas examiné {n} fichier(s) : {files}',
-  'review.dualReviewerFailed': 'un reviewer a échoué ({message}) ; la revue survivante a été utilisée',
+  'review.dualStats':
+    'revue duale : {merged} fusionnées · {rejected} rejetées par le juge · {added} ajoutées par le procureur',
+  'review.dualConsensus':
+    '{n} note relevée par les deux reviewers | {n} notes relevées par les deux reviewers',
+  'review.coverageGap': "⚠ {lane} n'a pas examiné {n} fichier(s) : {files}",
+  'review.dualReviewerFailed':
+    'un reviewer a échoué ({message}) ; la revue survivante a été utilisée',
   'review.dualJudgeFailed': 'juge inutilisable ({message}) ; union des deux revues conservée',
-  'review.customPrompt': 'instructions personnalisées de .codesema/PROMPT.md fusionnées dans le prompt de l\'agent',
-  'review.teamRules': '{n} règle d\'équipe de .codesema/RULES.md guide la passe de chasse | {n} règles d\'équipe de .codesema/RULES.md guident la passe de chasse',
-  'review.webLiveHint': '· en direct, les notes apparaissent pendant que l\'agent travaille',
+  'review.customPrompt':
+    "instructions personnalisées de .codesema/PROMPT.md fusionnées dans le prompt de l'agent",
+  'review.teamRules':
+    "{n} règle d'équipe de .codesema/RULES.md guide la passe de chasse | {n} règles d'équipe de .codesema/RULES.md guident la passe de chasse",
+  'review.webLiveHint': "· en direct, les notes apparaissent pendant que l'agent travaille",
   'review.spinner': 'revue avec {cmd}',
-  'review.runFailed': 'échec de l\'agent',
-  'review.runFailedDetail': 'échec de l\'agent : {message}',
+  'review.runFailed': "échec de l'agent",
+  'review.runFailedDetail': "échec de l'agent : {message}",
   'review.stillUp': '{url} toujours actif · Ctrl+C pour arrêter',
   'review.gateFailed': 'gate CI échoué : {reason}',
   'review.gateReasonSeverity': '{n} finding(s) au niveau {level} ou supérieur',
   'review.gateReasonVerdict': 'changements demandés',
-  'review.unusableOutput': 'sortie d\'agent inutilisable',
-  'review.groundedDropped': '{n} finding écarté : fichier absent du diff | {n} findings écartés : fichier absent du diff',
-  'review.groundedDeanchored': '{n} ancre de ligne retirée : ligne hors du diff | {n} ancres de ligne retirées : lignes hors du diff',
+  'review.unusableOutput': "sortie d'agent inutilisable",
+  'review.groundedDropped':
+    '{n} finding écarté : fichier absent du diff | {n} findings écartés : fichier absent du diff',
+  'review.groundedDeanchored':
+    '{n} ancre de ligne retirée : ligne hors du diff | {n} ancres de ligne retirées : lignes hors du diff',
   'review.groundedMerged': '{n} finding doublon fusionné | {n} findings doublons fusionnés',
   'review.groundedVerdict': 'verdict passé à request_changes : finding critique sur un approve',
   'review.ready': 'revue prête',
@@ -451,11 +488,12 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'review.syncHint': 'codesema sync  enregistre cette review dans votre workspace codesema.com',
   'review.syncPushed': '☁ revue synchronisée sur votre workspace codesema.com lié',
   'review.syncAlready': '☁ revue déjà synchronisée (contenu identique)',
-  'review.syncBlockedSecrets': '☁ synchro ignorée : {n} secret(s) potentiel(s) dans la diff · codesema sync --force pour forcer',
+  'review.syncBlockedSecrets':
+    '☁ synchro ignorée : {n} secret(s) potentiel(s) dans la diff · codesema sync --force pour forcer',
   'review.syncFailed': '☁ échec de la synchro : {message} · la revue reste archivée en local',
 
-  'notify.failedRun': 'échec de la revue : échec de l\'agent',
-  'notify.failedOutput': 'échec de la revue : sortie d\'agent inutilisable',
+  'notify.failedRun': "échec de la revue : échec de l'agent",
+  'notify.failedOutput': "échec de la revue : sortie d'agent inutilisable",
   'notify.ready': 'revue prête · {findings} · {verdict}',
 
   'field.branch': 'branche',
@@ -470,15 +508,17 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'field.status': 'statut',
   'field.account': 'compte',
 
-  'wizard.firstRun': 'Premier lancement : choisissez l\'agent qui fera la revue de votre code.',
-  'wizard.firstRunHint': 'Sauvegardé une fois, pour tous les dépôts. Modifiable à tout moment avec `codesema config`.',
+  'wizard.firstRun': "Premier lancement : choisissez l'agent qui fera la revue de votre code.",
+  'wizard.firstRunHint':
+    'Sauvegardé une fois, pour tous les dépôts. Modifiable à tout moment avec `codesema config`.',
   'wizard.notOnPath': 'introuvable sur le PATH : {bins}',
   'wizard.whichAgent': 'Quel agent IA fait la revue ?',
   'wizard.current': 'actuel',
   'wizard.customCommand': 'Commande personnalisée',
   'wizard.stdinStdout': 'stdin → stdout',
-  'wizard.fullCommandTitle': 'Commande d\'agent complète',
-  'wizard.fullCommandPlaceholder': 'lit le prompt sur stdin, affiche le JSON de la revue sur stdout',
+  'wizard.fullCommandTitle': "Commande d'agent complète",
+  'wizard.fullCommandPlaceholder':
+    'lit le prompt sur stdin, affiche le JSON de la revue sur stdout',
   'wizard.modelFor': 'Modèle pour {label} ?',
   'wizard.cliDefault': 'Défaut CLI',
   'wizard.letDecide': 'laisser {bin} décider',
@@ -488,7 +528,8 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'wizard.effort': 'Effort de raisonnement ?',
   'wizard.saved': 'sauvegardé : {path}',
 
-  'config.notInteractive': '`codesema config` est interactif : lancez-le depuis un terminal, ou éditez directement le fichier de config',
+  'config.notInteractive':
+    '`codesema config` est interactif : lancez-le depuis un terminal, ou éditez directement le fichier de config',
   'config.currentAgent': 'agent actuel : {command}',
   'config.fromPath': 'depuis {path}',
   'config.saveWhere': 'Sauvegarder où ?',
@@ -496,7 +537,7 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'config.everywhereHint': 'config globale, tous les dépôts',
   'config.thisRepo': 'Ce dépôt uniquement',
   'config.thisRepoHint': '.codesema/config.json, prime sur la globale',
-  'config.agentSaved': 'commande d\'agent sauvegardée : {command}',
+  'config.agentSaved': "commande d'agent sauvegardée : {command}",
   'config.savedTo': 'config : {path}',
   'config.menuTitle': 'Que voulez-vous configurer ?',
   'config.agentEntry': 'Agent & modèle',
@@ -507,7 +548,8 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'config.autoSyncOn': 'activé',
   'config.autoSyncOff': 'désactivé',
   'config.autoSyncUnset': 'pas encore choisi (proposé après le premier `codesema sync`)',
-  'config.autoSyncQuestion': 'Pousser automatiquement chaque review terminée vers votre workspace codesema.com ?',
+  'config.autoSyncQuestion':
+    'Pousser automatiquement chaque review terminée vers votre workspace codesema.com ?',
   'config.autoSyncSaved': 'auto-sync {state} : {path}',
   'config.back': 'Retour',
   'config.languageSaved': 'langue enregistrée : {path}',
@@ -529,7 +571,7 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'upgrade.done': 'codesema mis à jour en {latest}',
   'upgrade.failed': 'échec de la mise à jour : lancez {command} manuellement',
   'ui.phaseReading': 'lecture du diff…',
-  'ui.phaseCalls': 'suivi des chaînes d\'appel…',
+  'ui.phaseCalls': "suivi des chaînes d'appel…",
   'ui.phaseGrouping': 'regroupement des changements en étapes…',
   'ui.phaseRisks': 'évaluation des risques…',
   'ui.phaseStory': 'écriture du récit…',
@@ -540,7 +582,7 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'ui.progressVerdict': 'verdict {verdict} · rédaction des notes',
 
   'summary.none': 'aucune',
-  'summary.checkFirst': 'à vérifier d\'abord',
+  'summary.checkFirst': "à vérifier d'abord",
   'summary.praiseCount': '{n} éloge | {n} éloges',
   'summary.sevCritical': '{n} critique | {n} critiques',
   'summary.sevMajor': '{n} majeure | {n} majeures',
@@ -563,10 +605,12 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'serve.noWebUi': 'UI web embarquée introuvable dans {path} : installation ou build cassé',
   'serve.noFreePort': 'aucun port libre entre {start} et {end}',
 
-  'record.invalidJson': '{path} n\'est pas du JSON valide : la sortie de l\'agent doit être un unique objet JSON',
-  'record.noInput': '.codesema/input.json introuvable : lancez d\'abord `codesema prep`',
+  'record.invalidJson':
+    "{path} n'est pas du JSON valide : la sortie de l'agent doit être un unique objet JSON",
+  'record.noInput': ".codesema/input.json introuvable : lancez d'abord `codesema prep`",
   'record.reviewNotFound': 'fichier de revue introuvable : {path}',
-  'record.nothingToShow': 'aucune revue à afficher : lancez `codesema prep`, laissez votre agent écrire .codesema/review.json, puis réessayez',
+  'record.nothingToShow':
+    'aucune revue à afficher : lancez `codesema prep`, laissez votre agent écrire .codesema/review.json, puis réessayez',
 
   'export.verdictApprove': 'Approuvée ✅',
   'export.verdictChanges': 'Changements demandés ❌',
@@ -615,11 +659,15 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'sync.linkBrowserOpen': 'Confirmez le rattachement dans votre navigateur :',
   'sync.linkWaiting': 'En attente de la confirmation dans le navigateur… (Ctrl+C pour annuler)',
   'sync.linkFailed': 'Rattachement non confirmé.',
-  'sync.linkExpired': 'la demande de rattachement a expiré avant d\'être confirmée : relancez `codesema link`',
+  'sync.linkExpired':
+    "la demande de rattachement a expiré avant d'être confirmée : relancez `codesema link`",
   'sync.deleted': 'Données synchronisées supprimées et credentials locaux effacés.',
-  'sync.noCredentials': 'aucun workspace synchronisé sur cette machine (lancez `codesema sync` d\'abord)',
-  'sync.nonInteractiveSetup': 'sync non configuré : lancez `codesema sync` une fois dans un terminal interactif pour l\'activer',
-  'sync.unknownAction': 'action sync inconnue : {action} (attendu `codesema sync` ou `codesema sync delete`)',
+  'sync.noCredentials':
+    "aucun workspace synchronisé sur cette machine (lancez `codesema sync` d'abord)",
+  'sync.nonInteractiveSetup':
+    "sync non configuré : lancez `codesema sync` une fois dans un terminal interactif pour l'activer",
+  'sync.unknownAction':
+    'action sync inconnue : {action} (attendu `codesema sync` ou `codesema sync delete`)',
   'sync.unreachable': 'impossible de joindre {url} : vérifiez votre connexion ou CODESEMA_SYNC_URL',
   'sync.badResponse': 'réponse inattendue de {url} : champs requis manquants ou invalides',
 
@@ -629,7 +677,7 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'menu.dualReview': 'Revue duale',
   'menu.dualReviewHint': 'deux reviewers en parallèle, un juge fusionne leurs notes',
   'menu.show': 'Afficher la dernière revue',
-  'menu.showHint': 'ouvrir la dernière revue dans l\'UI web locale',
+  'menu.showHint': "ouvrir la dernière revue dans l'UI web locale",
   'menu.sync': 'Synchroniser',
   'menu.syncHintPush': 'pousser la dernière revue',
   'menu.syncHintSetup': 'pas encore configuré',
@@ -642,10 +690,10 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'menu.syncDeleteConfirmDelete': 'Tout supprimer',
   'menu.syncDeleteConfirmDeleteHint': 'irréversible',
   'menu.config': 'Configuration',
-  'menu.configHint': 'changer la langue, l\'agent, le modèle et l\'effort',
+  'menu.configHint': "changer la langue, l'agent, le modèle et l'effort",
   'menu.quit': 'Quitter',
   'menu.needRepo': 'à lancer dans un repo git',
-  'menu.notInRepo': 'pas dans un repo git : placez-vous d\'abord dans votre projet',
+  'menu.notInRepo': "pas dans un repo git : placez-vous d'abord dans votre projet",
   'menu.cloud': 'Cloud',
   'menu.cloudTitle': 'Cloud · codesema.com',
   'menu.cloudHintActive': 'workspace connecté',
@@ -691,10 +739,12 @@ export function t(key: MessageKey, params?: Record<string, unknown>, count?: num
   if (msg.includes(' | ')) {
     const n = count ?? (typeof params?.n === 'number' ? params.n : undefined)
     const parts = msg.split(' | ')
-    msg = (n === 1 ? parts[0] : parts[1] ?? parts[0]) ?? msg
+    msg = (n === 1 ? parts[0] : (parts[1] ?? parts[0])) ?? msg
   }
   if (params) {
-    for (const [k, v] of Object.entries(params)) msg = msg.replaceAll(`{${k}}`, String(v))
+    for (const [k, v] of Object.entries(params)) {
+      msg = msg.replaceAll(`{${k}}`, String(v))
+    }
   }
   return msg
 }

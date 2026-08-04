@@ -5,10 +5,27 @@ const FULL = JSON.stringify({
   verdict: 'request_changes',
   summary: 'Deux problèmes de gestion d’erreur.',
   findings: [
-    { file: 'src/a.ts', line: 12, severity: 'major', kind: 'design', title: 'Erreur avalée', message: 'Le catch vide masque la panne.' },
-    { file: 'src/b.ts', severity: 'minor', kind: 'convention', title: 'Nommage', message: 'Renommer x en userCount.' },
+    {
+      file: 'src/a.ts',
+      line: 12,
+      severity: 'major',
+      kind: 'design',
+      title: 'Erreur avalée',
+      message: 'Le catch vide masque la panne.',
+    },
+    {
+      file: 'src/b.ts',
+      severity: 'minor',
+      kind: 'convention',
+      title: 'Nommage',
+      message: 'Renommer x en userCount.',
+    },
   ],
-  narrative: { intent: 'Fiabiliser les erreurs', confidence: 'high', steps: [{ title: 'Fondations' }] },
+  narrative: {
+    intent: 'Fiabiliser les erreurs',
+    confidence: 'high',
+    steps: [{ title: 'Fondations' }],
+  },
 })
 
 describe('repairTruncatedJson', () => {
@@ -37,8 +54,12 @@ describe('repairTruncatedJson', () => {
   })
 
   test('array truncated in the middle of an object', () => {
-    const repaired = repairTruncatedJson('{"findings":[{"file":"a.ts","message":"ok"},{"file":"b.ts","mess')
-    expect(JSON.parse(repaired!)).toEqual({ findings: [{ file: 'a.ts', message: 'ok' }, { file: 'b.ts' }] })
+    const repaired = repairTruncatedJson(
+      '{"findings":[{"file":"a.ts","message":"ok"},{"file":"b.ts","mess',
+    )
+    expect(JSON.parse(repaired!)).toEqual({
+      findings: [{ file: 'a.ts', message: 'ok' }, { file: 'b.ts' }],
+    })
   })
 
   test('escape sequence cut at end of string', () => {
@@ -75,12 +96,16 @@ describe('parsePartialReview', () => {
   test('progressive prefix: each slice parses or returns null, without throwing', () => {
     for (let cut = 1; cut <= FULL.length; cut++) {
       const partial = parsePartialReview(FULL.slice(0, cut))
-      if (cut === FULL.length) expect(partial?.findings).toHaveLength(2)
+      if (cut === FULL.length) {
+        expect(partial?.findings).toHaveLength(2)
+      }
     }
   })
 
   test('finding without file/message ignored', () => {
-    const partial = parsePartialReview('{"verdict":"comment","findings":[{"file":"a.ts"},{"file":"b.ts","message":"ok"}]}')!
+    const partial = parsePartialReview(
+      '{"verdict":"comment","findings":[{"file":"a.ts"},{"file":"b.ts","message":"ok"}]}',
+    )!
     expect(partial.findings).toEqual([{ file: 'b.ts', message: 'ok' }])
   })
 

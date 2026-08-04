@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { Finding } from './useDiff'
-import { collapsedByBudget, parseDiff, pickFiles, sameFile, toSplit } from './useDiff'
+import { collapsedByBudget, parseDiff, pickFiles, sameFile, toSplit, type Finding } from './useDiff'
 
 const DIFF = `diff --git a/src/a.ts b/src/a.ts
 index 0000000..1111111 100644
@@ -105,7 +104,9 @@ describe('collapsedByBudget', () => {
   const file = (path: string, lines: number) => ({ path, addCount: lines, delCount: 0 })
 
   test('a file above the big-file threshold is collapsed even when first', () => {
-    expect(collapsedByBudget([file('big.ts', 501), file('small.ts', 10)])).toEqual(new Set(['big.ts']))
+    expect(collapsedByBudget([file('big.ts', 501), file('small.ts', 10)])).toEqual(
+      new Set(['big.ts']),
+    )
   })
 
   test('a file exactly at the big-file threshold stays expanded', () => {
@@ -119,6 +120,8 @@ describe('collapsedByBudget', () => {
 
   test('a collapsed big file still consumes the page budget', () => {
     const mediums = [1, 2, 3, 4, 5].map((i) => file(`m${i}.ts`, 450))
-    expect(collapsedByBudget([file('big.ts', 501), ...mediums])).toEqual(new Set(['big.ts', 'm5.ts']))
+    expect(collapsedByBudget([file('big.ts', 501), ...mediums])).toEqual(
+      new Set(['big.ts', 'm5.ts']),
+    )
   })
 })

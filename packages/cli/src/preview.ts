@@ -1,6 +1,6 @@
+import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
 import { currentBranch, git, refExists, repoRoot, tryGit } from './git.js'
 import { computeDiffSummary, detectTarget, excludePathspecs, resolveRef } from './prep.js'
-import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
 
 export type PreviewSource = { kind: 'branch'; name: string } | { kind: 'mr'; number: number }
 
@@ -35,14 +35,20 @@ export function parsePreviewSource(params: URLSearchParams): PreviewSource | nul
   const source = params.get('source')
   if (source === 'branch') {
     const name = params.get('name')
-    if (!name || !isSafeRefName(name)) return null
+    if (!name || !isSafeRefName(name)) {
+      return null
+    }
     return { kind: 'branch', name }
   }
   if (source === 'mr') {
     const raw = params.get('number')
-    if (!raw) return null
+    if (!raw) {
+      return null
+    }
     const number = Number(raw)
-    if (!Number.isInteger(number) || number <= 0) return null
+    if (!Number.isInteger(number) || number <= 0) {
+      return null
+    }
     return { kind: 'mr', number }
   }
   return null
@@ -50,7 +56,9 @@ export function parsePreviewSource(params: URLSearchParams): PreviewSource | nul
 
 export function parsePreviewPath(params: URLSearchParams): string | null {
   const path = params.get('path')
-  if (!path || !isSafeRefName(path)) return null
+  if (!path || !isSafeRefName(path)) {
+    return null
+  }
   return path
 }
 
@@ -63,7 +71,12 @@ function fetchBranch(cwd: string, branch: string): void {
   git(['fetch', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], cwd)
 }
 
-export type ResolvedPreviewRefs = { sourceRef: string; targetRef: string; branch: string; target: string }
+export type ResolvedPreviewRefs = {
+  sourceRef: string
+  targetRef: string
+  branch: string
+  target: string
+}
 
 /**
  * Resolves the two refs to diff, without ever checking out a worktree:
@@ -94,26 +107,49 @@ export async function resolvePreviewRefs(
   }
 
   const mrsResult = await listMrs(root)
-  if (!mrsResult.available) throw new Error('forge merge requests unavailable')
+  if (!mrsResult.available) {
+    throw new Error('forge merge requests unavailable')
+  }
   const mr = mrsResult.mrs.find((m) => m.number === source.number)
-  if (!mr) throw new Error(`no open MR #${source.number}`)
+  if (!mr) {
+    throw new Error(`no open MR #${source.number}`)
+  }
 
   fetchBranch(root, mr.sourceBranch)
   const targetRef = resolveRef(mr.targetBranch, root)
-  if (!targetRef) throw new Error(`target branch not found: ${mr.targetBranch}`)
-  return { sourceRef: `refs/remotes/origin/${mr.sourceBranch}`, targetRef, branch: mr.sourceBranch, target: mr.targetBranch }
+  if (!targetRef) {
+    throw new Error(`target branch not found: ${mr.targetBranch}`)
+  }
+  return {
+    sourceRef: `refs/remotes/origin/${mr.sourceBranch}`,
+    targetRef,
+    branch: mr.sourceBranch,
+    target: mr.targetBranch,
+  }
 }
 
 /** File status per path, from `git diff --name-status` (additions/deletions come from computeDiffSummary). */
 function fileStatuses(range: string, cwd: string): Map<string, PreviewFileStatus> {
   const excludes = excludePathspecs(cwd)
-  const raw = tryGit(['-c', 'core.quotePath=false', 'diff', '--name-status', range, '--', '.', ...excludes], cwd) ?? ''
+  const raw =
+    tryGit(
+      ['-c', 'core.quotePath=false', 'diff', '--name-status', range, '--', '.', ...excludes],
+      cwd,
+    ) ?? ''
   const statuses = new Map<string, PreviewFileStatus>()
   for (const line of raw.split('\n').filter(Boolean)) {
     const [code = '', ...rest] = line.split('\t')
     const path = rest[rest.length - 1] ?? ''
-    if (!path) continue
-    const status: PreviewFileStatus = code.startsWith('A') ? 'added' : code.startsWith('D') ? 'deleted' : code.startsWith('R') ? 'renamed' : 'modified'
+    if (!path) {
+      continue
+    }
+    const status: PreviewFileStatus = code.startsWith('A')
+      ? 'added'
+      : code.startsWith('D')
+        ? 'deleted'
+        : code.startsWith('R')
+          ? 'renamed'
+          : 'modified'
     statuses.set(path, status)
   }
   return statuses
@@ -128,7 +164,10 @@ export async function buildPreview(
   const refs = await resolvePreviewRefs(root, source, listMrs)
   const summary = computeDiffSummary(refs.sourceRef, refs.targetRef, root)
   const statuses = fileStatuses(`${refs.targetRef}...${refs.sourceRef}`, root)
-  const files: PreviewFile[] = summary.files.map((f) => ({ ...f, status: statuses.get(f.path) ?? 'modified' }))
+  const files: PreviewFile[] = summary.files.map((f) => ({
+    ...f,
+    status: statuses.get(f.path) ?? 'modified',
+  }))
   const diffStats: PreviewDiffStats = {
     files: files.length,
     additions: files.reduce((n, f) => n + f.additions, 0),
@@ -150,7 +189,10 @@ export async function buildFileDiff(
     throw new Error(`path is not part of this diff: ${path}`)
   }
   const range = `${refs.targetRef}...${refs.sourceRef}`
-  const raw = git(['-c', 'core.quotePath=false', 'diff', '--no-color', '-U10', range, '--', path], root)
+  const raw = git(
+    ['-c', 'core.quotePath=false', 'diff', '--no-color', '-U10', range, '--', path],
+    root,
+  )
   if (raw.length > PREVIEW_DIFF_MAX_CHARS) {
     return { diff: raw.slice(0, PREVIEW_DIFF_MAX_CHARS), truncated: true }
   }

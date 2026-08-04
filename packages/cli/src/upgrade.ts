@@ -2,21 +2,30 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { t } from './i18n.js'
 import { confirm, isInteractive } from './tui.js'
-import { AMBER, GREEN, dim, paint } from './ui.js'
-import { VERSION, isNewerVersion, startUpdateCheck } from './version.js'
+import { AMBER, dim, GREEN, paint } from './ui.js'
+import { isNewerVersion, startUpdateCheck, VERSION } from './version.js'
 
 export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun'
 
 /** Guesses the global package manager from where the CLI is installed. */
 export function detectPackageManager(installedPath: string): PackageManager {
   const segments = installedPath.split(/[\\/]/)
-  if (segments.includes('.bun')) return 'bun'
-  if (segments.includes('pnpm')) return 'pnpm'
-  if (segments.includes('yarn')) return 'yarn'
+  if (segments.includes('.bun')) {
+    return 'bun'
+  }
+  if (segments.includes('pnpm')) {
+    return 'pnpm'
+  }
+  if (segments.includes('yarn')) {
+    return 'yarn'
+  }
   return 'npm'
 }
 
-export function upgradeCommand(pm: PackageManager, version: string): { cmd: string; args: string[] } {
+export function upgradeCommand(
+  pm: PackageManager,
+  version: string,
+): { cmd: string; args: string[] } {
   const pkg = `codesema@${version}`
   switch (pm) {
     case 'bun':
@@ -54,12 +63,18 @@ function runUpgrade(latest: string): void {
  * Best effort and interactive-only; the current invocation continues either way.
  */
 export async function maybeOfferUpgrade(): Promise<void> {
-  if (!isInteractive()) return
+  if (!isInteractive()) {
+    return
+  }
   const latest = await startUpdateCheck()
-  if (!latest || !isNewerVersion(VERSION, latest)) return
+  if (!latest || !isNewerVersion(VERSION, latest)) {
+    return
+  }
   console.log('')
   console.log(`  ${paint(t('upgrade.available', { latest }), AMBER)} ${dim(`(v${VERSION})`)}`)
   const accepted = await confirm({ title: t('upgrade.question') })
-  if (accepted) runUpgrade(latest)
+  if (accepted) {
+    runUpgrade(latest)
+  }
   console.log('')
 }

@@ -9,7 +9,9 @@ const props = defineProps<{ source: DetailSource; running: boolean; runError?: s
 const emit = defineEmits<{ back: []; run: [mode: 'simple' | 'dual'] }>()
 
 const reviewSource = computed<ReviewSource>(() =>
-  props.source.kind === 'mr' ? { kind: 'mr', number: props.source.mr.number } : { kind: 'branch', name: props.source.branch.name },
+  props.source.kind === 'mr'
+    ? { kind: 'mr', number: props.source.mr.number }
+    : { kind: 'branch', name: props.source.branch.name },
 )
 </script>
 
@@ -19,7 +21,9 @@ const reviewSource = computed<ReviewSource>(() =>
 
     <section class="mrd-section">
       <template v-if="source.kind === 'mr'">
-        <span class="mrd-eyebrow codesema-muted">{{ $t('mrs.detailTitle') }} {{ $t('mrs.number', { n: source.mr.number }) }}</span>
+        <span class="mrd-eyebrow codesema-muted"
+          >{{ $t('mrs.detailTitle') }} {{ $t('mrs.number', { n: source.mr.number }) }}</span
+        >
         <h1 class="mrd-title">{{ source.mr.title }}</h1>
 
         <dl class="mrd-fields">
@@ -60,7 +64,13 @@ const reviewSource = computed<ReviewSource>(() =>
         <button class="mrd-run-btn" :disabled="running" @click="emit('run', 'dual')">
           {{ $t('mrs.runDualReview') }}
         </button>
-        <a v-if="source.kind === 'mr'" class="mrd-link-btn" :href="source.mr.url" target="_blank" rel="noopener noreferrer">
+        <a
+          v-if="source.kind === 'mr'"
+          class="mrd-link-btn"
+          :href="source.mr.url"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           {{ $t('mrs.detailOpenInForge') }}
         </a>
       </div>

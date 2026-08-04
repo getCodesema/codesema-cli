@@ -4,7 +4,9 @@ import { onMounted, ref } from 'vue'
 type RepoConfigSnapshot = { rulesContent: string; syncAutoPush: boolean }
 
 const isClient = typeof window !== 'undefined'
-const configToken = isClient ? (window as { __CODESEMA_CONFIG_TOKEN__?: string }).__CODESEMA_CONFIG_TOKEN__ : undefined
+const configToken = isClient
+  ? (window as { __CODESEMA_CONFIG_TOKEN__?: string }).__CODESEMA_CONFIG_TOKEN__
+  : undefined
 
 const loading = ref(true)
 const loadError = ref<string | null>(null)
@@ -24,7 +26,9 @@ async function load() {
   loadError.value = null
   try {
     const res = await fetch('/api/config')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
     const snapshot = (await res.json()) as RepoConfigSnapshot
     rulesContent.value = snapshot.rulesContent
     syncAutoPush.value = snapshot.syncAutoPush
@@ -36,7 +40,9 @@ async function load() {
 }
 
 async function saveRules() {
-  if (!configToken || savingRules.value) return
+  if (!configToken || savingRules.value) {
+    return
+  }
   savingRules.value = true
   rulesError.value = null
   try {
@@ -45,9 +51,13 @@ async function saveRules() {
       headers: { 'content-type': 'application/json', 'x-codesema-config-token': configToken },
       body: JSON.stringify({ content: rulesContent.value }),
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
     rulesSaved.value = true
-    if (rulesSavedTimer) clearTimeout(rulesSavedTimer)
+    if (rulesSavedTimer) {
+      clearTimeout(rulesSavedTimer)
+    }
     rulesSavedTimer = setTimeout(() => {
       rulesSaved.value = false
     }, 2000)
@@ -59,7 +69,9 @@ async function saveRules() {
 }
 
 async function toggleAutoSync() {
-  if (!configToken || togglingSync.value) return
+  if (!configToken || togglingSync.value) {
+    return
+  }
   const next = !syncAutoPush.value
   togglingSync.value = true
   syncError.value = null
@@ -69,7 +81,9 @@ async function toggleAutoSync() {
       headers: { 'content-type': 'application/json', 'x-codesema-config-token': configToken },
       body: JSON.stringify({ enabled: next }),
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
     syncAutoPush.value = next
   } catch (e) {
     syncError.value = e instanceof Error ? e.message : String(e)
@@ -97,12 +111,7 @@ onMounted(load)
       <section class="cfg-section">
         <h2 class="cfg-section-title">{{ $t('settings.rulesTitle') }}</h2>
         <p class="cfg-hint codesema-muted">{{ $t('settings.rulesHint') }}</p>
-        <textarea
-          v-model="rulesContent"
-          class="cfg-textarea"
-          rows="14"
-          spellcheck="false"
-        />
+        <textarea v-model="rulesContent" class="cfg-textarea" rows="14" spellcheck="false" />
         <div class="cfg-section-actions">
           <button
             class="cfg-save-btn"
@@ -112,7 +121,9 @@ onMounted(load)
           >
             {{ rulesSaved ? $t('settings.saved') : $t('settings.save') }}
           </button>
-          <p v-if="rulesError" class="cfg-error">{{ $t('settings.saveError') }} ({{ rulesError }})</p>
+          <p v-if="rulesError" class="cfg-error">
+            {{ $t('settings.saveError') }} ({{ rulesError }})
+          </p>
         </div>
       </section>
 
@@ -128,7 +139,9 @@ onMounted(load)
           >
             {{ syncAutoPush ? $t('settings.autoSyncOn') : $t('settings.autoSyncOff') }}
           </button>
-          <p v-if="syncError" class="cfg-error">{{ $t('settings.autoSyncError') }} ({{ syncError }})</p>
+          <p v-if="syncError" class="cfg-error">
+            {{ $t('settings.autoSyncError') }} ({{ syncError }})
+          </p>
         </div>
       </section>
     </template>

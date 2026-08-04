@@ -1,9 +1,15 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { saveGlobalConfig, saveRepoConfig } from './config.js'
-import { readRulesContent, readSyncAutoPush, rulesFilePath, setSyncAutoPush, writeRulesContent } from './repo-config.js'
+import {
+  readRulesContent,
+  readSyncAutoPush,
+  rulesFilePath,
+  setSyncAutoPush,
+  writeRulesContent,
+} from './repo-config.js'
 
 describe('repo-config', () => {
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
@@ -17,8 +23,11 @@ describe('repo-config', () => {
   })
 
   afterEach(() => {
-    if (previousConfigDir === undefined) delete process.env.CODESEMA_CONFIG_DIR
-    else process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
     rmSync(configDir, { recursive: true, force: true })
     rmSync(repoDir, { recursive: true, force: true })
   })

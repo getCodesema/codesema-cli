@@ -31,7 +31,8 @@ const en = {
   'focus.fixRunning': 'The agent is applying the fixes…',
   'focus.fixDone': 'Fixes applied. Run a new review to verify.',
   'focus.fixFailed': 'Fix run failed',
-  'focus.headMoved': 'The branch has moved since this review; the agent will patch the files as they are now.',
+  'focus.headMoved':
+    'The branch has moved since this review; the agent will patch the files as they are now.',
 
   'live.title': 'Review in progress',
   'live.errorTitle': 'The review failed',
@@ -58,7 +59,8 @@ const en = {
   'live.judgeRejected': 'rejected',
 
   'finding.consensus': 'both reviewers',
-  'reviews.dualStat': 'dual review · {merged} merged · {rejected} rejected · {added} added by the prosecutor',
+  'reviews.dualStat':
+    'dual review · {merged} merged · {rejected} rejected · {added} added by the prosecutor',
 
   'reviews.prologue.why': 'Why this MR',
   'reviews.prologue.what': 'What it does',
@@ -139,12 +141,14 @@ const en = {
   'settings.loading': 'Loading repo settings…',
   'settings.loadError': 'Could not load the repo settings.',
   'settings.rulesTitle': 'Review rules',
-  'settings.rulesHint': 'One rule per line, saved to .codesema/RULES.md. Optional | -separated segments (Scope, Where to look, Bad, Good, Exceptions).',
+  'settings.rulesHint':
+    'One rule per line, saved to .codesema/RULES.md. Optional | -separated segments (Scope, Where to look, Bad, Good, Exceptions).',
   'settings.save': 'Save',
   'settings.saved': 'Saved ✓',
   'settings.saveError': 'Could not save the rules.',
   'settings.autoSyncTitle': 'Auto-sync',
-  'settings.autoSyncHint': 'Automatically push every completed review to codesema.com. Global setting: applies to all your repositories, not only this one.',
+  'settings.autoSyncHint':
+    'Automatically push every completed review to codesema.com. Global setting: applies to all your repositories, not only this one.',
   'settings.autoSyncOn': 'Auto-sync: on',
   'settings.autoSyncOff': 'Auto-sync: off',
   'settings.autoSyncError': 'Could not update auto-sync.',
@@ -224,7 +228,8 @@ const fr: Record<MessageKey, string> = {
   'focus.fixRunning': "L'agent applique les fix…",
   'focus.fixDone': 'Fix appliqués. Relance une review pour vérifier.',
   'focus.fixFailed': 'Le lancement des fix a échoué',
-  'focus.headMoved': "La branche a bougé depuis cette revue ; l'agent corrigera les fichiers dans leur état actuel.",
+  'focus.headMoved':
+    "La branche a bougé depuis cette revue ; l'agent corrigera les fichiers dans leur état actuel.",
 
   'live.title': 'Revue en cours',
   'live.errorTitle': 'La revue a échoué',
@@ -251,7 +256,8 @@ const fr: Record<MessageKey, string> = {
   'live.judgeRejected': 'rejeté',
 
   'finding.consensus': 'les 2 reviewers',
-  'reviews.dualStat': 'revue duale · {merged} fusionnées · {rejected} rejetées · {added} ajoutées par le procureur',
+  'reviews.dualStat':
+    'revue duale · {merged} fusionnées · {rejected} rejetées · {added} ajoutées par le procureur',
 
   'reviews.prologue.why': 'Pourquoi cette MR',
   'reviews.prologue.what': "Ce qu'elle fait",
@@ -338,7 +344,8 @@ const fr: Record<MessageKey, string> = {
   'settings.saved': 'Enregistré ✓',
   'settings.saveError': "Impossible d'enregistrer les règles.",
   'settings.autoSyncTitle': 'Synchronisation automatique',
-  'settings.autoSyncHint': 'Pousser automatiquement chaque revue terminée vers codesema.com. Réglage global : s\'applique à tous vos dépôts, pas seulement celui-ci.',
+  'settings.autoSyncHint':
+    "Pousser automatiquement chaque revue terminée vers codesema.com. Réglage global : s'applique à tous vos dépôts, pas seulement celui-ci.",
   'settings.autoSyncOn': 'Auto-sync : activée',
   'settings.autoSyncOff': 'Auto-sync : désactivée',
   'settings.autoSyncError': 'Impossible de mettre à jour la synchronisation automatique.',
@@ -350,7 +357,7 @@ const fr: Record<MessageKey, string> = {
   'mrs.loadError': 'Impossible de charger les merge requests.',
   'mrs.reasonNoRemote': 'Aucun remote de forge configuré pour ce dépôt.',
   'mrs.reasonNoCli': 'Installe gh (GitHub) ou glab (GitLab) pour lister les merge requests.',
-  'mrs.reasonCliError': "La CLI de la forge a renvoyé une réponse inattendue.",
+  'mrs.reasonCliError': 'La CLI de la forge a renvoyé une réponse inattendue.',
   'mrs.number': '#{n}',
   'mrs.updated': 'Mise à jour {date}',
   'mrs.detailTitle': 'Merge request',
@@ -363,7 +370,7 @@ const fr: Record<MessageKey, string> = {
   'mrs.runDualReview': 'Lancer la revue double',
   'mrs.reviewRunning': 'Revue en cours…',
   'mrs.runBusy': 'Une autre revue de MR est déjà en cours.',
-  'mrs.runError': "Impossible de démarrer la revue.",
+  'mrs.runError': 'Impossible de démarrer la revue.',
 
   'branches.title': 'Branches',
   'branches.refresh': 'Rafraîchir',
@@ -390,7 +397,9 @@ const fr: Record<MessageKey, string> = {
 const catalogs: Record<string, Record<MessageKey, string>> = { en, fr }
 
 function detectLocale(): string {
-  if (typeof window === 'undefined') return 'en'
+  if (typeof window === 'undefined') {
+    return 'en'
+  }
   const injected = (window as { __CODESEMA_LOCALE__?: string }).__CODESEMA_LOCALE__
   return injected && catalogs[injected] ? injected : 'en'
 }
@@ -402,10 +411,12 @@ export function t(key: string, params?: Record<string, unknown>, count?: number)
   if (msg.includes(' | ')) {
     const n = count ?? (typeof params?.n === 'number' ? (params.n as number) : undefined)
     const parts = msg.split(' | ')
-    msg = (n === 1 ? parts[0] : parts[1] ?? parts[0]) ?? msg
+    msg = (n === 1 ? parts[0] : (parts[1] ?? parts[0])) ?? msg
   }
   if (params) {
-    for (const [k, v] of Object.entries(params)) msg = msg.replaceAll(`{${k}}`, String(v))
+    for (const [k, v] of Object.entries(params)) {
+      msg = msg.replaceAll(`{${k}}`, String(v))
+    }
   }
   return msg
 }

@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
-import type { ForgeMr, JudgeLive, LiveStatus, LocalBranch, MrReviewMode, MrReviewStatus, PartialReview, ReviewRecord, ReviewSource } from './types'
 import BranchSidebar from './components/BranchSidebar.vue'
 import MrDetailPanel, { type DetailSource } from './components/MrDetailPanel.vue'
 import MrSidebar from './components/MrSidebar.vue'
 import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
+import type {
+  ForgeMr,
+  JudgeLive,
+  LiveStatus,
+  LocalBranch,
+  MrReviewMode,
+  MrReviewStatus,
+  PartialReview,
+  ReviewRecord,
+  ReviewSource,
+} from './types'
 
 const view = ref<'review' | 'settings' | 'detail'>('review')
 const selectedDetail = shallowRef<DetailSource | null>(null)
@@ -37,8 +47,12 @@ let events: EventSource | null = null
 
 async function loadRecord(): Promise<boolean> {
   const res = await fetch('/api/review')
-  if (res.status === 202) return false
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (res.status === 202) {
+    return false
+  }
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`)
+  }
   record.value = (await res.json()) as ReviewRecord
   return true
 }
@@ -76,7 +90,9 @@ function openEvents() {
 async function load() {
   error.value = null
   try {
-    if (await loadRecord()) return
+    if (await loadRecord()) {
+      return
+    }
     openEvents()
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -94,7 +110,9 @@ const mrReviewStartError = ref<string | null>(null)
 let mrReviewPollTimer: ReturnType<typeof setInterval> | undefined
 
 const runningSource = computed<ReviewSource | null>(() =>
-  mrReviewStatus.value?.available && mrReviewStatus.value.phase === 'running' ? mrReviewStatus.value.source : null,
+  mrReviewStatus.value?.available && mrReviewStatus.value.phase === 'running'
+    ? mrReviewStatus.value.source
+    : null,
 )
 const mrReviewRunningNumber = computed(() =>
   runningSource.value?.kind === 'mr' ? runningSource.value.number : null,
@@ -105,30 +123,41 @@ const branchReviewRunningName = computed(() =>
 const mrReviewRunning = computed(() => runningSource.value !== null)
 
 function stopMrReviewPolling() {
-  if (!mrReviewPollTimer) return
+  if (!mrReviewPollTimer) {
+    return
+  }
   clearInterval(mrReviewPollTimer)
   mrReviewPollTimer = undefined
 }
 
 function startMrReviewPolling() {
-  if (!mrReviewPollTimer) mrReviewPollTimer = setInterval(() => void refreshMrReviewStatus(), 1500)
+  if (!mrReviewPollTimer) {
+    mrReviewPollTimer = setInterval(() => void refreshMrReviewStatus(), 1500)
+  }
 }
 
 async function refreshMrReviewStatus(): Promise<void> {
   try {
     const res = await fetch('/api/mrs/review/status')
-    if (!res.ok) return
+    if (!res.ok) {
+      return
+    }
     const next = (await res.json()) as MrReviewStatus
     mrReviewStatus.value = next
-    if (next.available && next.phase === 'running') startMrReviewPolling()
-    else stopMrReviewPolling()
+    if (next.available && next.phase === 'running') {
+      startMrReviewPolling()
+    } else {
+      stopMrReviewPolling()
+    }
   } catch {
     // local server stopped (Ctrl+C): keep the last known state
   }
 }
 
 async function runReview(source: ReviewSource, mode: MrReviewMode) {
-  if (!mrReviewToken || mrReviewRunning.value) return
+  if (!mrReviewToken || mrReviewRunning.value) {
+    return
+  }
   mrReviewStartError.value = null
   try {
     const res = await fetch('/api/mrs/review', {
@@ -163,13 +192,17 @@ onUnmounted(stopMrReviewPolling)
   <div class="app-layout">
     <aside class="app-sidebar">
       <MrSidebar
-        :selected-number="view === 'detail' && selectedDetail?.kind === 'mr' ? selectedDetail.mr.number : null"
+        :selected-number="
+          view === 'detail' && selectedDetail?.kind === 'mr' ? selectedDetail.mr.number : null
+        "
         :running-number="mrReviewRunningNumber"
         @select="selectMr"
       />
       <div class="app-sidebar-divider" />
       <BranchSidebar
-        :selected-name="view === 'detail' && selectedDetail?.kind === 'branch' ? selectedDetail.branch.name : null"
+        :selected-name="
+          view === 'detail' && selectedDetail?.kind === 'branch' ? selectedDetail.branch.name : null
+        "
         :running-name="branchReviewRunningName"
         @select="selectBranch"
       />
@@ -188,12 +221,26 @@ onUnmounted(stopMrReviewPolling)
         :running="mrReviewRunning"
         :run-error="mrReviewStartError"
         @back="backFromDetail"
-        @run="(mode) => runReview(selectedDetail!.kind === 'mr' ? { kind: 'mr', number: selectedDetail!.mr.number } : { kind: 'branch', name: selectedDetail!.branch.name }, mode)"
+        @run="
+          (mode) =>
+            runReview(
+              selectedDetail!.kind === 'mr'
+                ? { kind: 'mr', number: selectedDetail!.mr.number }
+                : { kind: 'branch', name: selectedDetail!.branch.name },
+              mode,
+            )
+        "
       />
       <RepoSettings v-else-if="view === 'settings'" />
       <template v-else>
         <ReviewShell v-if="record" :record="record" />
-        <ReviewLive v-else-if="status && !error" :status="status" :partial="partial" :partial-b="partialB" :judge="judge" />
+        <ReviewLive
+          v-else-if="status && !error"
+          :status="status"
+          :partial="partial"
+          :partial-b="partialB"
+          :judge="judge"
+        />
         <div v-else class="app-state">
           <template v-if="error">
             <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>

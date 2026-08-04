@@ -6,7 +6,11 @@ afterEach(() => setLanguage(null))
 
 describe('describeConfigEntries', () => {
   test('lists agent, language, auto-sync then back, with current values as hints', () => {
-    const entries = describeConfigEntries({ agent: 'claude -p --model opus', language: 'fr', syncAutoPush: true })
+    const entries = describeConfigEntries({
+      agent: 'claude -p --model opus',
+      language: 'fr',
+      syncAutoPush: true,
+    })
     expect(entries.map((entry) => entry.id)).toEqual(['agent', 'language', 'autoSync', 'back'])
     expect(entries[0]?.hint).toBe('claude -p --model opus')
     expect(entries[1]?.hint).toBe('Français')

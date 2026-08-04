@@ -1,14 +1,19 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { subprocessEnv } from './git.js'
 import { computeDiffSummary, computePrepInput, detectTarget, prep } from './prep.js'
 
 let repo: string
 
 function run(args: string[]) {
-  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: repo, stdio: 'ignore' })
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+    cwd: repo,
+    stdio: 'ignore',
+    env: subprocessEnv(),
+  })
 }
 
 function commitFile(name: string, content: string, msg: string) {
@@ -36,7 +41,10 @@ afterAll(() => {
 
 describe('detectTarget', () => {
   test('valid --target resolved, source = flag', () => {
-    expect(detectTarget('feature/x', 'develop', repo)).toEqual({ target: 'develop', source: '--target flag' })
+    expect(detectTarget('feature/x', 'develop', repo)).toEqual({
+      target: 'develop',
+      source: '--target flag',
+    })
   })
 
   test('--target not found: explicit error', () => {
@@ -147,13 +155,23 @@ describe('prep', () => {
 
   test('impact_candidates: filled when a changed export has callers outside the diff', () => {
     run(['checkout', 'develop'])
-    writeFileSync(join(repo, 'greeting.ts'), 'export function greetUser(name: string): string {\n  return name\n}\n')
-    writeFileSync(join(repo, 'consumer.ts'), "import { greetUser } from './greeting'\nconsole.log(greetUser('a'))\n")
+    writeFileSync(
+      join(repo, 'greeting.ts'),
+      'export function greetUser(name: string): string {\n  return name\n}\n',
+    )
+    writeFileSync(
+      join(repo, 'consumer.ts'),
+      "import { greetUser } from './greeting'\nconsole.log(greetUser('a'))\n",
+    )
     run(['add', '-A'])
     run(['commit', '-m', 'chore: add greeting and consumer'])
     run(['checkout', '-b', 'feature/impact'])
     try {
-      commitFile('greeting.ts', 'export function greetUser(name: string, loud: boolean): string {\n  return name\n}\n', 'feat: loud greeting')
+      commitFile(
+        'greeting.ts',
+        'export function greetUser(name: string, loud: boolean): string {\n  return name\n}\n',
+        'feat: loud greeting',
+      )
       const input = prep({ target: 'develop', cwd: repo, quiet: true })
       const symbol = input.impact_candidates?.symbols.find((s) => s.name === 'greetUser')
       expect(symbol?.change).toBe('modified')
@@ -178,7 +196,9 @@ describe('computePrepInput', () => {
   test('prep still writes input.json by consuming computePrepInput', () => {
     const input = prep({ target: 'develop', cwd: repo, quiet: true })
     expect(existsSync(join(repo, '.codesema', 'input.json'))).toBe(true)
-    expect(JSON.parse(readFileSync(join(repo, '.codesema', 'input.json'), 'utf8')).branch).toBe(input.branch)
+    expect(JSON.parse(readFileSync(join(repo, '.codesema', 'input.json'), 'utf8')).branch).toBe(
+      input.branch,
+    )
   })
 })
 

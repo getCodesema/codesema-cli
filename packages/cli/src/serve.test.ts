@@ -1,13 +1,20 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { sanitizeRecord } from './contract.js'
 import { parsePartialReview } from './partial.js'
-import { createSession, isLoopbackHost, resolveStaticPath, startServer, type LiveSession, type SessionEvent } from './serve.js'
+import {
+  createSession,
+  isLoopbackHost,
+  resolveStaticPath,
+  startServer,
+  type LiveSession,
+  type SessionEvent,
+} from './serve.js'
 
 describe('isLoopbackHost', () => {
   test('accepts loopback hosts, with and without a port', () => {
@@ -156,7 +163,9 @@ function rawRequest(
       },
     )
     req.on('error', reject)
-    if (opts.body !== undefined) req.write(opts.body)
+    if (opts.body !== undefined) {
+      req.write(opts.body)
+    }
     req.end()
   })
 }
@@ -164,7 +173,9 @@ function rawRequest(
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
   const startedAt = Date.now()
   while (!predicate()) {
-    if (Date.now() - startedAt > timeoutMs) throw new Error('timed out waiting for condition')
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('timed out waiting for condition')
+    }
     await new Promise((r) => setTimeout(r, 20))
   }
 }
@@ -189,8 +200,11 @@ describe('startServer', () => {
 
   afterAll(async () => {
     await stop()
-    if (previousConfigDir === undefined) delete process.env.CODESEMA_CONFIG_DIR
-    else process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
     rmSync(repoDir, { recursive: true, force: true })
     rmSync(configDir, { recursive: true, force: true })
   })
@@ -256,7 +270,9 @@ describe('startServer', () => {
   })
 
   test('rejects any request whose Host is not loopback', async () => {
-    expect((await rawRequest(port, '/api/status', { headers: { host: 'evil.com' } })).status).toBe(403)
+    expect((await rawRequest(port, '/api/status', { headers: { host: 'evil.com' } })).status).toBe(
+      403,
+    )
     expect((await rawRequest(port, '/', { headers: { host: 'evil.com' } })).status).toBe(403)
   })
 
@@ -297,7 +313,12 @@ describe('startServer', () => {
     const calls: number[][] = []
     let startResult: { ok: true } | { ok: false; code: number; error: string } = { ok: true }
     const runner = {
-      status: () => ({ available: true as const, phase: 'idle' as const, selected: [], head_moved: false }),
+      status: () => ({
+        available: true as const,
+        phase: 'idle' as const,
+        selected: [],
+        head_moved: false,
+      }),
       start: (ids: number[]) => {
         calls.push(ids)
         return startResult
@@ -314,7 +335,10 @@ describe('startServer', () => {
       const status = await rawRequest(started.port, '/api/fix/status')
       expect(JSON.parse(status.body)).toMatchObject({ available: true, phase: 'idle' })
 
-      const noToken = await rawRequest(started.port, '/api/fix', { method: 'POST', body: '{"findings":[0]}' })
+      const noToken = await rawRequest(started.port, '/api/fix', {
+        method: 'POST',
+        body: '{"findings":[0]}',
+      })
       expect(noToken.status).toBe(403)
       const badToken = await rawRequest(started.port, '/api/fix', {
         method: 'POST',
@@ -362,7 +386,11 @@ describe('startServer', () => {
       },
     }
     const mrSession = createSession()
-    const started = await startServer(mrSession, { cwd: repoDir, port: 4931, mrReviewRunner: runner })
+    const started = await startServer(mrSession, {
+      cwd: repoDir,
+      port: 4931,
+      mrReviewRunner: runner,
+    })
     try {
       const html = await rawRequest(started.port, '/')
       const tokenMatch = /__CODESEMA_MRREVIEW_TOKEN__="([a-f0-9]{32})"/.exec(html.body)
@@ -434,7 +462,10 @@ describe('startServer', () => {
   })
 
   test('rejects config mutations without a valid config token', async () => {
-    const noToken = await rawRequest(port, '/api/config/rules', { method: 'PUT', body: '{"content":"- rule"}' })
+    const noToken = await rawRequest(port, '/api/config/rules', {
+      method: 'PUT',
+      body: '{"content":"- rule"}',
+    })
     expect(noToken.status).toBe(403)
     const badToken = await rawRequest(port, '/api/config/sync-auto-push', {
       method: 'PUT',
@@ -470,10 +501,14 @@ describe('startServer', () => {
       body: JSON.stringify({ content: '- no any\n- errors carry a cause\n' }),
     })
     expect(written.status).toBe(200)
-    expect(readFileSync(join(repoDir, '.codesema', 'RULES.md'), 'utf8')).toBe('- no any\n- errors carry a cause\n')
+    expect(readFileSync(join(repoDir, '.codesema', 'RULES.md'), 'utf8')).toBe(
+      '- no any\n- errors carry a cause\n',
+    )
 
     const afterWrite = await rawRequest(port, '/api/config')
-    expect(JSON.parse(afterWrite.body)).toMatchObject({ rulesContent: '- no any\n- errors carry a cause\n' })
+    expect(JSON.parse(afterWrite.body)).toMatchObject({
+      rulesContent: '- no any\n- errors carry a cause\n',
+    })
 
     const badToggle = await rawRequest(port, '/api/config/sync-auto-push', {
       method: 'PUT',
@@ -547,7 +582,10 @@ describe('preview and branches endpoints', () => {
   let previewStop: () => Promise<void>
 
   function runGit(args: string[]): void {
-    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: previewRepo, stdio: 'ignore' })
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      cwd: previewRepo,
+      stdio: 'ignore',
+    })
   }
 
   beforeAll(async () => {
@@ -575,7 +613,11 @@ describe('preview and branches endpoints', () => {
   test('lists local branches with isCurrent and worktreePath', async () => {
     const res = await rawRequest(previewPort, '/api/branches')
     expect(res.status).toBe(200)
-    const branches = JSON.parse(res.body) as { name: string; isCurrent: boolean; worktreePath: string | null }[]
+    const branches = JSON.parse(res.body) as {
+      name: string
+      isCurrent: boolean
+      worktreePath: string | null
+    }[]
     const main = branches.find((b) => b.name === 'main')
     const feature = branches.find((b) => b.name === 'feature/x')
     expect(main).toMatchObject({ isCurrent: true })
@@ -603,7 +645,10 @@ describe('preview and branches endpoints', () => {
   })
 
   test('returns the diff of a single file from the preview', async () => {
-    const res = await rawRequest(previewPort, '/api/preview/diff?source=branch&name=feature/x&path=a.txt')
+    const res = await rawRequest(
+      previewPort,
+      '/api/preview/diff?source=branch&name=feature/x&path=a.txt',
+    )
     expect(res.status).toBe(200)
     const body = JSON.parse(res.body) as { diff: string; truncated: boolean }
     expect(body.diff).toContain('-base')
@@ -612,7 +657,10 @@ describe('preview and branches endpoints', () => {
   })
 
   test('rejects a file path that is not part of the diff', async () => {
-    const res = await rawRequest(previewPort, '/api/preview/diff?source=branch&name=feature/x&path=nope.txt')
+    const res = await rawRequest(
+      previewPort,
+      '/api/preview/diff?source=branch&name=feature/x&path=nope.txt',
+    )
     expect(res.status).toBe(404)
   })
 })

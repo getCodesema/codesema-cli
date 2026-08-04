@@ -8,7 +8,12 @@ import { archiveRecord, resolveRecord } from './record.js'
 import { createSession, startServer } from './serve.js'
 import { defaultCommand, detectAgents } from './wizard.js'
 
-export async function show(opts: { review?: string; port?: number; open: boolean; cwd: string }): Promise<void> {
+export async function show(opts: {
+  review?: string | undefined
+  port?: number | undefined
+  open: boolean
+  cwd: string
+}): Promise<void> {
   const cwd = repoRoot(opts.cwd)
 
   const { record, fresh, sourcePath } = resolveRecord({ review: opts.review, cwd })
@@ -39,7 +44,9 @@ export async function show(opts: { review?: string; port?: number; open: boolean
         })
       : undefined
   const mrReviewRunner =
-    agentCommand && !untrustedRepoAgent ? createMrReviewRunner({ cwd, session, agentCommand, timeoutMs }) : undefined
+    agentCommand && !untrustedRepoAgent
+      ? createMrReviewRunner({ cwd, session, agentCommand, timeoutMs })
+      : undefined
   const { url } = await startServer(session, {
     cwd,
     port: opts.port ?? config.port,
@@ -51,5 +58,7 @@ export async function show(opts: { review?: string; port?: number; open: boolean
   console.log(`codesema — ${record.meta.branch} → ${record.meta.target}`)
   console.log(`  ${url}`)
   console.log(`  ${t('review.ctrlc')}`)
-  if (opts.open) openBrowser(url)
+  if (opts.open) {
+    openBrowser(url)
+  }
 }

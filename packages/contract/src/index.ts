@@ -115,14 +115,23 @@ const MESSAGE_MAX = 2000
 const SUGGESTION_MAX = 4000
 
 function sanitizeReviewFirst(raw: unknown, stepsCount: number): ReviewFirstItem[] {
-  if (!Array.isArray(raw)) return []
+  if (!Array.isArray(raw)) {
+    return []
+  }
   const out: ReviewFirstItem[] = []
   for (const item of raw) {
-    if (out.length >= REVIEW_FIRST_MAX) break
-    if (!item || typeof item !== 'object') continue
+    if (out.length >= REVIEW_FIRST_MAX) {
+      break
+    }
+    if (!item || typeof item !== 'object') {
+      continue
+    }
     const it = item as Record<string, unknown>
-    const point = typeof it.point === 'string' ? it.point.trim().slice(0, REVIEW_FIRST_POINT_MAX) : ''
-    if (!point) continue
+    const point =
+      typeof it.point === 'string' ? it.point.trim().slice(0, REVIEW_FIRST_POINT_MAX) : ''
+    if (!point) {
+      continue
+    }
     const risk: ReviewFirstRisk = it.risk === 'high' || it.risk === 'low' ? it.risk : 'medium'
     // Archives written before the step rename used "chapter_ref".
     const rawRef = it.step_ref ?? it.chapter_ref
@@ -130,32 +139,45 @@ function sanitizeReviewFirst(raw: unknown, stepsCount: number): ReviewFirstItem[
       Number.isInteger(rawRef) && (rawRef as number) >= 0 && (rawRef as number) < stepsCount
         ? (rawRef as number)
         : null
-    const file = typeof it.file === 'string' && it.file.trim() ? it.file.trim().slice(0, FILE_MAX) : null
+    const file =
+      typeof it.file === 'string' && it.file.trim() ? it.file.trim().slice(0, FILE_MAX) : null
     out.push({ point, risk, step_ref: stepRef, file })
   }
   return out
 }
 
 function sanitizeRisk(raw: unknown): NarrativeRisk | undefined {
-  if (raw === 'high' || raw === 'medium' || raw === 'low') return raw
+  if (raw === 'high' || raw === 'medium' || raw === 'low') {
+    return raw
+  }
   return undefined
 }
 
 function sanitizePrologue(raw: unknown): NarrativePrologue | undefined {
-  if (!raw || typeof raw !== 'object') return undefined
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
   const p = raw as Record<string, unknown>
   const why = typeof p.why === 'string' ? p.why.trim() : ''
   const what = typeof p.what === 'string' ? p.what.trim() : ''
-  if (!why && !what) return undefined
+  if (!why && !what) {
+    return undefined
+  }
   const key_changes: NarrativePrologueKeyChange[] = []
   if (Array.isArray(p.key_changes)) {
     for (const item of p.key_changes) {
-      if (key_changes.length >= KEY_CHANGES_MAX) break
-      if (!item || typeof item !== 'object') continue
+      if (key_changes.length >= KEY_CHANGES_MAX) {
+        break
+      }
+      if (!item || typeof item !== 'object') {
+        continue
+      }
       const it = item as Record<string, unknown>
       const title = typeof it.title === 'string' ? it.title.trim() : ''
       const detail = typeof it.detail === 'string' ? it.detail.trim() : ''
-      if (!title) continue
+      if (!title) {
+        continue
+      }
       key_changes.push({ title, detail })
     }
   }
@@ -163,21 +185,28 @@ function sanitizePrologue(raw: unknown): NarrativePrologue | undefined {
 }
 
 export function sanitizeNarrative(raw: unknown, findingsCount: number): ReviewNarrative | null {
-  if (!raw || typeof raw !== 'object') return null
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
   const r = raw as Record<string, unknown>
 
   const intent = typeof r.intent === 'string' ? r.intent.trim() : ''
-  const confidence: NarrativeConfidence = r.confidence === 'high' || r.confidence === 'low' ? r.confidence : 'medium'
+  const confidence: NarrativeConfidence =
+    r.confidence === 'high' || r.confidence === 'low' ? r.confidence : 'medium'
   const prologue = sanitizePrologue(r.prologue)
   // Archives written before the step rename used "chapters".
   const rawSteps = Array.isArray(r.steps) ? r.steps : Array.isArray(r.chapters) ? r.chapters : []
 
   const steps: NarrativeStep[] = []
   for (const c of rawSteps) {
-    if (!c || typeof c !== 'object') continue
+    if (!c || typeof c !== 'object') {
+      continue
+    }
     const cc = c as Record<string, unknown>
     const title = typeof cc.title === 'string' ? cc.title.trim() : ''
-    if (!title) continue
+    if (!title) {
+      continue
+    }
     const rationale = typeof cc.rationale === 'string' ? cc.rationale.trim() : ''
     const files = Array.isArray(cc.files)
       ? cc.files.filter((f): f is string => typeof f === 'string').map((f) => f.slice(0, FILE_MAX))
@@ -191,7 +220,8 @@ export function sanitizeNarrative(raw: unknown, findingsCount: number): ReviewNa
       }
     }
     const risk = sanitizeRisk(cc.risk)
-    const take = typeof cc.take === 'string' ? cc.take.trim().slice(0, TAKE_MAX) || undefined : undefined
+    const take =
+      typeof cc.take === 'string' ? cc.take.trim().slice(0, TAKE_MAX) || undefined : undefined
     const check =
       cc.check === null
         ? null
@@ -209,30 +239,45 @@ export function sanitizeNarrative(raw: unknown, findingsCount: number): ReviewNa
     })
   }
 
-  if (steps.length === 0 && !intent) return null
+  if (steps.length === 0 && !intent) {
+    return null
+  }
   const review_first = sanitizeReviewFirst(r.review_first, steps.length)
   return { intent, confidence, ...(prologue ? { prologue } : {}), steps, review_first }
 }
 
-const SEVERITIES: readonly FindingSeverity[] = ['critical', 'major', 'minor', 'info']
-const KINDS: readonly FindingKind[] = ['security', 'perf', 'convention', 'design', 'praise', 'why']
+const SEVERITIES: ReadonlySet<FindingSeverity> = new Set(['critical', 'major', 'minor', 'info'])
+const KINDS: ReadonlySet<FindingKind> = new Set([
+  'security',
+  'perf',
+  'convention',
+  'design',
+  'praise',
+  'why',
+])
 
 export function sanitizeFindings(raw: unknown): Finding[] {
-  if (!Array.isArray(raw)) return []
+  if (!Array.isArray(raw)) {
+    return []
+  }
   const out: Finding[] = []
   for (const item of raw) {
-    if (!item || typeof item !== 'object') continue
+    if (!item || typeof item !== 'object') {
+      continue
+    }
     const f = item as Record<string, unknown>
     const file = typeof f.file === 'string' ? f.file.trim().slice(0, FILE_MAX) : ''
     const message = typeof f.message === 'string' ? f.message.trim().slice(0, MESSAGE_MAX) : ''
-    if (!file || !message) continue
-    const kind = KINDS.includes(f.kind as FindingKind) ? (f.kind as FindingKind) : undefined
+    if (!file || !message) {
+      continue
+    }
+    const kind = KINDS.has(f.kind as FindingKind) ? (f.kind as FindingKind) : undefined
     // A praise/why finding carries no defect: any higher severity would trip
     // the verdict escalation and the --fail-on gate.
     const severity: FindingSeverity =
       kind === 'praise' || kind === 'why'
         ? 'info'
-        : SEVERITIES.includes(f.severity as FindingSeverity)
+        : SEVERITIES.has(f.severity as FindingSeverity)
           ? (f.severity as FindingSeverity)
           : 'info'
     const line = Number.isInteger(f.line) && (f.line as number) > 0 ? (f.line as number) : undefined
@@ -240,9 +285,12 @@ export function sanitizeFindings(raw: unknown): Finding[] {
       line !== undefined && Number.isInteger(f.endLine) && (f.endLine as number) >= line
         ? (f.endLine as number)
         : undefined
-    const title = typeof f.title === 'string' ? f.title.trim().slice(0, TITLE_MAX) || undefined : undefined
+    const title =
+      typeof f.title === 'string' ? f.title.trim().slice(0, TITLE_MAX) || undefined : undefined
     const suggestion =
-      typeof f.suggestion === 'string' ? f.suggestion.slice(0, SUGGESTION_MAX) || undefined : undefined
+      typeof f.suggestion === 'string'
+        ? f.suggestion.slice(0, SUGGESTION_MAX) || undefined
+        : undefined
     out.push({
       file,
       message,
@@ -262,20 +310,30 @@ const FILES_REVIEWED_MAX = 500
 
 /** Bare strings are accepted for reviews written by pre-0.9 agents and archives. */
 function sanitizeReviewedPaths(raw: unknown): string[] | undefined {
-  if (!Array.isArray(raw)) return undefined
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
   const seen = new Set<string>()
   for (const item of raw) {
     const value =
       typeof item === 'string'
         ? item
-        : item !== null && typeof item === 'object' && typeof (item as Record<string, unknown>).path === 'string'
+        : item !== null &&
+            typeof item === 'object' &&
+            typeof (item as Record<string, unknown>).path === 'string'
           ? ((item as Record<string, unknown>).path as string)
           : null
-    if (value === null) continue
+    if (value === null) {
+      continue
+    }
     const path = value.trim().slice(0, FILE_MAX)
-    if (!path) continue
+    if (!path) {
+      continue
+    }
     seen.add(path)
-    if (seen.size >= FILES_REVIEWED_MAX) break
+    if (seen.size >= FILES_REVIEWED_MAX) {
+      break
+    }
   }
   return [...seen]
 }
@@ -289,7 +347,9 @@ function reviewedFilesFrom(paths: string[], findings: Finding[]): ReviewedFile[]
   const withFindings = new Set(findings.map((f) => f.file))
   const all = [...paths]
   for (const file of withFindings) {
-    if (!all.includes(file) && all.length < FILES_REVIEWED_MAX) all.push(file)
+    if (!all.includes(file) && all.length < FILES_REVIEWED_MAX) {
+      all.push(file)
+    }
   }
   return all.map((path) => ({ path, status: withFindings.has(path) ? 'findings' : 'clean' }))
 }
@@ -307,7 +367,9 @@ export function sanitizeReview(raw: unknown): SanitizedReview {
     summary,
     findings,
     narrative,
-    ...(reviewedPaths !== undefined ? { files_reviewed: reviewedFilesFrom(reviewedPaths, findings) } : {}),
+    ...(reviewedPaths !== undefined
+      ? { files_reviewed: reviewedFilesFrom(reviewedPaths, findings) }
+      : {}),
   }
 }
 
@@ -317,15 +379,25 @@ export function sanitizeReview(raw: unknown): SanitizedReview {
  * a usable object; shape fields are normalized.
  */
 function sanitizeDualStats(raw: unknown): DualStats | undefined {
-  if (!raw || typeof raw !== 'object') return undefined
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
   const d = raw as Record<string, unknown>
   const counts = [d.merged, d.rejected, d.added_by_b]
-  if (!counts.every((n) => Number.isInteger(n) && (n as number) >= 0)) return undefined
-  return { merged: d.merged as number, rejected: d.rejected as number, added_by_b: d.added_by_b as number }
+  if (!counts.every((n) => Number.isInteger(n) && (n as number) >= 0)) {
+    return undefined
+  }
+  return {
+    merged: d.merged as number,
+    rejected: d.rejected as number,
+    added_by_b: d.added_by_b as number,
+  }
 }
 
 export function sanitizeRecord(raw: unknown): ReviewRecord | null {
-  if (!raw || typeof raw !== 'object') return null
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
   const r = raw as Record<string, unknown>
   const m = (r.meta && typeof r.meta === 'object' ? r.meta : {}) as Record<string, unknown>
   const str = (v: unknown): string => (typeof v === 'string' ? v : '')
@@ -337,10 +409,13 @@ export function sanitizeRecord(raw: unknown): ReviewRecord | null {
     merge_base: str(m.merge_base),
     ...(typeof m.head_sha === 'string' && m.head_sha ? { head_sha: m.head_sha } : {}),
     repo_root: str(m.repo_root),
-    created_at: typeof m.created_at === 'string' && m.created_at ? m.created_at : new Date().toISOString(),
+    created_at:
+      typeof m.created_at === 'string' && m.created_at ? m.created_at : new Date().toISOString(),
     ...(dual !== undefined ? { dual } : {}),
   }
-  const commits = Array.isArray(r.commits) ? r.commits.filter((c): c is string => typeof c === 'string') : []
+  const commits = Array.isArray(r.commits)
+    ? r.commits.filter((c): c is string => typeof c === 'string')
+    : []
   const diff = typeof r.diff === 'string' ? r.diff : ''
   return { version: 1, meta, commits, diff, review: sanitizeReview(r.review) }
 }
@@ -377,10 +452,18 @@ const CONTENT_PATTERNS: readonly { label: string; re: RegExp }[] = [
 
 function sensitiveFilename(path: string): boolean {
   const base = (path.split('/').pop() ?? '').toLowerCase()
-  if (!base) return false
-  if (SENSITIVE_BASENAMES.has(base)) return true
-  if (base === '.env') return true
-  if (base.startsWith('.env.')) return !DOTENV_ALLOWED_SUFFIXES.has(base.slice(5))
+  if (!base) {
+    return false
+  }
+  if (SENSITIVE_BASENAMES.has(base)) {
+    return true
+  }
+  if (base === '.env') {
+    return true
+  }
+  if (base.startsWith('.env.')) {
+    return !DOTENV_ALLOWED_SUFFIXES.has(base.slice(5))
+  }
   const dot = base.lastIndexOf('.')
   return dot > 0 && SENSITIVE_EXTENSIONS.has(base.slice(dot + 1))
 }
@@ -395,7 +478,9 @@ function markerLinePath(line: string): string {
   const rest = line.slice(4)
   const tab = rest.indexOf('\t')
   const raw = (tab === -1 ? rest : rest.slice(0, tab)).trim()
-  if (raw === '/dev/null') return ''
+  if (raw === '/dev/null') {
+    return ''
+  }
   return raw.startsWith('a/') || raw.startsWith('b/') ? raw.slice(2) : raw
 }
 
@@ -406,12 +491,16 @@ function markerLinePath(line: string): string {
  * whether to hold the diff back.
  */
 export function detectDiffSecrets(diff: string): SecretMatch[] {
-  if (typeof diff !== 'string' || !diff) return []
+  if (typeof diff !== 'string' || !diff) {
+    return []
+  }
   const matches: SecretMatch[] = []
   const seen = new Set<string>()
   const add = (file: string, reason: SecretMatchReason, detail: string): void => {
     const key = `${file}\0${reason}\0${detail}`
-    if (seen.has(key)) return
+    if (seen.has(key)) {
+      return
+    }
     seen.add(key)
     matches.push({ file, reason, detail })
   }
@@ -419,23 +508,33 @@ export function detectDiffSecrets(diff: string): SecretMatch[] {
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ')) {
       currentFile = gitHeaderNewPath(line)
-      if (currentFile && sensitiveFilename(currentFile)) add(currentFile, 'filename', currentFile)
+      if (currentFile && sensitiveFilename(currentFile)) {
+        add(currentFile, 'filename', currentFile)
+      }
       continue
     }
     if (line.startsWith('+++ ') || line.startsWith('--- ')) {
       const path = markerLinePath(line)
       if (path) {
-        if (!currentFile) currentFile = path
-        if (sensitiveFilename(path)) add(path, 'filename', path)
+        if (!currentFile) {
+          currentFile = path
+        }
+        if (sensitiveFilename(path)) {
+          add(path, 'filename', path)
+        }
       }
       continue
     }
     const isAdded = line.startsWith('+') && !line.startsWith('+++')
     const isRemoved = line.startsWith('-') && !line.startsWith('---')
-    if (!isAdded && !isRemoved) continue
+    if (!isAdded && !isRemoved) {
+      continue
+    }
     const content = line.slice(1)
     for (const { label, re } of CONTENT_PATTERNS) {
-      if (re.test(content)) add(currentFile || '(unknown file)', 'content', label)
+      if (re.test(content)) {
+        add(currentFile || '(unknown file)', 'content', label)
+      }
     }
   }
   return matches
@@ -460,13 +559,19 @@ function indexDiff(diff: string): DiffIndex | null {
     if (line.startsWith('diff --git ')) {
       currentNewPath = ''
       const path = gitHeaderNewPath(line)
-      if (path) files.add(path)
+      if (path) {
+        files.add(path)
+      }
       continue
     }
     if (line.startsWith('--- ') || line.startsWith('+++ ')) {
       const path = markerLinePath(line)
-      if (path) files.add(path)
-      if (line.startsWith('+++ ')) currentNewPath = path
+      if (path) {
+        files.add(path)
+      }
+      if (line.startsWith('+++ ')) {
+        currentNewPath = path
+      }
       continue
     }
     const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line)
@@ -502,9 +607,16 @@ export function groundReview(
   review: SanitizedReview,
   diff: string,
 ): { review: SanitizedReview; report: GroundingReport } {
-  const report: GroundingReport = { dropped: [], deanchored: [], merged: 0, verdict_escalated: false }
+  const report: GroundingReport = {
+    dropped: [],
+    deanchored: [],
+    merged: 0,
+    verdict_escalated: false,
+  }
   const index = typeof diff === 'string' ? indexDiff(diff) : null
-  if (!index) return { review, report }
+  if (!index) {
+    return { review, report }
+  }
 
   const newIndexByOld = new Map<number, number>()
   const keptIndexByKey = new Map<string, number>()
@@ -530,7 +642,10 @@ export function groundReview(
       if (duplicateOf !== undefined) {
         report.merged++
         const first = findings[duplicateOf] as Finding
-        const severity = SEVERITY_ORDER[kept.severity] > SEVERITY_ORDER[first.severity] ? kept.severity : first.severity
+        const severity =
+          SEVERITY_ORDER[kept.severity] > SEVERITY_ORDER[first.severity]
+            ? kept.severity
+            : first.severity
         const consensus = first.consensus === true || kept.consensus === true
         findings[duplicateOf] = { ...first, severity, ...(consensus ? { consensus: true } : {}) }
         newIndexByOld.set(oldIndex, duplicateOf)

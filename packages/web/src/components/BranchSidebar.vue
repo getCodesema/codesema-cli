@@ -15,7 +15,9 @@ async function load() {
   loadError.value = null
   try {
     const res = await fetch('/api/branches')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
     branches.value = (await res.json()) as LocalBranch[]
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
@@ -32,11 +34,25 @@ defineExpose({ reload: load })
 <template>
   <section class="brs-sidebar">
     <div class="brs-header">
-      <button class="brs-collapse-btn" @click="collapsed = !collapsed" :aria-label="$t(collapsed ? 'branches.expand' : 'branches.collapse')">
-        <span class="brs-chevron" :class="{ 'brs-chevron--collapsed': collapsed }" aria-hidden="true">▾</span>
+      <button
+        class="brs-collapse-btn"
+        @click="collapsed = !collapsed"
+        :aria-label="$t(collapsed ? 'branches.expand' : 'branches.collapse')"
+      >
+        <span
+          class="brs-chevron"
+          :class="{ 'brs-chevron--collapsed': collapsed }"
+          aria-hidden="true"
+          >▾</span
+        >
         <h2 class="brs-title">{{ $t('branches.title') }}</h2>
       </button>
-      <button class="brs-refresh-btn" :disabled="loading" @click="load" :aria-label="$t('branches.refresh')">
+      <button
+        class="brs-refresh-btn"
+        :disabled="loading"
+        @click="load"
+        :aria-label="$t('branches.refresh')"
+      >
         {{ $t('branches.refresh') }}
       </button>
     </div>
@@ -49,7 +65,9 @@ defineExpose({ reload: load })
       <div v-else-if="loadError" class="brs-state">
         <p class="brs-error">{{ $t('branches.loadError') }} ({{ loadError }})</p>
       </div>
-      <p v-else-if="branches.length === 0" class="codesema-muted brs-reason">{{ $t('branches.empty') }}</p>
+      <p v-else-if="branches.length === 0" class="codesema-muted brs-reason">
+        {{ $t('branches.empty') }}
+      </p>
       <ul v-else class="brs-list">
         <li v-for="branch in branches" :key="branch.name">
           <button
@@ -59,12 +77,18 @@ defineExpose({ reload: load })
           >
             <span class="brs-item-top">
               <span class="brs-item-branch">{{ branch.name }}</span>
-              <span v-if="branch.isCurrent" class="brs-badge brs-badge--current">{{ $t('branches.current') }}</span>
-              <span v-else-if="branch.worktreePath" class="brs-badge">{{ $t('branches.inWorktree') }}</span>
+              <span v-if="branch.isCurrent" class="brs-badge brs-badge--current">{{
+                $t('branches.current')
+              }}</span>
+              <span v-else-if="branch.worktreePath" class="brs-badge">{{
+                $t('branches.inWorktree')
+              }}</span>
             </span>
             <span class="brs-item-subject">{{ branch.subject }}</span>
             <span class="brs-item-meta codesema-muted">{{ branch.lastCommitRelative }}</span>
-            <span v-if="branch.name === props.runningName" class="brs-item-running">{{ $t('mrs.reviewRunning') }}</span>
+            <span v-if="branch.name === props.runningName" class="brs-item-running">{{
+              $t('mrs.reviewRunning')
+            }}</span>
           </button>
         </li>
       </ul>

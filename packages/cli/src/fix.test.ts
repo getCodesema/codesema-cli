@@ -5,22 +5,32 @@ import { buildAgentFixPrompt, createFixRunner, fixCommandFor } from './fix.js'
 describe('fixCommandFor', () => {
   test('claude gets acceptEdits permission mode', () => {
     expect(fixCommandFor('claude -p')).toBe('claude -p --permission-mode acceptEdits')
-    expect(fixCommandFor('claude -p --model opus')).toBe('claude -p --model opus --permission-mode acceptEdits')
+    expect(fixCommandFor('claude -p --model opus')).toBe(
+      'claude -p --model opus --permission-mode acceptEdits',
+    )
   })
 
   test('codex exec gets a workspace-write sandbox, before the stdin dash', () => {
     expect(fixCommandFor('codex exec -')).toBe('codex exec --sandbox workspace-write -')
-    expect(fixCommandFor('codex exec -m gpt-5.5 -')).toBe('codex exec --sandbox workspace-write -m gpt-5.5 -')
+    expect(fixCommandFor('codex exec -m gpt-5.5 -')).toBe(
+      'codex exec --sandbox workspace-write -m gpt-5.5 -',
+    )
   })
 
   test('gemini gets auto_edit approval mode', () => {
     expect(fixCommandFor('gemini')).toBe('gemini --approval-mode auto_edit')
-    expect(fixCommandFor('gemini -m gemini-2.5-pro')).toBe('gemini -m gemini-2.5-pro --approval-mode auto_edit')
+    expect(fixCommandFor('gemini -m gemini-2.5-pro')).toBe(
+      'gemini -m gemini-2.5-pro --approval-mode auto_edit',
+    )
   })
 
   test('commands already carrying an edit flag are left alone', () => {
-    expect(fixCommandFor('claude -p --permission-mode plan')).toBe('claude -p --permission-mode plan')
-    expect(fixCommandFor('codex exec --sandbox danger-full-access -')).toBe('codex exec --sandbox danger-full-access -')
+    expect(fixCommandFor('claude -p --permission-mode plan')).toBe(
+      'claude -p --permission-mode plan',
+    )
+    expect(fixCommandFor('codex exec --sandbox danger-full-access -')).toBe(
+      'codex exec --sandbox danger-full-access -',
+    )
     expect(fixCommandFor('codex exec --full-auto -')).toBe('codex exec --full-auto -')
     expect(fixCommandFor('gemini --yolo')).toBe('gemini --yolo')
     expect(fixCommandFor('gemini --approval-mode yolo')).toBe('gemini --approval-mode yolo')
@@ -38,7 +48,13 @@ function record() {
       verdict: 'request_changes',
       summary: 's',
       findings: [
-        { file: 'src/a.ts', line: 3, severity: 'major', message: 'broken null check', suggestion: 'use ??' },
+        {
+          file: 'src/a.ts',
+          line: 3,
+          severity: 'major',
+          message: 'broken null check',
+          suggestion: 'use ??',
+        },
         { file: 'src/b.ts', severity: 'minor', message: 'rename this' },
         { file: 'src/c.ts', severity: 'info', kind: 'praise', message: 'nice' },
       ],
@@ -108,8 +124,14 @@ describe('createFixRunner', () => {
     })
     const started = runner.start([0, 1])
     expect(started.ok).toBe(true)
-    while (runner.status().phase === 'running') await new Promise((r) => setTimeout(r, 5))
-    expect(runner.status()).toMatchObject({ phase: 'done', summary: 'two files patched', selected: [0, 1] })
+    while (runner.status().phase === 'running') {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(runner.status()).toMatchObject({
+      phase: 'done',
+      summary: 'two files patched',
+      selected: [0, 1],
+    })
     expect(seenPrompt).toContain('broken null check')
     expect(seenCommand).toBe('claude -p --permission-mode acceptEdits')
   })
@@ -140,7 +162,9 @@ describe('createFixRunner', () => {
     expect(runner.start([0]).ok).toBe(true)
     expect(runner.start([0])).toMatchObject({ ok: false, code: 409 })
     release()
-    while (runner.status().phase === 'running') await new Promise((r) => setTimeout(r, 5))
+    while (runner.status().phase === 'running') {
+      await new Promise((r) => setTimeout(r, 5))
+    }
     expect(runner.start([1]).ok).toBe(true)
   })
 
@@ -151,7 +175,9 @@ describe('createFixRunner', () => {
       },
     })
     expect(runner.start([0]).ok).toBe(true)
-    while (runner.status().phase === 'running') await new Promise((r) => setTimeout(r, 5))
+    while (runner.status().phase === 'running') {
+      await new Promise((r) => setTimeout(r, 5))
+    }
     expect(runner.status()).toMatchObject({ phase: 'error', error: 'agent exploded' })
     expect(runner.start([0]).ok).toBe(true)
   })

@@ -5,28 +5,30 @@ import { isSupportedLanguage, type SupportedLanguage } from './i18n.js'
 
 export type CodesemaConfig = {
   /** Full headless agent shell command (e.g. "claude -p --model opus"). */
-  agent?: string
+  agent?: string | undefined
   /** Wizard metadata, used to re-edit without starting over. */
-  agentId?: string
-  model?: string
-  effort?: string
-  target?: string
-  port?: number
-  timeout?: number
+  agentId?: string | undefined
+  model?: string | undefined
+  effort?: string | undefined
+  target?: string | undefined
+  port?: number | undefined
+  timeout?: number | undefined
   /** UI and review language (ISO 639-1). */
-  language?: SupportedLanguage
+  language?: SupportedLanguage | undefined
   /** Cloud sync (codesema.com): base URL override and workspace credentials. */
-  syncUrl?: string
-  syncWorkspaceId?: string
-  syncSecret?: string
+  syncUrl?: string | undefined
+  syncWorkspaceId?: string | undefined
+  syncSecret?: string | undefined
   /** Explicit opt-in for pushing every completed review; credentials alone never auto-push. */
-  syncAutoPush?: boolean
+  syncAutoPush?: boolean | undefined
 }
 
 type ConfigScope = 'global' | 'repo'
 
 function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
-  if (!existsSync(path)) return {}
+  if (!existsSync(path)) {
+    return {}
+  }
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
@@ -40,9 +42,13 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       // Sync fields are global-only: a cloned repo's .codesema/config.json must
       // never be able to redirect where reviews (diff included) are sent.
       ...(scope === 'global' && str(raw.syncUrl) ? { syncUrl: str(raw.syncUrl) } : {}),
-      ...(scope === 'global' && str(raw.syncWorkspaceId) ? { syncWorkspaceId: str(raw.syncWorkspaceId) } : {}),
+      ...(scope === 'global' && str(raw.syncWorkspaceId)
+        ? { syncWorkspaceId: str(raw.syncWorkspaceId) }
+        : {}),
       ...(scope === 'global' && str(raw.syncSecret) ? { syncSecret: str(raw.syncSecret) } : {}),
-      ...(scope === 'global' && typeof raw.syncAutoPush === 'boolean' ? { syncAutoPush: raw.syncAutoPush } : {}),
+      ...(scope === 'global' && typeof raw.syncAutoPush === 'boolean'
+        ? { syncAutoPush: raw.syncAutoPush }
+        : {}),
       ...(Number.isInteger(raw.port) ? { port: raw.port as number } : {}),
       ...(Number.isInteger(raw.timeout) ? { timeout: raw.timeout as number } : {}),
     }
@@ -57,7 +63,9 @@ function writeConfig(path: string, config: CodesemaConfig, options?: { mode: num
 }
 
 export function globalConfigDir(): string {
-  if (process.env.CODESEMA_CONFIG_DIR) return process.env.CODESEMA_CONFIG_DIR
+  if (process.env.CODESEMA_CONFIG_DIR) {
+    return process.env.CODESEMA_CONFIG_DIR
+  }
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')
   return join(base, 'codesema')
 }
@@ -109,12 +117,16 @@ export function trustStorePath(): string {
 
 function readTrustStore(): Record<string, string> {
   const path = trustStorePath()
-  if (!existsSync(path)) return {}
+  if (!existsSync(path)) {
+    return {}
+  }
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     const out: Record<string, string> = {}
     for (const [key, value] of Object.entries(raw)) {
-      if (typeof value === 'string') out[key] = value
+      if (typeof value === 'string') {
+        out[key] = value
+      }
     }
     return out
   } catch {
@@ -140,6 +152,8 @@ export function ensureWorkDir(repoRoot: string): string {
   const dir = join(repoRoot, '.codesema')
   mkdirSync(dir, { recursive: true })
   const selfIgnore = join(dir, '.gitignore')
-  if (!existsSync(selfIgnore)) writeFileSync(selfIgnore, '*\n')
+  if (!existsSync(selfIgnore)) {
+    writeFileSync(selfIgnore, '*\n')
+  }
   return dir
 }

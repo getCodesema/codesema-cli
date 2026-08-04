@@ -10,12 +10,16 @@ const loadError = ref<string | null>(null)
 const result = ref<ForgeMrsResult | null>(null)
 
 const mrs = computed<ForgeMr[]>(() => {
-  if (!result.value?.available) return []
-  return [...result.value.mrs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  if (!result.value?.available) {
+    return []
+  }
+  return [...result.value.mrs].toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 })
 
 const unavailableReasonKey = computed<string | null>(() => {
-  if (!result.value || result.value.available) return null
+  if (!result.value || result.value.available) {
+    return null
+  }
   return {
     'no-remote': 'mrs.reasonNoRemote',
     'no-cli': 'mrs.reasonNoCli',
@@ -28,7 +32,9 @@ async function load() {
   loadError.value = null
   try {
     const res = await fetch('/api/mrs')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
     result.value = (await res.json()) as ForgeMrsResult
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
@@ -39,7 +45,9 @@ async function load() {
 
 function formatUpdatedAt(iso: string): string {
   try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso))
+    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+      new Date(iso),
+    )
   } catch {
     return iso
   }
@@ -54,7 +62,12 @@ defineExpose({ reload: load })
   <section class="mrs-sidebar">
     <div class="mrs-header">
       <h2 class="mrs-title">{{ $t('mrs.title') }}</h2>
-      <button class="mrs-refresh-btn" :disabled="loading" @click="load" :aria-label="$t('mrs.refresh')">
+      <button
+        class="mrs-refresh-btn"
+        :disabled="loading"
+        @click="load"
+        :aria-label="$t('mrs.refresh')"
+      >
         {{ $t('mrs.refresh') }}
       </button>
     </div>
@@ -82,8 +95,12 @@ defineExpose({ reload: load })
             <span class="mrs-item-branch">{{ mr.sourceBranch }}</span>
           </span>
           <span class="mrs-item-title">{{ mr.title }}</span>
-          <span class="mrs-item-meta codesema-muted">{{ mr.author }} · {{ formatUpdatedAt(mr.updatedAt) }}</span>
-          <span v-if="mr.number === props.runningNumber" class="mrs-item-running">{{ $t('mrs.reviewRunning') }}</span>
+          <span class="mrs-item-meta codesema-muted"
+            >{{ mr.author }} · {{ formatUpdatedAt(mr.updatedAt) }}</span
+          >
+          <span v-if="mr.number === props.runningNumber" class="mrs-item-running">{{
+            $t('mrs.reviewRunning')
+          }}</span>
         </button>
       </li>
     </ul>
