@@ -32,6 +32,7 @@ import {
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
 import { isAncestor, repoRoot } from './git.js'
 import { reviewLanguage, t, uiLocale } from './i18n.js'
+import { createMrReviewRunner } from './mr-review-runner.js'
 import { notifyDesktop } from './notify.js'
 import { openBrowser } from './open.js'
 import { parsePartialReview, type PartialReview } from './partial.js'
@@ -407,7 +408,91 @@ export async function runAgentJsonWithRetry<T>(
   }
 }
 
-type DualOutcome =
+/** The full (non-incremental) review prompt for an MR: reviewInstructions + the whole diff. */
+export function buildFullReviewPrompt(input: PrepInput): string {
+  return `${reviewInstructions()}\n\n<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>\n\nOutput ONLY the JSON object now.`
+}
+
+export type SimpleOutcome =
+  | { ok: true; record: ReviewRecord; reportLines: string[] }
+  | { ok: false; failure: 'run' | 'output'; message: string; rawOutput?: string }
+
+/**
+ * Single-agent review flow, extracted so both the CLI `review` command and the
+ * web-triggered MR review runner (mr-review-runner.ts) drive the exact same
+ * agent-run -> JSON-extract -> ground -> coverage-check pipeline.
+ */
+export async function runSimpleFlow(opts: {
+  agentCommand: string
+  input: PrepInput
+  dir: string
+  timeoutMs: number
+  session: LiveSession
+  prompt: string
+  incremental: boolean
+  onProgress?: (status: string) => void
+}): Promise<SimpleOutcome> {
+  const forwardPartial = createPartialForwarder(opts.session)
+  let out: string
+  try {
+    out = await runAgentJsonWithRetry(
+      {
+        command: hardenedReviewCommand(opts.agentCommand),
+        env: agentEnv(opts.agentCommand),
+        prompt: opts.prompt,
+        cwd: opts.input.repo_root,
+        timeoutMs: opts.timeoutMs,
+        onText: (text) => {
+          const partial = forwardPartial(text)
+          if (!partial) {
+            return
+          }
+          const status = progressLabel(partial)
+          if (status) {
+            opts.onProgress?.(status)
+          }
+        },
+      },
+      (raw) => {
+        extractReviewJson(raw)
+        return raw
+      },
+    )
+  } catch (err) {
+    if (err instanceof AgentOutputError) {
+      return { ok: false, failure: 'output', message: err.message, rawOutput: err.raw }
+    }
+    return { ok: false, failure: 'run', message: err instanceof Error ? err.message : String(err) }
+  }
+
+  try {
+    const json = extractReviewJson(out)
+    writeFileSync(join(opts.dir, 'review.json'), json)
+    const resolved = resolveRecord({ cwd: opts.input.repo_root }).record
+    const grounded = groundReview(resolved.review, resolved.diff)
+    const record: ReviewRecord = { ...resolved, review: grounded.review }
+    writeFileSync(join(opts.dir, 'review.json'), JSON.stringify(grounded.review, null, 2))
+    const reportLines = groundingReportLines(grounded.report)
+    // Incremental reviews legitimately revisit only what changed: coverage
+    // against the full file list would cry wolf.
+    if (!opts.incremental) {
+      const coverage = coverageGapLine(opts.input, t('review.dualLaneA'), grounded.review)
+      if (coverage) {
+        reportLines.push(coverage)
+      }
+    }
+    return { ok: true, record, reportLines }
+  } catch (err) {
+    return {
+      ok: false,
+      failure: 'output',
+      message: err instanceof Error ? err.message : String(err),
+      rawOutput: out,
+    }
+  }
+}
+
+export type DualOutcome =
   | { ok: true; record: ReviewRecord; reportLines: string[] }
   | { ok: false; failure: 'run' | 'output'; message: string; rawOutput?: string }
 
@@ -678,9 +763,7 @@ export async function review(opts: {
   // previous review, which has no equivalent for two lanes plus a judge.
   const dual = Boolean(opts.dual)
   const incremental = opts.full || dual ? null : buildIncrementalPrompt(input, input.repo_root)
-  const prompt =
-    incremental?.prompt ??
-    `${reviewInstructions()}\n\n<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>\n\nOutput ONLY the JSON object now.`
+  const prompt = incremental?.prompt ?? buildFullReviewPrompt(input)
 
   const additions = input.files.reduce((n, f) => n + f.additions, 0)
   const deletions = input.files.reduce((n, f) => n + f.deletions, 0)
@@ -700,12 +783,19 @@ export async function review(opts: {
 
   const timeoutMs = (opts.timeout ?? config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
   const { url, stop } = await startServer(session, {
+    cwd: input.repo_root,
     port: opts.port ?? config.port,
     locale: uiLocale(),
     fixRunner: createFixRunner({
       getRecord: () => session.record(),
       cwd: input.repo_root,
       command: agentCommand,
+      timeoutMs,
+    }),
+    mrReviewRunner: createMrReviewRunner({
+      cwd: input.repo_root,
+      session,
+      agentCommand,
       timeoutMs,
     }),
   })
@@ -784,63 +874,25 @@ export async function review(opts: {
     record = outcome.record
     reportLines = outcome.reportLines
   } else {
-    const forwardPartial = createPartialForwarder(session)
-    let out: string
-    try {
-      out = await runAgentJsonWithRetry(
-        {
-          command: hardenedReviewCommand(agentCommand),
-          env: agentEnv(agentCommand),
-          prompt,
-          cwd: input.repo_root,
-          timeoutMs,
-          onText: (text) => {
-            const partial = forwardPartial(text)
-            if (!partial) {
-              return
-            }
-            const status = progressLabel(partial)
-            if (status) {
-              spinner.update(status)
-            }
-          },
-        },
-        (raw) => {
-          extractReviewJson(raw)
-          return raw
-        },
-      )
-    } catch (err) {
-      if (err instanceof AgentOutputError) {
-        writeFileSync(join(dir, 'agent-output.txt'), err.raw)
-        await failRun('output', err.message)
-      } else {
-        await failRun('run', err instanceof Error ? err.message : String(err))
+    const outcome = await runSimpleFlow({
+      agentCommand,
+      input,
+      dir,
+      timeoutMs,
+      session,
+      prompt,
+      incremental: Boolean(incremental),
+      onProgress: (status) => spinner.update(status),
+    })
+    if (!outcome.ok) {
+      if (outcome.rawOutput !== undefined) {
+        writeFileSync(join(dir, 'agent-output.txt'), outcome.rawOutput)
       }
+      await failRun(outcome.failure, outcome.message)
       return
     }
-
-    try {
-      const json = extractReviewJson(out)
-      writeFileSync(join(dir, 'review.json'), json)
-      const resolved = resolveRecord({ cwd: input.repo_root }).record
-      const grounded = groundReview(resolved.review, resolved.diff)
-      record = { ...resolved, review: grounded.review }
-      writeFileSync(join(dir, 'review.json'), JSON.stringify(grounded.review, null, 2))
-      reportLines = groundingReportLines(grounded.report)
-      // Incremental reviews legitimately revisit only what changed: coverage
-      // against the full file list would cry wolf.
-      if (!incremental) {
-        const coverage = coverageGapLine(input, t('review.dualLaneA'), grounded.review)
-        if (coverage) {
-          reportLines.push(coverage)
-        }
-      }
-    } catch (err) {
-      writeFileSync(join(dir, 'agent-output.txt'), out)
-      await failRun('output', err instanceof Error ? err.message : String(err))
-      return
-    }
+    record = outcome.record
+    reportLines = outcome.reportLines
   }
 
   const savedPath = archiveRecord(record, input.repo_root)

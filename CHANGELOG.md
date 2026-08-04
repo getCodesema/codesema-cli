@@ -3,6 +3,16 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.12.0] - unreleased
+
+### Added
+
+- Repo settings page in the web UI: a "Repo settings" link switches the local server's view to edit `.codesema/RULES.md` (full content, one rule per line, optional `|`-separated grid segments) and toggle `syncAutoPush`. New endpoints `GET /api/config`, `PUT /api/config/rules` and `PUT /api/config/sync-auto-push`, protected by the same per-server CSRF token pattern as `POST /api/fix`.
+- Read-only sidebar listing the repo's open merge requests in the web UI, backed by the forge CLI (`gh pr list` on GitHub, `glab mr list` on GitLab), sorted by last update. Selecting one opens a minimal detail panel (title, branches, author, link to the forge). New `GET /api/mrs` endpoint reporting `{ available: true, mrs }` or `{ available: false, reason }` (`no-remote`, `no-cli`, `cli-error`) when the forge CLI is missing, unauthenticated, or the repo has no remote.
+- "Run review" and "Run dual review" buttons on the MR detail panel: fetches the MR's source branch, reviews it (simple or dual) in a disposable `git worktree` under the OS temp dir, archives the result in the main repo's `.codesema/reviews`, and always removes the worktree afterwards, success or failure. The run streams into the same live web UI as `codesema review` (status, partials, judge decisions). Only one review can run at a time; the sidebar marks which MR or branch is currently under review. `POST /api/mrs/review` (body `{ source: { kind: 'mr', number } | { kind: 'branch', name }, mode }`) and `GET /api/mrs/review/status`, protected by the same per-server CSRF token pattern as `POST /api/fix`.
+- Local branches sidebar, under the MR sidebar: lists local branches (name, current/worktree markers, last commit subject and date) from a new `GET /api/branches` endpoint. Selecting a branch opens the same detail panel as an MR, with the same "Run review" / "Run dual review" buttons. Reviewing a branch already checked out elsewhere (the current branch included) uses a detached disposable worktree (`git worktree add --detach`) instead of failing on git's "already checked out" restriction.
+- Deterministic (no agent) preview in the MR/branch detail panel: source and target branches, commit list, changed files with +/- and status, and a per-file diff on click, rendered with the same annotated diff view as a finished review. New `GET /api/preview?source=mr&number=N` (`?source=branch&name=X`) returning branch/target/commits/files/diffStats without the full diff, and `GET /api/preview/diff?source=...&path=<file>` returning one file's diff, capped in size and truncated past the cap. The pure git computation behind `codesema prep` (target detection, commits, files, diff) is extracted into `computePrepInput`/`computeDiffSummary` (no disk writes), reused by both `prep` and the preview endpoints.
+
 ## [0.11.0] - 2026-08-02
 
 ### Added

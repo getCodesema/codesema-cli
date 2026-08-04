@@ -15,7 +15,7 @@
     },
     "packages/cli": {
       "name": "codesema",
-      "version": "0.8.0",
+      "version": "0.12.0",
       "bin": {
         "codesema": "dist/index.mjs",
       },
@@ -28,7 +28,7 @@
     },
     "packages/contract": {
       "name": "@codesema/contract",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "devDependencies": {
         "@types/node": "^26.1.1",
         "tsdown": "^0.22.5",

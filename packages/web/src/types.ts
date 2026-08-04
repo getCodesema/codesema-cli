@@ -133,3 +133,69 @@ export type PartialReview = {
   findings: PartialFinding[]
   stepTitles: string[]
 }
+
+// Mirrors packages/cli/src/forge-mrs.ts and the /api/mrs endpoint.
+
+export type ForgeMr = {
+  number: number
+  title: string
+  author: string
+  sourceBranch: string
+  targetBranch: string
+  updatedAt: string
+  url: string
+}
+
+export type ForgeMrsResult =
+  | { available: true; mrs: ForgeMr[] }
+  | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
+
+// Mirrors packages/cli/src/mr-review-runner.ts and the /api/mrs/review endpoints.
+
+export type MrReviewMode = 'simple' | 'dual'
+
+export type ReviewSource = { kind: 'mr'; number: number } | { kind: 'branch'; name: string }
+
+export type MrReviewStatus =
+  | { available: false }
+  | { available: true; phase: 'idle' }
+  | {
+      available: true
+      phase: 'running'
+      source: ReviewSource
+      mode: MrReviewMode
+      started_at: string
+    }
+  | { available: true; phase: 'done'; source: ReviewSource; mode: MrReviewMode }
+  | { available: true; phase: 'error'; source: ReviewSource; mode: MrReviewMode; error: string }
+
+// Mirrors packages/cli/src/branches.ts and the /api/branches endpoint.
+
+export type LocalBranch = {
+  name: string
+  lastCommitRelative: string
+  subject: string
+  isCurrent: boolean
+  worktreePath: string | null
+}
+
+// Mirrors packages/cli/src/preview.ts and the /api/preview* endpoints.
+
+export type PreviewFileStatus = 'added' | 'deleted' | 'modified' | 'renamed'
+
+export type PreviewFile = {
+  path: string
+  additions: number
+  deletions: number
+  status: PreviewFileStatus
+}
+
+export type PreviewResult = {
+  branch: string
+  target: string
+  commits: string[]
+  files: PreviewFile[]
+  diffStats: { files: number; additions: number; deletions: number }
+}
+
+export type PreviewFileDiff = { diff: string; truncated: boolean }

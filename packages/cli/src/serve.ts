@@ -4,11 +4,22 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { listLocalBranches } from './branches.js'
 import type { ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
+import { listOpenMrs } from './forge-mrs.js'
 import { t } from './i18n.js'
+import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
+import { buildFileDiff, buildPreview, parsePreviewPath, parsePreviewSource } from './preview.js'
+import {
+  readRulesContent,
+  readSyncAutoPush,
+  RULES_CONTENT_MAX_BYTES,
+  setSyncAutoPush,
+  writeRulesContent,
+} from './repo-config.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
 
@@ -61,6 +72,8 @@ export type LiveSession = {
   setJudge: (judge: JudgeLive) => void
   setDone: (record: ReviewRecord) => void
   setError: (message: string) => void
+  /** Clears record/partials/judge and returns status to a fresh 'reviewing' phase, for a new run reusing this session (e.g. an MR review). */
+  reset: () => void
   subscribe: (listener: (event: SessionEvent) => void) => () => void
 }
 
@@ -126,6 +139,14 @@ export function createSession(initial?: { record?: ReviewRecord }): LiveSession 
     },
     setError(message) {
       status = { ...status, phase: 'error', error: message }
+      emitStatus()
+    },
+    reset() {
+      record = null
+      partial = null
+      partialB = null
+      judge = null
+      status = { phase: 'reviewing', started_at: new Date().toISOString() }
       emitStatus()
     },
     subscribe(listener) {
@@ -259,17 +280,26 @@ const MAX_FIX_BODY_BYTES = 64 * 1024
 function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   return new Promise((resolveBody, reject) => {
     let size = 0
+    // Rejecting keeps the socket alive to write the response; destroying it here
+    // would reset the connection before the caller's error response goes out.
+    let tooLarge = false
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => {
+      if (tooLarge) {
+        return
+      }
       size += chunk.length
       if (size > maxBytes) {
+        tooLarge = true
         reject(new Error('body too large'))
-        req.destroy()
         return
       }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (tooLarge) {
+        return
+      }
       try {
         resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       } catch {
@@ -281,6 +311,8 @@ function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> 
 }
 
 type FixEndpoint = { runner: FixRunner; token: string }
+type MrReviewEndpoint = { runner: MrReviewRunner; token: string }
+type RepoConfigEndpoint = { cwd: string; token: string }
 
 /**
  * POST /api/fix triggers an agent that EDITS the working tree, so it needs more
@@ -315,6 +347,153 @@ async function handleFixStart(
   return sendJson(res, 202, { ok: true })
 }
 
+const MAX_MR_REVIEW_BODY_BYTES = 1024
+
+/** Body-level shape check for the discriminated ReviewSource; null on any mismatch. */
+function parseReviewSourceBody(raw: unknown): ReviewSource | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const b = raw as { kind?: unknown; number?: unknown; name?: unknown }
+  if (b.kind === 'mr' && typeof b.number === 'number' && Number.isInteger(b.number)) {
+    return { kind: 'mr', number: b.number }
+  }
+  if (b.kind === 'branch' && typeof b.name === 'string' && b.name.length > 0) {
+    return { kind: 'branch', name: b.name }
+  }
+  return null
+}
+
+/**
+ * POST /api/mrs/review triggers an agent run (fetch or local checkout, disposable
+ * worktree, review agent) that writes to the repo's .codesema/reviews, so it needs
+ * the same per-server CSRF token as /api/fix (see handleFixStart). One route for
+ * both an open MR and a local branch: the body's `source.kind` discriminates.
+ */
+async function handleMrReviewStart(
+  req: IncomingMessage,
+  res: ServerResponse,
+  mrReview: MrReviewEndpoint | undefined,
+): Promise<void> {
+  if (!mrReview) {
+    return sendJson(res, 501, { error: 'MR review runner unavailable' })
+  }
+  if (req.headers['x-codesema-mrreview-token'] !== mrReview.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_MR_REVIEW_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const b = body as { source?: unknown; mode?: unknown } | null
+  const source = parseReviewSourceBody(b?.source)
+  if (!source || (b?.mode !== 'simple' && b?.mode !== 'dual')) {
+    return sendText(res, 400, 'bad request')
+  }
+  const started = await mrReview.runner.start(source, b?.mode as MrReviewMode)
+  if (!started.ok) {
+    return sendJson(res, started.code, { error: started.error })
+  }
+  return sendJson(res, 202, { ok: true })
+}
+
+const MAX_RULES_BODY_BYTES = RULES_CONTENT_MAX_BYTES + 1024
+const MAX_SYNC_TOGGLE_BODY_BYTES = 1024
+
+/**
+ * PUT /api/config/* writes to the repo's .codesema/RULES.md or the global config
+ * file, so it needs the same per-server CSRF token as /api/fix (see handleFixStart).
+ */
+async function handleRulesUpdate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  repoConfig: RepoConfigEndpoint,
+): Promise<void> {
+  if (req.headers['x-codesema-config-token'] !== repoConfig.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_RULES_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const content = (body as { content?: unknown } | null)?.content
+  if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > RULES_CONTENT_MAX_BYTES) {
+    return sendText(res, 400, 'bad request')
+  }
+  writeRulesContent(repoConfig.cwd, content)
+  return sendJson(res, 200, { ok: true })
+}
+
+async function handleSyncAutoPushUpdate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  repoConfig: RepoConfigEndpoint,
+): Promise<void> {
+  if (req.headers['x-codesema-config-token'] !== repoConfig.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_SYNC_TOGGLE_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const enabled = (body as { enabled?: unknown } | null)?.enabled
+  if (typeof enabled !== 'boolean') {
+    return sendText(res, 400, 'bad request')
+  }
+  setSyncAutoPush(enabled)
+  return sendJson(res, 200, { ok: true, syncAutoPush: enabled })
+}
+
+async function handleMrsList(res: ServerResponse, cwd: string): Promise<void> {
+  const result = await listOpenMrs(cwd)
+  sendJson(res, 200, result)
+}
+
+/** GET /api/preview?source=mr&number=N | ?source=branch&name=X: deterministic (no agent) MR/branch preview. */
+async function handlePreview(
+  res: ServerResponse,
+  cwd: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const source = parsePreviewSource(params)
+  if (!source) {
+    return sendText(res, 400, 'bad request')
+  }
+  try {
+    const preview = await buildPreview(cwd, source)
+    return sendJson(res, 200, preview)
+  } catch (err) {
+    return sendJson(res, 404, { error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/** GET /api/preview/diff?source=...&path=<file>: diff of a single file from the preview's own file list,
+ *  capped in size (see PREVIEW_DIFF_MAX_CHARS); `path` is only ever used as a git pathspec, never as a
+ *  filesystem path. */
+async function handlePreviewDiff(
+  res: ServerResponse,
+  cwd: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const source = parsePreviewSource(params)
+  const path = parsePreviewPath(params)
+  if (!source || !path) {
+    return sendText(res, 400, 'bad request')
+  }
+  try {
+    const result = await buildFileDiff(cwd, source, path)
+    return sendJson(res, 200, result)
+  } catch (err) {
+    return sendJson(res, 404, { error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
 async function serveStaticFile(res: ServerResponse, pathname: string): Promise<void> {
   const filePath = resolveStaticPath(WEB_DIST, pathname)
   if (!filePath) {
@@ -331,8 +510,17 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
-function createRequestHandler(session: LiveSession, indexHtml: string, fix?: FixEndpoint) {
+function createRequestHandler(handlerOpts: {
+  session: LiveSession
+  indexHtml: string
+  cwd: string
+  configToken: string
+  fix?: FixEndpoint | undefined
+  mrReview?: MrReviewEndpoint | undefined
+}) {
+  const { session, indexHtml, cwd, configToken, fix, mrReview } = handlerOpts
   let sseClients = 0
+  const repoConfig: RepoConfigEndpoint = { cwd, token: configToken }
 
   return (req: IncomingMessage, res: ServerResponse): void => {
     // The server only binds to loopback, but a malicious site could still reach
@@ -344,8 +532,11 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
     }
 
     let pathname: string
+    let searchParams: URLSearchParams
     try {
-      pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      pathname = url.pathname
+      searchParams = url.searchParams
     } catch {
       return sendText(res, 400, 'bad request')
     }
@@ -353,6 +544,18 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
     if (req.method === 'POST') {
       if (pathname === '/api/fix') {
         return void handleFixStart(req, res, fix)
+      }
+      if (pathname === '/api/mrs/review') {
+        return void handleMrReviewStart(req, res, mrReview)
+      }
+      return sendText(res, 405, 'method not allowed')
+    }
+    if (req.method === 'PUT') {
+      if (pathname === '/api/config/rules') {
+        return void handleRulesUpdate(req, res, repoConfig)
+      }
+      if (pathname === '/api/config/sync-auto-push') {
+        return void handleSyncAutoPushUpdate(req, res, repoConfig)
       }
       return sendText(res, 405, 'method not allowed')
     }
@@ -371,11 +574,35 @@ function createRequestHandler(session: LiveSession, indexHtml: string, fix?: Fix
         }
         return sendJson(res, 200, record)
       }
+      if (pathname === '/api/config') {
+        return sendJson(res, 200, {
+          rulesContent: readRulesContent(cwd),
+          syncAutoPush: readSyncAutoPush(cwd),
+        })
+      }
+      if (pathname === '/api/mrs') {
+        return void handleMrsList(res, cwd)
+      }
+      if (pathname === '/api/branches') {
+        return sendJson(res, 200, listLocalBranches(cwd))
+      }
+      if (pathname === '/api/preview') {
+        return void handlePreview(res, cwd, searchParams)
+      }
+      if (pathname === '/api/preview/diff') {
+        return void handlePreviewDiff(res, cwd, searchParams)
+      }
       if (pathname === '/api/fix/status') {
         if (!fix) {
           return sendJson(res, 200, { available: false })
         }
         return sendJson(res, 200, fix.runner.status())
+      }
+      if (pathname === '/api/mrs/review/status') {
+        if (!mrReview) {
+          return sendJson(res, 200, { available: false })
+        }
+        return sendJson(res, 200, mrReview.runner.status())
       }
       if (pathname === '/api/events') {
         if (sseClients >= MAX_SSE_CLIENTS) {
@@ -422,20 +649,28 @@ async function listen(
 export async function startServer(
   session: LiveSession,
   opts: {
+    cwd: string
     port?: number | undefined
     locale?: string | undefined
     fixRunner?: FixRunner | undefined
+    mrReviewRunner?: MrReviewRunner | undefined
   },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
     throw new Error(t('serve.noWebUi', { path: WEB_DIST }))
   }
+  const configToken = randomBytes(16).toString('hex')
   const fix: FixEndpoint | undefined = opts.fixRunner
     ? { runner: opts.fixRunner, token: randomBytes(16).toString('hex') }
     : undefined
+  const mrReview: MrReviewEndpoint | undefined = opts.mrReviewRunner
+    ? { runner: opts.mrReviewRunner, token: randomBytes(16).toString('hex') }
+    : undefined
   const bootScript = [
     `window.__CODESEMA_LOCALE__=${JSON.stringify(opts.locale ?? 'en')}`,
+    `window.__CODESEMA_CONFIG_TOKEN__=${JSON.stringify(configToken)}`,
     ...(fix ? [`window.__CODESEMA_FIX_TOKEN__=${JSON.stringify(fix.token)}`] : []),
+    ...(mrReview ? [`window.__CODESEMA_MRREVIEW_TOKEN__=${JSON.stringify(mrReview.token)}`] : []),
   ].join(';')
   const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8').replace(
     '</head>',
@@ -443,7 +678,7 @@ export async function startServer(
   )
 
   const { server, port } = await listen(
-    createRequestHandler(session, indexHtml, fix),
+    createRequestHandler({ session, indexHtml, cwd: opts.cwd, configToken, fix, mrReview }),
     opts.port ?? 4400,
   )
   const stop = () =>

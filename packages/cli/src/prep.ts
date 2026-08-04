@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { ensureWorkDir } from './config.js'
 import {
   currentBranch,
+  detectForgeHint,
   git,
   headSha,
   mergeBase,
@@ -65,7 +66,7 @@ export type PrepInput = {
   server_context: ServerContext | null
 }
 
-function resolveRef(name: string, cwd: string): string | null {
+export function resolveRef(name: string, cwd: string): string | null {
   if (refExists(name, cwd)) {
     return name
   }
@@ -83,9 +84,9 @@ function sameBranch(a: string, b: string): boolean {
 function targetFromForge(cwd: string): { target: string; source: string } | null {
   // Each probe blocks up to 8s; when origin clearly names one forge, skip the other.
   // An unrecognized remote (self-hosted on a custom domain) still probes both.
-  const remote = (tryGit(['remote', 'get-url', 'origin'], cwd) ?? '').toLowerCase()
-  const skipGitlab = remote.includes('github')
-  const skipGithub = remote.includes('gitlab')
+  const hint = detectForgeHint(cwd)
+  const skipGitlab = hint === 'github'
+  const skipGithub = hint === 'gitlab'
 
   const glabOut = skipGitlab ? null : tryExec('glab', ['mr', 'view', '--output', 'json'], cwd)
   if (glabOut) {
@@ -172,7 +173,7 @@ export function detectTarget(
   return detected
 }
 
-function excludePathspecs(cwd: string): string[] {
+export function excludePathspecs(cwd: string): string[] {
   const patterns = [...DEFAULT_EXCLUDES]
   const ignoreFile = join(cwd, '.codesema-ignore')
   if (existsSync(ignoreFile)) {
@@ -200,54 +201,43 @@ export function mrDiff(range: string, cwd: string, excludes = excludePathspecs(c
   )
 }
 
-export function prep(opts: {
-  branch?: string | undefined
-  target?: string | undefined
-  cwd: string
-  quiet?: boolean | undefined
-}): PrepInput {
-  const cwd = repoRoot(opts.cwd)
-  const checkedOut = currentBranch(cwd)
-  const branch = opts.branch ?? checkedOut
-  if (branch === 'HEAD') {
-    throw new Error(t('prep.detachedHead'))
-  }
-  if (opts.branch && !refExists(`refs/heads/${opts.branch}`, cwd)) {
-    throw new Error(t('prep.branchNotFound', { branch: opts.branch }))
-  }
-  const headRef = opts.branch && opts.branch !== checkedOut ? opts.branch : 'HEAD'
+/** Truncates by code points: a UTF-16 slice can split a surrogate pair. */
+function truncateSubject(subject: string): string {
+  const codePoints = Array.from(subject)
+  return codePoints.length > COMMIT_SUBJECT_MAX
+    ? `${codePoints.slice(0, COMMIT_SUBJECT_MAX - 1).join('')}…`
+    : subject
+}
 
-  const { target, source } = detectTarget(branch, opts.target, cwd, headRef)
-  if (sameBranch(target, branch)) {
-    throw new Error(t('prep.targetIsSelf', { branch }))
-  }
+export type DiffSummary = {
+  merge_base: string
+  commits: string[]
+  files: { path: string; additions: number; deletions: number }[]
+  diff: string
+}
 
-  const mb = mergeBase(target, headRef, cwd)
+/**
+ * Pure git computation between two refs (no target detection, no disk writes):
+ * shared by computePrepInput (local branch vs. detected target) and the web
+ * preview endpoints (arbitrary local or remote-tracking refs, e.g. an MR not
+ * checked out locally).
+ */
+export function computeDiffSummary(sourceRef: string, targetRef: string, cwd: string): DiffSummary {
+  const mb = mergeBase(targetRef, sourceRef, cwd)
   if (!mb) {
-    throw new Error(t('prep.noMergeBase', { target, branch }))
+    throw new Error(t('prep.noMergeBase', { target: targetRef, branch: sourceRef }))
   }
 
   const excludes = excludePathspecs(cwd)
-  const range = `${target}...${headRef}`
+  const range = `${targetRef}...${sourceRef}`
   const diff = mrDiff(range, cwd, excludes)
-  if (!diff.trim()) {
-    const dirty = headRef === 'HEAD' ? tryGit(['status', '--porcelain'], cwd) : null
-    const hint = dirty?.trim() ? t('prep.dirtyHint') : ''
-    throw new Error(t('prep.emptyDiff', { target, branch, hint }))
-  }
 
   const commits = (
-    tryGit(['log', '--pretty=%s', `${target}..${headRef}`, '--max-count=30'], cwd) ?? ''
+    tryGit(['log', '--pretty=%s', `${targetRef}..${sourceRef}`, '--max-count=30'], cwd) ?? ''
   )
     .split('\n')
     .filter(Boolean)
-    .map((subject) => {
-      // Truncate by code points: a UTF-16 slice can split a surrogate pair.
-      const codePoints = Array.from(subject)
-      return codePoints.length > COMMIT_SUBJECT_MAX
-        ? `${codePoints.slice(0, COMMIT_SUBJECT_MAX - 1).join('')}…`
-        : subject
-    })
+    .map(truncateSubject)
 
   const files = (
     tryGit(
@@ -266,11 +256,43 @@ export function prep(opts: {
       }
     })
 
+  return { merge_base: mb, commits, files, diff }
+}
+
+/** Pure calculation behind `prep`: no disk writes, safe to call for a preview. */
+export function computePrepInput(opts: {
+  branch?: string | undefined
+  target?: string | undefined
+  cwd: string
+}): PrepInput {
+  const cwd = repoRoot(opts.cwd)
+  const checkedOut = currentBranch(cwd)
+  const branch = opts.branch ?? checkedOut
+  if (branch === 'HEAD') {
+    throw new Error(t('prep.detachedHead'))
+  }
+  if (opts.branch && !refExists(`refs/heads/${opts.branch}`, cwd)) {
+    throw new Error(t('prep.branchNotFound', { branch: opts.branch }))
+  }
+  const headRef = opts.branch && opts.branch !== checkedOut ? opts.branch : 'HEAD'
+
+  const { target, source } = detectTarget(branch, opts.target, cwd, headRef)
+  if (sameBranch(target, branch)) {
+    throw new Error(t('prep.targetIsSelf', { branch }))
+  }
+
+  const { merge_base: mb, commits, files, diff } = computeDiffSummary(headRef, target, cwd)
+  if (!diff.trim()) {
+    const dirty = headRef === 'HEAD' ? tryGit(['status', '--porcelain'], cwd) : null
+    const hint = dirty?.trim() ? t('prep.dirtyHint') : ''
+    throw new Error(t('prep.emptyDiff', { target, branch, hint }))
+  }
+
   const promptFile = join(cwd, '.codesema', 'PROMPT.md')
   const custom = existsSync(promptFile) ? readFileSync(promptFile, 'utf8').trim() || null : null
   const rules = loadRules(cwd)
 
-  const input: PrepInput = {
+  return {
     version: 1,
     generated_by: 'codesema prep',
     title: branch,
@@ -288,6 +310,25 @@ export function prep(opts: {
     diff,
     server_context: null,
   }
+}
+
+export function prep(opts: {
+  branch?: string | undefined
+  target?: string | undefined
+  cwd: string
+  quiet?: boolean | undefined
+}): PrepInput {
+  const input = computePrepInput(opts)
+  const {
+    branch,
+    target,
+    target_source: source,
+    files,
+    commits,
+    custom_instructions: custom,
+    rules,
+    repo_root: cwd,
+  } = input
 
   const dir = ensureWorkDir(cwd)
   const inputPath = join(dir, 'input.json')
