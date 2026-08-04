@@ -4,6 +4,8 @@ web-dist/
 .codesema/
 *.log
 .DS_Store
+.env
+.env.*
 CLAUDE.md
 DESIGN.md
 
