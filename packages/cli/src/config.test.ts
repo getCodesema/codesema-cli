@@ -90,6 +90,25 @@ describe('sync credentials round-trip', () => {
     })
   })
 
+  test('a full rewrite (toggling one field) keeps the other global fields', () => {
+    // Write the sync credentials first.
+    saveGlobalConfig({
+      syncUrl: 'http://localhost:9080',
+      syncWorkspaceId: 'ws-1',
+      syncSecret: 's3cret',
+    })
+
+    // Toggle a single global field the way a setter would: reload, flip one field,
+    // then hand the whole config back to saveGlobalConfig (full file rewrite).
+    saveGlobalConfig({ ...loadGlobalConfig(), syncAutoPush: true })
+
+    // The rewrite must not erase the other global fields written before the save.
+    const reloaded = loadGlobalConfig()
+    expect(reloaded.syncUrl).toBe('http://localhost:9080')
+    expect(reloaded.syncWorkspaceId).toBe('ws-1')
+    expect(reloaded.syncAutoPush).toBe(true)
+  })
+
   test('unknown or empty sync fields are dropped on load', () => {
     saveGlobalConfig({ syncWorkspaceId: '' } as CodesemaConfig)
     expect(loadGlobalConfig()).toEqual({})
