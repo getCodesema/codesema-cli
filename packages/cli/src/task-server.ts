@@ -9,16 +9,21 @@
 // global SSE stream (/api/tasks/events) forwards verbatim, so N conversations
 // across N projects ride one EventSource.
 
+import { existsSync } from 'node:fs'
 import type { AgentRunOptions } from './agent.js'
 import {
   isActiveTaskStatus,
   TASK_BASE_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
+  type TaskChecks,
   type TaskEvent,
   type TaskRecord,
 } from './contract.js'
+import { tryGit } from './git.js'
 import { listProjects, type Project } from './projects.js'
+import { readChecksConfig } from './repo-config.js'
+import { runChecks } from './task-checks.js'
 import { createTaskReviewer } from './task-review.js'
 import {
   createTaskRunner,
@@ -41,8 +46,10 @@ import {
   createTask,
   listTasks,
   loadTask,
+  readTaskChecks,
   readTaskEvents,
   saveTask,
+  writeTaskChecks,
 } from './tasks-store.js'
 
 /**
@@ -57,6 +64,7 @@ export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task_event'; data: TaskEvent } }
   | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
   | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
+  | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
 
 export type CreateTaskManagerInput = {
   title: string
@@ -117,6 +125,16 @@ export type TaskManager = {
   ship: (projectId: string, id: string) => Promise<TaskActionResult>
   /** Discards the task's work: worktree AND branch deleted, status 'failed'. 409 while running. */
   abandon: (projectId: string, id: string) => TaskActionResult
+  /**
+   * Manual checks trigger (POST /api/tasks/:id/checks). Starts a background
+   * containerized run of the repo's checks on the task worktree; 409 while a
+   * run is already in flight or when the task has no turn commit to verify.
+   * ok means STARTED — the outcome travels over SSE ('task_checks' frames)
+   * and lands in checks.json.
+   */
+  checks: (projectId: string, id: string) => TaskActionResult
+  /** Latest persisted checks run; null on unknown project/task or never-run. */
+  getChecks: (projectId: string, id: string) => TaskChecks | null
   /** Graceful exit: interrupts every active agent (all projects) and resolves once all turns persisted. */
   shutdown: () => Promise<void>
   subscribe: (listener: (envelope: TaskEnvelope) => void) => () => void
@@ -142,6 +160,8 @@ export type CreateTaskManagerOptions = {
   shipTaskFn?: typeof shipTask
   /** Test seam: the default reads the global registry (projects.ts). */
   listProjectsFn?: () => Project[]
+  /** Test seam: the default runs real containers (task-checks.ts). */
+  runChecksFn?: typeof runChecks
 }
 
 /**
@@ -196,6 +216,8 @@ type ProjectContext = {
   runner: TaskRunner
   /** Tasks with a ship in flight (see ship below). */
   shipping: Set<string>
+  /** Tasks with a checks run in flight (one run at a time per task). */
+  checking: Set<string>
 }
 
 export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
@@ -272,6 +294,113 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   /**
+   * Containerized checks (task-checks.ts) on the task's worktree, in the
+   * background. Guards run synchronously (409 while in flight, 409 without a
+   * turn commit); the run itself is fire-and-forget and BEST-EFFORT: every
+   * outcome — missing container runtime included — lands in checks.json as a
+   * status, and a checks problem never touches the task record.
+   */
+  const startChecks = (ctx: ProjectContext, id: string): TaskActionResult => {
+    const cwd = ctx.project.path
+    const projectId = ctx.project.id
+    if (ctx.checking.has(id)) {
+      return { ok: false, code: 409, error: 'checks already running' }
+    }
+    const record = loadTask(cwd, id)
+    if (!record) {
+      return { ok: false, code: 404, error: 'task not found' }
+    }
+    // Checks verify COMMITTED work: a task whose turns never committed (or
+    // whose worktree is gone) has nothing to run against.
+    const hasCommit = readTaskEvents(cwd, id).some((event) => event.type === 'commit')
+    if (!hasCommit || !record.worktree || !existsSync(record.worktree)) {
+      return { ok: false, code: 409, error: 'task has no commit to check' }
+    }
+    const headSha = tryGit(['rev-parse', 'HEAD'], record.worktree) ?? ''
+    ctx.checking.add(id)
+    const broadcast = (snapshot: TaskChecks): void => {
+      // writeTaskChecks sanitizes and returns the persisted copy: SSE
+      // subscribers always see exactly what a later GET will read.
+      const clean = writeTaskChecks(cwd, id, snapshot)
+      emit({ project_id: projectId, task_id: id, event: { name: 'task_checks', data: clean } })
+    }
+    // 'running' is on disk (and on the stream) before this returns: the POST
+    // caller's immediate GET already sees the run.
+    broadcast({
+      head_sha: headSha,
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      status: 'running',
+      checks: [],
+      error: null,
+    })
+    const run = opts.runChecksFn ?? runChecks
+    void (async () => {
+      try {
+        let final: TaskChecks
+        try {
+          final = await run({
+            worktree: record.worktree,
+            config: readChecksConfig(cwd),
+            headSha,
+            onUpdate: (snapshot) => broadcast(snapshot),
+          })
+        } catch (err) {
+          // runChecks never rejects by contract; a bug there must not strand
+          // the run on 'running' forever.
+          final = {
+            head_sha: headSha,
+            started_at: new Date().toISOString(),
+            finished_at: new Date().toISOString(),
+            status: 'error',
+            checks: [],
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+        const clean = writeTaskChecks(cwd, id, final)
+        emit({ project_id: projectId, task_id: id, event: { name: 'task_checks', data: clean } })
+        const passed = clean.checks.filter((c) => c.status === 'passed').length
+        const failed = clean.checks.filter(
+          (c) => c.status === 'failed' || c.status === 'timeout',
+        ).length
+        const event = appendTaskEvent(cwd, id, {
+          type: 'checks',
+          data: { status: clean.status, passed, failed },
+        })
+        emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+      } catch {
+        // Even persistence trouble stays best-effort: the task never breaks
+        // because its checks could not be recorded.
+      } finally {
+        ctx.checking.delete(id)
+      }
+    })()
+    return { ok: true }
+  }
+
+  /**
+   * Auto-trigger after a turn COMMIT: fired from onTurnDone, in parallel with
+   * the review and never awaited. Only when this very turn committed (the
+   * runner appends its 'commit' event right before calling onTurnDone) — a
+   * no-change turn re-checks nothing.
+   */
+  const startChecksAfterCommit = (ctx: ProjectContext, record: TaskRecord): void => {
+    try {
+      const commits = readTaskEvents(ctx.project.path, record.id).filter(
+        (event) => event.type === 'commit',
+      )
+      if (commits.at(-1)?.data.turn !== record.turns.length) {
+        return
+      }
+      // The result is deliberately dropped: a 409 (manual run already in
+      // flight) or a missing-commit refusal must never disturb the turn.
+      startChecks(ctx, record.id)
+    } catch {
+      // Best-effort by contract.
+    }
+  }
+
+  /**
    * Lazy per-project assembly: store recovery, reviewer and runner are only
    * built once a project's tasks are actually touched, so a registry of ten
    * repos does not cost ten runners at boot. Null on an unregistered id — the
@@ -301,6 +430,10 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // rejects, so a failed auto-push cannot trip the runner's review_ko
     // fallback. `ctx` is assigned right below, before any turn can end.
     const onTurnDone: TaskTurnReviewFn = async (record, io) => {
+      // Checks run in PARALLEL with the review, fire-and-forget: they never
+      // delay the review nor the turn, and their failure (even a missing
+      // container runtime) never blocks anything.
+      startChecksAfterCommit(ctx, record)
       await reviewTurn(record, io)
       if (record.auto_ship && record.status === 'review_ok') {
         await ship(ctx, record.id)
@@ -337,7 +470,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           event: { name: 'task_meta', data: { tokens } },
         }),
     })
-    const ctx: ProjectContext = { project, runner, shipping: new Set() }
+    const ctx: ProjectContext = { project, runner, shipping: new Set(), checking: new Set() }
     contexts.set(projectId, ctx)
     return ctx
   }
@@ -526,6 +659,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       return ctx.shipping.has(id)
         ? { ok: false, code: 409, error: 'ship in progress' }
         : ctx.runner.abandon(id)
+    },
+
+    checks(projectId, id) {
+      const ctx = context(projectId)
+      return ctx ? startChecks(ctx, id) : unknownProject
+    },
+
+    getChecks(projectId, id) {
+      const project = registered().find((candidate) => candidate.id === projectId)
+      return project ? readTaskChecks(project.path, id) : null
     },
 
     async shutdown() {

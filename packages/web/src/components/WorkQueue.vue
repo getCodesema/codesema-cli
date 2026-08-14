@@ -9,6 +9,7 @@
 // the focus zone. All grouping/extraction is pure; the queue only holds its
 // disclosure state and a minute tick for the pause durations.
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { CHECKS_STATUS_KEY, checksBadge, checksTone } from '../composables/useChecks'
 import {
   formatDuration,
   groupQueue,
@@ -194,6 +195,16 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           <span class="wq-ready-open">
             <span class="wq-dot wq-dot--green" aria-hidden="true" />
             <span class="wq-title">{{ state.record.title }}</span>
+            <!-- Checks semaphore: what the human sees BEFORE clicking Ship
+                 (informative only, never a gate). Absent when no run exists. -->
+            <span
+              v-if="state.checks && checksBadge(state.checks)"
+              class="wq-checks"
+              :class="`wq-checks--${checksTone(state.checks)}`"
+              :title="t(CHECKS_STATUS_KEY[state.checks.status])"
+            >
+              {{ checksBadge(state.checks) }}
+            </span>
             <span class="wq-project">{{ projectName(state) }}</span>
           </span>
           <span class="wq-actions">
@@ -542,6 +553,33 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
   border: none;
   background: transparent;
   cursor: pointer;
+}
+
+/* Checks mini-badge: the run's semaphore glyph, colored by its state. */
+.wq-checks {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+}
+
+.wq-checks--pass {
+  color: var(--cs-green-text);
+  background: var(--cs-green-soft);
+}
+
+.wq-checks--fail {
+  color: var(--cs-red-text);
+  background: var(--cs-red-soft);
+}
+
+.wq-checks--run,
+.wq-checks--warn {
+  color: var(--cs-amber-text);
+  background: var(--cs-amber-soft);
 }
 
 .wq-actions {

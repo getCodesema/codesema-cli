@@ -33,6 +33,7 @@ export type TaskEventType =
   | 'commit'
   | 'review_started'
   | 'review_done'
+  | 'checks'
   | 'shipped'
   | 'error'
   | 'interrupted'
@@ -120,6 +121,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'commit',
   'review_started',
   'review_done',
+  'checks',
   'shipped',
   'error',
   'interrupted',
@@ -247,6 +249,120 @@ function sanitizeTaskEventData(raw: unknown): TaskEventData {
     kept++
   }
   return out
+}
+
+// --- Task checks (container-run typecheck/tests/lint on the task worktree) --
+
+/** Per-command outcome. 'skipped' = never ran (an earlier install/step failed). */
+export type TaskCheckStatus = 'passed' | 'failed' | 'timeout' | 'skipped'
+
+/**
+ * Whole-run status. 'error' means the run itself could not happen (no
+ * container runtime, engine bug) as opposed to a check failing;
+ * 'unconfigured' means nothing to run was detected or configured.
+ */
+export type TaskChecksStatus = 'running' | 'passed' | 'failed' | 'error' | 'unconfigured'
+
+export type TaskCheckResult = {
+  command: string
+  status: TaskCheckStatus
+  /** Container exit code; null when it never exited on its own (timeout, skip). */
+  exit_code: number | null
+  duration_ms: number
+  /** LAST ~4000 chars of the check's stdout+stderr (the end carries the verdict). */
+  tail: string
+}
+
+/** The persisted checks.json of one task: latest run only, overwritten each run. */
+export type TaskChecks = {
+  /** Worktree HEAD the checks ran against. */
+  head_sha: string
+  started_at: string
+  finished_at: string | null
+  status: TaskChecksStatus
+  checks: TaskCheckResult[]
+  /** Readable failure when status is 'error' (e.g. no container runtime). */
+  error: string | null
+}
+
+export const TASK_CHECK_COMMAND_MAX = 500
+export const TASK_CHECK_TAIL_MAX = 4_000
+export const TASK_CHECKS_LIST_MAX = 32
+export const TASK_CHECKS_ERROR_MAX = 2_000
+/** A git sha is 40 (64 for sha256 repos) chars; anything longer is garbage. */
+const TASK_CHECKS_SHA_MAX = 64
+
+const TASK_CHECK_STATUSES: ReadonlySet<TaskCheckStatus> = new Set([
+  'passed',
+  'failed',
+  'timeout',
+  'skipped',
+])
+
+const TASK_CHECKS_STATUSES: ReadonlySet<TaskChecksStatus> = new Set([
+  'running',
+  'passed',
+  'failed',
+  'error',
+  'unconfigured',
+])
+
+function sanitizeTaskCheckResult(raw: unknown): TaskCheckResult | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const c = raw as Record<string, unknown>
+  // A result without a command or with an unknown status cannot be rendered
+  // honestly: skip the entry rather than invent one.
+  const command = str(c.command, TASK_CHECK_COMMAND_MAX)
+  if (!command || !TASK_CHECK_STATUSES.has(c.status as TaskCheckStatus)) {
+    return null
+  }
+  return {
+    command,
+    status: c.status as TaskCheckStatus,
+    exit_code: Number.isInteger(c.exit_code) ? (c.exit_code as number) : null,
+    duration_ms: nonNegativeInt(c.duration_ms),
+    // The tail's END is the valuable part (final error, summary line): truncate
+    // from the front, never the back.
+    tail: typeof c.tail === 'string' ? c.tail.slice(-TASK_CHECK_TAIL_MAX) : '',
+  }
+}
+
+/**
+ * Revalidates a TaskChecks read back from disk (checks.json) or received over
+ * SSE. Same doctrine as the other sanitizers: whitelist and truncate, never
+ * throw. Null when the whole-run status is unusable — a file written by a
+ * newer schema must not render as a verdict it does not carry.
+ */
+export function sanitizeTaskChecks(raw: unknown): TaskChecks | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  if (!TASK_CHECKS_STATUSES.has(r.status as TaskChecksStatus)) {
+    return null
+  }
+  const checks: TaskCheckResult[] = []
+  if (Array.isArray(r.checks)) {
+    for (const item of r.checks) {
+      if (checks.length >= TASK_CHECKS_LIST_MAX) {
+        break
+      }
+      const check = sanitizeTaskCheckResult(item)
+      if (check) {
+        checks.push(check)
+      }
+    }
+  }
+  return {
+    head_sha: str(r.head_sha, TASK_CHECKS_SHA_MAX),
+    started_at: isoOrNow(r.started_at),
+    finished_at: typeof r.finished_at === 'string' && r.finished_at ? r.finished_at : null,
+    status: r.status as TaskChecksStatus,
+    checks,
+    error: nullableStr(r.error, TASK_CHECKS_ERROR_MAX),
+  }
 }
 
 /**

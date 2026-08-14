@@ -498,12 +498,12 @@ describe('oldestWaiting', () => {
 })
 
 describe('focusTabs', () => {
-  test('conversation is always live, checks never (not wired yet)', () => {
+  test('conversation and checks are always live (the checks body self-explains)', () => {
     for (const hasBranch of [true, false]) {
       const tabs = focusTabs(hasBranch)
       expect(tabs.map((tab) => tab.id)).toEqual(['conversation', 'diff', 'checks'])
       expect(tabs[0]?.enabled).toBe(true)
-      expect(tabs[2]?.enabled).toBe(false)
+      expect(tabs[2]?.enabled).toBe(true)
     }
   })
 

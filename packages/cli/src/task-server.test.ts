@@ -5,13 +5,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import type { TaskEvent, TaskRecord } from './contract.js'
+import type { TaskChecks, TaskEvent, TaskRecord } from './contract.js'
 import { addProject, listProjects, type Project } from './projects.js'
 import { createSession, startServer } from './serve.js'
+import type { RunChecksOptions } from './task-checks.js'
 import type { TaskRunner, TaskRunnerOptions } from './task-runner.js'
 import { createTaskManager, type TaskEnvelope, type TaskManager } from './task-server.js'
 import type { ShipOutcome, ShipTaskOptions } from './task-ship.js'
-import { createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
+import {
+  appendTaskEvent,
+  createTask,
+  loadTask,
+  readTaskChecks,
+  readTaskEvents,
+  saveTask,
+  writeTaskChecks,
+} from './tasks-store.js'
 
 // --- rigs -----------------------------------------------------------------
 
@@ -658,6 +667,207 @@ describe('manager.ship', () => {
   })
 })
 
+// --- manager.checks -------------------------------------------------------
+
+/** A finished TaskChecks the injected runChecksFn can resolve with. */
+function finishedChecks(over: Partial<TaskChecks> = {}): TaskChecks {
+  return {
+    head_sha: 'abc123',
+    started_at: '2026-08-14T10:00:00.000Z',
+    finished_at: '2026-08-14T10:01:00.000Z',
+    status: 'passed',
+    checks: [
+      { command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 500, tail: 'ok\n' },
+    ],
+    error: null,
+    ...over,
+  }
+}
+
+/** Seeds a task that HAS committed work: worktree = a real repo, commit event in the journal. */
+function seedCommittedTask(projectPath: string): { record: TaskRecord; worktree: string } {
+  const worktree = makeRepo()
+  const record = seedTask(projectPath)
+  record.worktree = worktree
+  saveTask(projectPath, record)
+  appendTaskEvent(projectPath, record.id, {
+    type: 'commit',
+    data: { sha: 'abc', files_changed: 1, turn: record.turns.length },
+  })
+  return { record, worktree }
+}
+
+describe('manager.checks', () => {
+  test('guards: no commit is a 409, unknown task/project are 404, gone worktree is a 409', () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async () => {},
+      runChecksFn: () => Promise.resolve(finishedChecks()),
+    })
+    const record = seedTask(project.path)
+    expect(manager.checks(project.id, record.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task has no commit to check',
+    })
+    expect(manager.checks(project.id, 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    expect(manager.checks('ghost', record.id)).toMatchObject({ ok: false, code: 404 })
+    // A commit event alone is not enough: the worktree must still exist.
+    appendTaskEvent(project.path, record.id, { type: 'commit', data: { turn: 1 } })
+    expect(manager.checks(project.id, record.id)).toMatchObject({ ok: false, code: 409 })
+    // Nothing was ever written for the task.
+    expect(readTaskChecks(project.path, record.id)).toBeNull()
+    expect(manager.getChecks(project.id, record.id)).toBeNull()
+  })
+
+  test('manual run: running is visible immediately, 409 while in flight, final + journal event after', async () => {
+    const project = register(makeRepo())
+    const { record, worktree } = seedCommittedTask(project.path)
+    const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree }).toString().trim()
+
+    let release!: (checks: TaskChecks) => void
+    const gate = new Promise<TaskChecks>((resolve) => {
+      release = resolve
+    })
+    const seen: RunChecksOptions[] = []
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async () => {},
+      runChecksFn: (options) => {
+        seen.push(options)
+        return gate
+      },
+    })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+    // 'running' hit the disk and the stream BEFORE the engine did anything.
+    expect(readTaskChecks(project.path, record.id)?.status).toBe('running')
+    expect(manager.getChecks(project.id, record.id)?.status).toBe('running')
+    const checksFrames = () => envelopes.filter((e) => e.event.name === 'task_checks')
+    expect(checksFrames()).toMatchObject([
+      { project_id: project.id, task_id: record.id, event: { data: { status: 'running' } } },
+    ])
+    // The engine got the worktree, its HEAD, and no config (none in this repo).
+    expect(seen[0]?.worktree).toBe(worktree)
+    expect(seen[0]?.headSha).toBe(headSha)
+    expect(seen[0]?.config).toBeNull()
+
+    // One run at a time per task.
+    expect(manager.checks(project.id, record.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'checks already running',
+    })
+
+    // Progress snapshots flow through as task_checks frames too.
+    seen[0]?.onUpdate?.(finishedChecks({ status: 'running', finished_at: null }))
+    expect(checksFrames().length).toBe(2)
+
+    release(
+      finishedChecks({
+        status: 'failed',
+        checks: [
+          { command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 5, tail: '' },
+          { command: 'bun run lint', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'x' },
+          { command: 'bun run e2e', status: 'timeout', exit_code: null, duration_ms: 5, tail: '' },
+        ],
+      }),
+    )
+    await until(() =>
+      readTaskEvents(project.path, record.id).some((event) => event.type === 'checks'),
+    )
+    // Final state persisted, journal summarizes it (timeout counts as failed).
+    expect(readTaskChecks(project.path, record.id)?.status).toBe('failed')
+    const journal = readTaskEvents(project.path, record.id).find((e) => e.type === 'checks')
+    expect(journal?.data).toEqual({ status: 'failed', passed: 1, failed: 2 })
+    // The journal line was broadcast as a task_event, the final as task_checks.
+    expect(checksFrames().at(-1)?.event.data).toMatchObject({ status: 'failed' })
+    expect(
+      envelopes.some((e) => e.event.name === 'task_event' && e.event.data.type === 'checks'),
+    ).toBe(true)
+    // The run settled: a new one may start.
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+  })
+
+  test('a rejecting engine degrades to status error and NEVER touches the task record', async () => {
+    const project = register(makeRepo())
+    const { record } = seedCommittedTask(project.path)
+    const statusBefore = loadTask(project.path, record.id)?.status
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async () => {},
+      runChecksFn: () => Promise.reject(new Error('engine exploded')),
+    })
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+    await until(() => readTaskChecks(project.path, record.id)?.status === 'error')
+    expect(readTaskChecks(project.path, record.id)?.error).toBe('engine exploded')
+    const journal = readTaskEvents(project.path, record.id).find((e) => e.type === 'checks')
+    expect(journal?.data).toEqual({ status: 'error', passed: 0, failed: 0 })
+    // The TASK is untouched: checks are best-effort by contract.
+    expect(loadTask(project.path, record.id)?.status).toBe(statusBefore)
+    // And the in-flight flag was released even on the error path.
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+  })
+
+  test('auto-trigger: onTurnDone starts checks for a committed turn WITHOUT blocking the review', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    let release!: (checks: TaskChecks) => void
+    const gate = new Promise<TaskChecks>((resolve) => {
+      release = resolve
+    })
+    let runs = 0
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async (record) => {
+        record.status = 'review_ok'
+      },
+      runChecksFn: () => {
+        runs++
+        return gate
+      },
+    })
+    // Force the lazy context (and thus the runner + its onTurnDone) to exist.
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    const io = { emit: () => {}, persist: () => {}, text: () => {} }
+
+    // onTurnDone resolves while the checks promise is still pending: the
+    // review was never gated on the container run.
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(runs).toBe(1)
+    expect(record.status).toBe('review_ok')
+    expect(readTaskChecks(project.path, record.id)?.status).toBe('running')
+
+    release(finishedChecks())
+    await until(() => readTaskChecks(project.path, record.id)?.status === 'passed')
+
+    // A turn WITHOUT a fresh commit (last commit event belongs to turn 1,
+    // record now has 2 turns) never re-triggers.
+    const again = loadTask(project.path, record.id)!
+    again.turns.push({
+      prompt: 'follow-up',
+      response: 'done',
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    saveTask(project.path, again)
+    await rig.runnerOptions().onTurnDone!(again, io)
+    expect(runs).toBe(1)
+  })
+})
+
 // --- HTTP surface ---------------------------------------------------------
 
 type RawResponse = { status: number; body: string }
@@ -715,6 +925,16 @@ describe('task routes without a task manager', () => {
           })
         ).status,
       ).toBe(501)
+      expect(
+        (await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa/checks?project=deadbeef')).status,
+      ).toBe(501)
+      expect(
+        (
+          await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa/checks?project=deadbeef', {
+            method: 'POST',
+          })
+        ).status,
+      ).toBe(501)
       expect((await rawRequest(started.port, '/api/projects')).status).toBe(501)
       expect(
         (await rawRequest(started.port, '/api/projects', { method: 'POST', body: '{}' })).status,
@@ -742,6 +962,7 @@ describe('task routes with a stub manager', () => {
       replies: [] as { project: string; id: string; message: string }[],
       ships: [] as string[],
       abandons: [] as string[],
+      checksStarts: [] as string[],
     }
     const known = (projectId: string) => projectId === project.id
     const manager: TaskManager = {
@@ -779,6 +1000,15 @@ describe('task routes with a stub manager', () => {
         calls.abandons.push(id)
         return { ok: true }
       },
+      checks: (projectId, id) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.checksStarts.push(id)
+        return { ok: true }
+      },
+      getChecks: (projectId, id) =>
+        known(projectId) && id === record.id ? readTaskChecks(project.path, id) : null,
       shutdown: () => Promise.resolve(),
       subscribe: (listener) => {
         listeners.add(listener)
@@ -995,6 +1225,100 @@ describe('task routes with a stub manager', () => {
       expect(abandoned.status).toBe(200)
       expect(JSON.parse(abandoned.body)).toEqual({ ok: true })
       expect(calls.abandons).toEqual([record.id])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('checks routes: GET 404 before any run then the file, POST under the token → 202', async () => {
+    const project = register(makeRepo())
+    const { manager, record, calls, emit } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5161,
+      taskManager: manager,
+    })
+    const path = `/api/tasks/${record.id}/checks?project=${project.id}`
+    try {
+      const token = await tasksToken(started.port)
+
+      // Never run: 404. Scoping mirrors the other task routes.
+      expect((await rawRequest(started.port, path)).status).toBe(404)
+      expect((await rawRequest(started.port, `/api/tasks/${record.id}/checks`)).status).toBe(400)
+      expect(
+        (await rawRequest(started.port, `/api/tasks/${record.id}/checks?project=ffffffff`)).status,
+      ).toBe(404)
+      expect(
+        (await rawRequest(started.port, `/api/tasks/not-an-id/checks?project=${project.id}`))
+          .status,
+      ).toBe(404)
+
+      // POST is a mutation: CSRF token required, 202 once accepted.
+      expect((await rawRequest(started.port, path, { method: 'POST' })).status).toBe(403)
+      expect(calls.checksStarts).toHaveLength(0)
+      const accepted = await rawRequest(started.port, path, {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+      })
+      expect(accepted.status).toBe(202)
+      expect(JSON.parse(accepted.body)).toEqual({ ok: true })
+      expect(calls.checksStarts).toEqual([record.id])
+
+      // Once checks.json exists the GET serves it verbatim.
+      writeTaskChecks(project.path, record.id, {
+        head_sha: 'abc',
+        started_at: '2026-08-14T10:00:00.000Z',
+        finished_at: '2026-08-14T10:01:00.000Z',
+        status: 'failed',
+        checks: [
+          { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 9, tail: 'ko' },
+        ],
+        error: null,
+      })
+      const got = await rawRequest(started.port, path)
+      expect(got.status).toBe(200)
+      expect(JSON.parse(got.body)).toMatchObject({
+        status: 'failed',
+        checks: [{ command: 'bun test', status: 'failed' }],
+      })
+
+      // task_checks envelopes ride the SAME global SSE stream as everything else.
+      const chunks: string[] = []
+      const req = request(
+        { host: '127.0.0.1', port: started.port, path: '/api/tasks/events' },
+        (res) => {
+          res.setEncoding('utf8')
+          res.on('data', (chunk: string) => {
+            chunks.push(chunk)
+          })
+        },
+      )
+      req.end()
+      await until(() => chunks.join('').includes('event: task\n'))
+      emit({
+        project_id: project.id,
+        task_id: record.id,
+        event: {
+          name: 'task_checks',
+          data: {
+            head_sha: 'abc',
+            started_at: '2026-08-14T10:00:00.000Z',
+            finished_at: null,
+            status: 'running',
+            checks: [],
+            error: null,
+          },
+        },
+      })
+      await until(() => chunks.join('').includes('event: task_checks\n'))
+      const frame = /event: task_checks\nid: \d+\ndata: (.*)\n/.exec(chunks.join(''))
+      expect(frame).not.toBeNull()
+      expect(JSON.parse(frame![1]!)).toMatchObject({
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task_checks', data: { status: 'running' } },
+      })
+      req.destroy()
     } finally {
       await started.stop()
     }

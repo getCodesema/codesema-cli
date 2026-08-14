@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { saveGlobalConfig, saveRepoConfig } from './config.js'
 import {
+  readChecksConfig,
   readRulesContent,
   readSyncAutoPush,
   rulesFilePath,
@@ -66,5 +67,80 @@ describe('repo-config', () => {
   test('a repo cannot make its own syncAutoPush true: the global value always wins', () => {
     saveRepoConfig(repoDir, { syncAutoPush: true })
     expect(readSyncAutoPush(repoDir)).toBe(false)
+  })
+})
+
+describe('readChecksConfig', () => {
+  let repoDir: string
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-checkscfg-'))
+  })
+
+  afterEach(() => {
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  const writeRepoConfig = (content: string) => {
+    mkdirSync(join(repoDir, '.codesema'), { recursive: true })
+    writeFileSync(join(repoDir, '.codesema', 'config.json'), content)
+  }
+
+  test('missing file, invalid json or absent checks key: null (auto-detection)', () => {
+    expect(readChecksConfig(repoDir)).toBeNull()
+    writeRepoConfig('{ not json')
+    expect(readChecksConfig(repoDir)).toBeNull()
+    writeRepoConfig(JSON.stringify({ agent: 'claude -p' }))
+    expect(readChecksConfig(repoDir)).toBeNull()
+    writeRepoConfig(JSON.stringify({ checks: 'yes' }))
+    expect(readChecksConfig(repoDir)).toBeNull()
+    writeRepoConfig(JSON.stringify({ checks: ['npm test'] }))
+    expect(readChecksConfig(repoDir)).toBeNull()
+  })
+
+  test('a full checks block is read back field by field', () => {
+    writeRepoConfig(
+      JSON.stringify({
+        checks: {
+          image: 'golang:1.23',
+          install: 'go mod download',
+          commands: ['go vet ./...', 'go test ./...'],
+          network: true,
+          timeoutSeconds: 120,
+        },
+      }),
+    )
+    expect(readChecksConfig(repoDir)).toEqual({
+      image: 'golang:1.23',
+      install: 'go mod download',
+      commands: ['go vet ./...', 'go test ./...'],
+      network: true,
+      timeoutSeconds: 120,
+    })
+  })
+
+  test('malformed fields are dropped, not guessed', () => {
+    writeRepoConfig(
+      JSON.stringify({
+        checks: {
+          image: 42,
+          install: ['nope'],
+          commands: ['ok', 7, '', '  ', 'also ok'],
+          network: 'yes',
+          timeoutSeconds: 2.5,
+        },
+      }),
+    )
+    expect(readChecksConfig(repoDir)).toEqual({ commands: ['ok', 'also ok'] })
+  })
+
+  test('install: null survives as an explicit no-install', () => {
+    writeRepoConfig(JSON.stringify({ checks: { install: null, commands: ['make check'] } }))
+    expect(readChecksConfig(repoDir)).toEqual({ install: null, commands: ['make check'] })
+  })
+
+  test('an empty checks object is tolerated (unconfigured is the engine call)', () => {
+    writeRepoConfig(JSON.stringify({ checks: {} }))
+    expect(readChecksConfig(repoDir)).toEqual({})
   })
 })

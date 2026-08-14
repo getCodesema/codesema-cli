@@ -66,6 +66,8 @@ const {
   interrupt,
   ship,
   abandon,
+  hydrateChecks,
+  runChecks,
   selectProject,
   refreshMrs,
   addProject,
@@ -113,6 +115,9 @@ const queueStates = computed(() =>
 // each conversation once when it enters the attention zone (the stream only
 // carries events emitted after connect, the question may predate it).
 const hydratedForQuestion = new Set<string>()
+// Ready cards wear a checks mini-badge: fetch the persisted result once when
+// a conversation reaches the ready zone ('task_checks' frames keep it live).
+const hydratedForChecks = new Set<string>()
 
 watch(
   states,
@@ -125,6 +130,10 @@ watch(
       ) {
         hydratedForQuestion.add(key)
         void hydrate(state.projectId, state.record.id)
+      }
+      if (state.record.status === 'review_ok' && !hydratedForChecks.has(key)) {
+        hydratedForChecks.add(key)
+        void hydrateChecks(state.projectId, state.record.id)
       }
     }
   },
@@ -444,6 +453,8 @@ async function onRemoveProject(id: string): Promise<void> {
               :interrupt="() => interrupt(entry.projectId, entry.taskId)"
               :ship="() => ship(entry.projectId, entry.taskId)"
               :abandon="() => abandon(entry.projectId, entry.taskId)"
+              :run-checks="() => runChecks(entry.projectId, entry.taskId)"
+              :load-checks="() => hydrateChecks(entry.projectId, entry.taskId)"
               @open-review="openReview"
               @toggle-pin="togglePin(entry.key)"
             />

@@ -569,9 +569,9 @@ async function handleTaskCreate(
   return sendJson(res, 201, created.record)
 }
 
-type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon'
+type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks'
 
-/** POST /api/tasks/:id/(reply|ship|interrupt|abandon)?project=, all under the tasks CSRF token. */
+/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks)?project=, all under the tasks CSRF token. */
 async function handleTaskAction(
   req: IncomingMessage,
   res: ServerResponse,
@@ -597,6 +597,14 @@ async function handleTaskAction(
     const result = await tasks.manager.ship(projectId, action.id)
     return result.ok
       ? sendJson(res, 200, { ok: true })
+      : sendJson(res, result.code, { error: result.error })
+  }
+  if (action.kind === 'checks') {
+    // Fire-and-forget start: 202 says the run is on its way, the outcome
+    // travels over SSE ('task_checks') and GET /api/tasks/:id/checks.
+    const result = tasks.manager.checks(projectId, action.id)
+    return result.ok
+      ? sendJson(res, 202, { ok: true })
       : sendJson(res, result.code, { error: result.error })
   }
   if (action.kind === 'interrupt' || action.kind === 'abandon') {
@@ -789,8 +797,9 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
-const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon)$/
+const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
+const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
 const PROJECT_DELETE_RE = /^\/api\/projects\/([^/]+)$/
 
 function createRequestHandler(handlerOpts: {
@@ -969,6 +978,25 @@ function createRequestHandler(handlerOpts: {
         return serveTaskEvents(tasks.manager, req, res, () => {
           sseClients--
         })
+      }
+      const taskChecksGet = TASK_CHECKS_RE.exec(pathname)
+      if (taskChecksGet?.[1]) {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        // 404 covers unknown project, unknown/malformed task id AND a task
+        // whose checks never ran: the file simply is not there yet.
+        const checks = isTaskId(taskChecksGet[1])
+          ? tasks.manager.getChecks(projectId, taskChecksGet[1])
+          : null
+        if (!checks) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, checks)
       }
       const taskGet = TASK_GET_RE.exec(pathname)
       if (taskGet?.[1]) {

@@ -297,7 +297,6 @@ const en = {
   'workspace.tabDiff': 'Diff',
   'workspace.tabDiffCount': 'Diff · {n} file | Diff · {n} files',
   'workspace.tabChecks': 'Checks',
-  'workspace.tabChecksSoon': 'Coming soon',
   'workspace.agentLabel': 'Agent',
   'workspace.agoTime': '{t} ago',
   'workspace.quickReplyOther': 'Something else…',
@@ -335,6 +334,32 @@ const en = {
   'workspace.draftWorkonHint': 'The conversation will work directly on {branch}',
   'workspace.draftTargetHint': 'Merge target: {target}',
   'workspace.toggleConversations': 'Show or hide the conversations',
+
+  // --- sandboxed checks (Checks tab / journal / queue badge) ---
+  'workspace.evChecks': 'Checks',
+  'workspace.checksEvPassed': 'Checks — {n} passed',
+  'workspace.checksEvFailed': 'Checks — {n} failed',
+  'workspace.checksEvError': 'Checks — error',
+  'workspace.checksEvUnconfigured': 'Checks — not configured',
+  'workspace.checksStatusRunning': 'Checks running…',
+  'workspace.checksStatusPassed': 'Checks passed',
+  'workspace.checksStatusFailed': 'Checks failed',
+  'workspace.checksStatusError': 'Checks could not run',
+  'workspace.checksStatusUnconfigured': 'Not configured',
+  'workspace.checksUnconfiguredHint':
+    'Add a "checks" key ({ image, install, commands }) to .codesema/config.json to run typecheck/tests/lint in a sandboxed container.',
+  'workspace.checksNeverRan': 'No checks have run yet.',
+  'workspace.checksAutoHint': 'Checks run automatically after each agent commit.',
+  'workspace.checksRerun': 'Re-run',
+  'workspace.checksRunNow': 'Run checks',
+  'workspace.checksNoCommitHint': 'Checks need a commit — they run after each agent turn.',
+  'workspace.checksHeadVerified': 'verified head {sha}',
+  'workspace.checksExitCode': 'exit {n}',
+  'workspace.checksTail': 'Output',
+  'workspace.checkPassed': 'passed',
+  'workspace.checkFailed': 'failed',
+  'workspace.checkTimeout': 'timeout',
+  'workspace.checkSkipped': 'skipped',
 }
 
 export type MessageKey = keyof typeof en
@@ -637,7 +662,6 @@ const fr: Record<MessageKey, string> = {
   'workspace.tabDiff': 'Diff',
   'workspace.tabDiffCount': 'Diff · {n} fichier | Diff · {n} fichiers',
   'workspace.tabChecks': 'Checks',
-  'workspace.tabChecksSoon': 'Bientôt',
   'workspace.agentLabel': 'Agent',
   'workspace.agoTime': 'il y a {t}',
   'workspace.quickReplyOther': 'Autre chose…',
@@ -675,6 +699,33 @@ const fr: Record<MessageKey, string> = {
   'workspace.draftWorkonHint': 'La conversation travaillera directement sur {branch}',
   'workspace.draftTargetHint': 'Cible de merge : {target}',
   'workspace.toggleConversations': 'Afficher ou masquer les conversations',
+
+  // --- sandboxed checks (Checks tab / journal / queue badge) ---
+  'workspace.evChecks': 'Checks',
+  'workspace.checksEvPassed': 'Checks — {n} réussi | Checks — {n} réussis',
+  'workspace.checksEvFailed': 'Checks — {n} échoué | Checks — {n} échoués',
+  'workspace.checksEvError': 'Checks — erreur',
+  'workspace.checksEvUnconfigured': 'Checks — non configurés',
+  'workspace.checksStatusRunning': 'Checks en cours…',
+  'workspace.checksStatusPassed': 'Checks réussis',
+  'workspace.checksStatusFailed': 'Checks échoués',
+  'workspace.checksStatusError': "Les checks n'ont pas pu tourner",
+  'workspace.checksStatusUnconfigured': 'Non configurés',
+  'workspace.checksUnconfiguredHint':
+    'Ajoute une clé "checks" ({ image, install, commands }) dans .codesema/config.json pour lancer typecheck/tests/lint dans un conteneur isolé.',
+  'workspace.checksNeverRan': "Aucun check n'a encore tourné.",
+  'workspace.checksAutoHint': "Les checks tournent automatiquement après chaque commit de l'agent.",
+  'workspace.checksRerun': 'Relancer',
+  'workspace.checksRunNow': 'Lancer les checks',
+  'workspace.checksNoCommitHint':
+    "Les checks demandent un commit — ils tournent après chaque tour de l'agent.",
+  'workspace.checksHeadVerified': 'head vérifié {sha}',
+  'workspace.checksExitCode': 'exit {n}',
+  'workspace.checksTail': 'Sortie',
+  'workspace.checkPassed': 'réussi',
+  'workspace.checkFailed': 'échoué',
+  'workspace.checkTimeout': 'timeout',
+  'workspace.checkSkipped': 'ignoré',
 }
 
 /**

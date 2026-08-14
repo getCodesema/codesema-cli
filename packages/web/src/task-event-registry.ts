@@ -4,6 +4,7 @@
 // contract, the components are the implementations.
 
 import type { Component } from 'vue'
+import TaskEventChecks from './components/task-events/TaskEventChecks.vue'
 import TaskEventLine from './components/task-events/TaskEventLine.vue'
 import TaskEventMessage from './components/task-events/TaskEventMessage.vue'
 import TaskEventQuestion from './components/task-events/TaskEventQuestion.vue'
@@ -40,6 +41,7 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   commit: TaskEventLine,
   review_started: TaskEventLine,
   review_done: TaskEventReviewDone,
+  checks: TaskEventChecks,
   shipped: TaskEventLine,
   error: TaskEventLine,
   interrupted: TaskEventLine,

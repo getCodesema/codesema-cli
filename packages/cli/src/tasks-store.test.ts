@@ -11,16 +11,23 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { TASK_EVENT_DATA_STRING_MAX, type TaskRecord } from './contract.js'
+import {
+  TASK_CHECK_TAIL_MAX,
+  TASK_EVENT_DATA_STRING_MAX,
+  type TaskChecks,
+  type TaskRecord,
+} from './contract.js'
 import {
   appendTaskEvent,
   createTask,
   listTasks,
   loadTask,
+  readTaskChecks,
   readTaskEvents,
   saveTask,
   taskDir,
   tasksDir,
+  writeTaskChecks,
 } from './tasks-store.js'
 
 let cwd: string
@@ -248,5 +255,67 @@ describe('appendTaskEvent / readTaskEvents', () => {
   test('malformed id: read returns empty, append throws loudly', () => {
     expect(readTaskEvents(cwd, '../oops')).toEqual([])
     expect(() => appendTaskEvent(cwd, '../oops', { type: 'message', data: {} })).toThrow()
+  })
+})
+
+describe('readTaskChecks / writeTaskChecks', () => {
+  let record: TaskRecord
+
+  beforeEach(() => {
+    record = createTask(cwd, input)
+  })
+
+  const checks = (over: Partial<TaskChecks> = {}): TaskChecks => ({
+    head_sha: 'abc123',
+    started_at: '2026-08-14T10:00:00.000Z',
+    finished_at: '2026-08-14T10:01:00.000Z',
+    status: 'passed',
+    checks: [
+      { command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 1200, tail: 'ok\n' },
+    ],
+    error: null,
+    ...over,
+  })
+
+  test('round-trips through disk, atomically (no tmp file left behind)', () => {
+    const written = writeTaskChecks(cwd, record.id, checks())
+    expect(readTaskChecks(cwd, record.id)).toEqual(written)
+    expect(existsSync(join(taskDir(cwd, record.id), 'checks.json'))).toBe(true)
+    expect(existsSync(join(taskDir(cwd, record.id), 'checks.json.tmp'))).toBe(false)
+  })
+
+  test('each write overwrites the previous run', () => {
+    writeTaskChecks(cwd, record.id, checks({ status: 'running', finished_at: null }))
+    writeTaskChecks(cwd, record.id, checks({ status: 'failed' }))
+    expect(readTaskChecks(cwd, record.id)?.status).toBe('failed')
+  })
+
+  test('the write sanitizes: oversized tail is truncated on disk and in the returned copy', () => {
+    const big = checks()
+    big.checks[0]!.tail = `${'x'.repeat(TASK_CHECK_TAIL_MAX + 500)}END`
+    const written = writeTaskChecks(cwd, record.id, big)
+    expect(written.checks[0]?.tail.length).toBe(TASK_CHECK_TAIL_MAX)
+    expect(readTaskChecks(cwd, record.id)?.checks[0]?.tail.endsWith('END')).toBe(true)
+  })
+
+  test('never run, corrupt file or unusable content: null, never a crash', () => {
+    expect(readTaskChecks(cwd, record.id)).toBeNull()
+    const path = join(taskDir(cwd, record.id), 'checks.json')
+    writeFileSync(path, '{ not json')
+    expect(readTaskChecks(cwd, record.id)).toBeNull()
+    writeFileSync(path, JSON.stringify({ status: 'greenish' }))
+    expect(readTaskChecks(cwd, record.id)).toBeNull()
+  })
+
+  test('malformed id: read returns null, write throws loudly', () => {
+    expect(readTaskChecks(cwd, '../oops')).toBeNull()
+    expect(() => writeTaskChecks(cwd, '../oops', checks())).toThrow()
+  })
+
+  test('a payload the sanitizer rejects is refused, not written', () => {
+    expect(() =>
+      writeTaskChecks(cwd, record.id, { status: 'nope' } as unknown as TaskChecks),
+    ).toThrow()
+    expect(existsSync(join(taskDir(cwd, record.id), 'checks.json'))).toBe(false)
   })
 })

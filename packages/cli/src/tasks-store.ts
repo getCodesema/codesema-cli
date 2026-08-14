@@ -17,8 +17,10 @@ import { join } from 'node:path'
 import { ensureWorkDir } from './config.js'
 import {
   isTaskId,
+  sanitizeTaskChecks,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
+  type TaskChecks,
   type TaskEvent,
   type TaskEventData,
   type TaskEventType,
@@ -183,6 +185,49 @@ export function appendTaskEvent(cwd: string, id: string, input: AppendTaskEventI
   }
   appendFileSync(path, `${prefix}${JSON.stringify(event)}\n`)
   return event
+}
+
+/**
+ * Latest checks run of a task (.codesema/tasks/<id>/checks.json). Null on
+ * unknown id, never-run task, unreadable file or unusable content — the API
+ * turns null into a 404, never a crash.
+ */
+export function readTaskChecks(cwd: string, id: string): TaskChecks | null {
+  if (!isTaskId(id)) {
+    return null
+  }
+  const path = join(taskDir(cwd, id), 'checks.json')
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+  return sanitizeTaskChecks(raw)
+}
+
+/**
+ * Atomic rewrite of checks.json (tmp + rename, same recipe as saveTask):
+ * every snapshot of a run overwrites the previous one, a crash mid-write
+ * never leaves a partial file. The payload is sanitized before writing so
+ * the file on disk is always bounded; the sanitized copy is returned so the
+ * caller broadcasts exactly what was persisted.
+ */
+export function writeTaskChecks(cwd: string, id: string, checks: TaskChecks): TaskChecks {
+  if (!isTaskId(id)) {
+    throw new Error(`invalid task id: ${id}`)
+  }
+  const clean = sanitizeTaskChecks(checks)
+  if (!clean) {
+    // Unreachable through the typed input; a hard invariant like appendTaskEvent's.
+    throw new Error('invalid task checks')
+  }
+  const dir = taskDir(cwd, id)
+  mkdirSync(dir, { recursive: true })
+  const tmp = join(dir, 'checks.json.tmp')
+  writeFileSync(tmp, `${JSON.stringify(clean, null, 2)}\n`)
+  renameSync(tmp, join(dir, 'checks.json'))
+  return clean
 }
 
 /**

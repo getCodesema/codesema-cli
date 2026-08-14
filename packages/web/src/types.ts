@@ -234,6 +234,7 @@ export type TaskEventType =
   | 'commit'
   | 'review_started'
   | 'review_done'
+  | 'checks'
   | 'shipped'
   | 'error'
   | 'interrupted'
@@ -269,6 +270,37 @@ export type TaskRecord = {
   updated_at: string
 }
 
+// Mirrors the checks contract (packages/contract) and the
+// /api/tasks/:id/checks endpoints: sandboxed typecheck/tests/lint runs
+// executed by codesema in an ephemeral container mounted on the worktree.
+
+/** Whole-run status; 'unconfigured' = nothing to run for this repo. */
+export type TaskChecksStatus = 'running' | 'passed' | 'failed' | 'error' | 'unconfigured'
+
+/** One command's outcome; 'skipped' = never ran (an earlier step failed). */
+export type TaskCheckStatus = 'passed' | 'failed' | 'timeout' | 'skipped'
+
+export type TaskCheck = {
+  command: string
+  status: TaskCheckStatus
+  exit_code: number | null
+  duration_ms: number
+  /** Last ~4000 chars of interleaved stdout+stderr. */
+  tail: string
+}
+
+/** The persisted checks.json of a task (.codesema/tasks/<id>/checks.json). */
+export type TaskChecks = {
+  /** Commit the checks ran against. */
+  head_sha: string
+  started_at: string
+  finished_at: string | null
+  status: TaskChecksStatus
+  checks: TaskCheck[]
+  /** Human-readable failure of the runner itself (e.g. no container engine). */
+  error: string | null
+}
+
 /**
  * One frame of the global /api/tasks/events SSE stream. Every frame is
  * project-enveloped: the workspace drives N repos over one stream.
@@ -278,6 +310,7 @@ export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task_event'; data: TaskEvent } }
   | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
   | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
+  | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
 
 // Mirrors packages/cli/src/projects.ts (global project registry) and the
 // /api/projects endpoints.

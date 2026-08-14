@@ -212,14 +212,14 @@ export type FocusTabState = { id: FocusTab; enabled: boolean }
 
 /**
  * Tab availability of one conversation: Diff needs a branch to diff against
- * (a queued task has none yet), Checks is not wired yet — the tab is visible
- * but disabled ("soon"), so the grammar of the zone is already learnable.
+ * (a queued task has none yet); Checks is always openable — its body explains
+ * itself (unconfigured hint, "no run yet") instead of a disabled tab.
  */
 export function focusTabs(hasBranch: boolean): FocusTabState[] {
   return [
     { id: 'conversation', enabled: true },
     { id: 'diff', enabled: hasBranch },
-    { id: 'checks', enabled: false },
+    { id: 'checks', enabled: true },
   ]
 }
 
@@ -314,6 +314,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   commit: 'workspace.evCommit',
   review_started: 'workspace.evReviewStarted',
   review_done: 'workspace.evReviewDone',
+  checks: 'workspace.evChecks',
   shipped: 'workspace.evShipped',
   error: 'workspace.evError',
   interrupted: 'workspace.evInterrupted',
@@ -331,6 +332,9 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   commit: 'go',
   review_started: 'check',
   review_done: 'check',
+  // Static fallback only: the checks line resolves go/stop from its status
+  // (see checksEventLine in useChecks).
+  checks: 'idle',
   shipped: 'go',
   error: 'stop',
   interrupted: 'idle',
@@ -367,6 +371,8 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   commit: ['message', 'subject', 'summary'],
   review_started: ['message', 'summary'],
   review_done: [],
+  // Rendered by its own component (TaskEventChecks): no probed key.
+  checks: [],
   shipped: ['url', 'branch'],
   error: ['message', 'error', 'summary'],
   interrupted: ['message', 'summary'],

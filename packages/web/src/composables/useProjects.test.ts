@@ -118,7 +118,14 @@ function record(partial: Partial<TaskRecord> & { id: string }): TaskRecord {
 }
 
 function state(partial: Partial<TaskRecord> & { id: string }): TaskState {
-  return { projectId: 'aaaa1111', record: record(partial), events: [], liveText: '', liveTokens: 0 }
+  return {
+    projectId: 'aaaa1111',
+    record: record(partial),
+    events: [],
+    liveText: '',
+    liveTokens: 0,
+    checks: null,
+  }
 }
 
 function mr(partial: Partial<ForgeMr> & { number: number }): ForgeMr {

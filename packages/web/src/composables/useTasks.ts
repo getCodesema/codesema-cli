@@ -19,6 +19,7 @@ import type {
   Project,
   ProjectCandidate,
   ProjectsResponse,
+  TaskChecks,
   TaskEnvelope,
   TaskEvent,
   TaskRecord,
@@ -41,6 +42,10 @@ export type TaskState = {
   liveText: string
   /** Live token meter of the in-flight turn (task_meta frames, volatile). */
   liveTokens: number
+  /** Sandboxed checks result (volatile mirror of checks.json): hydrated by
+   * GET /api/tasks/:id/checks on demand, updated by 'task_checks' frames.
+   * Null until either happened — which is NOT proof no checks ever ran. */
+  checks: TaskChecks | null
 }
 
 export type ApiResult = { ok: true } | { ok: false; status: number; error: string }
@@ -83,6 +88,7 @@ function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): 
       events: [],
       liveText: '',
       liveTokens: 0,
+      checks: null,
     })
     return
   }
@@ -148,7 +154,38 @@ function openStream(store: TaskStore, connected: Ref<boolean>, connections: Ref<
       current.liveTokens = envelope.event.data.tokens
     }
   })
+  // Checks transitions (running → per-check update → final): each frame
+  // carries the WHOLE checks.json, so replacing is always correct.
+  source.addEventListener('task_checks', (e) => {
+    const envelope = parseFrame<'task_checks'>(e)
+    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+    if (current) {
+      current.checks = envelope.event.data
+    }
+  })
   return source
+}
+
+/**
+ * Loads the persisted checks result of one task. 404 = never launched: the
+ * state keeps its null without erasing anything a live frame already set.
+ */
+async function hydrateChecksStore(store: TaskStore, projectId: string, id: string): Promise<void> {
+  try {
+    const res = await fetch(
+      `/api/tasks/${encodeURIComponent(id)}/checks?project=${encodeURIComponent(projectId)}`,
+    )
+    if (!res.ok) {
+      return
+    }
+    const checks = (await res.json()) as TaskChecks
+    const current = store.get(taskKey(projectId, id))
+    if (current) {
+      current.checks = checks
+    }
+  } catch {
+    // Local server stopped: keep the last known state, the stream will retry.
+  }
 }
 
 /** Loads the full journal of one task (the stream only carries live events). */
@@ -472,5 +509,9 @@ export function useTasks(token: string) {
     // Cleanup: removes the worktree (and, for forked tasks, the branch).
     abandon: (projectId: string, id: string) =>
       postAction(token, actionPath(projectId, id, 'abandon')),
+    hydrateChecks: (projectId: string, id: string) => hydrateChecksStore(store, projectId, id),
+    // Manual re-run of the sandboxed checks (409 while running or commit-less).
+    runChecks: (projectId: string, id: string) =>
+      postAction(token, actionPath(projectId, id, 'checks')),
   }
 }

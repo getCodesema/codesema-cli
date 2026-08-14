@@ -3,7 +3,8 @@
 // the agent waits), 📌 pin, the discreet 2-click branch/worktree cleanup,
 // Stop, Ship; a mono "project · ⎇ branch" chip plus the colored status
 // phrase; then the Conversation / Diff / Checks tabs (Diff is the scoped
-// PreviewPanel, Checks is visible but not wired yet). The Conversation tab
+// PreviewPanel; Checks shows the sandboxed typecheck/tests/lint run of the
+// worktree, its label being the semaphore — ✓ / ✗ / …). The Conversation tab
 // renders the journal through the event registry — agent bubbles, the amber
 // question card, folded tool runs reading "agent working — elapsed · tokens"
 // while live — with QUICK-REPLY buttons under an active question whose text
@@ -12,6 +13,14 @@
 // A task in flight is read-only — you answer questions or interrupt; a reply
 // typed during a run is parked and delivered on hand-over.
 import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue'
+import {
+  CHECK_GLYPH,
+  CHECK_STATUS_KEY,
+  CHECKS_STATUS_KEY,
+  checksTabLabel,
+  checksTone,
+  shortSha,
+} from '../composables/useChecks'
 import { extractQuickReplies } from '../composables/useQuickReplies'
 import {
   focusTabs,
@@ -20,6 +29,7 @@ import {
   groupThreadEvents,
   lastQuestion,
   replyModeOf,
+  timeAgo,
   type FocusTab,
 } from '../composables/useTaskBoard'
 import type { ApiResult, TaskState } from '../composables/useTasks'
@@ -39,6 +49,10 @@ const props = defineProps<{
   interrupt: () => Promise<ApiResult>
   ship: () => Promise<ApiResult>
   abandon: () => Promise<ApiResult>
+  /** POST …/checks: manual (re)run of the sandboxed checks. */
+  runChecks: () => Promise<ApiResult>
+  /** GET …/checks into state.checks (404 = never ran, state stays null). */
+  loadChecks: () => Promise<void>
 }>()
 
 const emit = defineEmits<{ 'open-review': [record: ReviewRecord]; 'toggle-pin': [] }>()
@@ -84,6 +98,51 @@ watch(
     }
   },
 )
+
+// ── Checks tab: sandboxed typecheck/tests/lint of the worktree ────────────
+// state.checks mirrors checks.json (hydrated below, live via 'task_checks'
+// SSE frames); everything here derives from it through pure useChecks fns.
+const checks = computed(() => props.state.checks)
+const checksTabText = computed(() => checksTabLabel(checks.value))
+const checksToneClass = computed(() => `cv-tab--checks-${checksTone(checks.value)}`)
+
+// Hydrate once, on the FIRST opening of the tab; the stream keeps it fresh
+// afterwards, so re-opening never refetches.
+let checksLoaded = false
+watch(tab, (next) => {
+  if (next === 'checks' && !checksLoaded) {
+    checksLoaded = true
+    void props.loadChecks()
+  }
+})
+
+const checksRunning = computed(() => checks.value?.status === 'running')
+/** A run needs a commit to verify; the server 409s both guards anyway. */
+const canRunChecks = computed(() => commitCount.value > 0 && !checksRunning.value)
+const checksBusy = ref(false)
+const checksError = ref<string | null>(null)
+
+async function doRunChecks(): Promise<void> {
+  if (!canRunChecks.value || checksBusy.value) {
+    return
+  }
+  checksBusy.value = true
+  checksError.value = null
+  const result = await props.runChecks()
+  checksBusy.value = false
+  if (!result.ok) {
+    checksError.value = result.error
+  }
+}
+
+/** "il y a X" stamp of the verified head (finished, else started). */
+const checksStamp = computed(() => {
+  const current = checks.value
+  if (current === null) {
+    return null
+  }
+  return timeAgo(current.finished_at ?? current.started_at, slowNow.value)
+})
 
 // ── Scroll: thread scrolls, reply stays pinned; follow the tail politely ──
 // New events/stream text keep the view glued to the bottom ONLY when the
@@ -561,12 +620,12 @@ const wait = computed(() =>
           {{ diffTabLabel }}
         </button>
         <button
-          class="cv-tab cv-tab--soon"
+          class="cv-tab"
+          :class="[checksToneClass, { 'cv-tab--active': tab === 'checks' }]"
           type="button"
-          disabled
-          :title="t('workspace.tabChecksSoon')"
+          @click="pickTab('checks')"
         >
-          {{ t('workspace.tabChecks') }}
+          {{ checksTabText }}
         </button>
       </nav>
     </header>
@@ -690,6 +749,72 @@ const wait = computed(() =>
         :project="state.projectId"
         @loaded="onPreviewLoaded"
       />
+    </div>
+
+    <!-- Checks tab: the sandboxed run (containerized typecheck/tests/lint),
+         per-check rows with a foldable output tail, and the manual re-run. -->
+    <div v-show="tab === 'checks'" class="cv-checks">
+      <div class="cv-checks-bar">
+        <template v-if="checks">
+          <span class="cv-checks-badge" :class="`cv-checks-badge--${checksTone(checks)}`">
+            <span v-if="checksRunning" class="cv-checks-dot" aria-hidden="true" />
+            {{ t(CHECKS_STATUS_KEY[checks.status]) }}
+          </span>
+          <span v-if="checks.head_sha" class="cv-checks-head">
+            {{ t('workspace.checksHeadVerified', { sha: shortSha(checks.head_sha) })
+            }}<template v-if="checksStamp"> · {{ checksStamp }}</template>
+          </span>
+        </template>
+        <span v-else class="cv-checks-none">{{ t('workspace.checksNeverRan') }}</span>
+        <button
+          class="cv-btn cv-checks-rerun"
+          type="button"
+          :disabled="!canRunChecks || checksBusy"
+          :title="commitCount === 0 ? t('workspace.checksNoCommitHint') : undefined"
+          @click="doRunChecks"
+        >
+          {{ checks ? t('workspace.checksRerun') : t('workspace.checksRunNow') }}
+        </button>
+      </div>
+
+      <p v-if="checksError" class="cv-error">{{ checksError }}</p>
+      <!-- Runner-level failure (no container engine…): the readable message. -->
+      <p v-if="checks?.status === 'error' && checks.error" class="cv-checks-broken">
+        {{ checks.error }}
+      </p>
+      <!-- Unconfigured (or never ran): say how to configure / when it runs. -->
+      <p v-if="checks?.status === 'unconfigured'" class="cv-checks-hint">
+        {{ t('workspace.checksUnconfiguredHint') }}
+      </p>
+      <p v-else-if="!checks" class="cv-checks-hint">{{ t('workspace.checksAutoHint') }}</p>
+
+      <ul v-if="checks && checks.checks.length > 0" class="cv-check-list">
+        <li v-for="(check, i) in checks.checks" :key="i" class="cv-check">
+          <div class="cv-check-row">
+            <span
+              class="cv-check-glyph"
+              :class="`cv-check-glyph--${check.status}`"
+              :title="t(CHECK_STATUS_KEY[check.status])"
+              aria-hidden="true"
+            >
+              {{ CHECK_GLYPH[check.status] }}
+            </span>
+            <code class="cv-check-cmd">{{ check.command }}</code>
+            <span class="cv-check-meta">
+              {{ t(CHECK_STATUS_KEY[check.status])
+              }}<template v-if="check.exit_code !== null">
+                · {{ t('workspace.checksExitCode', { n: check.exit_code }) }}</template
+              ><template v-if="check.duration_ms > 0">
+                · {{ formatDuration(check.duration_ms) }}</template
+              >
+            </span>
+          </div>
+          <details v-if="check.tail.trim().length > 0" class="cv-check-tail">
+            <summary class="cv-check-tail-summary">{{ t('workspace.checksTail') }}</summary>
+            <pre class="cv-check-pre">{{ check.tail }}</pre>
+          </details>
+        </li>
+      </ul>
     </div>
   </div>
 </template>
@@ -929,6 +1054,21 @@ const wait = computed(() =>
   opacity: 0.7;
 }
 
+/* The Checks label IS the semaphore: its glyph and color carry the state
+   (defined after --active with doubled specificity so the tone wins). */
+.cv-tab.cv-tab--checks-pass {
+  color: var(--cs-green-text);
+}
+
+.cv-tab.cv-tab--checks-fail {
+  color: var(--cs-red-text);
+}
+
+.cv-tab.cv-tab--checks-run,
+.cv-tab.cv-tab--checks-warn {
+  color: var(--cs-amber-text);
+}
+
 /* ── Conversation body ────────────────────────────────────────────────── */
 .cv-body {
   flex: 1;
@@ -1059,6 +1199,7 @@ const wait = computed(() =>
 
 @media (prefers-reduced-motion: reduce) {
   .cv-tools-dot,
+  .cv-checks-dot,
   .cv-dot--pulse {
     animation: none;
   }
@@ -1236,5 +1377,202 @@ const wait = computed(() =>
   min-height: 0;
   overflow-y: auto;
   padding: 16px 20px;
+}
+
+/* ── Checks tab ───────────────────────────────────────────────────────── */
+.cv-checks {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cv-checks-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Global state badge: running amber (pulsing dot), passed green, failed red,
+   broken runner amber — the state wears the color, per the doctrine. */
+.cv-checks-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 12px;
+  color: var(--cs-muted);
+  background: var(--cs-panel);
+  border: 1px solid var(--cs-line-2);
+}
+
+.cv-checks-badge--pass {
+  color: var(--cs-green-text);
+  background: var(--cs-green-soft);
+  border-color: var(--cs-green-ring);
+}
+
+.cv-checks-badge--fail {
+  color: var(--cs-red-text);
+  background: var(--cs-red-soft);
+  border-color: var(--cs-red-line);
+}
+
+.cv-checks-badge--run,
+.cv-checks-badge--warn {
+  color: var(--cs-amber-text);
+  background: var(--cs-amber-soft);
+  border-color: var(--cs-amber-line);
+}
+
+.cv-checks-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cs-amber);
+  box-shadow: var(--cs-amber-glow);
+  animation: cv-tools-pulse 1.6s ease-in-out infinite;
+}
+
+.cv-checks-head,
+.cv-checks-none {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--cs-ghost);
+}
+
+.cv-checks-rerun {
+  margin-left: auto;
+  color: var(--cs-text-2);
+}
+
+.cv-checks-hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--cs-muted);
+}
+
+/* The runner's own failure message (e.g. no container engine installed). */
+.cv-checks-broken {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--cs-amber-text);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.cv-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cv-check {
+  border: 1px solid var(--cs-line);
+  border-radius: 8px;
+  background: var(--cs-panel);
+  padding: 8px 11px;
+}
+
+.cv-check-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
+.cv-check-glyph {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.cv-check-glyph--passed {
+  color: var(--cs-green-text);
+}
+
+.cv-check-glyph--failed {
+  color: var(--cs-red-text);
+}
+
+.cv-check-glyph--timeout {
+  color: var(--cs-amber-text);
+}
+
+.cv-check-glyph--skipped {
+  color: var(--cs-ghost);
+}
+
+.cv-check-cmd {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--cs-text);
+  overflow-wrap: anywhere;
+}
+
+.cv-check-meta {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--cs-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+.cv-check-tail {
+  margin-top: 6px;
+}
+
+.cv-check-tail-summary {
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cs-muted);
+}
+
+.cv-check-tail-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cv-check-tail-summary::before {
+  content: '▸ ';
+}
+
+.cv-check-tail[open] .cv-check-tail-summary::before {
+  content: '▾ ';
+}
+
+/* The captured stdout+stderr tail: mono, inset, scrolls on its own. */
+.cv-check-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--cs-inset);
+  border: 1px solid var(--cs-line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--cs-text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow-y: auto;
 }
 </style>

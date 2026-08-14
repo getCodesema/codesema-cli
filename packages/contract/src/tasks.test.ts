@@ -2,13 +2,19 @@ import { describe, expect, test } from 'bun:test'
 import {
   isActiveTaskStatus,
   isTaskId,
+  sanitizeTaskChecks,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
+  TASK_CHECK_COMMAND_MAX,
+  TASK_CHECK_TAIL_MAX,
+  TASK_CHECKS_ERROR_MAX,
+  TASK_CHECKS_LIST_MAX,
   TASK_EVENT_DATA_KEYS_MAX,
   TASK_EVENT_DATA_STRING_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
   TASK_TURNS_MAX,
+  type TaskChecks,
   type TaskEvent,
   type TaskRecord,
   type TaskStatus,
@@ -241,6 +247,7 @@ describe('sanitizeTaskEvent', () => {
       'commit',
       'review_started',
       'review_done',
+      'checks',
       'shipped',
       'error',
       'interrupted',
@@ -289,5 +296,128 @@ describe('sanitizeTaskEvent', () => {
     expect(sanitizeTaskEvent({ ...validEvent, data: 'junk' })?.data).toEqual({})
     expect(sanitizeTaskEvent({ ...validEvent, data: [1, 2] })?.data).toEqual({})
     expect(sanitizeTaskEvent({ ...validEvent, data: undefined })?.data).toEqual({})
+  })
+})
+
+describe('sanitizeTaskChecks', () => {
+  const validChecks: TaskChecks = {
+    head_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+    started_at: '2026-08-14T10:00:00.000Z',
+    finished_at: '2026-08-14T10:02:00.000Z',
+    status: 'failed',
+    checks: [
+      {
+        command: 'bun run typecheck',
+        status: 'passed',
+        exit_code: 0,
+        duration_ms: 12_000,
+        tail: 'ok\n',
+      },
+      {
+        command: 'bun test',
+        status: 'failed',
+        exit_code: 1,
+        duration_ms: 30_000,
+        tail: '1 test failed\n',
+      },
+    ],
+    error: null,
+  }
+
+  test('a valid run round-trips unchanged', () => {
+    expect(sanitizeTaskChecks(structuredClone(validChecks))).toEqual(validChecks)
+  })
+
+  test('non-object input: null', () => {
+    expect(sanitizeTaskChecks(null)).toBeNull()
+    expect(sanitizeTaskChecks('junk')).toBeNull()
+    expect(sanitizeTaskChecks(42)).toBeNull()
+    expect(sanitizeTaskChecks([])).toBeNull()
+  })
+
+  test('unknown or missing run status: null (a newer schema never fakes a verdict)', () => {
+    expect(sanitizeTaskChecks({ ...validChecks, status: 'green' })).toBeNull()
+    expect(sanitizeTaskChecks({ ...validChecks, status: undefined })).toBeNull()
+  })
+
+  test('all valid run statuses are kept', () => {
+    const statuses = ['running', 'passed', 'failed', 'error', 'unconfigured'] as const
+    for (const status of statuses) {
+      expect(sanitizeTaskChecks({ ...validChecks, status })?.status).toBe(status)
+    }
+  })
+
+  test('a running snapshot keeps finished_at null and tolerates an empty list', () => {
+    const running = sanitizeTaskChecks({
+      head_sha: 'abc',
+      started_at: '2026-08-14T10:00:00.000Z',
+      finished_at: null,
+      status: 'running',
+      checks: [],
+      error: null,
+    })
+    expect(running?.finished_at).toBeNull()
+    expect(running?.checks).toEqual([])
+  })
+
+  test('check entries: missing command or unknown status are skipped, not mangled', () => {
+    const r = sanitizeTaskChecks({
+      ...validChecks,
+      checks: [
+        validChecks.checks[0],
+        { command: '', status: 'passed', exit_code: 0, duration_ms: 1, tail: '' },
+        { command: 'x', status: 'green', exit_code: 0, duration_ms: 1, tail: '' },
+        'junk',
+        null,
+      ],
+    })
+    expect(r?.checks).toEqual([validChecks.checks[0]!])
+  })
+
+  test('tail keeps the END on truncation (the verdict lives there)', () => {
+    const tail = `${'x'.repeat(TASK_CHECK_TAIL_MAX)}THE END`
+    const r = sanitizeTaskChecks({
+      ...validChecks,
+      checks: [{ ...validChecks.checks[0], tail }],
+    })
+    expect(r?.checks[0]?.tail.length).toBe(TASK_CHECK_TAIL_MAX)
+    expect(r?.checks[0]?.tail.endsWith('THE END')).toBe(true)
+  })
+
+  test('command is truncated, exit_code non-integers become null, counters clamp to 0', () => {
+    const r = sanitizeTaskChecks({
+      ...validChecks,
+      checks: [
+        {
+          command: 'c'.repeat(TASK_CHECK_COMMAND_MAX + 10),
+          status: 'timeout',
+          exit_code: 'boom',
+          duration_ms: -5,
+          tail: 42,
+        },
+      ],
+    })
+    expect(r?.checks[0]?.command.length).toBe(TASK_CHECK_COMMAND_MAX)
+    expect(r?.checks[0]?.exit_code).toBeNull()
+    expect(r?.checks[0]?.duration_ms).toBe(0)
+    expect(r?.checks[0]?.tail).toBe('')
+  })
+
+  test('the check list is capped', () => {
+    const many = Array.from({ length: TASK_CHECKS_LIST_MAX + 5 }, () => validChecks.checks[0])
+    expect(sanitizeTaskChecks({ ...validChecks, checks: many })?.checks.length).toBe(
+      TASK_CHECKS_LIST_MAX,
+    )
+  })
+
+  test('error message is bounded and blank degrades to null', () => {
+    const long = sanitizeTaskChecks({
+      ...validChecks,
+      status: 'error',
+      error: 'e'.repeat(TASK_CHECKS_ERROR_MAX + 100),
+    })
+    expect(long?.error?.length).toBe(TASK_CHECKS_ERROR_MAX)
+    expect(sanitizeTaskChecks({ ...validChecks, error: '   ' })?.error).toBeNull()
+    expect(sanitizeTaskChecks({ ...validChecks, error: 42 })?.error).toBeNull()
   })
 })
