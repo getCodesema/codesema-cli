@@ -217,6 +217,27 @@ export type DiffSummary = {
   diff: string
 }
 
+function parseNumstat(raw: string): DiffSummary['files'] {
+  const records = raw.split('\0')
+  const files: DiffSummary['files'] = []
+  for (let i = 0; i < records.length - 1; i += 1) {
+    const [add = '0', del = '0', ...rest] = (records[i] ?? '').split('\t')
+    let path = rest.join('\t')
+    if (!path) {
+      i += 2
+      path = records[i] ?? ''
+    }
+    if (path) {
+      files.push({
+        path,
+        additions: Number.isFinite(Number(add)) ? Number(add) : 0,
+        deletions: Number.isFinite(Number(del)) ? Number(del) : 0,
+      })
+    }
+  }
+  return files
+}
+
 /**
  * Pure git computation between two refs (no target detection, no disk writes):
  * shared by computePrepInput (local branch vs. detected target) and the web
@@ -240,22 +261,12 @@ export function computeDiffSummary(sourceRef: string, targetRef: string, cwd: st
     .filter(Boolean)
     .map(truncateSubject)
 
-  const files = (
+  const files = parseNumstat(
     tryGit(
-      ['-c', 'core.quotePath=false', 'diff', '--numstat', range, '--', '.', ...excludes],
+      ['-c', 'core.quotePath=false', 'diff', '--numstat', '-z', range, '--', '.', ...excludes],
       cwd,
-    ) ?? ''
+    ) ?? '',
   )
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [add = '0', del = '0', ...rest] = line.split('\t')
-      return {
-        path: rest.join('\t'),
-        additions: Number.isFinite(Number(add)) ? Number(add) : 0,
-        deletions: Number.isFinite(Number(del)) ? Number(del) : 0,
-      }
-    })
 
   return { merge_base: mb, commits, files, diff }
 }

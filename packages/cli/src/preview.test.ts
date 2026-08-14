@@ -149,6 +149,28 @@ describe('buildPreview', () => {
       /no open MR/,
     )
   })
+
+  test('uses the destination path and renamed status for a renamed file', async () => {
+    run(['checkout', '-b', 'feature/rename', 'main'])
+    run(['mv', 'a.txt', 'renamed.txt'])
+    run(['commit', '-m', 'feat: rename file'])
+    try {
+      const preview = await buildPreview(repo, { kind: 'branch', name: 'feature/rename' })
+      expect(preview.files).toEqual([
+        { path: 'renamed.txt', additions: 0, deletions: 0, status: 'renamed' },
+      ])
+      const result = await buildFileDiff(
+        repo,
+        { kind: 'branch', name: 'feature/rename' },
+        'renamed.txt',
+      )
+      expect(result.truncated).toBe(false)
+      expect(result.diff).toContain('a/renamed.txt')
+      expect(result.diff).toContain('+base')
+    } finally {
+      run(['checkout', 'feature/x'])
+    }
+  })
 })
 
 describe('buildFileDiff', () => {
