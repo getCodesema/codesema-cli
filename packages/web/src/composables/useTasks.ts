@@ -3,12 +3,16 @@
 // of every repo (the server caps SSE clients, a stream per task would blow
 // through it), a Map of task states keyed by (project_id, task_id), and the
 // token-guarded mutations. Streamed text deltas live only here — they are
-// never persisted server-side. The current project is a localStorage-persisted
-// ref; on first load the API's `current` seeds it (see deriveCurrentProject).
+// never persisted server-side. The selected projects are a localStorage-
+// persisted set; on first load the API's `current` (or the whole registry)
+// seeds it (see deriveSelection). Open MRs are cached per selected project so
+// the sidebar tree can attach shipped conversations under their MR.
 
 import { computed, reactive, ref, type Ref } from 'vue'
 import type {
   DiscoverResponse,
+  ForgeMr,
+  ForgeMrsResult,
   Project,
   ProjectCandidate,
   ProjectsResponse,
@@ -16,7 +20,7 @@ import type {
   TaskEvent,
   TaskRecord,
 } from '../types'
-import { deriveCurrentProject, PROJECT_STORAGE_KEY } from './useProjects'
+import { deriveSelection, persistSelection, readPersistedSelection } from './useProjects'
 import { compareByActivity, mergeEvent } from './useTaskBoard'
 
 export type TaskState = {
@@ -80,7 +84,7 @@ function parseFrame<N extends TaskEnvelope['event']['name']>(
 
 function openStream(store: TaskStore, connected: Ref<boolean>, connections: Ref<number>) {
   // The initial replay covers every task of every registered project; the
-  // client filters by current project at render time, never at the stream.
+  // client filters by selected projects at render time, never at the stream.
   const source = new EventSource('/api/tasks/events')
   source.addEventListener('open', () => {
     connected.value = true
@@ -182,27 +186,6 @@ async function createTask(
   }
 }
 
-// localStorage can throw (privacy modes); the persisted choice is best-effort.
-function readPersistedProject(): string | null {
-  try {
-    return localStorage.getItem(PROJECT_STORAGE_KEY)
-  } catch {
-    return null
-  }
-}
-
-function persistProject(id: string | null): void {
-  try {
-    if (id === null) {
-      localStorage.removeItem(PROJECT_STORAGE_KEY)
-    } else {
-      localStorage.setItem(PROJECT_STORAGE_KEY, id)
-    }
-  } catch {
-    // Best-effort: the API's `current` re-seeds the choice next launch.
-  }
-}
-
 /** Scoped mutation path: every task route carries its project id. */
 const actionPath = (projectId: string, id: string, action: string): string =>
   `/api/tasks/${encodeURIComponent(id)}/${action}?project=${encodeURIComponent(projectId)}`
@@ -223,13 +206,65 @@ async function deleteProject(token: string, id: string): Promise<ApiResult> {
   }
 }
 
-/** Global project registry client: list, current selection, add, remove. */
+/** Global project registry client: list, multi-selection, add, remove. */
 function useProjectRegistry(token: string, store: TaskStore) {
   const projects = ref<Project[]>([])
-  const currentProject = ref<string | null>(null)
+  const selectedProjects = ref<ReadonlySet<string>>(new Set())
+  // Open MRs per project id, refreshed on selection and on demand. A repo
+  // without a forge (or a stopped CLI) caches an empty list silently: the
+  // sidebar tree then degrades to branch nodes only.
+  const mrsByProject = reactive(new Map<string, ForgeMr[]>())
   // Git repos detected around the launch directory, refreshed on demand when
   // the add-project form opens: one-click registration instead of typing paths.
   const candidates = ref<ProjectCandidate[]>([])
+  // First derivation reads localStorage; later registry reloads only prune,
+  // so an explicit empty selection is never "helpfully" refilled.
+  let selectionSeeded = false
+
+  async function loadMrs(projectId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/mrs?project=${encodeURIComponent(projectId)}`)
+      if (!res.ok) {
+        mrsByProject.set(projectId, [])
+        return
+      }
+      const body = (await res.json()) as ForgeMrsResult
+      mrsByProject.set(projectId, body.available ? body.mrs : [])
+    } catch {
+      mrsByProject.set(projectId, [])
+    }
+  }
+
+  /** Re-fetches the open MRs of every selected project (refresh button). */
+  async function refreshMrs(): Promise<void> {
+    await Promise.all([...selectedProjects.value].map((id) => loadMrs(id)))
+  }
+
+  function setSelection(ids: string[]): void {
+    const previous = selectedProjects.value
+    selectedProjects.value = new Set(ids)
+    persistSelection(ids)
+    // A project entering the selection gets its MRs (re)fetched right away.
+    for (const id of ids) {
+      if (!previous.has(id)) {
+        void loadMrs(id)
+      }
+    }
+  }
+
+  function toggleProject(id: string): void {
+    if (!projects.value.some((project) => project.id === id)) {
+      return
+    }
+    const next = new Set(selectedProjects.value)
+    if (next.has(id)) {
+      next.delete(id)
+    } else {
+      next.add(id)
+    }
+    // Registry order keeps the persisted array (and the board) deterministic.
+    setSelection(projects.value.map((p) => p.id).filter((pid) => next.has(pid)))
+  }
 
   async function discoverCandidates(): Promise<void> {
     try {
@@ -246,13 +281,17 @@ function useProjectRegistry(token: string, store: TaskStore) {
 
   function applyRegistry(next: Project[], apiCurrent: string | null): void {
     projects.value = next
-    // Re-derivation covers first load AND removals: a current project gone
-    // from the registry falls back instead of pointing at nothing.
-    const persisted = currentProject.value ?? readPersistedProject()
-    const derived = deriveCurrentProject(persisted, apiCurrent, next)
-    if (derived !== currentProject.value) {
-      currentProject.value = derived
-      persistProject(derived)
+    if (!selectionSeeded) {
+      selectionSeeded = true
+      setSelection(deriveSelection(readPersistedSelection(), apiCurrent, next))
+      return
+    }
+    // Later reloads only prune: a selected project gone from the registry is
+    // dropped, but a deliberately empty selection stays empty.
+    const known = new Set(next.map((project) => project.id))
+    const kept = [...selectedProjects.value].filter((id) => known.has(id))
+    if (kept.length !== selectedProjects.value.size) {
+      setSelection(kept)
     }
   }
 
@@ -269,13 +308,6 @@ function useProjectRegistry(token: string, store: TaskStore) {
     }
   }
 
-  function selectProject(id: string): void {
-    if (projects.value.some((project) => project.id === id)) {
-      currentProject.value = id
-      persistProject(id)
-    }
-  }
-
   async function addProject(path: string): Promise<ApiResult> {
     const result = await postAction(token, '/api/projects', { path })
     if (result.ok) {
@@ -284,8 +316,10 @@ function useProjectRegistry(token: string, store: TaskStore) {
       const before = new Set(projects.value.map((project) => project.id))
       await loadProjects()
       const added = projects.value.find((project) => !before.has(project.id))
-      if (added) {
-        selectProject(added.id)
+      if (added && !selectedProjects.value.has(added.id)) {
+        // A freshly added project joins the selection: its board is what the
+        // user came for.
+        toggleProject(added.id)
       }
       // The registered flags of the open picker are stale now: refresh them.
       if (candidates.value.length > 0) {
@@ -307,17 +341,20 @@ function useProjectRegistry(token: string, store: TaskStore) {
         store.delete(key)
       }
     }
+    mrsByProject.delete(id)
     await loadProjects()
     return { ok: true }
   }
 
   return {
     projects,
-    currentProject,
+    selectedProjects,
+    mrsByProject,
     candidates,
     loadProjects,
     discoverCandidates,
-    selectProject,
+    toggleProject,
+    refreshMrs,
     addProject,
     removeProject,
   }

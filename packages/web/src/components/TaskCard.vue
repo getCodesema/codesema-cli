@@ -9,7 +9,13 @@ import type { TaskState } from '../composables/useTasks'
 import { EXECUTION_STATUS } from '../execution-status'
 import { t } from '../i18n'
 
-const props = defineProps<{ state: TaskState; prominent?: boolean; showActivity?: boolean }>()
+const props = defineProps<{
+  state: TaskState
+  prominent?: boolean
+  showActivity?: boolean
+  /** Repo name badge, shown when the board merges several projects. */
+  projectName?: string | null
+}>()
 
 const emit = defineEmits<{ select: [] }>()
 
@@ -33,6 +39,7 @@ const wait = computed(() =>
     />
     <span class="tk-body">
       <span class="tk-title-row">
+        <span v-if="projectName" class="tk-project">{{ projectName }}</span>
         <span class="tk-title">{{ state.record.title }}</span>
       </span>
       <span v-if="activity" class="tk-activity">{{ activity }}</span>
@@ -112,6 +119,22 @@ const wait = computed(() =>
   align-items: baseline;
   gap: 8px;
   min-width: 0;
+}
+
+/* Neutral chip: the project is context, never a state. */
+.tk-project {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--sema-ink-3);
+  background: var(--sema-panel-2);
+  border-radius: 5px;
+  padding: 1px 6px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tk-title {

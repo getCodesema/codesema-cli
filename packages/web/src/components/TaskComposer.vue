@@ -1,13 +1,24 @@
 <script setup lang="ts">
-// Home composer: one textarea (the title derives from its first line) and the
-// per-task auto-ship opt-in. No role picker: the tool runs anonymous dev
-// agents, the user defines the workflow in the prompt itself.
+// Home composer: one textarea (the title derives from its first line), the
+// per-task auto-ship opt-in, and — on a multi-project board — the target
+// project selector (the parent owns and persists the choice). No role picker:
+// the tool runs anonymous dev agents, the user defines the workflow in the
+// prompt itself.
 import { ref } from 'vue'
 import { titleFromPrompt } from '../composables/useTaskBoard'
 import type { CreateTaskInput } from '../composables/useTasks'
 import { t } from '../i18n'
+import type { Project } from '../types'
 
-const props = defineProps<{ creating: boolean; error: string | null }>()
+const props = defineProps<{
+  creating: boolean
+  error: string | null
+  /** Selectable target repos (the selected projects, registry order). */
+  projects: Project[]
+}>()
+
+/** Target project id, owned by the parent (last used, persisted). */
+const target = defineModel<string | null>('target', { required: true })
 
 const emit = defineEmits<{ create: [input: CreateTaskInput] }>()
 
@@ -16,7 +27,7 @@ const autoShip = ref(false)
 
 function submit(): void {
   const text = prompt.value.trim()
-  if (!text || props.creating) {
+  if (!text || props.creating || target.value === null) {
     return
   }
   emit('create', {
@@ -45,11 +56,23 @@ defineExpose({ reset })
       @keydown.enter="(e) => (e.metaKey || e.ctrlKey) && submit()"
     />
     <div class="tc-row">
+      <label v-if="projects.length > 1" class="tc-target">
+        <span class="tc-target-label">{{ t('workspace.composerTarget') }}</span>
+        <select v-model="target" class="tc-target-select">
+          <option v-for="project in projects" :key="project.id" :value="project.id">
+            {{ project.name }}
+          </option>
+        </select>
+      </label>
       <label class="tc-autoship" :title="t('workspace.autoShipHint')">
         <input v-model="autoShip" type="checkbox" class="tc-check" />
         <span>{{ t('workspace.autoShip') }}</span>
       </label>
-      <button class="tc-launch" type="submit" :disabled="creating || !prompt.trim()">
+      <button
+        class="tc-launch"
+        type="submit"
+        :disabled="creating || !prompt.trim() || target === null"
+      >
         {{ creating ? t('workspace.launching') : t('workspace.launch') }}
       </button>
     </div>
@@ -91,6 +114,35 @@ defineExpose({ reset })
   align-items: center;
   gap: 14px;
   flex-wrap: wrap;
+}
+
+.tc-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--sema-ink-2);
+}
+
+.tc-target-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sema-ink-3);
+}
+
+.tc-target-select {
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--sema-ink);
+  background: var(--sema-bg);
+  border: 1px solid var(--sema-line-soft);
+  border-radius: 7px;
+  padding: 4px 8px;
+  cursor: pointer;
 }
 
 .tc-autoship {

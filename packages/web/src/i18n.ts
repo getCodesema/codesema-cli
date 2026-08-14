@@ -253,9 +253,8 @@ const en = {
   'workspace.evError': 'Error',
   'workspace.evInterrupted': 'Interrupted',
 
-  // --- workspace multi-project (A3) ---
-  'workspace.projectLabel': 'Project',
-  'workspace.switchProject': 'Switch project',
+  // --- workspace multi-project (A3, B2) ---
+  'workspace.projectLabel': 'Projects',
   'workspace.addProject': 'Add a project',
   'workspace.detectedProjects': 'Detected repos',
   'workspace.addProjectPath': 'Absolute path to a git repo…',
@@ -268,9 +267,12 @@ const en = {
   'workspace.removeProjectHint': 'Unregisters the project only — nothing on disk is touched.',
   'workspace.removeProjectError': 'Could not remove the project.',
   'workspace.navHome': 'Home',
-  'workspace.recents': 'Recent',
-  'workspace.recentsEmpty': 'No conversation yet.',
+  'workspace.conversations': 'Conversations',
+  'workspace.refreshMrs': 'Refresh merge requests',
+  'workspace.treeEmpty': 'No conversation yet.',
   'workspace.noProject': 'No project yet — add one in the sidebar to get started.',
+  'workspace.noProjectSelected': 'No project selected — check one in the sidebar.',
+  'workspace.composerTarget': 'Project',
 }
 
 export type MessageKey = keyof typeof en
@@ -527,9 +529,8 @@ const fr: Record<MessageKey, string> = {
   'workspace.evError': 'Erreur',
   'workspace.evInterrupted': 'Interrompue',
 
-  // --- workspace multi-project (A3) ---
-  'workspace.projectLabel': 'Projet',
-  'workspace.switchProject': 'Changer de projet',
+  // --- workspace multi-project (A3, B2) ---
+  'workspace.projectLabel': 'Projets',
   'workspace.addProject': 'Ajouter un projet',
   'workspace.detectedProjects': 'Dépôts détectés',
   'workspace.addProjectPath': 'Chemin absolu vers un dépôt git…',
@@ -543,9 +544,12 @@ const fr: Record<MessageKey, string> = {
     'Désenregistre le projet seulement — rien n’est touché sur le disque.',
   'workspace.removeProjectError': 'Impossible de retirer le projet.',
   'workspace.navHome': 'Accueil',
-  'workspace.recents': 'Récents',
-  'workspace.recentsEmpty': 'Aucune conversation pour le moment.',
+  'workspace.conversations': 'Conversations',
+  'workspace.refreshMrs': 'Rafraîchir les merge requests',
+  'workspace.treeEmpty': 'Aucune conversation pour le moment.',
   'workspace.noProject': 'Aucun projet — ajoutes-en un dans la barre latérale pour commencer.',
+  'workspace.noProjectSelected': 'Aucun projet sélectionné — coches-en un dans la barre latérale.',
+  'workspace.composerTarget': 'Projet',
 }
 
 /**

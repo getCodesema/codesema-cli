@@ -1,11 +1,19 @@
 <script setup lang="ts">
-// Workspace sidebar, Codesema dashboard grammar: the project selector on top
-// (one project: its bare name; several: a dropdown; none: an "add" CTA), then
-// the nav and the recent conversations of the CURRENT project, each with its
-// status glyph from the shared execution-status table. All data comes from
-// props, all mutations go up as events: the sidebar holds only its own
-// disclosure state (menu open, add form open, pending removal confirmation).
+// Workspace sidebar, Codesema dashboard grammar: the project list on top —
+// every registered repo with its selection checkbox, plus add/remove — then
+// the nav, then one tree per selected project: its open MRs and active base
+// branches as expandable nodes, conversations underneath with their status
+// glyph from the shared execution-status table. Technical codesema/task-*
+// branches never appear as nodes: the conversation carries them (the tree is
+// built by buildProjectTree, pure and tested). All data comes from props, all
+// mutations go up as events: the sidebar holds only its own disclosure state
+// (add form open, pending removal confirmation, folded/unfolded nodes).
 import { computed, ref, watch } from 'vue'
+import {
+  nodeHasActiveConversation,
+  type ConversationNode,
+  type ProjectTree,
+} from '../composables/useProjects'
 import type { TaskState } from '../composables/useTasks'
 import { EXECUTION_STATUS } from '../execution-status'
 import { t } from '../i18n'
@@ -13,10 +21,12 @@ import type { Project, ProjectCandidate } from '../types'
 
 const props = defineProps<{
   projects: Project[]
-  currentId: string | null
-  recents: TaskState[]
-  /** Task id of the open conversation, to highlight it in the recents. */
-  activeTaskId: string | null
+  /** Ids of the selected projects (checkboxes). */
+  selected: ReadonlySet<string>
+  /** One tree per selected project, in registry order (see buildProjectTree). */
+  trees: ProjectTree[]
+  /** Open conversation, to highlight it in the trees. */
+  activeTask: { projectId: string; id: string } | null
   addBusy: boolean
   addError: string | null
   removeError: string | null
@@ -25,40 +35,26 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  select: [id: string]
+  toggle: [id: string]
   add: [path: string]
   remove: [id: string]
   home: []
   'open-task': [state: TaskState]
   /** Asks the parent to (re)fetch detection; fired when the add form opens. */
   discover: []
+  /** Asks the parent to re-fetch the open MRs of the selected projects. */
+  'refresh-mrs': []
 }>()
 
-const current = computed(
-  () => props.projects.find((project) => project.id === props.currentId) ?? null,
-)
-
-// ── Selector disclosure ───────────────────────────────────────────────────
-const menuOpen = ref(false)
+// ── Project list disclosure ───────────────────────────────────────────────
 const formOpen = ref(false)
 const pathDraft = ref('')
 // Two-step removal: the first click arms the confirmation, the second fires.
 const confirmRemoveId = ref<string | null>(null)
 
-function toggleMenu(): void {
-  menuOpen.value = !menuOpen.value
-  confirmRemoveId.value = null
-}
-
-function selectProject(id: string): void {
-  menuOpen.value = false
-  confirmRemoveId.value = null
-  emit('select', id)
-}
-
 function openForm(): void {
   formOpen.value = true
-  menuOpen.value = false
+  confirmRemoveId.value = null
   // Refresh detection on every open: repos appear/disappear between visits.
   emit('discover')
 }
@@ -98,12 +94,44 @@ watch(
 function requestRemove(id: string): void {
   if (confirmRemoveId.value === id) {
     confirmRemoveId.value = null
-    menuOpen.value = false
     emit('remove', id)
   } else {
     confirmRemoveId.value = id
   }
 }
+
+// ── Trees: folded/unfolded per node ───────────────────────────────────────
+// Nodes carrying an active conversation start unfolded; the map only stores
+// the user's explicit overrides, so fresh nodes keep the sensible default.
+const folded = ref(new Map<string, boolean>())
+
+function nodeKey(projectId: string, node: ConversationNode): string {
+  return node.kind === 'mr' ? `${projectId}:mr:${node.mr.number}` : `${projectId}:br:${node.name}`
+}
+
+function isOpen(projectId: string, node: ConversationNode): boolean {
+  return !(folded.value.get(nodeKey(projectId, node)) ?? !nodeHasActiveConversation(node))
+}
+
+function toggleNode(projectId: string, node: ConversationNode): void {
+  const next = new Map(folded.value)
+  next.set(nodeKey(projectId, node), isOpen(projectId, node))
+  folded.value = next
+}
+
+function nodeLabel(node: ConversationNode): string {
+  return node.kind === 'mr' ? `!${node.mr.number} ${node.mr.title}` : node.name
+}
+
+function isActiveState(state: TaskState): boolean {
+  return (
+    props.activeTask !== null &&
+    state.projectId === props.activeTask.projectId &&
+    state.record.id === props.activeTask.id
+  )
+}
+
+const hasConversations = computed(() => props.trees.some((tree) => tree.nodes.length > 0))
 </script>
 
 <template>
@@ -113,65 +141,43 @@ function requestRemove(id: string): void {
       <span class="sb-brand-sub">{{ t('workspace.title') }}</span>
     </div>
 
-    <!-- Project selector -->
+    <!-- Project list: one checkbox per registered repo, add/remove inline. -->
     <div class="sb-project">
       <span class="sb-label">{{ t('workspace.projectLabel') }}</span>
 
-      <!-- No project: the CTA is the whole selector. -->
+      <!-- No project: the CTA is the whole block. -->
       <button v-if="projects.length === 0 && !formOpen" class="sb-add-cta" @click="openForm">
         {{ t('workspace.addProject') }}
       </button>
 
-      <!-- One project: its bare name, plus a discreet add action. -->
-      <div v-else-if="projects.length === 1" class="sb-single">
-        <span class="sb-single-name" :title="current?.path">{{ current?.name }}</span>
-        <button
-          class="sb-icon-btn"
-          :title="t('workspace.addProject')"
-          :aria-label="t('workspace.addProject')"
-          @click="openForm"
-        >
-          +
-        </button>
-      </div>
-
-      <!-- Several projects: dropdown with switch, discreet removal and add. -->
-      <div v-else-if="projects.length > 1" class="sb-menu-wrap">
-        <button
-          class="sb-menu-btn"
-          :aria-expanded="menuOpen"
-          :title="t('workspace.switchProject')"
-          @click="toggleMenu"
-        >
-          <span class="sb-menu-name">{{ current?.name ?? '—' }}</span>
-          <span class="sb-menu-chevron" aria-hidden="true">{{ menuOpen ? '▴' : '▾' }}</span>
-        </button>
-        <div v-if="menuOpen" class="sb-menu">
-          <div v-for="project in projects" :key="project.id" class="sb-menu-row">
-            <button
-              class="sb-menu-item"
-              :class="{ 'sb-menu-item--current': project.id === currentId }"
-              :title="project.path"
-              @click="selectProject(project.id)"
-            >
-              {{ project.name }}
-            </button>
-            <button
-              class="sb-menu-remove"
-              :class="{ 'sb-menu-remove--armed': confirmRemoveId === project.id }"
-              :title="t('workspace.removeProjectHint')"
-              @click="requestRemove(project.id)"
-            >
-              {{
-                confirmRemoveId === project.id
-                  ? t('workspace.removeProjectConfirm')
-                  : t('workspace.removeProject')
-              }}
-            </button>
-          </div>
-          <button class="sb-menu-add" @click="openForm">+ {{ t('workspace.addProject') }}</button>
+      <template v-else>
+        <div v-for="project in projects" :key="project.id" class="sb-proj-row">
+          <label class="sb-proj-check" :title="project.path">
+            <input
+              type="checkbox"
+              class="sb-check"
+              :checked="selected.has(project.id)"
+              @change="emit('toggle', project.id)"
+            />
+            <span class="sb-proj-name">{{ project.name }}</span>
+          </label>
+          <button
+            class="sb-proj-remove"
+            :class="{ 'sb-proj-remove--armed': confirmRemoveId === project.id }"
+            :title="t('workspace.removeProjectHint')"
+            @click="requestRemove(project.id)"
+          >
+            {{
+              confirmRemoveId === project.id
+                ? t('workspace.removeProjectConfirm')
+                : t('workspace.removeProject')
+            }}
+          </button>
         </div>
-      </div>
+        <button v-if="!formOpen" class="sb-add-inline" @click="openForm">
+          + {{ t('workspace.addProject') }}
+        </button>
+      </template>
 
       <!-- Add form: detected repos first (one click), manual path as fallback. -->
       <form v-if="formOpen" class="sb-add-form" @submit.prevent="submitAdd">
@@ -220,29 +226,64 @@ function requestRemove(id: string): void {
       <button class="sb-nav-item" @click="emit('home')">{{ t('workspace.navHome') }}</button>
     </nav>
 
-    <!-- Recents, scoped to the current project by the parent. -->
-    <div class="sb-recents">
-      <span class="sb-label">{{ t('workspace.recents') }}</span>
-      <p v-if="recents.length === 0" class="sb-recents-empty">
-        {{ t('workspace.recentsEmpty') }}
-      </p>
-      <button
-        v-for="state in recents"
-        :key="state.record.id"
-        class="sb-recent"
-        :class="{ 'sb-recent--active': state.record.id === activeTaskId }"
-        @click="emit('open-task', state)"
-      >
-        <span
-          class="sb-recent-glyph"
-          :style="{ color: EXECUTION_STATUS[state.record.status].text }"
-          :title="t(EXECUTION_STATUS[state.record.status].labelKey)"
-          aria-hidden="true"
+    <!-- Trees: open MRs + active base branches of each selected project. -->
+    <div v-if="trees.length > 0" class="sb-trees">
+      <div class="sb-trees-head">
+        <span class="sb-label sb-label--inline">{{ t('workspace.conversations') }}</span>
+        <button
+          class="sb-icon-btn"
+          :title="t('workspace.refreshMrs')"
+          :aria-label="t('workspace.refreshMrs')"
+          @click="emit('refresh-mrs')"
         >
-          {{ EXECUTION_STATUS[state.record.status].icon }}
+          ↻
+        </button>
+      </div>
+
+      <p v-if="!hasConversations" class="sb-tree-empty">
+        {{ t('workspace.treeEmpty') }}
+      </p>
+
+      <div v-for="tree in trees" :key="tree.project.id" class="sb-tree">
+        <span v-if="trees.length > 1" class="sb-tree-project" :title="tree.project.path">
+          {{ tree.project.name }}
         </span>
-        <span class="sb-recent-title">{{ state.record.title }}</span>
-      </button>
+        <div v-for="node in tree.nodes" :key="nodeKey(tree.project.id, node)" class="sb-node">
+          <button
+            class="sb-node-btn"
+            :aria-expanded="isOpen(tree.project.id, node)"
+            :title="node.kind === 'mr' ? node.mr.title : node.name"
+            @click="toggleNode(tree.project.id, node)"
+          >
+            <span class="sb-node-chevron" aria-hidden="true">
+              {{ isOpen(tree.project.id, node) ? '▾' : '▸' }}
+            </span>
+            <span class="sb-node-glyph" aria-hidden="true">
+              {{ node.kind === 'mr' ? '⇄' : '⎇' }}
+            </span>
+            <span class="sb-node-label">{{ nodeLabel(node) }}</span>
+          </button>
+          <template v-if="isOpen(tree.project.id, node)">
+            <button
+              v-for="state in node.states"
+              :key="state.record.id"
+              class="sb-conv"
+              :class="{ 'sb-conv--active': isActiveState(state) }"
+              @click="emit('open-task', state)"
+            >
+              <span
+                class="sb-conv-glyph"
+                :style="{ color: EXECUTION_STATUS[state.record.status].text }"
+                :title="t(EXECUTION_STATUS[state.record.status].labelKey)"
+                aria-hidden="true"
+              >
+                {{ EXECUTION_STATUS[state.record.status].icon }}
+              </span>
+              <span class="sb-conv-title">{{ state.record.title }}</span>
+            </button>
+          </template>
+        </div>
+      </div>
     </div>
   </aside>
 </template>
@@ -295,10 +336,15 @@ function requestRemove(id: string): void {
   margin-bottom: 6px;
 }
 
-/* ── Project selector ─────────────────────────────────────────────────── */
+.sb-label--inline {
+  margin-bottom: 0;
+}
+
+/* ── Project list ─────────────────────────────────────────────────────── */
 .sb-project {
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
 .sb-add-cta {
@@ -319,21 +365,92 @@ function requestRemove(id: string): void {
   border-color: var(--sema-ink-3);
 }
 
-.sb-single {
+.sb-proj-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 4px;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 2px 4px;
 }
 
-.sb-single-name {
-  font-size: 13.5px;
-  font-weight: 700;
+.sb-proj-row:hover {
+  background: var(--sema-hover);
+}
+
+.sb-proj-check {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.sb-check {
+  flex: none;
+  accent-color: var(--sema-accent);
+}
+
+.sb-proj-name {
+  font-size: 13px;
+  font-weight: 600;
   color: var(--sema-ink);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Removal stays discreet until armed; red then carries the state. */
+.sb-proj-remove {
+  flex: none;
+  font-size: 10.5px;
+  font-family: inherit;
+  color: var(--sema-ink-ghost);
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0;
+}
+
+.sb-proj-row:hover .sb-proj-remove,
+.sb-proj-remove:focus-visible,
+.sb-proj-remove--armed {
+  opacity: 1;
+}
+
+.sb-proj-remove:hover {
+  color: var(--sema-red-text);
+  background: var(--sema-hover);
+}
+
+/* Armed confirmation carries a state: red is doctrine here, not decoration. */
+.sb-proj-remove--armed {
+  color: var(--sema-red-text);
+  background: var(--sema-red-soft);
+}
+
+.sb-add-inline {
+  margin-top: 4px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--sema-ink-3);
+  padding: 5px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sb-add-inline:hover {
+  background: var(--sema-hover);
+  color: var(--sema-ink);
 }
 
 .sb-icon-btn {
@@ -343,7 +460,7 @@ function requestRemove(id: string): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 13px;
   font-family: inherit;
   line-height: 1;
   border-radius: 6px;
@@ -356,135 +473,6 @@ function requestRemove(id: string): void {
 .sb-icon-btn:hover {
   border-color: var(--sema-line-card);
   background: var(--sema-hover);
-}
-
-.sb-menu-wrap {
-  position: relative;
-}
-
-.sb-menu-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  font-family: inherit;
-  padding: 8px 10px;
-  border-radius: 9px;
-  border: 1px solid var(--sema-line-card);
-  background: var(--sema-card);
-  cursor: pointer;
-  transition: border-color 0.12s ease;
-}
-
-.sb-menu-btn:hover {
-  border-color: var(--sema-ink-3);
-}
-
-.sb-menu-name {
-  font-size: 13.5px;
-  font-weight: 700;
-  color: var(--sema-ink);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sb-menu-chevron {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--sema-ink-3);
-}
-
-.sb-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  padding: 4px;
-  border: 1px solid var(--sema-line-card);
-  border-radius: 10px;
-  background: var(--sema-card);
-  box-shadow: var(--sema-shadow-panel);
-}
-
-.sb-menu-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sb-menu-item {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  font-size: 12.5px;
-  font-family: inherit;
-  color: var(--sema-ink-2);
-  padding: 7px 8px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sb-menu-item:hover {
-  background: var(--sema-hover);
-}
-
-.sb-menu-item--current {
-  font-weight: 700;
-  color: var(--sema-ink);
-}
-
-.sb-menu-remove {
-  flex: none;
-  font-size: 10.5px;
-  font-family: inherit;
-  color: var(--sema-ink-ghost);
-  padding: 5px 6px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.sb-menu-remove:hover {
-  color: var(--sema-red-text);
-  background: var(--sema-hover);
-}
-
-/* Armed confirmation carries a state: red is doctrine here, not decoration. */
-.sb-menu-remove--armed {
-  color: var(--sema-red-text);
-  background: var(--sema-red-soft);
-}
-
-.sb-menu-add {
-  margin-top: 2px;
-  text-align: left;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  color: var(--sema-ink-3);
-  padding: 7px 8px;
-  border: none;
-  border-top: 1px solid var(--sema-line-soft);
-  border-radius: 0 0 7px 7px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.sb-menu-add:hover {
-  background: var(--sema-hover);
-  color: var(--sema-ink);
 }
 
 .sb-add-form {
@@ -624,45 +612,119 @@ function requestRemove(id: string): void {
   color: var(--sema-ink);
 }
 
-/* ── Recents ──────────────────────────────────────────────────────────── */
-.sb-recents {
+/* ── Trees ────────────────────────────────────────────────────────────── */
+.sb-trees {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 10px;
   min-height: 0;
   overflow-y: auto;
 }
 
-.sb-recents-empty {
+.sb-trees-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.sb-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sb-tree-project {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sema-ink-2);
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-tree-empty {
   margin: 0;
   padding: 0 4px;
   font-size: 12px;
   color: var(--sema-ink-ghost);
 }
 
-.sb-recent {
+.sb-node {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* Node rows stay neutral: the color lives in the conversation glyphs. */
+.sb-node-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   text-align: left;
   font-family: inherit;
-  padding: 6px 8px;
+  padding: 5px 6px;
   border: none;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
 }
 
-.sb-recent:hover {
+.sb-node-btn:hover {
   background: var(--sema-hover);
 }
 
-.sb-recent--active {
+.sb-node-chevron {
+  flex: none;
+  width: 10px;
+  font-size: 9px;
+  color: var(--sema-ink-ghost);
+}
+
+.sb-node-glyph {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--sema-ink-3);
+}
+
+.sb-node-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--sema-ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-conv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-family: inherit;
+  margin-left: 16px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sb-conv:hover {
+  background: var(--sema-hover);
+}
+
+.sb-conv--active {
   background: var(--sema-active);
 }
 
 /* The glyph is the colored carrier of the execution state (shared table). */
-.sb-recent-glyph {
+.sb-conv-glyph {
   flex: none;
   width: 14px;
   text-align: center;
@@ -670,7 +732,7 @@ function requestRemove(id: string): void {
   font-family: var(--font-mono);
 }
 
-.sb-recent-title {
+.sb-conv-title {
   font-size: 12.5px;
   color: var(--sema-ink-2);
   min-width: 0;

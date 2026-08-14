@@ -8,12 +8,18 @@ import { listLocalBranches } from './branches.js'
 import { isTaskId, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
-import { listOpenMrs } from './forge-mrs.js'
+import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
 import { t } from './i18n.js'
 import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
 import { buildFileDiff, buildPreview, parsePreviewPath, parsePreviewSource } from './preview.js'
-import { addProject, discoverProjects, listProjects, removeProject } from './projects.js'
+import {
+  addProject,
+  discoverProjects,
+  getProject,
+  listProjects,
+  removeProject,
+} from './projects.js'
 import {
   readRulesContent,
   readSyncAutoPush,
@@ -473,6 +479,29 @@ function requiredProjectParam(params: URLSearchParams): string | null {
 }
 
 /**
+ * The repo-scoped read routes predating the multi-project workspace
+ * (/api/mrs, /api/branches, /api/preview, /api/preview/diff) accept an
+ * OPTIONAL `project` query param: present, the route operates on the
+ * registered project's path (unknown id → 404, same convention as the task
+ * routes); absent (or blank, mirroring requiredProjectParam's trim), the
+ * route keeps its historical behavior and reads the launch directory.
+ */
+export function resolveProjectCwd(
+  params: URLSearchParams,
+  fallbackCwd: string,
+): { cwd: string } | { error: 404 } {
+  const id = params.get('project')
+  if (id === null || !id.trim()) {
+    return { cwd: fallbackCwd }
+  }
+  const project = getProject(id.trim())
+  if (!project) {
+    return { error: 404 }
+  }
+  return { cwd: project.path }
+}
+
+/**
  * The task routes drive agents that EDIT worktrees of the repo, so every
  * mutation carries the same per-server CSRF token mechanic as /api/fix (see
  * handleFixStart): x-codesema-tasks-token, injected into the served page.
@@ -676,8 +705,12 @@ function serveTaskEvents(
   })
 }
 
-async function handleMrsList(res: ServerResponse, cwd: string): Promise<void> {
-  const result = await listOpenMrs(cwd)
+async function handleMrsList(
+  res: ServerResponse,
+  cwd: string,
+  listMrs: (cwd: string) => Promise<ForgeMrsResult>,
+): Promise<void> {
+  const result = await listMrs(cwd)
   sendJson(res, 200, result)
 }
 
@@ -745,11 +778,12 @@ function createRequestHandler(handlerOpts: {
   indexHtml: string
   cwd: string
   configToken: string
+  listMrs: (cwd: string) => Promise<ForgeMrsResult>
   fix?: FixEndpoint | undefined
   mrReview?: MrReviewEndpoint | undefined
   tasks?: TasksEndpoint | undefined
 }) {
-  const { session, indexHtml, cwd, configToken, fix, mrReview, tasks } = handlerOpts
+  const { session, indexHtml, cwd, configToken, listMrs, fix, mrReview, tasks } = handlerOpts
   // One cap for BOTH streams (review session + tasks): each browser tab holds
   // at most one of each, the cap only guards against runaway clients.
   let sseClients = 0
@@ -834,17 +868,26 @@ function createRequestHandler(handlerOpts: {
           syncAutoPush: readSyncAutoPush(cwd),
         })
       }
-      if (pathname === '/api/mrs') {
-        return void handleMrsList(res, cwd)
-      }
-      if (pathname === '/api/branches') {
-        return sendJson(res, 200, listLocalBranches(cwd))
-      }
-      if (pathname === '/api/preview') {
-        return void handlePreview(res, cwd, searchParams)
-      }
-      if (pathname === '/api/preview/diff') {
-        return void handlePreviewDiff(res, cwd, searchParams)
+      if (
+        pathname === '/api/mrs' ||
+        pathname === '/api/branches' ||
+        pathname === '/api/preview' ||
+        pathname === '/api/preview/diff'
+      ) {
+        const scoped = resolveProjectCwd(searchParams, cwd)
+        if ('error' in scoped) {
+          return sendText(res, 404, 'not found')
+        }
+        if (pathname === '/api/mrs') {
+          return void handleMrsList(res, scoped.cwd, listMrs)
+        }
+        if (pathname === '/api/branches') {
+          return sendJson(res, 200, listLocalBranches(scoped.cwd))
+        }
+        if (pathname === '/api/preview') {
+          return void handlePreview(res, scoped.cwd, searchParams)
+        }
+        return void handlePreviewDiff(res, scoped.cwd, searchParams)
       }
       if (pathname === '/api/fix/status') {
         if (!fix) {
@@ -968,6 +1011,8 @@ export async function startServer(
     taskManager?: TaskManager | undefined
     /** Project auto-registered from the boot repo (GET /api/projects `current`). */
     currentProjectId?: string | null | undefined
+    /** Test seam for GET /api/mrs (same shape as mr-review-runner's); defaults to the real forge CLI probe. */
+    listMrs?: ((cwd: string) => Promise<ForgeMrsResult>) | undefined
   },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
@@ -1000,7 +1045,16 @@ export async function startServer(
   )
 
   const { server, port } = await listen(
-    createRequestHandler({ session, indexHtml, cwd: opts.cwd, configToken, fix, mrReview, tasks }),
+    createRequestHandler({
+      session,
+      indexHtml,
+      cwd: opts.cwd,
+      configToken,
+      listMrs: opts.listMrs ?? listOpenMrs,
+      fix,
+      mrReview,
+      tasks,
+    }),
     opts.port ?? 4400,
   )
   const stop = () =>

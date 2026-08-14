@@ -1,11 +1,19 @@
 <script setup lang="ts">
-// Workspace shell: the project sidebar (selector, nav, recents), the home
-// board (composer + the three zones) scoped to the current project, the
-// conversation view with the touched-files panel, and the full review view
-// when a task's review record is loadable. Owns the single useTasks stream;
-// every child stays presentational and derives from pure functions.
+// Workspace shell: the project sidebar (multi-select list, nav, per-project
+// conversation trees), the home board (composer + the three zones) merged
+// over every selected project, the conversation view with the touched-files
+// panel, and the full review view when a task's review record is loadable.
+// Owns the single useTasks stream; every child stays presentational and
+// derives from pure functions.
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { filterByProject, sortRecents } from '../composables/useProjects'
+import {
+  buildProjectTree,
+  deriveComposerProject,
+  filterBySelection,
+  persistComposerProject,
+  readPersistedComposerProject,
+  type ProjectTree,
+} from '../composables/useProjects'
 import { sectionOf, type HomeSection } from '../composables/useTaskBoard'
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
@@ -25,7 +33,8 @@ const {
   connected,
   connections,
   projects,
-  currentProject,
+  selectedProjects,
+  mrsByProject,
   start,
   stop,
   hydrate,
@@ -33,7 +42,8 @@ const {
   reply,
   interrupt,
   ship,
-  selectProject,
+  toggleProject,
+  refreshMrs,
   addProject,
   removeProject,
   candidates,
@@ -48,9 +58,29 @@ type View = { kind: 'home' } | { kind: 'task'; projectId: string; id: string } |
 const view = ref<View>({ kind: 'home' })
 const reviewRecord = shallowRef<ReviewRecord | null>(null)
 
-// ── Project scoping: everything below the sidebar shows ONE project ───────
-const projectStates = computed(() => filterByProject(states.value, currentProject.value))
-const recents = computed(() => sortRecents(projectStates.value))
+// ── Selection scoping: the board merges every selected project ────────────
+const selectedList = computed(() =>
+  projects.value.filter((project) => selectedProjects.value.has(project.id)),
+)
+const projectStates = computed(() => filterBySelection(states.value, selectedProjects.value))
+/** Badge names only when the board actually mixes repos. */
+const projectNameById = computed(() => {
+  if (selectedProjects.value.size <= 1) {
+    return null
+  }
+  return new Map(projects.value.map((project) => [project.id, project.name]))
+})
+
+// ── Sidebar trees: open MRs + active base branches per selected project ───
+const trees = computed<ProjectTree[]>(() =>
+  selectedList.value.map((project) => ({
+    project,
+    nodes: buildProjectTree(
+      projectStates.value.filter((state) => state.projectId === project.id),
+      mrsByProject.get(project.id) ?? [],
+    ),
+  })),
+)
 
 // ── Home board ────────────────────────────────────────────────────────────
 const sections = computed(() => {
@@ -70,13 +100,28 @@ const SECTION_ORDER: {
   { key: 'done', labelKey: 'workspace.sectionDone' },
 ]
 
-// ── Create (always into the current project) ──────────────────────────────
+// ── Create (into the composer's target project) ───────────────────────────
 const composer = ref<InstanceType<typeof TaskComposer> | null>(null)
 const creating = ref(false)
 const createError = ref<string | null>(null)
+// Last used target, persisted; re-derived whenever the selection moves so it
+// always points at a selected project (or the first one).
+const composeTarget = ref<string | null>(null)
+
+watch(
+  selectedList,
+  (list) => {
+    const ids = list.map((project) => project.id)
+    composeTarget.value = deriveComposerProject(
+      composeTarget.value ?? readPersistedComposerProject(),
+      ids,
+    )
+  },
+  { immediate: true },
+)
 
 async function onCreate(input: CreateTaskInput): Promise<void> {
-  const projectId = currentProject.value
+  const projectId = composeTarget.value
   if (projectId === null) {
     return
   }
@@ -88,6 +133,7 @@ async function onCreate(input: CreateTaskInput): Promise<void> {
     createError.value = result.error
     return
   }
+  persistComposerProject(projectId)
   composer.value?.reset()
   openTask(projectId, result.record.id)
 }
@@ -115,13 +161,6 @@ async function onRemoveProject(id: string): Promise<void> {
     return
   }
   // The open conversation may belong to the removed project: home is safe.
-  backHome()
-}
-
-function onSelectProject(id: string): void {
-  selectProject(id)
-  // A project switch re-scopes the whole board: home is the only view that
-  // makes sense on the other side.
   backHome()
 }
 
@@ -162,10 +201,8 @@ const currentState = computed(() =>
     : null,
 )
 
-const activeTaskId = computed(() =>
-  view.value.kind === 'task' && view.value.projectId === currentProject.value
-    ? view.value.id
-    : null,
+const activeTask = computed(() =>
+  view.value.kind === 'task' ? { projectId: view.value.projectId, id: view.value.id } : null,
 )
 
 // Events emitted while the stream was down are not replayed: re-hydrate the
@@ -181,17 +218,18 @@ watch(connections, () => {
   <div class="ws-root">
     <WorkspaceSidebar
       :projects="projects"
-      :current-id="currentProject"
-      :recents="recents"
-      :active-task-id="activeTaskId"
+      :selected="selectedProjects"
+      :trees="trees"
+      :active-task="activeTask"
       :add-busy="addBusy"
       :add-error="addError"
       :remove-error="removeError"
       :candidates="candidates"
-      @select="onSelectProject"
+      @toggle="toggleProject"
       @add="onAddProject"
       @remove="onRemoveProject"
       @discover="() => void discoverCandidates()"
+      @refresh-mrs="() => void refreshMrs()"
       @home="backHome"
       @open-task="(state) => openTask(state.projectId, state.record.id)"
     />
@@ -224,6 +262,7 @@ watch(connections, () => {
           <PreviewPanel
             v-if="currentState.record.branch"
             :source="{ kind: 'branch', name: currentState.record.branch }"
+            :project="currentState.projectId"
           />
           <p v-else class="ws-side-empty">{{ t('workspace.noBranchYet') }}</p>
         </aside>
@@ -231,12 +270,17 @@ watch(connections, () => {
 
       <!-- Home: composer on top, then the three zones in fixed order. -->
       <div v-else class="ws-home">
-        <p v-if="currentProject === null" class="ws-empty">{{ t('workspace.noProject') }}</p>
+        <p v-if="projects.length === 0" class="ws-empty">{{ t('workspace.noProject') }}</p>
+        <p v-else-if="selectedList.length === 0" class="ws-empty">
+          {{ t('workspace.noProjectSelected') }}
+        </p>
         <template v-else>
           <TaskComposer
             ref="composer"
+            v-model:target="composeTarget"
             :creating="creating"
             :error="createError"
+            :projects="selectedList"
             @create="onCreate"
           />
 
@@ -253,10 +297,11 @@ watch(connections, () => {
               <div class="ws-section-list">
                 <TaskCard
                   v-for="state in sections[section.key]"
-                  :key="state.record.id"
+                  :key="taskKey(state.projectId, state.record.id)"
                   :state="state"
                   :prominent="section.key === 'waiting'"
                   :show-activity="section.key === 'active'"
+                  :project-name="projectNameById?.get(state.projectId) ?? null"
                   @select="openTask(state.projectId, state.record.id)"
                 />
               </div>

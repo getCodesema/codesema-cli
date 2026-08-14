@@ -4,12 +4,19 @@ import { parseDiff } from '../composables/useDiff'
 import type { PreviewFileDiff, PreviewResult, ReviewSource } from '../types'
 import DiffView from './DiffView.vue'
 
-const props = defineProps<{ source: ReviewSource }>()
+const props = defineProps<{
+  source: ReviewSource
+  /** Registry id scoping /api/preview* to a registered repo; absent = the
+   * launch cwd (legacy single-repo behavior, frozen contract). */
+  project?: string
+}>()
 
 function sourceQuery(source: ReviewSource): string {
-  return source.kind === 'mr'
-    ? `source=mr&number=${source.number}`
-    : `source=branch&name=${encodeURIComponent(source.name)}`
+  const base =
+    source.kind === 'mr'
+      ? `source=mr&number=${source.number}`
+      : `source=branch&name=${encodeURIComponent(source.name)}`
+  return props.project === undefined ? base : `${base}&project=${encodeURIComponent(props.project)}`
 }
 
 async function errorFrom(res: Response): Promise<string> {

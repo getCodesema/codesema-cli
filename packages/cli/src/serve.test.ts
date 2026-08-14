@@ -6,10 +6,13 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { sanitizeRecord } from './contract.js'
+import type { ForgeMrsResult } from './forge-mrs.js'
 import { parsePartialReview } from './partial.js'
+import { addProject } from './projects.js'
 import {
   createSession,
   isLoopbackHost,
+  resolveProjectCwd,
   resolveStaticPath,
   startServer,
   type LiveSession,
@@ -662,5 +665,187 @@ describe('preview and branches endpoints', () => {
       '/api/preview/diff?source=branch&name=feature/x&path=nope.txt',
     )
     expect(res.status).toBe(404)
+  })
+})
+
+describe('resolveProjectCwd', () => {
+  test('falls back to the launch cwd when the param is absent or blank', () => {
+    expect(resolveProjectCwd(new URLSearchParams(), '/launch')).toEqual({ cwd: '/launch' })
+    expect(resolveProjectCwd(new URLSearchParams('project='), '/launch')).toEqual({
+      cwd: '/launch',
+    })
+    expect(resolveProjectCwd(new URLSearchParams('project=%20%20'), '/launch')).toEqual({
+      cwd: '/launch',
+    })
+  })
+
+  test('404s an id that is not a registered project, malformed ids included', () => {
+    expect(resolveProjectCwd(new URLSearchParams('project=deadbeef'), '/launch')).toEqual({
+      error: 404,
+    })
+    expect(resolveProjectCwd(new URLSearchParams('project=../etc'), '/launch')).toEqual({
+      error: 404,
+    })
+  })
+})
+
+describe('project-scoped repo routes (?project=)', () => {
+  let configDir: string
+  let repoA: string
+  let repoB: string
+  let projectAId: string
+  let projectBId: string
+  let projectBPath: string
+  let scopedPort: number
+  let scopedStop: () => Promise<void>
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  const mrsCalls: string[] = []
+  const stubMrs: ForgeMrsResult = {
+    available: true,
+    mrs: [
+      {
+        number: 7,
+        title: 'stubbed',
+        author: 'me',
+        sourceBranch: 'codesema/task-x',
+        targetBranch: 'main',
+        updatedAt: '2026-08-14T00:00:00Z',
+        url: 'https://example.test/mr/7',
+      },
+    ],
+  }
+
+  function runGit(cwd: string, args: string[]): void {
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      cwd,
+      stdio: 'ignore',
+    })
+  }
+
+  function makeRepo(prefix: string, branch: string, file: string, content: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix))
+    runGit(dir, ['init', '-b', 'main'])
+    writeFileSync(join(dir, file), 'base\n')
+    runGit(dir, ['add', '-A'])
+    runGit(dir, ['commit', '-m', 'init'])
+    runGit(dir, ['checkout', '-b', branch])
+    writeFileSync(join(dir, file), content)
+    runGit(dir, ['add', '-A'])
+    runGit(dir, ['commit', '-m', `feat: ${branch}`])
+    runGit(dir, ['checkout', 'main'])
+    return dir
+  }
+
+  beforeAll(async () => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-scoped-config-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    repoA = makeRepo('codesema-scoped-a-', 'feature/alpha', 'a.txt', 'alpha\n')
+    repoB = makeRepo('codesema-scoped-b-', 'feature/beta', 'b.txt', 'beta\n')
+    const addedA = addProject(repoA)
+    const addedB = addProject(repoB)
+    if (!addedA.ok || !addedB.ok) {
+      throw new Error('failed to register test repos')
+    }
+    projectAId = addedA.project.id
+    projectBId = addedB.project.id
+    projectBPath = addedB.project.path
+
+    const started = await startServer(createSession(), {
+      cwd: repoA,
+      port: 4951,
+      listMrs: (cwd) => {
+        mrsCalls.push(cwd)
+        return Promise.resolve(stubMrs)
+      },
+    })
+    scopedPort = started.port
+    scopedStop = started.stop
+  })
+
+  afterAll(async () => {
+    await scopedStop()
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoA, { recursive: true, force: true })
+    rmSync(repoB, { recursive: true, force: true })
+  })
+
+  test('404s an unknown project on every scoped route', async () => {
+    expect((await rawRequest(scopedPort, '/api/mrs?project=deadbeef')).status).toBe(404)
+    expect((await rawRequest(scopedPort, '/api/branches?project=deadbeef')).status).toBe(404)
+    expect(
+      (await rawRequest(scopedPort, '/api/preview?project=deadbeef&source=branch&name=main'))
+        .status,
+    ).toBe(404)
+    expect(
+      (
+        await rawRequest(
+          scopedPort,
+          '/api/preview/diff?project=deadbeef&source=branch&name=main&path=a.txt',
+        )
+      ).status,
+    ).toBe(404)
+  })
+
+  test('lists the branches of the project named by ?project=', async () => {
+    const resB = await rawRequest(scopedPort, `/api/branches?project=${projectBId}`)
+    expect(resB.status).toBe(200)
+    const namesB = (JSON.parse(resB.body) as { name: string }[]).map((b) => b.name)
+    expect(namesB).toContain('feature/beta')
+    expect(namesB).not.toContain('feature/alpha')
+
+    const resA = await rawRequest(scopedPort, `/api/branches?project=${projectAId}`)
+    const namesA = (JSON.parse(resA.body) as { name: string }[]).map((b) => b.name)
+    expect(namesA).toContain('feature/alpha')
+    expect(namesA).not.toContain('feature/beta')
+  })
+
+  test('keeps the launch-cwd behavior when the param is absent', async () => {
+    const res = await rawRequest(scopedPort, '/api/branches')
+    const names = (JSON.parse(res.body) as { name: string }[]).map((b) => b.name)
+    expect(names).toContain('feature/alpha')
+    expect(names).not.toContain('feature/beta')
+  })
+
+  test('builds the preview and file diff against the scoped project repo', async () => {
+    const preview = await rawRequest(
+      scopedPort,
+      `/api/preview?project=${projectBId}&source=branch&name=feature/beta`,
+    )
+    expect(preview.status).toBe(200)
+    const body = JSON.parse(preview.body) as { branch: string; files: { path: string }[] }
+    expect(body.branch).toBe('feature/beta')
+    expect(body.files.map((f) => f.path)).toEqual(['b.txt'])
+
+    const diff = await rawRequest(
+      scopedPort,
+      `/api/preview/diff?project=${projectBId}&source=branch&name=feature/beta&path=b.txt`,
+    )
+    expect(diff.status).toBe(200)
+    expect((JSON.parse(diff.body) as { diff: string }).diff).toContain('+beta')
+
+    // feature/beta only exists in repo B: scoping the same preview to repo A must 404.
+    const wrongRepo = await rawRequest(
+      scopedPort,
+      `/api/preview?project=${projectAId}&source=branch&name=feature/beta`,
+    )
+    expect(wrongRepo.status).toBe(404)
+  })
+
+  test('runs the MR listing in the scoped project repo, launch cwd when absent', async () => {
+    mrsCalls.length = 0
+    const scoped = await rawRequest(scopedPort, `/api/mrs?project=${projectBId}`)
+    expect(scoped.status).toBe(200)
+    expect(JSON.parse(scoped.body)).toEqual(stubMrs)
+    expect(mrsCalls).toEqual([projectBPath])
+
+    const unscoped = await rawRequest(scopedPort, '/api/mrs')
+    expect(unscoped.status).toBe(200)
+    expect(mrsCalls).toHaveLength(2)
+    expect(mrsCalls[1]).toBe(repoA)
   })
 })
