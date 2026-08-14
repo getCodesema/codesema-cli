@@ -211,6 +211,30 @@ function liveSummary(): string {
   return parts.length > 0 ? ` — ${parts.join(' · ')}` : ''
 }
 
+// The journal's message/question payloads are bounded previews; the full
+// body lives on the turn. Walk the events once, tracking the turn index, so
+// each bubble can render the whole text instead of a cut "…" preview.
+const fullTextBySeq = computed(() => {
+  const map = new Map<number, string>()
+  let turn = -1
+  for (const event of props.state.events) {
+    if (event.type === 'turn_started') {
+      turn++
+    } else if (event.type === 'message') {
+      const response = record.value.turns[turn]?.response
+      if (response) {
+        map.set(event.seq, response)
+      }
+    } else if (event.type === 'question') {
+      const question = record.value.turns[turn]?.question
+      if (question) {
+        map.set(event.seq, question)
+      }
+    }
+  }
+  return map
+})
+
 const lastQuestionSeq = computed(() => {
   const questions = props.state.events.filter((e) => e.type === 'question')
   return questions.at(-1)?.seq ?? null
@@ -224,6 +248,7 @@ function ctxFor(event: TaskEvent): TaskEventCtx {
       event.seq === lastQuestionSeq.value,
     reviewAvailable: reviewRecord.value !== null,
     now: slowNow.value,
+    fullText: fullTextBySeq.value.get(event.seq) ?? null,
   }
 }
 

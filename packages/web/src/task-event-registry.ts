@@ -23,6 +23,12 @@ export type TaskEventCtx = {
   reviewAvailable: boolean
   /** Slow clock (epoch ms) owned by the conversation, for "il y a X" stamps. */
   now: number
+  /**
+   * Untruncated body for message/question events: the journal persists a
+   * bounded preview, the full text lives on the turn (turns[i].response /
+   * .question). Null when the record has no matching turn.
+   */
+  fullText: string | null
 }
 
 export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
