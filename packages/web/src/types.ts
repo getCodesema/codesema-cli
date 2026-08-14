@@ -199,3 +199,102 @@ export type PreviewResult = {
 }
 
 export type PreviewFileDiff = { diff: string; truncated: boolean }
+
+// Mirrors packages/contract/src/tasks.ts (task workspace contract) and
+// packages/cli/src/task-server.ts (SSE envelope). Kept by hand like the rest
+// of this file.
+
+export type TaskStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_you'
+  | 'reviewing'
+  | 'review_ok'
+  | 'review_ko'
+  | 'shipped'
+  | 'failed'
+  | 'interrupted'
+
+export type TaskTurn = {
+  prompt: string
+  response: string | null
+  question: string | null
+  started_at: string
+  ended_at: string | null
+}
+
+export type TaskEventType =
+  | 'turn_started'
+  | 'tool_use'
+  | 'tool_result'
+  | 'message'
+  | 'question'
+  | 'commit'
+  | 'review_started'
+  | 'review_done'
+  | 'shipped'
+  | 'error'
+  | 'interrupted'
+
+/** Flat, bounded payload: summaries only, never a full file body. */
+export type TaskEventData = Record<string, string | number | boolean | null>
+
+export type TaskEvent = {
+  seq: number
+  at: string
+  type: TaskEventType
+  data: TaskEventData
+}
+
+export type TaskRecord = {
+  version: 1
+  id: string
+  title: string
+  status: TaskStatus
+  base: string
+  branch: string
+  worktree: string
+  agent_session_id: string | null
+  turns: TaskTurn[]
+  review_ref: string | null
+  /** Time spent working; waiting_for_you time never counts as work. */
+  work_ms: number
+  wait_ms: number
+  auto_ship: boolean
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * One frame of the global /api/tasks/events SSE stream. Every frame is
+ * project-enveloped: the workspace drives N repos over one stream.
+ */
+export type TaskEnvelope =
+  | { project_id: string; task_id: string; event: { name: 'task'; data: TaskRecord } }
+  | { project_id: string; task_id: string; event: { name: 'task_event'; data: TaskEvent } }
+  | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
+
+// Mirrors packages/cli/src/projects.ts (global project registry) and the
+// /api/projects endpoints.
+
+export type Project = {
+  /** Stable 8-hex identifier of the registered repo. */
+  id: string
+  /** Absolute git toplevel path. */
+  path: string
+  /** Display name (basename of the path). */
+  name: string
+  added_at: string
+}
+
+export type ProjectsResponse = { projects: Project[]; current: string | null }
+
+/** Git repo detected around the launch directory (GET /api/projects/discover). */
+export type ProjectCandidate = {
+  path: string
+  name: string
+  /** Already registered: shown as added instead of offered. */
+  registered: boolean
+}
+
+export type DiscoverResponse = { candidates: ProjectCandidate[] }

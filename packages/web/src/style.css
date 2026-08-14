@@ -68,6 +68,133 @@ body {
   color: var(--codesema-ink-3);
 }
 
+/* ── Sémaphore workspace tokens (--sema-*) ────────────────────────────────
+   Transcribed from the Sémaphore design system (DESIGN.md + tokens.css of the
+   dashboard): day pastel by default, night graphite via prefers-color-scheme.
+   Doctrine: neutral borders by default — COLOR IS A STATE — glow reserved for
+   live signals, :focus-visible on every interactive element.
+   Only the NEW workspace views consume these; the existing review UI keeps
+   the light-only --codesema-* palette above, untouched. */
+:root {
+  --sema-bg: #faf1ea;
+  --sema-raised: #f4e6de;
+  --sema-card: #fffdfb;
+  --sema-panel-2: #f5ebe7;
+  --sema-line: #e6d4ce;
+  --sema-line-soft: #efe2dc;
+  --sema-line-card: #e9dad8;
+  --sema-ink: #1e3a5f;
+  --sema-ink-2: #3a4a54;
+  --sema-ink-3: #52646e;
+  --sema-ink-ghost: #7e8a92;
+  --sema-accent: #1e3a5f;
+  --sema-on-accent: #faf4ee;
+  --sema-accent-soft: #e7f0f8;
+  --sema-green: #12b76a;
+  --sema-green-text: #0a9d57;
+  --sema-green-soft: #e7f5ec;
+  --sema-amber: #f79009;
+  --sema-amber-text: #b26805;
+  --sema-amber-soft: #fdf3e1;
+  --sema-red: #e5342a;
+  --sema-red-text: #c42a21;
+  --sema-red-soft: #fcebe8;
+  --sema-blue: #3e6e92;
+  --sema-focus-ring: #1e3a5f;
+  --sema-dot-idle: #d6c6c9;
+  --sema-hover: rgba(30, 58, 95, 0.045);
+  --sema-active: rgba(30, 58, 95, 0.07);
+  --sema-diff-add: #edf5f1;
+  --sema-diff-add-gut: #dcebe2;
+  --sema-diff-del: #f9ece9;
+  --sema-diff-del-gut: #f0dcd6;
+  --sema-shadow-panel: 0 10px 30px -16px rgba(74, 58, 90, 0.22);
+  --sema-shadow-card: 0 10px 24px -18px rgba(74, 58, 90, 0.35);
+}
+
+/* Sémaphore nuit: same token names, graphite values (DESIGN.md section 8).
+   In night mode accent (actions) and the go signal share the maquette green;
+   the focus ring stays a distinct blue so keyboard focus is never mistaken
+   for a passed state. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sema-bg: #0b0d10;
+    --sema-raised: #0e1114;
+    --sema-card: #14181c;
+    --sema-panel-2: #1a2024;
+    --sema-line: #262b30;
+    --sema-line-soft: #1d2126;
+    --sema-line-card: #2e3338;
+    --sema-ink: #e7eaed;
+    --sema-ink-2: #c2c9cf;
+    --sema-ink-3: #8d959b;
+    --sema-ink-ghost: #4e555a;
+    --sema-accent: oklch(0.8 0.14 158);
+    --sema-on-accent: #07080a;
+    --sema-accent-soft: oklch(0.78 0.13 158 / 0.12);
+    --sema-green: oklch(0.78 0.13 158);
+    --sema-green-text: #9ed8b6;
+    --sema-green-soft: oklch(0.78 0.13 158 / 0.12);
+    --sema-amber: oklch(0.8 0.13 82);
+    --sema-amber-text: oklch(0.88 0.11 82);
+    --sema-amber-soft: oklch(0.8 0.13 82 / 0.12);
+    --sema-red: oklch(0.68 0.16 25);
+    --sema-red-text: oklch(0.8 0.11 25);
+    --sema-red-soft: oklch(0.68 0.16 25 / 0.12);
+    --sema-blue: oklch(0.74 0.13 250);
+    --sema-focus-ring: oklch(0.74 0.13 250);
+    --sema-dot-idle: #3d4348;
+    --sema-hover: rgba(255, 255, 255, 0.05);
+    --sema-active: rgba(255, 255, 255, 0.08);
+    --sema-diff-add: oklch(0.78 0.13 158 / 0.1);
+    --sema-diff-add-gut: oklch(0.78 0.13 158 / 0.18);
+    --sema-diff-del: oklch(0.68 0.16 25 / 0.1);
+    --sema-diff-del-gut: oklch(0.68 0.16 25 / 0.18);
+    --sema-shadow-panel: 0 10px 30px -16px rgba(0, 0, 0, 0.45);
+    --sema-shadow-card: 0 10px 24px -18px rgba(0, 0, 0, 0.55);
+  }
+}
+
+/* Inside the workspace, remap the legacy --codesema-* palette onto the sema
+   tokens so reused components (PreviewPanel, DiffView, ReviewShell) follow
+   day/night without being touched. Standalone review mode has no .ws-root
+   ancestor and keeps its light palette exactly as before. */
+.ws-root {
+  --codesema-bg: var(--sema-bg);
+  --codesema-panel: var(--sema-card);
+  --codesema-ink: var(--sema-ink);
+  --codesema-ink-2: var(--sema-ink-2);
+  --codesema-ink-3: var(--sema-ink-3);
+  --codesema-line: var(--sema-line);
+  --codesema-line-2: var(--sema-line-card);
+  --codesema-accent: var(--sema-accent);
+  --codesema-accent-soft: var(--sema-accent-soft);
+  --codesema-amber: var(--sema-amber);
+  --codesema-amber-soft: var(--sema-amber-soft);
+  --codesema-risk-high: var(--sema-red-text);
+  --codesema-risk-high-soft: var(--sema-red-soft);
+  --codesema-risk-med: var(--sema-amber-text);
+  --codesema-risk-med-soft: var(--sema-amber-soft);
+  --codesema-risk-low: var(--sema-green-text);
+  --codesema-risk-low-soft: var(--sema-green-soft);
+  --codesema-signal-go: var(--sema-green);
+  --codesema-signal-check: var(--sema-amber);
+  --codesema-signal-stop: var(--sema-red);
+  --codesema-dot-idle: var(--sema-dot-idle);
+  --codesema-line-idle: var(--sema-line-card);
+  --codesema-diff-add: var(--sema-diff-add);
+  --codesema-diff-add-gut: var(--sema-diff-add-gut);
+  --codesema-diff-del: var(--sema-diff-del);
+  --codesema-diff-del-gut: var(--sema-diff-del-gut);
+}
+
+/* Non-negotiable Sémaphore rule: every interactive element shows a keyboard
+   focus ring. Scoped to the workspace so the review UI is left as-is. */
+.ws-root :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--sema-focus-ring);
+  outline-offset: 2px;
+}
+
 /* Thin warm scrollbars (DESIGN.md section 4) */
 *::-webkit-scrollbar {
   width: 10px;

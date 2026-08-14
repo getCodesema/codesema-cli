@@ -6,6 +6,7 @@ import MrSidebar from './components/MrSidebar.vue'
 import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
+import WorkspaceView from './components/WorkspaceView.vue'
 import type {
   ForgeMr,
   JudgeLive,
@@ -17,6 +18,15 @@ import type {
   ReviewRecord,
   ReviewSource,
 } from './types'
+
+// The tasks token doubles as the mode detector: the server only injects it
+// when a TaskManager runs (codesema workspace), so its presence flips the UI
+// to the agent workspace. Without it, the review experience is unchanged.
+const tasksToken =
+  typeof window !== 'undefined'
+    ? (window as { __CODESEMA_TASKS_TOKEN__?: string }).__CODESEMA_TASKS_TOKEN__
+    : undefined
+const workspaceMode = typeof tasksToken === 'string' && tasksToken.length > 0
 
 const view = ref<'review' | 'settings' | 'detail'>('review')
 const selectedDetail = shallowRef<DetailSource | null>(null)
@@ -182,14 +192,21 @@ async function runReview(source: ReviewSource, mode: MrReviewMode) {
   }
 }
 
-onMounted(load)
-onMounted(() => void refreshMrReviewStatus())
+// In workspace mode the review session endpoints stay idle: WorkspaceView
+// owns its own stream, nothing to load or poll here.
+onMounted(() => {
+  if (!workspaceMode) {
+    void load()
+    void refreshMrReviewStatus()
+  }
+})
 onUnmounted(closeEvents)
 onUnmounted(stopMrReviewPolling)
 </script>
 
 <template>
-  <div class="app-layout">
+  <WorkspaceView v-if="workspaceMode && tasksToken" :token="tasksToken" />
+  <div v-else class="app-layout">
     <aside class="app-sidebar">
       <MrSidebar
         :selected-number="
