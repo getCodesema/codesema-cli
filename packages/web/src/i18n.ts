@@ -360,6 +360,45 @@ const en = {
   'workspace.checkFailed': 'failed',
   'workspace.checkTimeout': 'timeout',
   'workspace.checkSkipped': 'skipped',
+
+  // --- plan provenance (only shown when the server labels it) ---
+  'workspace.checksSourceConfig': 'configured',
+  'workspace.checksSourceLefthook': 'detected: lefthook',
+  'workspace.checksSourceCi': 'detected: CI workflow',
+  'workspace.checksSourceScripts': 'detected: scripts',
+
+  // --- agent-assisted checks setup (proposal → apply) ---
+  'workspace.checksSetupCta': 'Configure with the agent',
+  'workspace.checksSetupRegenerate': 'Regenerate with the agent',
+  'workspace.checksSetupRetry': 'Try again',
+  'workspace.checksSetupIntro':
+    'Your agent reads the repo files codesema already collected (lefthook, CI workflows, package.json, Makefile…) and proposes a plan. Nothing is written until you apply it.',
+  'workspace.checksSetupRunning': 'Your agent is analysing the repo…',
+  'workspace.checksSetupRunningHint':
+    'This is a real call to your agent, read-only: it answers with a plan, it changes nothing. It can take a minute or two.',
+  'workspace.checksSetupProposalTitle': 'Proposed plan',
+  'workspace.checksSetupImage': 'Image',
+  'workspace.checksSetupInstall': 'Install',
+  'workspace.checksSetupNoInstall': 'no install step',
+  'workspace.checksSetupCommands': 'Commands',
+  'workspace.checksSetupNetwork': 'Network',
+  'workspace.checksSetupNetworkInstall': 'install step only — the checks stay offline',
+  'workspace.checksSetupNetworkNone': 'none',
+  'workspace.checksSetupTimeout': 'Timeout',
+  'workspace.checksSetupTimeoutValue': '{n}s per check',
+  'workspace.checksSetupRationale': 'Why',
+  'workspace.checksSetupCompare': 'Current plan vs proposed plan',
+  'workspace.checksSetupDiffKept': 'unchanged',
+  'workspace.checksSetupDiffAdded': 'added',
+  'workspace.checksSetupDiffRemoved': 'dropped',
+  'workspace.checksSetupApply': 'Apply',
+  'workspace.checksSetupDismiss': 'Dismiss',
+  'workspace.checksSetupAppliedTitle': 'Applied configuration',
+  'workspace.checksSetupAppliedHint':
+    'Written to .codesema/config.json. The checks run with it after the next commit.',
+  'workspace.checksSetupNoAgent':
+    'No agent is configured for this repo — set the "agent" key in .codesema/config.json first.',
+  'workspace.checksSetupBusy': 'A setup run is already in progress for this project.',
 }
 
 export type MessageKey = keyof typeof en
@@ -726,6 +765,46 @@ const fr: Record<MessageKey, string> = {
   'workspace.checkFailed': 'échoué',
   'workspace.checkTimeout': 'timeout',
   'workspace.checkSkipped': 'ignoré',
+
+  // --- provenance du plan (affichée seulement si le serveur l'expose) ---
+  'workspace.checksSourceConfig': 'configuré',
+  'workspace.checksSourceLefthook': 'détecté : lefthook',
+  'workspace.checksSourceCi': 'détecté : workflow CI',
+  'workspace.checksSourceScripts': 'détecté : scripts',
+
+  // --- configuration des checks par l'agent (proposition → application) ---
+  'workspace.checksSetupCta': "Configurer avec l'agent",
+  'workspace.checksSetupRegenerate': "Regénérer avec l'agent",
+  'workspace.checksSetupRetry': 'Réessayer',
+  'workspace.checksSetupIntro':
+    "Ton agent lit les fichiers du repo que codesema a déjà rassemblés (lefthook, workflows CI, package.json, Makefile…) et propose un plan. Rien n'est écrit tant que tu ne l'appliques pas.",
+  'workspace.checksSetupRunning': 'Analyse du repo par ton agent…',
+  'workspace.checksSetupRunningHint':
+    "C'est un vrai appel à ton agent, en lecture seule : il répond un plan, il ne modifie rien. Ça peut prendre une à deux minutes.",
+  'workspace.checksSetupProposalTitle': 'Plan proposé',
+  'workspace.checksSetupImage': 'Image',
+  'workspace.checksSetupInstall': 'Install',
+  'workspace.checksSetupNoInstall': "pas d'étape d'install",
+  'workspace.checksSetupCommands': 'Commandes',
+  'workspace.checksSetupNetwork': 'Réseau',
+  'workspace.checksSetupNetworkInstall':
+    "étape d'install seulement — les checks restent hors ligne",
+  'workspace.checksSetupNetworkNone': 'aucun',
+  'workspace.checksSetupTimeout': 'Timeout',
+  'workspace.checksSetupTimeoutValue': '{n}s par check',
+  'workspace.checksSetupRationale': 'Pourquoi',
+  'workspace.checksSetupCompare': 'Plan actuel vs plan proposé',
+  'workspace.checksSetupDiffKept': 'inchangée',
+  'workspace.checksSetupDiffAdded': 'ajoutée',
+  'workspace.checksSetupDiffRemoved': 'retirée',
+  'workspace.checksSetupApply': 'Appliquer',
+  'workspace.checksSetupDismiss': 'Ignorer',
+  'workspace.checksSetupAppliedTitle': 'Configuration appliquée',
+  'workspace.checksSetupAppliedHint':
+    'Écrite dans .codesema/config.json. Les checks tourneront avec elle au prochain commit.',
+  'workspace.checksSetupNoAgent':
+    'Aucun agent configuré pour ce repo — renseigne la clé "agent" dans .codesema/config.json.',
+  'workspace.checksSetupBusy': 'Une configuration est déjà en cours pour ce projet.',
 }
 
 /**

@@ -668,6 +668,37 @@ async function handleProjectAdd(
   return sendJson(res, 201, added.project)
 }
 
+/**
+ * POST /api/projects/:id/checks-setup — asks the user's agent (read-only, no
+ * tools, prompt-fed files only) to PROPOSE a checks configuration, and
+ * POST /api/projects/:id/checks-apply — the only path from that proposal to
+ * the repo's .codesema/config.json. Both drive an agent or write a config
+ * file, so both sit under the tasks CSRF token like every other mutation.
+ */
+function handleChecksSetupAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+  action: { id: string; kind: 'setup' | 'apply' },
+): void {
+  if (!tasks) {
+    return sendJson(res, 501, { error: 'task manager unavailable' })
+  }
+  if (req.headers['x-codesema-tasks-token'] !== tasks.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  const result =
+    action.kind === 'setup'
+      ? tasks.manager.checksSetup(action.id)
+      : tasks.manager.checksApply(action.id)
+  if (!result.ok) {
+    return sendJson(res, result.code, { error: result.error })
+  }
+  // 202 for the setup (the agent runs in the background, the outcome travels
+  // on SSE 'checks_proposal'), 200 for the apply (the file is written).
+  return sendJson(res, action.kind === 'setup' ? 202 : 200, { ok: true })
+}
+
 /** DELETE /api/projects/:id — unregisters ONLY: the repo on disk is never touched. */
 function handleProjectRemove(
   req: IncomingMessage,
@@ -801,6 +832,8 @@ const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|ch
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
 const PROJECT_DELETE_RE = /^\/api\/projects\/([^/]+)$/
+const PROJECT_CHECKS_SETUP_RE = /^\/api\/projects\/([^/]+)\/checks-setup$/
+const PROJECT_CHECKS_APPLY_RE = /^\/api\/projects\/([^/]+)\/checks-apply$/
 
 function createRequestHandler(handlerOpts: {
   session: LiveSession
@@ -849,6 +882,14 @@ function createRequestHandler(handlerOpts: {
       }
       if (pathname === '/api/projects') {
         return void handleProjectAdd(req, res, tasks)
+      }
+      const checksSetupPost = PROJECT_CHECKS_SETUP_RE.exec(pathname)
+      if (checksSetupPost?.[1]) {
+        return handleChecksSetupAction(req, res, tasks, { id: checksSetupPost[1], kind: 'setup' })
+      }
+      const checksApplyPost = PROJECT_CHECKS_APPLY_RE.exec(pathname)
+      if (checksApplyPost?.[1]) {
+        return handleChecksSetupAction(req, res, tasks, { id: checksApplyPost[1], kind: 'apply' })
       }
       const taskAction = TASK_ACTION_RE.exec(pathname)
       if (taskAction?.[1] && taskAction[2]) {
@@ -978,6 +1019,17 @@ function createRequestHandler(handlerOpts: {
         return serveTaskEvents(tasks.manager, req, res, () => {
           sseClients--
         })
+      }
+      const checksSetupGet = PROJECT_CHECKS_SETUP_RE.exec(pathname)
+      if (checksSetupGet?.[1]) {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        // Read-only view of an in-memory proposal: no token, same guards as
+        // every other GET. 404 = unknown project (never "no proposal", which
+        // is the legitimate 'idle' state).
+        const state = tasks.manager.checksSetupStatus(checksSetupGet[1])
+        return state ? sendJson(res, 200, state) : sendText(res, 404, 'not found')
       }
       const taskChecksGet = TASK_CHECKS_RE.exec(pathname)
       if (taskChecksGet?.[1]) {

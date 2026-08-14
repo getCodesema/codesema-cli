@@ -9,6 +9,7 @@ import {
   readSyncAutoPush,
   rulesFilePath,
   setSyncAutoPush,
+  writeChecksConfig,
   writeRulesContent,
 } from './repo-config.js'
 
@@ -142,5 +143,66 @@ describe('readChecksConfig', () => {
   test('an empty checks object is tolerated (unconfigured is the engine call)', () => {
     writeRepoConfig(JSON.stringify({ checks: {} }))
     expect(readChecksConfig(repoDir)).toEqual({})
+  })
+})
+
+describe('writeChecksConfig', () => {
+  let repoDir: string
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-writechecks-'))
+  })
+
+  afterEach(() => {
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  const configFile = () => join(repoDir, '.codesema', 'config.json')
+  const writeRepoConfig = (content: string) => {
+    mkdirSync(join(repoDir, '.codesema'), { recursive: true })
+    writeFileSync(configFile(), content)
+  }
+
+  const checks = {
+    image: 'oven/bun:1',
+    install: 'bun install --frozen-lockfile',
+    commands: ['bun run typecheck', 'bun test'],
+    network: true,
+    timeoutSeconds: 300,
+  }
+
+  test('creates .codesema/config.json on demand and round-trips through readChecksConfig', () => {
+    writeChecksConfig(repoDir, checks)
+    expect(readChecksConfig(repoDir)).toEqual(checks)
+    // Human-editable file: pretty-printed, newline-terminated.
+    expect(readFileSync(configFile(), 'utf8').endsWith('}\n')).toBe(true)
+  })
+
+  test('every other key of the file survives untouched', () => {
+    writeRepoConfig(
+      JSON.stringify({ agent: 'claude -p', port: 4400, target: 'main', unknownKey: { a: [1] } }),
+    )
+    writeChecksConfig(repoDir, checks)
+    expect(JSON.parse(readFileSync(configFile(), 'utf8'))).toEqual({
+      agent: 'claude -p',
+      port: 4400,
+      target: 'main',
+      unknownKey: { a: [1] },
+      checks,
+    })
+  })
+
+  test('an existing checks key is replaced, not merged', () => {
+    writeRepoConfig(JSON.stringify({ checks: { image: 'node:22', commands: ['npm test'] } }))
+    writeChecksConfig(repoDir, { commands: ['make check'] })
+    expect(readChecksConfig(repoDir)).toEqual({ commands: ['make check'] })
+  })
+
+  test('refuses to overwrite a config file it cannot parse', () => {
+    writeRepoConfig('{ not json')
+    expect(() => writeChecksConfig(repoDir, checks)).toThrow(/not valid JSON/)
+    expect(readFileSync(configFile(), 'utf8')).toBe('{ not json')
+    writeRepoConfig('["an", "array"]')
+    expect(() => writeChecksConfig(repoDir, checks)).toThrow(/not a JSON object/)
   })
 })

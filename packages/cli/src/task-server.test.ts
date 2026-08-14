@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import type { TaskChecks, TaskEvent, TaskRecord } from './contract.js'
 import { addProject, listProjects, type Project } from './projects.js'
+import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
 import type { RunChecksOptions } from './task-checks.js'
 import type { TaskRunner, TaskRunnerOptions } from './task-runner.js'
@@ -963,6 +964,8 @@ describe('task routes with a stub manager', () => {
       ships: [] as string[],
       abandons: [] as string[],
       checksStarts: [] as string[],
+      checksSetups: [] as string[],
+      checksApplies: [] as string[],
     }
     const known = (projectId: string) => projectId === project.id
     const manager: TaskManager = {
@@ -1009,6 +1012,21 @@ describe('task routes with a stub manager', () => {
       },
       getChecks: (projectId, id) =>
         known(projectId) && id === record.id ? readTaskChecks(project.path, id) : null,
+      checksSetup: (projectId) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.checksSetups.push(projectId)
+        return { ok: true }
+      },
+      checksSetupStatus: (projectId) => (known(projectId) ? { status: 'idle' } : null),
+      checksApply: (projectId) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.checksApplies.push(projectId)
+        return { ok: false, code: 409, error: 'no checks proposal to apply' }
+      },
       shutdown: () => Promise.resolve(),
       subscribe: (listener) => {
         listeners.add(listener)
@@ -1945,5 +1963,203 @@ describe('workspace server end to end', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(shipCalls).toEqual([])
     expect(loadTask(repo, created.record.id)?.status).toBe('review_ko')
+  })
+})
+
+describe('checks setup routes', () => {
+  const PROPOSAL = {
+    image: 'oven/bun:1',
+    install: 'bun install --frozen-lockfile',
+    commands: ['bun run typecheck', 'bun test'],
+    network: true,
+    timeoutSeconds: 300,
+    rationale: 'bun lockfile with a pre-push hook running typecheck and tests',
+  }
+
+  test('POST proposes, GET reports, POST apply writes the config — and nothing before that', async () => {
+    const project = register(makeRepo())
+    const runs: AgentRunOptions[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runSetupAgentFn: (options) => {
+        runs.push(options)
+        return Promise.resolve(`Here you go:\n${JSON.stringify(PROPOSAL)}`)
+      },
+    })
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5171,
+      taskManager: manager,
+    })
+    const setupPath = `/api/projects/${project.id}/checks-setup`
+    const applyPath = `/api/projects/${project.id}/checks-apply`
+    try {
+      const token = await tasksToken(started.port)
+      const headers = { 'x-codesema-tasks-token': token }
+
+      // Nothing ran yet: idle, and unknown projects 404 on every verb.
+      expect(JSON.parse((await rawRequest(started.port, setupPath)).body)).toEqual({
+        status: 'idle',
+      })
+      expect((await rawRequest(started.port, '/api/projects/ffffffff/checks-setup')).status).toBe(
+        404,
+      )
+      expect(
+        (
+          await rawRequest(started.port, '/api/projects/ffffffff/checks-setup', {
+            method: 'POST',
+            headers,
+          })
+        ).status,
+      ).toBe(404)
+
+      // Mutations need the CSRF token.
+      expect((await rawRequest(started.port, setupPath, { method: 'POST' })).status).toBe(403)
+      expect((await rawRequest(started.port, applyPath, { method: 'POST' })).status).toBe(403)
+      expect(runs).toHaveLength(0)
+
+      const accepted = await rawRequest(started.port, setupPath, { method: 'POST', headers })
+      expect(accepted.status).toBe(202)
+      expect(JSON.parse(accepted.body)).toEqual({ ok: true })
+
+      for (let i = 0; i < 200; i++) {
+        const state = JSON.parse((await rawRequest(started.port, setupPath)).body) as {
+          status: string
+        }
+        if (state.status === 'ready') {
+          break
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      expect(JSON.parse((await rawRequest(started.port, setupPath)).body)).toEqual({
+        status: 'ready',
+        proposal: PROPOSAL,
+      })
+      // The agent ran read-only, in the project, on a prompt-fed file list.
+      expect(runs[0]?.cwd).toBe(project.path)
+      expect(runs[0]?.command).toContain('--tools ""')
+
+      // A proposal is NOT a configuration: nothing on disk until the apply.
+      expect(readChecksConfig(project.path)).toBeNull()
+
+      const applied = await rawRequest(started.port, applyPath, { method: 'POST', headers })
+      expect(applied.status).toBe(200)
+      expect(readChecksConfig(project.path)).toEqual({
+        image: 'oven/bun:1',
+        install: 'bun install --frozen-lockfile',
+        commands: ['bun run typecheck', 'bun test'],
+        network: true,
+        timeoutSeconds: 300,
+      })
+      // Applying consumes the proposal.
+      expect(JSON.parse((await rawRequest(started.port, setupPath)).body)).toEqual({
+        status: 'idle',
+      })
+      const reapplied = await rawRequest(started.port, applyPath, { method: 'POST', headers })
+      expect(reapplied.status).toBe(409)
+      expect(JSON.parse(reapplied.body)).toEqual({ error: 'no checks proposal to apply' })
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('a run in flight answers 409 and its transitions ride the SSE stream', async () => {
+    const project = register(makeRepo())
+    // One record so the SSE replay flushes the stream's headers immediately.
+    seedTask(project.path)
+    let release: (value: string) => void = () => {}
+    const pending = new Promise<string>((resolve) => {
+      release = resolve
+    })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runSetupAgentFn: () => pending,
+    })
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5181,
+      taskManager: manager,
+    })
+    const setupPath = `/api/projects/${project.id}/checks-setup`
+    try {
+      const headers = { 'x-codesema-tasks-token': await tasksToken(started.port) }
+      const chunks: string[] = []
+      let connected = false
+      const req = request(
+        { host: '127.0.0.1', port: started.port, path: '/api/tasks/events' },
+        (res) => {
+          connected = true
+          res.setEncoding('utf8')
+          res.on('data', (chunk: string) => {
+            chunks.push(chunk)
+          })
+        },
+      )
+      req.end()
+      // The subscriber must be attached before the POST emits 'running'; the
+      // replayed task frame is what proves the stream is live.
+      await until(() => connected && chunks.join('').includes('event: task\n'))
+
+      expect((await rawRequest(started.port, setupPath, { method: 'POST', headers })).status).toBe(
+        202,
+      )
+      const busy = await rawRequest(started.port, setupPath, { method: 'POST', headers })
+      expect(busy.status).toBe(409)
+      expect(JSON.parse(busy.body)).toEqual({ error: 'a checks setup is already running' })
+
+      await until(() => chunks.join('').includes('event: checks_proposal\n'))
+      release(JSON.stringify(PROPOSAL))
+      await until(() => chunks.join('').includes('"status":"ready"'))
+      // Project-scoped frames carry no task_id: the proposal is repo-wide.
+      const frame = /event: checks_proposal\nid: \d+\ndata: (.*)\n/.exec(chunks.join(''))
+      expect(JSON.parse(frame![1]!)).toEqual({
+        project_id: project.id,
+        event: {
+          name: 'checks_proposal',
+          data: { status: 'running', started_at: expect.any(String) },
+        },
+      })
+      req.destroy()
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('without a configured agent the setup route answers 501', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({ command: '', timeoutMs: 1000 })
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5191,
+      taskManager: manager,
+    })
+    try {
+      const headers = { 'x-codesema-tasks-token': await tasksToken(started.port) }
+      const refused = await rawRequest(started.port, `/api/projects/${project.id}/checks-setup`, {
+        method: 'POST',
+        headers,
+      })
+      expect(refused.status).toBe(501)
+      expect(JSON.parse(refused.body)).toEqual({ error: 'no agent configured' })
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('without a task manager at all every checks-setup route answers 501', async () => {
+    const started = await startServer(createSession(), { cwd: makeDir(), port: 5192 })
+    try {
+      expect((await rawRequest(started.port, '/api/projects/x/checks-setup')).status).toBe(501)
+      expect(
+        (await rawRequest(started.port, '/api/projects/x/checks-setup', { method: 'POST' })).status,
+      ).toBe(501)
+      expect(
+        (await rawRequest(started.port, '/api/projects/x/checks-apply', { method: 'POST' })).status,
+      ).toBe(501)
+    } finally {
+      await started.stop()
+    }
   })
 })

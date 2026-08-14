@@ -94,3 +94,30 @@ export function readChecksConfig(repoRoot: string): ChecksConfig | null {
       : {}),
   }
 }
+
+/**
+ * Writes ONLY the `checks` key of .codesema/config.json, keeping every other
+ * key (agent, port, language...) byte-for-byte in place — this is a
+ * user-owned file, not codesema's private state. Throws rather than write
+ * when the existing file is not a JSON object: overwriting a file we failed
+ * to understand would destroy configuration nobody asked us to touch.
+ */
+export function writeChecksConfig(repoRoot: string, checks: ChecksConfig): string {
+  const path = repoConfigPath(repoRoot)
+  let existing: Record<string, unknown> = {}
+  if (existsSync(path)) {
+    let raw: unknown
+    try {
+      raw = JSON.parse(readFileSync(path, 'utf8'))
+    } catch {
+      throw new Error(`${path} is not valid JSON: refusing to overwrite it`)
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`${path} is not a JSON object: refusing to overwrite it`)
+    }
+    existing = raw as Record<string, unknown>
+  }
+  ensureWorkDir(repoRoot)
+  writeFileSync(path, `${JSON.stringify({ ...existing, checks }, null, 2)}\n`)
+  return path
+}

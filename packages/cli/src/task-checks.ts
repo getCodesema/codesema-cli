@@ -11,7 +11,7 @@
 
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { TASK_CHECK_TAIL_MAX, type TaskCheckResult, type TaskChecks } from './contract.js'
 import type { ChecksConfig } from './repo-config.js'
@@ -171,6 +171,353 @@ export function detectChecks(input: DetectChecksInput): ChecksPlan | null {
   return null
 }
 
+// --- level 2 detection: what the repo DECLARES about its own checks --------
+// Between an explicit .codesema config and the lockfile heuristic sits the
+// repo's own word: the hooks it runs before a push and the CI jobs it gates
+// merges on. Those files say precisely which commands the humans consider
+// blocking, so parsing them beats guessing from package.json scripts. They
+// only ever contribute COMMANDS: the image and the install step keep coming
+// from the lockfile detection (a declaration cannot say what to run them in).
+//
+// The YAML "parsing" below is deliberately partial — indentation + `run:`
+// lines, nothing else. No YAML dependency, no anchors, no flow mappings: a
+// file it cannot understand simply yields no command, which degrades to the
+// lockfile plan instead of breaking anything.
+
+/** Executables a declared command may start with. Anything else is dropped. */
+const DECLARED_COMMAND_BINS: ReadonlySet<string> = new Set([
+  'bun',
+  'npm',
+  'npx',
+  'pnpm',
+  'yarn',
+  'node',
+  'pytest',
+  'cargo',
+  'go',
+  'make',
+  'just',
+])
+
+/** Enough to cover typecheck+test+lint across a couple of workspaces. */
+const DECLARED_COMMANDS_MAX = 6
+/** A check command longer than this is a script in disguise, not a check. */
+const DECLARED_COMMAND_MAX_CHARS = 300
+
+/**
+ * Shell metacharacters: a declared check is ONE plain command. Anything that
+ * chains, redirects, substitutes or templates (lefthook's `{staged_files}`)
+ * is refused rather than reinterpreted — the level-2 plan must never turn a
+ * hook line into an arbitrary shell program.
+ */
+const SHELL_METACHARACTERS = /[&|;<>`$(){}\\\n\r]/
+
+function firstToken(command: string): string {
+  const first = command.trim().split(/\s+/)[0] ?? ''
+  // A path-qualified binary (./node_modules/.bin/foo) is judged on its name.
+  return first.split('/').pop() ?? ''
+}
+
+/**
+ * Dependency installation, whatever the tool: a declaration only contributes
+ * CHECKS — the install step comes from the stack detection and is the only
+ * step that may reach the network. Keeping a hook's `npm ci` as a check would
+ * run it network-less and fail every time.
+ */
+const INSTALL_LIKE =
+  /\binstall\b|^(npm|pnpm|yarn|bun)\s+(ci|i|add)\b|^go\s+mod\b|^cargo\s+(fetch|update)\b/
+
+/**
+ * STRICT filter for a declared command: a single command, no shell plumbing,
+ * starting with one of the known build-tool binaries, and not an install.
+ * Returns the normalized command or null when it must not be run.
+ */
+export function acceptDeclaredCommand(raw: string): string | null {
+  const command = raw.trim()
+  if (!command || command.length > DECLARED_COMMAND_MAX_CHARS) {
+    return null
+  }
+  if (SHELL_METACHARACTERS.test(command) || INSTALL_LIKE.test(command)) {
+    return null
+  }
+  return DECLARED_COMMAND_BINS.has(firstToken(command)) ? command : null
+}
+
+/** typecheck → test → lint, then everything else in file order (stable sort). */
+function commandRank(command: string): number {
+  const c = command.toLowerCase()
+  if (/type-?check|\btsc\b|vue-tsc/.test(c)) {
+    return 0
+  }
+  if (/\btests?\b|pytest|vitest|jest|\bspec\b/.test(c)) {
+    return 1
+  }
+  if (/\blint\b|eslint|oxlint|clippy|\bfmt\b|format/.test(c)) {
+    return 2
+  }
+  return 3
+}
+
+/** Filter → dedupe → order → cap. The single funnel every declaration goes through. */
+function selectDeclaredCommands(raw: string[]): string[] {
+  const kept: string[] = []
+  for (const candidate of raw) {
+    const command = acceptDeclaredCommand(candidate)
+    if (command && !kept.includes(command)) {
+      kept.push(command)
+    }
+  }
+  return kept
+    .map((command, index) => ({ command, index, rank: commandRank(command) }))
+    .toSorted((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((entry) => entry.command)
+    .slice(0, DECLARED_COMMANDS_MAX)
+}
+
+/** One significant YAML line: its indentation and its trimmed content. */
+type YamlLine = { indent: number; content: string }
+
+/**
+ * Blank lines and full-line comments are dropped; a leading `- ` (sequence
+ * item) is folded into the indentation so a step's keys sit one level deeper
+ * than the sequence itself. Tabs count as two spaces.
+ */
+function scanYaml(content: string): YamlLine[] {
+  const lines: YamlLine[] = []
+  for (const raw of content.split(/\r?\n/)) {
+    const expanded = raw.replace(/\t/g, '  ')
+    const trimmed = expanded.trim()
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue
+    }
+    let indent = expanded.length - expanded.trimStart().length
+    let text = trimmed
+    while (text.startsWith('- ')) {
+      indent += 2
+      text = text.slice(2).trimStart()
+    }
+    lines.push({ indent, content: text })
+  }
+  return lines
+}
+
+/** Strips surrounding quotes and a trailing ` # comment` from a scalar value. */
+function scalarValue(raw: string): string {
+  const withoutComment = raw.replace(/\s+#.*$/, '').trim()
+  const quoted = /^(['"])([\s\S]*)\1$/.exec(withoutComment)
+  return (quoted?.[2] ?? withoutComment).trim()
+}
+
+/**
+ * Every `run:` value inside [from, to). A block scalar (`run: |`) contributes
+ * ONE candidate per line — each is then filtered on its own, so a multi-line
+ * CI step yields its `bun test` line and drops its `docker login` line.
+ */
+function runValues(lines: YamlLine[], from: number, to: number): string[] {
+  const values: string[] = []
+  for (let i = from; i < to; i++) {
+    const line = lines[i]
+    if (!line) {
+      continue
+    }
+    const match = /^run:\s*(.*)$/.exec(line.content)
+    if (!match) {
+      continue
+    }
+    const value = (match[1] ?? '').trim()
+    if (value === '' || /^[|>][-+]?\d*$/.test(value)) {
+      for (let j = i + 1; j < to; j++) {
+        const inner = lines[j]
+        if (!inner || inner.indent <= line.indent) {
+          break
+        }
+        values.push(inner.content)
+        i = j
+      }
+      continue
+    }
+    values.push(scalarValue(value))
+  }
+  return values
+}
+
+/** Hooks worth mining, in the order their commands should run. */
+const LEFTHOOK_HOOKS = ['pre-push', 'pre-commit'] as const
+
+/** `run:` values of lefthook's pre-push jobs, then its pre-commit jobs. */
+function lefthookRunValues(content: string): string[] {
+  const lines = scanYaml(content)
+  const sections = new Map<string, { from: number; to: number }>()
+  let current: string | null = null
+  let start = 0
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]?.indent !== 0) {
+      continue
+    }
+    if (current) {
+      sections.set(current, { from: start, to: i })
+    }
+    current = /^([A-Za-z0-9_.-]+):\s*$/.exec(lines[i]?.content ?? '')?.[1] ?? null
+    start = i + 1
+  }
+  if (current) {
+    sections.set(current, { from: start, to: lines.length })
+  }
+  const values: string[] = []
+  for (const hook of LEFTHOOK_HOOKS) {
+    const range = sections.get(hook)
+    if (range) {
+      values.push(...runValues(lines, range.from, range.to))
+    }
+  }
+  return values
+}
+
+/** A CI job whose id or name says it verifies something. */
+const CI_JOB_RE = /test|lint|typecheck|type-check|check/i
+
+/** `run:` values of the verification jobs of ONE GitHub workflow file. */
+function workflowRunValues(content: string): string[] {
+  const lines = scanYaml(content)
+  const jobsIndex = lines.findIndex(
+    (line) => line.indent === 0 && /^jobs:\s*$/.test(line.content ?? ''),
+  )
+  if (jobsIndex < 0) {
+    return []
+  }
+  let jobsEnd = lines.length
+  for (let i = jobsIndex + 1; i < lines.length; i++) {
+    if (lines[i]?.indent === 0) {
+      jobsEnd = i
+      break
+    }
+  }
+  const jobIndent = lines[jobsIndex + 1]?.indent ?? 0
+  if (jobIndent <= 0) {
+    return []
+  }
+  const starts: number[] = []
+  for (let i = jobsIndex + 1; i < jobsEnd; i++) {
+    if (lines[i]?.indent === jobIndent) {
+      starts.push(i)
+    }
+  }
+  const values: string[] = []
+  for (let k = 0; k < starts.length; k++) {
+    const from = starts[k] ?? 0
+    const to = starts[k + 1] ?? jobsEnd
+    const id = /^([A-Za-z0-9_.-]+):/.exec(lines[from]?.content ?? '')?.[1]
+    if (!id) {
+      continue
+    }
+    const body = lines.slice(from + 1, to)
+    const bodyIndent = body.reduce(
+      (min, line) => Math.min(min, line.indent),
+      Number.MAX_SAFE_INTEGER,
+    )
+    // Only the JOB's own name counts; a step named "test" inside a "deploy"
+    // job must not pull the whole job in.
+    const name = body.find(
+      (line) => line.indent === bodyIndent && /^name:\s*\S/.test(line.content),
+    )?.content
+    const label = name ? scalarValue(name.slice('name:'.length)) : ''
+    if (!CI_JOB_RE.test(id) && !CI_JOB_RE.test(label)) {
+      continue
+    }
+    values.push(...runValues(lines, from, to))
+  }
+  return values
+}
+
+/** A repo file that may declare check commands, with its content. */
+export type DeclarationFile = { path: string; content: string }
+
+/** Commands the repo declares for itself, and which file they came from. */
+export type DeclaredChecks = { commands: string[]; source: 'lefthook' | 'ci' }
+
+function basename(path: string): string {
+  return path.replace(/\\/g, '/').split('/').pop() ?? ''
+}
+
+const LEFTHOOK_FILES: ReadonlySet<string> = new Set([
+  'lefthook.yml',
+  'lefthook.yaml',
+  '.lefthook.yml',
+  '.lefthook.yaml',
+])
+
+function isWorkflowPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/')
+  return normalized.includes('.github/workflows/') && /\.ya?ml$/.test(normalized)
+}
+
+/**
+ * PURE level-2 detection. Lefthook wins over CI: a pre-push hook is what the
+ * humans actually run before sharing code, CI is the fallback statement of
+ * the same intent. Null when nothing survives the strict filter — the caller
+ * then keeps the lockfile plan untouched.
+ */
+export function detectFromDeclarations(files: DeclarationFile[]): DeclaredChecks | null {
+  const byPath = (a: DeclarationFile, b: DeclarationFile) => a.path.localeCompare(b.path)
+  const lefthook = files
+    .filter((file) => LEFTHOOK_FILES.has(basename(file.path)))
+    .toSorted(byPath)
+    .flatMap((file) => lefthookRunValues(file.content))
+  const fromLefthook = selectDeclaredCommands(lefthook)
+  if (fromLefthook.length > 0) {
+    return { commands: fromLefthook, source: 'lefthook' }
+  }
+  const ci = files
+    .filter((file) => isWorkflowPath(file.path))
+    .toSorted(byPath)
+    .flatMap((file) => workflowRunValues(file.content))
+  const fromCi = selectDeclaredCommands(ci)
+  return fromCi.length > 0 ? { commands: fromCi, source: 'ci' } : null
+}
+
+/** Per-file read cap: a declaration file bigger than this is not one. */
+const DECLARATION_FILE_MAX_BYTES = 128 * 1024
+/** A repo with more workflows than this gets its first ones, alphabetically. */
+const WORKFLOW_FILES_MAX = 20
+
+function readBounded(path: string): string | null {
+  try {
+    if (statSync(path).size > DECLARATION_FILE_MAX_BYTES) {
+      return null
+    }
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/** Disk side of the level-2 detection; any read failure just yields fewer files. */
+export function readDeclarationFiles(root: string): DeclarationFile[] {
+  const files: DeclarationFile[] = []
+  for (const name of LEFTHOOK_FILES) {
+    const content = readBounded(join(root, name))
+    if (content !== null) {
+      files.push({ path: name, content })
+    }
+  }
+  let workflows: string[] = []
+  try {
+    workflows = readdirSync(join(root, '.github', 'workflows'))
+      .filter((name) => /\.ya?ml$/.test(name))
+      .toSorted()
+      .slice(0, WORKFLOW_FILES_MAX)
+  } catch {
+    workflows = []
+  }
+  for (const name of workflows) {
+    const content = readBounded(join(root, '.github', 'workflows', name))
+    if (content !== null) {
+      files.push({ path: `.github/workflows/${name}`, content })
+    }
+  }
+  return files
+}
+
 /** Explicit config → plan. Commands are the essence: none = unconfigured. */
 export function planFromConfig(config: ChecksConfig): ChecksPlan | null {
   const commands = (config.commands ?? []).filter((command) => command.trim() !== '')
@@ -217,6 +564,31 @@ export function detectChecksFromWorktree(worktree: string): ChecksPlan | null {
     }
   }
   return detectChecks({ files, packageJson, pyproject: readIfPresent('pyproject.toml') })
+}
+
+/**
+ * THE precedence, in one place: explicit repo config, then what the repo
+ * declares about itself (lefthook / CI), then the lockfile heuristic.
+ *
+ * Level 2 only ever REPLACES the commands: the image and the install step
+ * still come from the stack detection, so a declaration alone (no lockfile
+ * match, hence no image) yields no plan at all. An explicit config is taken
+ * as-is — configuring checks and getting hook commands instead would be a
+ * silent override of an explicit decision.
+ */
+export function resolveChecksPlan(input: {
+  worktree: string
+  config?: ChecksConfig | null
+}): ChecksPlan | null {
+  if (input.config) {
+    return planFromConfig(input.config)
+  }
+  const detected = detectChecksFromWorktree(input.worktree)
+  if (!detected) {
+    return null
+  }
+  const declared = detectFromDeclarations(readDeclarationFiles(input.worktree))
+  return declared ? { ...detected, commands: declared.commands } : detected
 }
 
 export type RunChecksOptions = {
@@ -324,7 +696,10 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
     error,
     finished_at: new Date().toISOString(),
   })
-  const plan = opts.config ? planFromConfig(opts.config) : detectChecksFromWorktree(opts.worktree)
+  const plan = resolveChecksPlan({
+    worktree: opts.worktree,
+    ...(opts.config !== undefined ? { config: opts.config } : {}),
+  })
   if (!plan) {
     return finish('unconfigured')
   }

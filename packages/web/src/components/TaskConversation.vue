@@ -17,9 +17,14 @@ import {
   CHECK_GLYPH,
   CHECK_STATUS_KEY,
   CHECKS_STATUS_KEY,
+  checksSetupCard,
+  checksSetupErrorText,
+  checksSourceLabel,
   checksTabLabel,
   checksTone,
+  COMMAND_DIFF_GLYPH,
   shortSha,
+  type ChecksSetupState,
 } from '../composables/useChecks'
 import { extractQuickReplies } from '../composables/useQuickReplies'
 import {
@@ -53,6 +58,17 @@ const props = defineProps<{
   runChecks: () => Promise<ApiResult>
   /** GET …/checks into state.checks (404 = never ran, state stays null). */
   loadChecks: () => Promise<void>
+  /** Agent-assisted setup state of THIS conversation's project (shared by
+   * every conversation of the repo); undefined until the first GET. */
+  checksSetup: ChecksSetupState | undefined
+  /** GET /api/projects/:id/checks-setup into that state. */
+  loadChecksSetup: () => Promise<void>
+  /** POST …/checks-setup: runs the user's agent read-only (a real LLM call). */
+  runChecksSetup: () => Promise<ApiResult>
+  /** POST …/checks-apply: writes the proposal into .codesema/config.json. */
+  applyChecksProposal: () => Promise<ApiResult>
+  /** Local dismissal of the proposal — writes nothing anywhere. */
+  dismissChecksProposal: () => void
 }>()
 
 const emit = defineEmits<{ 'open-review': [record: ReviewRecord]; 'toggle-pin': [] }>()
@@ -113,6 +129,9 @@ watch(tab, (next) => {
   if (next === 'checks' && !checksLoaded) {
     checksLoaded = true
     void props.loadChecks()
+    // The project's setup state travels with the tab: a proposal produced in
+    // another conversation of the same repo shows up here too.
+    void props.loadChecksSetup()
   }
 })
 
@@ -133,6 +152,50 @@ async function doRunChecks(): Promise<void> {
   if (!result.ok) {
     checksError.value = result.error
   }
+}
+
+/** "detected: lefthook" chip — only when the server labels the plan's
+ * provenance; the current checks.json contract does not, so this is silent. */
+const checksSourceText = computed(() => checksSourceLabel(checks.value))
+
+// ── Agent-assisted setup: propose a plan, apply it on an explicit click ────
+// The plan in force, as far as this tab can honestly tell: the commands the
+// last run actually executed (the server's `current`, when it exposes one,
+// wins inside checksSetupCard).
+const currentCommands = computed(() => checks.value?.checks.map((check) => check.command) ?? [])
+const setupCard = computed(() => checksSetupCard(props.checksSetup, currentCommands.value))
+const setupBusy = ref(false)
+const setupError = ref<string | null>(null)
+
+async function doRunChecksSetup(): Promise<void> {
+  if (setupBusy.value) {
+    return
+  }
+  setupBusy.value = true
+  setupError.value = null
+  const result = await props.runChecksSetup()
+  setupBusy.value = false
+  if (!result.ok) {
+    setupError.value = checksSetupErrorText(result.status, result.error)
+  }
+}
+
+async function doApplyProposal(): Promise<void> {
+  if (setupBusy.value) {
+    return
+  }
+  setupBusy.value = true
+  setupError.value = null
+  const result = await props.applyChecksProposal()
+  setupBusy.value = false
+  if (!result.ok) {
+    setupError.value = checksSetupErrorText(result.status, result.error)
+  }
+}
+
+function dismissProposal(): void {
+  setupError.value = null
+  props.dismissChecksProposal()
 }
 
 /** "il y a X" stamp of the verified head (finished, else started). */
@@ -764,6 +827,8 @@ const wait = computed(() =>
             {{ t('workspace.checksHeadVerified', { sha: shortSha(checks.head_sha) })
             }}<template v-if="checksStamp"> · {{ checksStamp }}</template>
           </span>
+          <!-- Where the plan came from; silent unless the server says so. -->
+          <span v-if="checksSourceText" class="cv-checks-source">{{ checksSourceText }}</span>
         </template>
         <span v-else class="cv-checks-none">{{ t('workspace.checksNeverRan') }}</span>
         <button
@@ -787,6 +852,150 @@ const wait = computed(() =>
         {{ t('workspace.checksUnconfiguredHint') }}
       </p>
       <p v-else-if="!checks" class="cv-checks-hint">{{ t('workspace.checksAutoHint') }}</p>
+
+      <!-- Agent-assisted setup. Prominent while nothing is configured; once a
+           plan exists it shrinks to the discreet link below the list. Nothing
+           is EVER written without the explicit "Apply" click. -->
+      <section
+        v-if="setupCard.mode !== 'offer' || !setupCard.discreet"
+        class="cv-setup"
+        :class="`cv-setup--${setupCard.mode}`"
+      >
+        <template v-if="setupCard.mode === 'offer'">
+          <p class="cv-setup-intro">{{ t('workspace.checksSetupIntro') }}</p>
+          <button
+            class="cv-btn cv-setup-cta"
+            type="button"
+            :disabled="setupBusy"
+            @click="doRunChecksSetup"
+          >
+            {{ t(setupCard.actionKey) }}
+          </button>
+        </template>
+
+        <!-- A real LLM call: say it, and keep the spinner honest. -->
+        <template v-else-if="setupCard.mode === 'running'">
+          <p class="cv-setup-running">
+            <span class="cv-checks-dot" aria-hidden="true" />
+            {{ t('workspace.checksSetupRunning') }}
+          </p>
+          <p class="cv-setup-hint">{{ t('workspace.checksSetupRunningHint') }}</p>
+        </template>
+
+        <template v-else-if="setupCard.mode === 'error'">
+          <p class="cv-setup-error">{{ setupCard.error ?? t('workspace.checksStatusError') }}</p>
+          <button
+            class="cv-btn cv-setup-cta"
+            type="button"
+            :disabled="setupBusy"
+            @click="doRunChecksSetup"
+          >
+            {{ t(setupCard.actionKey) }}
+          </button>
+        </template>
+
+        <template v-else-if="setupCard.proposal">
+          <h3 class="cv-setup-title">
+            {{
+              setupCard.mode === 'applied'
+                ? t('workspace.checksSetupAppliedTitle')
+                : t('workspace.checksSetupProposalTitle')
+            }}
+          </h3>
+          <dl class="cv-setup-plan">
+            <dt>{{ t('workspace.checksSetupImage') }}</dt>
+            <dd>
+              <code>{{ setupCard.proposal.image }}</code>
+            </dd>
+            <dt>{{ t('workspace.checksSetupInstall') }}</dt>
+            <dd>
+              <code v-if="setupCard.proposal.install">{{ setupCard.proposal.install }}</code>
+              <span v-else class="cv-setup-muted">{{ t('workspace.checksSetupNoInstall') }}</span>
+            </dd>
+            <dt>{{ t('workspace.checksSetupCommands') }}</dt>
+            <dd>
+              <ul class="cv-setup-cmds">
+                <li v-for="(command, i) in setupCard.proposal.commands" :key="i">
+                  <code>{{ command }}</code>
+                </li>
+              </ul>
+            </dd>
+            <dt>{{ t('workspace.checksSetupNetwork') }}</dt>
+            <dd>
+              {{
+                setupCard.proposal.network
+                  ? t('workspace.checksSetupNetworkInstall')
+                  : t('workspace.checksSetupNetworkNone')
+              }}
+            </dd>
+            <dt>{{ t('workspace.checksSetupTimeout') }}</dt>
+            <dd>
+              {{ t('workspace.checksSetupTimeoutValue', { n: setupCard.proposal.timeoutSeconds }) }}
+            </dd>
+          </dl>
+
+          <p v-if="setupCard.proposal.rationale" class="cv-setup-rationale">
+            <span class="cv-setup-rationale-label">{{ t('workspace.checksSetupRationale') }}</span>
+            {{ setupCard.proposal.rationale }}
+          </p>
+
+          <!-- Regeneration over an existing plan: current vs proposed. -->
+          <template v-if="setupCard.diff.length > 0">
+            <h4 class="cv-setup-subtitle">{{ t('workspace.checksSetupCompare') }}</h4>
+            <ul class="cv-setup-diff">
+              <li
+                v-for="(row, i) in setupCard.diff"
+                :key="i"
+                :class="`cv-setup-diff--${row.state}`"
+              >
+                <span class="cv-setup-diff-glyph" aria-hidden="true">
+                  {{ COMMAND_DIFF_GLYPH[row.state] }}
+                </span>
+                <code>{{ row.command }}</code>
+                <span class="cv-setup-diff-state">{{
+                  row.state === 'kept'
+                    ? t('workspace.checksSetupDiffKept')
+                    : row.state === 'added'
+                      ? t('workspace.checksSetupDiffAdded')
+                      : t('workspace.checksSetupDiffRemoved')
+                }}</span>
+              </li>
+            </ul>
+          </template>
+
+          <template v-if="setupCard.mode === 'applied'">
+            <p class="cv-setup-hint">{{ t('workspace.checksSetupAppliedHint') }}</p>
+            <button
+              class="cv-setup-link"
+              type="button"
+              :disabled="setupBusy"
+              @click="doRunChecksSetup"
+            >
+              {{ t(setupCard.actionKey) }}
+            </button>
+          </template>
+          <div v-else class="cv-setup-actions">
+            <button
+              class="cv-btn cv-setup-apply"
+              type="button"
+              :disabled="setupBusy"
+              @click="doApplyProposal"
+            >
+              {{ t('workspace.checksSetupApply') }}
+            </button>
+            <button
+              class="cv-btn cv-setup-dismiss"
+              type="button"
+              :disabled="setupBusy"
+              @click="dismissProposal"
+            >
+              {{ t('workspace.checksSetupDismiss') }}
+            </button>
+          </div>
+        </template>
+
+        <p v-if="setupError" class="cv-error">{{ setupError }}</p>
+      </section>
 
       <ul v-if="checks && checks.checks.length > 0" class="cv-check-list">
         <li v-for="(check, i) in checks.checks" :key="i" class="cv-check">
@@ -815,6 +1024,14 @@ const wait = computed(() =>
           </details>
         </li>
       </ul>
+
+      <!-- A plan already runs: the agent setup stays a discreet regeneration. -->
+      <div v-if="setupCard.mode === 'offer' && setupCard.discreet" class="cv-setup-foot">
+        <button class="cv-setup-link" type="button" :disabled="setupBusy" @click="doRunChecksSetup">
+          {{ t(setupCard.actionKey) }}
+        </button>
+        <p v-if="setupError" class="cv-error">{{ setupError }}</p>
+      </div>
     </div>
   </div>
 </template>
@@ -1457,6 +1674,215 @@ const wait = computed(() =>
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--cs-muted);
+}
+
+/* Plan provenance chip ("detected: lefthook"), when the server labels it. */
+.cv-checks-source {
+  font-size: 10.5px;
+  color: var(--cs-ghost);
+  border: 1px solid var(--cs-line);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+/* ── Agent-assisted setup: the validation card ─────────────────────────── */
+.cv-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid var(--cs-line);
+  border-radius: 8px;
+  background: var(--cs-panel);
+  padding: 12px 13px;
+}
+
+/* A proposal is a decision waiting on the reader: give it the amber card. */
+.cv-setup--review {
+  border-color: var(--cs-amber-line);
+  background: var(--cs-amber-card);
+}
+
+.cv-setup--applied {
+  border-color: var(--cs-green-ring);
+}
+
+.cv-setup-intro,
+.cv-setup-hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--cs-muted);
+}
+
+.cv-setup-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--cs-text);
+}
+
+.cv-setup-subtitle {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--cs-text-2);
+}
+
+.cv-setup-cta {
+  align-self: flex-start;
+  color: var(--cs-text-2);
+}
+
+.cv-setup-running {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--cs-amber-text);
+}
+
+.cv-setup-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--cs-red-text);
+  overflow-wrap: anywhere;
+}
+
+.cv-setup-plan {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.cv-setup-plan dt {
+  color: var(--cs-ghost);
+}
+
+.cv-setup-plan dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--cs-text);
+  overflow-wrap: anywhere;
+}
+
+.cv-setup-plan code,
+.cv-setup-cmds code,
+.cv-setup-diff code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.cv-setup-muted {
+  color: var(--cs-ghost);
+}
+
+.cv-setup-cmds,
+.cv-setup-diff {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cv-setup-diff li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cv-setup-diff-glyph {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.cv-setup-diff-state {
+  margin-left: auto;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--cs-ghost);
+}
+
+.cv-setup-diff--added .cv-setup-diff-glyph {
+  color: var(--cs-green-text);
+}
+
+.cv-setup-diff--removed .cv-setup-diff-glyph,
+.cv-setup-diff--removed code {
+  color: var(--cs-red-text);
+}
+
+.cv-setup-diff--kept .cv-setup-diff-glyph,
+.cv-setup-diff--kept code {
+  color: var(--cs-ghost);
+}
+
+.cv-setup-rationale {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--cs-text-2);
+}
+
+.cv-setup-rationale-label {
+  color: var(--cs-ghost);
+  margin-right: 6px;
+}
+
+.cv-setup-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.cv-setup-apply {
+  color: var(--cs-on-green);
+  background: var(--cs-green);
+  border-color: var(--cs-green);
+}
+
+.cv-setup-apply:hover:enabled {
+  background: var(--cs-green-hover);
+  border-color: var(--cs-green-hover);
+}
+
+.cv-setup-dismiss {
+  color: var(--cs-text-2);
+}
+
+/* Discreet entry point once a plan already runs. */
+.cv-setup-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cv-setup-link {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--cs-ghost);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.cv-setup-link:hover:enabled {
+  color: var(--cs-text-2);
+}
+
+.cv-setup-link:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 /* The runner's own failure message (e.g. no container engine installed). */

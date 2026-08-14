@@ -25,6 +25,12 @@ import type {
   TaskRecord,
 } from '../types'
 import {
+  IDLE_CHECKS_SETUP,
+  mergeChecksSetup,
+  parseChecksSetup,
+  type ChecksSetupState,
+} from './useChecks'
+import {
   deriveActiveProject,
   persistActiveProject,
   purgeDeadStorageKeys,
@@ -120,7 +126,15 @@ function parseFrame<N extends TaskEnvelope['event']['name']>(
   return JSON.parse((e as MessageEvent).data) as Extract<TaskEnvelope, { event: { name: N } }>
 }
 
-function openStream(store: TaskStore, connected: Ref<boolean>, connections: Ref<number>) {
+/** Agent-assisted checks setup, one state per PROJECT (never per task). */
+type ChecksSetupStore = Map<string, ChecksSetupState>
+
+function openStream(
+  store: TaskStore,
+  setups: ChecksSetupStore,
+  connected: Ref<boolean>,
+  connections: Ref<number>,
+) {
   // The initial replay covers every task of every registered project; the
   // rail shows them all, only the right panel scopes to the active card.
   const source = new EventSource('/api/tasks/events')
@@ -163,7 +177,85 @@ function openStream(store: TaskStore, connected: Ref<boolean>, connections: Ref<
       current.checks = envelope.event.data
     }
   })
+  // Agent-assisted setup: the run's progress and its final proposal. The frame
+  // is project-scoped (no task_id) and its payload is parsed defensively —
+  // a bare proposal object reads as "ready" just like a state envelope.
+  source.addEventListener('checks_proposal', (e) => {
+    const envelope = parseFrame<'checks_proposal'>(e)
+    const projectId = envelope.project_id
+    // Merged, not replaced: applying consumes the proposal server-side and
+    // broadcasts an idle state that must not erase the local confirmation.
+    setups.set(
+      projectId,
+      mergeChecksSetup(setups.get(projectId), parseChecksSetup(envelope.event.data)),
+    )
+  })
   return source
+}
+
+/**
+ * Loads the current setup state of a project (idle / running / a proposal
+ * waiting for validation). Any failure keeps the last known state: the setup
+ * card then simply offers to run the agent.
+ */
+async function loadChecksSetupStore(setups: ChecksSetupStore, projectId: string): Promise<void> {
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/checks-setup`)
+    if (!res.ok) {
+      return
+    }
+    setups.set(
+      projectId,
+      mergeChecksSetup(setups.get(projectId), parseChecksSetup(await res.json())),
+    )
+  } catch {
+    // Local server stopped: keep the last known state.
+  }
+}
+
+/** Starts the agent (read-only, a real LLM call): the proposal lands later
+ * over SSE. The optimistic 'running' only survives an accepted POST. */
+async function startChecksSetup(
+  token: string,
+  setups: ChecksSetupStore,
+  projectId: string,
+): Promise<ApiResult> {
+  const result = await postAction(
+    token,
+    `/api/projects/${encodeURIComponent(projectId)}/checks-setup`,
+  )
+  if (result.ok) {
+    const previous = setups.get(projectId) ?? IDLE_CHECKS_SETUP
+    setups.set(projectId, { ...previous, status: 'running', error: null, applied: false })
+  }
+  return result
+}
+
+/**
+ * Writes the proposal under review into the repo's .codesema/config.json —
+ * the ONLY path that ever touches the file. The applied plan stays in the
+ * client state so the card can confirm what was written.
+ */
+async function applyChecksSetup(
+  token: string,
+  setups: ChecksSetupStore,
+  projectId: string,
+): Promise<ApiResult> {
+  const proposal = setups.get(projectId)?.proposal ?? null
+  const result = await postAction(
+    token,
+    `/api/projects/${encodeURIComponent(projectId)}/checks-apply`,
+  )
+  if (result.ok) {
+    setups.set(projectId, {
+      status: 'idle',
+      proposal: null,
+      error: null,
+      current: proposal,
+      applied: true,
+    })
+  }
+  return result
 }
 
 /**
@@ -467,6 +559,9 @@ function useProjectRegistry(token: string, store: TaskStore) {
 export function useTasks(token: string) {
   // reactive(Map) tracks set/get natively; states are mutated in place.
   const store = reactive(new Map<string, TaskState>())
+  // Checks setup states keyed by project id: the proposal belongs to the
+  // repo, every conversation of that repo reads the same one.
+  const checksSetup = reactive(new Map<string, ChecksSetupState>())
   const connected = ref(false)
   // Bumped on every (re)open: watchers re-hydrate the open conversation, since
   // events emitted while disconnected are not replayed by the stream.
@@ -481,7 +576,7 @@ export function useTasks(token: string) {
 
   function start(): void {
     void registry.loadProjects()
-    source ??= openStream(store, connected, connections)
+    source ??= openStream(store, checksSetup, connected, connections)
   }
 
   function stop(): void {
@@ -513,5 +608,16 @@ export function useTasks(token: string) {
     // Manual re-run of the sandboxed checks (409 while running or commit-less).
     runChecks: (projectId: string, id: string) =>
       postAction(token, actionPath(projectId, id, 'checks')),
+    // ── Agent-assisted checks setup, per project ──────────────────────────
+    checksSetup,
+    loadChecksSetup: (projectId: string) => loadChecksSetupStore(checksSetup, projectId),
+    runChecksSetup: (projectId: string) => startChecksSetup(token, checksSetup, projectId),
+    applyChecksProposal: (projectId: string) => applyChecksSetup(token, checksSetup, projectId),
+    /** "Dismiss": drops the proposal from THIS client's view only — nothing
+     * was written, and the server keeps whatever it holds. */
+    dismissChecksProposal: (projectId: string): void => {
+      const previous = checksSetup.get(projectId) ?? IDLE_CHECKS_SETUP
+      checksSetup.set(projectId, { ...previous, status: 'idle', proposal: null, error: null })
+    },
   }
 }

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -8,7 +8,9 @@ import {
   DEFAULT_CHECKS_IMAGE,
   detectChecks,
   detectContainerRuntime,
+  detectFromDeclarations,
   planFromConfig,
+  resolveChecksPlan,
   runChecks,
   type ExecFn,
   type ExecResult,
@@ -376,5 +378,251 @@ describe('runChecks', () => {
     expect(snapshots[2]?.checks.length).toBe(2)
     expect(snapshots.every((s) => s.status === 'running')).toBe(true)
     expect(result.status).toBe('passed')
+  })
+})
+
+// --- detectFromDeclarations (pure) ----------------------------------------
+
+/** Verbatim copy of THIS repository's lefthook.yml — the reference fixture. */
+const CODESEMA_LEFTHOOK = `pre-commit:
+  commands:
+    secrets:
+      run: gitleaks protect --staged --redact
+    format:
+      glob: '*'
+      run: bunx prettier --write --ignore-unknown {staged_files}
+      stage_fixed: true
+    lint:
+      glob: '*.{ts,mjs,vue}'
+      run: bunx oxlint {staged_files}
+
+pre-push:
+  commands:
+    typecheck:
+      run: bun run typecheck
+    test:
+      run: bun run test
+`
+
+describe('detectFromDeclarations', () => {
+  test("this repo's lefthook.yml: pre-push commands only, gitleaks and bunx filtered out", () => {
+    const declared = detectFromDeclarations([{ path: 'lefthook.yml', content: CODESEMA_LEFTHOOK }])
+    // bunx is NOT bun: the first token must be an allowed binary, and the
+    // lefthook `{staged_files}` template is not runnable in a container.
+    expect(declared).toEqual({
+      commands: ['bun run typecheck', 'bun run test'],
+      source: 'lefthook',
+    })
+  })
+
+  test('lefthook: pre-push before pre-commit, unknown binaries dropped, typecheck→test→lint order', () => {
+    const content = `pre-commit:
+  commands:
+    format:
+      run: bunx prettier --write {staged_files}
+    lint:
+      run: npm run lint
+    audit:
+      run: docker run --rm scanner
+pre-push:
+  commands:
+    test:
+      run: pnpm test
+    types:
+      run: pnpm typecheck
+`
+    expect(detectFromDeclarations([{ path: 'lefthook.yml', content }])).toEqual({
+      commands: ['pnpm typecheck', 'pnpm test', 'npm run lint'],
+      source: 'lefthook',
+    })
+  })
+
+  test('lefthook: install steps and shell plumbing never become checks', () => {
+    const content = `pre-push:
+  commands:
+    deps:
+      run: bun install --frozen-lockfile
+    chained:
+      run: bun run build && bun test
+    piped:
+      run: bun test | tee out.txt
+    subshell:
+      run: node -e "console.log($(whoami))"
+    ok:
+      run: make check
+`
+    expect(detectFromDeclarations([{ path: 'lefthook.yml', content }])).toEqual({
+      commands: ['make check'],
+      source: 'lefthook',
+    })
+  })
+
+  test('lefthook: deduplicated and capped at six commands', () => {
+    const commands = Array.from(
+      { length: 10 },
+      (_, i) => `    job${i}:\n      run: make target${i}\n`,
+    ).join('')
+    const content = `pre-push:\n  commands:\n${commands}    dup:\n      run: make target0\n`
+    const declared = detectFromDeclarations([{ path: 'lefthook.yml', content }])
+    expect(declared?.commands).toEqual([
+      'make target0',
+      'make target1',
+      'make target2',
+      'make target3',
+      'make target4',
+      'make target5',
+    ])
+  })
+
+  test('github workflow: only verification jobs, block scalars split line by line', () => {
+    const content = `name: CI
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t app .
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: npm ci
+      - name: Verify
+        run: |
+          npm run typecheck
+          npm test
+      - name: Report
+        run: curl -X POST https://example.com/report
+  deploy:
+    name: Deploy to production
+    needs: [test]
+    steps:
+      - run: npm run deploy
+`
+    expect(detectFromDeclarations([{ path: '.github/workflows/ci.yml', content }])).toEqual({
+      commands: ['npm run typecheck', 'npm test'],
+      source: 'ci',
+    })
+  })
+
+  test('github workflow: a job named "Lint & types" counts even with a neutral id', () => {
+    const content = `jobs:
+  quality:
+    name: Lint and types
+    steps:
+      - run: yarn lint
+  release:
+    steps:
+      - run: yarn publish
+`
+    expect(detectFromDeclarations([{ path: '.github/workflows/main.yaml', content }])).toEqual({
+      commands: ['yarn lint'],
+      source: 'ci',
+    })
+  })
+
+  test('lefthook wins over CI when both declare commands', () => {
+    const declared = detectFromDeclarations([
+      {
+        path: '.github/workflows/ci.yml',
+        content: 'jobs:\n  test:\n    steps:\n      - run: go test ./...\n',
+      },
+      { path: 'lefthook.yml', content: CODESEMA_LEFTHOOK },
+    ])
+    expect(declared?.source).toBe('lefthook')
+  })
+
+  test('unreadable or irrelevant YAML yields null instead of guesses', () => {
+    expect(
+      detectFromDeclarations([
+        { path: 'lefthook.yml', content: '::: not: yaml [ at all\n\t\trun\n' },
+        { path: '.github/workflows/broken.yml', content: '%%%%\n  - - - :\n' },
+      ]),
+    ).toBeNull()
+    expect(detectFromDeclarations([])).toBeNull()
+    // A file that is not a declaration file is ignored entirely.
+    expect(
+      detectFromDeclarations([{ path: 'docs/lefthook.md', content: 'run: bun test' }]),
+    ).toBeNull()
+  })
+})
+
+// --- resolveChecksPlan (precedence) ---------------------------------------
+
+describe('resolveChecksPlan', () => {
+  const bunRepo = (): void => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    writeFileSync(
+      join(worktree, 'package.json'),
+      JSON.stringify({ scripts: { typecheck: 'tsc', test: 'bun test', lint: 'oxlint' } }),
+    )
+  }
+
+  test('explicit config wins over declarations and lockfiles', () => {
+    bunRepo()
+    writeFileSync(join(worktree, 'lefthook.yml'), CODESEMA_LEFTHOOK)
+    const plan = resolveChecksPlan({
+      worktree,
+      config: { image: 'node:22', commands: ['npm run only-this'] },
+    })
+    expect(plan).toMatchObject({ image: 'node:22', commands: ['npm run only-this'] })
+  })
+
+  test('declarations replace the detected commands but keep image and install', () => {
+    bunRepo()
+    writeFileSync(
+      join(worktree, 'lefthook.yml'),
+      'pre-push:\n  commands:\n    all:\n      run: make check\n',
+    )
+    expect(resolveChecksPlan({ worktree })).toEqual({
+      image: 'oven/bun:1',
+      install: 'bun install --frozen-lockfile',
+      commands: ['make check'],
+      network: true,
+      timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+    })
+  })
+
+  test('CI declarations are read from .github/workflows', () => {
+    bunRepo()
+    mkdirSync(join(worktree, '.github', 'workflows'), { recursive: true })
+    writeFileSync(
+      join(worktree, '.github', 'workflows', 'ci.yml'),
+      'jobs:\n  checks:\n    steps:\n      - run: bun run ci\n',
+    )
+    expect(resolveChecksPlan({ worktree })?.commands).toEqual(['bun run ci'])
+  })
+
+  test('without declarations the lockfile plan is untouched', () => {
+    bunRepo()
+    expect(resolveChecksPlan({ worktree })?.commands).toEqual([
+      'bun run typecheck',
+      'bun run test',
+      'bun run lint',
+    ])
+  })
+
+  test('declarations alone provide no image, hence no plan', () => {
+    writeFileSync(join(worktree, 'lefthook.yml'), CODESEMA_LEFTHOOK)
+    expect(resolveChecksPlan({ worktree })).toBeNull()
+  })
+
+  test('runChecks runs the declared commands end to end', async () => {
+    bunRepo()
+    writeFileSync(join(worktree, 'lefthook.yml'), CODESEMA_LEFTHOOK)
+    const { calls, exec } = dockerRig(() => ok())
+    const result = await runChecks({ worktree, headSha: 'abc', execFn: exec })
+    expect(result.status).toBe('passed')
+    expect(result.checks.map((c) => c.command)).toEqual([
+      'bun install --frozen-lockfile',
+      'bun run typecheck',
+      'bun run test',
+    ])
+    expect(calls.some((c) => c.args.at(-1) === 'bun run lint')).toBe(false)
   })
 })

@@ -68,6 +68,11 @@ const {
   abandon,
   hydrateChecks,
   runChecks,
+  checksSetup,
+  loadChecksSetup,
+  runChecksSetup,
+  applyChecksProposal,
+  dismissChecksProposal,
   selectProject,
   refreshMrs,
   addProject,
@@ -455,6 +460,11 @@ async function onRemoveProject(id: string): Promise<void> {
               :abandon="() => abandon(entry.projectId, entry.taskId)"
               :run-checks="() => runChecks(entry.projectId, entry.taskId)"
               :load-checks="() => hydrateChecks(entry.projectId, entry.taskId)"
+              :checks-setup="checksSetup.get(entry.projectId)"
+              :load-checks-setup="() => loadChecksSetup(entry.projectId)"
+              :run-checks-setup="() => runChecksSetup(entry.projectId)"
+              :apply-checks-proposal="() => applyChecksProposal(entry.projectId)"
+              :dismiss-checks-proposal="() => dismissChecksProposal(entry.projectId)"
               @open-review="openReview"
               @toggle-pin="togglePin(entry.key)"
             />

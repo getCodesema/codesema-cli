@@ -289,6 +289,11 @@ export type TaskCheck = {
   tail: string
 }
 
+/** Where the executed plan came from, when the server labels it. OPTIONAL:
+ * the frozen checks.json contract does not carry it today, so every consumer
+ * treats it as "may be absent" and simply shows nothing then. */
+export type TaskChecksSource = 'config' | 'lefthook' | 'ci' | 'scripts'
+
 /** The persisted checks.json of a task (.codesema/tasks/<id>/checks.json). */
 export type TaskChecks = {
   /** Commit the checks ran against. */
@@ -299,6 +304,8 @@ export type TaskChecks = {
   checks: TaskCheck[]
   /** Human-readable failure of the runner itself (e.g. no container engine). */
   error: string | null
+  /** Provenance of the plan; absent on servers that do not expose it. */
+  source?: TaskChecksSource | string
 }
 
 /**
@@ -311,6 +318,9 @@ export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
   | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
   | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
+  // Agent-assisted checks setup: PROJECT-scoped, no task_id — the proposal
+  // belongs to the repo, not to a conversation.
+  | { project_id: string; event: { name: 'checks_proposal'; data: unknown } }
 
 // Mirrors packages/cli/src/projects.ts (global project registry) and the
 // /api/projects endpoints.

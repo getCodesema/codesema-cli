@@ -12,6 +12,11 @@
 import { existsSync } from 'node:fs'
 import type { AgentRunOptions } from './agent.js'
 import {
+  createChecksSetupRunner,
+  type ChecksSetupRunner,
+  type ChecksSetupState,
+} from './checks-setup.js'
+import {
   isActiveTaskStatus,
   TASK_BASE_MAX,
   TASK_TITLE_MAX,
@@ -65,6 +70,9 @@ export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
   | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
   | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
+  // PROJECT-scoped, hence no task_id: the checks setup agent proposes a
+  // configuration for the whole repo, not for one conversation.
+  | { project_id: string; event: { name: 'checks_proposal'; data: ChecksSetupState } }
 
 export type CreateTaskManagerInput = {
   title: string
@@ -135,6 +143,20 @@ export type TaskManager = {
   checks: (projectId: string, id: string) => TaskActionResult
   /** Latest persisted checks run; null on unknown project/task or never-run. */
   getChecks: (projectId: string, id: string) => TaskChecks | null
+  /**
+   * Asks the user's agent (READ-ONLY, no tools) to propose a checks
+   * configuration for the project. ok means STARTED; the proposal lands on
+   * the state below and on the SSE stream ('checks_proposal'). 501 without a
+   * configured agent, 409 while a proposal is already being computed.
+   */
+  checksSetup: (projectId: string) => TaskActionResult
+  /** Current proposal state of a project; null on unknown project. */
+  checksSetupStatus: (projectId: string) => ChecksSetupState | null
+  /**
+   * Writes the ready proposal to the project's .codesema/config.json — the
+   * ONLY path from a proposal to disk. 409 when nothing is proposed.
+   */
+  checksApply: (projectId: string) => TaskActionResult
   /** Graceful exit: interrupts every active agent (all projects) and resolves once all turns persisted. */
   shutdown: () => Promise<void>
   subscribe: (listener: (envelope: TaskEnvelope) => void) => () => void
@@ -162,6 +184,12 @@ export type CreateTaskManagerOptions = {
   listProjectsFn?: () => Project[]
   /** Test seam: the default runs real containers (task-checks.ts). */
   runChecksFn?: typeof runChecks
+  /**
+   * Test seam for the checks SETUP agent (checks-setup.ts). Separate from
+   * runAgentFn: the setup agent is a read-only text transformer, never the
+   * task runner's working agent.
+   */
+  runSetupAgentFn?: (options: AgentRunOptions) => Promise<string>
 }
 
 /**
@@ -240,6 +268,18 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const pool = createTaskSlotPool(opts.maxParallel ?? DEFAULT_MAX_PARALLEL_TASKS)
   const createRunner = opts.createRunnerFn ?? createTaskRunner
   const contexts = new Map<string, ProjectContext>()
+
+  // Project-scoped, context-free: proposing a checks configuration needs no
+  // runner, no store and no worktree — only the repo path and the agent.
+  const checksSetup: ChecksSetupRunner = createChecksSetupRunner({
+    command: opts.command,
+    ...(opts.runSetupAgentFn ? { runAgentFn: opts.runSetupAgentFn } : {}),
+    onState: (projectId, state) =>
+      emit({ project_id: projectId, event: { name: 'checks_proposal', data: state } }),
+  })
+  /** Registry lookup shared by the project-scoped routes (no lazy context needed). */
+  const findProject = (projectId: string): Project | null =>
+    registered().find((candidate) => candidate.id === projectId) ?? null
 
   /**
    * T5. Never rejects: a push failure comes back as a plain error result with
@@ -667,8 +707,23 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     },
 
     getChecks(projectId, id) {
-      const project = registered().find((candidate) => candidate.id === projectId)
+      const project = findProject(projectId)
       return project ? readTaskChecks(project.path, id) : null
+    },
+
+    checksSetup(projectId) {
+      const project = findProject(projectId)
+      return project ? checksSetup.start(project) : unknownProject
+    },
+
+    checksSetupStatus(projectId) {
+      const project = findProject(projectId)
+      return project ? checksSetup.status(project.id) : null
+    },
+
+    checksApply(projectId) {
+      const project = findProject(projectId)
+      return project ? checksSetup.apply(project) : unknownProject
     },
 
     async shutdown() {
