@@ -1,0 +1,1268 @@
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { request } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import type { AgentRunOptions } from './agent.js'
+import type { TaskEvent, TaskRecord } from './contract.js'
+import { addProject, listProjects, type Project } from './projects.js'
+import { createSession, startServer } from './serve.js'
+import type { TaskRunner, TaskRunnerOptions } from './task-runner.js'
+import { createTaskManager, type TaskEnvelope, type TaskManager } from './task-server.js'
+import type { ShipOutcome, ShipTaskOptions } from './task-ship.js'
+import { createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
+
+// --- rigs -----------------------------------------------------------------
+
+// The project registry is global state: redirected to a fresh tmpdir per test
+// via CODESEMA_CONFIG_DIR so tests never touch the real ~/.config/codesema.
+let configDir: string
+const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+const cleanups: string[] = []
+
+beforeEach(() => {
+  configDir = mkdtempSync(join(tmpdir(), 'codesema-task-server-cfg-'))
+  cleanups.push(configDir)
+  process.env.CODESEMA_CONFIG_DIR = configDir
+})
+
+afterEach(() => {
+  for (const dir of cleanups.splice(0)) {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  if (previousConfigDir === undefined) {
+    delete process.env.CODESEMA_CONFIG_DIR
+  } else {
+    process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+  }
+})
+
+function makeDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'codesema-task-server-'))
+  cleanups.push(dir)
+  return dir
+}
+
+/** Real git repo: projects must be git roots, and the runner creates worktrees. */
+function makeRepo(): string {
+  const repo = makeDir()
+  const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+  run(['init', '-b', 'main'])
+  run(['config', 'user.email', 't@t'])
+  run(['config', 'user.name', 't'])
+  writeFileSync(join(repo, 'base.txt'), 'a\n')
+  run(['add', '-A'])
+  run(['commit', '-m', 'init: base'])
+  return repo
+}
+
+/** Registers a repo in the global registry, as the workspace boot would. */
+function register(repo: string): Project {
+  const added = addProject(repo)
+  if (!added.ok) {
+    throw new Error(added.error)
+  }
+  return added.project
+}
+
+function seedTask(cwd: string, title = 'seeded', prompt = 'do work'): TaskRecord {
+  return createTask(cwd, {
+    title,
+    prompt,
+    autoShip: false,
+    base: '',
+    branch: '',
+    worktree: '',
+  })
+}
+
+async function until(cond: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('timeout waiting for condition')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+type FakeRunnerRig = {
+  createRunnerFn: (options: TaskRunnerOptions) => TaskRunner
+  /** Hooks the manager passed to the LAST runner created (onTask/onEvent/onText). */
+  runnerOptions: () => TaskRunnerOptions
+  /** One entry per createRunnerFn call: the manager builds one runner per project. */
+  allRunnerOptions: TaskRunnerOptions[]
+  starts: TaskRecord[]
+  replies: { id: string; message: string }[]
+  interrupts: string[]
+  abandons: string[]
+}
+
+/** Captures the manager→runner seam without ever launching an agent. */
+function fakeRunner(): FakeRunnerRig {
+  const rig: FakeRunnerRig = {
+    allRunnerOptions: [],
+    starts: [],
+    replies: [],
+    interrupts: [],
+    abandons: [],
+    runnerOptions: () => {
+      const last = rig.allRunnerOptions.at(-1)
+      if (!last) {
+        throw new Error('runner never created')
+      }
+      return last
+    },
+    createRunnerFn: (options) => {
+      rig.allRunnerOptions.push(options)
+      return {
+        start: (task) => {
+          rig.starts.push(task)
+          return { ok: true }
+        },
+        reply: (id, message) => {
+          rig.replies.push({ id, message })
+          return { ok: false, code: 409, error: 'task is not waiting for a reply' }
+        },
+        interrupt: (id) => {
+          rig.interrupts.push(id)
+          return { ok: true }
+        },
+        abandon: (id) => {
+          rig.abandons.push(id)
+          return { ok: true }
+        },
+        shutdown: () => Promise.resolve(),
+        runningCount: () => 0,
+      }
+    },
+  }
+  return rig
+}
+
+const managerOpts = { command: 'claude -p', timeoutMs: 1000 }
+
+// --- createTaskManager ----------------------------------------------------
+
+describe('createTaskManager', () => {
+  test('boot marks orphaned running/reviewing tasks as interrupted, across EVERY project', () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    register(repoA)
+    register(repoB)
+    const running = seedTask(repoA, 'was running')
+    running.status = 'running'
+    saveTask(repoA, running)
+    const reviewing = seedTask(repoB, 'was reviewing')
+    reviewing.status = 'reviewing'
+    saveTask(repoB, reviewing)
+    const waiting = seedTask(repoA, 'was waiting')
+    waiting.status = 'waiting_for_you'
+    saveTask(repoA, waiting)
+    const queued = seedTask(repoB, 'still queued')
+
+    createTaskManager({ ...managerOpts, ...fakeRunner() })
+
+    for (const [cwd, id] of [
+      [repoA, running.id],
+      [repoB, reviewing.id],
+    ] as const) {
+      const record = loadTask(cwd, id)
+      expect(record?.status).toBe('interrupted')
+      expect(record?.turns.at(-1)?.ended_at).not.toBeNull()
+      expect(readTaskEvents(cwd, id).map((e) => e.type)).toContain('interrupted')
+    }
+    // Untouched states stay untouched: only dead-process states are rewritten.
+    expect(loadTask(repoA, waiting.id)?.status).toBe('waiting_for_you')
+    expect(loadTask(repoB, queued.id)?.status).toBe('queued')
+    expect(readTaskEvents(repoB, queued.id)).toHaveLength(0)
+  })
+
+  test('every scoped call on an unregistered project is a 404, never a crash', async () => {
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    const input = { title: 't', prompt: 'p', autoShip: false }
+    expect(manager.list('deadbeef')).toBeNull()
+    expect(manager.get('deadbeef', 'aaaaaaaaaaaa')).toBeNull()
+    expect(manager.create('deadbeef', input)).toEqual({
+      ok: false,
+      code: 404,
+      error: 'unknown project',
+    })
+    expect(manager.reply('deadbeef', 'aaaaaaaaaaaa', 'hi')).toMatchObject({ ok: false, code: 404 })
+    expect(manager.interrupt('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    expect(await manager.ship('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    expect(manager.abandon('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    expect(rig.allRunnerOptions).toHaveLength(0)
+  })
+
+  test('create validates title and prompt before touching the store', () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    const base = { prompt: 'do it', autoShip: false }
+    expect(manager.create(project.id, { ...base, title: '   ' })).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    expect(manager.create(project.id, { ...base, title: 'x'.repeat(201) })).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    expect(manager.create(project.id, { title: 't', prompt: '', autoShip: false })).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    expect(
+      manager.create(project.id, { title: 't', prompt: 'p'.repeat(20_001), autoShip: false }),
+    ).toMatchObject({ ok: false, code: 400 })
+    expect(manager.list(project.id)).toHaveLength(0)
+    expect(rig.starts).toHaveLength(0)
+  })
+
+  test('create persists a queued task in ITS project repo, broadcasts, hands to the runner', () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    const created = manager.create(projectB.id, {
+      title: '  Audit the auth flow  ',
+      prompt: 'look at login',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // The task lives in project B's repo — and ONLY there.
+    const onDisk = loadTask(projectB.path, created.record.id)
+    expect(onDisk).toMatchObject({
+      title: 'Audit the auth flow',
+      status: 'queued',
+      auto_ship: true,
+    })
+    expect(onDisk?.turns[0]?.prompt).toBe('look at login')
+    expect(loadTask(projectA.path, created.record.id)).toBeNull()
+    expect(manager.list(projectA.id)).toHaveLength(0)
+    expect(rig.starts.map((r) => r.id)).toEqual([created.record.id])
+    // The runner was built for project B's repo.
+    expect(rig.runnerOptions().cwd).toBe(projectB.path)
+    expect(envelopes).toEqual([
+      {
+        project_id: projectB.id,
+        task_id: created.record.id,
+        event: { name: 'task', data: created.record },
+      },
+    ])
+  })
+
+  test('runner hooks fan out as project-scoped task / task_event / task_text envelopes', () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const envelopes: TaskEnvelope[] = []
+    const unsubscribe = manager.subscribe((envelope) => envelopes.push(envelope))
+
+    const record = seedTask(project.path)
+    // Touch the project so its runner (and hooks) exist.
+    expect(manager.interrupt(project.id, record.id)).toEqual({ ok: true })
+    const event: TaskEvent = { seq: 1, at: new Date().toISOString(), type: 'message', data: {} }
+    const hooks = rig.runnerOptions()
+    hooks.onTask?.(record)
+    hooks.onEvent?.(record.id, event)
+    hooks.onText?.(record.id, 'streamed text')
+
+    expect(envelopes).toEqual([
+      { project_id: project.id, task_id: record.id, event: { name: 'task', data: record } },
+      { project_id: project.id, task_id: record.id, event: { name: 'task_event', data: event } },
+      {
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task_text', data: { text: 'streamed text' } },
+      },
+    ])
+
+    unsubscribe()
+    hooks.onText?.(record.id, 'after unsubscribe')
+    expect(envelopes).toHaveLength(3)
+  })
+
+  test('reply and interrupt delegate to the right project runner and propagate its verdict', () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    expect(manager.reply(projectA.id, 'aaaaaaaaaaaa', 'hello')).toMatchObject({
+      ok: false,
+      code: 409,
+    })
+    expect(rig.replies).toEqual([{ id: 'aaaaaaaaaaaa', message: 'hello' }])
+    expect(manager.interrupt(projectB.id, 'bbbbbbbbbbbb')).toEqual({ ok: true })
+    expect(rig.interrupts).toEqual(['bbbbbbbbbbbb'])
+    // One runner per touched project, each bound to its own repo.
+    expect(rig.allRunnerOptions.map((o) => o.cwd)).toEqual([projectA.path, projectB.path])
+  })
+
+  test('get is project-scoped: a task is only reachable through ITS project', () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const record = seedTask(projectA.path)
+
+    const found = manager.get(projectA.id, record.id)
+    expect(found?.record.id).toBe(record.id)
+    expect(found?.events).toEqual([])
+    expect(manager.get(projectB.id, record.id)).toBeNull()
+    expect(manager.get(projectA.id, 'aaaaaaaaaaaa')).toBeNull()
+    expect(manager.get(projectA.id, '../escape')).toBeNull()
+  })
+
+  test('listAll aggregates every registered project with its tasks', () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const a = seedTask(projectA.path, 'in A')
+    const b1 = seedTask(projectB.path, 'in B one')
+    const b2 = seedTask(projectB.path, 'in B two')
+
+    const all = manager.listAll()
+    expect(all.map((entry) => entry.project.id)).toEqual([projectA.id, projectB.id])
+    expect(all[0]?.records.map((r) => r.id)).toEqual([a.id])
+    expect(new Set(all[1]?.records.map((r) => r.id))).toEqual(new Set([b1.id, b2.id]))
+  })
+})
+
+// --- manager.ship (T5) ----------------------------------------------------
+
+/** A task parked on a post-review status, as the reviewer leaves it. */
+function seedShippable(cwd: string, status: 'review_ok' | 'review_ko' = 'review_ok'): TaskRecord {
+  const record = seedTask(cwd, 'shippable task')
+  record.status = status
+  record.base = 'origin/main'
+  record.branch = 'codesema/task-shippable-task'
+  record.worktree = join(cwd, '.codesema', 'worktrees', record.id)
+  saveTask(cwd, record)
+  return record
+}
+
+function shipStub(outcome: ShipOutcome | Promise<ShipOutcome>) {
+  const calls: ShipTaskOptions[] = []
+  const fn = (options: ShipTaskOptions): Promise<ShipOutcome> => {
+    calls.push(options)
+    return Promise.resolve(outcome)
+  }
+  return { calls, fn }
+}
+
+describe('manager.ship', () => {
+  test('gate: only review_ok / review_ko ship; shipped and unknown ids refuse', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: null, note: null })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+
+    expect(await manager.ship(project.id, 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    const queued = seedTask(cwd, 'still queued')
+    expect(await manager.ship(project.id, queued.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task is queued',
+    })
+    const waiting = seedTask(cwd, 'waiting')
+    waiting.status = 'waiting_for_you'
+    saveTask(cwd, waiting)
+    expect(await manager.ship(project.id, waiting.id)).toMatchObject({ ok: false, code: 409 })
+    const shipped = seedShippable(cwd)
+    shipped.status = 'shipped'
+    saveTask(cwd, shipped)
+    // Idempotence: a second ship must never open a double MR.
+    expect(await manager.ship(project.id, shipped.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task is already shipped',
+    })
+    expect(stub.calls).toHaveLength(0)
+  })
+
+  test('review_ok ship: shipped event with the MR URL, record flips to shipped', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    // The ship runs in the PROJECT's repo (push + forge CLI cwd).
+    expect(stub.calls).toMatchObject([{ cwd, task: { id: record.id } }])
+    expect(loadTask(cwd, record.id)?.status).toBe('shipped')
+    const events = readTaskEvents(cwd, record.id)
+    expect(events).toMatchObject([
+      { type: 'shipped', data: { mr_url: 'https://github.com/o/r/pull/9' } },
+    ])
+    // Journal event first, then the full record — store-first, like the runner.
+    expect(envelopes.map((e) => e.event.name)).toEqual(['task_event', 'task'])
+    expect(envelopes.every((e) => e.project_id === project.id)).toBe(true)
+    expect(envelopes.at(-1)?.event.data).toMatchObject({ status: 'shipped' })
+  })
+
+  test('push failure: status unchanged, readable error event, 502 result', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: false, error: 'git push failed: permission denied' })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({
+      ok: false,
+      code: 502,
+      error: 'git push failed: permission denied',
+    })
+    // Retryable: the task is exactly where it was before the attempt.
+    expect(loadTask(cwd, record.id)?.status).toBe('review_ok')
+    expect(readTaskEvents(cwd, record.id)).toMatchObject([
+      { type: 'error', data: { message: 'git push failed: permission denied' } },
+    ])
+  })
+
+  test('a rejecting shipTaskFn degrades to a push failure, never a crash', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      ...managerOpts,
+      shipTaskFn: () => Promise.reject(new Error('boom')),
+      ...fakeRunner(),
+    })
+    const record = seedShippable(project.path)
+    expect(await manager.ship(project.id, record.id)).toEqual({
+      ok: false,
+      code: 502,
+      error: 'boom',
+    })
+    expect(loadTask(project.path, record.id)?.status).toBe('review_ok')
+  })
+
+  test('while a ship is in flight: reply, abandon and a second ship are refused', async () => {
+    const project = register(makeRepo())
+    let release!: (outcome: ShipOutcome) => void
+    const pending = new Promise<ShipOutcome>((resolve) => {
+      release = resolve
+    })
+    const manager = createTaskManager({
+      ...managerOpts,
+      shipTaskFn: () => pending,
+      ...fakeRunner(),
+    })
+    const record = seedShippable(project.path)
+
+    // ship() runs synchronously up to its first await: the in-flight guard is
+    // set before this call returns, no yield needed.
+    const inFlight = manager.ship(project.id, record.id)
+    expect(await manager.ship(project.id, record.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'ship already in progress',
+    })
+    expect(manager.reply(project.id, record.id, 'wait')).toEqual({
+      ok: false,
+      code: 409,
+      error: 'ship in progress',
+    })
+    expect(manager.abandon(project.id, record.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'ship in progress',
+    })
+    release({ pushed: true, mrUrl: null, note: null })
+    expect(await inFlight).toEqual({ ok: true })
+    expect(loadTask(project.path, record.id)?.status).toBe('shipped')
+  })
+})
+
+// --- HTTP surface ---------------------------------------------------------
+
+type RawResponse = { status: number; body: string }
+
+function rawRequest(
+  port: number,
+  path: string,
+  opts: { method?: string; headers?: Record<string, string>; body?: string } = {},
+): Promise<RawResponse> {
+  return new Promise((resolveResponse, reject) => {
+    const req = request(
+      { host: '127.0.0.1', port, path, method: opts.method ?? 'GET', headers: opts.headers },
+      (res) => {
+        let body = ''
+        res.setEncoding('utf8')
+        res.on('data', (chunk: string) => {
+          body += chunk
+        })
+        res.on('end', () => resolveResponse({ status: res.statusCode ?? 0, body }))
+      },
+    )
+    req.on('error', reject)
+    if (opts.body !== undefined) {
+      req.write(opts.body)
+    }
+    req.end()
+  })
+}
+
+async function tasksToken(port: number): Promise<string> {
+  const html = await rawRequest(port, '/')
+  const match = /__CODESEMA_TASKS_TOKEN__="([a-f0-9]{32})"/.exec(html.body)
+  expect(match).not.toBeNull()
+  return match![1]!
+}
+
+describe('task routes without a task manager', () => {
+  test('every task and project route answers 501, review routes are untouched', async () => {
+    const repo = makeDir()
+    const started = await startServer(createSession(), { cwd: repo, port: 5101 })
+    try {
+      expect((await rawRequest(started.port, '/api/tasks?project=deadbeef')).status).toBe(501)
+      expect((await rawRequest(started.port, '/api/tasks/events')).status).toBe(501)
+      expect(
+        (await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa?project=deadbeef')).status,
+      ).toBe(501)
+      expect(
+        (await rawRequest(started.port, '/api/tasks', { method: 'POST', body: '{}' })).status,
+      ).toBe(501)
+      expect(
+        (
+          await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa/reply?project=deadbeef', {
+            method: 'POST',
+            body: '{}',
+          })
+        ).status,
+      ).toBe(501)
+      expect((await rawRequest(started.port, '/api/projects')).status).toBe(501)
+      expect(
+        (await rawRequest(started.port, '/api/projects', { method: 'POST', body: '{}' })).status,
+      ).toBe(501)
+      expect(
+        (await rawRequest(started.port, '/api/projects/deadbeef', { method: 'DELETE' })).status,
+      ).toBe(501)
+      // No tasks token is injected when the manager is absent.
+      const html = await rawRequest(started.port, '/')
+      expect(html.body).not.toContain('__CODESEMA_TASKS_TOKEN__')
+      // The review API still answers as before.
+      expect((await rawRequest(started.port, '/api/status')).status).toBe(200)
+    } finally {
+      await started.stop()
+    }
+  })
+})
+
+describe('task routes with a stub manager', () => {
+  function stubManager(project: Project) {
+    const listeners = new Set<(envelope: TaskEnvelope) => void>()
+    const record = seedTask(project.path, 'stubbed task', 'stub work')
+    const calls = {
+      creates: [] as string[],
+      replies: [] as { project: string; id: string; message: string }[],
+      ships: [] as string[],
+      abandons: [] as string[],
+    }
+    const known = (projectId: string) => projectId === project.id
+    const manager: TaskManager = {
+      list: (projectId) => (known(projectId) ? [record] : null),
+      listAll: () => [{ project, records: [record] }],
+      get: (projectId, id) =>
+        known(projectId) && id === record.id ? { record, events: [] } : null,
+      create: (projectId) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.creates.push(projectId)
+        return { ok: true, record }
+      },
+      reply: (projectId, id, message) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.replies.push({ project: projectId, id, message })
+        return { ok: false, code: 409, error: 'task is not waiting for a reply' }
+      },
+      interrupt: (projectId) =>
+        known(projectId) ? { ok: true } : { ok: false, code: 404, error: 'unknown project' },
+      ship: (projectId, id) => {
+        if (!known(projectId)) {
+          return Promise.resolve({ ok: false as const, code: 404, error: 'unknown project' })
+        }
+        calls.ships.push(id)
+        return Promise.resolve({ ok: false as const, code: 409, error: 'task is queued' })
+      },
+      abandon: (projectId, id) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.abandons.push(id)
+        return { ok: true }
+      },
+      shutdown: () => Promise.resolve(),
+      subscribe: (listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+    }
+    const emit = (envelope: TaskEnvelope) => {
+      for (const listener of listeners) {
+        listener(envelope)
+      }
+    }
+    return { manager, record, calls, emit }
+  }
+
+  test('CRUD routes: project scoping (400 missing, 404 unknown), create, Host guard', async () => {
+    const project = register(makeRepo())
+    const { manager, record, calls } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5121,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+
+      // project= is MANDATORY on every scoped route.
+      expect((await rawRequest(started.port, '/api/tasks')).status).toBe(400)
+      expect((await rawRequest(started.port, `/api/tasks/${record.id}`)).status).toBe(400)
+      // Unknown project: 404.
+      expect((await rawRequest(started.port, '/api/tasks?project=ffffffff')).status).toBe(404)
+      expect(
+        (await rawRequest(started.port, `/api/tasks/${record.id}?project=ffffffff`)).status,
+      ).toBe(404)
+
+      const list = await rawRequest(started.port, `/api/tasks?project=${project.id}`)
+      expect(list.status).toBe(200)
+      expect(JSON.parse(list.body)).toMatchObject([{ id: record.id, title: 'stubbed task' }])
+
+      const one = await rawRequest(started.port, `/api/tasks/${record.id}?project=${project.id}`)
+      expect(one.status).toBe(200)
+      expect(JSON.parse(one.body)).toMatchObject({ record: { id: record.id }, events: [] })
+
+      expect(
+        (await rawRequest(started.port, `/api/tasks/aaaaaaaaaaaa?project=${project.id}`)).status,
+      ).toBe(404)
+      expect(
+        (await rawRequest(started.port, `/api/tasks/UPPER-not-id?project=${project.id}`)).status,
+      ).toBe(404)
+
+      // Create carries the project in the BODY (project_id), not the query.
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ project_id: project.id, title: 't', prompt: 'p' }),
+      })
+      expect(created.status).toBe(201)
+      expect(JSON.parse(created.body)).toMatchObject({ id: record.id })
+      expect(calls.creates).toEqual([project.id])
+
+      // Missing project_id: 400 before the manager is reached.
+      const noProject = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ title: 't', prompt: 'p' }),
+      })
+      expect(noProject.status).toBe(400)
+      // Unknown project_id: the manager's 404 comes through.
+      const ghostProject = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ project_id: 'ffffffff', title: 't', prompt: 'p' }),
+      })
+      expect(ghostProject.status).toBe(404)
+
+      const badBody = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ project_id: project.id, title: 42, prompt: 'p' }),
+      })
+      expect(badBody.status).toBe(400)
+      expect(calls.creates).toEqual([project.id])
+
+      // DNS-rebinding guard stays active on every task route.
+      const rebound = await rawRequest(started.port, `/api/tasks?project=${project.id}`, {
+        headers: { host: 'evil.com' },
+      })
+      expect(rebound.status).toBe(403)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('mutations without the tasks token are refused before reaching the manager', async () => {
+    const project = register(makeRepo())
+    const { manager, record, calls } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5131,
+      taskManager: manager,
+    })
+    const scoped = (path: string) => `${path}?project=${project.id}`
+    try {
+      const noToken = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify({ project_id: project.id, title: 't', prompt: 'p' }),
+      })
+      expect(noToken.status).toBe(403)
+      const badToken = await rawRequest(started.port, scoped(`/api/tasks/${record.id}/reply`), {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': 'wrong' },
+        body: JSON.stringify({ message: 'hello' }),
+      })
+      expect(badToken.status).toBe(403)
+      const badInterrupt = await rawRequest(
+        started.port,
+        scoped(`/api/tasks/${record.id}/interrupt`),
+        { method: 'POST' },
+      )
+      expect(badInterrupt.status).toBe(403)
+      // abandon deletes a worktree and a branch: same CSRF token gate.
+      const badAbandon = await rawRequest(started.port, scoped(`/api/tasks/${record.id}/abandon`), {
+        method: 'POST',
+      })
+      expect(badAbandon.status).toBe(403)
+      expect(calls.abandons).toHaveLength(0)
+      // ship pushes to origin: same gate again.
+      const badShip = await rawRequest(started.port, scoped(`/api/tasks/${record.id}/ship`), {
+        method: 'POST',
+      })
+      expect(badShip.status).toBe(403)
+      expect(calls.ships).toHaveLength(0)
+      expect(calls.creates).toHaveLength(0)
+      expect(calls.replies).toHaveLength(0)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('actions: project scoping and manager verdict propagation', async () => {
+    const project = register(makeRepo())
+    const { manager, record, calls } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5141,
+      taskManager: manager,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const headers = { 'x-codesema-tasks-token': token }
+
+      // Missing project param: 400 on every action.
+      const unscoped = await rawRequest(started.port, `/api/tasks/${record.id}/reply`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ message: 'hello' }),
+      })
+      expect(unscoped.status).toBe(400)
+      expect(calls.replies).toHaveLength(0)
+
+      // Unknown project: 404 from the manager.
+      const ghost = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/reply?project=ffffffff`,
+        { method: 'POST', headers, body: JSON.stringify({ message: 'hello' }) },
+      )
+      expect(ghost.status).toBe(404)
+
+      const conflict = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/reply?project=${project.id}`,
+        { method: 'POST', headers, body: JSON.stringify({ message: 'hello' }) },
+      )
+      expect(conflict.status).toBe(409)
+      expect(JSON.parse(conflict.body)).toEqual({ error: 'task is not waiting for a reply' })
+      expect(calls.replies).toEqual([{ project: project.id, id: record.id, message: 'hello' }])
+
+      const badBody = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/reply?project=${project.id}`,
+        { method: 'POST', headers, body: JSON.stringify({ message: 7 }) },
+      )
+      expect(badBody.status).toBe(400)
+
+      const badId = await rawRequest(
+        started.port,
+        `/api/tasks/not-an-id/reply?project=${project.id}`,
+        { method: 'POST', headers, body: JSON.stringify({ message: 'hello' }) },
+      )
+      expect(badId.status).toBe(404)
+
+      // T5: the ship route delegates to manager.ship and forwards its verdict.
+      const ship = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/ship?project=${project.id}`,
+        { method: 'POST', headers },
+      )
+      expect(ship.status).toBe(409)
+      expect(JSON.parse(ship.body)).toEqual({ error: 'task is queued' })
+      expect(calls.ships).toEqual([record.id])
+
+      const interrupted = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/interrupt?project=${project.id}`,
+        { method: 'POST', headers },
+      )
+      expect(interrupted.status).toBe(200)
+
+      const abandoned = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/abandon?project=${project.id}`,
+        { method: 'POST', headers },
+      )
+      expect(abandoned.status).toBe(200)
+      expect(JSON.parse(abandoned.body)).toEqual({ ok: true })
+      expect(calls.abandons).toEqual([record.id])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('the global SSE stream replays every project then forwards envelopes', async () => {
+    const project = register(makeRepo())
+    const { manager, record, emit } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5151,
+      taskManager: manager,
+    })
+    try {
+      const chunks: string[] = []
+      const req = request(
+        { host: '127.0.0.1', port: started.port, path: '/api/tasks/events' },
+        (res) => {
+          res.setEncoding('utf8')
+          res.on('data', (chunk: string) => {
+            chunks.push(chunk)
+          })
+        },
+      )
+      req.end()
+
+      // Initial replay: one 'task' frame per record of EVERY project, enveloped.
+      await until(() => chunks.join('').includes('event: task\n'))
+      const replayed = /event: task\nid: \d+\ndata: (.*)\n/.exec(chunks.join(''))
+      expect(replayed).not.toBeNull()
+      expect(JSON.parse(replayed![1]!)).toMatchObject({
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task', data: { id: record.id, status: 'queued' } },
+      })
+
+      // Live envelopes keep the same shape, under their own SSE event name.
+      const event: TaskEvent = {
+        seq: 1,
+        at: new Date().toISOString(),
+        type: 'message',
+        data: { text: 'hi' },
+      }
+      emit({
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task_event', data: event },
+      })
+      emit({
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task_text', data: { text: 'stream' } },
+      })
+      await until(() => chunks.join('').includes('event: task_text'))
+      const stream = chunks.join('')
+      expect(stream).toContain('event: task_event')
+      expect(stream).toContain(
+        `data: {"project_id":"${project.id}","task_id":"${record.id}","event":{"name":"task_event"`,
+      )
+      expect(stream).toContain('"name":"task_text","data":{"text":"stream"}')
+      req.destroy()
+    } finally {
+      await started.stop()
+    }
+  })
+})
+
+// --- /api/projects --------------------------------------------------------
+
+describe('project routes', () => {
+  test('GET lists the registry with the current project; POST/DELETE edit it under the token', async () => {
+    const current = register(makeRepo())
+    const { manager } = (() => {
+      const rig = fakeRunner()
+      return { manager: createTaskManager({ ...managerOpts, ...rig }) }
+    })()
+    const started = await startServer(createSession(), {
+      cwd: current.path,
+      port: 5161,
+      taskManager: manager,
+      currentProjectId: current.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+
+      const initial = await rawRequest(started.port, '/api/projects')
+      expect(initial.status).toBe(200)
+      expect(JSON.parse(initial.body)).toEqual({
+        projects: [
+          {
+            id: current.id,
+            path: current.path,
+            name: current.name,
+            added_at: current.added_at,
+          },
+        ],
+        current: current.id,
+      })
+
+      // Register a second repo by path.
+      const other = makeRepo()
+      const added = await rawRequest(started.port, '/api/projects', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ path: other }),
+      })
+      expect(added.status).toBe(201)
+      const project = JSON.parse(added.body) as Project
+      expect(project.id).toMatch(/^[0-9a-f]{8}$/)
+      expect(listProjects().map((p) => p.id)).toEqual([current.id, project.id])
+
+      // Not a git ROOT: 400 with a readable error.
+      const notRoot = await rawRequest(started.port, '/api/projects', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ path: makeDir() }),
+      })
+      expect(notRoot.status).toBe(400)
+      // Malformed body: 400.
+      const badBody = await rawRequest(started.port, '/api/projects', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ path: 42 }),
+      })
+      expect(badBody.status).toBe(400)
+
+      // The new project's tasks are immediately reachable, no restart needed.
+      expect((await rawRequest(started.port, `/api/tasks?project=${project.id}`)).status).toBe(200)
+
+      // DELETE unregisters ONLY: the repo stays on disk.
+      const removed = await rawRequest(started.port, `/api/projects/${project.id}`, {
+        method: 'DELETE',
+        headers: { 'x-codesema-tasks-token': token },
+      })
+      expect(removed.status).toBe(200)
+      expect(listProjects().map((p) => p.id)).toEqual([current.id])
+      expect(
+        (
+          await rawRequest(started.port, `/api/projects/${project.id}`, {
+            method: 'DELETE',
+            headers: { 'x-codesema-tasks-token': token },
+          })
+        ).status,
+      ).toBe(404)
+
+      // Mutations without the token never reach the registry.
+      const noTokenAdd = await rawRequest(started.port, '/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({ path: other }),
+      })
+      expect(noTokenAdd.status).toBe(403)
+      const noTokenDelete = await rawRequest(started.port, `/api/projects/${current.id}`, {
+        method: 'DELETE',
+      })
+      expect(noTokenDelete.status).toBe(403)
+      expect(listProjects().map((p) => p.id)).toEqual([current.id])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('GET /api/projects/discover: repos around the launch dir, registered ones flagged', async () => {
+    // Launch dir is NOT a repo: its direct children are scanned. One child is
+    // already registered (the current project), one is a fresh repo, one is a
+    // plain directory.
+    const base = makeDir()
+    const knownPath = join(base, 'known')
+    mkdirSync(knownPath)
+    execFileSync('git', ['init', '-b', 'main'], { cwd: knownPath, stdio: 'ignore' })
+    const known = register(knownPath)
+    const freshPath = join(base, 'fresh')
+    mkdirSync(freshPath)
+    execFileSync('git', ['init', '-b', 'main'], { cwd: freshPath, stdio: 'ignore' })
+    mkdirSync(join(base, 'plain'))
+
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const started = await startServer(createSession(), {
+      cwd: base,
+      port: 5165,
+      taskManager: manager,
+      currentProjectId: known.id,
+    })
+    try {
+      const res = await rawRequest(started.port, '/api/projects/discover')
+      expect(res.status).toBe(200)
+      const body = JSON.parse(res.body) as {
+        candidates: { name: string; registered: boolean }[]
+      }
+      expect(body.candidates.map((c) => [c.name, c.registered])).toEqual([
+        ['fresh', false],
+        ['known', true],
+      ])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('GET /api/projects/discover without a task manager: 501', async () => {
+    const started = await startServer(createSession(), { cwd: makeRepo(), port: 5166 })
+    try {
+      expect((await rawRequest(started.port, '/api/projects/discover')).status).toBe(501)
+    } finally {
+      await started.stop()
+    }
+  })
+})
+
+// --- end to end: real manager + real runner + injected agent --------------
+
+describe('workspace server end to end', () => {
+  const jsonl = (events: unknown[]) => `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+  const claudeStream = (response: string) =>
+    jsonl([
+      { type: 'system', subtype: 'init', session_id: 'sess-e2e' },
+      { type: 'result', result: response },
+    ])
+
+  test('create over HTTP runs a turn to waiting_for_you, then reply runs turn 2', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    let firstTurnGate: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      firstTurnGate = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      if (!options.command.includes('--resume')) {
+        await gate
+      }
+      const raw = claudeStream(
+        options.command.includes('--resume')
+          ? 'second turn done'
+          : 'first pass done.\nQUESTION: which flavor?',
+      )
+      options.onText?.(raw)
+      return raw
+    }
+    const manager = createTaskManager({ command: 'claude -p', timeoutMs: 5000, runAgentFn })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5171,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 'Pick a flavor',
+          prompt: 'try things',
+        }),
+      })
+      expect(created.status).toBe(201)
+      const record = JSON.parse(created.body) as TaskRecord
+      expect(record.status).toBe('queued')
+
+      // While the first turn runs, a reply is a 409 through the whole stack.
+      await until(() => loadTask(repo, record.id)?.status === 'running')
+      const early = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/reply?project=${project.id}`,
+        {
+          method: 'POST',
+          headers: { 'x-codesema-tasks-token': token },
+          body: JSON.stringify({ message: 'too early' }),
+        },
+      )
+      expect(early.status).toBe(409)
+
+      firstTurnGate()
+      await until(() => loadTask(repo, record.id)?.status === 'waiting_for_you')
+      const waiting = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}?project=${project.id}`,
+      )
+      expect(waiting.status).toBe(200)
+      const detail = JSON.parse(waiting.body) as { record: TaskRecord; events: TaskEvent[] }
+      expect(detail.record.turns[0]?.question).toBe('which flavor?')
+      expect(detail.events.map((e) => e.type)).toContain('question')
+
+      const replied = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/reply?project=${project.id}`,
+        {
+          method: 'POST',
+          headers: { 'x-codesema-tasks-token': token },
+          body: JSON.stringify({ message: 'vanilla' }),
+        },
+      )
+      expect(replied.status).toBe(200)
+      // Turn 2 ends 'done': the automatic review kicks in (T4). The fake agent
+      // wrote nothing, so the diff vs base is empty and the reviewer lands on
+      // review_ok through its no-changes path — no review agent ever spawned.
+      await until(
+        () =>
+          loadTask(repo, record.id)?.turns.length === 2 &&
+          loadTask(repo, record.id)?.status === 'review_ok',
+      )
+      expect(loadTask(repo, record.id)?.turns[1]?.response).toBe('second turn done')
+      expect(readTaskEvents(repo, record.id).map((e) => e.type)).toContain('message')
+
+      const list = await rawRequest(started.port, `/api/tasks?project=${project.id}`)
+      expect(JSON.parse(list.body)).toMatchObject([{ id: record.id }])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('maxParallel is GLOBAL: one slot serves two projects, FIFO across repos', async () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      if (options.prompt.includes('task one')) {
+        await gate
+      }
+      const raw = claudeStream('done')
+      options.onText?.(raw)
+      return raw
+    }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      maxParallel: 1,
+      runAgentFn,
+      // Land on review_ok without spawning a review agent (empty diffs would
+      // too, but the stub keeps it deterministic and fast).
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+    })
+
+    const first = manager.create(projectA.id, { title: 'A', prompt: 'task one', autoShip: false })
+    const second = manager.create(projectB.id, { title: 'B', prompt: 'task two', autoShip: false })
+    expect(first.ok && second.ok).toBe(true)
+    if (!first.ok || !second.ok) {
+      return
+    }
+    // ONE global slot: project B's task queues even though its repo is idle.
+    expect(loadTask(projectA.path, first.record.id)?.status).toBe('running')
+    expect(loadTask(projectB.path, second.record.id)?.status).toBe('queued')
+
+    release()
+    // The slot freed in project A is handed to project B's queue.
+    await until(
+      () =>
+        loadTask(projectA.path, first.record.id)?.status === 'review_ok' &&
+        loadTask(projectB.path, second.record.id)?.status === 'review_ok',
+    )
+  })
+
+  test('auto_ship chains ship right after a review_ok, without any click', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const shipCalls: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      // The fake agent writes nothing, so the real reviewer would land on its
+      // no-changes review_ok path too — the stub keeps the test deterministic.
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options) => {
+        shipCalls.push(options.task.id)
+        return Promise.resolve({ pushed: true, mrUrl: 'https://github.com/o/r/pull/3', note: null })
+      },
+    })
+
+    const created = manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    await until(() => loadTask(repo, created.record.id)?.status === 'shipped')
+    expect(shipCalls).toEqual([created.record.id])
+    expect(readTaskEvents(repo, created.record.id)).toMatchObject([
+      { type: 'turn_started' },
+      { type: 'message' },
+      { type: 'shipped', data: { mr_url: 'https://github.com/o/r/pull/3' } },
+    ])
+  })
+
+  test('auto_ship never fires on a review_ko: the KO waits for the human', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const shipCalls: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ko'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options) => {
+        shipCalls.push(options.task.id)
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+    })
+
+    const created = manager.create(project.id, {
+      title: 'Risky change',
+      prompt: 'try it',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    await until(() => loadTask(repo, created.record.id)?.status === 'review_ko')
+    // Give a wrongly-chained ship a beat to show up before asserting it never came.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(shipCalls).toEqual([])
+    expect(loadTask(repo, created.record.id)?.status).toBe('review_ko')
+  })
+})

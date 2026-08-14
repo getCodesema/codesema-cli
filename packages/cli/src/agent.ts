@@ -172,16 +172,95 @@ export function claudeStreamCommand(command: string): string | null {
   return `${command} ${CLAUDE_STREAM_FLAGS}`
 }
 
-type ClaudeStreamParser = {
+export type ClaudeStreamParser = {
   push: (chunk: string) => void
   finalText: () => string | null
 }
 
-/** Parses claude's JSONL stream: text_delta events while streaming, result at the end. */
-export function createClaudeStreamParser(onText?: (text: string) => void): ClaudeStreamParser {
+/** Ceiling for tool_use/tool_result summaries in task events: enough to tell
+ *  what the agent is doing, never a full file body in the journal. */
+export const TASK_TOOL_SUMMARY_MAX = 400
+
+/** One-line summary of an arbitrary tool payload, truncated by code points. */
+function summarizePayload(value: unknown): string {
+  let text: string
+  if (typeof value === 'string') {
+    text = value
+  } else {
+    try {
+      text = JSON.stringify(value) ?? ''
+    } catch {
+      text = String(value)
+    }
+  }
+  const codePoints = Array.from(text)
+  return codePoints.length > TASK_TOOL_SUMMARY_MAX
+    ? `${codePoints.slice(0, TASK_TOOL_SUMMARY_MAX - 1).join('')}…`
+    : text
+}
+
+type ClaudeContentBlock = {
+  type?: string
+  text?: string
+  name?: string
+  input?: unknown
+  content?: unknown
+}
+
+/** A tool_result's content is either a plain string or text blocks: flatten to one string. */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+  if (Array.isArray(content)) {
+    return (content as ClaudeContentBlock[])
+      .filter((block) => block.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('')
+  }
+  return ''
+}
+
+export type ClaudeTaskParserHandlers = {
+  /** Provider session id from the system/init event, needed for --resume on later turns. */
+  onInit?: (sessionId: string) => void
+  /** A complete assistant tool call: name + summarized input (bounded). */
+  onToolUse?: (name: string, inputSummary: string) => void
+  /** Summarized tool output (bounded). */
+  onToolResult?: (summary: string) => void
+  /** Cumulative streamed text, same contract as createClaudeStreamParser. */
+  onText?: (text: string) => void
+}
+
+/**
+ * Extended claude JSONL parser for agent tasks: everything the review stream
+ * parser does, plus session capture (system/init) and tool activity. Tool
+ * events are read from the complete `assistant`/`user` messages only, never
+ * from partial stream_events, so each tool call is reported exactly once.
+ */
+export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): ClaudeStreamParser {
+  const { onText } = handlers
   let lineBuffer = ''
   let streamedText = ''
   let resultText: string | null = null
+
+  const handleAssistant = (event: Record<string, unknown>) => {
+    const message = event.message as { content?: ClaudeContentBlock[] } | undefined
+    const blocks = Array.isArray(message?.content) ? message.content : []
+    const text = blocks
+      .filter((block) => block.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('')
+    if (text) {
+      streamedText = text
+      onText?.(streamedText)
+    }
+    for (const block of blocks) {
+      if (block.type === 'tool_use' && typeof block.name === 'string') {
+        handlers.onToolUse?.(block.name, summarizePayload(block.input ?? {}))
+      }
+    }
+  }
 
   const handleLine = (line: string) => {
     if (!line.trim()) {
@@ -191,6 +270,12 @@ export function createClaudeStreamParser(onText?: (text: string) => void): Claud
     try {
       event = JSON.parse(line) as Record<string, unknown>
     } catch {
+      return
+    }
+    if (event.type === 'system') {
+      if (event.subtype === 'init' && typeof event.session_id === 'string' && event.session_id) {
+        handlers.onInit?.(event.session_id)
+      }
       return
     }
     if (event.type === 'stream_event') {
@@ -209,14 +294,15 @@ export function createClaudeStreamParser(onText?: (text: string) => void): Claud
       return
     }
     if (event.type === 'assistant') {
-      const message = event.message as { content?: { type?: string; text?: string }[] } | undefined
-      const text = (message?.content ?? [])
-        .filter((block) => block.type === 'text' && typeof block.text === 'string')
-        .map((block) => block.text)
-        .join('')
-      if (text) {
-        streamedText = text
-        onText?.(streamedText)
+      handleAssistant(event)
+      return
+    }
+    if (event.type === 'user') {
+      const message = event.message as { content?: ClaudeContentBlock[] } | undefined
+      for (const block of Array.isArray(message?.content) ? message.content : []) {
+        if (block.type === 'tool_result') {
+          handlers.onToolResult?.(summarizePayload(toolResultText(block.content)))
+        }
       }
       return
     }
@@ -247,6 +333,11 @@ export function createClaudeStreamParser(onText?: (text: string) => void): Claud
   }
 }
 
+/** Parses claude's JSONL stream: text_delta events while streaming, result at the end. */
+export function createClaudeStreamParser(onText?: (text: string) => void): ClaudeStreamParser {
+  return createClaudeTaskParser(onText ? { onText } : {})
+}
+
 export type AgentRunOptions = {
   command: string
   prompt: string
@@ -256,6 +347,8 @@ export type AgentRunOptions = {
   env?: NodeJS.ProcessEnv | undefined
   /** Cumulative review text so far, called on every update from the agent. */
   onText?: (text: string) => void
+  /** Aborting interrupts the run: SIGTERM to the whole process group, the promise rejects. */
+  signal?: AbortSignal | undefined
 }
 
 export function runAgent(opts: AgentRunOptions): Promise<string> {
@@ -276,8 +369,8 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     })
     let out = ''
     let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
+    let aborted = false
+    const killGroup = () => {
       try {
         if (detached && child.pid) {
           process.kill(-child.pid, 'SIGTERM')
@@ -287,7 +380,21 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
       } catch {
         // process group already gone
       }
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      killGroup()
     }, opts.timeoutMs)
+    // Same kill-the-group path as the timeout, driven by the caller (task interrupt).
+    const onAbort = () => {
+      aborted = true
+      killGroup()
+    }
+    if (opts.signal?.aborted) {
+      onAbort()
+    } else {
+      opts.signal?.addEventListener('abort', onAbort, { once: true })
+    }
 
     child.stdout.on('data', (d: Buffer) => {
       const chunk = d.toString()
@@ -300,11 +407,15 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     })
     child.on('error', (err) => {
       clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
       reject(err)
     })
     child.on('close', (code) => {
       clearTimeout(timer)
-      if (timedOut) {
+      opts.signal?.removeEventListener('abort', onAbort)
+      if (aborted) {
+        reject(new Error(t('agent.interrupted')))
+      } else if (timedOut) {
         reject(new Error(t('agent.timeout', { s: Math.round(opts.timeoutMs / 1000) })))
       } else if (code === 0) {
         resolve(parser ? (parser.finalText() ?? out) : out)

@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { listLocalBranches } from './branches.js'
-import type { ReviewRecord } from './contract.js'
+import { isTaskId, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
 import { listOpenMrs } from './forge-mrs.js'
@@ -13,6 +13,7 @@ import { t } from './i18n.js'
 import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
 import { buildFileDiff, buildPreview, parsePreviewPath, parsePreviewSource } from './preview.js'
+import { addProject, discoverProjects, listProjects, removeProject } from './projects.js'
 import {
   readRulesContent,
   readSyncAutoPush,
@@ -20,6 +21,7 @@ import {
   setSyncAutoPush,
   writeRulesContent,
 } from './repo-config.js'
+import type { TaskEnvelope, TaskManager } from './task-server.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
 
@@ -313,6 +315,12 @@ function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> 
 type FixEndpoint = { runner: FixRunner; token: string }
 type MrReviewEndpoint = { runner: MrReviewRunner; token: string }
 type RepoConfigEndpoint = { cwd: string; token: string }
+type TasksEndpoint = {
+  manager: TaskManager
+  token: string
+  /** Project auto-registered from the boot repo, or null when started outside a repo. */
+  currentProjectId: string | null
+}
 
 /**
  * POST /api/fix triggers an agent that EDITS the working tree, so it needs more
@@ -450,6 +458,224 @@ async function handleSyncAutoPushUpdate(
   return sendJson(res, 200, { ok: true, syncAutoPush: enabled })
 }
 
+const MAX_TASK_BODY_BYTES = 64 * 1024
+
+/**
+ * Every task route is scoped by a MANDATORY project id (the multi-project
+ * workspace: same task ids could exist in two repos). It rides the `project`
+ * query param — except task creation, where it is `project_id` in the body.
+ * Missing id → 400; an id that is not a registered project → 404 (from the
+ * manager). This helper only enforces presence/shape of the query param.
+ */
+function requiredProjectParam(params: URLSearchParams): string | null {
+  const id = params.get('project')
+  return id && id.trim() ? id.trim() : null
+}
+
+/**
+ * The task routes drive agents that EDIT worktrees of the repo, so every
+ * mutation carries the same per-server CSRF token mechanic as /api/fix (see
+ * handleFixStart): x-codesema-tasks-token, injected into the served page.
+ */
+async function handleTaskCreate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  if (!tasks) {
+    return sendJson(res, 501, { error: 'task manager unavailable' })
+  }
+  if (req.headers['x-codesema-tasks-token'] !== tasks.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_TASK_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const b = body as {
+    project_id?: unknown
+    title?: unknown
+    prompt?: unknown
+    autoShip?: unknown
+  } | null
+  if (
+    typeof b?.project_id !== 'string' ||
+    !b.project_id.trim() ||
+    typeof b.title !== 'string' ||
+    typeof b.prompt !== 'string' ||
+    (b.autoShip !== undefined && typeof b.autoShip !== 'boolean')
+  ) {
+    return sendText(res, 400, 'bad request')
+  }
+  const created = tasks.manager.create(b.project_id.trim(), {
+    title: b.title,
+    prompt: b.prompt,
+    autoShip: b.autoShip ?? false,
+  })
+  if (!created.ok) {
+    return sendJson(res, created.code, { error: created.error })
+  }
+  return sendJson(res, 201, created.record)
+}
+
+type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon'
+
+/** POST /api/tasks/:id/(reply|ship|interrupt|abandon)?project=, all under the tasks CSRF token. */
+async function handleTaskAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+  action: { id: string; kind: TaskActionKind; projectId: string | null },
+): Promise<void> {
+  if (!tasks) {
+    return sendJson(res, 501, { error: 'task manager unavailable' })
+  }
+  if (req.headers['x-codesema-tasks-token'] !== tasks.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  const projectId = action.projectId
+  if (!projectId) {
+    return sendText(res, 400, 'bad request')
+  }
+  if (!isTaskId(action.id)) {
+    return sendText(res, 404, 'not found')
+  }
+  if (action.kind === 'ship') {
+    // T5: push + MR creation. Success detail (MR URL, degraded-ship note)
+    // travels on the SSE stream as the 'shipped' event and the record update.
+    const result = await tasks.manager.ship(projectId, action.id)
+    return result.ok
+      ? sendJson(res, 200, { ok: true })
+      : sendJson(res, result.code, { error: result.error })
+  }
+  if (action.kind === 'interrupt' || action.kind === 'abandon') {
+    const result =
+      action.kind === 'interrupt'
+        ? tasks.manager.interrupt(projectId, action.id)
+        : tasks.manager.abandon(projectId, action.id)
+    return result.ok
+      ? sendJson(res, 200, { ok: true })
+      : sendJson(res, result.code, { error: result.error })
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_TASK_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const message = (body as { message?: unknown } | null)?.message
+  if (typeof message !== 'string') {
+    return sendText(res, 400, 'bad request')
+  }
+  const result = tasks.manager.reply(projectId, action.id, message)
+  return result.ok
+    ? sendJson(res, 200, { ok: true })
+    : sendJson(res, result.code, { error: result.error })
+}
+
+const MAX_PROJECT_BODY_BYTES = 4 * 1024
+
+/**
+ * POST /api/projects registers a repo the workspace will drive agents in, so
+ * it sits under the same tasks CSRF token as every task mutation (and DELETE
+ * with it: a blind cross-site request must not be able to edit the registry).
+ * The path must be an existing git repository ROOT; anything else is a 400.
+ */
+async function handleProjectAdd(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  if (!tasks) {
+    return sendJson(res, 501, { error: 'task manager unavailable' })
+  }
+  if (req.headers['x-codesema-tasks-token'] !== tasks.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_PROJECT_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const path = (body as { path?: unknown } | null)?.path
+  if (typeof path !== 'string' || !path.trim()) {
+    return sendText(res, 400, 'bad request')
+  }
+  const added = addProject(path.trim())
+  if (!added.ok) {
+    return sendJson(res, 400, { error: added.error })
+  }
+  return sendJson(res, 201, added.project)
+}
+
+/** DELETE /api/projects/:id — unregisters ONLY: the repo on disk is never touched. */
+function handleProjectRemove(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+  id: string,
+): void {
+  if (!tasks) {
+    return sendJson(res, 501, { error: 'task manager unavailable' })
+  }
+  if (req.headers['x-codesema-tasks-token'] !== tasks.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  if (!removeProject(id)) {
+    return sendText(res, 404, 'not found')
+  }
+  return sendJson(res, 200, { ok: true })
+}
+
+/**
+ * GET /api/tasks/events: ONE SSE stream for every conversation of every
+ * registered project, each frame an envelope {project_id, task_id, event} (a
+ * per-task EventSource would blow through MAX_SSE_CLIENTS on the first task
+ * grid). On connect the current state is replayed as one 'task' frame per
+ * existing record — ALL projects — so a late or reconnecting client rebuilds
+ * its whole board without a separate fetch.
+ */
+function serveTaskEvents(
+  manager: TaskManager,
+  req: IncomingMessage,
+  res: ServerResponse,
+  onClose: () => void,
+): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+    'x-content-type-options': 'nosniff',
+  })
+
+  let eventId = 0
+  const send = (envelope: TaskEnvelope) => {
+    res.write(
+      `event: ${envelope.event.name}\nid: ${eventId++}\ndata: ${JSON.stringify(envelope)}\n\n`,
+    )
+  }
+
+  const unsubscribe = manager.subscribe(send)
+  const heartbeat = setInterval(() => {
+    res.write('event: ping\ndata: \n\n')
+  }, 15000)
+
+  for (const { project, records } of manager.listAll()) {
+    for (const record of records) {
+      send({ project_id: project.id, task_id: record.id, event: { name: 'task', data: record } })
+    }
+  }
+
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    unsubscribe()
+    onClose()
+  })
+}
+
 async function handleMrsList(res: ServerResponse, cwd: string): Promise<void> {
   const result = await listOpenMrs(cwd)
   sendJson(res, 200, result)
@@ -510,6 +736,10 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
+const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon)$/
+const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
+const PROJECT_DELETE_RE = /^\/api\/projects\/([^/]+)$/
+
 function createRequestHandler(handlerOpts: {
   session: LiveSession
   indexHtml: string
@@ -517,8 +747,11 @@ function createRequestHandler(handlerOpts: {
   configToken: string
   fix?: FixEndpoint | undefined
   mrReview?: MrReviewEndpoint | undefined
+  tasks?: TasksEndpoint | undefined
 }) {
-  const { session, indexHtml, cwd, configToken, fix, mrReview } = handlerOpts
+  const { session, indexHtml, cwd, configToken, fix, mrReview, tasks } = handlerOpts
+  // One cap for BOTH streams (review session + tasks): each browser tab holds
+  // at most one of each, the cap only guards against runaway clients.
   let sseClients = 0
   const repoConfig: RepoConfigEndpoint = { cwd, token: configToken }
 
@@ -547,6 +780,27 @@ function createRequestHandler(handlerOpts: {
       }
       if (pathname === '/api/mrs/review') {
         return void handleMrReviewStart(req, res, mrReview)
+      }
+      if (pathname === '/api/tasks') {
+        return void handleTaskCreate(req, res, tasks)
+      }
+      if (pathname === '/api/projects') {
+        return void handleProjectAdd(req, res, tasks)
+      }
+      const taskAction = TASK_ACTION_RE.exec(pathname)
+      if (taskAction?.[1] && taskAction[2]) {
+        return void handleTaskAction(req, res, tasks, {
+          id: taskAction[1],
+          kind: taskAction[2] as TaskActionKind,
+          projectId: requiredProjectParam(searchParams),
+        })
+      }
+      return sendText(res, 405, 'method not allowed')
+    }
+    if (req.method === 'DELETE') {
+      const projectDelete = PROJECT_DELETE_RE.exec(pathname)
+      if (projectDelete?.[1]) {
+        return handleProjectRemove(req, res, tasks, projectDelete[1])
       }
       return sendText(res, 405, 'method not allowed')
     }
@@ -613,6 +867,63 @@ function createRequestHandler(handlerOpts: {
           sseClients--
         })
       }
+      if (pathname === '/api/projects') {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        return sendJson(res, 200, { projects: listProjects(), current: tasks.currentProjectId })
+      }
+      if (pathname === '/api/projects/discover') {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        // Read-only, launch-directory scoped: the same loopback + Host guards
+        // as every other GET protect it; there is nothing to mutate.
+        return sendJson(res, 200, { candidates: discoverProjects(cwd) })
+      }
+      if (pathname === '/api/tasks') {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        const records = tasks.manager.list(projectId)
+        if (!records) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, records)
+      }
+      if (pathname === '/api/tasks/events') {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        if (sseClients >= MAX_SSE_CLIENTS) {
+          return sendText(res, 503, 'too many event streams')
+        }
+        sseClients++
+        return serveTaskEvents(tasks.manager, req, res, () => {
+          sseClients--
+        })
+      }
+      const taskGet = TASK_GET_RE.exec(pathname)
+      if (taskGet?.[1]) {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        // isTaskId screens user input before it ever reaches a path join; the
+        // manager rechecks, this is just the earliest honest 404.
+        const found = isTaskId(taskGet[1]) ? tasks.manager.get(projectId, taskGet[1]) : null
+        if (!found) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, found)
+      }
       return sendText(res, 404, 'not found')
     }
 
@@ -654,6 +965,9 @@ export async function startServer(
     locale?: string | undefined
     fixRunner?: FixRunner | undefined
     mrReviewRunner?: MrReviewRunner | undefined
+    taskManager?: TaskManager | undefined
+    /** Project auto-registered from the boot repo (GET /api/projects `current`). */
+    currentProjectId?: string | null | undefined
   },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
@@ -666,11 +980,19 @@ export async function startServer(
   const mrReview: MrReviewEndpoint | undefined = opts.mrReviewRunner
     ? { runner: opts.mrReviewRunner, token: randomBytes(16).toString('hex') }
     : undefined
+  const tasks: TasksEndpoint | undefined = opts.taskManager
+    ? {
+        manager: opts.taskManager,
+        token: randomBytes(16).toString('hex'),
+        currentProjectId: opts.currentProjectId ?? null,
+      }
+    : undefined
   const bootScript = [
     `window.__CODESEMA_LOCALE__=${JSON.stringify(opts.locale ?? 'en')}`,
     `window.__CODESEMA_CONFIG_TOKEN__=${JSON.stringify(configToken)}`,
     ...(fix ? [`window.__CODESEMA_FIX_TOKEN__=${JSON.stringify(fix.token)}`] : []),
     ...(mrReview ? [`window.__CODESEMA_MRREVIEW_TOKEN__=${JSON.stringify(mrReview.token)}`] : []),
+    ...(tasks ? [`window.__CODESEMA_TASKS_TOKEN__=${JSON.stringify(tasks.token)}`] : []),
   ].join(';')
   const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8').replace(
     '</head>',
@@ -678,7 +1000,7 @@ export async function startServer(
   )
 
   const { server, port } = await listen(
-    createRequestHandler({ session, indexHtml, cwd: opts.cwd, configToken, fix, mrReview }),
+    createRequestHandler({ session, indexHtml, cwd: opts.cwd, configToken, fix, mrReview, tasks }),
     opts.port ?? 4400,
   )
   const stop = () =>

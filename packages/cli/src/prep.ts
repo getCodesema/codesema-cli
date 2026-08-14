@@ -114,7 +114,8 @@ function targetFromForge(cwd: string): { target: string; source: string } | null
   return null
 }
 
-function targetFromOriginHead(cwd: string): { target: string; source: string } | null {
+/** Repo default branch as a remote-tracking ref; also the base a new task branches from. */
+export function targetFromOriginHead(cwd: string): { target: string; source: string } | null {
   const sym = tryGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], cwd)
   if (!sym) {
     return null

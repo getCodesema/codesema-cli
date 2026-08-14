@@ -13,6 +13,8 @@ export type CodesemaConfig = {
   target?: string | undefined
   port?: number | undefined
   timeout?: number | undefined
+  /** Cap of concurrently running workspace tasks (default in task-runner.ts). */
+  maxParallelTasks?: number | undefined
   /** UI and review language (ISO 639-1). */
   language?: SupportedLanguage | undefined
   /** Cloud sync (codesema.com): base URL override and workspace credentials. */
@@ -51,6 +53,9 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
         : {}),
       ...(Number.isInteger(raw.port) ? { port: raw.port as number } : {}),
       ...(Number.isInteger(raw.timeout) ? { timeout: raw.timeout as number } : {}),
+      ...(Number.isInteger(raw.maxParallelTasks) && (raw.maxParallelTasks as number) >= 1
+        ? { maxParallelTasks: raw.maxParallelTasks as number }
+        : {}),
     }
   } catch {
     return {}

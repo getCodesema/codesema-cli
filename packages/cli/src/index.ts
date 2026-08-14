@@ -13,6 +13,7 @@ import { isInteractive } from './tui.js'
 import { maybeOfferUpgrade } from './upgrade.js'
 import { VERSION } from './version.js'
 import { configCommand } from './wizard.js'
+import { workspace } from './workspace.js'
 
 function parseIntFlag(
   name: string,
@@ -72,8 +73,13 @@ async function main(): Promise<void> {
     return
   }
   await maybeOfferUpgrade()
+  // The workspace IS the product (plan decision n°7): a bare interactive
+  // `codesema` opens it. Review flags keep their historical meaning (they fall
+  // through to `review` below) and non-TTY keeps the old default, so CI
+  // pipelines built on bare `codesema` are untouched. The old menu stays
+  // reachable as `codesema menu`.
   if (positionals[0] === undefined && !reviewFlagsPassed(values) && isInteractive()) {
-    await runMenu({ cwd: process.cwd() })
+    await workspace({ port: undefined, open: true, cwd: process.cwd() })
     return
   }
   const command = positionals[0] ?? 'review'
@@ -99,6 +105,16 @@ async function main(): Promise<void> {
         target: values.target ?? loadConfig(repoRoot).target,
         cwd: process.cwd(),
       })
+      break
+    case 'workspace':
+      await workspace({
+        port: parseIntFlag('port', values.port, 1, 65535),
+        open: !values['no-open'],
+        cwd: process.cwd(),
+      })
+      break
+    case 'menu':
+      await runMenu({ cwd: process.cwd() })
       break
     case 'show':
       await show({

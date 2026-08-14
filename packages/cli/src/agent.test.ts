@@ -3,7 +3,10 @@ import {
   agentEnv,
   claudeStreamCommand,
   createClaudeStreamParser,
+  createClaudeTaskParser,
   hardenedReviewCommand,
+  runAgent,
+  TASK_TOOL_SUMMARY_MAX,
 } from './agent.js'
 
 describe('claudeStreamCommand', () => {
@@ -215,5 +218,126 @@ describe('createClaudeStreamParser', () => {
       `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'full text' }] } })}\n`,
     )
     expect(parser.finalText()).toBe('full text')
+  })
+})
+
+describe('createClaudeTaskParser', () => {
+  const line = (event: unknown) => `${JSON.stringify(event)}\n`
+
+  test('captures the session id from the system init event', () => {
+    let sessionId = ''
+    const parser = createClaudeTaskParser({
+      onInit: (id) => {
+        sessionId = id
+      },
+    })
+    parser.push(line({ type: 'system', subtype: 'init', session_id: 'sess-abc' }))
+    expect(sessionId).toBe('sess-abc')
+  })
+
+  test('reports tool_use with a summarized input, once per complete message', () => {
+    const calls: [string, string][] = []
+    const parser = createClaudeTaskParser({
+      onToolUse: (name, input) => calls.push([name, input]),
+    })
+    parser.push(
+      line({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Bash', input: { command: 'bun test' } },
+            { type: 'text', text: 'running the tests' },
+          ],
+        },
+      }),
+    )
+    expect(calls).toEqual([['Bash', '{"command":"bun test"}']])
+  })
+
+  test('tool inputs and results are truncated to the summary ceiling', () => {
+    const inputs: string[] = []
+    const results: string[] = []
+    const parser = createClaudeTaskParser({
+      onToolUse: (_name, input) => inputs.push(input),
+      onToolResult: (summary) => results.push(summary),
+    })
+    const big = 'x'.repeat(5000)
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Write', input: { content: big } }] },
+      }),
+    )
+    parser.push(
+      line({ type: 'user', message: { content: [{ type: 'tool_result', content: big }] } }),
+    )
+    expect(inputs[0]?.length).toBeLessThanOrEqual(TASK_TOOL_SUMMARY_MAX)
+    expect(inputs[0]?.endsWith('…')).toBe(true)
+    expect(results[0]?.length).toBeLessThanOrEqual(TASK_TOOL_SUMMARY_MAX)
+  })
+
+  test('tool_result content given as text blocks is flattened', () => {
+    const results: string[] = []
+    const parser = createClaudeTaskParser({ onToolResult: (summary) => results.push(summary) })
+    parser.push(
+      line({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              content: [
+                { type: 'text', text: 'line one ' },
+                { type: 'text', text: 'line two' },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+    expect(results).toEqual(['line one line two'])
+  })
+
+  test('text streaming and the final result behave like the review parser', () => {
+    const texts: string[] = []
+    const parser = createClaudeTaskParser({ onText: (text) => texts.push(text) })
+    parser.push(
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hel' } },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'lo' } },
+      }),
+    )
+    parser.push(line({ type: 'result', result: 'final answer' }))
+    expect(texts).toEqual(['hel', 'hello'])
+    expect(parser.finalText()).toBe('final answer')
+  })
+
+  test('corrupt lines and unknown events are ignored', () => {
+    const parser = createClaudeTaskParser({})
+    parser.push('not json\n')
+    parser.push(line({ type: 'system', subtype: 'other' }))
+    parser.push(line({ type: 'user', message: { content: 'plain string content' } }))
+    expect(parser.finalText()).toBeNull()
+  })
+})
+
+describe('runAgent abort', () => {
+  test('aborting the signal kills the agent and rejects as interrupted', async () => {
+    const controller = new AbortController()
+    const promise = runAgent({
+      command: 'sleep 5',
+      prompt: '',
+      cwd: process.cwd(),
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    })
+    setTimeout(() => controller.abort(), 50)
+    await expect(promise).rejects.toThrow(/interrupted|interrompu/)
   })
 })
