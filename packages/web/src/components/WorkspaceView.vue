@@ -1,29 +1,52 @@
 <script setup lang="ts">
-// Workspace shell: the project sidebar (multi-select list, nav, per-project
-// conversation trees), the home board (composer + the three zones) merged
-// over every selected project, the conversation view with the touched-files
-// panel, and the full review view when a task's review record is loadable.
-// Owns the single useTasks stream; every child stays presentational and
-// derives from pure functions.
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+// Workspace shell, T4 layout: a global 52px header (search, attention bell,
+// agents counter), the projects column on the left (filter + the selected
+// project's MR/branch tree), the work queue in the center-left (composer +
+// status sections), and the focus zone on the right — a DECK of columns
+// (useFocusDeck, pure): one conversation by default, pinned conversations
+// side by side (max 3), fork/work-on drafts keeping their own column; the
+// full-screen review view covers the focus zone only. Owns the single
+// useTasks stream; every child stays presentational and derives from pure
+// functions.
+import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
+import {
+  columnKey,
+  draftBranch,
+  draftColumnKey,
+  forkDraft,
+  workonDraft,
+  type DraftTarget,
+} from '../composables/useColumns'
+import {
+  deckCloseDraft,
+  deckCloseProject,
+  deckOpenDraft,
+  deckOpenTask,
+  deckPromoteDraft,
+  deckSwapDraft,
+  deckTogglePin,
+  EMPTY_DECK,
+  isPinned,
+  type FocusDeck,
+} from '../composables/useFocusDeck'
 import {
   buildProjectTree,
-  deriveComposerProject,
-  filterBySelection,
-  persistComposerProject,
-  readPersistedComposerProject,
-  type ProjectTree,
+  countProjectActivity,
+  isTrunkBranch,
+  otherBranches,
+  resolveBranchClick,
+  type ConversationNode,
 } from '../composables/useProjects'
-import { sectionOf, type HomeSection } from '../composables/useTaskBoard'
+import { agentCounts, matchesQuery, oldestWaiting } from '../composables/useTaskBoard'
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
-import type { ReviewRecord } from '../types'
-import PreviewPanel from './PreviewPanel.vue'
+import type { ForgeMr, ReviewRecord } from '../types'
+import ProjectsNav from './ProjectsNav.vue'
 import ReviewShell from './ReviewShell.vue'
-import TaskCard from './TaskCard.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
-import WorkspaceSidebar from './WorkspaceSidebar.vue'
+import WorkQueue from './WorkQueue.vue'
+import WorkspaceHeader from './WorkspaceHeader.vue'
 
 const props = defineProps<{ token: string }>()
 
@@ -33,8 +56,8 @@ const {
   connected,
   connections,
   projects,
-  selectedProjects,
   mrsByProject,
+  branchesByProject,
   start,
   stop,
   hydrate,
@@ -42,7 +65,8 @@ const {
   reply,
   interrupt,
   ship,
-  toggleProject,
+  abandon,
+  selectProject,
   refreshMrs,
   addProject,
   removeProject,
@@ -53,92 +77,278 @@ const {
 onMounted(start)
 onUnmounted(stop)
 
-type View = { kind: 'home' } | { kind: 'task'; projectId: string; id: string } | { kind: 'review' }
-
-const view = ref<View>({ kind: 'home' })
-const reviewRecord = shallowRef<ReviewRecord | null>(null)
-
-// ── Selection scoping: the board merges every selected project ────────────
-const selectedList = computed(() =>
-  projects.value.filter((project) => selectedProjects.value.has(project.id)),
-)
-const projectStates = computed(() => filterBySelection(states.value, selectedProjects.value))
-/** Badge names only when the board actually mixes repos. */
-const projectNameById = computed(() => {
-  if (selectedProjects.value.size <= 1) {
-    return null
-  }
-  return new Map(projects.value.map((project) => [project.id, project.name]))
-})
-
-// ── Sidebar trees: open MRs + active base branches per selected project ───
-const trees = computed<ProjectTree[]>(() =>
-  selectedList.value.map((project) => ({
-    project,
-    nodes: buildProjectTree(
-      projectStates.value.filter((state) => state.projectId === project.id),
-      mrsByProject.get(project.id) ?? [],
-    ),
-  })),
+const projectNameById = computed(
+  () => new Map(projects.value.map((project) => [project.id, project.name])),
 )
 
-// ── Home board ────────────────────────────────────────────────────────────
-const sections = computed(() => {
-  const grouped: Record<HomeSection, TaskState[]> = { waiting: [], active: [], done: [] }
-  for (const state of projectStates.value) {
-    grouped[sectionOf(state.record.status)].push(state)
+// ── Project filter: a project id, or null for "All projects" ──────────────
+// Selecting a project also makes it the registry's active card, which lazily
+// loads its MRs/branches for the tree; "All" only clears the filter.
+const filter = ref<string | null>(null)
+
+function selectFilter(id: string | null): void {
+  filter.value = id
+  if (id !== null) {
+    selectProject(id)
   }
-  return grouped
-})
+}
 
-const SECTION_ORDER: {
-  key: HomeSection
-  labelKey: 'workspace.sectionWaiting' | 'workspace.sectionActive' | 'workspace.sectionDone'
-}[] = [
-  { key: 'waiting', labelKey: 'workspace.sectionWaiting' },
-  { key: 'active', labelKey: 'workspace.sectionActive' },
-  { key: 'done', labelKey: 'workspace.sectionDone' },
-]
+/** States scoped to the filter — the queue's and the header's world. */
+const scopedStates = computed(() =>
+  filter.value === null
+    ? states.value
+    : states.value.filter((state) => state.projectId === filter.value),
+)
 
-// ── Create (into the composer's target project) ───────────────────────────
-const composer = ref<InstanceType<typeof TaskComposer> | null>(null)
-const creating = ref(false)
-const createError = ref<string | null>(null)
-// Last used target, persisted; re-derived whenever the selection moves so it
-// always points at a selected project (or the first one).
-const composeTarget = ref<string | null>(null)
+// ── Header: search + live counters over the scoped states ─────────────────
+const query = ref('')
+const counters = computed(() => agentCounts(scopedStates.value))
+
+/** The queue additionally filters by the header search (title or branch). */
+const queueStates = computed(() =>
+  scopedStates.value.filter((state) => matchesQuery(state.record, query.value)),
+)
+
+// Attention cards show the agent's question without being opened: hydrate
+// each conversation once when it enters the attention zone (the stream only
+// carries events emitted after connect, the question may predate it).
+const hydratedForQuestion = new Set<string>()
 
 watch(
-  selectedList,
-  (list) => {
-    const ids = list.map((project) => project.id)
-    composeTarget.value = deriveComposerProject(
-      composeTarget.value ?? readPersistedComposerProject(),
-      ids,
-    )
+  states,
+  (all) => {
+    for (const state of all) {
+      const key = taskKey(state.projectId, state.record.id)
+      if (
+        (state.record.status === 'waiting_for_you' || state.record.status === 'review_ko') &&
+        !hydratedForQuestion.has(key)
+      ) {
+        hydratedForQuestion.add(key)
+        void hydrate(state.projectId, state.record.id)
+      }
+    }
   },
   { immediate: true },
 )
 
-async function onCreate(input: CreateTaskInput): Promise<void> {
-  const projectId = composeTarget.value
-  if (projectId === null) {
+/** Bell click: open the conversation that has waited the longest. */
+function openOldestWaiting(): void {
+  const state = oldestWaiting(scopedStates.value)
+  if (state) {
+    openConversation(state.projectId, state.record.id)
+  }
+}
+
+// ── Focus deck: one conversation, pinned ones side by side, drafts kept ───
+const deck = ref<FocusDeck>(EMPTY_DECK)
+
+const focusedKeys = computed(() => deck.value.cols.columns.map(columnKey))
+
+/** What each deck slot renders: the task column with its live state (a stale
+ * id renders nothing and falls out without disturbing the other slots), or
+ * the draft composer. Flattened here so the template stays cast-free. */
+type DeckEntry =
+  | { kind: 'task'; key: string; projectId: string; taskId: string; state: TaskState }
+  | { kind: 'draft'; key: string; projectId: string; draft: DraftTarget }
+
+const deckEntries = computed<DeckEntry[]>(() => {
+  const entries: DeckEntry[] = []
+  for (const column of deck.value.cols.columns) {
+    const key = columnKey(column)
+    if (column.ref.kind === 'task') {
+      const state = store.get(taskKey(column.projectId, column.ref.taskId))
+      if (state) {
+        entries.push({
+          kind: 'task',
+          key,
+          projectId: column.projectId,
+          taskId: column.ref.taskId,
+          state,
+        })
+      }
+    } else {
+      entries.push({ kind: 'draft', key, projectId: column.projectId, draft: column.ref })
+    }
+  }
+  return entries
+})
+
+function openConversation(projectId: string, taskId: string): void {
+  deck.value = deckOpenTask(deck.value, projectId, taskId)
+  reviewRecord.value = null
+  void hydrate(projectId, taskId)
+}
+
+function togglePin(key: string): void {
+  deck.value = deckTogglePin(deck.value, key)
+}
+
+// Events emitted while the stream was down are not replayed: re-hydrate every
+// open conversation on each reconnect (drafts have nothing to fetch).
+watch(connections, () => {
+  for (const column of deck.value.cols.columns) {
+    if (column.ref.kind === 'task') {
+      void hydrate(column.projectId, column.ref.taskId)
+    }
+  }
+})
+
+// ── Draft columns: an empty composer in fork or work-on mode ──────────────
+type DraftRun = { creating: boolean; error: string | null }
+
+/** Per-column create state, keyed by the draft column's identity. */
+const draftRuns = reactive(new Map<string, DraftRun>())
+
+function runOf(projectId: string, draft: DraftTarget): DraftRun {
+  return draftRuns.get(draftColumnKey(projectId, draft)) ?? { creating: false, error: null }
+}
+
+function openDraft(projectId: string, draft: DraftTarget): void {
+  deck.value = deckOpenDraft(deck.value, projectId, draft)
+  reviewRecord.value = null
+  draftRuns.delete(draftColumnKey(projectId, draft))
+}
+
+/** The draft's mode switch: work-on <-> fork-from, same column slot. When
+ * flipping to work-on, an open MR of the branch contributes its target. */
+function toggleDraftMode(projectId: string, draft: DraftTarget): void {
+  const branch = draftBranch(draft)
+  const other =
+    draft.mode === 'fork'
+      ? workonDraft(
+          branch,
+          (mrsByProject.get(projectId) ?? []).find((m) => m.sourceBranch === branch)
+            ?.targetBranch ?? null,
+        )
+      : forkDraft(branch)
+  deck.value = deckSwapDraft(deck.value, projectId, draft, other)
+  draftRuns.delete(draftColumnKey(projectId, draft))
+}
+
+function closeDraft(projectId: string, draft: DraftTarget): void {
+  deck.value = deckCloseDraft(deck.value, projectId, draft)
+  draftRuns.delete(draftColumnKey(projectId, draft))
+}
+
+/** Every branch/MR click of the projects column routes through the pure
+ * resolveBranchClick: open the branch's active conversation, or draft. */
+function onBranchClick(projectId: string, branch: string, mr: ForgeMr | null): void {
+  const projectStates = states.value.filter((state) => state.projectId === projectId)
+  const resolution = resolveBranchClick(branch, mr, projectStates)
+  if (resolution.kind === 'open') {
+    openConversation(projectId, resolution.taskId)
+  } else if (resolution.kind === 'draft-fork') {
+    openDraft(projectId, forkDraft(resolution.base))
+  } else {
+    openDraft(projectId, workonDraft(resolution.branch, resolution.target))
+  }
+}
+
+/** Launches the real conversation from the draft: the POST carries base
+ * (fork) or branch+target (work-on); on success — or on the 409 "already has
+ * a conversation" — the column becomes that conversation IN PLACE. */
+async function onDraftCreate(
+  projectId: string,
+  draft: DraftTarget,
+  input: CreateTaskInput,
+): Promise<void> {
+  const key = draftColumnKey(projectId, draft)
+  if (draftRuns.get(key)?.creating) {
     return
   }
+  draftRuns.set(key, { creating: true, error: null })
+  const payload: CreateTaskInput =
+    draft.mode === 'fork'
+      ? { ...input, base: draft.base }
+      : { ...input, branch: draft.branch, ...(draft.target !== null && { target: draft.target }) }
+  const result = await create(projectId, payload)
+  if (!result.ok) {
+    if (result.existingTaskId !== null) {
+      // 409 uniqueness guard: the branch's ACTIVE conversation takes the slot.
+      draftRuns.delete(key)
+      deck.value = deckPromoteDraft(deck.value, projectId, draft, result.existingTaskId)
+      void hydrate(projectId, result.existingTaskId)
+      return
+    }
+    // A readable 400/409 (unknown branch, worktree busy…) or a network
+    // error: shown in the draft panel.
+    draftRuns.set(key, { creating: false, error: result.error })
+    return
+  }
+  draftRuns.delete(key)
+  deck.value = deckPromoteDraft(deck.value, projectId, draft, result.record.id)
+  void hydrate(projectId, result.record.id)
+}
+
+// ── Review view: full screen over the focus zone only ─────────────────────
+const reviewRecord = shallowRef<ReviewRecord | null>(null)
+
+function openReview(record: ReviewRecord): void {
+  reviewRecord.value = record
+}
+
+function backFromReview(): void {
+  // The deck was never touched: the conversations are still where they were.
+  reviewRecord.value = null
+}
+
+// ── Projects column: counters + the selected project's tree ───────────────
+const activity = computed(() => countProjectActivity(states.value))
+
+const tree = computed<ConversationNode[]>(() => {
+  const projectId = filter.value
+  if (projectId === null) {
+    return []
+  }
+  return buildProjectTree(
+    states.value.filter((state) => state.projectId === projectId),
+    mrsByProject.get(projectId) ?? [],
+  )
+})
+
+/** Local branches of the selected project the tree does not already show:
+ * the "Branches (N)" disclosure, each entry a draft target. */
+const extraBranches = computed<string[]>(() => {
+  const projectId = filter.value
+  if (projectId === null) {
+    return []
+  }
+  return otherBranches(
+    branchesByProject.get(projectId) ?? [],
+    tree.value,
+    mrsByProject.get(projectId) ?? [],
+  )
+})
+
+// ── Create (queue composer) ───────────────────────────────────────────────
+const creating = ref(false)
+const createError = ref<string | null>(null)
+
+async function onCreate(projectId: string, input: CreateTaskInput): Promise<void> {
   creating.value = true
   createError.value = null
   const result = await create(projectId, input)
   creating.value = false
   if (!result.ok) {
+    if (result.existingTaskId !== null) {
+      // 409 uniqueness guard: open the branch's existing conversation.
+      openConversation(projectId, result.existingTaskId)
+      return
+    }
     createError.value = result.error
     return
   }
-  persistComposerProject(projectId)
-  composer.value?.reset()
-  openTask(projectId, result.record.id)
+  openConversation(projectId, result.record.id)
 }
 
-// ── Project registry actions (sidebar) ────────────────────────────────────
+/** [Ship] on a ready card: the existing ship action, with the conversation
+ * brought into focus so the outcome is visible. */
+function onQueueShip(state: TaskState): void {
+  openConversation(state.projectId, state.record.id)
+  void ship(state.projectId, state.record.id)
+}
+
+// ── Project registry actions ──────────────────────────────────────────────
 const addBusy = ref(false)
 const addError = ref<string | null>(null)
 const removeError = ref<string | null>(null)
@@ -160,155 +370,179 @@ async function onRemoveProject(id: string): Promise<void> {
     removeError.value = result.error
     return
   }
-  // The open conversation may belong to the removed project: home is safe.
-  backHome()
-}
-
-// ── Navigation ────────────────────────────────────────────────────────────
-function openTask(projectId: string, id: string): void {
-  view.value = { kind: 'task', projectId, id }
-  void hydrate(projectId, id)
-}
-
-function backHome(): void {
-  view.value = { kind: 'home' }
-  reviewRecord.value = null
-}
-
-function openReview(record: ReviewRecord): void {
-  reviewRecord.value = record
-  view.value = { kind: 'review' }
-}
-
-function backFromReview(): void {
-  // The review is always entered from a conversation; return there.
-  const task = currentTask.value
-  view.value = task ? { kind: 'task', projectId: task.projectId, id: task.id } : { kind: 'home' }
-}
-
-const currentTask = ref<{ projectId: string; id: string } | null>(null)
-watch(view, (v) => {
-  if (v.kind === 'task') {
-    currentTask.value = { projectId: v.projectId, id: v.id }
-  } else if (v.kind === 'home') {
-    currentTask.value = null
+  // Its store states are gone: drop its filter and columns too.
+  if (filter.value === id) {
+    filter.value = null
   }
-})
-
-const currentState = computed(() =>
-  view.value.kind === 'task'
-    ? (store.get(taskKey(view.value.projectId, view.value.id)) ?? null)
-    : null,
-)
-
-const activeTask = computed(() =>
-  view.value.kind === 'task' ? { projectId: view.value.projectId, id: view.value.id } : null,
-)
-
-// Events emitted while the stream was down are not replayed: re-hydrate the
-// open conversation on every reconnect.
-watch(connections, () => {
-  if (view.value.kind === 'task') {
-    void hydrate(view.value.projectId, view.value.id)
-  }
-})
+  deck.value = deckCloseProject(deck.value, id)
+}
 </script>
 
 <template>
   <div class="ws-root">
-    <WorkspaceSidebar
-      :projects="projects"
-      :selected="selectedProjects"
-      :trees="trees"
-      :active-task="activeTask"
-      :add-busy="addBusy"
-      :add-error="addError"
-      :remove-error="removeError"
-      :candidates="candidates"
-      @toggle="toggleProject"
-      @add="onAddProject"
-      @remove="onRemoveProject"
-      @discover="() => void discoverCandidates()"
-      @refresh-mrs="() => void refreshMrs()"
-      @home="backHome"
-      @open-task="(state) => openTask(state.projectId, state.record.id)"
+    <WorkspaceHeader
+      v-model:query="query"
+      :needs-you="counters.needsYou"
+      :agents="counters.agents"
+      @open-oldest-waiting="openOldestWaiting"
     />
 
-    <div class="ws-main">
-      <p v-if="!connected" class="ws-offline" role="status">
-        {{ t('workspace.connectionLost') }}
-      </p>
+    <p v-if="!connected" class="ws-offline" role="status">
+      {{ t('workspace.connectionLost') }}
+    </p>
 
-      <!-- Review view: the existing guided review, themed by the workspace. -->
-      <div v-if="view.kind === 'review' && reviewRecord" class="ws-review">
-        <button class="ws-review-back" @click="backFromReview">{{ t('workspace.back') }}</button>
-        <ReviewShell :record="reviewRecord" />
-      </div>
+    <div class="ws-body">
+      <ProjectsNav
+        :projects="projects"
+        :selected="filter"
+        :activity="activity"
+        :tree="tree"
+        :extra-branches="extraBranches"
+        :focused-keys="focusedKeys"
+        :add-busy="addBusy"
+        :add-error="addError"
+        :remove-error="removeError"
+        :candidates="candidates"
+        @select="selectFilter"
+        @add="onAddProject"
+        @remove="onRemoveProject"
+        @discover="() => void discoverCandidates()"
+        @refresh-mrs="() => void refreshMrs()"
+        @open-task="(state) => openConversation(state.projectId, state.record.id)"
+        @branch-click="({ projectId, branch, mr }) => onBranchClick(projectId, branch, mr)"
+      />
 
-      <!-- Conversation view: thread on the left, touched files on the right. -->
-      <div v-else-if="view.kind === 'task' && currentState" class="ws-task">
-        <div class="ws-task-main">
-          <TaskConversation
-            :state="currentState"
-            :reply="(m) => reply(currentState!.projectId, currentState!.record.id, m)"
-            :interrupt="() => interrupt(currentState!.projectId, currentState!.record.id)"
-            :ship="() => ship(currentState!.projectId, currentState!.record.id)"
-            @back="backHome"
-            @open-review="openReview"
-          />
+      <WorkQueue
+        :states="queueStates"
+        :project-names="projectNameById"
+        :focused-keys="focusedKeys"
+        :projects="projects"
+        :filter="filter"
+        :creating="creating"
+        :create-error="createError"
+        @open="(state) => openConversation(state.projectId, state.record.id)"
+        @ship="onQueueShip"
+        @create="onCreate"
+      />
+
+      <main class="ws-focus">
+        <!-- Review view: the existing guided review, over the focus zone. -->
+        <div v-if="reviewRecord" class="ws-review">
+          <button class="ws-review-back" @click="backFromReview">{{ t('workspace.back') }}</button>
+          <ReviewShell :record="reviewRecord" />
         </div>
-        <aside class="ws-task-side">
-          <h2 class="ws-side-title">{{ t('workspace.filesTitle') }}</h2>
-          <PreviewPanel
-            v-if="currentState.record.branch"
-            :source="{ kind: 'branch', name: currentState.record.branch }"
-            :project="currentState.projectId"
-          />
-          <p v-else class="ws-side-empty">{{ t('workspace.noBranchYet') }}</p>
-        </aside>
-      </div>
 
-      <!-- Home: composer on top, then the three zones in fixed order. -->
-      <div v-else class="ws-home">
-        <p v-if="projects.length === 0" class="ws-empty">{{ t('workspace.noProject') }}</p>
-        <p v-else-if="selectedList.length === 0" class="ws-empty">
-          {{ t('workspace.noProjectSelected') }}
-        </p>
-        <template v-else>
-          <TaskComposer
-            ref="composer"
-            v-model:target="composeTarget"
-            :creating="creating"
-            :error="createError"
-            :projects="selectedList"
-            @create="onCreate"
-          />
+        <!-- The deck: conversations (pinned side by side) and draft columns. -->
+        <div v-else-if="deckEntries.length > 0" class="ws-deck">
+          <div v-for="entry in deckEntries" :key="entry.key" class="ws-col">
+            <TaskConversation
+              v-if="entry.kind === 'task'"
+              :state="entry.state"
+              :project-name="projectNameById.get(entry.projectId) ?? entry.projectId"
+              :pinned="isPinned(deck, entry.key)"
+              :reply="(m) => reply(entry.projectId, entry.taskId, m)"
+              :interrupt="() => interrupt(entry.projectId, entry.taskId)"
+              :ship="() => ship(entry.projectId, entry.taskId)"
+              :abandon="() => abandon(entry.projectId, entry.taskId)"
+              @open-review="openReview"
+              @toggle-pin="togglePin(entry.key)"
+            />
 
-          <p v-if="projectStates.length === 0" class="ws-empty">{{ t('workspace.emptyBoard') }}</p>
-
-          <template v-for="section in SECTION_ORDER" :key="section.key">
-            <section v-if="sections[section.key].length" class="ws-section">
-              <h2 class="ws-section-title">
-                {{ t(section.labelKey) }}
-                <span class="ws-section-count">{{
-                  t('workspace.taskCount', { n: sections[section.key].length })
-                }}</span>
-              </h2>
-              <div class="ws-section-list">
-                <TaskCard
-                  v-for="state in sections[section.key]"
-                  :key="taskKey(state.projectId, state.record.id)"
-                  :state="state"
-                  :prominent="section.key === 'waiting'"
-                  :show-activity="section.key === 'active'"
-                  :project-name="projectNameById?.get(state.projectId) ?? null"
-                  @select="openTask(state.projectId, state.record.id)"
+            <!-- Draft column: a composer in fork mode (new branch from a
+                 base) or work-on mode (directly on an existing branch); the
+                 create turns this column into the real conversation. -->
+            <div v-else class="ws-draft-wrap">
+              <div class="ws-draft">
+                <header class="ws-draft-head">
+                  <h2 class="ws-draft-title">
+                    {{
+                      entry.draft.mode === 'fork'
+                        ? t('workspace.draftForkTitle', { base: entry.draft.base })
+                        : t('workspace.draftWorkonTitle', { branch: entry.draft.branch })
+                    }}
+                  </h2>
+                  <span class="ws-draft-project">
+                    {{ projectNameById.get(entry.projectId) ?? entry.projectId }}
+                  </span>
+                  <button
+                    class="ws-draft-close"
+                    :aria-label="t('workspace.addProjectCancel')"
+                    :title="t('workspace.addProjectCancel')"
+                    @click="closeDraft(entry.projectId, entry.draft)"
+                  >
+                    ✕
+                  </button>
+                </header>
+                <div
+                  class="ws-draft-modes"
+                  role="group"
+                  :aria-label="t('workspace.draftModeLabel')"
+                >
+                  <button
+                    class="ws-draft-mode"
+                    :class="{ 'ws-draft-mode--on': entry.draft.mode === 'workon' }"
+                    type="button"
+                    @click="
+                      entry.draft.mode === 'fork' && toggleDraftMode(entry.projectId, entry.draft)
+                    "
+                  >
+                    {{ t('workspace.draftModeWorkon') }}
+                  </button>
+                  <button
+                    class="ws-draft-mode"
+                    :class="{ 'ws-draft-mode--on': entry.draft.mode === 'fork' }"
+                    type="button"
+                    @click="
+                      entry.draft.mode === 'workon' && toggleDraftMode(entry.projectId, entry.draft)
+                    "
+                  >
+                    {{ t('workspace.draftModeFork') }}
+                  </button>
+                </div>
+                <p
+                  v-if="entry.draft.mode === 'workon' && isTrunkBranch(draftBranch(entry.draft))"
+                  class="ws-draft-warning"
+                >
+                  {{ t('workspace.draftTrunkWarning', { branch: draftBranch(entry.draft) }) }}
+                </p>
+                <div class="ws-draft-chips">
+                  <span
+                    class="ws-draft-chip"
+                    :title="
+                      entry.draft.mode === 'fork'
+                        ? t('workspace.draftBaseHint', { branch: entry.draft.base })
+                        : t('workspace.draftWorkonHint', { branch: entry.draft.branch })
+                    "
+                  >
+                    <span aria-hidden="true">⎇</span> {{ draftBranch(entry.draft) }}
+                  </span>
+                  <!-- Work-on from an MR node: the merge target rides along. -->
+                  <span
+                    v-if="entry.draft.mode === 'workon' && entry.draft.target !== null"
+                    class="ws-draft-chip"
+                    :title="t('workspace.draftTargetHint', { target: entry.draft.target })"
+                  >
+                    <span aria-hidden="true">→</span> {{ entry.draft.target }}
+                  </span>
+                </div>
+                <TaskComposer
+                  compact
+                  :creating="runOf(entry.projectId, entry.draft).creating"
+                  :error="runOf(entry.projectId, entry.draft).error"
+                  @create="(input) => onDraftCreate(entry.projectId, entry.draft, input)"
                 />
               </div>
-            </section>
-          </template>
-        </template>
-      </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Empty focus: a sober invite. -->
+        <div v-else class="ws-empty-focus">
+          <p class="ws-empty">
+            {{ projects.length === 0 ? t('workspace.noProject') : t('workspace.focusEmpty') }}
+          </p>
+        </div>
+      </main>
     </div>
   </div>
 </template>
@@ -316,113 +550,214 @@ watch(connections, () => {
 <style scoped>
 .ws-root {
   display: flex;
-  align-items: stretch;
-  min-height: 100vh;
-  background: var(--sema-bg);
-  color: var(--sema-ink);
-}
-
-.ws-main {
-  flex: 1;
-  min-width: 0;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--cs-bg);
+  color: var(--cs-text);
 }
 
 .ws-offline {
+  flex: none;
   margin: 0;
-  padding: 8px 26px;
+  padding: 6px 20px;
   font-size: 12px;
-  color: var(--sema-amber-text);
-  background: var(--sema-amber-soft);
+  color: var(--cs-amber-text);
+  background: var(--cs-amber-soft);
+  border-bottom: 1px solid var(--cs-amber-line);
 }
 
-.ws-home {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 28px 24px 80px;
-  display: flex;
-  flex-direction: column;
-  gap: 26px;
-}
-
-.ws-empty {
-  margin: 12px 0 0;
-  text-align: center;
-  font-size: 13px;
-  color: var(--sema-ink-3);
-}
-
-.ws-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.ws-section-title {
-  margin: 0;
-  font-size: 14.5px;
-  font-weight: 700;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.ws-section-count {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 400;
-  color: var(--sema-ink-3);
-}
-
-.ws-section-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ws-task {
-  display: flex;
-  align-items: flex-start;
-  gap: 22px;
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 24px 24px 80px;
-}
-
-.ws-task-main {
+.ws-body {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+/* ── Focus zone: the column deck ──────────────────────────────────────── */
+.ws-focus {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cs-inset);
+}
+
+.ws-deck {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.ws-col {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-col + .ws-col {
+  border-left: 1px solid var(--cs-line);
+}
+
+/* ── Draft column ─────────────────────────────────────────────────────── */
+.ws-draft-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px;
+}
+
+.ws-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 560px;
+  width: 100%;
+  margin: 48px auto 24px;
+  padding: 18px 20px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 12px;
+  background: var(--cs-surface);
+}
+
+.ws-draft-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
-.ws-task-side {
-  width: 380px;
-  flex: none;
-  position: sticky;
-  top: 18px;
-  max-height: calc(100vh - 40px);
-  overflow-y: auto;
-  padding: 14px 16px;
-  border: 1px solid var(--sema-line-card);
-  border-radius: 13px;
-  background: var(--sema-card);
+.ws-draft-title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--cs-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ws-side-title {
-  margin: 0 0 12px;
+.ws-draft-project {
+  flex: none;
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--sema-ink-3);
+  color: var(--cs-ghost);
 }
 
-.ws-side-empty {
+.ws-draft-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--cs-muted);
+  cursor: pointer;
+}
+
+.ws-draft-close:hover {
+  background: var(--cs-hover);
+  color: var(--cs-text);
+}
+
+.ws-draft-modes {
+  display: inline-flex;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 8px;
+  overflow: hidden;
+  align-self: flex-start;
+}
+
+.ws-draft-mode {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 5px 11px;
+  border: none;
+  background: var(--cs-surface);
+  color: var(--cs-muted);
+  cursor: pointer;
+}
+
+.ws-draft-mode + .ws-draft-mode {
+  border-left: 1px solid var(--cs-line-2);
+}
+
+/* The chosen mode is a state: green soft wash, per the doctrine. */
+.ws-draft-mode--on {
+  background: var(--cs-green-soft);
+  color: var(--cs-text);
+  cursor: default;
+}
+
+.ws-draft-warning {
   margin: 0;
   font-size: 12.5px;
-  color: var(--sema-ink-3);
+  color: var(--cs-amber-text);
+  border: 1px solid var(--cs-amber-line);
+  border-radius: 8px;
+  background: var(--cs-amber-soft);
+  padding: 6px 10px;
 }
 
+.ws-draft-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Branch chips: the base to fork from, or the branch worked on (+ target). */
+.ws-draft-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--cs-text-2);
+  padding: 2px 9px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 999px;
+  background: var(--cs-inset);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Empty focus ──────────────────────────────────────────────────────── */
+.ws-empty-focus {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.ws-empty {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--cs-muted);
+  max-width: 380px;
+}
+
+/* ── Review ───────────────────────────────────────────────────────────── */
 .ws-review {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 18px 24px 60px;
 }
 
@@ -433,25 +768,20 @@ watch(connections, () => {
   font-family: inherit;
   padding: 5px 10px;
   border-radius: 8px;
-  border: 1px solid var(--sema-line-card);
-  background: var(--sema-card);
-  color: var(--sema-ink-2);
+  border: 1px solid var(--cs-line-2);
+  background: var(--cs-surface);
+  color: var(--cs-text-2);
   cursor: pointer;
 }
 
 .ws-review-back:hover {
-  border-color: var(--sema-ink-3);
+  border-color: var(--cs-muted);
 }
 
-@media (max-width: 980px) {
-  .ws-task {
-    flex-direction: column;
-  }
-
-  .ws-task-side {
-    width: 100%;
-    position: static;
-    max-height: none;
+/* Narrow desk: the projects column folds first, then the queue narrows. */
+@media (max-width: 1100px) {
+  .ws-body :deep(.wq-root) {
+    width: 360px;
   }
 }
 </style>

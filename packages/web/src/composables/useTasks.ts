@@ -3,16 +3,19 @@
 // of every repo (the server caps SSE clients, a stream per task would blow
 // through it), a Map of task states keyed by (project_id, task_id), and the
 // token-guarded mutations. Streamed text deltas live only here — they are
-// never persisted server-side. The selected projects are a localStorage-
-// persisted set; on first load the API's `current` (or the whole registry)
-// seeds it (see deriveSelection). Open MRs are cached per selected project so
-// the sidebar tree can attach shipped conversations under their MR.
+// never persisted server-side. The active project (the selected card of the
+// right panel) is a localStorage-persisted single id; on first load the API's
+// `current` (or the first registered project) seeds it (see
+// deriveActiveProject). Open MRs are fetched LAZILY, when a card becomes
+// active — the tree is their only consumer and it renders the active project
+// alone — and cached per project id so switching back is instant.
 
 import { computed, reactive, ref, type Ref } from 'vue'
 import type {
   DiscoverResponse,
   ForgeMr,
   ForgeMrsResult,
+  LocalBranch,
   Project,
   ProjectCandidate,
   ProjectsResponse,
@@ -20,7 +23,12 @@ import type {
   TaskEvent,
   TaskRecord,
 } from '../types'
-import { deriveSelection, persistSelection, readPersistedSelection } from './useProjects'
+import {
+  deriveActiveProject,
+  persistActiveProject,
+  purgeDeadStorageKeys,
+  readPersistedActiveProject,
+} from './useProjects'
 import { compareByActivity, mergeEvent } from './useTaskBoard'
 
 export type TaskState = {
@@ -31,6 +39,8 @@ export type TaskState = {
   events: TaskEvent[]
   /** Cumulative streamed text of the in-flight turn (SSE only, volatile). */
   liveText: string
+  /** Live token meter of the in-flight turn (task_meta frames, volatile). */
+  liveTokens: number
 }
 
 export type ApiResult = { ok: true } | { ok: false; status: number; error: string }
@@ -39,10 +49,25 @@ export type CreateTaskInput = {
   title: string
   prompt: string
   autoShip: boolean
+  /** Fork mode: local branch the task forks from; absent → auto-detection.
+   * EXCLUSIVE with branch (the server 400s when both are sent). */
+  base?: string
+  /** Work-on mode: existing local branch the task works DIRECTLY on. */
+  branch?: string
+  /** Work-on mode only: the MR target branch, used by the server as base. */
+  target?: string
 }
 
 export type CreateTaskResult =
-  { ok: true; record: TaskRecord } | { ok: false; status: number; error: string }
+  | { ok: true; record: TaskRecord }
+  | {
+      ok: false
+      status: number
+      error: string
+      /** Set on a 409 uniqueness conflict: the branch's ACTIVE conversation.
+       * The caller opens that conversation instead of showing an error. */
+      existingTaskId: string | null
+    }
 
 type TaskStore = Map<string, TaskState>
 
@@ -52,7 +77,13 @@ export const taskKey = (projectId: string, taskId: string): string => `${project
 function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): void {
   const current = store.get(taskKey(projectId, record.id))
   if (!current) {
-    store.set(taskKey(projectId, record.id), { projectId, record, events: [], liveText: '' })
+    store.set(taskKey(projectId, record.id), {
+      projectId,
+      record,
+      events: [],
+      liveText: '',
+      liveTokens: 0,
+    })
     return
   }
   current.record = record
@@ -72,6 +103,7 @@ function pushEvent(store: TaskStore, projectId: string, taskId: string, event: T
   }
   if (event.type === 'turn_started') {
     current.liveText = ''
+    current.liveTokens = 0
   }
   mergeEvent(current.events, event)
 }
@@ -84,7 +116,7 @@ function parseFrame<N extends TaskEnvelope['event']['name']>(
 
 function openStream(store: TaskStore, connected: Ref<boolean>, connections: Ref<number>) {
   // The initial replay covers every task of every registered project; the
-  // client filters by selected projects at render time, never at the stream.
+  // rail shows them all, only the right panel scopes to the active card.
   const source = new EventSource('/api/tasks/events')
   source.addEventListener('open', () => {
     connected.value = true
@@ -107,6 +139,13 @@ function openStream(store: TaskStore, connected: Ref<boolean>, connections: Ref<
     const current = store.get(taskKey(envelope.project_id, envelope.task_id))
     if (current) {
       current.liveText = envelope.event.data.text
+    }
+  })
+  source.addEventListener('task_meta', (e) => {
+    const envelope = parseFrame<'task_meta'>(e)
+    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+    if (current) {
+      current.liveTokens = envelope.event.data.tokens
     }
   })
   return source
@@ -174,7 +213,20 @@ async function createTask(
       body: JSON.stringify({ ...input, project_id: projectId }),
     })
     if (!res.ok) {
-      return { ok: false, status: res.status, error: await errorFrom(res) }
+      const body = (await res.json().catch(() => null)) as {
+        error?: string
+        existing_task_id?: string
+      } | null
+      return {
+        ok: false,
+        status: res.status,
+        error: body?.error ?? `HTTP ${res.status}`,
+        // Only the 409 uniqueness guard carries the existing conversation.
+        existingTaskId:
+          res.status === 409 && typeof body?.existing_task_id === 'string'
+            ? body.existing_task_id
+            : null,
+      }
     }
     const record = (await res.json()) as TaskRecord
     // The stream will broadcast it too, but upserting now makes the new
@@ -182,7 +234,12 @@ async function createTask(
     upsertRecord(store, projectId, record)
     return { ok: true, record }
   } catch (e) {
-    return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) }
+    return {
+      ok: false,
+      status: 0,
+      error: e instanceof Error ? e.message : String(e),
+      existingTaskId: null,
+    }
   }
 }
 
@@ -206,20 +263,25 @@ async function deleteProject(token: string, id: string): Promise<ApiResult> {
   }
 }
 
-/** Global project registry client: list, multi-selection, add, remove. */
+/** Global project registry client: list, active card, add, remove. */
 function useProjectRegistry(token: string, store: TaskStore) {
   const projects = ref<Project[]>([])
-  const selectedProjects = ref<ReadonlySet<string>>(new Set())
-  // Open MRs per project id, refreshed on selection and on demand. A repo
-  // without a forge (or a stopped CLI) caches an empty list silently: the
-  // sidebar tree then degrades to branch nodes only.
+  // The selected card of the right panel: composer target and tree scope.
+  const activeProject = ref<string | null>(null)
+  // Open MRs per project id, fetched when a card becomes active and on
+  // demand. A repo without a forge (or a stopped CLI) caches an empty list
+  // silently: the tree then degrades to branch nodes only.
   const mrsByProject = reactive(new Map<string, ForgeMr[]>())
+  // Local branches per project id, fetched alongside the MRs when a card
+  // becomes active: the tree's "Branches (N)" disclosure and the draft
+  // columns are the consumers. Errors cache an empty list silently.
+  const branchesByProject = reactive(new Map<string, LocalBranch[]>())
   // Git repos detected around the launch directory, refreshed on demand when
   // the add-project form opens: one-click registration instead of typing paths.
   const candidates = ref<ProjectCandidate[]>([])
-  // First derivation reads localStorage; later registry reloads only prune,
-  // so an explicit empty selection is never "helpfully" refilled.
-  let selectionSeeded = false
+  // First derivation reads localStorage (and migrates the retired keys);
+  // later registry reloads only re-derive when the active card disappears.
+  let activeSeeded = false
 
   async function loadMrs(projectId: string): Promise<void> {
     try {
@@ -235,35 +297,38 @@ function useProjectRegistry(token: string, store: TaskStore) {
     }
   }
 
-  /** Re-fetches the open MRs of every selected project (refresh button). */
-  async function refreshMrs(): Promise<void> {
-    await Promise.all([...selectedProjects.value].map((id) => loadMrs(id)))
-  }
-
-  function setSelection(ids: string[]): void {
-    const previous = selectedProjects.value
-    selectedProjects.value = new Set(ids)
-    persistSelection(ids)
-    // A project entering the selection gets its MRs (re)fetched right away.
-    for (const id of ids) {
-      if (!previous.has(id)) {
-        void loadMrs(id)
-      }
+  async function loadBranches(projectId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/branches?project=${encodeURIComponent(projectId)}`)
+      branchesByProject.set(projectId, res.ok ? ((await res.json()) as LocalBranch[]) : [])
+    } catch {
+      branchesByProject.set(projectId, [])
     }
   }
 
-  function toggleProject(id: string): void {
-    if (!projects.value.some((project) => project.id === id)) {
+  /** Re-fetches the open MRs (and local branches) of the active project. */
+  async function refreshMrs(): Promise<void> {
+    if (activeProject.value !== null) {
+      // Both feed the same tree: refresh them together.
+      await Promise.all([loadMrs(activeProject.value), loadBranches(activeProject.value)])
+    }
+  }
+
+  function setActive(id: string | null): void {
+    activeProject.value = id
+    if (id !== null) {
+      persistActiveProject(id)
+      // Lazy fetch policy: the card becoming active is the only trigger.
+      void loadMrs(id)
+      void loadBranches(id)
+    }
+  }
+
+  function selectProject(id: string): void {
+    if (id === activeProject.value || !projects.value.some((project) => project.id === id)) {
       return
     }
-    const next = new Set(selectedProjects.value)
-    if (next.has(id)) {
-      next.delete(id)
-    } else {
-      next.add(id)
-    }
-    // Registry order keeps the persisted array (and the board) deterministic.
-    setSelection(projects.value.map((p) => p.id).filter((pid) => next.has(pid)))
+    setActive(id)
   }
 
   async function discoverCandidates(): Promise<void> {
@@ -281,17 +346,17 @@ function useProjectRegistry(token: string, store: TaskStore) {
 
   function applyRegistry(next: Project[], apiCurrent: string | null): void {
     projects.value = next
-    if (!selectionSeeded) {
-      selectionSeeded = true
-      setSelection(deriveSelection(readPersistedSelection(), apiCurrent, next))
+    if (!activeSeeded) {
+      activeSeeded = true
+      const persisted = readPersistedActiveProject()
+      purgeDeadStorageKeys()
+      setActive(deriveActiveProject(persisted, apiCurrent, next))
       return
     }
-    // Later reloads only prune: a selected project gone from the registry is
-    // dropped, but a deliberately empty selection stays empty.
-    const known = new Set(next.map((project) => project.id))
-    const kept = [...selectedProjects.value].filter((id) => known.has(id))
-    if (kept.length !== selectedProjects.value.size) {
-      setSelection(kept)
+    // Later reloads: an active card gone from the registry (or a first
+    // project appearing) re-derives instead of pointing at nothing.
+    if (!next.some((project) => project.id === activeProject.value)) {
+      setActive(deriveActiveProject(null, apiCurrent, next))
     }
   }
 
@@ -316,10 +381,10 @@ function useProjectRegistry(token: string, store: TaskStore) {
       const before = new Set(projects.value.map((project) => project.id))
       await loadProjects()
       const added = projects.value.find((project) => !before.has(project.id))
-      if (added && !selectedProjects.value.has(added.id)) {
-        // A freshly added project joins the selection: its board is what the
-        // user came for.
-        toggleProject(added.id)
+      if (added) {
+        // A freshly added project becomes the active card: its conversations
+        // are what the user came for.
+        selectProject(added.id)
       }
       // The registered flags of the open picker are stale now: refresh them.
       if (candidates.value.length > 0) {
@@ -342,18 +407,20 @@ function useProjectRegistry(token: string, store: TaskStore) {
       }
     }
     mrsByProject.delete(id)
+    branchesByProject.delete(id)
     await loadProjects()
     return { ok: true }
   }
 
   return {
     projects,
-    selectedProjects,
+    activeProject,
     mrsByProject,
+    branchesByProject,
     candidates,
     loadProjects,
     discoverCandidates,
-    toggleProject,
+    selectProject,
     refreshMrs,
     addProject,
     removeProject,
@@ -402,5 +469,8 @@ export function useTasks(token: string) {
     interrupt: (projectId: string, id: string) =>
       postAction(token, actionPath(projectId, id, 'interrupt')),
     ship: (projectId: string, id: string) => postAction(token, actionPath(projectId, id, 'ship')),
+    // Cleanup: removes the worktree (and, for forked tasks, the branch).
+    abandon: (projectId: string, id: string) =>
+      postAction(token, actionPath(projectId, id, 'abandon')),
   }
 }

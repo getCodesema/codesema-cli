@@ -11,6 +11,10 @@ const props = defineProps<{
   project?: string
 }>()
 
+/** Fired on every successful load: the parent can label its Diff tab with
+ * the real file count without a second fetch. */
+const emit = defineEmits<{ loaded: [preview: PreviewResult] }>()
+
 function sourceQuery(source: ReviewSource): string {
   const base =
     source.kind === 'mr'
@@ -45,6 +49,7 @@ async function load() {
       throw new Error(await errorFrom(res))
     }
     preview.value = (await res.json()) as PreviewResult
+    emit('loaded', preview.value)
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
   } finally {

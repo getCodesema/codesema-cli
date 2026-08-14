@@ -28,27 +28,34 @@ describe('EXECUTION_STATUS', () => {
     }
   })
 
+  test('every header phrase key resolves to a real message', () => {
+    for (const status of ALL_STATUSES) {
+      const key = EXECUTION_STATUS[status].phraseKey
+      expect(t(key)).not.toBe(key)
+    }
+  })
+
   test('semaphore grammar: green means done and passed', () => {
     for (const status of ['review_ok', 'shipped'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--sema-green)')
+      expect(EXECUTION_STATUS[status].color).toBe('var(--cs-green)')
     }
   })
 
   test('semaphore grammar: red means blocked', () => {
     for (const status of ['review_ko', 'failed'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--sema-red)')
+      expect(EXECUTION_STATUS[status].color).toBe('var(--cs-red)')
     }
   })
 
   test('semaphore grammar: amber for machine work and human waits', () => {
     for (const status of ['running', 'reviewing', 'waiting_for_you'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--sema-amber)')
+      expect(EXECUTION_STATUS[status].color).toBe('var(--cs-amber)')
     }
   })
 
   test('neutral for queued and interrupted: nothing is happening', () => {
     for (const status of ['queued', 'interrupted'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--sema-dot-idle)')
+      expect(EXECUTION_STATUS[status].color).toBe('var(--cs-dot-idle)')
     }
   })
 
@@ -66,7 +73,7 @@ describe('EXECUTION_STATUS', () => {
     for (const status of ALL_STATUSES) {
       const { color, soft, text } = EXECUTION_STATUS[status]
       for (const value of [color, soft, text]) {
-        expect(value.startsWith('var(--sema-')).toBe(true)
+        expect(value.startsWith('var(--cs-')).toBe(true)
       }
     }
   })

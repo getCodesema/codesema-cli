@@ -21,6 +21,8 @@ export type TaskEventCtx = {
   active: boolean
   /** True when the task's archived review is loadable in the review view. */
   reviewAvailable: boolean
+  /** Slow clock (epoch ms) owned by the conversation, for "il y a X" stamps. */
+  now: number
 }
 
 export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {

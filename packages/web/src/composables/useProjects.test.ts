@@ -1,12 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import type { ForgeMr, Project, TaskRecord } from '../types'
+import type { ForgeMr, LocalBranch, Project, TaskRecord, TaskStatus } from '../types'
 import {
   buildProjectTree,
-  deriveComposerProject,
-  deriveSelection,
-  filterBySelection,
+  countProjectActivity,
+  deriveActiveProject,
+  isTrunkBranch,
+  migrateActiveProject,
+  nameColor,
   nodeHasActiveConversation,
-  parsePersistedSelection,
+  otherBranches,
+  resolveBranchClick,
 } from './useProjects'
 import type { TaskState } from './useTasks'
 
@@ -25,102 +28,70 @@ const registry = [
   project({ id: 'cccc3333' }),
 ]
 
-describe('parsePersistedSelection', () => {
-  test('a valid JSON string array wins', () => {
-    expect(parsePersistedSelection('["aaaa1111","bbbb2222"]', 'cccc3333')).toEqual([
-      'aaaa1111',
-      'bbbb2222',
-    ])
+describe('migrateActiveProject', () => {
+  test('the persisted card wins over the retired composer key', () => {
+    expect(migrateActiveProject('aaaa1111', 'bbbb2222')).toBe('aaaa1111')
   })
 
-  test('an empty persisted array is kept as-is (deriveSelection handles the fallback)', () => {
-    expect(parsePersistedSelection('[]', 'cccc3333')).toEqual([])
-  })
-
-  test('the legacy single-project key migrates as a one-element selection', () => {
-    expect(parsePersistedSelection(null, 'aaaa1111')).toEqual(['aaaa1111'])
-  })
-
-  test('a corrupt multi value falls back to the legacy key', () => {
-    expect(parsePersistedSelection('{oops', 'aaaa1111')).toEqual(['aaaa1111'])
-    expect(parsePersistedSelection('"not-an-array"', 'aaaa1111')).toEqual(['aaaa1111'])
-    expect(parsePersistedSelection('[1,2]', 'aaaa1111')).toEqual(['aaaa1111'])
+  test('the retired composer target seeds the first active card', () => {
+    expect(migrateActiveProject(null, 'bbbb2222')).toBe('bbbb2222')
   })
 
   test('null when nothing usable was persisted', () => {
-    expect(parsePersistedSelection(null, null)).toBeNull()
-    expect(parsePersistedSelection('{oops', null)).toBeNull()
-    expect(parsePersistedSelection(null, '')).toBeNull()
+    expect(migrateActiveProject(null, null)).toBeNull()
   })
 })
 
-describe('deriveSelection', () => {
-  test('the persisted ids intersected with the registry win', () => {
-    expect(deriveSelection(['bbbb2222', 'cccc3333'], 'aaaa1111', registry)).toEqual([
-      'bbbb2222',
-      'cccc3333',
-    ])
+describe('deriveActiveProject', () => {
+  test('the persisted id wins while the registry knows it', () => {
+    expect(deriveActiveProject('bbbb2222', 'aaaa1111', registry)).toBe('bbbb2222')
   })
 
-  test('ids gone from the registry are dropped, not resurrected', () => {
-    expect(deriveSelection(['gone0000', 'bbbb2222'], null, registry)).toEqual(['bbbb2222'])
+  test('an id gone from the registry falls back to the API current', () => {
+    expect(deriveActiveProject('gone0000', 'cccc3333', registry)).toBe('cccc3333')
   })
 
   test('null persisted falls back to the API current', () => {
-    expect(deriveSelection(null, 'cccc3333', registry)).toEqual(['cccc3333'])
+    expect(deriveActiveProject(null, 'cccc3333', registry)).toBe('cccc3333')
   })
 
-  test('an empty intersection falls back to the API current', () => {
-    expect(deriveSelection(['gone0000'], 'bbbb2222', registry)).toEqual(['bbbb2222'])
+  test('without a usable current, the first registered project is active', () => {
+    expect(deriveActiveProject(null, null, registry)).toBe('aaaa1111')
+    expect(deriveActiveProject('gone0000', 'gone1111', registry)).toBe('aaaa1111')
   })
 
-  test('an empty persisted array falls back to the API current', () => {
-    expect(deriveSelection([], 'bbbb2222', registry)).toEqual(['bbbb2222'])
-  })
-
-  test('without a usable current, every registered project is selected', () => {
-    expect(deriveSelection(null, null, registry)).toEqual(['aaaa1111', 'bbbb2222', 'cccc3333'])
-    expect(deriveSelection([], 'gone0000', registry)).toEqual(['aaaa1111', 'bbbb2222', 'cccc3333'])
-  })
-
-  test('empty on an empty registry', () => {
-    expect(deriveSelection(['aaaa1111'], 'aaaa1111', [])).toEqual([])
+  test('null on an empty registry', () => {
+    expect(deriveActiveProject('aaaa1111', 'aaaa1111', [])).toBeNull()
   })
 })
 
-describe('deriveComposerProject', () => {
-  test('the last used project wins while it is still selected', () => {
-    expect(deriveComposerProject('bbbb2222', ['aaaa1111', 'bbbb2222'])).toBe('bbbb2222')
-  })
+const at = (projectId: string, status: TaskStatus) => ({ projectId, record: { status } })
 
-  test('a deselected last-used project falls back to the first selected', () => {
-    expect(deriveComposerProject('cccc3333', ['aaaa1111', 'bbbb2222'])).toBe('aaaa1111')
-    expect(deriveComposerProject(null, ['bbbb2222'])).toBe('bbbb2222')
-  })
-
-  test('null on an empty selection', () => {
-    expect(deriveComposerProject('aaaa1111', [])).toBeNull()
-  })
-})
-
-describe('filterBySelection', () => {
-  const items = [
-    { projectId: 'aaaa1111', id: 't1' },
-    { projectId: 'bbbb2222', id: 't2' },
-    { projectId: 'aaaa1111', id: 't3' },
-  ]
-
-  test('keeps only the selected projects, order preserved', () => {
-    expect(filterBySelection(items, new Set(['aaaa1111'])).map((i) => i.id)).toEqual(['t1', 't3'])
-    expect(filterBySelection(items, new Set(['aaaa1111', 'bbbb2222'])).map((i) => i.id)).toEqual([
-      't1',
-      't2',
-      't3',
+describe('countProjectActivity', () => {
+  test('counts waiting and active conversations per project', () => {
+    const counts = countProjectActivity([
+      at('aaaa1111', 'waiting_for_you'),
+      at('aaaa1111', 'review_ko'),
+      at('aaaa1111', 'running'),
+      at('bbbb2222', 'queued'),
+      at('bbbb2222', 'reviewing'),
     ])
+    expect(counts.get('aaaa1111')).toEqual({ waiting: 2, active: 1 })
+    expect(counts.get('bbbb2222')).toEqual({ waiting: 0, active: 2 })
   })
 
-  test('an empty selection shows nothing, never a cross-repo mix', () => {
-    expect(filterBySelection(items, new Set())).toEqual([])
+  test('done conversations count for nothing', () => {
+    const counts = countProjectActivity([
+      at('aaaa1111', 'shipped'),
+      at('aaaa1111', 'failed'),
+      at('aaaa1111', 'review_ok'),
+      at('aaaa1111', 'interrupted'),
+    ])
+    expect(counts.get('aaaa1111')).toBeUndefined()
+  })
+
+  test('empty input yields an empty map', () => {
+    expect(countProjectActivity([]).size).toBe(0)
   })
 })
 
@@ -147,7 +118,7 @@ function record(partial: Partial<TaskRecord> & { id: string }): TaskRecord {
 }
 
 function state(partial: Partial<TaskRecord> & { id: string }): TaskState {
-  return { projectId: 'aaaa1111', record: record(partial), events: [], liveText: '' }
+  return { projectId: 'aaaa1111', record: record(partial), events: [], liveText: '', liveTokens: 0 }
 }
 
 function mr(partial: Partial<ForgeMr> & { number: number }): ForgeMr {
@@ -274,6 +245,189 @@ describe('buildProjectTree', () => {
   })
 })
 
+// ── otherBranches ──────────────────────────────────────────────────────────
+
+function localBranch(name: string): LocalBranch {
+  return {
+    name,
+    lastCommitRelative: '2 hours ago',
+    subject: `work on ${name}`,
+    isCurrent: false,
+    worktreePath: null,
+  }
+}
+
+describe('otherBranches', () => {
+  test('keeps the API order and returns names only', () => {
+    expect(otherBranches([localBranch('develop'), localBranch('main')], [], [])).toEqual([
+      'develop',
+      'main',
+    ])
+  })
+
+  test('excludes branches that are already tree nodes', () => {
+    const tree = buildProjectTree([state({ id: 't1', base: 'main' })], [])
+    expect(otherBranches([localBranch('main'), localBranch('develop')], tree, [])).toEqual([
+      'develop',
+    ])
+  })
+
+  test('excludes the source branches of the displayed MRs', () => {
+    const mrs = [mr({ number: 1, sourceBranch: 'feature/x' })]
+    const tree = buildProjectTree([], mrs)
+    expect(otherBranches([localBranch('feature/x'), localBranch('develop')], tree, mrs)).toEqual([
+      'develop',
+    ])
+  })
+
+  test('excludes MR sources even when the MR list and the tree disagree', () => {
+    // An MR fetched after the tree was built: its source must not be offered.
+    const mrs = [mr({ number: 2, sourceBranch: 'feature/late' })]
+    expect(otherBranches([localBranch('feature/late'), localBranch('main')], [], mrs)).toEqual([
+      'main',
+    ])
+  })
+
+  test('excludes the technical codesema/task-* branches', () => {
+    expect(otherBranches([localBranch('codesema/task-t1'), localBranch('main')], [], [])).toEqual([
+      'main',
+    ])
+  })
+
+  test('empty input yields an empty list', () => {
+    expect(otherBranches([], [], [])).toEqual([])
+  })
+})
+
+// ── resolveBranchClick (amendment 4: the conversation IS its branch) ───────
+
+describe('resolveBranchClick', () => {
+  const workon = (id: string, branch: string, status: TaskStatus) =>
+    state({ id, branch, base: 'main', status })
+
+  test('an ACTIVE conversation on the exact branch opens it', () => {
+    const states = [workon('t1', 'feature/x', 'running')]
+    expect(resolveBranchClick('feature/x', null, states)).toEqual({ kind: 'open', taskId: 't1' })
+  })
+
+  test('every non-terminal status owns its branch', () => {
+    const active: TaskStatus[] = [
+      'queued',
+      'running',
+      'waiting_for_you',
+      'reviewing',
+      'review_ok',
+      'review_ko',
+      'interrupted',
+    ]
+    for (const status of active) {
+      expect(resolveBranchClick('feature/x', null, [workon('t1', 'feature/x', status)])).toEqual({
+        kind: 'open',
+        taskId: 't1',
+      })
+    }
+  })
+
+  test('terminal conversations (shipped/failed) never block: draft instead', () => {
+    for (const status of ['shipped', 'failed'] as TaskStatus[]) {
+      expect(resolveBranchClick('feature/x', null, [workon('t1', 'feature/x', status)])).toEqual({
+        kind: 'draft-workon',
+        branch: 'feature/x',
+        target: null,
+      })
+    }
+  })
+
+  test('an active conversation wins even over a trunk name', () => {
+    // Defensive: rule 1 of the frozen contract comes before the trunk rule.
+    const states = [workon('t1', 'main', 'running')]
+    expect(resolveBranchClick('main', null, states)).toEqual({ kind: 'open', taskId: 't1' })
+  })
+
+  test('a trunk without an active conversation drafts a work-on too: the MODE is the human choice', () => {
+    // Amendment: no branch-name routing. A plain click always means "work on
+    // it"; the draft column carries the switch to fork-from plus a trunk
+    // warning (see WorkspaceView).
+    for (const trunk of ['main', 'master', 'develop']) {
+      expect(resolveBranchClick(trunk, null, [])).toEqual({
+        kind: 'draft-workon',
+        branch: trunk,
+        target: null,
+      })
+    }
+  })
+
+  test('terminal conversations never capture the click (trunk or not)', () => {
+    const states = [workon('t1', 'main', 'shipped')]
+    expect(resolveBranchClick('main', mr({ number: 1, targetBranch: 'prod' }), states)).toEqual({
+      kind: 'draft-workon',
+      branch: 'main',
+      target: 'prod',
+    })
+  })
+
+  test('a non-trunk branch without conversation drafts a work-on', () => {
+    expect(resolveBranchClick('feature/x', null, [])).toEqual({
+      kind: 'draft-workon',
+      branch: 'feature/x',
+      target: null,
+    })
+  })
+
+  test('an MR click carries its target branch into the work-on draft', () => {
+    const clicked = mr({ number: 8, sourceBranch: 'feature/x', targetBranch: 'develop' })
+    expect(resolveBranchClick('feature/x', clicked, [])).toEqual({
+      kind: 'draft-workon',
+      branch: 'feature/x',
+      target: 'develop',
+    })
+  })
+
+  test('an MR whose source branch has an ACTIVE conversation opens it', () => {
+    const clicked = mr({ number: 8, sourceBranch: 'feature/x', targetBranch: 'develop' })
+    const states = [workon('t1', 'feature/x', 'waiting_for_you')]
+    expect(resolveBranchClick('feature/x', clicked, states)).toEqual({
+      kind: 'open',
+      taskId: 't1',
+    })
+  })
+
+  test('branch names match with their exact case, trunks included', () => {
+    // 'Main' is not a trunk, and a conversation on 'Feature/X' never answers
+    // for 'feature/x'.
+    expect(resolveBranchClick('Main', null, [])).toEqual({
+      kind: 'draft-workon',
+      branch: 'Main',
+      target: null,
+    })
+    const states = [workon('t1', 'Feature/X', 'running')]
+    expect(resolveBranchClick('feature/x', null, states)).toEqual({
+      kind: 'draft-workon',
+      branch: 'feature/x',
+      target: null,
+    })
+  })
+
+  test('conversations on other branches never interfere', () => {
+    const states = [workon('t1', 'feature/other', 'running'), workon('t2', 'feature/x', 'failed')]
+    expect(resolveBranchClick('feature/x', null, states)).toEqual({
+      kind: 'draft-workon',
+      branch: 'feature/x',
+      target: null,
+    })
+  })
+})
+
+describe('isTrunkBranch', () => {
+  test('exactly main, master and develop, case-sensitive', () => {
+    expect(isTrunkBranch('main')).toBe(true)
+    expect(isTrunkBranch('master')).toBe(true)
+    expect(isTrunkBranch('develop')).toBe(true)
+    expect(isTrunkBranch('Main')).toBe(false)
+    expect(isTrunkBranch('feature/main')).toBe(false)
+  })
+})
+
 describe('nodeHasActiveConversation', () => {
   test('true when a conversation is running or waiting', () => {
     const node = buildProjectTree([state({ id: 't1', status: 'waiting_for_you' })], [])[0]!
@@ -285,5 +439,25 @@ describe('nodeHasActiveConversation', () => {
     expect(nodeHasActiveConversation(done)).toBe(false)
     const empty = buildProjectTree([], [mr({ number: 1 })])[0]!
     expect(nodeHasActiveConversation(empty)).toBe(false)
+  })
+})
+
+describe('nameColor', () => {
+  test('deterministic: the same name always yields the same hue', () => {
+    expect(nameColor('nolyra')).toBe(nameColor('nolyra'))
+    expect(nameColor('codesema-cli')).toBe(nameColor('codesema-cli'))
+  })
+
+  test('hue stays in [0, 360)', () => {
+    for (const name of ['nolyra', 'codesema-cli', 'solstice-rush', 'a', '', 'émoji-ç']) {
+      const hue = nameColor(name)
+      expect(hue).toBeGreaterThanOrEqual(0)
+      expect(hue).toBeLessThan(360)
+      expect(Number.isInteger(hue)).toBe(true)
+    }
+  })
+
+  test('close names spread apart on the wheel', () => {
+    expect(nameColor('project-a')).not.toBe(nameColor('project-b'))
   })
 })

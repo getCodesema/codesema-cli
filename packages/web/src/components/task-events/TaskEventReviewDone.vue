@@ -64,9 +64,9 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 .tvr-root {
   margin: 6px 0;
   padding: 12px 14px;
-  border: 1px solid var(--sema-line-card);
+  border: 1px solid var(--cs-line-2);
   border-radius: 11px;
-  background: var(--sema-card);
+  background: var(--cs-surface);
 }
 
 .tvr-head {
@@ -81,7 +81,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--sema-ink-3);
+  color: var(--cs-muted);
 }
 
 .tvr-verdict {
@@ -92,32 +92,32 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 }
 
 .tvr-verdict--go {
-  color: var(--sema-green-text);
-  background: var(--sema-green-soft);
+  color: var(--cs-green-text);
+  background: var(--cs-green-soft);
 }
 
 .tvr-verdict--stop {
-  color: var(--sema-red-text);
-  background: var(--sema-red-soft);
+  color: var(--cs-red-text);
+  background: var(--cs-red-soft);
 }
 
 .tvr-verdict--check {
-  color: var(--sema-amber-text);
-  background: var(--sema-amber-soft);
+  color: var(--cs-amber-text);
+  background: var(--cs-amber-soft);
 }
 
 .tvr-time {
   margin-left: auto;
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--sema-ink-ghost);
+  color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
 }
 
 .tvr-count {
   margin: 7px 0 0;
   font-size: 12.5px;
-  color: var(--sema-ink-2);
+  color: var(--cs-text-2);
 }
 
 .tvr-actions {
@@ -132,14 +132,14 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
   font-family: inherit;
   padding: 5px 11px;
   border-radius: 8px;
-  border: 1px solid var(--sema-line-card);
-  background: var(--sema-card);
-  color: var(--sema-ink-2);
+  border: 1px solid var(--cs-line-2);
+  background: var(--cs-surface);
+  color: var(--cs-text-2);
   cursor: pointer;
   transition: border-color 0.12s ease;
 }
 
 .tvr-btn:hover {
-  border-color: var(--sema-ink-3);
+  border-color: var(--cs-muted);
 }
 </style>

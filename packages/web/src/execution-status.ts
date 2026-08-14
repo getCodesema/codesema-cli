@@ -8,7 +8,7 @@ import type { MessageKey } from './i18n'
 import type { TaskStatus } from './types'
 
 export type StatusVisual = {
-  /** Core signal color (dot, active border). Always a --sema-* token. */
+  /** Core signal color (dot, active border). Always a --cs-* token. */
   color: string
   /** Soft wash behind the status chip. */
   soft: string
@@ -17,6 +17,9 @@ export type StatusVisual = {
   /** Compact glyph for dense rows; never the only carrier of the state. */
   icon: string
   labelKey: MessageKey
+  /** Sentence-length phrase for the conversation header ("paused — waiting
+   * for your answer"), colored with `text`. */
+  phraseKey: MessageKey
   /** Discreet pulse: the agent itself is working right now (live signal). */
   pulse: boolean
   /** Strong amber treatment: the task is blocked on the human. */
@@ -24,24 +27,24 @@ export type StatusVisual = {
 }
 
 const green: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--sema-green)',
-  soft: 'var(--sema-green-soft)',
-  text: 'var(--sema-green-text)',
+  color: 'var(--cs-green)',
+  soft: 'var(--cs-green-soft)',
+  text: 'var(--cs-green-text)',
 }
 const amber: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--sema-amber)',
-  soft: 'var(--sema-amber-soft)',
-  text: 'var(--sema-amber-text)',
+  color: 'var(--cs-amber)',
+  soft: 'var(--cs-amber-soft)',
+  text: 'var(--cs-amber-text)',
 }
 const red: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--sema-red)',
-  soft: 'var(--sema-red-soft)',
-  text: 'var(--sema-red-text)',
+  color: 'var(--cs-red)',
+  soft: 'var(--cs-red-soft)',
+  text: 'var(--cs-red-text)',
 }
 const idle: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--sema-dot-idle)',
-  soft: 'var(--sema-hover)',
-  text: 'var(--sema-ink-3)',
+  color: 'var(--cs-dot-idle)',
+  soft: 'var(--cs-hover)',
+  text: 'var(--cs-muted)',
 }
 
 export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
@@ -49,6 +52,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     ...idle,
     icon: '○',
     labelKey: 'workspace.statusQueued',
+    phraseKey: 'workspace.phaseQueued',
     pulse: false,
     attention: false,
   },
@@ -56,6 +60,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     ...amber,
     icon: '●',
     labelKey: 'workspace.statusRunning',
+    phraseKey: 'workspace.phaseRunning',
     pulse: true,
     attention: false,
   },
@@ -63,6 +68,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     ...amber,
     icon: '?',
     labelKey: 'workspace.statusWaiting',
+    phraseKey: 'workspace.phaseWaiting',
     pulse: false,
     attention: true,
   },
@@ -70,6 +76,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     ...amber,
     icon: '◎',
     labelKey: 'workspace.statusReviewing',
+    phraseKey: 'workspace.phaseReviewing',
     pulse: true,
     attention: false,
   },
@@ -77,6 +84,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     ...green,
     icon: '✓',
     labelKey: 'workspace.statusReviewOk',
+    phraseKey: 'workspace.phaseReviewOk',
     pulse: false,
     attention: false,
   },
@@ -84,6 +92,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     ...red,
     icon: '✕',
     labelKey: 'workspace.statusReviewKo',
+    phraseKey: 'workspace.phaseReviewKo',
     pulse: false,
     attention: false,
   },
@@ -91,14 +100,23 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     ...green,
     icon: '↗',
     labelKey: 'workspace.statusShipped',
+    phraseKey: 'workspace.phaseShipped',
     pulse: false,
     attention: false,
   },
-  failed: { ...red, icon: '✕', labelKey: 'workspace.statusFailed', pulse: false, attention: false },
+  failed: {
+    ...red,
+    icon: '✕',
+    labelKey: 'workspace.statusFailed',
+    phraseKey: 'workspace.phaseFailed',
+    pulse: false,
+    attention: false,
+  },
   interrupted: {
     ...idle,
     icon: '‖',
     labelKey: 'workspace.statusInterrupted',
+    phraseKey: 'workspace.phaseInterrupted',
     pulse: false,
     attention: false,
   },

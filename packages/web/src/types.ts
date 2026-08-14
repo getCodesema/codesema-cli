@@ -221,6 +221,8 @@ export type TaskTurn = {
   question: string | null
   started_at: string
   ended_at: string | null
+  /** Total LLM tokens of the turn, when the agent stream reported usage. */
+  tokens?: number
 }
 
 export type TaskEventType =
@@ -261,6 +263,8 @@ export type TaskRecord = {
   work_ms: number
   wait_ms: number
   auto_ship: boolean
+  /** True when the conversation works directly ON its branch (no forked codesema/task-*). */
+  work_on?: boolean
   created_at: string
   updated_at: string
 }
@@ -273,6 +277,7 @@ export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task'; data: TaskRecord } }
   | { project_id: string; task_id: string; event: { name: 'task_event'; data: TaskEvent } }
   | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
+  | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
 
 // Mirrors packages/cli/src/projects.ts (global project registry) and the
 // /api/projects endpoints.

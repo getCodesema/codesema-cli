@@ -65,20 +65,20 @@ const detail = computed(() => {
 }
 
 .tvt-summary:hover .tvt-text {
-  color: var(--sema-ink);
+  color: var(--cs-text);
 }
 
 .tvt-glyph {
   flex: none;
   font-size: 11px;
-  color: var(--sema-ink-ghost);
+  color: var(--cs-ghost);
   transform: translateY(-1px);
 }
 
 .tvt-text {
   font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--sema-ink-3);
+  color: var(--cs-muted);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -86,7 +86,7 @@ const detail = computed(() => {
 .tvt-hint {
   flex: none;
   font-size: 10.5px;
-  color: var(--sema-ink-ghost);
+  color: var(--cs-ghost);
 }
 
 .tvt-time {
@@ -94,20 +94,20 @@ const detail = computed(() => {
   flex: none;
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--sema-ink-ghost);
+  color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
 }
 
 .tvt-detail {
   margin: 6px 0 4px 20px;
   padding: 9px 12px;
-  border: 1px solid var(--sema-line-soft);
+  border: 1px solid var(--cs-line);
   border-radius: 9px;
-  background: var(--sema-panel-2);
+  background: var(--cs-surface-2);
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.55;
-  color: var(--sema-ink-2);
+  color: var(--cs-text-2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

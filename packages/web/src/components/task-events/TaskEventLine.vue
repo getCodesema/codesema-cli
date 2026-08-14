@@ -11,10 +11,10 @@ import type { TaskEvent, TaskRecord } from '../../types'
 const props = defineProps<{ event: TaskEvent; task: TaskRecord; ctx: TaskEventCtx }>()
 
 const TONE_COLOR = {
-  go: 'var(--sema-green)',
-  check: 'var(--sema-amber)',
-  stop: 'var(--sema-red)',
-  idle: 'var(--sema-dot-idle)',
+  go: 'var(--cs-green)',
+  check: 'var(--cs-amber)',
+  stop: 'var(--cs-red)',
+  idle: 'var(--cs-dot-idle)',
 } as const
 
 const dotColor = computed(() => TONE_COLOR[eventTone(props.event.type)])
@@ -50,13 +50,13 @@ const stamp = computed(() => clockTime(props.event.at))
 }
 
 .tev-text {
-  color: var(--sema-ink-2);
+  color: var(--cs-text-2);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .tev-text--error {
-  color: var(--sema-red-text);
+  color: var(--cs-red-text);
   font-family: var(--font-mono);
   font-size: 12px;
 }
@@ -66,7 +66,7 @@ const stamp = computed(() => clockTime(props.event.at))
   flex: none;
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--sema-ink-ghost);
+  color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
 }
 </style>
