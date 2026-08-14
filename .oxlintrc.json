@@ -26,7 +26,8 @@
           "__CODESEMA_LOCALE__",
           "__CODESEMA_FIX_TOKEN__",
           "__CODESEMA_CONFIG_TOKEN__",
-          "__CODESEMA_MRREVIEW_TOKEN__"
+          "__CODESEMA_MRREVIEW_TOKEN__",
+          "__CODESEMA_TASKS_TOKEN__"
         ]
       }
     ],

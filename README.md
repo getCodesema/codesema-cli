@@ -17,16 +17,29 @@ Run one command on a branch: `codesema` computes the MR diff, hands it to **your
 ## Quick start
 
 ```bash
-npx -y codesema
+npx -y codesema            # opens the agentic workspace (web UI, see below)
+npx -y codesema review     # guided review of a local branch
 ```
 
-That is the whole flow:
+The review flow:
 
 1. **First run only**: a short wizard asks which agent CLI to use (auto-detected on your PATH), the model and the reasoning effort. Saved globally, never asked again; change it anytime with `codesema config`.
 2. **Pick a branch**: your local branches, sorted by last commit, arrow keys + type-to-filter.
 3. **The web UI opens immediately**: the review runs in the background and the page fills in live, diff stats first, then verdict, summary and findings as the agent writes them (true token streaming with Claude Code, best-effort with other agents).
 
 Re-running on the same branch reviews **incrementally**: the agent gets the previous review plus the diff since it, and updates it (pass `--full` to review from scratch).
+
+## Workspace
+
+`codesema` (or `codesema workspace`) opens a **local agentic workspace**: a web UI where you hand tasks to your AI agent in natural language. Each task lives in its own conversation and works in an isolated git worktree (`.codesema/worktrees/<task-id>/`) on its own branch (`codesema/task-<slug>`), so several tasks run in parallel without touching your checkout. The agent never commits: the runner commits the worktree at the end of each turn.
+
+**One workspace drives several repos.** Launched from inside a git repository, that repo is auto-registered as a project and becomes the current one; launched from anywhere else, the workspace opens on the projects you already registered (add more from the UI, by path). The registry is a small global file (`~/.config/codesema/projects.json`) mapping stable ids to repo roots — each repo keeps its own tasks and worktrees under its own `.codesema/`, so removing a project only unregisters it and never touches the repo. The concurrency cap is **global**: 3 running tasks at a time by default across all projects (`maxParallelTasks` in the config), extra ones queue FIFO.
+
+A task moves through explicit statuses: `queued` → `running`, then `waiting_for_you` when the agent ends its turn on a question (reply to start the next turn), or — when a turn finishes with changes — `reviewing`: every finished turn passes an **automatic local review** (the same review engine as `codesema review`, on the task's branch) before anything leaves your machine, landing on `review_ok` or `review_ko`. **Ship** then pushes the branch and opens the MR via `gh`/`glab` (status `shipped`); per-task **auto-ship** chains it without a click on a green review. `failed` and `interrupted` round out the lifecycle: an interrupted task (Ctrl-C, crash) keeps its worktree and session, and resumes when you reply to it.
+
+There are no named agent roles: every task gets the same anonymous dev agent with a neutral prompt — you define your workflow in the tasks you write, the tool stays out of the way.
+
+Tasks live as long as the process runs (no detached daemon). The first Ctrl-C shuts down cleanly — agents stopped, tasks persisted as `interrupted`, worktrees kept for resume — and a second one force-quits. Task state (record + append-only event journal) is stored under `.codesema/tasks/<id>/` of the task's repo.
 
 ## Dual review
 
@@ -91,7 +104,9 @@ An `agent` command coming from a repo's `.codesema/config.json` runs on your mac
 ## Commands
 
 ```bash
-codesema                       # interactive terminal: opens a navigable menu (review, show, sync, link, config)
+codesema                       # interactive terminal: opens the agentic workspace (web UI)
+codesema workspace             # same, explicit (accepts --port <n> and --no-open)
+codesema menu                  # navigable menu (workspace, review, show, sync, link, config)
 codesema review --branch feat/x --target develop   # non-interactive, CI-friendly
 codesema review --fail-on major   # CI gate: exit 2 if a finding is >= major (or use 'request_changes')
 codesema config                # change language / agent / model / effort
@@ -143,16 +158,20 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 
 ## Files
 
-| Path                             | Contents                                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------ |
-| `~/.config/codesema/config.json` | Global config (language, agent, model, effort, sync credentials), mode `0600`. |
-| `.codesema/config.json`          | Repo config, overrides the global one.                                         |
-| `.codesema/input.json`           | The prepared MR diff handed to the agent (`prep`).                             |
-| `.codesema/review.json`          | The latest review written by the agent.                                        |
-| `.codesema/reviews/`             | Archived reviews (5 kept per branch, used for incremental re-review).          |
-| `.codesema/PROMPT.md`            | Your team's extra review instructions, merged into the prompt.                 |
-| `.codesema/RULES.md`             | Your team's review rules (one `[Cn]` grid line each), hunted first.            |
-| `.codesema-ignore`               | Glob patterns excluded from the diff.                                          |
+| Path                                | Contents                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------ |
+| `~/.config/codesema/config.json`    | Global config (language, agent, model, effort, sync credentials), mode `0600`. |
+| `~/.config/codesema/projects.json`  | Global registry of workspace projects (id → git repo root).                    |
+| `~/.config/codesema/workspace.lock` | Guards against two workspace processes on the same machine.                    |
+| `.codesema/config.json`             | Repo config, overrides the global one.                                         |
+| `.codesema/input.json`              | The prepared MR diff handed to the agent (`prep`).                             |
+| `.codesema/review.json`             | The latest review written by the agent.                                        |
+| `.codesema/reviews/`                | Archived reviews (5 kept per branch, used for incremental re-review).          |
+| `.codesema/PROMPT.md`               | Your team's extra review instructions, merged into the prompt.                 |
+| `.codesema/RULES.md`                | Your team's review rules (one `[Cn]` grid line each), hunted first.            |
+| `.codesema/tasks/<id>/`             | Workspace task records and their append-only event journals.                   |
+| `.codesema/worktrees/<id>/`         | One isolated git worktree per workspace task.                                  |
+| `.codesema-ignore`                  | Glob patterns excluded from the diff.                                          |
 
 ## Exit codes
 
