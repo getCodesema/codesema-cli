@@ -94,8 +94,9 @@ function pausedFor(state: TaskState): string | null {
 
 const excerptOf = (state: TaskState): string | null => lastQuestion(state.events)
 
-// Done pile: history, folded by default.
-const doneOpen = ref(false)
+// Done pile: visible by default (Hasan: "je veux toujours voir les dones"),
+// still foldable for long histories.
+const doneOpen = ref(true)
 
 const isEmpty = computed(() => props.states.length === 0)
 
@@ -182,19 +183,21 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
       <!-- READY TO SHIP: green ring, one click away. -->
       <div v-if="groups.ready.length > 0" class="wq-group">
         <h2 class="wq-head wq-head--ready">{{ t(SECTION_LABEL.ready) }}</h2>
+        <!-- The WHOLE card opens the conversation; only Ship stops the bubble. -->
         <div
           v-for="state in groups.ready"
           :key="keyOf(state)"
           class="wq-card wq-card--ready"
           :class="{ 'wq-card--focused': focusedKeys.includes(keyOf(state)) }"
+          @click="emit('open', state)"
         >
-          <button class="wq-ready-open" @click="emit('open', state)">
+          <span class="wq-ready-open">
             <span class="wq-dot wq-dot--green" aria-hidden="true" />
             <span class="wq-title">{{ state.record.title }}</span>
             <span class="wq-project">{{ projectName(state) }}</span>
-          </button>
+          </span>
           <span class="wq-actions">
-            <button class="wq-ship" @click="emit('ship', state)">
+            <button class="wq-ship" @click.stop="emit('ship', state)">
               {{ t('workspace.shipAction') }}
             </button>
             <button class="wq-diff" :title="t('workspace.filesTitle')" @click="emit('open', state)">
@@ -514,6 +517,7 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
 
 /* Ready card: the green ring is the state — one click away from shipping. */
 .wq-card--ready {
+  cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 8px;
