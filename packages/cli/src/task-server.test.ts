@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -219,6 +219,178 @@ describe('createTaskManager', () => {
     expect(
       manager.create(project.id, { title: 't', prompt: 'p'.repeat(20_001), autoShip: false }),
     ).toMatchObject({ ok: false, code: 400 })
+    expect(manager.list(project.id)).toHaveLength(0)
+    expect(rig.starts).toHaveLength(0)
+  })
+
+  test('create validates an explicit base: unknown, option-lookalike and oversized are 400', () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature'], { cwd: repo, stdio: 'ignore' })
+    const project = register(repo)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    const input = { title: 't', prompt: 'p', autoShip: false }
+    expect(manager.create(project.id, { ...input, base: 'nope' })).toMatchObject({
+      ok: false,
+      code: 400,
+      error: expect.stringContaining('nope'),
+    })
+    expect(manager.create(project.id, { ...input, base: '-evil' })).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    expect(manager.create(project.id, { ...input, base: 'b'.repeat(201) })).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    // Nothing was persisted or handed to the runner by the refusals.
+    expect(manager.list(project.id)).toHaveLength(0)
+    expect(rig.starts).toHaveLength(0)
+
+    // Valid base (trimmed): recorded on the task, branch/worktree still lazy.
+    const created = manager.create(project.id, { ...input, base: '  feature  ' })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    expect(created.record.base).toBe('feature')
+    expect(created.record.branch).toBe('')
+    expect(loadTask(repo, created.record.id)?.base).toBe('feature')
+    expect(rig.starts.map((r) => r.id)).toEqual([created.record.id])
+
+    // A blank base means absent: auto-detection at launch, base stays empty.
+    const blank = manager.create(project.id, { ...input, base: '   ' })
+    expect(blank.ok).toBe(true)
+    if (blank.ok) {
+      expect(blank.record.base).toBe('')
+    }
+  })
+
+  test('create work-on: branch/base exclusivity and branch validation are 400, nothing persisted', () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature'], { cwd: repo, stdio: 'ignore' })
+    const project = register(repo)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    const input = { title: 't', prompt: 'p', autoShip: false }
+    expect(manager.create(project.id, { ...input, branch: 'feature', base: 'main' })).toMatchObject(
+      { ok: false, code: 400, error: expect.stringContaining('exclusive') },
+    )
+    expect(manager.create(project.id, { ...input, branch: 'ghost' })).toMatchObject({
+      ok: false,
+      code: 400,
+      error: expect.stringContaining('ghost'),
+    })
+    expect(manager.create(project.id, { ...input, branch: '-evil' })).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    expect(manager.create(project.id, { ...input, branch: 'b'.repeat(201) })).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    expect(manager.list(project.id)).toHaveLength(0)
+    expect(rig.starts).toHaveLength(0)
+  })
+
+  test('create work-on: records the branch verbatim, work_on, and the MR target as base', () => {
+    const repo = makeRepo()
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    run(['branch', 'feature'])
+    run(['branch', 'feature-two'])
+    run(['branch', 'feature-three'])
+    // An MR target may only exist on origin: simulate a remote-only 'release'.
+    run(['update-ref', 'refs/remotes/origin/release', 'main'])
+    const project = register(repo)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const input = { title: 't', prompt: 'p', autoShip: false }
+
+    // No target: base is the same trunk auto-detection as fork mode.
+    const plain = manager.create(project.id, { ...input, branch: '  feature  ' })
+    expect(plain.ok).toBe(true)
+    if (!plain.ok) {
+      return
+    }
+    expect(plain.record.branch).toBe('feature')
+    expect(plain.record.work_on).toBe(true)
+    expect(plain.record.base).toBe('main')
+    // The worktree stays lazy, as in fork mode: the runner materializes it.
+    expect(plain.record.worktree).toBe('')
+    expect(loadTask(repo, plain.record.id)).toMatchObject({ branch: 'feature', work_on: true })
+    expect(rig.starts.map((r) => r.id)).toEqual([plain.record.id])
+
+    // A remote-only target resolves and becomes the base.
+    const targeted = manager.create(project.id, {
+      ...input,
+      branch: 'feature-two',
+      target: 'release',
+    })
+    expect(targeted.ok).toBe(true)
+    if (targeted.ok) {
+      expect(targeted.record.base).toBe('release')
+    }
+
+    // An unresolvable target falls back to auto-detection — never a 400.
+    const bogus = manager.create(project.id, { ...input, branch: 'feature-three', target: 'nope' })
+    expect(bogus.ok).toBe(true)
+    if (bogus.ok) {
+      expect(bogus.record.base).toBe('main')
+    }
+  })
+
+  test('create work-on: ONE active conversation per branch — 409 with existing_task_id; terminal tasks never block', () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature'], { cwd: repo, stdio: 'ignore' })
+    const project = register(repo)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const seeded = seedTask(repo, 'already there')
+    seeded.branch = 'feature'
+    seeded.status = 'waiting_for_you'
+    saveTask(repo, seeded)
+
+    const input = { title: 't', prompt: 'p', autoShip: false }
+    const refused = manager.create(project.id, { ...input, branch: 'feature' })
+    expect(refused).toMatchObject({
+      ok: false,
+      code: 409,
+      error: expect.stringContaining('feature'),
+      existing_task_id: seeded.id,
+    })
+    expect(manager.list(project.id)).toHaveLength(1)
+
+    // shipped (and failed) are terminal: the branch is free again.
+    seeded.status = 'shipped'
+    saveTask(repo, seeded)
+    const allowed = manager.create(project.id, { ...input, branch: 'feature' })
+    expect(allowed.ok).toBe(true)
+  })
+
+  test('create work-on: a branch checked out in ANY worktree (main included) is a 409, nothing persisted', () => {
+    const repo = makeRepo()
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    run(['branch', 'feature'])
+    run(['worktree', 'add', join(repo, '.codesema', 'elsewhere'), 'feature'])
+    const project = register(repo)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const input = { title: 't', prompt: 'p', autoShip: false }
+
+    // 'main' is held by the MAIN worktree.
+    expect(manager.create(project.id, { ...input, branch: 'main' })).toMatchObject({
+      ok: false,
+      code: 409,
+      error: expect.stringContaining('checked out'),
+    })
+    // 'feature' is held by a secondary worktree.
+    expect(manager.create(project.id, { ...input, branch: 'feature' })).toMatchObject({
+      ok: false,
+      code: 409,
+      error: expect.stringContaining('checked out'),
+    })
     expect(manager.list(project.id)).toHaveLength(0)
     expect(rig.starts).toHaveLength(0)
   })
@@ -1129,6 +1301,191 @@ describe('workspace server end to end', () => {
 
       const list = await rawRequest(started.port, `/api/tasks?project=${project.id}`)
       expect(JSON.parse(list.body)).toMatchObject([{ id: record.id }])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('base=… over HTTP: worktree branches from that commit, unknown base is a 400', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    // A branch whose content diverges from main, checked back out of.
+    run(['checkout', '-b', 'feature'])
+    writeFileSync(join(repo, 'feature.txt'), 'f\n')
+    run(['add', '-A'])
+    run(['commit', '-m', 'feat: feature file'])
+    run(['checkout', 'main'])
+    const featureSha = execFileSync('git', ['rev-parse', 'feature'], { cwd: repo })
+      .toString()
+      .trim()
+
+    const runAgentFn = (): Promise<string> => Promise.resolve(claudeStream('all done'))
+    const manager = createTaskManager({ command: 'claude -p', timeoutMs: 5000, runAgentFn })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5191,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const headers = { 'x-codesema-tasks-token': token }
+
+      // Unknown base: readable 400 from the manager, no task ever persisted.
+      const bad = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project_id: project.id, title: 't', prompt: 'p', base: 'nope' }),
+      })
+      expect(bad.status).toBe(400)
+      expect((JSON.parse(bad.body) as { error: string }).error).toContain('nope')
+
+      // Non-string base: schema-level 400 before the manager is reached.
+      const badType = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project_id: project.id, title: 't', prompt: 'p', base: 42 }),
+      })
+      expect(badType.status).toBe(400)
+      expect(manager.list(project.id)).toHaveLength(0)
+
+      // Valid base: created, and the materialized worktree STARTS AT feature.
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 'From feature',
+          prompt: 'work here',
+          base: 'feature',
+        }),
+      })
+      expect(created.status).toBe(201)
+      const record = JSON.parse(created.body) as TaskRecord
+      expect(record.base).toBe('feature')
+
+      // The injected agent changes nothing, so the turn lands on review_ok
+      // through the reviewer's no-changes path (no review agent spawned).
+      await until(() => loadTask(repo, record.id)?.status === 'review_ok')
+      const task = loadTask(repo, record.id)
+      expect(task?.base).toBe('feature')
+      expect(task?.worktree).not.toBe('')
+      expect(existsSync(join(task!.worktree, 'feature.txt'))).toBe(true)
+      const worktreeHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: task!.worktree })
+        .toString()
+        .trim()
+      expect(worktreeHead).toBe(featureSha)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('work-on over HTTP: the turn commits DIRECTLY on the branch; a duplicate conversation is a 409', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    run(['branch', 'feature'])
+    const shaBefore = execFileSync('git', ['rev-parse', 'feature'], { cwd: repo }).toString().trim()
+
+    // The agent writes a file; the runner commits it at end of turn.
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      writeFileSync(join(options.cwd, 'work-on.txt'), 'w\n')
+      const raw = claudeStream('did the work')
+      options.onText?.(raw)
+      return Promise.resolve(raw)
+    }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      // The diff vs base is non-empty here: stub the reviewer so no real
+      // review agent ever spawns.
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+    })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5195,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const headers = { 'x-codesema-tasks-token': token }
+
+      // branch and base together: 400 through the whole stack.
+      const both = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 't',
+          prompt: 'p',
+          branch: 'feature',
+          base: 'main',
+        }),
+      })
+      expect(both.status).toBe(400)
+
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 'Work on feature',
+          prompt: 'continue the work',
+          branch: 'feature',
+        }),
+      })
+      expect(created.status).toBe(201)
+      const record = JSON.parse(created.body) as TaskRecord
+      expect(record).toMatchObject({ branch: 'feature', work_on: true, base: 'main' })
+
+      await until(() => loadTask(repo, record.id)?.status === 'review_ok')
+      const task = loadTask(repo, record.id)
+      // The worktree IS the branch: the turn's commit advanced refs/heads/feature.
+      expect(task?.branch).toBe('feature')
+      expect(
+        execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: task!.worktree })
+          .toString()
+          .trim(),
+      ).toBe('feature')
+      const tip = execFileSync('git', ['rev-parse', 'refs/heads/feature'], { cwd: repo })
+        .toString()
+        .trim()
+      expect(tip).not.toBe(shaBefore)
+      const subject = execFileSync('git', ['log', '-1', '--pretty=%s', 'feature'], { cwd: repo })
+        .toString()
+        .trim()
+      expect(subject).toBe(`task(${record.id}): Work on feature — turn 1`)
+      // No derived codesema/task-* branch anywhere.
+      const heads = execFileSync(
+        'git',
+        ['for-each-ref', 'refs/heads', '--format=%(refname:short)'],
+        {
+          cwd: repo,
+        },
+      ).toString()
+      expect(heads).not.toContain('codesema/task-')
+
+      // review_ok is NOT terminal: a second conversation on the branch is a
+      // 409 carrying the existing task id — the web opens that column.
+      const dup = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 'again',
+          prompt: 'p',
+          branch: 'feature',
+        }),
+      })
+      expect(dup.status).toBe(409)
+      expect(JSON.parse(dup.body)).toMatchObject({ existing_task_id: record.id })
     } finally {
       await started.stop()
     }

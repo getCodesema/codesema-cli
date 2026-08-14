@@ -230,6 +230,12 @@ export type ClaudeTaskParserHandlers = {
   onToolResult?: (summary: string) => void
   /** Cumulative streamed text, same contract as createClaudeStreamParser. */
   onText?: (text: string) => void
+  /**
+   * Cumulative LLM tokens (input+output) of the turn so far. Fired on every
+   * usage-bearing frame: completed assistant messages accumulate, the final
+   * result event is authoritative when it carries usage.
+   */
+  onTokens?: (total: number) => void
 }
 
 /**
@@ -238,11 +244,23 @@ export type ClaudeTaskParserHandlers = {
  * events are read from the complete `assistant`/`user` messages only, never
  * from partial stream_events, so each tool call is reported exactly once.
  */
+/** input+output of one usage payload; cache reads are billed input too but negligible for a live counter. */
+function usageTotal(usage: unknown): number | null {
+  if (!usage || typeof usage !== 'object') {
+    return null
+  }
+  const u = usage as { input_tokens?: unknown; output_tokens?: unknown }
+  const input = typeof u.input_tokens === 'number' ? u.input_tokens : 0
+  const output = typeof u.output_tokens === 'number' ? u.output_tokens : 0
+  return input > 0 || output > 0 ? input + output : null
+}
+
 export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): ClaudeStreamParser {
   const { onText } = handlers
   let lineBuffer = ''
   let streamedText = ''
   let resultText: string | null = null
+  let tokensSettled = 0
 
   const handleAssistant = (event: Record<string, unknown>) => {
     const message = event.message as { content?: ClaudeContentBlock[] } | undefined
@@ -259,6 +277,11 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         handlers.onToolUse?.(block.name, summarizePayload(block.input ?? {}))
       }
+    }
+    const usage = usageTotal((event.message as { usage?: unknown } | undefined)?.usage)
+    if (usage !== null) {
+      tokensSettled += usage
+      handlers.onTokens?.(tokensSettled)
     }
   }
 
@@ -306,8 +329,16 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
       }
       return
     }
-    if (event.type === 'result' && typeof event.result === 'string') {
-      resultText = event.result
+    if (event.type === 'result') {
+      if (typeof event.result === 'string') {
+        resultText = event.result
+      }
+      // The result frame's usage is the whole turn as the provider billed it.
+      const usage = usageTotal(event.usage)
+      if (usage !== null && usage > tokensSettled) {
+        tokensSettled = usage
+        handlers.onTokens?.(tokensSettled)
+      }
     }
   }
 

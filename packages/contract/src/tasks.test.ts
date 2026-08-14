@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  isActiveTaskStatus,
   isTaskId,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
@@ -10,6 +11,7 @@ import {
   TASK_TURNS_MAX,
   type TaskEvent,
   type TaskRecord,
+  type TaskStatus,
 } from './index.js'
 
 const validRecord: TaskRecord = {
@@ -34,6 +36,7 @@ const validRecord: TaskRecord = {
   work_ms: 300_000,
   wait_ms: 12_000,
   auto_ship: true,
+  work_on: false,
   created_at: '2026-08-14T10:00:00.000Z',
   updated_at: '2026-08-14T10:05:00.000Z',
 }
@@ -97,6 +100,7 @@ describe('sanitizeTaskRecord', () => {
     expect(r?.work_ms).toBe(0)
     expect(r?.wait_ms).toBe(0)
     expect(r?.auto_ship).toBe(false)
+    expect(r?.work_on).toBe(false)
     expect(typeof r?.created_at).toBe('string')
     // With no created_at, updated_at falls back to the same generated stamp.
     expect(r?.updated_at).toBe(r?.created_at ?? '')
@@ -142,6 +146,14 @@ describe('sanitizeTaskRecord', () => {
     expect(sanitizeTaskRecord({ ...validRecord, auto_ship: 1 })?.auto_ship).toBe(false)
   })
 
+  test('work_on: strictly boolean true; a legacy record without it is a fork task', () => {
+    expect(sanitizeTaskRecord({ ...validRecord, work_on: true })?.work_on).toBe(true)
+    expect(sanitizeTaskRecord({ ...validRecord, work_on: 'yes' })?.work_on).toBe(false)
+    const legacy: Record<string, unknown> = { ...validRecord }
+    delete legacy.work_on
+    expect(sanitizeTaskRecord(legacy)?.work_on).toBe(false)
+  })
+
   test('turns: invalid entries skipped, texts truncated, empty response null', () => {
     const r = sanitizeTaskRecord({
       ...validRecord,
@@ -167,6 +179,25 @@ describe('sanitizeTaskRecord', () => {
 
   test('non-array turns become an empty list', () => {
     expect(sanitizeTaskRecord({ ...validRecord, turns: 'nope' })?.turns).toEqual([])
+  })
+})
+
+describe('isActiveTaskStatus', () => {
+  test('only shipped and failed are terminal', () => {
+    const active: TaskStatus[] = [
+      'queued',
+      'running',
+      'waiting_for_you',
+      'reviewing',
+      'review_ok',
+      'review_ko',
+      'interrupted',
+    ]
+    for (const status of active) {
+      expect(isActiveTaskStatus(status)).toBe(true)
+    }
+    expect(isActiveTaskStatus('shipped')).toBe(false)
+    expect(isActiveTaskStatus('failed')).toBe(false)
   })
 })
 

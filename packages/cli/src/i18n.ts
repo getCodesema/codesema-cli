@@ -360,6 +360,9 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'agent.interrupted': 'agent interrupted',
   'task.noBase':
     'could not detect a base branch for the task (no origin/HEAD, develop, main or master)',
+  'task.unknownBase': "base branch '{base}' does not exist in this repository",
+  'task.unknownBranch': "branch '{branch}' does not exist in this repository",
+  'task.branchInUse': "branch '{branch}' is already checked out in another worktree ({path})",
 
   // --- task ship ---
   'ship.mrReviewLine':
@@ -754,6 +757,9 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'agent.interrupted': 'agent interrompu',
   'task.noBase':
     'impossible de détecter la branche de base de la tâche (ni origin/HEAD, ni develop, main ou master)',
+  'task.unknownBase': "la branche de base '{base}' n'existe pas dans ce dépôt",
+  'task.unknownBranch': "la branche '{branch}' n'existe pas dans ce dépôt",
+  'task.branchInUse': "la branche '{branch}' est déjà extraite dans un autre worktree ({path})",
 
   // --- task ship ---
   'ship.mrReviewLine':

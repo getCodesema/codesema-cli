@@ -40,6 +40,8 @@ export type CreateTaskInput = {
   base: string
   branch: string
   worktree: string
+  /** Work-on mode (POST /api/tasks `branch`): the task works directly on `branch`. Defaults to false (fork mode). */
+  workOn?: boolean
 }
 
 /**
@@ -68,6 +70,7 @@ export function createTask(cwd: string, input: CreateTaskInput): TaskRecord {
     work_ms: 0,
     wait_ms: 0,
     auto_ship: input.autoShip,
+    work_on: input.workOn === true,
     created_at: now,
     updated_at: now,
   }

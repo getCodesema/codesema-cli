@@ -98,8 +98,14 @@ export function parseTaskQuestion(response: string): string | null {
 }
 
 export type TaskTurnOutcome =
-  | { kind: 'done'; response: string; sessionId: string | null }
-  | { kind: 'question'; response: string; question: string; sessionId: string | null }
+  | { kind: 'done'; response: string; sessionId: string | null; tokens: number }
+  | {
+      kind: 'question'
+      response: string
+      question: string
+      sessionId: string | null
+      tokens: number
+    }
 
 export type RunTaskTurnOptions = {
   /** The task's worktree, not the main repo. */
@@ -115,6 +121,8 @@ export type RunTaskTurnOptions = {
   onEvent: (event: AppendTaskEventInput) => void
   /** Cumulative streamed text (SSE only, never persisted). */
   onText?: (text: string) => void
+  /** Cumulative token count of the turn (SSE live meter; final value persisted on the turn). */
+  onTokens?: (total: number) => void
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
 }
 
@@ -138,7 +146,11 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
     data: { turn: opts.task.turns.length, prompt: preview(opts.prompt) },
   })
 
-  let sessionId: string | null = session?.id ?? null
+  let sessionId: string | null = null
+  if (session) {
+    sessionId = session.id
+  }
+  let tokens = 0
   const parser = command.includes('--output-format stream-json')
     ? createClaudeTaskParser({
         onInit: (id) => {
@@ -147,6 +159,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
         onToolUse: (name, input) => opts.onEvent({ type: 'tool_use', data: { name, input } }),
         onToolResult: (summary) => opts.onEvent({ type: 'tool_result', data: { summary } }),
         ...(opts.onText ? { onText: opts.onText } : {}),
+        onTokens: (total) => {
+          tokens = total
+          opts.onTokens?.(total)
+        },
       })
     : null
   let fed = 0
@@ -176,10 +192,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   const question = parseTaskQuestion(response)
   if (question) {
     opts.onEvent({ type: 'question', data: { question: preview(question) } })
-    return { kind: 'question', response, question, sessionId }
+    return { kind: 'question', response, question, sessionId, tokens }
   }
   opts.onEvent({ type: 'message', data: { text: preview(response) } })
-  return { kind: 'done', response, sessionId }
+  return { kind: 'done', response, sessionId, tokens }
 }
 
 export type TaskActionResult = { ok: true } | { ok: false; code: number; error: string }
@@ -234,6 +250,8 @@ export type TaskRunnerOptions = {
   onTask?: (record: TaskRecord) => void
   onEvent?: (taskId: string, event: TaskEvent) => void
   onText?: (taskId: string, text: string) => void
+  /** Live token meter of the in-flight turn (SSE only; the final count lands on the turn). */
+  onTokens?: (taskId: string, total: number) => void
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
   /**
    * Automatic end-of-turn review (T4). When set, a successful 'done' turn
@@ -362,6 +380,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       turn.response = outcome.response || null
       turn.question = outcome.kind === 'question' ? outcome.question : null
       turn.ended_at = new Date().toISOString()
+      if (outcome.tokens > 0) {
+        turn.tokens = outcome.tokens
+      }
     }
     if (outcome.kind === 'done') {
       commitTurn(record)
@@ -421,7 +442,24 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     if (record.worktree && existsSync(record.worktree)) {
       return
     }
-    const wt = createTaskWorktree(opts.cwd, record.id, record.title)
+    if (record.work_on) {
+      // Work-on task (POST /api/tasks branch=…): the conversation identifies
+      // with its pre-existing branch — check the branch itself out, first
+      // materialization and re-materialization alike. record.base already
+      // holds the MR target (set by the server at creation): never overwrite
+      // it, and a branch deleted or checked out elsewhere in the meantime
+      // fails the turn with a readable error instead of forking a substitute.
+      const wt = createTaskWorktree(opts.cwd, record.id, record.title, { branch: record.branch })
+      record.worktree = wt.worktree
+      return
+    }
+    // A base set BEFORE the first materialization (worktree still empty) is an
+    // explicit request (POST /api/tasks base=…): honor it — a deleted branch
+    // fails the turn rather than silently branching from somewhere else. Once
+    // a worktree existed, base may hold a DETECTED ref (possibly remote, e.g.
+    // 'origin/main'), so re-materialization keeps the auto-detection path.
+    const explicitBase = !record.worktree && record.base ? { base: record.base } : {}
+    const wt = createTaskWorktree(opts.cwd, record.id, record.title, explicitBase)
     record.base = wt.base
     record.branch = wt.branch
     record.worktree = wt.worktree
@@ -477,6 +515,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       signal: controller.signal,
       onEvent: (event) => emit(record.id, event),
       onText: (text) => opts.onText?.(record.id, text),
+      onTokens: (total) => opts.onTokens?.(record.id, total),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
     })
       .then((outcome) => finishTurn(record, outcome, startedAt))
@@ -622,13 +661,20 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       }
       // Abandon is the one place the branch dies with the worktree: the task's
       // work is explicitly discarded, unlike interrupt/shutdown which keep both.
-      removeTaskWorktree(opts.cwd, taskId, record.branch, { deleteBranch: true })
+      // EXCEPT for work-on tasks — their branch pre-existed the conversation
+      // and belongs to the user, so only the worktree checkout is discarded.
+      removeTaskWorktree(opts.cwd, taskId, record.branch, { deleteBranch: !record.work_on })
       const turn = record.turns.at(-1)
       if (turn && !turn.ended_at) {
         turn.ended_at = new Date().toISOString()
       }
-      record.status = 'failed'
-      emit(taskId, { type: 'error', data: { message: 'task abandoned' } })
+      // Cleaning up a SHIPPED task is housekeeping, not a discard: its work
+      // lives on in the pushed branch/MR, the status must keep saying so.
+      // Everything else abandoned mid-cycle is discarded work: failed.
+      if (record.status !== 'shipped') {
+        record.status = 'failed'
+      }
+      emit(taskId, { type: 'error', data: { message: 'worktree removed, task abandoned' } })
       persist(record)
       return { ok: true }
     },

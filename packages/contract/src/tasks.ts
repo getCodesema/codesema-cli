@@ -20,6 +20,8 @@ export type TaskTurn = {
   question: string | null
   started_at: string
   ended_at: string | null
+  /** Total LLM tokens (input+output) consumed by this turn, when the agent's stream reports usage. */
+  tokens?: number
 }
 
 export type TaskEventType =
@@ -45,15 +47,24 @@ export type TaskEvent = {
   data: TaskEventData
 }
 
+/**
+ * Statuses that count as ACTIVE for the one-active-conversation-per-branch
+ * rule: everything non-terminal. Terminal tasks (shipped, failed) never block
+ * a new conversation on their branch.
+ */
+export function isActiveTaskStatus(status: TaskStatus): boolean {
+  return status !== 'shipped' && status !== 'failed'
+}
+
 export type TaskRecord = {
   version: 1
   /** 12 lowercase hex chars, doubles as the on-disk directory name. */
   id: string
   title: string
   status: TaskStatus
-  /** Base ref the task branched from (e.g. "main"). */
+  /** Fork mode: base ref the task branched from (e.g. "main"). Work-on mode: the MR target branch. */
   base: string
-  /** Task branch, "codesema/task-<slug>". */
+  /** Task branch: a generated "codesema/task-<slug>" (fork mode) or the pre-existing branch the conversation works on directly (work-on mode). */
   branch: string
   /** Absolute path of the task's git worktree. */
   worktree: string
@@ -66,11 +77,19 @@ export type TaskRecord = {
   work_ms: number
   wait_ms: number
   auto_ship: boolean
+  /**
+   * True for a work-on task (POST /api/tasks `branch`): the conversation works
+   * DIRECTLY on the pre-existing `branch` — the worktree is a plain checkout
+   * of it, and abandoning the task must never delete the branch.
+   */
+  work_on: boolean
   created_at: string
   updated_at: string
 }
 
 export const TASK_TITLE_MAX = 200
+/** Bound for a caller-supplied base branch name (POST /api/tasks `base`). */
+export const TASK_BASE_MAX = 200
 export const TASK_PATH_MAX = 500
 export const TASK_SESSION_ID_MAX = 200
 /** Applies to a turn's prompt, response and question alike. */
@@ -145,6 +164,9 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
       typeof t.question === 'string' ? t.question.slice(0, TASK_TURN_TEXT_MAX) || null : null,
     started_at: isoOrNow(t.started_at),
     ended_at: typeof t.ended_at === 'string' && t.ended_at ? t.ended_at : null,
+    ...(typeof t.tokens === 'number' && Number.isFinite(t.tokens) && t.tokens >= 0
+      ? { tokens: Math.min(Math.round(t.tokens), 1_000_000_000) }
+      : {}),
   }
 }
 
@@ -190,6 +212,9 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     work_ms: nonNegativeInt(r.work_ms),
     wait_ms: nonNegativeInt(r.wait_ms),
     auto_ship: r.auto_ship === true,
+    // Absent on records written before work-on mode existed: those are all
+    // fork tasks, so false is the honest default.
+    work_on: r.work_on === true,
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

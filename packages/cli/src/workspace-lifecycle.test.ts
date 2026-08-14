@@ -256,7 +256,10 @@ describe('abandon', () => {
     const record = loadTask(repo, task.id)
     expect(record?.status).toBe('failed')
     const last = readTaskEvents(repo, task.id).at(-1)
-    expect(last).toMatchObject({ type: 'error', data: { message: 'task abandoned' } })
+    expect(last).toMatchObject({
+      type: 'error',
+      data: { message: 'worktree removed, task abandoned' },
+    })
   })
 
   test('abandons a waiting task with uncommitted agent changes in the worktree', async () => {
@@ -310,4 +313,27 @@ describe('abandon', () => {
     expect(runner.abandon(fresh.id)).toEqual({ ok: true })
     expect(status(repo, fresh.id)).toBe('failed')
   })
+})
+
+// Cleanup of a SHIPPED task is housekeeping, never a discard: the status must
+// keep saying the work made it out.
+test('abandoning a shipped task keeps the shipped status', async () => {
+  const repo = makeRepo()
+  const task = makeTask(repo, 'shipped one', 'do work')
+  const runner = createTaskRunner({
+    cwd: repo,
+    command: 'claude -p',
+    timeoutMs: 1000,
+    runAgentFn: () => Promise.resolve('done'),
+  })
+  runner.start(loadTask(repo, task.id)!)
+  await until(() => ['waiting_for_you', 'review_ok'].includes(status(repo, task.id) ?? ''))
+  const shippedRecord = loadTask(repo, task.id)!
+  shippedRecord.status = 'shipped'
+  saveTask(repo, shippedRecord)
+
+  expect(runner.abandon(task.id)).toEqual({ ok: true })
+  const after = loadTask(repo, task.id)
+  expect(after?.status).toBe('shipped')
+  expect(existsSync(after!.worktree)).toBe(false)
 })

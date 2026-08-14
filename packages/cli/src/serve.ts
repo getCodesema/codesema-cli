@@ -528,23 +528,43 @@ async function handleTaskCreate(
     title?: unknown
     prompt?: unknown
     autoShip?: unknown
+    base?: unknown
+    branch?: unknown
+    target?: unknown
   } | null
   if (
     typeof b?.project_id !== 'string' ||
     !b.project_id.trim() ||
     typeof b.title !== 'string' ||
     typeof b.prompt !== 'string' ||
-    (b.autoShip !== undefined && typeof b.autoShip !== 'boolean')
+    (b.autoShip !== undefined && typeof b.autoShip !== 'boolean') ||
+    (b.base !== undefined && typeof b.base !== 'string') ||
+    (b.branch !== undefined && typeof b.branch !== 'string') ||
+    (b.target !== undefined && typeof b.target !== 'string')
   ) {
     return sendText(res, 400, 'bad request')
   }
+  // base/branch/target are only type-checked here: the manager owns the real
+  // validation (trim, length bound, option-lookalike refusal, branch
+  // existence → 400, base/branch exclusivity → 400, active-conversation and
+  // checked-out-elsewhere guards → 409).
   const created = tasks.manager.create(b.project_id.trim(), {
     title: b.title,
     prompt: b.prompt,
     autoShip: b.autoShip ?? false,
+    ...(typeof b.base === 'string' ? { base: b.base } : {}),
+    ...(typeof b.branch === 'string' ? { branch: b.branch } : {}),
+    ...(typeof b.target === 'string' ? { target: b.target } : {}),
   })
   if (!created.ok) {
-    return sendJson(res, created.code, { error: created.error })
+    // existing_task_id rides along on the uniqueness 409: the web client
+    // opens that conversation instead of showing a dead-end error.
+    return sendJson(res, created.code, {
+      error: created.error,
+      ...(created.existing_task_id !== undefined
+        ? { existing_task_id: created.existing_task_id }
+        : {}),
+    })
   }
   return sendJson(res, 201, created.record)
 }

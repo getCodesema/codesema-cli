@@ -8,6 +8,7 @@ import { archiveRecord } from './record.js'
 import {
   buildMrDescription,
   extractMrUrl,
+  isMrAlreadyExistsError,
   shipTask,
   type ShipCliOutcome,
   type ShipForgeExecFn,
@@ -63,6 +64,7 @@ function makeTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
     work_ms: 0,
     wait_ms: 0,
     auto_ship: false,
+    work_on: false,
     created_at: now,
     updated_at: now,
     ...overrides,
@@ -130,6 +132,23 @@ describe('extractMrUrl', () => {
   test('null when the output holds no URL', () => {
     expect(extractMrUrl('created PR #12')).toBeNull()
     expect(extractMrUrl('')).toBeNull()
+  })
+})
+
+// --- isMrAlreadyExistsError -----------------------------------------------
+
+describe('isMrAlreadyExistsError', () => {
+  test('matches the gh and glab wordings, case-insensitively', () => {
+    expect(
+      isMrAlreadyExistsError('a pull request for branch "x" into branch "main" already exists:'),
+    ).toBe(true)
+    expect(isMrAlreadyExistsError('merge request Already Exists for this source branch')).toBe(true)
+  })
+
+  test('never matches an unrelated failure', () => {
+    expect(isMrAlreadyExistsError('API rate limit exceeded')).toBe(false)
+    expect(isMrAlreadyExistsError('could not resolve to a Repository')).toBe(false)
+    expect(isMrAlreadyExistsError('')).toBe(false)
   })
 })
 
@@ -295,12 +314,44 @@ describe('shipTask', () => {
   test('forge CLI error: still shipped (push done), the error becomes the note', async () => {
     const cwd = makeDir()
     const git = gitExec({ kind: 'ok', stdout: '' })
-    const forge = forgeExec({ gh: { kind: 'error', message: 'a pull request already exists' } })
+    const forge = forgeExec({ gh: { kind: 'error', message: 'API rate limit exceeded' } })
     const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
     expect(outcome).toEqual({
       pushed: true,
       mrUrl: null,
-      note: 'gh failed: a pull request already exists',
+      note: 'gh failed: API rate limit exceeded',
+    })
+  })
+
+  test('gh "already exists": degraded success reusing the existing PR URL from the error', async () => {
+    const cwd = makeDir()
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({
+      gh: {
+        kind: 'error',
+        message:
+          'a pull request for branch "codesema/task-fix-the-login-flow" into branch "main" already exists:\nhttps://github.com/o/r/pull/17',
+      },
+    })
+    const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    expect(outcome).toEqual({
+      pushed: true,
+      mrUrl: 'https://github.com/o/r/pull/17',
+      note: 'gh: a merge request already exists for this branch — the push updated it',
+    })
+  })
+
+  test('glab "already exists" without a URL: degraded success, null URL, honest note', async () => {
+    const cwd = makeRepoWithOrigin('https://gitlab.com/o/r.git')
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({
+      glab: { kind: 'error', message: 'merge request already exists for this source branch' },
+    })
+    const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    expect(outcome).toEqual({
+      pushed: true,
+      mrUrl: null,
+      note: 'glab: a merge request already exists for this branch — the push updated it',
     })
   })
 

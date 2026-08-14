@@ -190,7 +190,12 @@ describe('runTaskTurn', () => {
       onText: (text) => texts.push(text),
       runAgentFn: fake.run,
     })
-    expect(outcome).toEqual({ kind: 'done', response: 'all done', sessionId: 'sess-123' })
+    expect(outcome).toEqual({
+      kind: 'done',
+      response: 'all done',
+      sessionId: 'sess-123',
+      tokens: 0,
+    })
     expect(events.map((e) => e.type)).toEqual([
       'turn_started',
       'tool_use',
@@ -256,7 +261,12 @@ describe('runTaskTurn', () => {
         return Promise.resolve('plain text answer')
       },
     })
-    expect(outcome).toEqual({ kind: 'done', response: 'plain text answer', sessionId: null })
+    expect(outcome).toEqual({
+      kind: 'done',
+      response: 'plain text answer',
+      sessionId: null,
+      tokens: 0,
+    })
   })
 
   test('the roles layer is gone: no role flags ever reach the command', async () => {

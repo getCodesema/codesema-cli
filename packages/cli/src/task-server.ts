@@ -10,7 +10,14 @@
 // across N projects ride one EventSource.
 
 import type { AgentRunOptions } from './agent.js'
-import { TASK_TITLE_MAX, TASK_TURN_TEXT_MAX, type TaskEvent, type TaskRecord } from './contract.js'
+import {
+  isActiveTaskStatus,
+  TASK_BASE_MAX,
+  TASK_TITLE_MAX,
+  TASK_TURN_TEXT_MAX,
+  type TaskEvent,
+  type TaskRecord,
+} from './contract.js'
 import { listProjects, type Project } from './projects.js'
 import { createTaskReviewer } from './task-review.js'
 import {
@@ -23,6 +30,12 @@ import {
   type TaskTurnReviewFn,
 } from './task-runner.js'
 import { shipTask, type ShipOutcome } from './task-ship.js'
+import {
+  branchCheckoutPath,
+  detectTaskBase,
+  resolveBranchRef,
+  shortBranchName,
+} from './task-worktree.js'
 import {
   appendTaskEvent,
   createTask,
@@ -43,15 +56,42 @@ export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task'; data: TaskRecord } }
   | { project_id: string; task_id: string; event: { name: 'task_event'; data: TaskEvent } }
   | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
+  | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
 
 export type CreateTaskManagerInput = {
   title: string
   prompt: string
   autoShip: boolean
+  /**
+   * Optional LOCAL branch the task branches from (draft columns pick one from
+   * the project tree). Absent or blank: the usual auto-detection at launch.
+   * Exclusive with `branch`.
+   */
+  base?: string
+  /**
+   * Work-on mode: LOCAL branch the conversation works DIRECTLY on (no derived
+   * codesema/task-* branch — the worktree is a checkout of the branch itself).
+   * Exclusive with `base`.
+   */
+  branch?: string
+  /**
+   * Work-on mode only: the MR target branch (a click on an MR node passes its
+   * targetBranch). Used as the record's base when it exists locally or on
+   * origin; otherwise the base falls back to trunk auto-detection — an
+   * unresolvable target is never a 400. Ignored without `branch`.
+   */
+  target?: string
 }
 
 export type TaskCreateResult =
-  { ok: true; record: TaskRecord } | { ok: false; code: number; error: string }
+  | { ok: true; record: TaskRecord }
+  | {
+      ok: false
+      code: number
+      error: string
+      /** On the 409 of the one-active-conversation-per-branch guard: the conversation to open instead. */
+      existing_task_id?: string
+    }
 
 /** Shared 404 for a project id absent from the registry (fits both result types). */
 const unknownProject = { ok: false as const, code: 404, error: 'unknown project' }
@@ -290,6 +330,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           task_id: taskId,
           event: { name: 'task_text', data: { text } },
         }),
+      onTokens: (taskId, tokens) =>
+        emit({
+          project_id: projectId,
+          task_id: taskId,
+          event: { name: 'task_meta', data: { tokens } },
+        }),
     })
     const ctx: ProjectContext = { project, runner, shipping: new Set() }
     contexts.set(projectId, ctx)
@@ -337,15 +383,105 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (prompt.length > TASK_TURN_TEXT_MAX) {
         return { ok: false, code: 400, error: `prompt too long (max ${TASK_TURN_TEXT_MAX})` }
       }
-      // base/branch/worktree stay empty here: the runner creates the worktree
-      // when the task actually launches (so a queued task costs nothing).
+      // Optional explicit base: must be an existing LOCAL branch, checked now
+      // so the caller gets a synchronous 400 instead of a task that fails at
+      // launch. Blank means absent (auto-detection at launch, as before).
+      // 'origin/x' and 'x' are the SAME branch: identity is the short name.
+      const base = shortBranchName((input.base ?? '').trim())
+      const branch = shortBranchName((input.branch ?? '').trim())
+      // `branch` (work-on) and `base` (fork) are two different creation modes:
+      // both at once is a caller bug, not something to guess a priority for.
+      if (branch && base) {
+        return { ok: false, code: 400, error: "'branch' and 'base' are mutually exclusive" }
+      }
+      if (base) {
+        if (base.length > TASK_BASE_MAX) {
+          return { ok: false, code: 400, error: `base too long (max ${TASK_BASE_MAX})` }
+        }
+        if (base.startsWith('-')) {
+          // Never let a branch name masquerade as a git option.
+          return { ok: false, code: 400, error: `invalid base branch name '${base}'` }
+        }
+        if (resolveBranchRef(ctx.project.path, base) === null) {
+          return { ok: false, code: 400, error: `base branch '${base}' does not exist` }
+        }
+      }
+      // Work-on mode: the record's branch IS the existing branch, fixed at
+      // creation. Every guard runs now, synchronously, so a refusal leaves
+      // nothing behind — no record, no worktree, no ref.
+      let recordBase = base
+      if (branch) {
+        if (branch.length > TASK_BASE_MAX) {
+          return { ok: false, code: 400, error: `branch too long (max ${TASK_BASE_MAX})` }
+        }
+        if (branch.startsWith('-')) {
+          return { ok: false, code: 400, error: `invalid branch name '${branch}'` }
+        }
+        if (resolveBranchRef(ctx.project.path, branch) === null) {
+          return { ok: false, code: 400, error: `branch '${branch}' does not exist` }
+        }
+        // ONE active conversation per branch. Only work-on creations need the
+        // guard: fork branches are minted at launch from the free refs/heads
+        // namespace, and every active task's branch keeps a live ref, so a
+        // fork can never collide with an active conversation's branch.
+        const existing = listTasks(ctx.project.path).find(
+          (task) => task.branch === branch && isActiveTaskStatus(task.status),
+        )
+        if (existing) {
+          return {
+            ok: false,
+            code: 409,
+            error: `a conversation is already active on branch '${branch}'`,
+            existing_task_id: existing.id,
+          }
+        }
+        // A branch checked out anywhere (the MAIN worktree counts) cannot be
+        // checked out again: refuse now rather than failing the first turn.
+        const takenBy = branchCheckoutPath(ctx.project.path, branch)
+        if (takenBy) {
+          return {
+            ok: false,
+            code: 409,
+            error: `branch '${branch}' is already checked out in another worktree (${takenBy})`,
+          }
+        }
+        // The record's base is the MR target: the caller's `target` when it
+        // resolves (an MR target may only exist on origin), otherwise the same
+        // trunk auto-detection as fork mode — an unresolvable target is never
+        // a 400.
+        const target = shortBranchName((input.target ?? '').trim())
+        const targetResolves =
+          target && !target.startsWith('-') && resolveBranchRef(ctx.project.path, target) !== null
+        if (targetResolves) {
+          recordBase = target
+        } else {
+          try {
+            recordBase = detectTaskBase(ctx.project.path)
+          } catch (err) {
+            // No trunk anywhere: the MR target of a work-on conversation
+            // cannot be determined, and unlike fork mode there is no later
+            // launch step to surface it — refuse synchronously.
+            return {
+              ok: false,
+              code: 400,
+              error: err instanceof Error ? err.message : String(err),
+            }
+          }
+        }
+      }
+      // branch/worktree stay empty here (fork mode): the runner creates the
+      // worktree when the task actually launches (so a queued task costs
+      // nothing). A non-empty base on a never-materialized record is the
+      // runner's signal to branch from it instead of auto-detecting. A
+      // work-on record instead carries its branch (and workOn) from day one.
       const record = createTask(ctx.project.path, {
         title,
         prompt,
         autoShip: input.autoShip,
-        base: '',
-        branch: '',
+        base: recordBase,
+        branch,
         worktree: '',
+        workOn: branch !== '',
       })
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
       // start() rereads the task.json written just above; on a fresh 'queued'

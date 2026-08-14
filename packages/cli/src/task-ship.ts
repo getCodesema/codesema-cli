@@ -77,6 +77,18 @@ export function extractMrUrl(raw: string): string | null {
   return match ? match[0].replace(/[.,)\]]+$/, '') : null
 }
 
+/**
+ * Best-effort detection of the "an MR already exists for this branch" failure
+ * a second `gh pr create` / `glab mr create` run reports. Matched on the
+ * common "already exists" wording both CLIs use (gh additionally prints the
+ * existing PR's URL in that message, which extractMrUrl can then recover).
+ * Deliberately loose: a phrasing this misses simply keeps the current
+ * error-note behavior, it never turns a real failure into a success.
+ */
+export function isMrAlreadyExistsError(message: string): boolean {
+  return /already exists/i.test(message)
+}
+
 /** Best-effort load of the task's archived review; null on any miss (same tolerance as buildFixTurnPrompt). */
 function loadReview(task: TaskRecord): ReviewRecord | null {
   if (!task.review_ref) {
@@ -175,6 +187,18 @@ async function createMr(opts: ShipTaskOptions, execForge: ShipForgeExecFn): Prom
       continue
     }
     if (outcome.kind === 'error') {
+      if (isMrAlreadyExistsError(outcome.message)) {
+        // An MR already exists for this branch (a re-ship of a work-on task
+        // whose branch had one open, typically): the push DID land the
+        // commits on it, so this is a degraded success, not a failure. gh
+        // prints the existing PR's URL inside the error message — recover it
+        // when present.
+        return {
+          pushed: true,
+          mrUrl: extractMrUrl(outcome.message),
+          note: `${candidate.cli}: a merge request already exists for this branch — the push updated it`,
+        }
+      }
       // Keep trying (a dual-remote setup may have the other CLI working) but
       // remember the failure: it is the honest note if nothing else succeeds.
       note = `${candidate.cli} failed: ${outcome.message}`

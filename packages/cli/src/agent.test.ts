@@ -341,3 +341,36 @@ describe('runAgent abort', () => {
     await expect(promise).rejects.toThrow(/interrupted|interrompu/)
   })
 })
+
+describe('createClaudeTaskParser tokens', () => {
+  test('accumulates assistant usage and lets the result frame settle the total', () => {
+    const seen: number[] = []
+    const parser = createClaudeTaskParser({ onTokens: (n) => seen.push(n) })
+    const line = (obj: unknown) => JSON.stringify(obj) + '\n'
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [], usage: { input_tokens: 100, output_tokens: 50 } },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [], usage: { input_tokens: 200, output_tokens: 80 } },
+      }),
+    )
+    // The provider-billed total on the result frame wins when larger.
+    parser.push(
+      line({ type: 'result', result: 'done', usage: { input_tokens: 400, output_tokens: 150 } }),
+    )
+    expect(seen).toEqual([150, 430, 550])
+  })
+
+  test('frames without usage never fire the meter', () => {
+    const seen: number[] = []
+    const parser = createClaudeTaskParser({ onTokens: (n) => seen.push(n) })
+    parser.push(JSON.stringify({ type: 'assistant', message: { content: [] } }) + '\n')
+    parser.push(JSON.stringify({ type: 'result', result: 'done' }) + '\n')
+    expect(seen).toEqual([])
+  })
+})
