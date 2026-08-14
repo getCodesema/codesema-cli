@@ -12,6 +12,7 @@ import {
   agentEnv,
   claudeStreamCommand,
   createClaudeTaskParser,
+  flagPresent,
   runAgent,
   type AgentRunOptions,
 } from './agent.js'
@@ -53,6 +54,17 @@ export function taskCommandFor(command: string, opts: { session: TaskSession | n
   let cmd = fixCommandFor(command)
   if (!/^claude(\s|$)/.test(command)) {
     return cmd
+  }
+  // CVE-2026-25725 lesson: a turn could write .claude/settings.json or
+  // .mcp.json INTO the worktree, and the next resumed turn would load them —
+  // hooks and MCP servers running with host privileges. Task agents therefore
+  // load user-level settings only and ignore repo-provided MCP config, like
+  // the review harness. User-set flags win (flagPresent, quote-aware).
+  if (!flagPresent(cmd, '--strict-mcp-config')) {
+    cmd += ' --strict-mcp-config'
+  }
+  if (!flagPresent(cmd, '--setting-sources')) {
+    cmd += ' --setting-sources user'
   }
   cmd = claudeStreamCommand(cmd) ?? cmd
   if (opts.session) {

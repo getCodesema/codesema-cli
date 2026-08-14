@@ -12,6 +12,7 @@
 // <globalConfigDir()>/workspace.lock prevents a second workspace process from
 // racing this one's registry and task stores.
 
+import { knownAgent } from './agent.js'
 import { isRepoAgentTrusted, loadConfig, loadRepoConfig } from './config.js'
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
 import { tryGit } from './git.js'
@@ -131,6 +132,12 @@ export async function workspace(opts: {
   const repoRoot = tryGit(['rev-parse', '--show-toplevel'], opts.cwd)
   const config = loadConfig(repoRoot)
   const agentCommand = resolveAgentCommand(opts.cwd, repoRoot, config.agent)
+  // A custom (non claude/codex/gemini) agent command gets NO hardening flags:
+  // full env, no read-only harness, no strict-mcp. The user chose it, but the
+  // workspace must say so out loud once per boot.
+  if (agentCommand && knownAgent(agentCommand) === null) {
+    console.log(t('workspace.customAgentWarning', { command: agentCommand }))
+  }
 
   // The lock must be held BEFORE the manager touches any task store: its boot
   // recovery would mark another live workspace's running tasks as orphans.

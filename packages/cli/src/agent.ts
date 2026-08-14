@@ -6,7 +6,7 @@ const CLAUDE_STREAM_FLAGS = '--output-format stream-json --include-partial-messa
 const AGENT_BINS = ['claude', 'codex', 'gemini'] as const
 type KnownAgent = (typeof AGENT_BINS)[number]
 
-function knownAgent(command: string): KnownAgent | null {
+export function knownAgent(command: string): KnownAgent | null {
   const first = command.trim().split(/\s+/)[0] ?? ''
   const bin = first.split('/').pop() ?? ''
   return (AGENT_BINS as readonly string[]).includes(bin) ? (bin as KnownAgent) : null
@@ -21,7 +21,7 @@ function escapeRegExp(s: string): string {
  * literal inside another argument (e.g. an --append-system-prompt text) must
  * not disable the hardening.
  */
-function flagPresent(command: string, flag: string): boolean {
+export function flagPresent(command: string, flag: string): boolean {
   const unquoted = command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, ' ')
   return new RegExp(`(^|\\s)${escapeRegExp(flag)}(=|\\s|$)`).test(unquoted)
 }

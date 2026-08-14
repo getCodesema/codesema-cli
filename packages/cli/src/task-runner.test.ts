@@ -582,3 +582,28 @@ describe('createTaskRunner', () => {
     expect(pool.running.size).toBe(0)
   })
 })
+
+// Hardening (CVE-2026-25725 lesson): a worktree-written .claude/settings.json
+// or .mcp.json must never be loaded by the NEXT resumed turn.
+describe('taskCommandFor hardening', () => {
+  test('claude task commands ignore repo settings and repo MCP config', () => {
+    const cmd = taskCommandFor('claude -p', { session: null })
+    expect(cmd).toContain('--strict-mcp-config')
+    expect(cmd).toContain('--setting-sources user')
+  })
+
+  test('user-set flags win, even quoted noise does not count as set', () => {
+    const explicit = taskCommandFor('claude -p --setting-sources user,project', { session: null })
+    expect(explicit).toContain('--setting-sources user,project')
+    expect(explicit.match(/--setting-sources/g)).toHaveLength(1)
+    const quoted = taskCommandFor(
+      `claude -p --append-system-prompt 'mention --strict-mcp-config here'`,
+      { session: null },
+    )
+    expect(quoted.match(/--strict-mcp-config/g)).toHaveLength(2)
+  })
+
+  test('non-claude commands stay untouched', () => {
+    expect(taskCommandFor('codex exec -', { session: null })).not.toContain('--strict-mcp-config')
+  })
+})
