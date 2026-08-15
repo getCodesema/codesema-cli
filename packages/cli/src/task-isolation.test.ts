@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,6 +15,7 @@ import {
   agentContainerName,
   agentHomeVolume,
   agentImageTag,
+  agentUserCommand,
   bootstrapAgentHome,
   buildAgentImage,
   buildSquidConfig,
@@ -282,6 +283,120 @@ describe('parseJsonc', () => {
 
 // --- agent image -----------------------------------------------------------
 
+/** A uid/gid pair no real account owns: the "free" side of every branch below. */
+const FREE_UID = 61234
+const FREE_GID = 61235
+
+type UserSetupRun = { code: number; stdout: string; stderr: string; calls: string[] }
+
+/**
+ * Runs the generated user-setup script FOR REAL, with the distro's user tools
+ * replaced by stubs that only record their argv. What is asserted is then the
+ * BRANCH the script takes on a given base — the bug it replaces was a chain of
+ * `||` that read fine and could not work on any busybox base.
+ *
+ * PATH deliberately excludes /usr/sbin, where useradd/adduser/groupadd live on
+ * a real machine: a probe must only ever find the stubs this rig installed.
+ */
+function runUserSetup(opts: { uid: number; gid: number; tools: readonly string[] }): UserSetupRun {
+  const dir = makeDir('codesema-user-setup-')
+  const log = join(dir, 'calls.log')
+  // mkdir/chown are stubbed too: the script's paths are absolute (/home/agent,
+  // /work) and a test must not touch the host's filesystem.
+  for (const tool of ['mkdir', 'chown', ...opts.tools]) {
+    writeFileSync(join(dir, tool), `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >> "${log}"\n`, {
+      mode: 0o755,
+    })
+  }
+  const done = spawnSync('sh', ['-c', agentUserCommand(opts.uid, opts.gid)], {
+    encoding: 'utf8',
+    env: { PATH: `${dir}:/usr/bin:/bin` },
+  })
+  let calls: string[] = []
+  try {
+    calls = readFileSync(log, 'utf8').trim().split('\n').filter(Boolean)
+  } catch {
+    calls = []
+  }
+  return { code: done.status ?? -1, stdout: done.stdout, stderr: done.stderr, calls }
+}
+
+const called = (run: UserSetupRun, tool: string): string[] =>
+  run.calls.filter((line) => line.startsWith(`${tool} `))
+
+describe('agentUserCommand', () => {
+  // THE alpine bug: node:*-alpine already owns uid/gid 1000 with its `node`
+  // user, busybox has no groupadd and its adduser has no -o, so a recipe that
+  // insists on CREATING the host uid could not build on any alpine base.
+  test('a base that already owns the host uid is reused, nothing is created', () => {
+    // uid/gid 0 is the one account every machine running this test has.
+    const run = runUserSetup({ uid: 0, gid: 0, tools: ['useradd', 'adduser', 'groupadd'] })
+    expect(run.code).toBe(0)
+    expect(run.stdout).toContain('reusing')
+    expect(called(run, 'useradd')).toEqual([])
+    expect(called(run, 'adduser')).toEqual([])
+    expect(called(run, 'groupadd')).toEqual([])
+    // The cage home is still prepared and handed to that uid.
+    expect(called(run, 'mkdir').join(' ')).toContain('/home/agent /work')
+    expect(called(run, 'chown').join(' ')).toContain('0:0 /home/agent')
+  })
+
+  test('a free uid is created, group first, with the shadow tools when they exist', () => {
+    const run = runUserSetup({
+      uid: FREE_UID,
+      gid: FREE_GID,
+      tools: ['groupadd', 'useradd', 'addgroup', 'adduser'],
+    })
+    expect(run.code).toBe(0)
+    expect(called(run, 'groupadd')).toEqual([`groupadd -g ${FREE_GID} agent`])
+    expect(called(run, 'useradd')[0]).toContain(`-u ${FREE_UID}`)
+    expect(called(run, 'useradd')[0]).toContain(`-g ${FREE_GID}`)
+    expect(called(run, 'useradd')[0]).toContain('-d /home/agent')
+    // The busybox spellings stay untouched when the shadow ones are there.
+    expect(called(run, 'addgroup')).toEqual([])
+    expect(called(run, 'adduser')).toEqual([])
+  })
+
+  test('a busybox base uses addgroup/adduser, and never an option busybox lacks', () => {
+    const run = runUserSetup({ uid: FREE_UID, gid: FREE_GID, tools: ['addgroup', 'adduser'] })
+    expect(run.code).toBe(0)
+    expect(called(run, 'addgroup')).toEqual([`addgroup -g ${FREE_GID} agent`])
+    expect(called(run, 'adduser')[0]).toContain(`-u ${FREE_UID}`)
+    expect(called(run, 'adduser')[0]).toContain('-G agent')
+    expect(called(run, 'adduser')[0]).toContain('-h /home/agent')
+    // -o (allow a duplicate uid) does not exist in busybox: the recipe must
+    // never need it, since it only ever creates a uid nobody owns.
+    expect(agentUserCommand(FREE_UID, FREE_GID)).not.toContain('-o ')
+  })
+
+  test('a taken gid with a free uid reuses the existing group instead of failing on it', () => {
+    // gid 0 is taken everywhere; its name is what adduser -G must receive.
+    const run = runUserSetup({ uid: FREE_UID, gid: 0, tools: ['addgroup', 'adduser'] })
+    expect(run.code).toBe(0)
+    expect(called(run, 'addgroup')).toEqual([])
+    expect(called(run, 'adduser')[0]).toMatch(/-G (root|wheel)/)
+    expect(called(run, 'adduser')[0]).toContain(`-u ${FREE_UID}`)
+  })
+
+  test('a base that can create neither fails the build, loudly and actionably', () => {
+    const run = runUserSetup({ uid: FREE_UID, gid: 0, tools: [] })
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('codesema:')
+    expect(run.stderr).toContain('neither useradd nor adduser')
+    expect(run.stderr).toContain('.devcontainer')
+  })
+
+  test('a base with no way to own the gid fails the same way, naming the gid', () => {
+    const run = runUserSetup({ uid: FREE_UID, gid: FREE_GID, tools: ['useradd', 'adduser'] })
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('codesema:')
+    expect(run.stderr).toContain('neither groupadd nor addgroup')
+    expect(run.stderr).toContain(String(FREE_GID))
+    // It stopped there: no user was created against a group that is not owned.
+    expect(called(run, 'useradd')).toEqual([])
+  })
+})
+
 describe('generateAgentDockerfile', () => {
   const dockerfile = generateAgentDockerfile({
     baseRef: 'node:22',
@@ -291,15 +406,17 @@ describe('generateAgentDockerfile', () => {
     gid: 1000,
   })
 
-  test('derives from the base and ends as the non-root agent user', () => {
+  test('derives from the base and ends as the non-root host uid', () => {
     expect(dockerfile).toContain('FROM node:22')
     expect(dockerfile).toContain(DEFAULT_CLAUDE_INSTALL_COMMAND)
-    expect(dockerfile.trimEnd().endsWith('USER agent')).toBe(true)
+    // NUMERIC on purpose: when the base's own user is reused, its name is only
+    // known inside the build and a Dockerfile cannot carry it into USER.
+    expect(dockerfile.trimEnd().endsWith('USER 1000:1000')).toBe(true)
     expect(dockerfile).toContain('ENV HOME=/home/agent')
     expect(dockerfile).toContain('WORKDIR /work')
   })
 
-  test('creates agent with the host uid/gid so the mounted worktree stays writable', () => {
+  test('runs as the host uid/gid so the mounted worktree stays writable', () => {
     const asUser = generateAgentDockerfile({
       baseRef: 'node:22',
       installCommand: 'true',
@@ -310,6 +427,16 @@ describe('generateAgentDockerfile', () => {
     expect(asUser).toContain('-u 1500')
     expect(asUser).toContain('-g 1501')
     expect(asUser).toContain('chown -R 1500:1501 /home/agent')
+    expect(asUser.trimEnd().endsWith('USER 1500:1501')).toBe(true)
+  })
+
+  // HOME is the mount point of the per-task home volume (containerRunArgs), so
+  // it must NOT follow a reused user's own home (`/home/node` on a node base):
+  // the ENV wins over the passwd entry, and both sides agree on one path.
+  test('HOME is the cage home whatever the reused user owns', () => {
+    expect(dockerfile).toContain('ENV HOME=/home/agent')
+    expect(dockerfile).toContain('mkdir -p /home/agent /work')
+    expect(dockerfile).toContain('chown -R 1000:1000 /home/agent')
   })
 
   test('every RUN uses the JSON exec form: a hostile postCreateCommand cannot break out', () => {
@@ -346,13 +473,15 @@ describe('generateAgentDockerfile', () => {
     expect(GIT_INSTALL_COMMAND).toContain('codesema: this base image ships no git')
   })
 
-  test('git is installed before the agent CLI, both as root, before USER agent', () => {
+  test('user setup, git and the agent CLI all run as root, before the final USER', () => {
     const lines = dockerfile.split('\n')
+    const userStep = lines.findIndex((line) => line.includes('getent passwd 1000'))
     const gitStep = lines.findIndex((line) => line.includes('apk add --no-cache git'))
     const claudeStep = lines.findIndex((line) => line.includes(DEFAULT_CLAUDE_INSTALL_COMMAND))
-    expect(gitStep).toBeGreaterThan(lines.indexOf('USER root'))
+    expect(userStep).toBeGreaterThan(lines.indexOf('USER root'))
+    expect(userStep).toBeLessThan(gitStep)
     expect(gitStep).toBeLessThan(claudeStep)
-    expect(claudeStep).toBeLessThan(lines.indexOf('USER agent'))
+    expect(claudeStep).toBeLessThan(lines.indexOf('USER 1000:1000'))
   })
 
   test('postCreateCommand is best effort: it can never fail the cage build', () => {
@@ -406,6 +535,30 @@ describe('agentImageTag', () => {
     expect(withoutGit).not.toBe(recipe)
     expect(agentImageTag(DEFAULT_BASE_IMAGE, recipe, '2.1.233')).not.toBe(
       agentImageTag(DEFAULT_BASE_IMAGE, withoutGit, '2.1.233'),
+    )
+  })
+
+  // Same guarantee for the user step: every image built by the create-only
+  // recipe carries the old step in its hash, so none of them is reused.
+  test('changing the user step retags: no image built by the broken recipe is reused', () => {
+    const recipe = generateAgentDockerfile({
+      baseRef: DEFAULT_BASE_IMAGE,
+      installCommand: DEFAULT_CLAUDE_INSTALL_COMMAND,
+      postCreate: null,
+      uid: 1000,
+      gid: 1000,
+    })
+    const broken = recipe
+      .split('\n')
+      .map((line) =>
+        line.includes('getent passwd 1000')
+          ? 'RUN ["sh","-lc","useradd -o -m -u 1000 -g 1000 -s /bin/sh agent"]'
+          : line,
+      )
+      .join('\n')
+    expect(broken).not.toBe(recipe)
+    expect(agentImageTag(DEFAULT_BASE_IMAGE, recipe, '2.1.233')).not.toBe(
+      agentImageTag(DEFAULT_BASE_IMAGE, broken, '2.1.233'),
     )
   })
 })

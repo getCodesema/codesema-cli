@@ -7,7 +7,8 @@
 // - a BASE image resolved from the repo itself (devcontainer core → the checks
 //   detection image → node:26), so the agent works in the environment the
 //   project already describes for humans;
-// - an AGENT image derived from it (non-root `agent` user + git + claude-code),
+// - an AGENT image derived from it (non-root user at the host's uid + git +
+//   claude-code),
 //   tagged by content hash and built once;
 // - a per-workspace INTERNAL network plus one squid container as the only way
 //   out: CONNECT to the allowlisted domains, nothing else;
@@ -109,6 +110,78 @@ export const GIT_INSTALL_COMMAND = [
     ' .devcontainer or checks config points at" >&2',
   'exit 1',
 ].join('\n')
+
+/**
+ * The non-root user of the cage — REUSED from the base image when the host's
+ * uid is already taken there, created only when it is free.
+ *
+ * The bug this shape exists for: the previous recipe always tried to CREATE a
+ * user with the host's uid/gid. That works on a shadow/glibc base (`useradd -o`
+ * tolerates a duplicate uid) and is impossible on a busybox/alpine one — there
+ * is no `groupadd`, `addgroup -g 1000` fails because the official `node` image
+ * already owns gid 1000, and busybox `adduser` has no `-o` to allow a duplicate
+ * uid. Every fallback of the chain failed in cascade ("adduser: unknown group
+ * agent", then "adduser: uid '1000' in use") and the cage image could not be
+ * built on ANY alpine base.
+ *
+ * So the base is ASKED what it already has, exactly like the git probe below.
+ * The common case is not an accident: images that ship a non-root user put it
+ * at uid 1000, which IS the host uid of most single-user machines, so reusing
+ * it is both correct and free. A user is created only when nothing owns that
+ * uid, with the shadow and busybox spellings chosen by probe instead of chained
+ * as a "|| maybe this one works" pile that hides which step really failed.
+ *
+ * The final USER is NUMERIC (`uid:gid`): the reused user's name is only known
+ * INSIDE the build, and a Dockerfile cannot carry a value computed by a RUN
+ * into its USER instruction. Numeric is what the kernel checks anyway, and a
+ * passwd entry for that uid exists in both branches, so whatever looks the name
+ * up still finds one. HOME stays CAGE_HOME_DIR whatever the reused user's own
+ * home is (`/home/node` on a node base): that is the path the per-task home
+ * volume is mounted at (containerRunArgs, bootstrapAgentHome), and the ENV wins
+ * over the passwd entry.
+ *
+ * Failure stays loud: a base where the uid is free and no user can be created
+ * is a base where the agent would end up root, which is not a cage.
+ */
+export function agentUserCommand(uid: number, gid: number): string {
+  return [
+    'set -e',
+    // getent first (it also sees an NSS-only passwd), /etc/passwd as the
+    // fallback for a base too small to have it.
+    `existing=$(getent passwd ${uid} 2>/dev/null | cut -d: -f1 || true)`,
+    `if [ -z "$existing" ]; then`,
+    `  existing=$(awk -F: -v u=${uid} '$3 == u { print $1; exit }' /etc/passwd 2>/dev/null || true)`,
+    'fi',
+    'if [ -n "$existing" ]; then',
+    `  echo "codesema: uid ${uid} already belongs to '$existing' in this base image — reusing it"`,
+    'else',
+    `  group=$(awk -F: -v g=${gid} '$3 == g { print $1; exit }' /etc/group 2>/dev/null || true)`,
+    '  if [ -z "$group" ]; then',
+    `    if command -v groupadd >/dev/null 2>&1; then groupadd -g ${gid} agent;`,
+    `    elif command -v addgroup >/dev/null 2>&1; then addgroup -g ${gid} agent;`,
+    '    else',
+    `      echo "codesema: this base image has neither groupadd nor addgroup, so the cage cannot` +
+      ` own gid ${gid} — add a non-root user to the image your .devcontainer or checks config` +
+      ` points at" >&2`,
+    '      exit 1',
+    '    fi',
+    '    group=agent',
+    '  fi',
+    '  if command -v useradd >/dev/null 2>&1; then',
+    `    useradd -m -d ${CAGE_HOME_DIR} -u ${uid} -g ${gid} -s /bin/sh agent`,
+    '  elif command -v adduser >/dev/null 2>&1; then',
+    `    adduser -D -h ${CAGE_HOME_DIR} -u ${uid} -G "$group" -s /bin/sh agent`,
+    '  else',
+    `    echo "codesema: this base image has neither useradd nor adduser, so the caged agent would` +
+      ` run as root — add a non-root user to the image your .devcontainer or checks config points` +
+      ` at" >&2`,
+    '    exit 1',
+    '  fi',
+    'fi',
+    `mkdir -p ${CAGE_HOME_DIR} ${CAGE_WORK_DIR}`,
+    `chown -R ${uid}:${gid} ${CAGE_HOME_DIR}`,
+  ].join('\n')
+}
 
 /** Resource ceiling of one caged turn. */
 export const CAGE_MEMORY = '4g'
@@ -436,36 +509,34 @@ export type AgentDockerfileInput = {
   installCommand: string
   /** devcontainer postCreateCommand, or null. */
   postCreate: string | null
-  /** uid/gid of the `agent` user: the host's, so the bind-mounted worktree stays writable. */
+  /** uid/gid the caged turn runs as: the host's, so the bind-mounted worktree stays writable. */
   uid: number
   gid: number
 }
 
 /**
- * The generated agent image. The `agent` user is created with the HOST's
- * uid/gid (non-unique on purpose: bases like node: already ship a uid 1000
- * user) so files written in the mounted worktree belong to the human who owns
- * the repo, and podman gets --userns=keep-id at run time to match.
+ * The generated agent image. The turn runs under the HOST's uid/gid — reusing
+ * the base's own non-root user when it already owns that uid (agentUserCommand)
+ * — so files written in the mounted worktree belong to the human who owns the
+ * repo, and podman gets --userns=keep-id at run time to match.
  *
- * A base with neither useradd nor adduser fails the BUILD, loudly: an image
- * where the agent would end up root is not a cage. A base without git — and
- * without any way to get it — fails it the same way: an agent that cannot
- * read the worktree's history is not the agent the task was recorded with.
+ * A base where that uid is free and no user can be created fails the BUILD,
+ * loudly: an image where the agent would end up root is not a cage. A base
+ * without git — and without any way to get it — fails it the same way: an agent
+ * that cannot read the worktree's history is not the agent the task was
+ * recorded with.
+ *
+ * Order is load-bearing: the user setup, the git install and the claude-code
+ * install all run as ROOT, before the final USER, so the binaries land on the
+ * shared PATH and the package manager can write.
  */
 export function generateAgentDockerfile(input: AgentDockerfileInput): string {
   const { uid, gid } = input
-  const createUser = [
-    'set -e',
-    `(groupadd -o -g ${gid} agent || addgroup -g ${gid} agent || true)`,
-    `(useradd -o -m -u ${uid} -g ${gid} -s /bin/sh agent || adduser -D -u ${uid} -G agent -s /bin/sh agent || adduser -D -u ${uid} -s /bin/sh agent)`,
-    `mkdir -p ${CAGE_HOME_DIR} ${CAGE_WORK_DIR}`,
-    `chown -R ${uid}:${gid} ${CAGE_HOME_DIR}`,
-  ].join('; ')
   const lines = [
     '# Generated by codesema — agent cage image, do not edit.',
     `FROM ${input.baseRef}`,
     'USER root',
-    runLine(createUser),
+    runLine(agentUserCommand(uid, gid)),
     runLine(GIT_INSTALL_COMMAND),
     runLine(input.installCommand),
   ]
@@ -475,7 +546,13 @@ export function generateAgentDockerfile(input: AgentDockerfileInput): string {
     // tooling, it must never be able to break the cage itself.
     lines.push(runLine(`${input.postCreate} || echo 'codesema: postCreateCommand failed'`))
   }
-  lines.push(`ENV HOME=${CAGE_HOME_DIR}`, `WORKDIR ${CAGE_WORK_DIR}`, 'USER agent', '')
+  lines.push(
+    `ENV HOME=${CAGE_HOME_DIR}`,
+    `WORKDIR ${CAGE_WORK_DIR}`,
+    // Numeric: the reused user's NAME is only known inside the build.
+    `USER ${uid}:${gid}`,
+    '',
+  )
   return lines.join('\n')
 }
 
@@ -799,7 +876,7 @@ export type AgentHome = { volume: string; credentials: HomeCredentials }
 export type BootstrapAgentHomeOptions = {
   runtime: string
   taskId: string
-  /** Agent image: the ephemeral bootstrap container runs as its `agent` user. */
+  /** Agent image: the ephemeral bootstrap container runs as its non-root user. */
   image: string
   execFn?: IsolationExecFn
   env?: NodeJS.ProcessEnv
