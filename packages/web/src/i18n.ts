@@ -218,6 +218,10 @@ const en = {
   'workspace.waitTime': 'waiting for you: {t}',
   'workspace.back': '← Back to tasks',
   'workspace.interrupt': 'Stop',
+  'workspace.resume': 'Resume',
+  'workspace.resumeHint': 'Restarts the interrupted turn — same instruction, same conversation.',
+  'workspace.resumeNothing':
+    'Stopped after the agent had answered: nothing to restart. Send a message to continue.',
   'workspace.ship': 'Confirm and ship',
   'workspace.shipSoon': 'Shipping lands in an upcoming version — the review verdict is saved.',
   'workspace.replyPlaceholder': 'Answer the agent…',
@@ -636,6 +640,10 @@ const fr: Record<MessageKey, string> = {
   'workspace.waitTime': 'en attente de toi : {t}',
   'workspace.back': '← Retour aux tâches',
   'workspace.interrupt': 'Arrêter',
+  'workspace.resume': 'Reprendre',
+  'workspace.resumeHint': 'Relance le tour interrompu — même consigne, même conversation.',
+  'workspace.resumeNothing':
+    "Arrêtée après la réponse de l'agent : rien à relancer. Envoie un message pour continuer.",
   'workspace.ship': 'Confirmer et publier',
   'workspace.shipSoon':
     'La publication arrive dans une prochaine version — le verdict de review est enregistré.',

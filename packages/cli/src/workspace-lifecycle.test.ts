@@ -1,8 +1,9 @@
 // T8 process-lifecycle coverage: graceful shutdown drains the runner and
 // persists 'interrupted' {reason:'shutdown'} while KEEPING worktrees, an
-// interrupted task is replyable (that is the resume path), and abandon is the
-// one destructive exit (worktree + branch deleted) — refused while an agent
-// still works in the worktree. Real git repos in tmpdirs, injected agents.
+// interrupted task is replyable AND resumable (resume() re-runs the turn that
+// died, in place, with no new instruction), and abandon is the one
+// destructive exit (worktree + branch deleted) — refused while an agent still
+// works in the worktree. Real git repos in tmpdirs, injected agents.
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -226,6 +227,152 @@ describe('reply on an interrupted task', () => {
     )
     // The 30ms parked on 'interrupted' was not accrued into wait_ms.
     expect(loadTask(repo, task.id)!.wait_ms).toBe(waitBefore)
+  })
+})
+
+// --- resume: restarting the interrupted turn itself ------------------------
+
+describe('resume', () => {
+  test('restarts the turn that died, in place, on the resumed session', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'resumable', 'start work')
+    const agent = questionAgent()
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: agent.run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    // A second turn that the shutdown catches mid-flight: its prompt is on
+    // the record, its response never came.
+    runner.reply(task.id, 'keep going')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const interrupted = loadTask(repo, task.id)!
+    interrupted.status = 'interrupted'
+    interrupted.turns[1]!.response = null
+    interrupted.turns[1]!.question = null
+    saveTask(repo, interrupted)
+
+    expect(runner.resume(task.id)).toEqual({ ok: true })
+    await until(() => loadTask(repo, task.id)?.turns[1]?.response !== null)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const after = loadTask(repo, task.id)!
+    // NO third turn: the conversation keeps one instruction per turn.
+    expect(after.turns).toHaveLength(2)
+    expect(after.turns[1]?.response).toContain('Blocked.')
+    // Same instruction, resumed session — nothing was invented for the agent.
+    expect(agent.seen.prompts.at(-1)).toBe('keep going')
+    expect(agent.seen.commands.at(-1)).toContain('--resume sess-123')
+  })
+
+  test('a task interrupted before its first run replays it with no session', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'never ran', 'initial instruction')
+    // Exactly what a shutdown does to a still-queued task.
+    const seeded = loadTask(repo, task.id)!
+    seeded.status = 'interrupted'
+    saveTask(repo, seeded)
+
+    const prompts: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        return Promise.resolve('picked it up\nQUESTION: keep going?')
+      },
+    })
+    expect(runner.resume(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    // Turn 1 again: the standing instructions plus the original prompt, with
+    // no transcript to replay (nothing ever happened).
+    expect(loadTask(repo, task.id)?.turns).toHaveLength(1)
+    expect(prompts[0]).toContain('initial instruction')
+    expect(prompts[0]).not.toContain('Previous turns of this task:')
+  })
+
+  test('refused when the last turn already answered: only a reply moves it', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'answered', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    // Stopping a conversation the agent already answered leaves nothing to
+    // redo — a Resume there would silently repeat a finished turn.
+    expect(runner.interrupt(task.id)).toEqual({ ok: true })
+    expect(runner.resume(task.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task has no interrupted turn to resume',
+    })
+    // The documented way forward still works.
+    expect(runner.reply(task.id, 'and now this')).toEqual({ ok: true })
+  })
+
+  test('refused when the materialized worktree is gone', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'homeless', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: hangingAgent,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'running')
+    runner.interrupt(task.id)
+    await until(() => status(repo, task.id) === 'interrupted')
+    const { worktree } = loadTask(repo, task.id)!
+    expect(existsSync(worktree)).toBe(true)
+    // Deleted behind codesema's back: re-running the turn would fork a fresh
+    // branch and strand the commits made so far.
+    rmSync(worktree, { recursive: true, force: true })
+
+    expect(runner.resume(task.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task worktree is gone',
+    })
+  })
+
+  test('gate: unknown id, non-interrupted statuses, and a drain in progress', async () => {
+    const repo = makeRepo()
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run,
+    })
+    expect(runner.resume('aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+
+    for (const state of ['queued', 'waiting_for_you', 'review_ok', 'shipped', 'failed'] as const) {
+      const task = makeTask(repo, `is ${state}`, 'work')
+      const seeded = loadTask(repo, task.id)!
+      seeded.status = state
+      saveTask(repo, seeded)
+      expect(runner.resume(task.id)).toEqual({
+        ok: false,
+        code: 409,
+        error: `task is ${state}`,
+      })
+    }
+
+    const draining = makeTask(repo, 'too late', 'work')
+    const seeded = loadTask(repo, draining.id)!
+    seeded.status = 'interrupted'
+    saveTask(repo, seeded)
+    await runner.shutdown()
+    expect(runner.resume(draining.id)).toEqual({ ok: false, code: 409, error: 'shutting down' })
   })
 })
 

@@ -646,6 +646,11 @@ export function useTasks(token: string) {
       postAction(token, actionPath(projectId, id, 'reply'), { message }),
     interrupt: (projectId: string, id: string) =>
       postAction(token, actionPath(projectId, id, 'interrupt')),
+    // T8: restarts the turn an interrupted conversation died on — no message,
+    // the instruction is the one already on the record. 409 when there is
+    // nothing to restart (see resumeStateOf) or the worktree is gone.
+    resume: (projectId: string, id: string) =>
+      postAction(token, actionPath(projectId, id, 'resume')),
     ship: (projectId: string, id: string) => postAction(token, actionPath(projectId, id, 'ship')),
     // Cleanup: removes the worktree (and, for forked tasks, the branch).
     abandon: (projectId: string, id: string) =>

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // One conversation of the focus zone, maquette form. Header: title (⚠ when
 // the agent waits), 📌 pin, the discreet 2-click branch/worktree cleanup,
-// Stop, Ship; a mono "project · ⎇ branch" chip, the isolation chip (🛡
+// Stop, Resume (T8 — only when there IS an interrupted turn to restart; a
+// conversation stopped after the agent answered says so instead), Ship; a
+// mono "project · ⎇ branch" chip, the isolation chip (🛡
 // container / ◇ policy, tooltip spelling out the guarantee) plus the colored
 // status phrase; then the Conversation / Diff / Checks tabs (Diff is the scoped
 // PreviewPanel; Checks shows the sandboxed typecheck/tests/lint run of the
@@ -41,6 +43,7 @@ import {
   groupThreadEvents,
   lastQuestion,
   replyModeOf,
+  resumeStateOf,
   reviewRefOf,
   streamsLiveText,
   timeAgo,
@@ -61,6 +64,8 @@ const props = defineProps<{
   pinned: boolean
   reply: (message: string) => Promise<ApiResult>
   interrupt: () => Promise<ApiResult>
+  /** POST …/resume: restarts the turn an interrupted conversation died on. */
+  resume: () => Promise<ApiResult>
   ship: () => Promise<ApiResult>
   abandon: () => Promise<ApiResult>
   /** POST …/checks: manual (re)run of the sandboxed checks. */
@@ -674,6 +679,26 @@ async function doInterrupt(): Promise<void> {
   }
 }
 
+// T8. Nothing ever restarts an interrupted conversation on its own: this
+// button is the gesture. It only shows when there IS a turn to restart —
+// 'reply' instead states, in words, that the composer is the way forward, so
+// the header never carries a button that would 409.
+const resumeState = computed(() => resumeStateOf(record.value))
+const resumeBusy = ref(false)
+
+async function doResume(): Promise<void> {
+  if (resumeBusy.value) {
+    return
+  }
+  resumeBusy.value = true
+  actionError.value = null
+  const result = await props.resume()
+  resumeBusy.value = false
+  if (!result.ok) {
+    actionError.value = result.error
+  }
+}
+
 async function doShip(): Promise<void> {
   actionError.value = null
   shipNotice.value = null
@@ -741,6 +766,15 @@ const wait = computed(() =>
           <button v-if="canInterrupt" class="cv-btn cv-btn--danger" @click="doInterrupt">
             {{ t('workspace.interrupt') }}
           </button>
+          <button
+            v-if="resumeState === 'ready'"
+            class="cv-btn cv-btn--resume"
+            :disabled="resumeBusy"
+            :title="t('workspace.resumeHint')"
+            @click="doResume"
+          >
+            {{ t('workspace.resume') }}
+          </button>
           <button v-if="record.status === 'review_ok'" class="cv-btn cv-btn--ship" @click="doShip">
             {{ t('workspace.ship') }}
           </button>
@@ -768,6 +802,9 @@ const wait = computed(() =>
       </div>
 
       <p v-if="shipNotice" class="cv-notice">{{ shipNotice }}</p>
+      <!-- Interrupted, but with nothing to restart: say it instead of showing
+           a Resume that could only fail. -->
+      <p v-if="resumeState === 'reply'" class="cv-notice">{{ t('workspace.resumeNothing') }}</p>
       <p v-if="actionError" class="cv-error">{{ actionError }}</p>
 
       <nav class="cv-tabs" :aria-label="t('workspace.conversations')">
@@ -1297,6 +1334,18 @@ const wait = computed(() =>
 .cv-btn--ship:hover {
   background: var(--cs-green-hover);
   border-color: var(--cs-green-hover);
+}
+
+/* Resume: the one thing to do on a stopped conversation, so it wears the
+   amber of the zone it sits in — loud enough to be found, not a ship. */
+.cv-btn--resume {
+  color: var(--cs-amber-text);
+  border-color: var(--cs-amber-line);
+  background: var(--cs-amber-soft);
+}
+
+.cv-btn--resume:hover:not(:disabled) {
+  border-color: var(--cs-amber);
 }
 
 .cv-btn:disabled {

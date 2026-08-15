@@ -128,6 +128,7 @@ type FakeRunnerRig = {
   replies: { id: string; message: string }[]
   interrupts: string[]
   abandons: string[]
+  resumes: string[]
 }
 
 /** Captures the manager→runner seam without ever launching an agent. */
@@ -138,6 +139,7 @@ function fakeRunner(): FakeRunnerRig {
     replies: [],
     interrupts: [],
     abandons: [],
+    resumes: [],
     runnerOptions: () => {
       const last = rig.allRunnerOptions.at(-1)
       if (!last) {
@@ -155,6 +157,10 @@ function fakeRunner(): FakeRunnerRig {
         reply: (id, message) => {
           rig.replies.push({ id, message })
           return { ok: false, code: 409, error: 'task is not waiting for a reply' }
+        },
+        resume: (id) => {
+          rig.resumes.push(id)
+          return { ok: true }
         },
         interrupt: (id) => {
           rig.interrupts.push(id)
@@ -210,6 +216,49 @@ describe('createTaskManager', () => {
     expect(readTaskEvents(repoB, queued.id)).toHaveLength(0)
   })
 
+  // T8. Resume re-runs the interrupted turn IN the task's worktree; without
+  // it, ensureWorktree would fork a fresh branch from the base and strand
+  // whatever the task had committed. Same doctrine as abandon: a task without
+  // its worktree is 'failed', said out loud, never a Resume that loses work.
+  test('boot fails an interrupted task whose materialized worktree is gone', () => {
+    const repo = makeRepo()
+    register(repo)
+    const lost = seedTask(repo, 'worktree deleted by hand')
+    lost.status = 'interrupted'
+    lost.worktree = join(repo, '.codesema', 'worktrees', lost.id)
+    saveTask(repo, lost)
+    // Never materialized one (a task interrupted while still queued): it has
+    // nothing to lose, and its resume simply creates the worktree.
+    const neverMaterialized = seedTask(repo, 'stopped while queued')
+    neverMaterialized.status = 'interrupted'
+    saveTask(repo, neverMaterialized)
+
+    createTaskManager({ ...managerOpts, ...fakeRunner() })
+
+    expect(loadTask(repo, lost.id)?.status).toBe('failed')
+    expect(readTaskEvents(repo, lost.id).at(-1)).toMatchObject({
+      type: 'error',
+      data: { message: 'worktree is gone, the task cannot be resumed' },
+    })
+    expect(loadTask(repo, neverMaterialized.id)?.status).toBe('interrupted')
+    expect(readTaskEvents(repo, neverMaterialized.id)).toHaveLength(0)
+  })
+
+  test('boot keeps an interrupted task whose worktree is still on disk', () => {
+    const repo = makeRepo()
+    register(repo)
+    const alive = seedTask(repo, 'stopped mid-turn')
+    alive.status = 'interrupted'
+    alive.worktree = join(repo, '.codesema', 'worktrees', alive.id)
+    mkdirSync(alive.worktree, { recursive: true })
+    saveTask(repo, alive)
+
+    createTaskManager({ ...managerOpts, ...fakeRunner() })
+
+    expect(loadTask(repo, alive.id)?.status).toBe('interrupted')
+    expect(readTaskEvents(repo, alive.id)).toHaveLength(0)
+  })
+
   test('every scoped call on an unregistered project is a 404, never a crash', async () => {
     const rig = fakeRunner()
     const manager = createTaskManager({ ...managerOpts, ...rig })
@@ -224,6 +273,7 @@ describe('createTaskManager', () => {
     })
     expect(manager.reply('deadbeef', 'aaaaaaaaaaaa', 'hi')).toMatchObject({ ok: false, code: 404 })
     expect(manager.interrupt('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    expect(manager.resume('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
     expect(await manager.ship('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
     expect(manager.abandon('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
     expect(rig.allRunnerOptions).toHaveLength(0)
@@ -664,6 +714,8 @@ describe('createTaskManager', () => {
     expect(rig.replies).toEqual([{ id: 'aaaaaaaaaaaa', message: 'hello' }])
     expect(manager.interrupt(projectB.id, 'bbbbbbbbbbbb')).toEqual({ ok: true })
     expect(rig.interrupts).toEqual(['bbbbbbbbbbbb'])
+    expect(manager.resume(projectB.id, 'bbbbbbbbbbbb')).toEqual({ ok: true })
+    expect(rig.resumes).toEqual(['bbbbbbbbbbbb'])
     // One runner per touched project, each bound to its own repo.
     expect(rig.allRunnerOptions.map((o) => o.cwd)).toEqual([projectA.path, projectB.path])
   })
@@ -834,6 +886,13 @@ describe('manager.ship', () => {
       error: 'ship in progress',
     })
     expect(manager.abandon(project.id, record.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'ship in progress',
+    })
+    // A resume would start a turn (and a commit) under the branch being
+    // pushed: same wait as a reply.
+    expect(manager.resume(project.id, record.id)).toEqual({
       ok: false,
       code: 409,
       error: 'ship in progress',
@@ -1145,6 +1204,7 @@ describe('task routes with a stub manager', () => {
       checksStarts: [] as string[],
       checksSetups: [] as string[],
       checksApplies: [] as string[],
+      resumes: [] as { project: string; id: string }[],
     }
     const known = (projectId: string) => projectId === project.id
     const manager: TaskManager = {
@@ -1165,6 +1225,13 @@ describe('task routes with a stub manager', () => {
         }
         calls.replies.push({ project: projectId, id, message })
         return { ok: false, code: 409, error: 'task is not waiting for a reply' }
+      },
+      resume: (projectId, id) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.resumes.push({ project: projectId, id })
+        return { ok: true }
       },
       interrupt: (projectId) =>
         known(projectId) ? { ok: true } : { ok: false, code: 404, error: 'unknown project' },
@@ -1430,6 +1497,32 @@ describe('task routes with a stub manager', () => {
       expect(abandoned.status).toBe(200)
       expect(JSON.parse(abandoned.body)).toEqual({ ok: true })
       expect(calls.abandons).toEqual([record.id])
+
+      // T8: resume takes no body at all — the instruction is on the record.
+      const resumed = await rawRequest(
+        started.port,
+        `/api/tasks/${record.id}/resume?project=${project.id}`,
+        { method: 'POST', headers },
+      )
+      expect(resumed.status).toBe(200)
+      expect(JSON.parse(resumed.body)).toEqual({ ok: true })
+      expect(calls.resumes).toEqual([{ project: project.id, id: record.id }])
+      // Same guards as every other mutation: CSRF token, then the project.
+      expect(
+        (
+          await rawRequest(started.port, `/api/tasks/${record.id}/resume?project=${project.id}`, {
+            method: 'POST',
+          })
+        ).status,
+      ).toBe(403)
+      expect(
+        (
+          await rawRequest(started.port, `/api/tasks/${record.id}/resume?project=ffffffff`, {
+            method: 'POST',
+            headers,
+          })
+        ).status,
+      ).toBe(404)
     } finally {
       await started.stop()
     }

@@ -48,15 +48,15 @@ describe('EXECUTION_STATUS', () => {
   })
 
   test('semaphore grammar: amber for machine work and human waits', () => {
-    for (const status of ['running', 'reviewing', 'waiting_for_you'] as const) {
+    // 'interrupted' is a human wait too: only a Resume (or a reply) restarts
+    // it, so it must not read as the neutral "nothing to do here".
+    for (const status of ['running', 'reviewing', 'waiting_for_you', 'interrupted'] as const) {
       expect(EXECUTION_STATUS[status].color).toBe('var(--cs-amber)')
     }
   })
 
-  test('neutral for queued and interrupted: nothing is happening', () => {
-    for (const status of ['queued', 'interrupted'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--cs-dot-idle)')
-    }
+  test('neutral for queued: the machine will get to it, nobody is waited on', () => {
+    expect(EXECUTION_STATUS.queued.color).toBe('var(--cs-dot-idle)')
   })
 
   test('pulse is reserved for statuses where the agent itself works', () => {

@@ -15,13 +15,16 @@ const SECTION_BY_STATUS: Record<TaskStatus, HomeSection> = {
   // A blocked review is something to READ, not a terminal state: it belongs
   // with the questions, where the human is the bottleneck.
   review_ko: 'waiting',
+  // T8. An interrupted conversation is not finished, it is STOPPED: nothing
+  // re-enqueues it, only a human gesture (Resume, or a reply) starts a turn
+  // again. That is the definition of this zone — the human is the bottleneck.
+  interrupted: 'waiting',
   running: 'active',
   reviewing: 'active',
   queued: 'active',
   review_ok: 'done',
   shipped: 'done',
   failed: 'done',
-  interrupted: 'done',
 }
 
 export function sectionOf(status: TaskStatus): HomeSection {
@@ -35,9 +38,11 @@ export function sectionOf(status: TaskStatus): HomeSection {
 export type QueueSection = 'attention' | 'active' | 'ready' | 'done'
 
 const QUEUE_SECTION_BY_STATUS: Record<TaskStatus, QueueSection> = {
-  // The human is the bottleneck: a question, or a blocked review to read.
+  // The human is the bottleneck: a question, a blocked review to read, or a
+  // conversation stopped mid-turn that waits for a Resume (T8).
   waiting_for_you: 'attention',
   review_ko: 'attention',
+  interrupted: 'attention',
   running: 'active',
   reviewing: 'active',
   queued: 'active',
@@ -45,7 +50,6 @@ const QUEUE_SECTION_BY_STATUS: Record<TaskStatus, QueueSection> = {
   review_ok: 'ready',
   shipped: 'done',
   failed: 'done',
-  interrupted: 'done',
 }
 
 export function queueSectionOf(status: TaskStatus): QueueSection {
@@ -112,6 +116,14 @@ export function matchesQuery(record: Pick<TaskRecord, 'title' | 'branch'>, query
 /** Statuses counted as "agents at work" by the header counter. */
 const HEADER_AGENT_STATUSES: ReadonlySet<TaskStatus> = new Set(['running', 'reviewing'])
 
+/**
+ * Statuses where NOTHING moves until the human acts: an open question, and
+ * (T8) a conversation stopped mid-turn, which no boot and no queue ever
+ * restarts on its own. Both the bell badge and the bell's target read this,
+ * so the count and the click can never disagree.
+ */
+const NEEDS_YOU_STATUSES: ReadonlySet<TaskStatus> = new Set(['waiting_for_you', 'interrupted'])
+
 export type AgentCounts = {
   /** Conversations blocked on the human (the amber bell badge). */
   needsYou: number
@@ -125,7 +137,7 @@ export function agentCounts(
   let needsYou = 0
   let agents = 0
   for (const state of states) {
-    if (state.record.status === 'waiting_for_you') {
+    if (NEEDS_YOU_STATUSES.has(state.record.status)) {
       needsYou++
     }
     if (HEADER_AGENT_STATUSES.has(state.record.status)) {
@@ -136,13 +148,13 @@ export function agentCounts(
 }
 
 /**
- * The waiting_for_you conversation that has waited the LONGEST (oldest
+ * The conversation blocked on the human that has waited the LONGEST (oldest
  * updated_at, id as tie-break): the bell click opens it in focus.
  */
 export function oldestWaiting<
   T extends { record: Pick<TaskRecord, 'status' | 'updated_at' | 'id'> },
 >(states: readonly T[]): T | null {
-  const waiting = states.filter((state) => state.record.status === 'waiting_for_you')
+  const waiting = states.filter((state) => NEEDS_YOU_STATUSES.has(state.record.status))
   return waiting.toSorted((a, b) => compareByActivity(b.record, a.record))[0] ?? null
 }
 
@@ -170,6 +182,31 @@ const REPLY_MODE_BY_STATUS: Record<TaskStatus, ReplyMode> = {
 
 export function replyModeOf(status: TaskStatus): ReplyMode {
   return REPLY_MODE_BY_STATUS[status]
+}
+
+/**
+ * What a stopped conversation offers (T8):
+ * 'ready'  — the turn it died on can be restarted as it stands: POST …/resume
+ *            re-runs that very instruction (resumed provider session when the
+ *            record kept one, transcript replay otherwise). The [Resume]
+ *            button.
+ * 'reply'  — it IS interrupted, but its last turn already answered (the human
+ *            stopped it from 'waiting_for_you'): there is nothing to redo, and
+ *            a Resume would silently repeat a finished turn. The UI says so
+ *            and points at the composer — never a button that would fail.
+ * 'none'   — not an interrupted conversation: no offer at all.
+ *
+ * Mirrors pendingResumeTurn() on the server, which owns the real gate: this
+ * decides what to OFFER, the server decides what to run.
+ */
+export type ResumeState = 'ready' | 'reply' | 'none'
+
+export function resumeStateOf(record: Pick<TaskRecord, 'status' | 'turns'>): ResumeState {
+  if (record.status !== 'interrupted') {
+    return 'none'
+  }
+  const turn = record.turns.at(-1)
+  return turn && turn.response === null ? 'ready' : 'reply'
 }
 
 /**

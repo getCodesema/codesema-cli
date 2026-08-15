@@ -221,7 +221,7 @@ export const isTrunkBranch = (branch: string): boolean => TRUNK_BRANCHES.has(sho
  * Non-terminal statuses: at most ONE such conversation exists per branch
  * (server-side uniqueness guard). Terminal ones (shipped/failed) never block
  * a new conversation on their branch. This is NOT the rail's section grammar:
- * review_ok and interrupted are done for the rail but still own their branch.
+ * review_ok is done for the rail but still owns its branch.
  */
 const ACTIVE_TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'queued',

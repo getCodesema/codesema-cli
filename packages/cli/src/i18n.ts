@@ -388,7 +388,7 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'workspace.noProjects':
     'no project registered yet — launch codesema from a git repository, or add one from the web UI',
   'workspace.resumable':
-    '{n} interrupted task can be resumed — reply to it from the web UI: | {n} interrupted tasks can be resumed — reply to them from the web UI:',
+    '{n} interrupted task can be resumed — click Resume in the web UI: | {n} interrupted tasks can be resumed — click Resume in the web UI:',
   'workspace.customAgentWarning':
     '⚠ custom agent command ({command}): no hardening applies — full environment, no read-only harness, repo-provided settings honored. Only use a command you fully trust.',
 
@@ -813,7 +813,7 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'workspace.noProjects':
     "aucun projet enregistré — lancez codesema depuis un dépôt git, ou ajoutez-en un depuis l'UI web",
   'workspace.resumable':
-    "{n} tâche interrompue peut reprendre — répondez-lui depuis l'UI web : | {n} tâches interrompues peuvent reprendre — répondez-leur depuis l'UI web :",
+    "{n} tâche interrompue peut reprendre — cliquez Reprendre dans l'UI web : | {n} tâches interrompues peuvent reprendre — cliquez Reprendre dans l'UI web :",
   'workspace.customAgentWarning':
     "⚠ commande d'agent custom ({command}) : aucun durcissement ne s'applique — environnement complet, pas de harnais lecture seule, réglages du repo honorés. À n'utiliser qu'avec une commande de confiance totale.",
 

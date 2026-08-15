@@ -112,8 +112,11 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
     pulse: false,
     attention: false,
   },
+  // Amber, not neutral: nothing runs, but the conversation is not over — it
+  // sits in the "needs you" zone waiting for a Resume (T8). No `attention`
+  // though: an unanswered question is louder than a paused turn.
   interrupted: {
-    ...idle,
+    ...amber,
     icon: '‖',
     labelKey: 'workspace.statusInterrupted',
     phraseKey: 'workspace.phaseInterrupted',

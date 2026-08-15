@@ -64,6 +64,7 @@ const {
   create,
   reply,
   interrupt,
+  resume,
   ship,
   abandon,
   hydrateChecks,
@@ -363,6 +364,13 @@ function onQueueShip(state: TaskState): void {
   void ship(state.projectId, state.record.id)
 }
 
+/** [Resume] on a stopped card (T8): same shape as [Ship] — the conversation
+ * opens, so the restarted turn is watched live instead of guessed at. */
+function onQueueResume(state: TaskState): void {
+  openConversation(state.projectId, state.record.id)
+  void resume(state.projectId, state.record.id)
+}
+
 // ── Project registry actions ──────────────────────────────────────────────
 const addBusy = ref(false)
 const addError = ref<string | null>(null)
@@ -438,6 +446,7 @@ async function onRemoveProject(id: string): Promise<void> {
         :workspace="workspace"
         @open="(state) => openConversation(state.projectId, state.record.id)"
         @ship="onQueueShip"
+        @resume="onQueueResume"
         @create="onCreate"
       />
 
@@ -458,6 +467,7 @@ async function onRemoveProject(id: string): Promise<void> {
               :pinned="isPinned(deck, entry.key)"
               :reply="(m) => reply(entry.projectId, entry.taskId, m)"
               :interrupt="() => interrupt(entry.projectId, entry.taskId)"
+              :resume="() => resume(entry.projectId, entry.taskId)"
               :ship="() => ship(entry.projectId, entry.taskId)"
               :abandon="() => abandon(entry.projectId, entry.taskId)"
               :run-checks="() => runChecks(entry.projectId, entry.taskId)"

@@ -142,6 +142,14 @@ export type TaskManager = {
   /** Validates, persists and starts a new task in the project's repo. */
   create: (projectId: string, input: CreateTaskManagerInput) => TaskCreateResult
   reply: (projectId: string, id: string, message: string) => TaskActionResult
+  /**
+   * T8 (POST /api/tasks/:id/resume). Restarts the turn an 'interrupted' task
+   * died on, with no new instruction from the human: same prompt, same turn,
+   * resumed provider session when the record kept one. 409 on any other
+   * status, on a task with no unfinished turn (only a reply moves that one),
+   * and on a task whose worktree is gone.
+   */
+  resume: (projectId: string, id: string) => TaskActionResult
   interrupt: (projectId: string, id: string) => TaskActionResult
   /**
    * Push + MR creation (T5). Gated on a finished review: 'review_ok', or
@@ -247,29 +255,58 @@ export type CreateTaskManagerOptions = {
 }
 
 /**
- * A task left 'running' (or 'reviewing') on disk while no runner holds it can
- * only mean the previous codesema process died mid-turn: the agent process is
- * gone, so the honest state is 'interrupted' (T8 adds the resume offer).
+ * The status boot must rewrite a record to, or null to leave it alone. Two
+ * rules:
+ *
+ * 1. A task left 'running' (or 'reviewing') while no runner holds it can only
+ *    mean the previous codesema process died mid-turn: the agent process is
+ *    gone, so the honest state is 'interrupted' — resumable, since the
+ *    worktree and the unfinished turn are both still there.
+ * 2. An 'interrupted' task whose MATERIALIZED worktree has vanished (deleted
+ *    by hand, repo moved) is not resumable at all: its work is gone, and
+ *    re-running the turn would fork a fresh branch and strand the commits.
+ *    Same doctrine as abandon — a task without its worktree is 'failed' — so
+ *    the UI never offers a Resume that would quietly lose work.
+ */
+function reconciledStatus(record: TaskRecord): 'interrupted' | 'failed' | null {
+  const orphan = record.status === 'running' || record.status === 'reviewing'
+  if (!orphan && record.status !== 'interrupted') {
+    return null
+  }
+  // A worktree the record NAMES but disk no longer has. An empty path is a
+  // task that never materialized one: nothing was lost.
+  if (record.worktree !== '' && !existsSync(record.worktree)) {
+    return 'failed'
+  }
+  return orphan ? 'interrupted' : null
+}
+
+/**
+ * Applies reconciledStatus across a repo, journaling the WHY on each rewrite.
  * Called at boot for every registered project (and again when a project's
  * context is built — by then nothing of that project runs here yet), before
  * anything subscribes: no broadcast needed.
  */
-function recoverOrphans(cwd: string): void {
+function reconcileTasks(cwd: string): void {
   for (const record of listTasks(cwd)) {
-    if (record.status !== 'running' && record.status !== 'reviewing') {
+    const status = reconciledStatus(record)
+    if (status === null) {
       continue
     }
     const turn = record.turns.at(-1)
     if (turn && !turn.ended_at) {
       turn.ended_at = new Date().toISOString()
     }
-    record.status = 'interrupted'
+    record.status = status
     record.updated_at = new Date().toISOString()
     saveTask(cwd, record)
-    appendTaskEvent(cwd, record.id, {
-      type: 'interrupted',
-      data: { message: 'process exited while the task was active' },
-    })
+    appendTaskEvent(
+      cwd,
+      record.id,
+      status === 'failed'
+        ? { type: 'error', data: { message: 'worktree is gone, the task cannot be resumed' } }
+        : { type: 'interrupted', data: { message: 'process exited while the task was active' } },
+    )
   }
 }
 
@@ -307,7 +344,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   // Boot recovery across EVERY registered repo: the SSE replay (listAll) must
   // already show a dead process's tasks as 'interrupted', context or not.
   for (const project of registered()) {
-    recoverOrphans(project.path)
+    reconcileTasks(project.path)
   }
 
   const listeners = new Set<(envelope: TaskEnvelope) => void>()
@@ -512,7 +549,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       return null
     }
     // A project registered after boot may carry orphans from an older run.
-    recoverOrphans(project.path)
+    reconcileTasks(project.path)
     const cwd = project.path
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict; the reviewer shares the task agent command and timeout.
@@ -764,6 +801,18 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       return ctx.shipping.has(id)
         ? { ok: false, code: 409, error: 'ship in progress' }
         : ctx.runner.reply(id, message)
+    },
+
+    // Same reason as reply: a resume starts a turn (and a commit) under a push
+    // in flight, so it waits for the ship to settle.
+    resume(projectId, id) {
+      const ctx = context(projectId)
+      if (!ctx) {
+        return unknownProject
+      }
+      return ctx.shipping.has(id)
+        ? { ok: false, code: 409, error: 'ship in progress' }
+        : ctx.runner.resume(id)
     },
 
     interrupt(projectId, id) {

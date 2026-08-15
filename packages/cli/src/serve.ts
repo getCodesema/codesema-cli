@@ -27,6 +27,7 @@ import {
   setSyncAutoPush,
   writeRulesContent,
 } from './repo-config.js'
+import type { TaskActionResult } from './task-runner.js'
 import type { TaskEnvelope, TaskManager } from './task-server.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
@@ -569,9 +570,23 @@ async function handleTaskCreate(
   return sendJson(res, 201, created.record)
 }
 
-type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks'
+type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume'
 
-/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks)?project=, all under the tasks CSRF token. */
+/**
+ * The mutations that carry NO request body: everything they need is already
+ * on the record. 'resume' (T8) is one of them on purpose — the instruction it
+ * restarts is the one the interrupted turn was given.
+ */
+const BODYLESS_TASK_ACTIONS: Record<
+  'interrupt' | 'abandon' | 'resume',
+  (manager: TaskManager, projectId: string, id: string) => TaskActionResult
+> = {
+  interrupt: (manager, projectId, id) => manager.interrupt(projectId, id),
+  abandon: (manager, projectId, id) => manager.abandon(projectId, id),
+  resume: (manager, projectId, id) => manager.resume(projectId, id),
+}
+
+/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume)?project=, all under the tasks CSRF token. */
 async function handleTaskAction(
   req: IncomingMessage,
   res: ServerResponse,
@@ -607,11 +622,8 @@ async function handleTaskAction(
       ? sendJson(res, 202, { ok: true })
       : sendJson(res, result.code, { error: result.error })
   }
-  if (action.kind === 'interrupt' || action.kind === 'abandon') {
-    const result =
-      action.kind === 'interrupt'
-        ? tasks.manager.interrupt(projectId, action.id)
-        : tasks.manager.abandon(projectId, action.id)
+  if (action.kind !== 'reply') {
+    const result = BODYLESS_TASK_ACTIONS[action.kind](tasks.manager, projectId, action.id)
     return result.ok
       ? sendJson(res, 200, { ok: true })
       : sendJson(res, result.code, { error: result.error })
@@ -828,7 +840,7 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
-const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks)$/
+const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
 const TASK_REVIEW_RE = /^\/api\/tasks\/([^/]+)\/review$/

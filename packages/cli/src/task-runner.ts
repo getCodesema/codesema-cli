@@ -4,7 +4,10 @@
 // of a successful turn, so the result is deterministic across providers.
 // A turn ends either in a result or in a question (no realtime channel into a
 // running agent): the task lands on 'waiting_for_you' and the human's reply
-// starts the next turn, resuming the provider session when it can.
+// starts the next turn, resuming the provider session when it can. A turn cut
+// short instead (crash, shutdown, Stop) leaves the task 'interrupted', and
+// resume() re-runs that very turn in place — never on its own, always on a
+// human gesture.
 
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -16,7 +19,7 @@ import {
   runAgent,
   type AgentRunOptions,
 } from './agent.js'
-import type { TaskEvent, TaskRecord, TaskStatus } from './contract.js'
+import type { TaskEvent, TaskRecord, TaskStatus, TaskTurn } from './contract.js'
 import { fixCommandFor } from './fix.js'
 import { git, tryGit } from './git.js'
 import { reviewLanguage } from './i18n.js'
@@ -343,6 +346,30 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
 
 export type TaskActionResult = { ok: true } | { ok: false; code: number; error: string }
 
+/**
+ * The turn a RESUME would re-run (T8), or null when there is none. A task is
+ * only resumable when it is 'interrupted' AND its last turn never delivered a
+ * reply: that turn's agent process died mid-flight (crash, shutdown) or never
+ * started (queued at drain time), so re-running the very same instruction is
+ * exactly what picks the work back up.
+ *
+ * A last turn that DID answer means the opposite: the agent finished and the
+ * human interrupted from 'waiting_for_you'. There is nothing to redo — only a
+ * new instruction moves that conversation, so the UI offers the composer
+ * instead of a Resume button that would silently repeat a finished turn.
+ *
+ * The CONTEXT of the re-run always exists: the instruction is on the turn, and
+ * composeTurnPrompt either resumes the provider session (agent_session_id) or
+ * replays the transcript from the record's own turns.
+ */
+export function pendingResumeTurn(record: TaskRecord): TaskTurn | null {
+  if (record.status !== 'interrupted') {
+    return null
+  }
+  const turn = record.turns.at(-1)
+  return turn && turn.response === null ? turn : null
+}
+
 /** Store/broadcast toolkit handed to the end-of-turn review hook. */
 export type TaskTurnIo = {
   /** Appends to the journal and broadcasts (store write first). */
@@ -426,6 +453,15 @@ export type TaskRunner = {
   start: (task: TaskRecord) => TaskActionResult
   /** Answers a 'waiting_for_you' task: appends a turn and schedules it. */
   reply: (taskId: string, message: string) => TaskActionResult
+  /**
+   * T8. Picks an 'interrupted' task back up WITHOUT a new instruction: the
+   * turn that never finished is re-scheduled as it stands (same prompt, same
+   * turn index), so the conversation continues instead of branching. Refused
+   * (409) on any other status, on a task with no unfinished turn to re-run,
+   * and on a task whose materialized worktree has vanished — the work it
+   * carried is not there to continue.
+   */
+  resume: (taskId: string) => TaskActionResult
   /** SIGTERM to the agent's process group (running) or drops the task from the queue. */
   interrupt: (taskId: string) => TaskActionResult
   /** Deletes the worktree AND the branch, marks the task 'failed'. Refused while running. */
@@ -789,6 +825,41 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       })
       // Persisted as 'queued' first: if all slots are busy the task correctly
       // shows up as queued; launch() flips it to 'running' when its turn comes.
+      record.status = 'queued'
+      persist(record)
+      schedule(record)
+      return { ok: true }
+    },
+
+    resume(taskId) {
+      if (draining) {
+        return { ok: false, code: 409, error: 'shutting down' }
+      }
+      if (active.has(taskId) || queue.includes(taskId)) {
+        return { ok: false, code: 409, error: 'task is running' }
+      }
+      const record = loadTask(opts.cwd, taskId)
+      if (!record) {
+        return { ok: false, code: 404, error: 'task not found' }
+      }
+      if (record.status !== 'interrupted') {
+        return { ok: false, code: 409, error: `task is ${record.status}` }
+      }
+      const turn = pendingResumeTurn(record)
+      if (!turn) {
+        // The last turn answered: only a new instruction moves this on.
+        return { ok: false, code: 409, error: 'task has no interrupted turn to resume' }
+      }
+      // A worktree that was materialized and then vanished takes the task's
+      // work with it: ensureWorktree would fork a FRESH branch from the base
+      // and the commits made so far would be stranded. Refuse instead.
+      if (record.worktree && !existsSync(record.worktree)) {
+        return { ok: false, code: 409, error: 'task worktree is gone' }
+      }
+      // The very same turn runs again, in place: no new turn is appended, so
+      // the conversation keeps one instruction per turn and the transcript
+      // replay (or the resumed provider session) stays exact.
+      turn.ended_at = null
       record.status = 'queued'
       persist(record)
       schedule(record)

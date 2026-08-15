@@ -85,9 +85,15 @@ describe('countProjectActivity', () => {
       at('aaaa1111', 'shipped'),
       at('aaaa1111', 'failed'),
       at('aaaa1111', 'review_ok'),
-      at('aaaa1111', 'interrupted'),
     ])
     expect(counts.get('aaaa1111')).toBeUndefined()
+  })
+
+  // T8: a conversation stopped mid-turn is work left to do, not history —
+  // the project card must say the repo still wants the human.
+  test('an interrupted conversation counts as waiting', () => {
+    const counts = countProjectActivity([at('aaaa1111', 'interrupted')])
+    expect(counts.get('aaaa1111')).toEqual({ waiting: 1, active: 0 })
   })
 
   test('empty input yields an empty map', () => {

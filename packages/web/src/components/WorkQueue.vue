@@ -3,7 +3,8 @@
 // ("New task…", auto-ship kept, plus the target-project select — hidden when
 // a specific project is already selected), then the conversations grouped by
 // the queue grammar (groupQueue, pure): "⚠ NEEDS YOU" amber cards with the
-// last question excerpt and "paused for X", "IN PROGRESS" with a pulsing dot
+// last question excerpt, "paused for X" and — for a conversation stopped
+// mid-turn — a [Resume] that restarts it, "IN PROGRESS" with a pulsing dot
 // and a thin indeterminate amber bar, "READY TO SHIP" green-ringed cards with
 // [Ship] + [Diff], and the folded "DONE" pile. Clicking a card opens it in
 // the focus zone. Each live card carries a discreet isolation dot (green =
@@ -26,6 +27,7 @@ import {
   formatDuration,
   groupQueue,
   lastQuestion,
+  resumeStateOf,
   waitingSince,
   type QueueSection,
 } from '../composables/useTaskBoard'
@@ -56,6 +58,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   open: [state: TaskState]
   ship: [state: TaskState]
+  resume: [state: TaskState]
   create: [projectId: string, input: CreateTaskInput]
 }>()
 
@@ -109,6 +112,9 @@ function pausedFor(state: TaskState): string | null {
 }
 
 const excerptOf = (state: TaskState): string | null => lastQuestion(state.events)
+
+/** T8: what a stopped conversation offers — only 'ready' earns a button. */
+const resumeOf = (state: TaskState) => resumeStateOf(state.record)
 
 // Done pile: visible by default (Hasan: "je veux toujours voir les dones"),
 // still foldable for long histories.
@@ -191,12 +197,19 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           {{ t(SECTION_LABEL.attention) }}
           <span class="wq-head-dot" aria-hidden="true" />
         </h2>
-        <button
+        <!-- A div, not a button: a stopped conversation nests its own
+             [Resume] action (same pattern as the ready cards), hence the
+             explicit role/tabindex/keydown. -->
+        <div
           v-for="state in groups.attention"
           :key="keyOf(state)"
           class="wq-card wq-card--attention"
           :class="{ 'wq-card--focused': focusedKeys.includes(keyOf(state)) }"
+          role="button"
+          tabindex="0"
           @click="emit('open', state)"
+          @keydown.enter="emit('open', state)"
+          @keydown.space.prevent="emit('open', state)"
         >
           <span class="wq-card-row">
             <span class="wq-title">{{ state.record.title }}</span>
@@ -217,7 +230,18 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
               · {{ t('workspace.pausedFor', { t: pausedFor(state) }) }}
             </template>
           </span>
-        </button>
+          <!-- T8: the offer is right here, on the card. Absent when there is
+               nothing to restart — the conversation then says why. -->
+          <span v-if="resumeOf(state) === 'ready'" class="wq-actions">
+            <button
+              class="wq-resume"
+              :title="t('workspace.resumeHint')"
+              @click.stop="emit('resume', state)"
+            >
+              {{ t('workspace.resume') }}
+            </button>
+          </span>
+        </div>
       </div>
 
       <!-- IN PROGRESS: the machine works; nothing is asked of the human. -->
@@ -782,6 +806,24 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
 
 .wq-diff:hover {
   border-color: var(--cs-muted);
+}
+
+/* Resume: an amber outline on an amber card — present, never a Ship. */
+.wq-resume {
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 11px;
+  border: 1px solid var(--cs-amber-line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cs-amber-text);
+  cursor: pointer;
+}
+
+.wq-resume:hover {
+  border-color: var(--cs-amber);
+  background: var(--cs-amber-soft);
 }
 
 /* Done rows: quiet history. */

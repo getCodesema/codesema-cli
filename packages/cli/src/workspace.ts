@@ -7,8 +7,9 @@
 // projects from the UI). The process stays in the foreground: tasks live as
 // long as it runs (no detached daemon, decision n°4 of the plan). The first
 // Ctrl-C shuts down gracefully (agents SIGTERMed, tasks persisted
-// 'interrupted', worktrees kept — reply to an interrupted task from the UI to
-// resume it); a second Ctrl-C during that drain force-quits. A GLOBAL
+// 'interrupted', worktrees kept — the next boot offers them back, and one
+// click on Resume in the UI restarts the turn that died; nothing ever
+// restarts on its own); a second Ctrl-C during that drain force-quits. A GLOBAL
 // <globalConfigDir()>/workspace.lock prevents a second workspace process from
 // racing this one's registry and task stores.
 
@@ -27,6 +28,7 @@ import {
   teardownEgressProxy,
   type IsolationProbe,
 } from './task-isolation.js'
+import { pendingResumeTurn } from './task-runner.js'
 import { createTaskManager, type TaskManager } from './task-server.js'
 import { AGENT_DEFS, defaultCommand, detectAgents } from './wizard.js'
 import { acquireWorkspaceLock, type WorkspaceLockHandle } from './workspace-lock.js'
@@ -44,16 +46,20 @@ function logProjects(projects: Project[], currentId: string | null): void {
 }
 
 /**
- * Tasks interrupted by a previous shutdown/crash that kept a provider session
- * are resumable: surface them at boot (they also show up in the UI, where a
- * reply on an interrupted task starts a --resume turn). All projects.
+ * Tasks a previous shutdown/crash left mid-turn: surface them at boot, all
+ * projects. NOTHING re-enqueues them — restarting agents that write code and
+ * commit, unattended, on a plain `codesema workspace` boot would be intrusive
+ * and would burn tokens on work nobody asked for. The offer is explicit
+ * instead: this line, and the "needs you" section of the web UI where one
+ * click on Resume restarts the very turn that died (the resumed provider
+ * session when the record kept one, the transcript replay otherwise).
  */
 function logResumableTasks(manager: TaskManager): void {
   const resumable = manager
     .listAll()
     .flatMap(({ project, records }) =>
       records
-        .filter((record) => record.status === 'interrupted' && record.agent_session_id !== null)
+        .filter((record) => pendingResumeTurn(record) !== null)
         .map((record) => ({ project, record })),
     )
   if (resumable.length === 0) {

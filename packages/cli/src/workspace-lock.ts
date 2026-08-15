@@ -1,7 +1,7 @@
 // Single-workspace guard, GLOBAL to the machine: the multi-project workspace
 // drives every registered repo from one process, so two codesema workspace
 // processes would race on the same global project registry and mark each
-// other's running tasks as orphans at boot (see recoverOrphans). A lockfile
+// other's running tasks as orphans at boot (see reconcileTasks). A lockfile
 // at <globalConfigDir()>/workspace.lock ({pid, port}) makes the second boot
 // fail loudly. The lock is advisory and self-healing: a lock whose pid is
 // dead (crash, SIGKILL — no release ran) is stolen instead of blocking

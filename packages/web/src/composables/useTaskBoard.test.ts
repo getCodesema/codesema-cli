@@ -22,6 +22,7 @@ import {
   oldestWaiting,
   queueSectionOf,
   replyModeOf,
+  resumeStateOf,
   reviewRefOf,
   sectionOf,
   settlesLiveMessages,
@@ -66,6 +67,12 @@ describe('sectionOf', () => {
     expect(sectionOf('review_ko')).toBe('waiting')
   })
 
+  // T8: nothing re-enqueues a stopped conversation — only a human gesture
+  // does. That is the definition of the waiting zone, not of the done pile.
+  test('interrupted waits for the human, it is not done', () => {
+    expect(sectionOf('interrupted')).toBe('waiting')
+  })
+
   test('running, reviewing and queued are in progress', () => {
     expect(sectionOf('running')).toBe('active')
     expect(sectionOf('reviewing')).toBe('active')
@@ -76,7 +83,6 @@ describe('sectionOf', () => {
     expect(sectionOf('review_ok')).toBe('done')
     expect(sectionOf('shipped')).toBe('done')
     expect(sectionOf('failed')).toBe('done')
-    expect(sectionOf('interrupted')).toBe('done')
   })
 
   test('every status maps to a section', () => {
@@ -504,6 +510,12 @@ describe('queueSectionOf', () => {
     expect(queueSectionOf('review_ko')).toBe('attention')
   })
 
+  // T8: a stopped conversation belongs in the work queue with a [Resume] on
+  // its card, never folded away with the shipped and the failed.
+  test('interrupted blocks on the human too, never in the done pile', () => {
+    expect(queueSectionOf('interrupted')).toBe('attention')
+  })
+
   test('running, reviewing and queued are the machine at work', () => {
     expect(queueSectionOf('running')).toBe('active')
     expect(queueSectionOf('reviewing')).toBe('active')
@@ -517,7 +529,6 @@ describe('queueSectionOf', () => {
   test('terminal states are done', () => {
     expect(queueSectionOf('shipped')).toBe('done')
     expect(queueSectionOf('failed')).toBe('done')
-    expect(queueSectionOf('interrupted')).toBe('done')
   })
 
   test('every status lands in exactly one queue section', () => {
@@ -632,6 +643,17 @@ describe('agentCounts', () => {
     expect(agentCounts(states)).toEqual({ needsYou: 2, agents: 2 })
   })
 
+  // T8: the badge is how a stopped conversation gets noticed at all after a
+  // restart — the terminal line scrolls away, the bell does not.
+  test('needsYou counts interrupted conversations too', () => {
+    const states = [
+      { record: record({ status: 'interrupted' }) },
+      { record: record({ status: 'waiting_for_you' }) },
+      { record: record({ status: 'failed' }) },
+    ]
+    expect(agentCounts(states)).toEqual({ needsYou: 2, agents: 0 })
+  })
+
   test('zeroes on an empty workspace', () => {
     expect(agentCounts([])).toEqual({ needsYou: 0, agents: 0 })
   })
@@ -651,8 +673,63 @@ describe('oldestWaiting', () => {
     expect(oldestWaiting(states)?.record.id).toBe('b')
   })
 
+  // The bell's count and the bell's click must never disagree: both read the
+  // same "blocked on the human" set.
+  test('an interrupted conversation is a valid bell target', () => {
+    const states = [
+      {
+        record: record({ id: 'a', status: 'waiting_for_you', updated_at: '2026-08-13T11:00:00Z' }),
+      },
+      { record: record({ id: 'b', status: 'interrupted', updated_at: '2026-08-13T07:00:00Z' }) },
+    ]
+    expect(oldestWaiting(states)?.record.id).toBe('b')
+  })
+
   test('null without any waiting conversation', () => {
     expect(oldestWaiting([{ record: record({ status: 'running' }) }])).toBeNull()
+  })
+})
+
+// ── T8: what a stopped conversation offers ─────────────────────────────────
+
+describe('resumeStateOf', () => {
+  const pending = {
+    prompt: 'do it',
+    response: null,
+    question: null,
+    started_at: '',
+    ended_at: null,
+  }
+  const answered = { ...pending, response: 'done', ended_at: '2026-08-13T10:00:00Z' }
+
+  test("'ready' when the last turn never answered: that turn is re-runnable", () => {
+    expect(resumeStateOf(record({ status: 'interrupted', turns: [pending] }))).toBe('ready')
+    // Several turns deep, the same rule: only the last one matters.
+    expect(resumeStateOf(record({ status: 'interrupted', turns: [answered, pending] }))).toBe(
+      'ready',
+    )
+  })
+
+  test("'reply' when the agent HAD answered: nothing to restart, only to say", () => {
+    expect(resumeStateOf(record({ status: 'interrupted', turns: [answered] }))).toBe('reply')
+    // A record with no turn at all cannot re-run anything either.
+    expect(resumeStateOf(record({ status: 'interrupted', turns: [] }))).toBe('reply')
+  })
+
+  test("'none' on every other status: there is no resume to offer", () => {
+    const statuses: TaskStatus[] = [
+      'queued',
+      'running',
+      'waiting_for_you',
+      'reviewing',
+      'review_ok',
+      'review_ko',
+      'shipped',
+      'failed',
+    ]
+    for (const status of statuses) {
+      expect(resumeStateOf(record({ status, turns: [pending] }))).toBe('none')
+    }
   })
 })
 
