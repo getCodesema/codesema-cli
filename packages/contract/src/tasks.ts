@@ -37,6 +37,22 @@ export type TaskEventType =
   | 'shipped'
   | 'error'
   | 'interrupted'
+  /** Isolation decided for the task at creation, with the reason behind it. */
+  | 'isolation'
+
+/**
+ * How a task's agent turns are contained.
+ *
+ * - 'container': the WHOLE turn runs inside a per-task container (worktree
+ *   mounted, egress through an allowlist proxy). The cage is the guarantee, so
+ *   the agent gets full Bash inside it.
+ * - 'policy': the turn runs on the HOST, contained by CLI flags only (edit
+ *   tools opened, user settings only, strict MCP config).
+ *
+ * Fixed AT CREATION and immutable: a record must never promise an isolation
+ * its turns did not actually run under.
+ */
+export type TaskIsolation = 'container' | 'policy'
 
 /** Flat, bounded payload: summaries only, never a full file body. */
 export type TaskEventData = Record<string, string | number | boolean | null>
@@ -84,6 +100,12 @@ export type TaskRecord = {
    * of it, and abandoning the task must never delete the branch.
    */
   work_on: boolean
+  /**
+   * Containment of this task's agent turns, decided at creation from the
+   * workspace configuration and the container-runtime probe. Immutable: the
+   * runner reads it, never writes it.
+   */
+  isolation: TaskIsolation
   created_at: string
   updated_at: string
 }
@@ -125,7 +147,10 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'shipped',
   'error',
   'interrupted',
+  'isolation',
 ])
+
+const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
 
 /** The id names a directory under .codesema/tasks/: nothing else is usable. */
 const TASK_ID_RE = /^[0-9a-f]{12}$/
@@ -217,6 +242,13 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // Absent on records written before work-on mode existed: those are all
     // fork tasks, so false is the honest default.
     work_on: r.work_on === true,
+    // Absent on records written before the container cage existed — those all
+    // ran on the host under the policy hardening, so 'policy' is the honest
+    // default. An unknown value degrades the same way: a record must never
+    // claim a stronger containment than the one it can prove.
+    isolation: TASK_ISOLATIONS.has(r.isolation as TaskIsolation)
+      ? (r.isolation as TaskIsolation)
+      : 'policy',
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

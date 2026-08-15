@@ -16,6 +16,7 @@ import type { ShipOutcome, ShipTaskOptions } from './task-ship.js'
 import {
   appendTaskEvent,
   createTask,
+  listTasks,
   loadTask,
   readTaskChecks,
   readTaskEvents,
@@ -206,6 +207,126 @@ describe('createTaskManager', () => {
     expect(await manager.ship('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
     expect(manager.abandon('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
     expect(rig.allRunnerOptions).toHaveLength(0)
+  })
+
+  test('isolation: an available cage makes new tasks caged, and says so in the journal', () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created.ok).toBe(true)
+    const record = created.ok ? created.record : null
+    expect(record?.isolation).toBe('container')
+    // Persisted, not just returned: the runner reads the record from disk.
+    expect(loadTask(project.path, record?.id ?? '')?.isolation).toBe('container')
+    const isolation = readTaskEvents(project.path, record?.id ?? '').find(
+      (event) => event.type === 'isolation',
+    )
+    expect(isolation?.data).toMatchObject({ isolation: 'container', reason: 'podman is available' })
+  })
+
+  test("isolation 'auto' without a cage falls back to policy WITH the reason journaled", () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      isolation: {
+        available: false,
+        mode: 'policy',
+        reason: 'no container runtime found (install docker or podman)',
+        configured: 'auto',
+        runtime: null,
+      },
+    })
+    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created.ok).toBe(true)
+    const id = created.ok ? created.record.id : ''
+    expect(loadTask(project.path, id)?.isolation).toBe('policy')
+    const isolation = readTaskEvents(project.path, id).find((event) => event.type === 'isolation')
+    expect(isolation?.data.isolation).toBe('policy')
+    expect(String(isolation?.data.reason)).toContain('no container runtime found')
+  })
+
+  test("isolation 'container' with no cage refuses the creation (409), leaving nothing behind", () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      isolation: {
+        available: false,
+        mode: 'policy',
+        reason: 'docker is installed but its engine does not answer',
+        configured: 'container',
+        runtime: 'docker',
+      },
+    })
+    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created).toMatchObject({ ok: false, code: 409 })
+    expect(created.ok ? '' : created.error).toContain('does not answer')
+    expect(listTasks(project.path)).toHaveLength(0)
+    expect(rig.starts).toHaveLength(0)
+  })
+
+  test('an unprobed manager creates policy tasks: nothing pretends to be caged', () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created.ok && created.record.isolation).toBe('policy')
+    expect(manager.workspaceInfo()).toMatchObject({
+      isolation_available: false,
+      isolation_default: 'policy',
+    })
+  })
+
+  test('workspaceInfo reports the probe verbatim, reason included', () => {
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'docker is available',
+        configured: 'auto',
+        runtime: 'docker',
+      },
+    })
+    expect(manager.workspaceInfo()).toEqual({
+      isolation_available: true,
+      isolation_default: 'container',
+      isolation_reason: 'docker is available',
+      isolation_configured: 'auto',
+    })
+  })
+
+  test('the egress allowlist and the repo checks config reach the runner', () => {
+    const project = register(makeRepo())
+    mkdirSync(join(project.path, '.codesema'), { recursive: true })
+    writeFileSync(
+      join(project.path, '.codesema', 'config.json'),
+      JSON.stringify({ checks: { image: 'oven/bun:1', commands: ['bun test'] } }),
+    )
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      allowedDomains: ['api.anthropic.com', 'registry.npmjs.org'],
+    })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const options = rig.runnerOptions()
+    expect(options.allowedDomains).toEqual(['api.anthropic.com', 'registry.npmjs.org'])
+    expect(options.checksConfig?.image).toBe('oven/bun:1')
   })
 
   test('create validates title and prompt before touching the store', () => {
@@ -435,11 +556,17 @@ describe('createTaskManager', () => {
     expect(rig.starts.map((r) => r.id)).toEqual([created.record.id])
     // The runner was built for project B's repo.
     expect(rig.runnerOptions().cwd).toBe(projectB.path)
-    expect(envelopes).toEqual([
+    expect(envelopes).toMatchObject([
       {
         project_id: projectB.id,
         task_id: created.record.id,
         event: { name: 'task', data: created.record },
+      },
+      // The isolation decision is broadcast with the record it belongs to.
+      {
+        project_id: projectB.id,
+        task_id: created.record.id,
+        event: { name: 'task_event', data: { type: 'isolation' } },
       },
     ])
   })
@@ -1020,6 +1147,12 @@ describe('task routes with a stub manager', () => {
         return { ok: true }
       },
       checksSetupStatus: (projectId) => (known(projectId) ? { status: 'idle' } : null),
+      workspaceInfo: () => ({
+        isolation_available: false,
+        isolation_default: 'policy',
+        isolation_reason: 'stub',
+        isolation_configured: 'policy',
+      }),
       checksApply: (projectId) => {
         if (!known(projectId)) {
           return { ok: false, code: 404, error: 'unknown project' }
@@ -1434,6 +1567,12 @@ describe('project routes', () => {
           },
         ],
         current: current.id,
+        workspace: {
+          isolation_available: false,
+          isolation_default: 'policy',
+          isolation_reason: 'container isolation was not probed',
+          isolation_configured: 'policy',
+        },
       })
 
       // Register a second repo by path.
@@ -1919,6 +2058,7 @@ describe('workspace server end to end', () => {
     await until(() => loadTask(repo, created.record.id)?.status === 'shipped')
     expect(shipCalls).toEqual([created.record.id])
     expect(readTaskEvents(repo, created.record.id)).toMatchObject([
+      { type: 'isolation', data: { isolation: 'policy' } },
       { type: 'turn_started' },
       { type: 'message' },
       { type: 'shipped', data: { mr_url: 'https://github.com/o/r/pull/3' } },

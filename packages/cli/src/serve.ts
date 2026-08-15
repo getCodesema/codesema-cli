@@ -984,7 +984,14 @@ function createRequestHandler(handlerOpts: {
         if (!tasks) {
           return sendJson(res, 501, { error: 'task manager unavailable' })
         }
-        return sendJson(res, 200, { projects: listProjects(), current: tasks.currentProjectId })
+        // `workspace` carries the process-wide facts the UI needs before it
+        // can honestly label anything: whether the container cage is usable
+        // here, and which isolation a new task would be created with.
+        return sendJson(res, 200, {
+          projects: listProjects(),
+          current: tasks.currentProjectId,
+          workspace: tasks.manager.workspaceInfo(),
+        })
       }
       if (pathname === '/api/projects/discover') {
         if (!tasks) {

@@ -16,6 +16,7 @@ import {
   type ChecksSetupRunner,
   type ChecksSetupState,
 } from './checks-setup.js'
+import type { IsolationMode } from './config.js'
 import {
   isActiveTaskStatus,
   TASK_BASE_MAX,
@@ -23,12 +24,20 @@ import {
   TASK_TURN_TEXT_MAX,
   type TaskChecks,
   type TaskEvent,
+  type TaskIsolation,
   type TaskRecord,
 } from './contract.js'
 import { tryGit } from './git.js'
+import { t } from './i18n.js'
 import { listProjects, type Project } from './projects.js'
 import { readChecksConfig } from './repo-config.js'
 import { runChecks } from './task-checks.js'
+import {
+  isolationDefaults,
+  resolveTaskIsolation,
+  UNPROBED_ISOLATION,
+  type IsolationProbe,
+} from './task-isolation.js'
 import { createTaskReviewer } from './task-review.js'
 import {
   createTaskRunner,
@@ -153,6 +162,23 @@ export type TaskManager = {
   /** Current proposal state of a project; null on unknown project. */
   checksSetupStatus: (projectId: string) => ChecksSetupState | null
   /**
+   * Workspace-wide facts the UI needs before creating anything: whether the
+   * container cage is usable here, and which isolation a new task would get.
+   * Exposed on GET /api/projects.
+   */
+  workspaceInfo: () => {
+    isolation_available: boolean
+    isolation_default: TaskIsolation
+    /** Why — always present, so a policy fallback is never silent in the UI either. */
+    isolation_reason: string
+    /**
+     * What the config ASKED for. Lets the UI tell a deliberate 'policy' choice
+     * apart from an 'auto' that fell back, and stop offering an upgrade the
+     * user already declined.
+     */
+    isolation_configured: IsolationMode
+  }
+  /**
    * Writes the ready proposal to the project's .codesema/config.json — the
    * ONLY path from a proposal to disk. 409 when nothing is proposed.
    */
@@ -168,6 +194,15 @@ export type CreateTaskManagerOptions = {
   timeoutMs: number
   /** GLOBAL cap of concurrently running tasks, all projects confounded. */
   maxParallel?: number
+  /**
+   * Result of the boot probe (workspace.ts): decides the isolation every new
+   * task is created with. Absent means "nothing probed" — tasks are then
+   * created as 'policy', which is what a plain server (tests, `codesema
+   * review`) honestly offers.
+   */
+  isolation?: IsolationProbe
+  /** Egress allowlist of the cage; the isolation module's default applies when absent. */
+  allowedDomains?: readonly string[] | undefined
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
   /** Test seam: lets tests observe/replace the runner without spawning agents. */
   createRunnerFn?: (options: TaskRunnerOptions) => TaskRunner
@@ -266,6 +301,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   // ONE pool for every runner: maxParallel is a global budget, a slot freed by
   // any project's task wakes every project's queue.
   const pool = createTaskSlotPool(opts.maxParallel ?? DEFAULT_MAX_PARALLEL_TASKS)
+  const probe = opts.isolation ?? UNPROBED_ISOLATION
   const createRunner = opts.createRunnerFn ?? createTaskRunner
   const contexts = new Map<string, ProjectContext>()
 
@@ -488,6 +524,10 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       timeoutMs: opts.timeoutMs,
       slots: pool,
       onTurnDone,
+      // Cage inputs, read from the project's own config: its checks image is
+      // the base-image fallback, its allowlist bounds the egress proxy.
+      checksConfig: readChecksConfig(cwd),
+      ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
       onTask: (record) =>
         emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } }),
@@ -647,6 +687,18 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // nothing). A non-empty base on a never-materialized record is the
       // runner's signal to branch from it instead of auto-detecting. A
       // work-on record instead carries its branch (and workOn) from day one.
+      // Isolation is decided HERE, once, and stored on the record: the runner
+      // reads it and never re-decides. A workspace configured 'container'
+      // refuses the creation outright rather than quietly running the task on
+      // the host under a weaker containment than the one that was asked for.
+      const resolved = resolveTaskIsolation(probe)
+      if (!resolved) {
+        return {
+          ok: false,
+          code: 409,
+          error: t('isolation.unavailable', { reason: probe.reason }),
+        }
+      }
       const record = createTask(ctx.project.path, {
         title,
         prompt,
@@ -655,8 +707,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         branch,
         worktree: '',
         workOn: branch !== '',
+        isolation: resolved.isolation,
+      })
+      // The WHY is journaled on the task itself: an 'auto' workspace that fell
+      // back to policy must be able to say so, months later, from the record.
+      const isolationEvent = appendTaskEvent(ctx.project.path, record.id, {
+        type: 'isolation',
+        data: { isolation: resolved.isolation, reason: resolved.reason },
       })
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      emit({
+        project_id: projectId,
+        task_id: record.id,
+        event: { name: 'task_event', data: isolationEvent },
+      })
       // start() rereads the task.json written just above; on a fresh 'queued'
       // record it cannot legitimately refuse, but a refusal must not be
       // swallowed: the caller would wait forever on a task that never runs.
@@ -720,6 +784,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       const project = findProject(projectId)
       return project ? checksSetup.status(project.id) : null
     },
+
+    workspaceInfo: () => ({
+      ...isolationDefaults(probe),
+      isolation_reason: probe.reason,
+      isolation_configured: probe.configured,
+    }),
 
     checksApply(projectId) {
       const project = findProject(projectId)

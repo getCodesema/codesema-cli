@@ -45,4 +45,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   shipped: TaskEventLine,
   error: TaskEventLine,
   interrupted: TaskEventLine,
+  isolation: TaskEventLine,
 }

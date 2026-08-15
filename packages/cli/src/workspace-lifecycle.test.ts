@@ -14,6 +14,7 @@ import type { TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
 import { createTaskRunner } from './task-runner.js'
 import { createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
+import { logIsolation } from './workspace.js'
 
 const cleanups: string[] = []
 
@@ -336,4 +337,54 @@ test('abandoning a shipped task keeps the shipped status', async () => {
   const after = loadTask(repo, task.id)
   expect(after?.status).toBe('shipped')
   expect(existsSync(after!.worktree)).toBe(false)
+})
+
+// --- boot: the isolation the workspace actually offers, said out loud ------
+
+describe('logIsolation', () => {
+  function captured(fn: () => void): string {
+    const lines: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => lines.push(args.join(' '))
+    try {
+      fn()
+    } finally {
+      console.log = original
+    }
+    return lines.join('\n')
+  }
+
+  test('cage on: the line names the runtime and what it lets out', () => {
+    const output = captured(() =>
+      logIsolation(
+        {
+          available: true,
+          mode: 'container',
+          reason: 'podman is available',
+          configured: 'auto',
+          runtime: 'podman',
+        },
+        ['api.anthropic.com'],
+      ),
+    )
+    expect(output).toContain('podman')
+    expect(output).toContain('api.anthropic.com')
+  })
+
+  test('cage off: the WHY is on screen — the downgrade is never silent', () => {
+    const output = captured(() =>
+      logIsolation(
+        {
+          available: false,
+          mode: 'policy',
+          reason: 'no container runtime found (install docker or podman)',
+          configured: 'auto',
+          runtime: null,
+        },
+        ['api.anthropic.com'],
+      ),
+    )
+    expect(output).toContain('no container runtime found')
+    expect(output).toContain('policy')
+  })
 })

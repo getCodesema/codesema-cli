@@ -6,10 +6,22 @@
 // last question excerpt and "paused for X", "IN PROGRESS" with a pulsing dot
 // and a thin indeterminate amber bar, "READY TO SHIP" green-ringed cards with
 // [Ship] + [Diff], and the folded "DONE" pile. Clicking a card opens it in
-// the focus zone. All grouping/extraction is pure; the queue only holds its
-// disclosure state and a minute tick for the pause durations.
+// the focus zone. Each live card carries a discreet isolation dot (green =
+// caged in a container, hollow = policy) whenever that dot tells the cards
+// apart, and a dismissible banner sits on top when the whole workspace fell
+// back to policy while a container runtime could have carried it. All
+// grouping/extraction is pure; the queue only holds its disclosure state, the
+// banner dismissal and a minute tick for the pause durations.
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { CHECKS_STATUS_KEY, checksBadge, checksTone } from '../composables/useChecks'
+import {
+  ISOLATION_DOC_URL,
+  isolationBadge,
+  persistIsolationBannerDismissed,
+  readIsolationBannerDismissed,
+  shouldOfferIsolationUpgrade,
+  showIsolationDot,
+} from '../composables/useIsolation'
 import {
   formatDuration,
   groupQueue,
@@ -20,7 +32,7 @@ import {
 import { taskKey, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { EXECUTION_STATUS } from '../execution-status'
 import { t } from '../i18n'
-import type { Project } from '../types'
+import type { Project, WorkspaceInfo } from '../types'
 import TaskComposer from './TaskComposer.vue'
 
 const props = defineProps<{
@@ -36,6 +48,9 @@ const props = defineProps<{
   filter: string | null
   creating: boolean
   createError: string | null
+  /** Workspace isolation facts (GET /api/projects); null = the server said
+   * nothing, so the queue claims nothing either. */
+  workspace: WorkspaceInfo | null
 }>()
 
 const emit = defineEmits<{
@@ -101,6 +116,21 @@ const doneOpen = ref(true)
 
 const isEmpty = computed(() => props.states.length === 0)
 
+// ── Isolation: per-card dot + the one-time upgrade banner ─────────────────
+const isoOf = (state: TaskState) => isolationBadge(state.record)
+const showIso = (state: TaskState): boolean => showIsolationDot(state.record, props.workspace)
+
+// Dismissal is a local preference, persisted for good on this machine.
+const isoBannerDismissed = ref(readIsolationBannerDismissed())
+const showIsoBanner = computed(() =>
+  shouldOfferIsolationUpgrade(props.workspace, isoBannerDismissed.value),
+)
+
+function dismissIsoBanner(): void {
+  isoBannerDismissed.value = true
+  persistIsolationBannerDismissed()
+}
+
 const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
   attention: 'workspace.queueAttention',
   active: 'workspace.queueActive',
@@ -128,6 +158,30 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
     </div>
 
     <div class="wq-scroll">
+      <!-- Said once, not on every card: agents here are not caged, and how to
+           change that. Dismissing it is remembered on this machine. -->
+      <aside v-if="showIsoBanner" class="wq-iso-banner">
+        <p class="wq-iso-title">
+          <span aria-hidden="true">🛡</span> {{ t('workspace.isolationUpgradeTitle') }}
+        </p>
+        <p class="wq-iso-body">
+          {{ t('workspace.isolationUpgradeBody', { reason: workspace?.isolation_reason ?? '' }) }}
+        </p>
+        <p class="wq-iso-actions">
+          <a
+            class="wq-iso-link"
+            :href="ISOLATION_DOC_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {{ t('workspace.isolationUpgradeLink') }}
+          </a>
+          <button class="wq-iso-dismiss" type="button" @click="dismissIsoBanner">
+            {{ t('workspace.isolationUpgradeDismiss') }}
+          </button>
+        </p>
+      </aside>
+
       <p v-if="isEmpty" class="wq-empty">{{ t('workspace.treeEmpty') }}</p>
 
       <!-- ⚠ NEEDS YOU: the human is the bottleneck; amber carries the state. -->
@@ -146,6 +200,14 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
         >
           <span class="wq-card-row">
             <span class="wq-title">{{ state.record.title }}</span>
+            <span
+              v-if="showIso(state)"
+              class="wq-iso"
+              :class="`wq-iso--${isoOf(state).isolation}`"
+              role="img"
+              :aria-label="t(isoOf(state).labelKey)"
+              :title="t(isoOf(state).hintKey)"
+            />
             <span class="wq-flag">{{ t(EXECUTION_STATUS[state.record.status].labelKey) }}</span>
           </span>
           <span v-if="excerptOf(state)" class="wq-question">« {{ excerptOf(state) }} »</span>
@@ -175,6 +237,14 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
               aria-hidden="true"
             />
             <span class="wq-title">{{ state.record.title }}</span>
+            <span
+              v-if="showIso(state)"
+              class="wq-iso"
+              :class="`wq-iso--${isoOf(state).isolation}`"
+              role="img"
+              :aria-label="t(isoOf(state).labelKey)"
+              :title="t(isoOf(state).hintKey)"
+            />
             <span class="wq-project">{{ projectName(state) }}</span>
           </span>
           <span class="wq-bar" aria-hidden="true"><span class="wq-bar-fill" /></span>
@@ -205,6 +275,14 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
             >
               {{ checksBadge(state.checks) }}
             </span>
+            <span
+              v-if="showIso(state)"
+              class="wq-iso"
+              :class="`wq-iso--${isoOf(state).isolation}`"
+              role="img"
+              :aria-label="t(isoOf(state).labelKey)"
+              :title="t(isoOf(state).hintKey)"
+            />
             <span class="wq-project">{{ projectName(state) }}</span>
           </span>
           <span class="wq-actions">
@@ -380,6 +458,84 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
   font-weight: 400;
   color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── Isolation: one banner, then one quiet dot per card ───────────────── */
+.wq-iso-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid var(--cs-line-2);
+  border-left: 3px solid var(--cs-line-3);
+  border-radius: 9px;
+  background: var(--cs-surface);
+}
+
+.wq-iso-title {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--cs-text-2);
+}
+
+.wq-iso-body {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--cs-ghost);
+}
+
+.wq-iso-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 0;
+}
+
+.wq-iso-link {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cs-green-text);
+  text-decoration: none;
+}
+
+.wq-iso-link:hover {
+  text-decoration: underline;
+}
+
+.wq-iso-dismiss {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cs-ghost);
+  cursor: pointer;
+}
+
+.wq-iso-dismiss:hover {
+  border-color: var(--cs-line-3);
+  color: var(--cs-text-2);
+}
+
+/* Filled green = caged; hollow = policy. Discreet on purpose: it informs,
+   it does not alarm. */
+.wq-iso {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  cursor: help;
+}
+
+.wq-iso--container {
+  background: var(--cs-green);
+}
+
+.wq-iso--policy {
+  border: 1px solid var(--cs-line-3);
 }
 
 /* ── Cards ────────────────────────────────────────────────────────────── */

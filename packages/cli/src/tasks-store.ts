@@ -24,6 +24,7 @@ import {
   type TaskEvent,
   type TaskEventData,
   type TaskEventType,
+  type TaskIsolation,
   type TaskRecord,
 } from './contract.js'
 
@@ -44,6 +45,8 @@ export type CreateTaskInput = {
   worktree: string
   /** Work-on mode (POST /api/tasks `branch`): the task works directly on `branch`. Defaults to false (fork mode). */
   workOn?: boolean
+  /** Containment of the task's turns, resolved by the manager. Defaults to 'policy'. */
+  isolation?: TaskIsolation
 }
 
 /**
@@ -73,6 +76,8 @@ export function createTask(cwd: string, input: CreateTaskInput): TaskRecord {
     wait_ms: 0,
     auto_ship: input.autoShip,
     work_on: input.workOn === true,
+    // Fixed here, once: nothing downstream may change how a task is contained.
+    isolation: input.isolation ?? 'policy',
     created_at: now,
     updated_at: now,
   }

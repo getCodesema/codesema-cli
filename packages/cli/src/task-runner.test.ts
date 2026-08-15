@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import type { TaskEvent, TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
+import type { RunContainerTurnOptions } from './task-isolation.js'
 import {
   buildTaskPrompt,
   createTaskRunner,
@@ -108,7 +109,12 @@ afterEach(() => {
   }
 })
 
-function makeTask(repo: string, title: string, prompt: string): TaskRecord {
+function makeTask(
+  repo: string,
+  title: string,
+  prompt: string,
+  isolation: TaskRecord['isolation'] = 'policy',
+): TaskRecord {
   return createTask(repo, {
     title,
     prompt,
@@ -116,6 +122,7 @@ function makeTask(repo: string, title: string, prompt: string): TaskRecord {
     base: '',
     branch: '',
     worktree: '',
+    isolation,
   })
 }
 
@@ -605,5 +612,186 @@ describe('taskCommandFor hardening', () => {
 
   test('non-claude commands stay untouched', () => {
     expect(taskCommandFor('codex exec -', { session: null })).not.toContain('--strict-mcp-config')
+  })
+})
+
+// --- isolation branch: the same turn, in its box or on the host ------------
+
+describe('container isolation branch', () => {
+  /** Captures the caged path without ever touching a container runtime. */
+  function fakeCage(response = 'done in the box') {
+    const calls: RunContainerTurnOptions[] = []
+    const run = (options: RunContainerTurnOptions): Promise<string> => {
+      calls.push(options)
+      const raw = claudeStream(response)
+      options.onText?.(raw)
+      return Promise.resolve(raw)
+    }
+    return { calls, run }
+  }
+
+  test("a 'container' record runs in the cage, never through the host agent", async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    const cage = fakeCage()
+    const host = fakeClaude(() => 'should never run')
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: host.run,
+      runContainerTurnFn: cage.run,
+    })
+    expect(host.commands).toHaveLength(0)
+    expect(cage.calls).toHaveLength(1)
+    expect(outcome.response).toBe('done in the box')
+    // The stream parser is fed exactly as on the host path.
+    expect(outcome.sessionId).toBe('sess-123')
+  })
+
+  test('a caged task is told git cannot work in its box', () => {
+    const caged = { title: 'x', isolation: 'container' } as TaskRecord
+    expect(buildTaskPrompt(caged)).toContain('git commands will fail')
+    expect(buildTaskPrompt({ title: 'x', isolation: 'policy' } as TaskRecord)).not.toContain(
+      'git commands will fail',
+    )
+  })
+
+  test('the caged command swaps the policy hardening for the cage flag', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    const cage = fakeCage()
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runContainerTurnFn: cage.run,
+    })
+    const command = cage.calls[0]?.command ?? ''
+    expect(command).toContain('--dangerously-skip-permissions')
+    expect(command).toContain('--output-format stream-json')
+    expect(command).toContain('--session-id')
+    expect(command).not.toContain('--strict-mcp-config')
+    expect(command).not.toContain('--setting-sources')
+  })
+
+  test('the cage receives the task id, its worktree, the allowlist and the checks config', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    const cage = fakeCage()
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1234,
+      onEvent: () => {},
+      allowedDomains: ['api.anthropic.com', 'registry.npmjs.org'],
+      checksConfig: { image: 'oven/bun:1', commands: ['bun test'] },
+      runContainerTurnFn: cage.run,
+    })
+    const call = cage.calls[0]
+    expect(call?.taskId).toBe(task.id)
+    expect(call?.worktree).toBe(repo)
+    expect(call?.prompt).toBe('do it')
+    expect(call?.timeoutMs).toBe(1234)
+    expect(call?.allowedDomains).toEqual(['api.anthropic.com', 'registry.npmjs.org'])
+    expect(call?.checksConfig?.image).toBe('oven/bun:1')
+  })
+
+  test("a 'policy' record keeps the host path exactly as it was", async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'host', 'do it')
+    const cage = fakeCage()
+    const host = fakeClaude(() => 'done on the host')
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: host.run,
+      runContainerTurnFn: cage.run,
+    })
+    expect(cage.calls).toHaveLength(0)
+    expect(outcome.response).toBe('done on the host')
+    expect(host.commands[0]).toContain('--strict-mcp-config')
+    expect(host.commands[0]).not.toContain('--dangerously-skip-permissions')
+  })
+
+  test('a caged turn still gets its commit from the HOST runner (no git creds in the box)', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'Caged feature', 'write feature.txt', 'container')
+    const calls: RunContainerTurnOptions[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runContainerTurnFn: (options) => {
+        calls.push(options)
+        // The agent writes inside the mounted worktree, as it would in its box.
+        writeFileSync(join(options.worktree, 'feature.txt'), 'from the cage\n')
+        return Promise.resolve(claudeStream('feature written'))
+      },
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record?.isolation).toBe('container')
+    expect(tryGit(['log', '-1', '--pretty=%s'], record?.worktree ?? '')).toBe(
+      `task(${task.id}): Caged feature — turn 1`,
+    )
+    expect(calls[0]?.worktree).toBe(record?.worktree)
+  })
+
+  test('interrupt reaches the cage: the abort signal is handed to the container run', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'Long caged', 'wait', 'container')
+    let aborted = false
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runContainerTurnFn: (options) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => {
+            aborted = true
+            reject(new Error('interrupted'))
+          })
+        }),
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'running')
+    expect(runner.interrupt(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'interrupted')
+    expect(aborted).toBe(true)
+  })
+
+  test('shutdown drains a caged turn the same way it drains a host one', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'Draining', 'wait', 'container')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runContainerTurnFn: (options) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('interrupted')))
+        }),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'running')
+    await runner.shutdown()
+    expect(status(repo, task.id)).toBe('interrupted')
+    const last = readTaskEvents(repo, task.id).at(-1)
+    expect(last?.type).toBe('interrupted')
+    expect(last?.data.reason).toBe('shutdown')
   })
 })

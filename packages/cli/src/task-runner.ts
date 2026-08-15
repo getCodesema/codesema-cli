@@ -19,6 +19,12 @@ import {
 import type { TaskEvent, TaskRecord, TaskStatus } from './contract.js'
 import { fixCommandFor } from './fix.js'
 import { git, tryGit } from './git.js'
+import type { ChecksConfig } from './repo-config.js'
+import {
+  containerTaskCommandFor,
+  runContainerTurn,
+  type RunContainerTurnOptions,
+} from './task-isolation.js'
 import { createTaskWorktree, removeTaskWorktree } from './task-worktree.js'
 import { appendTaskEvent, loadTask, saveTask, type AppendTaskEventInput } from './tasks-store.js'
 
@@ -90,6 +96,14 @@ export function buildTaskPrompt(task: TaskRecord): string {
     'Rules:',
     '- Work only inside this worktree. Never touch files outside it.',
     '- Do NOT commit, stage, push, or run destructive git commands: the runner commits your work at the end of the turn.',
+    // The cage mounts the worktree and NOTHING else — the .git directory it
+    // points at lives on the other side, so git simply cannot work in there.
+    // Saying it up front beats letting the agent discover it by failing.
+    ...(task.isolation === 'container'
+      ? [
+          '- You are running inside a container: the working tree is here, but its git directory is not, so git commands will fail. Read and edit files directly; the runner commits from outside.',
+        ]
+      : []),
     '- Follow the existing code style and conventions of the repository.',
     '- If the repo has cheap checks (typecheck, unit tests, lint), run them and fix what YOUR changes broke before finishing.',
     "- If you cannot proceed without a human decision, end your reply with a single final line of the exact form 'QUESTION: <your question>' (nothing after that line). Ask only when truly blocked.",
@@ -136,6 +150,12 @@ export type RunTaskTurnOptions = {
   /** Cumulative token count of the turn (SSE live meter; final value persisted on the turn). */
   onTokens?: (total: number) => void
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
+  /** Egress allowlist of the cage (container isolation only). */
+  allowedDomains?: readonly string[] | undefined
+  /** Repo checks config: the base image of the cage falls back to it. */
+  checksConfig?: ChecksConfig | null | undefined
+  /** Test seam for the caged path; the default drives real containers. */
+  runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
 }
 
 /**
@@ -151,7 +171,13 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
       ? { kind: 'resume', id: opts.task.agent_session_id }
       : { kind: 'new', id: randomUUID() }
     : null
-  const command = taskCommandFor(opts.command, { session })
+  // The isolation is fixed on the record at creation: 'container' turns run
+  // inside the task's own box (full agent tools, the cage is the guarantee),
+  // everything else keeps the host path with its policy hardening.
+  const caged = opts.task.isolation === 'container'
+  const command = caged
+    ? containerTaskCommandFor(opts.command, { session })
+    : taskCommandFor(opts.command, { session })
 
   opts.onEvent({
     type: 'turn_started',
@@ -178,22 +204,37 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
       })
     : null
   let fed = 0
-  const raw = await run({
-    command,
-    prompt: opts.prompt,
-    cwd: opts.cwd,
-    timeoutMs: opts.timeoutMs,
-    env: agentEnv(command),
-    ...(opts.signal ? { signal: opts.signal } : {}),
-    onText: (text) => {
-      if (parser) {
-        parser.push(text.slice(fed))
-        fed = text.length
-      } else {
-        opts.onText?.(text)
-      }
-    },
-  })
+  // Both paths deliver the SAME cumulative stdout, so the stream-json parser
+  // is fed identically whether the agent ran on the host or in its box.
+  const onText = (text: string): void => {
+    if (parser) {
+      parser.push(text.slice(fed))
+      fed = text.length
+    } else {
+      opts.onText?.(text)
+    }
+  }
+  const raw = caged
+    ? await (opts.runContainerTurnFn ?? runContainerTurn)({
+        taskId: opts.task.id,
+        worktree: opts.cwd,
+        command,
+        prompt: opts.prompt,
+        timeoutMs: opts.timeoutMs,
+        ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
+        ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        onText,
+      })
+    : await run({
+        command,
+        prompt: opts.prompt,
+        cwd: opts.cwd,
+        timeoutMs: opts.timeoutMs,
+        env: agentEnv(command),
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        onText,
+      })
   // The resolved value is the full stdout: replay whatever onText never saw
   // (an injected runAgentFn may resolve without streaming at all).
   if (parser && raw.length > fed) {
@@ -265,6 +306,12 @@ export type TaskRunnerOptions = {
   /** Live token meter of the in-flight turn (SSE only; the final count lands on the turn). */
   onTokens?: (taskId: string, total: number) => void
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
+  /** Egress allowlist handed to every caged turn of this repo. */
+  allowedDomains?: readonly string[] | undefined
+  /** Repo checks config (base image fallback of the cage). */
+  checksConfig?: ChecksConfig | null | undefined
+  /** Test seam for the caged path; the default drives real containers. */
+  runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
   /**
    * Automatic end-of-turn review (T4). When set, a successful 'done' turn
    * parks the task on 'reviewing' (post-commit) and hands it to this hook,
@@ -529,6 +576,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       onText: (text) => opts.onText?.(record.id, text),
       onTokens: (total) => opts.onTokens?.(record.id, total),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
+      ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
+      ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
+      ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
     })
       .then((outcome) => finishTurn(record, outcome, startedAt))
       .catch((err: unknown) => failTurn(record, err, startedAt, controller.signal.aborted))

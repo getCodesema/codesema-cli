@@ -318,6 +318,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   shipped: 'workspace.evShipped',
   error: 'workspace.evError',
   interrupted: 'workspace.evInterrupted',
+  isolation: 'workspace.evIsolation',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -338,6 +339,7 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   shipped: 'go',
   error: 'stop',
   interrupted: 'idle',
+  isolation: 'idle',
 }
 
 export function eventTone(type: TaskEventType): EventTone {
@@ -376,6 +378,7 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   shipped: ['url', 'branch'],
   error: ['message', 'error', 'summary'],
   interrupted: ['message', 'summary'],
+  isolation: ['reason', 'isolation'],
 }
 
 /** One dense line per journal event; falls back to the localized type label. */

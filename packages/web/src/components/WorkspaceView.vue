@@ -79,6 +79,7 @@ const {
   removeProject,
   candidates,
   discoverCandidates,
+  workspace,
 } = useTasks(props.token)
 
 onMounted(start)
@@ -434,6 +435,7 @@ async function onRemoveProject(id: string): Promise<void> {
         :filter="filter"
         :creating="creating"
         :create-error="createError"
+        :workspace="workspace"
         @open="(state) => openConversation(state.projectId, state.record.id)"
         @ship="onQueueShip"
         @create="onCreate"

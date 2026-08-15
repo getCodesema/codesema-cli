@@ -238,6 +238,14 @@ export type TaskEventType =
   | 'shipped'
   | 'error'
   | 'interrupted'
+  /** Isolation decided for the task at creation, with the reason behind it. */
+  | 'isolation'
+
+/** How a task's agent turns are contained (mirrors the contract). */
+export type TaskIsolation = 'container' | 'policy'
+
+/** What the workspace config ASKED for (mirrors the CLI's IsolationMode). */
+export type IsolationMode = 'auto' | 'container' | 'policy'
 
 /** Flat, bounded payload: summaries only, never a full file body. */
 export type TaskEventData = Record<string, string | number | boolean | null>
@@ -266,6 +274,8 @@ export type TaskRecord = {
   auto_ship: boolean
   /** True when the conversation works directly ON its branch (no forked codesema/task-*). */
   work_on?: boolean
+  /** Containment of the task's turns, fixed at creation. Absent on older records = 'policy'. */
+  isolation?: TaskIsolation
   created_at: string
   updated_at: string
 }
@@ -335,7 +345,32 @@ export type Project = {
   added_at: string
 }
 
-export type ProjectsResponse = { projects: Project[]; current: string | null }
+/**
+ * Process-wide isolation facts of the workspace, answered by GET /api/projects
+ * alongside the registry: whether the container cage is usable on this machine
+ * and which isolation a task created now would get. The UI must never claim a
+ * containment the server did not report — a missing `workspace` (older CLI)
+ * means "unknown", not "policy".
+ */
+export type WorkspaceInfo = {
+  isolation_available: boolean
+  isolation_default: TaskIsolation
+  /** Why — always set by the server, so a policy fallback is never silent. */
+  isolation_reason: string
+  /**
+   * What the config asked for. OPTIONAL: the CLI does not expose it today, so
+   * consumers treat it as "may be absent" and only use it to STAY QUIET (an
+   * explicit 'policy' choice is not something to nag about).
+   */
+  isolation_configured?: IsolationMode
+}
+
+export type ProjectsResponse = {
+  projects: Project[]
+  current: string | null
+  /** Absent on servers predating the container cage. */
+  workspace?: WorkspaceInfo
+}
 
 /** Git repo detected around the launch directory (GET /api/projects/discover). */
 export type ProjectCandidate = {

@@ -65,6 +65,7 @@ function makeTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
     wait_ms: 0,
     auto_ship: false,
     work_on: false,
+    isolation: 'policy',
     created_at: now,
     updated_at: now,
     ...overrides,

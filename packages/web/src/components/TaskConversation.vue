@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // One conversation of the focus zone, maquette form. Header: title (⚠ when
 // the agent waits), 📌 pin, the discreet 2-click branch/worktree cleanup,
-// Stop, Ship; a mono "project · ⎇ branch" chip plus the colored status
-// phrase; then the Conversation / Diff / Checks tabs (Diff is the scoped
+// Stop, Ship; a mono "project · ⎇ branch" chip, the isolation chip (🛡
+// container / ◇ policy, tooltip spelling out the guarantee) plus the colored
+// status phrase; then the Conversation / Diff / Checks tabs (Diff is the scoped
 // PreviewPanel; Checks shows the sandboxed typecheck/tests/lint run of the
 // worktree, its label being the semaphore — ✓ / ✗ / …). The Conversation tab
 // renders the journal through the event registry — agent bubbles, the amber
@@ -26,6 +27,7 @@ import {
   shortSha,
   type ChecksSetupState,
 } from '../composables/useChecks'
+import { isolationBadge } from '../composables/useIsolation'
 import { extractQuickReplies } from '../composables/useQuickReplies'
 import {
   focusTabs,
@@ -75,6 +77,9 @@ const emit = defineEmits<{ 'open-review': [record: ReviewRecord]; 'toggle-pin': 
 
 const record = computed(() => props.state.record)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
+// Containment of this conversation's turns, fixed at its creation: the chip
+// states it, the tooltip says what it actually guarantees.
+const isolation = computed(() => isolationBadge(record.value))
 
 // ── Tabs: Conversation / Diff · N / Checks (soon) ─────────────────────────
 const tab = ref<FocusTab>('conversation')
@@ -653,6 +658,15 @@ const wait = computed(() =>
         <span class="cv-chip">
           {{ projectName }} · <span aria-hidden="true">⎇</span> {{ record.branch || record.base }}
         </span>
+        <!-- Isolation: what contains this conversation's agent. The tooltip
+             carries the guarantee, so the chip itself stays one word. -->
+        <span
+          class="cv-chip cv-iso"
+          :class="`cv-iso--${isolation.isolation}`"
+          :title="t(isolation.hintKey)"
+        >
+          <span aria-hidden="true">{{ isolation.glyph }}</span> {{ t(isolation.labelKey) }}
+        </span>
         <span class="cv-phrase" :style="{ color: visual.text }">{{ t(visual.phraseKey) }}</span>
         <span class="cv-chrono">
           <span>{{ t('workspace.workTime', { t: work }) }}</span>
@@ -1204,6 +1218,22 @@ const wait = computed(() =>
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Isolation chip: a green outline when the cage holds it, neutral otherwise —
+   never a scary red, "policy" is the documented default, not a failure. */
+.cv-iso {
+  cursor: help;
+  letter-spacing: 0.02em;
+}
+
+.cv-iso--container {
+  color: var(--cs-green-text);
+  border-color: var(--cs-green-ring);
+}
+
+.cv-iso--policy {
+  color: var(--cs-ghost);
 }
 
 .cv-phrase {

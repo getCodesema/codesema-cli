@@ -150,3 +150,67 @@ describe('sync fields are global-only', () => {
     })
   })
 })
+
+describe('isolation configuration', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-iso-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-iso-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('the three modes survive a round-trip, in either scope', () => {
+    for (const isolation of ['auto', 'container', 'policy'] as const) {
+      saveRepoConfig(repoDir, { isolation })
+      expect(loadRepoConfig(repoDir).isolation).toBe(isolation)
+    }
+    saveGlobalConfig({ isolation: 'container' })
+    expect(loadGlobalConfig().isolation).toBe('container')
+    // Repo wins over global, like every other field.
+    saveRepoConfig(repoDir, { isolation: 'policy' })
+    expect(loadConfig(repoDir).isolation).toBe('policy')
+  })
+
+  test('an unknown mode is simply absent (the caller applies its own default)', () => {
+    saveRepoConfig(repoDir, { isolation: 'vm' as never })
+    expect(loadRepoConfig(repoDir).isolation).toBeUndefined()
+  })
+
+  test('the allowlist keeps hostnames, drops everything that is not one', () => {
+    saveRepoConfig(repoDir, {
+      isolationAllowedDomains: [
+        'api.anthropic.com',
+        'API.Anthropic.com',
+        'registry.npmjs.org',
+        'evil.com/../x',
+        'no spaces.com',
+        '',
+        42 as never,
+      ],
+    })
+    expect(loadRepoConfig(repoDir).isolationAllowedDomains).toEqual([
+      'api.anthropic.com',
+      'registry.npmjs.org',
+    ])
+  })
+
+  test('an allowlist that is not a list of domains is absent, never half-applied', () => {
+    saveRepoConfig(repoDir, { isolationAllowedDomains: 'api.anthropic.com' as never })
+    expect(loadRepoConfig(repoDir).isolationAllowedDomains).toBeUndefined()
+    saveRepoConfig(repoDir, { isolationAllowedDomains: ['!!!'] })
+    expect(loadRepoConfig(repoDir).isolationAllowedDomains).toBeUndefined()
+  })
+})

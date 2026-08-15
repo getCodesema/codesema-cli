@@ -43,6 +43,7 @@ const validRecord: TaskRecord = {
   wait_ms: 12_000,
   auto_ship: true,
   work_on: false,
+  isolation: 'container',
   created_at: '2026-08-14T10:00:00.000Z',
   updated_at: '2026-08-14T10:05:00.000Z',
 }
@@ -160,6 +161,25 @@ describe('sanitizeTaskRecord', () => {
     expect(sanitizeTaskRecord(legacy)?.work_on).toBe(false)
   })
 
+  test('isolation: both modes survive a round-trip', () => {
+    expect(sanitizeTaskRecord({ ...validRecord, isolation: 'container' })?.isolation).toBe(
+      'container',
+    )
+    expect(sanitizeTaskRecord({ ...validRecord, isolation: 'policy' })?.isolation).toBe('policy')
+  })
+
+  test('isolation: a record written before the cage existed is policy', () => {
+    const legacy: Record<string, unknown> = { ...validRecord }
+    delete legacy.isolation
+    expect(sanitizeTaskRecord(legacy)?.isolation).toBe('policy')
+  })
+
+  test('isolation: an unknown value never claims the stronger containment', () => {
+    expect(sanitizeTaskRecord({ ...validRecord, isolation: 'vm' })?.isolation).toBe('policy')
+    expect(sanitizeTaskRecord({ ...validRecord, isolation: 42 })?.isolation).toBe('policy')
+    expect(sanitizeTaskRecord({ ...validRecord, isolation: null })?.isolation).toBe('policy')
+  })
+
   test('turns: invalid entries skipped, texts truncated, empty response null', () => {
     const r = sanitizeTaskRecord({
       ...validRecord,
@@ -251,6 +271,7 @@ describe('sanitizeTaskEvent', () => {
       'shipped',
       'error',
       'interrupted',
+      'isolation',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

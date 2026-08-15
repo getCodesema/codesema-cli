@@ -21,6 +21,12 @@ import { createMrReviewRunner } from './mr-review-runner.js'
 import { openBrowser } from './open.js'
 import { addProject, listProjects, type Project } from './projects.js'
 import { createSession, startServer } from './serve.js'
+import {
+  DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+  probeIsolation,
+  teardownEgressProxy,
+  type IsolationProbe,
+} from './task-isolation.js'
 import { createTaskManager, type TaskManager } from './task-server.js'
 import { AGENT_DEFS, defaultCommand, detectAgents } from './wizard.js'
 import { acquireWorkspaceLock, type WorkspaceLockHandle } from './workspace-lock.js'
@@ -66,10 +72,27 @@ function logResumableTasks(manager: TaskManager): void {
  * signal force-quits — the classic double Ctrl-C escape hatch when an agent
  * ignores its SIGTERM. 130 = 128 + SIGINT, the conventional exit code.
  */
+/**
+ * One line, every boot: either the cage is on (and what it lets out), or it is
+ * off and WHY. The fallback to the host policy hardening is a downgrade of the
+ * promise made to the user — it is never allowed to happen quietly.
+ */
+export function logIsolation(probe: IsolationProbe, domains: readonly string[]): void {
+  console.log(
+    probe.available
+      ? t('workspace.isolationContainer', {
+          runtime: probe.runtime ?? '',
+          domains: domains.join(', '),
+        })
+      : t('workspace.isolationPolicy', { reason: probe.reason }),
+  )
+}
+
 function installShutdownHandlers(
   manager: TaskManager,
   stop: () => Promise<void>,
   lock: WorkspaceLockHandle,
+  probe: IsolationProbe,
 ): void {
   let shuttingDown = false
   const shutdown = (): void => {
@@ -83,6 +106,9 @@ function installShutdownHandlers(
       try {
         await manager.shutdown()
         await stop()
+        // The egress proxy outlives individual tasks: it dies with the
+        // workspace that started it, never before and never after.
+        await teardownEgressProxy({ runtime: probe.runtime })
       } finally {
         // Exit inside finally: even a failing drain must not leave a headless
         // process holding the lock.
@@ -139,6 +165,15 @@ export async function workspace(opts: {
     console.log(t('workspace.customAgentWarning', { command: agentCommand }))
   }
 
+  // Container cage: probed ONCE at boot (is a runtime there, does its engine
+  // answer, can it run the configured agent) and handed to the manager, so
+  // every task creation resolves its isolation from the same answer.
+  const allowedDomains = config.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
+  const probe = await probeIsolation({
+    configured: config.isolation ?? 'auto',
+    command: agentCommand,
+  })
+
   // The lock must be held BEFORE the manager touches any task store: its boot
   // recovery would mark another live workspace's running tasks as orphans.
   const lock = acquireWorkspaceLock()
@@ -158,6 +193,8 @@ export async function workspace(opts: {
     taskManager = createTaskManager({
       command: agentCommand,
       timeoutMs,
+      isolation: probe,
+      allowedDomains,
       ...(config.maxParallelTasks !== undefined ? { maxParallel: config.maxParallelTasks } : {}),
     })
 
@@ -201,12 +238,14 @@ export async function workspace(opts: {
   console.log(`  ${started.url}`)
   console.log(`  ${t('review.ctrlc')}`)
   console.log('')
+  logIsolation(probe, allowedDomains)
+  console.log('')
   console.log(t('workspace.projects'))
   logProjects(listProjects(), currentProjectId)
   logResumableTasks(taskManager)
   if (opts.open) {
     openBrowser(started.url)
   }
-  installShutdownHandlers(taskManager, started.stop, lock)
+  installShutdownHandlers(taskManager, started.stop, lock, probe)
   // The listening server keeps the event loop (and therefore the tasks) alive.
 }

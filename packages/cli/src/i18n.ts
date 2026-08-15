@@ -386,6 +386,25 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
     '{n} interrupted task can be resumed — reply to it from the web UI: | {n} interrupted tasks can be resumed — reply to them from the web UI:',
   'workspace.customAgentWarning':
     '⚠ custom agent command ({command}): no hardening applies — full environment, no read-only harness, repo-provided settings honored. Only use a command you fully trust.',
+
+  // --- task isolation (container cage) ---
+  'workspace.isolationContainer':
+    '🛡 container isolation ON ({runtime}): each task runs in its own container — full agent tools inside, egress limited to {domains}',
+  'workspace.isolationPolicy':
+    '⚠ container isolation OFF: {reason} — tasks run on this machine with the policy hardening (edit tools in the worktree, user settings only, strict MCP config)',
+  'isolation.noRuntime':
+    'container isolation: no container runtime found (install docker or podman) — this task was created with the cage required',
+  'isolation.buildFailed': 'container isolation: the agent image could not be built — {error}',
+  'isolation.proxyFailed': 'container isolation: the egress proxy could not be started — {error}',
+  'isolation.homeFailed':
+    "container isolation: the task's home volume could not be prepared — {error}",
+  'isolation.unavailable': 'container isolation is unavailable: {reason}',
+  'isolation.reasonConfigured': "isolation is set to 'policy' in the configuration",
+  'isolation.reasonAgent':
+    'the cage only provides claude-code, and the configured agent is {command}',
+  'isolation.reasonNoRuntime': 'no container runtime found (install docker or podman)',
+  'isolation.reasonUnreachable': '{runtime} is installed but its engine does not answer',
+  'isolation.reasonReady': '{runtime} is available',
 }
 
 export type MessageKey = keyof typeof en
@@ -785,6 +804,25 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
     "{n} tâche interrompue peut reprendre — répondez-lui depuis l'UI web : | {n} tâches interrompues peuvent reprendre — répondez-leur depuis l'UI web :",
   'workspace.customAgentWarning':
     "⚠ commande d'agent custom ({command}) : aucun durcissement ne s'applique — environnement complet, pas de harnais lecture seule, réglages du repo honorés. À n'utiliser qu'avec une commande de confiance totale.",
+
+  // --- task isolation (container cage) ---
+  'workspace.isolationContainer':
+    "🛡 isolation container ACTIVE ({runtime}) : chaque tâche tourne dans son propre container — outils de l'agent complets à l'intérieur, sortie réseau limitée à {domains}",
+  'workspace.isolationPolicy':
+    '⚠ isolation container INACTIVE : {reason} — les tâches tournent sur cette machine avec le durcissement policy (outils d’édition dans le worktree, réglages utilisateur seuls, config MCP stricte)',
+  'isolation.noRuntime':
+    'isolation container : aucun runtime de container trouvé (installez docker ou podman) — cette tâche a été créée avec la cage exigée',
+  'isolation.buildFailed':
+    "isolation container : l'image de l'agent n'a pas pu être construite — {error}",
+  'isolation.proxyFailed': "isolation container : le proxy de sortie n'a pas pu démarrer — {error}",
+  'isolation.homeFailed':
+    "isolation container : le volume home de la tâche n'a pas pu être préparé — {error}",
+  'isolation.unavailable': "l'isolation container est indisponible : {reason}",
+  'isolation.reasonConfigured': "l'isolation est réglée sur « policy » dans la configuration",
+  'isolation.reasonAgent': "la cage ne fournit que claude-code, or l'agent configuré est {command}",
+  'isolation.reasonNoRuntime': 'aucun runtime de container trouvé (installez docker ou podman)',
+  'isolation.reasonUnreachable': '{runtime} est installé mais son moteur ne répond pas',
+  'isolation.reasonReady': '{runtime} est disponible',
 }
 
 /**

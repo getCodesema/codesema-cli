@@ -23,6 +23,7 @@ import type {
   TaskEnvelope,
   TaskEvent,
   TaskRecord,
+  WorkspaceInfo,
 } from '../types'
 import {
   IDLE_CHECKS_SETUP,
@@ -408,6 +409,10 @@ function useProjectRegistry(token: string, store: TaskStore) {
   // Git repos detected around the launch directory, refreshed on demand when
   // the add-project form opens: one-click registration instead of typing paths.
   const candidates = ref<ProjectCandidate[]>([])
+  // Process-wide isolation facts, answered by the same GET /api/projects.
+  // Null until the first successful load (and on older CLIs that never send
+  // it): the UI then claims nothing about containment.
+  const workspace = ref<WorkspaceInfo | null>(null)
   // First derivation reads localStorage (and migrates the retired keys);
   // later registry reloads only re-derive when the active card disappears.
   let activeSeeded = false
@@ -496,6 +501,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
         return
       }
       const body = (await res.json()) as ProjectsResponse
+      workspace.value = body.workspace ?? null
       applyRegistry(body.projects, body.current)
     } catch {
       // Local server stopped: keep the last known registry.
@@ -547,6 +553,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
     mrsByProject,
     branchesByProject,
     candidates,
+    workspace,
     loadProjects,
     discoverCandidates,
     selectProject,
