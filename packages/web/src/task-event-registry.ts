@@ -20,7 +20,9 @@ import type { TaskEventType } from './types'
 export type TaskEventCtx = {
   /** True for the live question of a task in waiting_for_you: the card opens itself. */
   active: boolean
-  /** True when the task's archived review is loadable in the review view. */
+  /** True on a review_done event whose archive can be asked for: the ref it
+   * carries, or the task's current review_ref on older journals. The load
+   * itself happens on the click (and 404s on a pruned archive). */
   reviewAvailable: boolean
   /** Slow clock (epoch ms) owned by the conversation, for "il y a X" stamps. */
   now: number

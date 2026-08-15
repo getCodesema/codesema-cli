@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { parseDiff } from '../composables/useDiff'
+import { parseDiff, type Finding } from '../composables/useDiff'
 import type { PreviewFileDiff, PreviewResult, ReviewSource } from '../types'
 import DiffView from './DiffView.vue'
 
@@ -9,6 +9,10 @@ const props = defineProps<{
   /** Registry id scoping /api/preview* to a registered repo; absent = the
    * launch cwd (legacy single-repo behavior, frozen contract). */
   project?: string
+  /** Review notes to annotate the opened file's diff with. Absent (or from
+   * another file) simply leaves the diff bare — parseDiff drops what it
+   * cannot anchor. Findings must carry their id, as the review view does. */
+  findings?: Finding[]
 }>()
 
 /** Fired on every successful load: the parent can label its Diff tab with
@@ -77,7 +81,11 @@ async function pickFile(path: string) {
   }
 }
 
-const diffFiles = computed(() => (diffResult.value ? parseDiff(diffResult.value.diff).files : []))
+// The findings are attached HERE, by parseDiff: the annotated rows are what
+// DiffView renders, it does no matching of its own.
+const diffFiles = computed(() =>
+  diffResult.value ? parseDiff(diffResult.value.diff, props.findings ?? []).files : [],
+)
 
 watch(() => props.source, load, { immediate: true, deep: true })
 
@@ -150,7 +158,7 @@ const STATUS_LABEL: Record<string, string> = {
         </p>
         <template v-else-if="diffResult">
           <p v-if="diffResult.truncated" class="pv-truncated">{{ $t('preview.diffTruncated') }}</p>
-          <DiffView :files="diffFiles" :findings="[]" hide-toolbar />
+          <DiffView :files="diffFiles" hide-toolbar />
         </template>
         <p v-else-if="preview.files.length" class="codesema-muted pv-empty">
           {{ $t('preview.selectFileHint') }}

@@ -19,8 +19,11 @@ import {
   oldestWaiting,
   queueSectionOf,
   replyModeOf,
+  reviewRefOf,
   sectionOf,
+  severityBreakdown,
   splitInlineCode,
+  streamsLiveText,
   timeAgo,
   titleFromPrompt,
   verdictLabelKey,
@@ -186,6 +189,18 @@ describe('eventSummary', () => {
     )
   })
 
+  test('review_started names the turn under review and the flow', () => {
+    expect(eventSummary(event({ type: 'review_started', data: { turn: 2, mode: 'simple' } }))).toBe(
+      'Review started · turn 2 · simple',
+    )
+    // A journal written before the payload existed keeps the plain label.
+    expect(eventSummary(event({ type: 'review_started', data: {} }))).toBe('Review started')
+    // A nonsense turn is dropped rather than rendered.
+    expect(eventSummary(event({ type: 'review_started', data: { turn: 0, mode: 'dual' } }))).toBe(
+      'Review started · dual',
+    )
+  })
+
   test('review_done appends the verdict', () => {
     expect(eventSummary(event({ type: 'review_done', data: { verdict: 'approve' } }))).toContain(
       'approve',
@@ -243,6 +258,57 @@ describe('findingsCount', () => {
     expect(findingsCount({ findings: 1.5 })).toBeNull()
     expect(findingsCount({ findings: '3' })).toBeNull()
     expect(findingsCount({})).toBeNull()
+  })
+})
+
+describe('severityBreakdown', () => {
+  test('worst first, absent severities simply missing', () => {
+    expect(
+      severityBreakdown({ severity_major: 2, severity_critical: 1, severity_info: 4 }),
+    ).toEqual([
+      { severity: 'critical', n: 1 },
+      { severity: 'major', n: 2 },
+      { severity: 'info', n: 4 },
+    ])
+  })
+
+  test('an event without a spread yields nothing, junk is ignored', () => {
+    expect(severityBreakdown({ verdict: 'approve' })).toEqual([])
+    expect(
+      severityBreakdown({ severity_major: 0, severity_minor: '3', severity_info: 1.5 }),
+    ).toEqual([])
+  })
+})
+
+describe('reviewRefOf', () => {
+  test('the archive path when the event carries one', () => {
+    expect(reviewRefOf({ ref: '/repo/.codesema/reviews/x-20260814-100000.json' })).toBe(
+      '/repo/.codesema/reviews/x-20260814-100000.json',
+    )
+    expect(reviewRefOf({ ref: '  ' })).toBeNull()
+    expect(reviewRefOf({})).toBeNull()
+  })
+})
+
+describe('streamsLiveText', () => {
+  test('the agent turn AND its review stream on the task_text channel', () => {
+    expect(streamsLiveText('running')).toBe(true)
+    expect(streamsLiveText('reviewing')).toBe(true)
+  })
+
+  test('every settled status drops the volatile text', () => {
+    const settled: TaskStatus[] = [
+      'queued',
+      'waiting_for_you',
+      'review_ok',
+      'review_ko',
+      'shipped',
+      'failed',
+      'interrupted',
+    ]
+    for (const status of settled) {
+      expect(streamsLiveText(status)).toBe(false)
+    }
   })
 })
 

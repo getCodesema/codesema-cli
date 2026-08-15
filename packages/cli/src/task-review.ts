@@ -4,10 +4,14 @@
 // dedicated LiveSession that is never wired to the single-review UI — its
 // partials are relayed to the task's SSE text channel instead. The verdict
 // decides 'review_ok'/'review_ko'; the archived record lands in the MAIN repo
-// and "fix the findings" is just a pre-built reply for the next turn.
+// and "fix the findings" is just a pre-built reply for the next turn. The
+// archive of each turn travels on its review_done event ('ref') and is served
+// back by GET /api/tasks/:id/review (readTaskReview), so a conversation can
+// open the review of ANY of its turns, not just the last one.
 
+import { join, resolve, sep } from 'node:path'
 import { ensureWorkDir } from './config.js'
-import { sanitizeRecord, type ReviewRecord, type TaskRecord } from './contract.js'
+import { sanitizeRecord, type Finding, type ReviewRecord, type TaskRecord } from './contract.js'
 import { buildAgentFixPrompt } from './fix.js'
 import { tryGit } from './git.js'
 import { prep } from './prep.js'
@@ -21,6 +25,7 @@ import {
 } from './review.js'
 import { createSession } from './serve.js'
 import type { TaskTurnIo, TaskTurnReviewFn } from './task-runner.js'
+import { loadTask } from './tasks-store.js'
 import { progressLabel } from './ui.js'
 
 export type TaskReviewMode = 'simple' | 'dual'
@@ -63,6 +68,61 @@ export function buildFixTurnPrompt(task: TaskRecord, findingIds: number[]): stri
   } catch {
     return null
   }
+}
+
+/**
+ * An archive path is servable only when it lands INSIDE the project's
+ * .codesema/reviews: a `ref` comes from the client (the review_done event it
+ * read), so it is resolved against that directory and rejected the moment it
+ * escapes it — a relative "../../" or an absolute path elsewhere never reads.
+ */
+function archiveInProject(cwd: string, ref: string): string | null {
+  const dir = resolve(join(cwd, '.codesema', 'reviews'))
+  const path = resolve(dir, ref)
+  return path.startsWith(`${dir}${sep}`) ? path : null
+}
+
+/**
+ * The archived review of ONE task, for GET /api/tasks/:id/review. `ref` (the
+ * archive path a review_done event carries) opens the review of THAT turn;
+ * without one — or when it points outside the project's reviews directory —
+ * the task's current review_ref is served. Null on every miss (no review yet,
+ * pruned archive, corrupt file): the route turns that into a 404, never a
+ * crash. Same tolerance as buildFixTurnPrompt.
+ */
+export function readTaskReview(
+  cwd: string,
+  id: string,
+  ref?: string | null | undefined,
+): ReviewRecord | null {
+  const task = loadTask(cwd, id)
+  if (!task) {
+    return null
+  }
+  const path = ref ? archiveInProject(cwd, ref) : task.review_ref
+  if (!path) {
+    return null
+  }
+  try {
+    return sanitizeRecord(readJson(path))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Per-severity tally of a review's findings, as FLAT scalar event keys
+ * ('severity_major': 2) — the journal payload stays a bounded record of
+ * scalars. Empty severities are omitted: the card renders what the review
+ * actually raised, and the payload keeps room under the key cap.
+ */
+export function findingSeverityCounts(findings: readonly Finding[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const finding of findings) {
+    const key = `severity_${finding.severity}`
+    counts[key] = (counts[key] ?? 0) + 1
+  }
+  return counts
 }
 
 const settle = (record: TaskRecord, io: TaskTurnIo, status: 'review_ok' | 'review_ko'): void => {
@@ -185,11 +245,19 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       // from the repo the server was started in, and the worktree is
       // disposable.
       record.review_ref = archive(outcome.record, opts.cwd)
+      // The payload is what the conversation card renders WITHOUT re-reading
+      // the archive: verdict, count, the summary line, the severity spread —
+      // plus 'ref', the archive of THIS turn, so an old card still opens its
+      // own review once later turns moved record.review_ref on.
+      const summary = outcome.record.review.summary.trim()
       io.emit({
         type: 'review_done',
         data: {
           verdict: outcome.record.review.verdict,
           findings_count: outcome.record.review.findings.length,
+          ref: record.review_ref,
+          ...(summary ? { summary } : {}),
+          ...findingSeverityCounts(outcome.record.review.findings),
         },
       })
       settle(record, io, taskReviewVerdict(outcome.record))

@@ -235,6 +235,9 @@ const en = {
   'workspace.agentWriting': 'The agent is writing…',
   'workspace.questionHint': 'The agent is waiting for your answer.',
   'workspace.openReview': 'Open the review',
+  'workspace.reviewUnavailable': 'This review is no longer available.',
+  'workspace.reviewRunning': 'The review is reading the diff…',
+  'workspace.reviewTurn': 'turn {n}',
   'workspace.findingsCount': '{n} finding | {n} findings',
   'workspace.fixFindings': 'Fix the findings',
   'workspace.fixFindingsPrefill':
@@ -651,6 +654,9 @@ const fr: Record<MessageKey, string> = {
   'workspace.agentWriting': "L'agent écrit…",
   'workspace.questionHint': "L'agent attend ta réponse.",
   'workspace.openReview': 'Ouvrir la review',
+  'workspace.reviewUnavailable': "Cette review n'est plus disponible.",
+  'workspace.reviewRunning': 'La review lit le diff…',
+  'workspace.reviewTurn': 'tour {n}',
   'workspace.findingsCount': '{n} finding | {n} findings',
   'workspace.fixFindings': 'Corriger les findings',
   'workspace.fixFindingsPrefill':

@@ -12,7 +12,11 @@
 // enumerates its options (extractQuickReplies, pure), and the reply composer
 // pinned at the bottom (amber send while a question waits, green otherwise).
 // A task in flight is read-only — you answer questions or interrupt; a reply
-// typed during a run is parked and delivered on hand-over.
+// typed during a run is parked and delivered on hand-over. The live block
+// carries the automatic review's progress too while the task is 'reviewing'
+// (tagged as such: it is the review talking, not the agent), and each
+// review_done card opens ITS OWN archive through …/tasks/:id/review — whose
+// findings also annotate the Diff tab.
 import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue'
 import {
   CHECK_GLYPH,
@@ -27,6 +31,7 @@ import {
   shortSha,
   type ChecksSetupState,
 } from '../composables/useChecks'
+import type { Finding } from '../composables/useDiff'
 import { isolationBadge } from '../composables/useIsolation'
 import { extractQuickReplies } from '../composables/useQuickReplies'
 import {
@@ -36,6 +41,8 @@ import {
   groupThreadEvents,
   lastQuestion,
   replyModeOf,
+  reviewRefOf,
+  streamsLiveText,
   timeAgo,
   type FocusTab,
 } from '../composables/useTaskBoard'
@@ -264,12 +271,13 @@ const thread = computed<ThreadItem[]>(() => {
 })
 
 // ── Clocks ────────────────────────────────────────────────────────────────
-// A fast ticker (1s) drives the live meter while the agent holds a turn; a
-// slow one (30s) keeps the "il y a X" stamps honest without being busy.
+// A fast ticker (1s) drives the live meter while the agent holds a turn OR
+// while its review runs; a slow one (30s) keeps the "il y a X" stamps honest
+// without being busy.
 const nowTick = ref(Date.now())
 let ticker: ReturnType<typeof setInterval> | null = null
 watch(
-  () => record.value.status === 'running',
+  () => streamsLiveText(record.value.status),
   (running) => {
     if (running && ticker === null) {
       nowTick.value = Date.now()
@@ -294,12 +302,25 @@ onUnmounted(() => {
   clearInterval(slowTicker)
 })
 
+/**
+ * Elapsed time of whatever is in flight: the agent's open turn while
+ * 'running', then the REVIEW of that turn while 'reviewing' — the review
+ * starts the moment the turn ends, so its own start is that ended_at.
+ */
 const runningElapsed = computed(() => {
   const turn = record.value.turns.at(-1)
-  if (record.value.status !== 'running' || !turn || turn.ended_at !== null) {
+  if (!turn) {
     return null
   }
-  return formatDuration(Math.max(0, nowTick.value - new Date(turn.started_at).getTime()))
+  if (record.value.status === 'running') {
+    return turn.ended_at !== null
+      ? null
+      : formatDuration(Math.max(0, nowTick.value - new Date(turn.started_at).getTime()))
+  }
+  if (record.value.status === 'reviewing' && turn.ended_at !== null) {
+    return formatDuration(Math.max(0, nowTick.value - new Date(turn.ended_at).getTime()))
+  }
+  return null
 })
 
 /** A tools block is LIVE when it belongs to the still-open turn of a running task. */
@@ -373,15 +394,28 @@ function ctxFor(event: TaskEvent): TaskEventCtx {
       event.type === 'question' &&
       record.value.status === 'waiting_for_you' &&
       event.seq === lastQuestionSeq.value,
-    reviewAvailable: reviewRecord.value !== null,
+    // The card offers its review as soon as an archive can be asked for: its
+    // own (the ref it carries) or, on journals written before refs existed,
+    // the task's current one. A pruned archive 404s on the click.
+    reviewAvailable:
+      event.type === 'review_done' &&
+      (reviewRefOf(event.data) !== null || record.value.review_ref !== null),
     now: slowNow.value,
     fullText: fullTextBySeq.value.get(event.seq) ?? null,
   }
 }
 
+// The live block covers BOTH streams: the agent writing its turn, and the
+// review reading the diff afterwards — same channel, two very different
+// things, so the block says which one is talking.
 const streaming = computed(
-  () => props.state.liveText.trim().length > 0 && record.value.status === 'running',
+  () => props.state.liveText.trim().length > 0 && streamsLiveText(record.value.status),
 )
+const reviewStreaming = computed(() => record.value.status === 'reviewing')
+// A review that streams nothing yet is STILL running: the block shows for the
+// whole 'reviewing' phase (tag + elapsed), text or no text — a silent gap is
+// exactly what made the review look like it did nothing.
+const showLive = computed(() => streaming.value || reviewStreaming.value)
 
 // ── Quick replies: enumerated options of the ACTIVE question, one click ───
 const questionActive = computed(() => record.value.status === 'waiting_for_you')
@@ -407,39 +441,84 @@ async function sendQuickReply(option: string): Promise<void> {
   }
 }
 
-// ── Review linkage: is the task's review loadable in the review view? ─────
-// The server session exposes one review record; it belongs to this task only
-// when it was produced on the task's branch.
-const reviewRecord = shallowRef<ReviewRecord | null>(null)
-const hasReviewDone = computed(() => props.state.events.some((e) => e.type === 'review_done'))
+// ── Review linkage: the archived review OF THIS TASK, per turn ────────────
+// GET …/tasks/:id/review serves the task's own archive — never the server's
+// global review session. Each review_done card passes the ref it carries, so
+// an old turn opens ITS review even after later turns moved the task's
+// review_ref on; without a ref the route falls back to the current one.
+// Records are cached by ref: reopening a card never refetches.
+const reviewCache = new Map<string, ReviewRecord>()
 
-watch(
-  hasReviewDone,
-  async (has) => {
-    if (!has || reviewRecord.value || !record.value.branch) {
-      return
+async function fetchReview(archiveRef: string | null): Promise<ReviewRecord | null> {
+  // Keyed by the archive actually served: a bare fetch caches under the
+  // task's current review_ref, so the next turn's review is a cache MISS.
+  const key = archiveRef ?? record.value.review_ref ?? ''
+  const cached = reviewCache.get(key)
+  if (cached) {
+    return cached
+  }
+  const query = new URLSearchParams({ project: props.state.projectId })
+  if (archiveRef) {
+    query.set('ref', archiveRef)
+  }
+  try {
+    const res = await fetch(
+      `/api/tasks/${encodeURIComponent(record.value.id)}/review?${query.toString()}`,
+    )
+    if (res.status !== 200) {
+      return null
     }
-    try {
-      const res = await fetch('/api/review')
-      if (res.status !== 200) {
-        return
-      }
-      const review = (await res.json()) as ReviewRecord
-      if (review.meta.branch === record.value.branch) {
-        reviewRecord.value = review
-      }
-    } catch {
-      // Local server stopped: the card simply keeps its degraded form.
-    }
-  },
-  { immediate: true },
-)
-
-function openReview(): void {
-  if (reviewRecord.value) {
-    emit('open-review', reviewRecord.value)
+    const review = (await res.json()) as ReviewRecord
+    reviewCache.set(key, review)
+    return review
+  } catch {
+    // Local server stopped: the card simply keeps its degraded form.
+    return null
   }
 }
+
+async function loadAndOpenReview(archiveRef: string | null): Promise<void> {
+  actionError.value = null
+  const review = await fetchReview(archiveRef)
+  if (review) {
+    emit('open-review', review)
+  } else {
+    // The archive is gone (pruned by the retention bound) or unreadable: say
+    // so instead of leaving a dead button.
+    actionError.value = t('workspace.reviewUnavailable')
+  }
+}
+
+function openReview(archiveRef: string | null): void {
+  void loadAndOpenReview(archiveRef)
+}
+
+// ── Diff annotations: the notes of the task's latest review ───────────────
+// Loaded LAZILY — nothing is fetched until the Diff tab opens on a task that
+// actually has a review. Findings carry their index as id, exactly like the
+// review view, so the annotated diff anchors its notes the same way.
+const reviewFindings = shallowRef<Finding[]>([])
+/** review_ref the annotations were loaded for; re-synced when a turn moves it. */
+let annotatedRef: string | null | undefined
+
+async function syncDiffFindings(): Promise<void> {
+  const current = record.value.review_ref
+  if (tab.value !== 'diff' || current === annotatedRef) {
+    return
+  }
+  annotatedRef = current
+  if (current === null) {
+    reviewFindings.value = []
+    return
+  }
+  const review = await fetchReview(null)
+  reviewFindings.value = (review?.review.findings ?? []).map((finding, i) => ({
+    ...finding,
+    id: i,
+  }))
+}
+
+watch([tab, () => record.value.review_ref], () => void syncDiffFindings())
 
 // ── Reply composer (always visible: prepare the next instruction anytime) ──
 const replyInput = ref<HTMLTextAreaElement | null>(null)
@@ -569,8 +648,11 @@ async function doCleanup(): Promise<void> {
 }
 
 // ── Header actions ────────────────────────────────────────────────────────
+// 'reviewing' is deliberately ABSENT: the runner frees the task's slot before
+// handing over to the review, so an interrupt there always 409s. A button
+// that cannot stop anything is worse than no button.
 const canInterrupt = computed(() =>
-  ['queued', 'running', 'waiting_for_you', 'reviewing'].includes(record.value.status),
+  ['queued', 'running', 'waiting_for_you'].includes(record.value.status),
 )
 
 async function doInterrupt(): Promise<void> {
@@ -755,11 +837,25 @@ const wait = computed(() =>
             </details>
           </template>
 
-          <div v-if="streaming" class="cv-live">
-            <p class="cv-live-text">
+          <!-- Live stream of the turn in flight. While 'reviewing' it is the
+               review reading the diff, not the agent writing: the block wears
+               a review tag and a sober frame instead of an agent bubble. -->
+          <div v-if="showLive" class="cv-live" :class="{ 'cv-live--review': reviewStreaming }">
+            <span v-if="reviewStreaming" class="cv-live-tag">
+              {{ t('workspace.evReviewStarted') }}
+            </span>
+            <p v-if="streaming" class="cv-live-text">
               {{ state.liveText }}<span class="cv-caret" aria-hidden="true" />
             </p>
-            <p class="cv-live-hint">{{ t('workspace.agentWriting') }}</p>
+            <!-- Only the elapsed time is the REVIEW's own: the live token
+                 meter belongs to the agent turn that just ended. -->
+            <p class="cv-live-hint">
+              <template v-if="reviewStreaming">
+                <span class="cv-live-dot" aria-hidden="true" />{{ t('workspace.reviewRunning')
+                }}<template v-if="runningElapsed"> — {{ runningElapsed }}</template>
+              </template>
+              <template v-else>{{ t('workspace.agentWriting') }}</template>
+            </p>
           </div>
 
           <!-- Quick replies: the question enumerated its options — one click. -->
@@ -824,6 +920,7 @@ const wait = computed(() =>
         :key="previewKey"
         :source="{ kind: 'branch', name: record.branch }"
         :project="state.projectId"
+        :findings="reviewFindings"
         @loaded="onPreviewLoaded"
       />
     </div>
@@ -1369,6 +1466,43 @@ const wait = computed(() =>
   max-width: 85%;
 }
 
+/* The review is not the agent talking: sober panel + ring, no amber bubble,
+   and a mono tag naming what runs. */
+.cv-live--review {
+  background: var(--cs-panel);
+  border: 1px solid var(--cs-line-2);
+}
+
+.cv-live-tag {
+  display: block;
+  margin-bottom: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--cs-muted);
+}
+
+.cv-live--review .cv-caret {
+  background: var(--cs-muted);
+}
+
+.cv-live--review .cv-live-hint {
+  color: var(--cs-muted);
+}
+
+/* The review runs even when it says nothing: the dot is the proof of life. */
+.cv-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--cs-muted);
+  animation: cv-tools-pulse 1.6s ease-in-out infinite;
+}
+
 .cv-live-text {
   margin: 0;
   font-size: 13px;
@@ -1447,6 +1581,7 @@ const wait = computed(() =>
 @media (prefers-reduced-motion: reduce) {
   .cv-tools-dot,
   .cv-checks-dot,
+  .cv-live-dot,
   .cv-dot--pulse {
     animation: none;
   }

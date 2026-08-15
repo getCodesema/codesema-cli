@@ -25,9 +25,14 @@ function record(meta: Record<string, unknown>) {
 }
 
 describe('archiveRecord', () => {
-  test('keeps only the newest archives of the branch, other branches untouched', () => {
-    for (let day = 1; day <= 6; day++) {
-      writeFileSync(join(reviewsDir, `feat-x-2026010${day}-000000.json`), '{}')
+  test('keeps the 20 newest archives of the branch, other branches untouched', () => {
+    // 21 existing + the one archived below: the two oldest fall off. A task
+    // branch archives ONE review per reviewed turn, hence the deep history.
+    for (let day = 1; day <= 21; day++) {
+      writeFileSync(
+        join(reviewsDir, `feat-x-202601${String(day).padStart(2, '0')}-000000.json`),
+        '{}',
+      )
     }
     writeFileSync(join(reviewsDir, 'feat-x-extra-20260101-000000.json'), '{}')
     writeFileSync(join(reviewsDir, 'other-20260101-000000.json'), '{}')
@@ -36,9 +41,10 @@ describe('archiveRecord', () => {
 
     const names = readdirSync(reviewsDir)
     const kept = names.filter((n) => /^feat-x-\d{8}-\d{6}\.json$/.test(n)).toSorted()
-    expect(kept.length).toBe(5)
+    expect(kept.length).toBe(20)
     expect(kept).not.toContain('feat-x-20260101-000000.json')
     expect(kept).not.toContain('feat-x-20260102-000000.json')
+    expect(kept).toContain('feat-x-20260103-000000.json')
     expect(names).toContain('feat-x-extra-20260101-000000.json')
     expect(names).toContain('other-20260101-000000.json')
   })

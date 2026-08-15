@@ -37,7 +37,7 @@ import {
   purgeDeadStorageKeys,
   readPersistedActiveProject,
 } from './useProjects'
-import { compareByActivity, mergeEvent } from './useTaskBoard'
+import { compareByActivity, mergeEvent, streamsLiveText } from './useTaskBoard'
 
 export type TaskState = {
   /** Registry id of the repo this task lives in. */
@@ -99,10 +99,19 @@ function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): 
     })
     return
   }
+  const previous = current.record.status
   current.record = record
-  // The stream text belongs to the running turn: once the task leaves
-  // 'running' the turn is settled in the journal, drop the volatile copy.
-  if (record.status !== 'running') {
+  // The stream text belongs to the turn in flight — the agent's ('running')
+  // AND its automatic review ('reviewing'), which streams its own progress on
+  // the same channel. Any other status settles the turn in the journal: drop
+  // the volatile copy. Entering 'reviewing' drops it too, once: the agent's
+  // last words are already in the journal, and leaving them under the review
+  // banner until the first progress line arrives would attribute them to the
+  // review.
+  if (
+    !streamsLiveText(record.status) ||
+    (record.status === 'reviewing' && previous !== 'reviewing')
+  ) {
     current.liveText = ''
   }
 }
@@ -117,6 +126,12 @@ function pushEvent(store: TaskStore, projectId: string, taskId: string, event: T
   if (event.type === 'turn_started') {
     current.liveText = ''
     current.liveTokens = 0
+  }
+  // The review's verdict lands as a journal card: its progress lines have
+  // said everything they had to say, drop them right away rather than let
+  // them linger under the card until the status frame arrives.
+  if (event.type === 'review_done') {
+    current.liveText = ''
   }
   mergeEvent(current.events, event)
 }

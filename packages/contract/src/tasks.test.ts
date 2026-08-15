@@ -313,6 +313,26 @@ describe('sanitizeTaskEvent', () => {
     expect(r?.data.keep).toBe('ok')
   })
 
+  test('the review_done payload survives whole: ref, summary and severity spread', () => {
+    const data = {
+      verdict: 'request_changes',
+      findings_count: 3,
+      ref: '/repo/.codesema/reviews/codesema-task-x-20260814-100000.json',
+      summary: 'The retry loop never gives up.',
+      severity_critical: 1,
+      severity_major: 2,
+    }
+    const event = sanitizeTaskEvent({
+      seq: 7,
+      at: '2026-08-14T10:05:00.000Z',
+      type: 'review_done',
+      data,
+    })
+    // Flat scalars only: nothing here needs a nested payload, so nothing is
+    // dropped and the card can render the review without reloading it.
+    expect(event?.data).toEqual(data)
+  })
+
   test('non-object data becomes an empty object', () => {
     expect(sanitizeTaskEvent({ ...validEvent, data: 'junk' })?.data).toEqual({})
     expect(sanitizeTaskEvent({ ...validEvent, data: [1, 2] })?.data).toEqual({})

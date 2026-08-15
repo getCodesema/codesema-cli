@@ -22,6 +22,7 @@ import {
   TASK_BASE_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
+  type ReviewRecord,
   type TaskChecks,
   type TaskEvent,
   type TaskIsolation,
@@ -38,7 +39,7 @@ import {
   UNPROBED_ISOLATION,
   type IsolationProbe,
 } from './task-isolation.js'
-import { createTaskReviewer } from './task-review.js'
+import { createTaskReviewer, readTaskReview } from './task-review.js'
 import {
   createTaskRunner,
   createTaskSlotPool,
@@ -152,6 +153,14 @@ export type TaskManager = {
   checks: (projectId: string, id: string) => TaskActionResult
   /** Latest persisted checks run; null on unknown project/task or never-run. */
   getChecks: (projectId: string, id: string) => TaskChecks | null
+  /**
+   * The task's archived end-of-turn review (GET /api/tasks/:id/review).
+   * `ref` — the archive path a review_done event carries — serves THAT turn's
+   * review instead of the latest one, and is honored only inside the
+   * project's .codesema/reviews. Null on unknown project/task, no review yet,
+   * a pruned archive or an escaping ref: the route answers 404.
+   */
+  getReview: (projectId: string, id: string, ref?: string | null) => ReviewRecord | null
   /**
    * Asks the user's agent (READ-ONLY, no tools) to propose a checks
    * configuration for the project. ok means STARTED; the proposal lands on
@@ -773,6 +782,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     getChecks(projectId, id) {
       const project = findProject(projectId)
       return project ? readTaskChecks(project.path, id) : null
+    },
+
+    getReview(projectId, id, ref) {
+      const project = findProject(projectId)
+      return project ? readTaskReview(project.path, id, ref) : null
     },
 
     checksSetup(projectId) {

@@ -5,6 +5,7 @@
 
 import { t, type MessageKey } from '../i18n'
 import type { TaskEvent, TaskEventData, TaskEventType, TaskRecord, TaskStatus } from '../types'
+import type { FindingSeverity } from './useDiff'
 
 /** The three status zones of the rail, in display order. */
 export type HomeSection = 'waiting' | 'active' | 'done'
@@ -169,6 +170,16 @@ const REPLY_MODE_BY_STATUS: Record<TaskStatus, ReplyMode> = {
 
 export function replyModeOf(status: TaskStatus): ReplyMode {
   return REPLY_MODE_BY_STATUS[status]
+}
+
+/**
+ * Statuses whose turn is STILL streaming text on the task_text channel: the
+ * agent's own turn ('running') and the automatic end-of-turn review
+ * ('reviewing'), whose progress lines ride the very same channel. Anything
+ * else settles the turn in the journal, so the volatile copy is dropped.
+ */
+export function streamsLiveText(status: TaskStatus): boolean {
+  return status === 'running' || status === 'reviewing'
 }
 
 /**
@@ -381,6 +392,39 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   isolation: ['reason', 'isolation'],
 }
 
+/**
+ * What a review_started line says beyond its label: which turn is under
+ * review, and which flow reviews it. Empty when the payload carries neither
+ * (older journals), so the line degrades to the plain label.
+ */
+function reviewStartedDetails(data: TaskEventData): string[] {
+  const details: string[] = []
+  const turn = data.turn
+  if (typeof turn === 'number' && Number.isInteger(turn) && turn > 0) {
+    details.push(t('workspace.reviewTurn', { n: turn }))
+  }
+  const mode = firstString(data, ['mode'])
+  if (mode) {
+    details.push(mode)
+  }
+  return details
+}
+
+/**
+ * Facts appended after the label, " · "-joined: the review lines are the only
+ * ones that carry any (everything else reads its summary key instead).
+ */
+function summaryDetails(event: TaskEvent): string[] {
+  if (event.type === 'review_started') {
+    return reviewStartedDetails(event.data)
+  }
+  if (event.type === 'review_done') {
+    const verdict = firstString(event.data, ['verdict'])
+    return verdict ? [verdict] : []
+  }
+  return []
+}
+
 /** One dense line per journal event; falls back to the localized type label. */
 export function eventSummary(event: TaskEvent): string {
   const label = t(EVENT_LABEL_KEY[event.type])
@@ -392,9 +436,9 @@ export function eventSummary(event: TaskEvent): string {
     }
     return clip(name ?? detail ?? label)
   }
-  if (event.type === 'review_done') {
-    const verdict = firstString(event.data, ['verdict'])
-    return clip(verdict ? `${label} · ${verdict}` : label)
+  const details = summaryDetails(event)
+  if (details.length > 0) {
+    return clip([label, ...details].join(' · '))
   }
   return clip(firstString(event.data, SUMMARY_KEYS[event.type]) ?? label)
 }
@@ -416,6 +460,32 @@ export function findingsCount(data: TaskEventData): number | null {
     }
   }
   return null
+}
+
+/** Severities in display order: worst first, so the card reads top-down. */
+const SEVERITY_ORDER: readonly FindingSeverity[] = ['critical', 'major', 'minor', 'info']
+
+export type SeverityCount = { severity: FindingSeverity; n: number }
+
+/**
+ * Severity spread carried by a review_done event ('severity_major': 2). The
+ * runner omits empty severities, so an absent key means zero — and an event
+ * written before the spread existed simply yields an empty list.
+ */
+export function severityBreakdown(data: TaskEventData): SeverityCount[] {
+  const counts: SeverityCount[] = []
+  for (const severity of SEVERITY_ORDER) {
+    const value = data[`severity_${severity}`]
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      counts.push({ severity, n: value })
+    }
+  }
+  return counts
+}
+
+/** Archive path of the review a review_done event points at, when it carries one. */
+export function reviewRefOf(data: TaskEventData): string | null {
+  return firstString(data, ['ref'])
 }
 
 /**

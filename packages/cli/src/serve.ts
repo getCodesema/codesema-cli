@@ -831,6 +831,7 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
 const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
+const TASK_REVIEW_RE = /^\/api\/tasks\/([^/]+)\/review$/
 const PROJECT_DELETE_RE = /^\/api\/projects\/([^/]+)$/
 const PROJECT_CHECKS_SETUP_RE = /^\/api\/projects\/([^/]+)\/checks-setup$/
 const PROJECT_CHECKS_APPLY_RE = /^\/api\/projects\/([^/]+)\/checks-apply$/
@@ -1056,6 +1057,27 @@ function createRequestHandler(handlerOpts: {
           return sendText(res, 404, 'not found')
         }
         return sendJson(res, 200, checks)
+      }
+      const taskReviewGet = TASK_REVIEW_RE.exec(pathname)
+      if (taskReviewGet?.[1]) {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        // Read-only like the other task GETs: no token. 'ref' selects the
+        // archive of one PAST turn (the path its review_done event carries);
+        // the manager rejects anything outside the project's reviews dir.
+        // 404 covers unknown project/task, no review yet AND a pruned archive.
+        const review = isTaskId(taskReviewGet[1])
+          ? tasks.manager.getReview(projectId, taskReviewGet[1], searchParams.get('ref'))
+          : null
+        if (!review) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, review)
       }
       const taskGet = TASK_GET_RE.exec(pathname)
       if (taskGet?.[1]) {

@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import type { TaskChecks, TaskEvent, TaskRecord } from './contract.js'
+import type { ReviewRecord, TaskChecks, TaskEvent, TaskRecord, Verdict } from './contract.js'
 import { addProject, listProjects, type Project } from './projects.js'
+import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
 import type { RunChecksOptions } from './task-checks.js'
+import { readTaskReview } from './task-review.js'
 import type { TaskRunner, TaskRunnerOptions } from './task-runner.js'
 import { createTaskManager, type TaskEnvelope, type TaskManager } from './task-server.js'
 import type { ShipOutcome, ShipTaskOptions } from './task-ship.js'
@@ -86,6 +88,24 @@ function seedTask(cwd: string, title = 'seeded', prompt = 'do work'): TaskRecord
     branch: '',
     worktree: '',
   })
+}
+
+/** A minimal archivable review record, as the task reviewer produces one. */
+function fakeReviewRecord(verdict: Verdict, summary: string): ReviewRecord {
+  return {
+    version: 1,
+    meta: {
+      title: 'task review',
+      branch: 'codesema/task-x',
+      target: 'main',
+      merge_base: 'abc',
+      repo_root: '/nowhere',
+      created_at: new Date().toISOString(),
+    },
+    commits: [],
+    diff: '',
+    review: { verdict, summary, findings: [], narrative: null },
+  }
 }
 
 async function until(cond: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -1057,6 +1077,9 @@ describe('task routes without a task manager', () => {
         (await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa/checks?project=deadbeef')).status,
       ).toBe(501)
       expect(
+        (await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa/review?project=deadbeef')).status,
+      ).toBe(501)
+      expect(
         (
           await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa/checks?project=deadbeef', {
             method: 'POST',
@@ -1139,6 +1162,8 @@ describe('task routes with a stub manager', () => {
       },
       getChecks: (projectId, id) =>
         known(projectId) && id === record.id ? readTaskChecks(project.path, id) : null,
+      getReview: (projectId, id, ref) =>
+        known(projectId) ? readTaskReview(project.path, id, ref) : null,
       checksSetup: (projectId) => {
         if (!known(projectId)) {
           return { ok: false, code: 404, error: 'unknown project' }
@@ -1470,6 +1495,65 @@ describe('task routes with a stub manager', () => {
         event: { name: 'task_checks', data: { status: 'running' } },
       })
       req.destroy()
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('review route: 404 before any review, then the archive, ref-scoped and traversal-proof', async () => {
+    const project = register(makeRepo())
+    const { manager, record } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5171,
+      taskManager: manager,
+    })
+    const path = `/api/tasks/${record.id}/review?project=${project.id}`
+    try {
+      // No review yet: 404, exactly like a task whose checks never ran.
+      expect((await rawRequest(started.port, path)).status).toBe(404)
+      // Same scoping contract as every other task route.
+      expect((await rawRequest(started.port, `/api/tasks/${record.id}/review`)).status).toBe(400)
+      expect(
+        (await rawRequest(started.port, `/api/tasks/${record.id}/review?project=ffffffff`)).status,
+      ).toBe(404)
+      expect(
+        (await rawRequest(started.port, `/api/tasks/not-an-id/review?project=${project.id}`))
+          .status,
+      ).toBe(404)
+
+      // The task's own archive, once a review ran.
+      const stored = loadTask(project.path, record.id)!
+      stored.review_ref = archiveRecord(fakeReviewRecord('approve', 'looks good'), project.path)
+      saveTask(project.path, stored)
+      const got = await rawRequest(started.port, path)
+      expect(got.status).toBe(200)
+      expect(JSON.parse(got.body)).toMatchObject({
+        review: { verdict: 'approve', summary: 'looks good' },
+      })
+
+      // A ref opens THAT turn's archive instead of the latest one.
+      const older = fakeReviewRecord('request_changes', 'previous turn')
+      older.meta.branch = 'codesema/task-older'
+      const olderRef = archiveRecord(older, project.path)
+      const byRef = await rawRequest(started.port, `${path}&ref=${encodeURIComponent(olderRef)}`)
+      expect(byRef.status).toBe(200)
+      expect(JSON.parse(byRef.body)).toMatchObject({ review: { verdict: 'request_changes' } })
+
+      // A ref pointing anywhere else reads nothing — no traversal, no
+      // absolute path outside the project's reviews directory.
+      const outside = join(project.path, 'secret.json')
+      writeFileSync(outside, JSON.stringify(fakeReviewRecord('approve', 'not yours')))
+      expect(
+        (await rawRequest(started.port, `${path}&ref=${encodeURIComponent(outside)}`)).status,
+      ).toBe(404)
+      expect(
+        (await rawRequest(started.port, `${path}&ref=${encodeURIComponent('../../secret.json')}`))
+          .status,
+      ).toBe(404)
+
+      // Read-only: no CSRF token needed, and POST is not a thing here.
+      expect((await rawRequest(started.port, path, { method: 'POST' })).status).toBe(405)
     } finally {
       await started.stop()
     }

@@ -9,6 +9,7 @@ import type { runSimpleFlow, SimpleOutcome } from './review.js'
 import {
   buildFixTurnPrompt,
   createTaskReviewer,
+  readTaskReview,
   taskReviewVerdict,
   type CreateTaskReviewerOptions,
 } from './task-review.js'
@@ -186,7 +187,49 @@ describe('createTaskReviewer', () => {
     expect(record.review_ref?.startsWith(record.worktree)).toBe(false)
     expect(existsSync(record.review_ref ?? '')).toBe(true)
     expect(rig.events.map((e) => e.type)).toEqual(['review_started', 'review_done'])
-    expect(rig.events[1]?.data).toEqual({ verdict: 'approve', findings_count: 0 })
+    // The event carries everything the card renders, archive included.
+    expect(rig.events[1]?.data).toEqual({
+      verdict: 'approve',
+      findings_count: 0,
+      ref: record.review_ref,
+      summary: 'summary',
+    })
+  })
+
+  test('review_done carries the archive ref, the summary and the severity spread', async () => {
+    const repo = makeRepo()
+    const record = makeTaskWithWorktree(repo, 'spread task')
+    commitChange(record.worktree, 'work.txt')
+    const rig = fakeIo(record)
+    const findings: Finding[] = [
+      { file: 'work.txt', severity: 'critical', message: 'boom' },
+      { file: 'work.txt', severity: 'major', message: 'meh' },
+      { file: 'work.txt', severity: 'major', message: 'also meh' },
+      { file: 'work.txt', severity: 'info', message: 'nit' },
+    ]
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReview('request_changes', findings),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(rig.events[1]?.data).toEqual({
+      verdict: 'request_changes',
+      findings_count: 4,
+      ref: record.review_ref,
+      summary: 'summary',
+      severity_critical: 1,
+      severity_major: 2,
+      severity_info: 1,
+    })
+    // Empty severities are omitted, not sent as zeros.
+    expect(rig.events[1]?.data).not.toHaveProperty('severity_minor')
+    // The ref is the archive that was just written: the route can serve it.
+    expect(readTaskReview(repo, record.id, String(rig.events[1]?.data.ref))?.review.verdict).toBe(
+      'request_changes',
+    )
   })
 
   test('request_changes verdict lands on review_ko with the findings count', async () => {
@@ -205,7 +248,11 @@ describe('createTaskReviewer', () => {
 
     expect(record.status).toBe('review_ko')
     expect(record.review_ref).not.toBeNull()
-    expect(rig.events[1]?.data).toEqual({ verdict: 'request_changes', findings_count: 1 })
+    expect(rig.events[1]?.data).toMatchObject({
+      verdict: 'request_changes',
+      findings_count: 1,
+      severity_critical: 1,
+    })
   })
 
   test('a failed review is review_ko with an error event, never a throw', async () => {
@@ -312,6 +359,76 @@ describe('buildFixTurnPrompt', () => {
     const corrupt = join(repo, 'corrupt.json')
     writeFileSync(corrupt, '{not json')
     expect(buildFixTurnPrompt({ review_ref: corrupt } as TaskRecord, [0])).toBeNull()
+  })
+})
+
+// --- readTaskReview -------------------------------------------------------
+
+describe('readTaskReview', () => {
+  /** A persisted task whose review_ref points at a real archive. */
+  function reviewedTask(repo: string, verdict: Verdict = 'approve'): TaskRecord {
+    const record = createTask(repo, {
+      title: 'reviewed',
+      prompt: 'do work',
+      autoShip: false,
+      base: 'main',
+      branch: 'codesema/task-x',
+      worktree: join(repo, 'wt'),
+    })
+    record.review_ref = archiveRecord(fakeReview(verdict), repo)
+    saveTask(repo, record)
+    return record
+  }
+
+  test('serves the task review_ref by default', () => {
+    const repo = makeRepo()
+    const task = reviewedTask(repo, 'request_changes')
+    expect(readTaskReview(repo, task.id)?.review.verdict).toBe('request_changes')
+  })
+
+  test('an explicit ref serves THAT archive, so old turns keep their review', () => {
+    const repo = makeRepo()
+    const task = reviewedTask(repo, 'approve')
+    // Another turn's archive (a distinct branch keeps it a distinct file:
+    // archive names are stamped to the second). The task points at its own,
+    // the ref opens the one the caller asked for.
+    const other = fakeReview('request_changes')
+    other.meta.branch = 'codesema/task-y'
+    const otherRef = archiveRecord(other, repo)
+    expect(readTaskReview(repo, task.id, otherRef)?.review.verdict).toBe('request_changes')
+    expect(readTaskReview(repo, task.id)?.review.verdict).toBe('approve')
+  })
+
+  test('a ref outside .codesema/reviews is refused, absolute or traversing', () => {
+    const repo = makeRepo()
+    const task = reviewedTask(repo)
+    const outside = join(repo, 'secret.json')
+    writeFileSync(outside, JSON.stringify(fakeReview('approve')))
+    expect(readTaskReview(repo, task.id, outside)).toBeNull()
+    expect(readTaskReview(repo, task.id, '../../secret.json')).toBeNull()
+    expect(readTaskReview(repo, task.id, '../tasks')).toBeNull()
+    // The directory itself is not an archive either.
+    expect(readTaskReview(repo, task.id, join(repo, '.codesema', 'reviews'))).toBeNull()
+  })
+
+  test('null on an unknown task, a task without a review and a corrupt archive', () => {
+    const repo = makeRepo()
+    expect(readTaskReview(repo, 'aaaaaaaaaaaa')).toBeNull()
+    expect(readTaskReview(repo, 'not-an-id')).toBeNull()
+    const bare = createTask(repo, {
+      title: 'never reviewed',
+      prompt: 'p',
+      autoShip: false,
+      base: 'main',
+      branch: 'b',
+      worktree: '',
+    })
+    expect(readTaskReview(repo, bare.id)).toBeNull()
+    // Archived path kept, file gone or unreadable: a miss, never a throw.
+    const task = reviewedTask(repo)
+    writeFileSync(task.review_ref ?? '', '{not json')
+    expect(readTaskReview(repo, task.id)).toBeNull()
+    expect(readTaskReview(repo, task.id, join('reviews', 'nope.json'))).toBeNull()
   })
 })
 
