@@ -14,7 +14,7 @@
     "lint": "oxlint",
     "typecheck": "bun run build:contract && bun run --cwd packages/contract typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/web typecheck",
     "test": "bun run build:contract && bun test packages/cli packages/web packages/contract",
-    "prepare": "lefthook install",
+    "prepare": "lefthook install || true",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
