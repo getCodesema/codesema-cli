@@ -5,9 +5,9 @@
 //
 // What the cage is made of:
 // - a BASE image resolved from the repo itself (devcontainer core → the checks
-//   detection image → node:22), so the agent works in the environment the
+//   detection image → node:26), so the agent works in the environment the
 //   project already describes for humans;
-// - an AGENT image derived from it (non-root `agent` user + claude-code),
+// - an AGENT image derived from it (non-root `agent` user + git + claude-code),
 //   tagged by content hash and built once;
 // - a per-workspace INTERNAL network plus one squid container as the only way
 //   out: CONNECT to the allowlisted domains, nothing else;
@@ -20,7 +20,9 @@
 // HOST shell — execFile/spawn with an argv array only. The command string
 // runs under `sh -lc` INSIDE the container, where it can do no harm beyond
 // the mount. Git credentials never enter the cage: the runner still commits
-// the worktree from the host.
+// the worktree from the host, and the repo's git directory is exposed to the
+// box READ-ONLY (container-git.ts) so the agent can see what it changed
+// without being able to rewrite a single ref.
 
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -29,6 +31,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { knownAgent } from './agent.js'
 import type { IsolationMode } from './config.js'
+import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
 import type { TaskIsolation } from './contract.js'
 import { t } from './i18n.js'
 import type { ChecksConfig } from './repo-config.js'
@@ -37,7 +40,7 @@ import { detectContainerRuntime, resolveChecksPlan, type ExecResult } from './ta
 // --- constants -------------------------------------------------------------
 
 /** Last-resort base image when the repo says nothing about its environment. */
-export const DEFAULT_BASE_IMAGE = 'node:22'
+export const DEFAULT_BASE_IMAGE = 'node:26'
 
 /**
  * Domains the caged agent may reach when the workspace configures none: the
@@ -77,6 +80,35 @@ export const DEFAULT_CLAUDE_INSTALL_COMMAND = 'npm install -g @anthropic-ai/clau
 /** Bun bases have no npm: BUN_INSTALL puts the binary on the shared PATH. */
 export const BUN_CLAUDE_INSTALL_COMMAND =
   'BUN_INSTALL=/usr/local bun install -g @anthropic-ai/claude-code'
+
+/**
+ * Git is not optional equipment for the agent: reading the diff, the log and
+ * the state its previous turn left behind is half of what it does in a task
+ * worktree. `node:` ships it, `node:*-slim`, `*-alpine` and plenty of
+ * hand-rolled devcontainer images do not — and the cage would then hand the
+ * agent a repository it can see but not question.
+ *
+ * Nothing is assumed about the distribution: the base is ASKED what package
+ * manager it has (the same shape as the useradd/adduser probe above), and an
+ * image that has none fails the build with a sentence a human can act on
+ * rather than silently producing a git-less box.
+ */
+export const GIT_INSTALL_COMMAND = [
+  'if command -v git >/dev/null 2>&1; then exit 0; fi',
+  'if command -v apt-get >/dev/null 2>&1; then',
+  '  apt-get update && apt-get install -y --no-install-recommends git && apt-get clean; exit $?;',
+  'fi',
+  'if command -v apk >/dev/null 2>&1; then apk add --no-cache git; exit $?; fi',
+  'if command -v microdnf >/dev/null 2>&1; then microdnf install -y git; exit $?; fi',
+  'if command -v dnf >/dev/null 2>&1; then dnf install -y git; exit $?; fi',
+  'if command -v yum >/dev/null 2>&1; then yum install -y git; exit $?; fi',
+  'if command -v zypper >/dev/null 2>&1; then zypper --non-interactive install git; exit $?; fi',
+  'if command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm git; exit $?; fi',
+  'echo "codesema: this base image ships no git and no package manager to install one' +
+    ' (tried apt-get, apk, microdnf, dnf, yum, zypper, pacman) — add git to the image your' +
+    ' .devcontainer or checks config points at" >&2',
+  'exit 1',
+].join('\n')
 
 /** Resource ceiling of one caged turn. */
 export const CAGE_MEMORY = '4g'
@@ -416,7 +448,9 @@ export type AgentDockerfileInput = {
  * the repo, and podman gets --userns=keep-id at run time to match.
  *
  * A base with neither useradd nor adduser fails the BUILD, loudly: an image
- * where the agent would end up root is not a cage.
+ * where the agent would end up root is not a cage. A base without git — and
+ * without any way to get it — fails it the same way: an agent that cannot
+ * read the worktree's history is not the agent the task was recorded with.
  */
 export function generateAgentDockerfile(input: AgentDockerfileInput): string {
   const { uid, gid } = input
@@ -432,6 +466,7 @@ export function generateAgentDockerfile(input: AgentDockerfileInput): string {
     `FROM ${input.baseRef}`,
     'USER root',
     runLine(createUser),
+    runLine(GIT_INSTALL_COMMAND),
     runLine(input.installCommand),
   ]
   if (input.postCreate) {
@@ -935,6 +970,12 @@ export type ContainerRunSpec = {
   command: string
   /** Provider variable NAMES forwarded from the host env (values stay out of argv). */
   forwardEnv: readonly string[]
+  /**
+   * READ-ONLY `-v` arguments exposing the repo's git directory to the box
+   * (container-git.ts). Absent when the worktree needs none — a plain checkout
+   * already carries its `.git` inside the mount.
+   */
+  gitMounts?: readonly string[]
   memory?: string
   cpus?: string
   /**
@@ -946,7 +987,8 @@ export type ContainerRunSpec = {
 
 /**
  * The exact argv of a caged turn. Note what is NOT here: no --privileged, no
- * docker socket, no host path other than the worktree, no capability added.
+ * docker socket, no host path other than the worktree and the repo's git
+ * directory (read-only), no capability added.
  */
 export function containerRunArgs(spec: ContainerRunSpec): string[] {
   const proxy = spec.proxyUrl
@@ -964,6 +1006,8 @@ export function containerRunArgs(spec: ContainerRunSpec): string[] {
     CAGE_WORK_DIR,
     '-v',
     `${spec.homeVolume}:${CAGE_HOME_DIR}`,
+    ...(spec.gitMounts ?? []),
+    ...gitSafeDirectoryEnvArgs(CAGE_WORK_DIR),
     '-e',
     `HTTP_PROXY=${proxy}`,
     '-e',
@@ -1157,6 +1201,10 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
   })
   const env = opts.env ?? process.env
   const name = agentContainerName(opts.taskId)
+  // A task worktree is a LINKED worktree: without this its `.git` points at a
+  // host path the cage cannot see, and every git command inside dies with
+  // "not a git repository".
+  const git = prepareContainerGit({ worktree: opts.worktree, workDir: CAGE_WORK_DIR })
   const args = containerRunArgs({
     runtime,
     podman,
@@ -1168,6 +1216,7 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
     proxyUrl: proxy.url,
     command: opts.command,
     forwardEnv: CAGE_FORWARDED_ENV.filter((key) => env[key]),
+    ...(git ? { gitMounts: git.mountArgs } : {}),
   })
   const spawnFn = opts.spawnFn ?? spawnContainer
   return spawnFn({

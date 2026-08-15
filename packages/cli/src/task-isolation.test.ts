@@ -1,7 +1,15 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  CAGE_GIT_COMMON_DIR,
+  containerGitStateDir,
+  gitPointerContent,
+  prepareContainerGit,
+  resolveWorktreeGitLink,
+} from './container-git.js'
 import type { ExecResult } from './task-checks.js'
 import {
   agentContainerName,
@@ -21,6 +29,7 @@ import {
   EGRESS_PROXY_IMAGE,
   ensureEgressProxy,
   generateAgentDockerfile,
+  GIT_INSTALL_COMMAND,
   parseJsonc,
   probeIsolation,
   resetIsolationCaches,
@@ -56,6 +65,29 @@ function makeDir(prefix = 'codesema-isolation-'): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   cleanups.push(dir)
   return dir
+}
+
+/**
+ * A real repo plus a LINKED worktree — the exact shape every task gets, and
+ * the one whose `.git` is a pointer FILE aimed at a path outside the mount.
+ */
+function makeLinkedWorktree(): { repo: string; worktree: string } {
+  const root = makeDir('codesema-isolation-git-')
+  const repo = join(root, 'repo')
+  mkdirSync(repo, { recursive: true })
+  const run = (args: string[]): void => {
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      cwd: repo,
+      stdio: 'ignore',
+    })
+  }
+  run(['init', '-b', 'main'])
+  writeFileSync(join(repo, 'base.txt'), 'a\n')
+  run(['add', '-A'])
+  run(['commit', '-m', 'init'])
+  const worktree = join(root, 'wt')
+  run(['worktree', 'add', worktree, '-b', 'codesema/task-x'])
+  return { repo, worktree }
 }
 
 const ok = (over: Partial<ExecResult> = {}): ExecResult => ({
@@ -295,6 +327,34 @@ describe('generateAgentDockerfile', () => {
     expect(evil).toContain('echo \\"quoted\\"')
   })
 
+  // The bug this guards: node: ships git, node:*-slim and *-alpine do not, and
+  // an agent whose `git status` answers "not found" reports that git is not
+  // available and starts guessing what the previous turn did.
+  test('git is guaranteed: probed first, then installed per package-manager family', () => {
+    expect(dockerfile).toContain('command -v git')
+    expect(dockerfile).toContain('apt-get install -y --no-install-recommends git')
+    expect(dockerfile).toContain('apk add --no-cache git')
+    expect(dockerfile).toContain('dnf install -y git')
+    // The probe comes first: a base that already has git installs nothing.
+    expect(GIT_INSTALL_COMMAND.indexOf('command -v git')).toBeLessThan(
+      GIT_INSTALL_COMMAND.indexOf('apt-get'),
+    )
+  })
+
+  test('a base with neither git nor a package manager fails the build, with the reason', () => {
+    expect(GIT_INSTALL_COMMAND.trimEnd().endsWith('exit 1')).toBe(true)
+    expect(GIT_INSTALL_COMMAND).toContain('codesema: this base image ships no git')
+  })
+
+  test('git is installed before the agent CLI, both as root, before USER agent', () => {
+    const lines = dockerfile.split('\n')
+    const gitStep = lines.findIndex((line) => line.includes('apk add --no-cache git'))
+    const claudeStep = lines.findIndex((line) => line.includes(DEFAULT_CLAUDE_INSTALL_COMMAND))
+    expect(gitStep).toBeGreaterThan(lines.indexOf('USER root'))
+    expect(gitStep).toBeLessThan(claudeStep)
+    expect(claudeStep).toBeLessThan(lines.indexOf('USER agent'))
+  })
+
   test('postCreateCommand is best effort: it can never fail the cage build', () => {
     const withPost = generateAgentDockerfile({
       baseRef: 'node:22',
@@ -327,6 +387,26 @@ describe('agentImageTag', () => {
     expect(agentImageTag('node:22', 'FROM node:22', '2.1.234')).not.toBe(base)
     expect(agentImageTag('node:24', 'FROM node:22', '2.1.233')).not.toBe(base)
     expect(agentImageTag('node:22', 'FROM node:22\nUSER agent', '2.1.233')).not.toBe(base)
+  })
+
+  // The tag hashes the WHOLE recipe, so adding the git step invalidates every
+  // git-less agent image already built on this machine instead of reusing it.
+  test('changing the recipe retags: images built before the git step are invalidated', () => {
+    const recipe = generateAgentDockerfile({
+      baseRef: DEFAULT_BASE_IMAGE,
+      installCommand: DEFAULT_CLAUDE_INSTALL_COMMAND,
+      postCreate: null,
+      uid: 1000,
+      gid: 1000,
+    })
+    const withoutGit = recipe
+      .split('\n')
+      .filter((line) => !line.includes('command -v git'))
+      .join('\n')
+    expect(withoutGit).not.toBe(recipe)
+    expect(agentImageTag(DEFAULT_BASE_IMAGE, recipe, '2.1.233')).not.toBe(
+      agentImageTag(DEFAULT_BASE_IMAGE, withoutGit, '2.1.233'),
+    )
   })
 })
 
@@ -754,6 +834,33 @@ describe('containerRunArgs', () => {
     expect(args.filter((arg) => arg === '-v')).toHaveLength(2)
   })
 
+  test('the git mounts are read-only, and they are the ONLY host path added', () => {
+    const args = containerRunArgs({
+      ...spec,
+      gitMounts: ['-v', '/repo/.git:/gitcommon:ro', '-v', '/tmp/x/dotgit:/work/.git:ro'],
+    })
+    expect(args.filter((arg) => arg === '-v')).toHaveLength(4)
+    expect(args).toContain('/repo/.git:/gitcommon:ro')
+    expect(args).toContain('/tmp/x/dotgit:/work/.git:ro')
+    // Read-only is the whole point: the box reads the history, the host commits.
+    for (const mount of args.filter((arg) => arg.includes(':/gitcommon'))) {
+      expect(mount.endsWith(':ro')).toBe(true)
+    }
+  })
+
+  // git refuses a repository owned by another uid; the rootless mappings make
+  // that mismatch ordinary. safe.directory only counts in protected config,
+  // and GIT_CONFIG_* (command scope) is per RUN, so it survives a $HOME volume
+  // that was seeded on an earlier turn.
+  test('safe.directory travels as protected config, on every run', () => {
+    const args = containerRunArgs(spec)
+    expect(args).toContain('GIT_CONFIG_COUNT=2')
+    expect(args).toContain('GIT_CONFIG_KEY_0=safe.directory')
+    expect(args).toContain('GIT_CONFIG_VALUE_0=/work')
+    expect(args).toContain('GIT_CONFIG_KEY_1=safe.directory')
+    expect(args).toContain('GIT_CONFIG_VALUE_1=/gitcommon')
+  })
+
   test('the only route out is the internal network plus the proxy env', () => {
     const args = containerRunArgs(spec)
     expect(args[args.indexOf('--network') + 1]).toBe('codesema-net-12345678')
@@ -798,6 +905,51 @@ describe('containerRunArgs', () => {
     expect(containerRunArgs({ ...spec, runtime: 'podman', podman: false })).not.toContain(
       '--userns=keep-id',
     )
+  })
+})
+
+// --- reading git from inside the box ---------------------------------------
+
+describe('container git access', () => {
+  test('a linked worktree resolves to the shared git dir plus its admin subpath', () => {
+    const { repo, worktree } = makeLinkedWorktree()
+    const link = resolveWorktreeGitLink(worktree)
+    expect(link).not.toBeNull()
+    expect(link?.commonDir).toBe(join(repo, '.git'))
+    expect(link?.gitDirRelative).toBe('worktrees/wt')
+    // What lands over /work/.git: a pointer INSIDE the container, no host path.
+    expect(link ? gitPointerContent(link) : '').toBe(
+      `gitdir: ${CAGE_GIT_COMMON_DIR}/worktrees/wt\n`,
+    )
+  })
+
+  test('a plain checkout needs nothing: its .git is already inside the mount', () => {
+    const { repo } = makeLinkedWorktree()
+    expect(resolveWorktreeGitLink(repo)).toBeNull()
+    expect(prepareContainerGit({ worktree: repo, workDir: '/work' })).toBeNull()
+  })
+
+  test('a directory that is not a repository is left strictly alone', () => {
+    expect(resolveWorktreeGitLink(makeDir())).toBeNull()
+  })
+
+  test('prepare writes the pointer file and returns two read-only mounts', () => {
+    const { repo, worktree } = makeLinkedWorktree()
+    const stateDir = makeDir('codesema-isolation-gitstate-')
+    const git = prepareContainerGit({ worktree, workDir: '/work', stateDir })
+    expect(git?.mountArgs).toEqual([
+      '-v',
+      `${join(repo, '.git')}:/gitcommon:ro`,
+      '-v',
+      `${join(stateDir, 'dotgit')}:/work/.git:ro`,
+    ])
+    expect(readFileSync(git?.pointerPath ?? '', 'utf8')).toBe('gitdir: /gitcommon/worktrees/wt\n')
+  })
+
+  test('the scratch dir is stable per worktree: no tmp growth across turns', () => {
+    const worktree = '/repo/.codesema/worktrees/a1b2c3d4e5f6'
+    expect(containerGitStateDir(worktree)).toBe(containerGitStateDir(worktree))
+    expect(containerGitStateDir(worktree)).not.toBe(containerGitStateDir(`${worktree}-other`))
   })
 })
 
@@ -893,6 +1045,34 @@ describe('runContainerTurn', () => {
     const build = argsOf(calls, 'build')[0] ?? []
     const dockerfile = build[build.indexOf('-f') + 1] ?? ''
     expect(readFileSync(dockerfile, 'utf8')).toContain('FROM python:3.12-slim')
+  })
+
+  // The reported bug: the agent answered "Git isn't available in the container"
+  // because /work/.git pointed at a HOST path the box never saw.
+  test('a task worktree gets its git: shared dir read-only, pointer over /work/.git', async () => {
+    const { repo, worktree } = makeLinkedWorktree()
+    cleanups.push(containerGitStateDir(worktree))
+    const { exec, spawned, spawnFn } = rig()
+    await runContainerTurn({
+      taskId,
+      worktree,
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 1000,
+      runtime: 'docker',
+      claudeVersion: '2.1.233',
+      execFn: exec,
+      spawnFn,
+      env: {},
+    })
+    const args = spawned[0]?.args ?? []
+    expect(args).toContain(`${join(repo, '.git')}:/gitcommon:ro`)
+    const pointer = args.find((arg) => arg.endsWith(':/work/.git:ro'))
+    expect(pointer).toBeDefined()
+    expect(readFileSync((pointer ?? '').split(':')[0] ?? '', 'utf8')).toBe(
+      'gitdir: /gitcommon/worktrees/wt\n',
+    )
+    expect(args).toContain('GIT_CONFIG_VALUE_0=/work')
   })
 
   test('no container runtime: the turn fails saying so, it never runs on the host', async () => {

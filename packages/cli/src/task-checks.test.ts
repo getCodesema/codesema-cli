@@ -1,7 +1,9 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { containerGitStateDir } from './container-git.js'
 import { TASK_CHECK_TAIL_MAX, type TaskChecks } from './contract.js'
 import {
   DEFAULT_CHECK_TIMEOUT_SECONDS,
@@ -19,6 +21,8 @@ import {
 // --- rigs -----------------------------------------------------------------
 
 let worktree: string
+/** Extra fixtures (git repos, generated pointer dirs) removed after each test. */
+const cleanupDirs: string[] = []
 
 beforeEach(() => {
   worktree = mkdtempSync(join(tmpdir(), 'codesema-checks-'))
@@ -26,6 +30,9 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(worktree, { recursive: true, force: true })
+  for (const dir of cleanupDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 const ok = (over: Partial<ExecResult> = {}): ExecResult => ({
@@ -99,13 +106,13 @@ describe('detectChecks', () => {
     expect(detectChecks({ files: ['bun.lock'] })?.commands).toEqual(['bun test'])
   })
 
-  test('npm/yarn lockfiles: node:22 + npm ci + npm run for present scripts only', () => {
+  test('npm/yarn lockfiles: node:26 + npm ci + npm run for present scripts only', () => {
     const plan = detectChecks({
       files: ['package-lock.json', 'package.json'],
       packageJson: packageJson({ test: 'vitest', lint: 'eslint .' }),
     })
     expect(plan).toEqual({
-      image: 'node:22',
+      image: DEFAULT_CHECKS_IMAGE,
       install: 'npm ci',
       commands: ['npm run test', 'npm run lint'],
       network: true,
@@ -253,6 +260,45 @@ describe('runChecks', () => {
     // ...while the detected install step does (fresh worktree, registry needed).
     const install = calls.find((c) => c.args.at(-1) === 'bun install --frozen-lockfile')
     expect(install?.args).not.toContain('--network')
+  })
+
+  // Check commands are the repo's own: hooks, version stamps and test rigs
+  // shell out to git, which a LINKED worktree alone cannot answer (its `.git`
+  // is a pointer at a host path outside the mount).
+  test('the repo git dir is mounted read-only and safe.directory is set', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codesema-checks-git-'))
+    cleanupDirs.push(root)
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    const run = (args: string[]): void => {
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        cwd: repo,
+        stdio: 'ignore',
+      })
+    }
+    run(['init', '-b', 'main'])
+    writeFileSync(join(repo, 'base.txt'), 'a\n')
+    run(['add', '-A'])
+    run(['commit', '-m', 'init'])
+    const linked = join(root, 'wt')
+    run(['worktree', 'add', linked, '-b', 'task'])
+    cleanupDirs.push(containerGitStateDir(linked))
+    writeFileSync(join(linked, 'bun.lock'), '')
+
+    const { calls, exec } = dockerRig(() => ok())
+    await runChecks({ worktree: linked, headSha: 'abc', execFn: exec })
+    const args = calls.find((c) => c.args.at(-1) === 'bun test')?.args ?? []
+    expect(args).toContain(`${join(repo, '.git')}:/gitcommon:ro`)
+    expect(args.some((arg) => arg.endsWith(':/work/.git:ro'))).toBe(true)
+    expect(args).toContain('GIT_CONFIG_VALUE_0=/work')
+  })
+
+  test('a plain worktree adds no git mount at all', async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { calls, exec } = dockerRig(() => ok())
+    await runChecks({ worktree, headSha: 'abc', execFn: exec })
+    const args = calls.find((c) => c.args.at(-1) === 'bun test')?.args ?? []
+    expect(args.filter((arg) => arg === '-v')).toHaveLength(1)
   })
 
   test('a failing check keeps a nonzero exit and does NOT skip later checks', async () => {

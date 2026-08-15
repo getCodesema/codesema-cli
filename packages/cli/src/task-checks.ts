@@ -1,8 +1,10 @@
 // Checks engine: codesema (never the agent) verifies a task's worktree by
 // running typecheck/tests/lint inside an EPHEMERAL container mounted on it.
 // The agent gains no execution rights — the runner commits, then this engine
-// runs the repo's checks in a cage: worktree mounted rw and nothing else, no
-// network for check commands, cpu/memory capped, one timeout per check.
+// runs the repo's checks in a cage: worktree mounted rw, the repo's git
+// directory read-only (a linked worktree's `.git` points outside the mount —
+// container-git.ts), nothing else, no network for check commands, cpu/memory
+// capped, one timeout per check.
 // Everything host-side goes through execFile with an argv array: no shell
 // interpolation ever happens on the host (the check command itself runs under
 // `sh -lc` INSIDE the container, where it can do no harm beyond the mount).
@@ -13,6 +15,7 @@ import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
 import {
   TASK_CHECK_TAIL_MAX,
   type TaskCheckResult,
@@ -24,10 +27,13 @@ import type { ChecksConfig } from './repo-config.js'
 /** Per-check wall-clock budget when the repo config does not set one. */
 export const DEFAULT_CHECK_TIMEOUT_SECONDS = 300
 /** Image used when an explicit config sets commands but no image. */
-export const DEFAULT_CHECKS_IMAGE = 'node:22'
+export const DEFAULT_CHECKS_IMAGE = 'node:26'
 
 /** Combined stdout+stderr capture cap per exec (the persisted tail is far smaller). */
 const EXEC_MAX_BUFFER = 10 * 1024 * 1024
+
+/** Worktree mount point inside a checks container; the step's cwd. */
+const CHECKS_WORK_DIR = '/work'
 
 export type ExecResult = {
   /** Exit code; null when the process never exited on its own (timeout, spawn failure). */
@@ -171,7 +177,7 @@ export function detectChecks(input: DetectChecksInput): ChecksPlan | null {
     if (commands.length === 0) {
       return null
     }
-    return { image: 'node:22', install: 'npm ci', commands, ...base }
+    return { image: DEFAULT_CHECKS_IMAGE, install: 'npm ci', commands, ...base }
   }
   if (files.has('pyproject.toml')) {
     // Only when the project itself declares pytest; guessing a test runner
@@ -634,6 +640,8 @@ type RunStepInput = {
   step: { command: string; network: boolean }
   plan: ChecksPlan
   worktree: string
+  /** READ-ONLY `-v` arguments exposing the repo's git directory; see container-git.ts. */
+  gitMounts: readonly string[]
 }
 
 /** One containerized step. Kills the container on timeout (killing the client alone leaves it running). */
@@ -647,9 +655,13 @@ async function runStep(input: RunStepInput): Promise<StepOutcome> {
     '--name',
     name,
     '-v',
-    `${worktree}:/work:rw`,
+    `${worktree}:${CHECKS_WORK_DIR}:rw`,
     '-w',
-    '/work',
+    CHECKS_WORK_DIR,
+    // Check commands are the repo's own: hooks, version stamps and test rigs
+    // routinely shell out to git, which a linked worktree alone cannot answer.
+    ...input.gitMounts,
+    ...gitSafeDirectoryEnvArgs(CHECKS_WORK_DIR),
     ...(step.network ? [] : ['--network', 'none']),
     '--cpus',
     '2',
@@ -734,6 +746,8 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
     )
   }
   const exec = opts.execFn ?? defaultExec
+  const git = prepareContainerGit({ worktree: opts.worktree, workDir: CHECKS_WORK_DIR })
+  const gitMounts = git?.mountArgs ?? []
   const steps = [
     ...(plan.install ? [{ command: plan.install, network: plan.network, install: true }] : []),
     ...plan.commands.map((command) => ({ command, network: false, install: false })),
@@ -757,6 +771,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
       step,
       plan,
       worktree: opts.worktree,
+      gitMounts,
     })
     snapshot.checks.push(result)
     if (failure !== null) {

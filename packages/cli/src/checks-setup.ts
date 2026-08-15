@@ -411,7 +411,7 @@ Answer with ONE JSON object and NOTHING else:
 {"image":"...","install":"..." or null,"commands":["..."],"network":true or false,"timeoutSeconds":300,"rationale":"..."}
 
 Rules:
-- image: an existing public docker image that already ships the toolchain (e.g. "oven/bun:1", "node:22", "python:3.12", "rust:1"). No build step, no registry credentials.
+- image: an existing public docker image that already ships the toolchain (e.g. "oven/bun:1", "node:26", "python:3.12", "rust:1"). No build step, no registry credentials.
 - install: the ONE command installing the dependencies, or null when there is nothing to install. It may also start with pip, pip3, poetry, uv, bundle or composer.
 - commands: 1 to 6 check commands (typecheck, tests, lint), each a single command starting with one of: bun, npm, npx, pnpm, yarn, node, pytest, cargo, go, make, just. A leading "cd <dir> && " is allowed for a package of a monorepo. No other shell plumbing (no pipes, no redirections, no substitutions).
 - network: true when the INSTALL step needs the network (it almost always does).
