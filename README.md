@@ -68,11 +68,24 @@ The live UI shows both phases: the two reviewers face to face with a per-file co
 2. **Your agent** reviews the diff like a senior reviewer and writes a structured review: prologue, ordered steps with risk/take/check, typed findings (security/perf/convention/design/praise/why), and what to review first.
 3. **The local web UI** shows the review in progress, then switches to the full experience: guided step-by-step reading, split/unified diff with inline notes, file tree, read/checked progress.
 
+## In the web UI
+
+Beyond the review itself, the local page drives the whole loop:
+
+- **Focus mode**: a problems-first view — actionable findings with checkboxes on the left, the selected note and its code excerpt on the right, previous/next stepping, and "Copy selection for agent" scoped to what you checked.
+- **Run fixes**: asks the configured agent to apply the selected findings to your working tree (headless run with edit tools, warning when the branch moved since the review).
+- **Merge requests and branches sidebars**: the repo's open MRs (via `gh`/`glab`) and your local branches, each opening a detail panel with title, branches, commits and changed files.
+- **Preview**: the detail panel shows commits, changed files with +/- and a per-file diff, computed by git alone — no agent, no tokens.
+- **Run review / Run dual review** from that panel: the review runs in a disposable `git worktree` (removed afterwards, success or failure), archives into the main repo's `.codesema/reviews/` and streams into the same live UI. One review at a time; the sidebar marks which MR or branch is running.
+- **Repo settings**: edit `.codesema/RULES.md` and toggle auto-sync without leaving the page.
+
 ## Privacy
 
 Everything runs on your machine. The MR diff, the prompt and the review are written under `.codesema/` and never leave your computer: the review itself is produced by the agent CLI you run locally, not by a codesema.com service.
 
-The one exception is `codesema sync`. That command uploads the review record (**including the diff**) to a codesema.com workspace, and only after you confirm on first run. After a successful sync it offers, once, to also push every future completed review automatically; nothing is pushed automatically unless you accept, and the `codesema config` menu turns it on or off anytime. Your absolute local repo path is stripped from the payload; only the review, diff, commit subjects and the origin remote URL are sent. `codesema sync delete` erases everything.
+Two things do talk to codesema.com, both gated. The first is `codesema sync`: that command uploads the review record (**including the diff**) to a codesema.com workspace, and only after you confirm on first run. After a successful sync it offers, once, to also push every future completed review automatically; nothing is pushed automatically unless you accept, and the `codesema config` menu turns it on or off anytime. Your absolute local repo path is stripped from the payload; only the review, diff, commit subjects and the origin remote URL are sent. `codesema sync delete` erases everything.
+
+The second only exists once a workspace is linked: `codesema review` then asks that workspace for the repo's server context (conventions, learned rules, facts) and hands it to the agent alongside the diff. It is a read-only `GET`, authenticated with the stored workspace credentials, sending only the `origin` remote URL to resolve the repo — no diff, no code. Without stored credentials or an `origin` remote there is no request at all, and any failure (offline, unlinked workspace, malformed answer) silently degrades to no context: the review runs unchanged. `.codesema/RULES.md` stays local and always wins.
 
 Before uploading, sync scans the diff for anything that looks like a committed secret (dotenv files, private keys, and AWS/GitHub/Slack/Google/Stripe/OpenAI/Anthropic credentials) and refuses to send it. Fix the diff, or pass `--force` once you have checked.
 
@@ -117,7 +130,9 @@ CLI flags always win over both. `target`, `port`, `timeout` and `language` can a
 
 Onboarding starts with a language question, stored as `language` (ISO 639-1: `en` or `fr`). It drives the CLI output, the web UI and the language the agent writes the review in. Without it, the interface stays in English and the review follows the language of the commit messages.
 
-`review` and `show` check the npm registry once at startup (a read-only `dist-tags` lookup, nothing about you or your code is sent) to print a one-line notice when a newer version exists. Set `CODESEMA_NO_UPDATE_CHECK=1` to disable it; it is also skipped when stdout is not a terminal.
+### Update check
+
+Every command checks the npm registry once at startup (a read-only `dist-tags` lookup, nothing about you or your code is sent). When a newer version exists, codesema says so and asks whether to upgrade now; accept and it runs the matching global install command (npm, pnpm, yarn or bun, detected from where codesema is installed), refuse and the current run continues unchanged. Interactive terminals only. Set `CODESEMA_NO_UPDATE_CHECK=1` to disable it; it is also skipped when stdout is not a terminal.
 
 ### Repo-provided agent approval
 
@@ -130,6 +145,7 @@ codesema                       # interactive terminal: opens the agentic workspa
 codesema workspace             # same, explicit (accepts --port <n> and --no-open)
 codesema menu                  # navigable menu (workspace, review, show, sync, link, config)
 codesema review --branch feat/x --target develop   # non-interactive, CI-friendly
+codesema review --dual            # two reviewers in parallel + a judge (see above)
 codesema review --fail-on major   # CI gate: exit 2 if a finding is >= major (or use 'request_changes')
 codesema config                # change language / agent / model / effort
 codesema prep                  # only write .codesema/input.json for your own agent flow
@@ -189,6 +205,7 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 | `.codesema/input.json`              | The prepared MR diff handed to the agent (`prep`).                             |
 | `.codesema/review.json`             | The latest review written by the agent.                                        |
 | `.codesema/reviews/`                | Archived reviews (5 kept per branch, used for incremental re-review).          |
+| `.codesema/agent-output.txt`        | Raw agent output, written only when it held no parseable JSON review.          |
 | `.codesema/PROMPT.md`               | Your team's extra review instructions, merged into the prompt.                 |
 | `.codesema/RULES.md`                | Your team's review rules (one `[Cn]` grid line each), hunted first.            |
 | `.codesema/tasks/<id>/task.json`    | One workspace task record (status, branch, turns, isolation mode).             |
@@ -215,7 +232,7 @@ node packages/cli/dist/index.mjs        # full interactive flow
 node packages/cli/dist/index.mjs show
 ```
 
-Monorepo layout (`codesema-tools`): `packages/cli` (Node CLI: review/prep/show, native `node:http` ephemeral server + SSE, zero runtime dependencies), `packages/web` (Vue 3 + Vite SPA embedded in the CLI tarball), `skills/codesema` (the agent skill).
+Monorepo layout (`codesema-tools`): `packages/cli` (Node CLI: review/prep/show, native `node:http` ephemeral server + SSE, zero runtime dependencies), `packages/contract` (`@codesema/contract`: review types, sanitizers and grounding, bundled into the CLI and published for codesema.com), `packages/web` (Vue 3 + Vite SPA embedded in the CLI tarball), `skills/codesema` (the agent skill).
 
 ## License
 

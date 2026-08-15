@@ -40,6 +40,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - The workspace warns once at boot when the configured agent is a custom command: no hardening applies to it — full environment, no read-only harness, repo-provided settings honored — so only use a command you fully trust.
 - The checks container never receives your environment: no `-e`/`--env` flag at all, the worktree as its only host mount, `--network none` on every check command, and the network reachable only by an explicit `network: true` install step.
 
+### Changed
+
+- `codesema --help` lists `--fail-on`, `--out` and `--force`, shows `--dual` and `--fail-on` on the `review` usage line, and describes the startup update check as the upgrade prompt it became in 0.10.0 (it fires on every command, not just `review` and `show`). Both catalogs, English and French.
+- Repo tooling: the root `prepare` script no longer aborts `bun install` when `lefthook install` fails (a checkout without `git` or without the lefthook binary, e.g. a minimal container). The failure is reported as an explicit warning saying the git hooks — gitleaks secret scan included — are not active, instead of being swallowed; nothing changes on a machine where lefthook installs fine.
+- Documentation caught up with the code: the README gained a "In the web UI" section (focus mode, run fixes, MR and branch sidebars, preview, running a review from the page, repo settings), a Privacy paragraph on the server context download of 0.11.0, the corrected update-check description and `packages/contract` in the monorepo layout; the bundled agent skill emits `steps`/`step_ref` (renamed from `chapters`/`chapter_ref`) plus `files_reviewed`, and documents the `rules` and `impact_candidates` input fields; `@codesema/contract`'s README documents `groundReview`, `detectDiffSecrets` and `reviewRecordSchema`.
+
 ## [0.11.0] - 2026-08-02
 
 ### Added
