@@ -13,6 +13,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Local branches sidebar, under the MR sidebar: lists local branches (name, current/worktree markers, last commit subject and date) from a new `GET /api/branches` endpoint. Selecting a branch opens the same detail panel as an MR, with the same "Run review" / "Run dual review" buttons. Reviewing a branch already checked out elsewhere (the current branch included) uses a detached disposable worktree (`git worktree add --detach`) instead of failing on git's "already checked out" restriction.
 - Deterministic (no agent) preview in the MR/branch detail panel: source and target branches, commit list, changed files with +/- and status, and a per-file diff on click, rendered with the same annotated diff view as a finished review. New `GET /api/preview?source=mr&number=N` (`?source=branch&name=X`) returning branch/target/commits/files/diffStats without the full diff, and `GET /api/preview/diff?source=...&path=<file>` returning one file's diff, capped in size and truncated past the cap. The pure git computation behind `codesema prep` (target detection, commits, files, diff) is extracted into `computePrepInput`/`computeDiffSummary` (no disk writes), reused by both `prep` and the preview endpoints.
 
+### Changed
+
+- `codesema --help` lists `--fail-on`, `--out` and `--force`, shows `--dual` and `--fail-on` on the `review` usage line, and describes the startup update check as the upgrade prompt it became in 0.10.0 (it fires on every command, not just `review` and `show`). Both catalogs, English and French.
+- Documentation caught up with the code: the README gained a "In the web UI" section (focus mode, run fixes, MR and branch sidebars, preview, running a review from the page, repo settings), a Privacy paragraph on the server context download of 0.11.0, the corrected update-check description and `packages/contract` in the monorepo layout; the bundled agent skill emits `steps`/`step_ref` (renamed from `chapters`/`chapter_ref`) plus `files_reviewed`, and documents the `rules` and `impact_candidates` input fields; `@codesema/contract`'s README documents `groundReview`, `detectDiffSecrets` and `reviewRecordSchema`.
+
 ## [0.11.0] - 2026-08-02
 
 ### Added

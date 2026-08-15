@@ -12,7 +12,8 @@ Usage:
                                       while your AI agent reviews. First run only: a short wizard picks
                                       the language, agent, model and effort (saved globally — change it
                                       with \`codesema config\`)
-  codesema review [--branch <name>] [--target <branch>] [--agent <cmd>] [--full] [--no-open]
+  codesema review [--branch <name>] [--target <branch>] [--agent <cmd>] [--full] [--dual]
+                  [--fail-on <level>] [--no-open]
                                       Same flow; --branch skips the branch picker (also skipped
                                       when stdin is not a terminal, e.g. CI). Re-runs on the same
                                       branch update the previous review incrementally; --full
@@ -33,19 +34,23 @@ Options:
   --agent <cmd>       Agent command override for this run. Receives the prompt on stdin,
                       must print the review JSON on stdout
   --review <file>     Agent output to display (default: .codesema/review.json, else last archived review)
+  --out <file>        Destination of \`export\` (- for stdout)
   --port <n>          Preferred port for the local server (default: 4400)
   --timeout <s>       Agent time budget in seconds for \`review\` (default: 900)
   --full              Review from scratch instead of updating the previous review
   --dual              Dual review: two independent reviewers run in parallel (same agent,
                       different angles), then a judge model merges their findings
+  --fail-on <level>   CI gate: run the review once, then exit 2 when a finding is at or above
+                      <level> (critical, major, minor, info) or when changes are requested
+  --force             \`sync\`: upload even though the diff looks like it carries a secret
   --no-open           Do not open the browser
   -h, --help          Show this help
   -v, --version       Show version
 
 Config precedence: CLI flags > .codesema/config.json (repo) > ~/.config/codesema/config.json (global).
 
-\`review\` and \`show\` check the npm registry once at startup to tell you when a newer
-version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
+Every command checks the npm registry once at startup (nothing is sent) and, in an interactive
+terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
 `,
   'cli.unknownCommand': 'unknown command: {command}',
   'cli.intFlagError': '--{name} {raw}: expected an integer between {min} and {max}',
@@ -359,7 +364,8 @@ Usage :
                                       lancement uniquement : un court assistant choisit la langue,
                                       l'agent, le modèle et l'effort (sauvegardés globalement,
                                       modifiables avec \`codesema config\`)
-  codesema review [--branch <nom>] [--target <branche>] [--agent <cmd>] [--full] [--no-open]
+  codesema review [--branch <nom>] [--target <branche>] [--agent <cmd>] [--full] [--dual]
+                  [--fail-on <niveau>] [--no-open]
                                       Même flux ; --branch saute le sélecteur de branche (sauté
                                       aussi quand stdin n'est pas un terminal, ex. CI). Relancer
                                       sur la même branche met à jour la revue précédente de façon
@@ -380,19 +386,25 @@ Options :
   --agent <cmd>       Commande d'agent pour ce lancement. Reçoit le prompt sur stdin,
                       doit afficher le JSON de la revue sur stdout
   --review <fichier>  Sortie d'agent à afficher (défaut : .codesema/review.json, sinon dernière revue archivée)
+  --out <fichier>     Destination de \`export\` (- pour stdout)
   --port <n>          Port préféré du serveur local (défaut : 4400)
   --timeout <s>       Budget de temps de l'agent en secondes pour \`review\` (défaut : 900)
   --full              Revue complète au lieu de mettre à jour la revue précédente
   --dual              Revue duale : deux reviewers indépendants en parallèle (même agent,
                       angles différents), puis un modèle juge fusionne leurs notes
+  --fail-on <niveau>  Garde-fou CI : lance la revue une fois, puis sort en code 2 si une note
+                      atteint <niveau> (critical, major, minor, info) ou si des changements
+                      sont demandés
+  --force             \`sync\` : envoie même si le diff semble contenir un secret
   --no-open           Ne pas ouvrir le navigateur
   -h, --help          Afficher cette aide
   -v, --version       Afficher la version
 
 Priorité de config : flags CLI > .codesema/config.json (repo) > ~/.config/codesema/config.json (globale).
 
-\`review\` et \`show\` interrogent une fois le registre npm au démarrage pour signaler qu'une nouvelle
-version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
+Chaque commande interroge une fois le registre npm au démarrage (rien n'est envoyé) et, dans un
+terminal interactif, propose la mise à jour si une nouvelle version existe.
+CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
 `,
   'cli.unknownCommand': 'commande inconnue : {command}',
   'cli.intFlagError': '--{name} {raw} : entier attendu entre {min} et {max}',
