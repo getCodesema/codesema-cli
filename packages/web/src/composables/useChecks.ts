@@ -120,9 +120,10 @@ export function shortSha(sha: string): string {
 }
 
 // ── Plan provenance (optional server field) ───────────────────────────────
-// The server may label WHERE an auto-detected plan came from (the repo's own
-// lefthook/CI declarations, or the lockfile scripts). The frozen checks.json
-// contract has no such field yet, so this degrades to "show nothing".
+// The server labels WHERE the executed plan came from: the repo's .codesema
+// config, its own lefthook/CI declarations, or the lockfile scripts. The
+// field is optional — a checks.json written before it existed, or a run that
+// resolved no plan, carries none and simply shows nothing.
 
 const CHECKS_SOURCE_KEY: Record<TaskChecksSource, MessageKey> = {
   config: 'workspace.checksSourceConfig',
@@ -180,12 +181,18 @@ export const IDLE_CHECKS_SETUP: ChecksSetupState = {
   applied: false,
 }
 
-const PROPOSAL_STRING_MAX = 500
-const PROPOSAL_COMMANDS_MAX = 32
+// These bounds MIRROR the server's (packages/cli/src/checks-setup.ts and its
+// DEFAULT_CHECK_TIMEOUT_SECONDS): the server is the source of truth and a
+// looser client would accept a plan the server itself would have trimmed.
+const PROPOSAL_IMAGE_MAX = 200
+const PROPOSAL_COMMAND_MAX = 300
+const PROPOSAL_COMMANDS_MAX = 8
 const PROPOSAL_RATIONALE_MAX = 500
+/** The server's error sentence is not a proposal field: its own bound. */
+const PROPOSAL_ERROR_MAX = 500
 const TIMEOUT_MIN = 30
 const TIMEOUT_MAX = 3600
-const TIMEOUT_DEFAULT = 600
+const TIMEOUT_DEFAULT = 300
 
 const trimmed = (value: unknown, max: number): string =>
   typeof value === 'string' ? value.trim().slice(0, max) : ''
@@ -203,17 +210,17 @@ export function sanitizeChecksProposal(raw: unknown): ChecksProposal | null {
     return null
   }
   const p = raw as Record<string, unknown>
-  const image = trimmed(p.image, PROPOSAL_STRING_MAX)
+  const image = trimmed(p.image, PROPOSAL_IMAGE_MAX)
   const commands = Array.isArray(p.commands)
     ? p.commands
-        .map((command) => trimmed(command, PROPOSAL_STRING_MAX))
+        .map((command) => trimmed(command, PROPOSAL_COMMAND_MAX))
         .filter((command) => command !== '')
         .slice(0, PROPOSAL_COMMANDS_MAX)
     : []
   if (image === '' || commands.length === 0) {
     return null
   }
-  const install = trimmed(p.install, PROPOSAL_STRING_MAX)
+  const install = trimmed(p.install, PROPOSAL_COMMAND_MAX)
   const timeout = Number.isInteger(p.timeoutSeconds)
     ? (p.timeoutSeconds as number)
     : TIMEOUT_DEFAULT
@@ -252,7 +259,7 @@ export function parseChecksSetup(raw: unknown): ChecksSetupState {
     // 'ready' without a usable plan would show an empty card: stay idle.
     status: status === 'ready' && proposal === null ? 'idle' : status,
     proposal,
-    error: trimmed(body.error, PROPOSAL_STRING_MAX) || null,
+    error: trimmed(body.error, PROPOSAL_ERROR_MAX) || null,
     current,
     applied: false,
   }

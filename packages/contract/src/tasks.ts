@@ -295,6 +295,15 @@ export type TaskCheckStatus = 'passed' | 'failed' | 'timeout' | 'skipped'
  */
 export type TaskChecksStatus = 'running' | 'passed' | 'failed' | 'error' | 'unconfigured'
 
+/**
+ * WHERE the executed plan came from, in the engine's own precedence order:
+ * the repo's explicit .codesema config, the commands the repo declares for
+ * itself (lefthook hooks, then CI workflow jobs), else the lockfile/scripts
+ * heuristic. Optional on the wire: a checks.json written before this field
+ * existed simply carries no provenance.
+ */
+export type TaskChecksSource = 'config' | 'lefthook' | 'ci' | 'scripts'
+
 export type TaskCheckResult = {
   command: string
   status: TaskCheckStatus
@@ -315,6 +324,12 @@ export type TaskChecks = {
   checks: TaskCheckResult[]
   /** Readable failure when status is 'error' (e.g. no container runtime). */
   error: string | null
+  /**
+   * Provenance of the plan that ran. ABSENT (never null) when unknown: files
+   * written by an older engine, and runs that never resolved a plan
+   * ('unconfigured'), carry nothing — readers show nothing then.
+   */
+  source?: TaskChecksSource
 }
 
 export const TASK_CHECK_COMMAND_MAX = 500
@@ -337,6 +352,13 @@ const TASK_CHECKS_STATUSES: ReadonlySet<TaskChecksStatus> = new Set([
   'failed',
   'error',
   'unconfigured',
+])
+
+const TASK_CHECKS_SOURCES: ReadonlySet<TaskChecksSource> = new Set([
+  'config',
+  'lefthook',
+  'ci',
+  'scripts',
 ])
 
 function sanitizeTaskCheckResult(raw: unknown): TaskCheckResult | null {
@@ -394,6 +416,11 @@ export function sanitizeTaskChecks(raw: unknown): TaskChecks | null {
     status: r.status as TaskChecksStatus,
     checks,
     error: nullableStr(r.error, TASK_CHECKS_ERROR_MAX),
+    // Optional and whitelisted: an absent or unknown provenance drops the key
+    // entirely rather than surfacing a token no reader can label.
+    ...(TASK_CHECKS_SOURCES.has(r.source as TaskChecksSource)
+      ? { source: r.source as TaskChecksSource }
+      : {}),
   }
 }
 

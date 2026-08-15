@@ -83,6 +83,7 @@ describe('detectChecks', () => {
       commands: ['bun run typecheck', 'bun run test', 'bun run lint'],
       network: true,
       timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+      source: 'scripts',
     })
   })
 
@@ -109,6 +110,7 @@ describe('detectChecks', () => {
       commands: ['npm run test', 'npm run lint'],
       network: true,
       timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+      source: 'scripts',
     })
     expect(
       detectChecks({
@@ -143,6 +145,7 @@ describe('detectChecks', () => {
       commands: ['pytest'],
       network: true,
       timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+      source: 'scripts',
     })
     expect(
       detectChecks({ files: ['pyproject.toml'], pyproject: '[project]\nname = "x"\n' }),
@@ -169,6 +172,7 @@ describe('planFromConfig', () => {
       commands: ['make check'],
       network: false,
       timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+      source: 'config',
     })
   })
 
@@ -187,6 +191,7 @@ describe('planFromConfig', () => {
       commands: ['go vet ./...', 'go test ./...'],
       network: true,
       timeoutSeconds: 60,
+      source: 'config',
     })
     expect(planFromConfig({ commands: ['x'], timeoutSeconds: -5 })?.timeoutSeconds).toBe(
       DEFAULT_CHECK_TIMEOUT_SECONDS,
@@ -340,6 +345,31 @@ describe('runChecks', () => {
     expect(result.status).toBe('unconfigured')
     expect(result.finished_at).not.toBeNull()
     expect(calls).toEqual([])
+    // No plan resolved: there is no provenance to claim.
+    expect(result.source).toBeUndefined()
+  })
+
+  test('the run stamps the plan provenance on every snapshot', async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const snapshots: TaskChecks[] = []
+    const { exec } = dockerRig(() => ok())
+    const result = await runChecks({
+      worktree,
+      headSha: 'abc',
+      execFn: exec,
+      onUpdate: (snapshot) => snapshots.push(snapshot),
+    })
+    expect(result.source).toBe('scripts')
+    expect(snapshots.length).toBeGreaterThan(0)
+    expect(snapshots.every((s) => s.source === 'scripts')).toBe(true)
+    // An explicit config relabels the same run.
+    const configured = await runChecks({
+      worktree,
+      config: { image: 'node:22', commands: ['npm run test'] },
+      headSha: 'abc',
+      execFn: exec,
+    })
+    expect(configured.source).toBe('config')
   })
 
   test('explicit config REPLACES detection (image, commands, network flag)', async () => {
@@ -570,7 +600,31 @@ describe('resolveChecksPlan', () => {
       worktree,
       config: { image: 'node:22', commands: ['npm run only-this'] },
     })
-    expect(plan).toMatchObject({ image: 'node:22', commands: ['npm run only-this'] })
+    expect(plan).toMatchObject({
+      image: 'node:22',
+      commands: ['npm run only-this'],
+      source: 'config',
+    })
+  })
+
+  test('source labels the level that produced the commands', () => {
+    bunRepo()
+    // Level 3 alone: the lockfile/scripts heuristic.
+    expect(resolveChecksPlan({ worktree })?.source).toBe('scripts')
+    // Level 2, CI flavour.
+    mkdirSync(join(worktree, '.github', 'workflows'), { recursive: true })
+    writeFileSync(
+      join(worktree, '.github', 'workflows', 'ci.yml'),
+      'jobs:\n  checks:\n    steps:\n      - run: bun run ci\n',
+    )
+    expect(resolveChecksPlan({ worktree })?.source).toBe('ci')
+    // Level 2, lefthook flavour — which outranks CI.
+    writeFileSync(join(worktree, 'lefthook.yml'), CODESEMA_LEFTHOOK)
+    expect(resolveChecksPlan({ worktree })?.source).toBe('lefthook')
+    // Level 1: an explicit config outranks everything.
+    expect(resolveChecksPlan({ worktree, config: { commands: ['make check'] } })?.source).toBe(
+      'config',
+    )
   })
 
   test('declarations replace the detected commands but keep image and install', () => {
@@ -585,6 +639,7 @@ describe('resolveChecksPlan', () => {
       commands: ['make check'],
       network: true,
       timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+      source: 'lefthook',
     })
   })
 

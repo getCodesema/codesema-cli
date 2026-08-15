@@ -13,7 +13,12 @@ import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { TASK_CHECK_TAIL_MAX, type TaskCheckResult, type TaskChecks } from './contract.js'
+import {
+  TASK_CHECK_TAIL_MAX,
+  type TaskCheckResult,
+  type TaskChecks,
+  type TaskChecksSource,
+} from './contract.js'
 import type { ChecksConfig } from './repo-config.js'
 
 /** Per-check wall-clock budget when the repo config does not set one. */
@@ -107,6 +112,8 @@ export type ChecksPlan = {
   /** True: the INSTALL step runs with network; check commands NEVER do. */
   network: boolean
   timeoutSeconds: number
+  /** Which precedence level produced the COMMANDS; stamped on checks.json. */
+  source: TaskChecksSource
 }
 
 export type DetectChecksInput = {
@@ -137,7 +144,13 @@ function scriptNames(packageJson: DetectChecksInput['packageJson']): Set<string>
 export function detectChecks(input: DetectChecksInput): ChecksPlan | null {
   const files = new Set(input.files)
   const scripts = scriptNames(input.packageJson)
-  const base = { network: true, timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS }
+  // 'scripts': the lockfile/package.json heuristic is the lowest precedence
+  // level; a declaration or a config overrides the commands (and the label).
+  const base = {
+    network: true,
+    timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+    source: 'scripts' as const,
+  }
   if (files.has('bun.lock') || files.has('bun.lockb')) {
     const commands: string[] = []
     if (scripts.has('typecheck')) {
@@ -533,6 +546,9 @@ export function planFromConfig(config: ChecksConfig): ChecksPlan | null {
       Number.isInteger(config.timeoutSeconds) && (config.timeoutSeconds as number) > 0
         ? (config.timeoutSeconds as number)
         : DEFAULT_CHECK_TIMEOUT_SECONDS,
+    // An explicit .codesema config — including the one an applied setup
+    // proposal just wrote — is always labelled 'config'.
+    source: 'config',
   }
 }
 
@@ -588,7 +604,9 @@ export function resolveChecksPlan(input: {
     return null
   }
   const declared = detectFromDeclarations(readDeclarationFiles(input.worktree))
-  return declared ? { ...detected, commands: declared.commands } : detected
+  // Level 2 replaces the commands AND the provenance label: what runs came
+  // from lefthook/CI even though the image still comes from the lockfile.
+  return declared ? { ...detected, commands: declared.commands, source: declared.source } : detected
 }
 
 export type RunChecksOptions = {
@@ -701,8 +719,12 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
     ...(opts.config !== undefined ? { config: opts.config } : {}),
   })
   if (!plan) {
+    // Nothing resolved: there is no provenance to claim.
     return finish('unconfigured')
   }
+  // Stamped once the plan exists, so every snapshot from here on (including
+  // the ones `finish` derives) carries it.
+  snapshot.source = plan.source
   opts.onUpdate?.({ ...snapshot })
   const runtime = await containerRuntime(opts.execFn)
   if (!runtime) {

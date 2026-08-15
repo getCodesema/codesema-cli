@@ -299,9 +299,10 @@ export type TaskCheck = {
   tail: string
 }
 
-/** Where the executed plan came from, when the server labels it. OPTIONAL:
- * the frozen checks.json contract does not carry it today, so every consumer
- * treats it as "may be absent" and simply shows nothing then. */
+/** Where the executed plan came from: the repo's explicit .codesema config,
+ * its own lefthook/CI declarations, else the lockfile/scripts heuristic.
+ * OPTIONAL on the wire — a checks.json written before the field existed (or a
+ * run that resolved no plan) carries none, and consumers then show nothing. */
 export type TaskChecksSource = 'config' | 'lefthook' | 'ci' | 'scripts'
 
 /** The persisted checks.json of a task (.codesema/tasks/<id>/checks.json). */
@@ -314,7 +315,9 @@ export type TaskChecks = {
   checks: TaskCheck[]
   /** Human-readable failure of the runner itself (e.g. no container engine). */
   error: string | null
-  /** Provenance of the plan; absent on servers that do not expose it. */
+  /** Provenance of the plan; absent on older servers and on runs that
+   * resolved no plan. Widened to string on purpose: a future level would
+   * arrive as an unknown token, which readers must ignore, not render. */
   source?: TaskChecksSource | string
 }
 

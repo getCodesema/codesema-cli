@@ -160,14 +160,25 @@ describe('sanitizeChecksProposal', () => {
     expect(sanitizeChecksProposal({ ...rawProposal, timeoutSeconds: 99_999 })?.timeoutSeconds).toBe(
       3600,
     )
+    // The fallback is the SERVER's default (DEFAULT_CHECK_TIMEOUT_SECONDS).
     expect(sanitizeChecksProposal({ ...rawProposal, timeoutSeconds: 'ten' })?.timeoutSeconds).toBe(
-      600,
+      300,
     )
   })
 
   test('truncates a rationale that would flood the card', () => {
     const long = sanitizeChecksProposal({ ...rawProposal, rationale: 'x'.repeat(900) })
     expect(long?.rationale.length).toBe(500)
+  })
+
+  test('image, command and list bounds mirror the server', () => {
+    const proposal = sanitizeChecksProposal({
+      image: `oven/bun:${'x'.repeat(400)}`,
+      commands: Array.from({ length: 20 }, (_, i) => `bun run check-${i} ${'y'.repeat(400)}`),
+    })
+    expect(proposal?.image.length).toBe(200)
+    expect(proposal?.commands.length).toBe(8)
+    expect(proposal?.commands[0]?.length).toBe(300)
   })
 })
 

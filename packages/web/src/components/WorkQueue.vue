@@ -254,13 +254,19 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
       <!-- READY TO SHIP: green ring, one click away. -->
       <div v-if="groups.ready.length > 0" class="wq-group">
         <h2 class="wq-head wq-head--ready">{{ t(SECTION_LABEL.ready) }}</h2>
-        <!-- The WHOLE card opens the conversation; only Ship stops the bubble. -->
+        <!-- The WHOLE card opens the conversation (a div, not a button: it
+             nests its own actions — hence the explicit role/tabindex/keydown);
+             both inner buttons stop the bubble so one click emits once. -->
         <div
           v-for="state in groups.ready"
           :key="keyOf(state)"
           class="wq-card wq-card--ready"
           :class="{ 'wq-card--focused': focusedKeys.includes(keyOf(state)) }"
+          role="button"
+          tabindex="0"
           @click="emit('open', state)"
+          @keydown.enter="emit('open', state)"
+          @keydown.space.prevent="emit('open', state)"
         >
           <span class="wq-ready-open">
             <span class="wq-dot wq-dot--green" aria-hidden="true" />
@@ -289,7 +295,11 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
             <button class="wq-ship" @click.stop="emit('ship', state)">
               {{ t('workspace.shipAction') }}
             </button>
-            <button class="wq-diff" :title="t('workspace.filesTitle')" @click="emit('open', state)">
+            <button
+              class="wq-diff"
+              :title="t('workspace.filesTitle')"
+              @click.stop="emit('open', state)"
+            >
               {{ t('workspace.diffAction') }}
             </button>
           </span>

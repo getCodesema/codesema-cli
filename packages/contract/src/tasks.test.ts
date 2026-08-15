@@ -441,4 +441,15 @@ describe('sanitizeTaskChecks', () => {
     expect(sanitizeTaskChecks({ ...validChecks, error: '   ' })?.error).toBeNull()
     expect(sanitizeTaskChecks({ ...validChecks, error: 42 })?.error).toBeNull()
   })
+
+  test('source: known values pass through, anything else drops the key', () => {
+    for (const source of ['config', 'lefthook', 'ci', 'scripts'] as const) {
+      expect(sanitizeTaskChecks({ ...validChecks, source })?.source).toBe(source)
+    }
+    // A checks.json written before the field existed stays valid and silent.
+    expect(sanitizeTaskChecks(structuredClone(validChecks))).not.toHaveProperty('source')
+    for (const junk of ['gitlab', '', 42, null, {}]) {
+      expect(sanitizeTaskChecks({ ...validChecks, source: junk })).not.toHaveProperty('source')
+    }
+  })
 })

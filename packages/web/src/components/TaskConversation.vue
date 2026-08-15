@@ -81,7 +81,7 @@ const visual = computed(() => EXECUTION_STATUS[record.value.status])
 // states it, the tooltip says what it actually guarantees.
 const isolation = computed(() => isolationBadge(record.value))
 
-// ── Tabs: Conversation / Diff · N / Checks (soon) ─────────────────────────
+// ── Tabs: Conversation / Diff · N / Checks ────────────────────────────────
 const tab = ref<FocusTab>('conversation')
 const tabs = computed(() => focusTabs(record.value.branch.length > 0))
 
@@ -159,8 +159,8 @@ async function doRunChecks(): Promise<void> {
   }
 }
 
-/** "detected: lefthook" chip — only when the server labels the plan's
- * provenance; the current checks.json contract does not, so this is silent. */
+/** "detected: lefthook" chip — silent when the run carries no provenance
+ * (a checks.json from an older engine, or an unconfigured run). */
 const checksSourceText = computed(() => checksSourceLabel(checks.value))
 
 // ── Agent-assisted setup: propose a plan, apply it on an explicit click ────
