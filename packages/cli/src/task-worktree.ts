@@ -41,8 +41,11 @@ export function taskWorktreePath(cwd: string, taskId: string): string {
 
 const SLUG_MAX = 40
 
+/** Every branch this tool FORKS for a task starts with it; work-on branches never do. */
+export const TASK_BRANCH_PREFIX = 'codesema/task-'
+
 /** Same slugging as review archive names (record.ts), with 'task' as last resort. */
-function slug(s: string): string {
+export function slug(s: string): string {
   const full = s
     // NFKD + strip combining marks: "Réponds" → "reponds", not "r-ponds".
     .normalize('NFKD')
@@ -87,7 +90,7 @@ export function detectTaskBase(cwd: string): string {
  * is the unconditionally-unique last resort.
  */
 function freeBranchName(cwd: string, taskId: string, title: string): string {
-  const wanted = `codesema/task-${slug(title)}`
+  const wanted = `${TASK_BRANCH_PREFIX}${slug(title)}`
   if (!refExists(`refs/heads/${wanted}`, cwd)) {
     return wanted
   }
@@ -98,6 +101,46 @@ function freeBranchName(cwd: string, taskId: string, title: string): string {
     }
   }
   return `${wanted}-${taskId}`
+}
+
+/**
+ * Renames a task's FORKED branch to the name the agent proposed on its first
+ * turn (the slugged title it was created with says what you typed, not what
+ * the task turned out to be — and that name becomes the MR source branch).
+ * `git branch -m` keeps the linked worktree's HEAD on the branch, so the task
+ * keeps working in place under its new name.
+ *
+ * Refused, silently, in every case where the current name is not ours to
+ * change: a branch that is not a codesema/task-* fork (a work-on conversation
+ * works on the USER's branch — the caller also checks record.work_on), a
+ * branch already pushed (its name is published, an MR may point at it), an
+ * unusable proposal, or a git refusal. Returns the new name, or null when
+ * nothing was renamed: a cosmetic rename is never worth failing a turn over,
+ * the task simply keeps the name it had.
+ */
+export function renameTaskBranch(
+  cwd: string,
+  taskId: string,
+  current: string,
+  proposal: string,
+): string | null {
+  if (!current.startsWith(TASK_BRANCH_PREFIX)) {
+    return null
+  }
+  const wanted = slug(proposal)
+  // 'task' is slug()'s last resort (nothing usable in the proposal), and a
+  // proposal that slugs to the current name has nothing to rename — asking
+  // freeBranchName for it would only invent a pointless '-2' suffix.
+  if (wanted === 'task' || `${TASK_BRANCH_PREFIX}${wanted}` === current) {
+    return null
+  }
+  // Published name: an MR (or a plain push) already refers to this branch.
+  // Renaming here would strand the remote ref under the old name.
+  if (refExists(`refs/remotes/origin/${current}`, cwd)) {
+    return null
+  }
+  const next = freeBranchName(cwd, taskId, proposal)
+  return tryGit(['branch', '-m', current, next], cwd) === null ? null : next
 }
 
 export type TaskWorktree = { branch: string; worktree: string; base: string }

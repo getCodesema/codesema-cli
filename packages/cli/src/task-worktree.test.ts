@@ -10,6 +10,7 @@ import {
   createTaskWorktree,
   detectTaskBase,
   removeTaskWorktree,
+  renameTaskBranch,
   taskWorktreePath,
 } from './task-worktree.js'
 
@@ -291,6 +292,69 @@ describe('removeTaskWorktree', () => {
     expect(() =>
       removeTaskWorktree(repo, 'ffffffffffff', 'codesema/task-none', { deleteBranch: true }),
     ).not.toThrow()
+  })
+})
+
+describe('renameTaskBranch', () => {
+  test('renames the fork and the worktree keeps committing on it', () => {
+    const repo = makeRepo('main')
+    const wt = createTaskWorktree(repo, 'aaaabbbbcccc', 'les docs sont à jours ?')
+    expect(wt.branch).toBe('codesema/task-les-docs-sont-a-jours')
+
+    const next = renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'update-workspace-docs')
+    expect(next).toBe('codesema/task-update-workspace-docs')
+    expect(refExists('refs/heads/codesema/task-les-docs-sont-a-jours', repo)).toBe(false)
+    expect(refExists('refs/heads/codesema/task-update-workspace-docs', repo)).toBe(true)
+    // The linked worktree followed the rename: HEAD still points at the branch.
+    expect(tryGit(['rev-parse', '--abbrev-ref', 'HEAD'], wt.worktree)).toBe(
+      'codesema/task-update-workspace-docs',
+    )
+    writeFileSync(join(wt.worktree, 'after.txt'), 'x\n')
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A'], {
+      cwd: wt.worktree,
+    })
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'after'], {
+      cwd: wt.worktree,
+      stdio: 'ignore',
+    })
+    expect(tryGit(['log', '-1', '--pretty=%s', 'codesema/task-update-workspace-docs'], repo)).toBe(
+      'after',
+    )
+  })
+
+  test('the proposal is slugged and collisions get the same numeric suffix as creation', () => {
+    const repo = makeRepo('main')
+    const wt = createTaskWorktree(repo, 'aaaabbbbcccc', 'first title')
+    execFileSync('git', ['branch', 'codesema/task-fix-preview-rename'], { cwd: repo })
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'Fix Preview Rename')).toBe(
+      'codesema/task-fix-preview-rename-2',
+    )
+  })
+
+  test('a work-on branch (not a codesema/task-* fork) is never renamed', () => {
+    const repo = makeRepo('main')
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo })
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', 'feature/mine', 'nicer-name')).toBeNull()
+    expect(refExists('refs/heads/feature/mine', repo)).toBe(true)
+    expect(refExists('refs/heads/codesema/task-nicer-name', repo)).toBe(false)
+  })
+
+  test('a branch already pushed keeps its published name', () => {
+    const repo = makeRepo('main')
+    const wt = createTaskWorktree(repo, 'aaaabbbbcccc', 'shipped work')
+    execFileSync('git', ['update-ref', `refs/remotes/origin/${wt.branch}`, wt.branch], {
+      cwd: repo,
+    })
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'much-better-name')).toBeNull()
+    expect(refExists(`refs/heads/${wt.branch}`, repo)).toBe(true)
+  })
+
+  test('an unusable or identical proposal is a no-op', () => {
+    const repo = makeRepo('main')
+    const wt = createTaskWorktree(repo, 'aaaabbbbcccc', 'keep me')
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, '!!! ???')).toBeNull()
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'Keep me')).toBeNull()
+    expect(refExists('refs/heads/codesema/task-keep-me', repo)).toBe(true)
   })
 })
 

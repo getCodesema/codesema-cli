@@ -25,7 +25,7 @@ import {
   runContainerTurn,
   type RunContainerTurnOptions,
 } from './task-isolation.js'
-import { createTaskWorktree, removeTaskWorktree } from './task-worktree.js'
+import { createTaskWorktree, removeTaskWorktree, renameTaskBranch } from './task-worktree.js'
 import { appendTaskEvent, loadTask, saveTask, type AppendTaskEventInput } from './tasks-store.js'
 
 /** Concurrent 'running' tasks by default; overridable via the maxParallelTasks config. */
@@ -86,8 +86,12 @@ export function taskCommandFor(command: string, opts: { session: TaskSession | n
  * Standing instructions sent with the first turn (and replayed for providers
  * without session resume). The QUESTION protocol is the whole question
  * mechanism: a turn ends either in a summary or in that final line.
+ *
+ * `askBranchName` adds the one-line BRANCH protocol, asked on the FIRST turn
+ * of a forked task only (see parseTaskBranchProposal): once the branch has the
+ * agent's name, re-asking would only invite a rename mid-conversation.
  */
-export function buildTaskPrompt(task: TaskRecord): string {
+export function buildTaskPrompt(task: TaskRecord, opts: { askBranchName?: boolean } = {}): string {
   const lines = [
     'You are an autonomous coding agent working on a task in a dedicated git worktree of this repository (your current directory).',
     '',
@@ -108,8 +112,54 @@ export function buildTaskPrompt(task: TaskRecord): string {
     '- If the repo has cheap checks (typecheck, unit tests, lint), run them and fix what YOUR changes broke before finishing.',
     "- If you cannot proceed without a human decision, end your reply with a single final line of the exact form 'QUESTION: <your question>' (nothing after that line). Ask only when truly blocked.",
     '- Otherwise end your reply with a short plain-text summary of what you did and how you verified it (no code fences).',
+    // FIRST line, because the QUESTION protocol already owns the last one.
+    ...(opts.askBranchName
+      ? [
+          "- Start this reply with a single first line of the exact form 'BRANCH: <name>', where <name> is a 2-5 word kebab-case English branch name for this task (e.g. 'fix-preview-rename'). Then continue with your reply as usual.",
+        ]
+      : []),
   ]
   return lines.join('\n')
+}
+
+/** Bound for the raw name the agent proposes; longer is prose, not a branch name. */
+const BRANCH_PROPOSAL_MAX = 60
+
+/** A branch name, possibly still spaced/uppercased: slug() finishes the job. */
+const BRANCH_PROPOSAL_RE = /^[a-z0-9][a-z0-9 ._/-]*$/i
+
+export type TaskBranchProposal = {
+  /** Usable proposal, still to be slugged; null when the line carried garbage. */
+  name: string | null
+  /** The reply with the protocol line removed. */
+  rest: string
+}
+
+/**
+ * The first-turn prompt asks the agent to OPEN its reply with
+ * 'BRANCH: <kebab-name>' (the last line is already taken by the QUESTION
+ * protocol). Null when there is no such line — the overwhelmingly common case
+ * for a provider that ignored the instruction, and the reason the field is
+ * optional. A present but unusable line still gets stripped (it is protocol,
+ * not prose) with a null name: the branch just keeps its generated slug.
+ */
+export function parseTaskBranchProposal(response: string): TaskBranchProposal | null {
+  const trimmed = response.trimStart()
+  const breakAt = trimmed.indexOf('\n')
+  const first = (breakAt === -1 ? trimmed : trimmed.slice(0, breakAt)).trim()
+  const match = /^BRANCH:\s*(.+)$/i.exec(first)
+  if (!match) {
+    return null
+  }
+  const rest = (breakAt === -1 ? '' : trimmed.slice(breakAt + 1)).trim()
+  // Agents love quoting and backticking identifiers; that is not garbage.
+  const raw = (match[1] ?? '')
+    .trim()
+    .replace(/^[`'"]+|[`'"]+$/g, '')
+    .trim()
+  const usable =
+    raw.length >= 3 && raw.length <= BRANCH_PROPOSAL_MAX && BRANCH_PROPOSAL_RE.test(raw)
+  return { name: usable ? raw : null, rest }
 }
 
 /**
@@ -124,13 +174,22 @@ export function parseTaskQuestion(response: string): string | null {
 }
 
 export type TaskTurnOutcome =
-  | { kind: 'done'; response: string; sessionId: string | null; tokens: number }
+  | {
+      kind: 'done'
+      response: string
+      sessionId: string | null
+      tokens: number
+      /** First turn only: the branch name the agent proposed for the task. */
+      branchProposal?: string
+    }
   | {
       kind: 'question'
       response: string
       question: string
       sessionId: string | null
       tokens: number
+      /** First turn only: the branch name the agent proposed for the task. */
+      branchProposal?: string
     }
 
 export type RunTaskTurnOptions = {
@@ -240,15 +299,22 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   if (parser && raw.length > fed) {
     parser.push(raw.slice(fed))
   }
-  const response = (parser ? (parser.finalText() ?? raw) : raw).trim()
+  const full = (parser ? (parser.finalText() ?? raw) : raw).trim()
+  // Parsed exactly where the prompt asked for it: the FIRST turn of a forked
+  // task. Anywhere else (later turns, work-on conversations) a reply opening
+  // with 'BRANCH:' was never protocol and stays plain prose in the response.
+  const asked = opts.task.turns.length <= 1 && !opts.task.work_on
+  const proposal = asked ? parseTaskBranchProposal(full) : null
+  const response = proposal ? proposal.rest : full
+  const branch = proposal?.name ? { branchProposal: proposal.name } : {}
 
   const question = parseTaskQuestion(response)
   if (question) {
     opts.onEvent({ type: 'question', data: { question: preview(question) } })
-    return { kind: 'question', response, question, sessionId, tokens }
+    return { kind: 'question', response, question, sessionId, tokens, ...branch }
   }
   opts.onEvent({ type: 'message', data: { text: preview(response) } })
-  return { kind: 'done', response, sessionId, tokens }
+  return { kind: 'done', response, sessionId, tokens, ...branch }
 }
 
 export type TaskActionResult = { ok: true } | { ok: false; code: number; error: string }
@@ -362,7 +428,9 @@ function transcript(record: TaskRecord): string {
 function composeTurnPrompt(record: TaskRecord, command: string): string {
   const message = record.turns.at(-1)?.prompt ?? ''
   if (record.turns.length <= 1) {
-    return `${buildTaskPrompt(record)}\n\n${message}`
+    // A work-on conversation is not asked to name anything: it works on the
+    // user's own pre-existing branch, which is never renamed.
+    return `${buildTaskPrompt(record, { askBranchName: !record.work_on })}\n\n${message}`
   }
   if (supportsSessionResume(command) && record.agent_session_id) {
     return message
@@ -431,8 +499,31 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     })
   }
 
+  /**
+   * Turn 1 only: adopt the branch name the agent proposed for itself, BEFORE
+   * the commit, the review and the checks — everything downstream then sees a
+   * single name. Never for a work-on task (that branch is the user's, the
+   * prompt never even asks) and never past a push (renameTaskBranch refuses a
+   * published branch). Any refusal is a silent no-op: the task keeps the slug
+   * of its title, which is exactly the behaviour that existed before.
+   */
+  const adoptBranchProposal = (record: TaskRecord, outcome: TaskTurnOutcome): void => {
+    if (!outcome.branchProposal || record.work_on || record.turns.length > 1) {
+      return
+    }
+    const renamed = renameTaskBranch(opts.cwd, record.id, record.branch, outcome.branchProposal)
+    if (!renamed) {
+      return
+    }
+    record.branch = renamed
+    // Broadcast right away: the UI reads record.branch for the Diff tab and
+    // for the ship, and the rest of the turn already runs on the new name.
+    persist(record)
+  }
+
   const finishTurn = (record: TaskRecord, outcome: TaskTurnOutcome, startedAt: number): void => {
     record.work_ms += Date.now() - startedAt
+    adoptBranchProposal(record, outcome)
     record.agent_session_id = outcome.sessionId ?? record.agent_session_id
     const turn = record.turns.at(-1)
     if (turn) {

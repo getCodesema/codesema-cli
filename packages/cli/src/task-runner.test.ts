@@ -11,6 +11,7 @@ import {
   buildTaskPrompt,
   createTaskRunner,
   createTaskSlotPool,
+  parseTaskBranchProposal,
   parseTaskQuestion,
   runTaskTurn,
   supportsSessionResume,
@@ -83,6 +84,43 @@ describe('buildTaskPrompt / parseTaskQuestion', () => {
     expect(parseTaskQuestion('I asked myself QUESTION: what now?\nThen I fixed it.')).toBeNull()
     expect(parseTaskQuestion('all done, tests pass')).toBeNull()
     expect(parseTaskQuestion('QUESTION:')).toBeNull()
+  })
+})
+
+describe('parseTaskBranchProposal', () => {
+  test('the first line names the branch and leaves the reply', () => {
+    expect(parseTaskBranchProposal('BRANCH: fix-preview-rename\n\nDid the thing.')).toEqual({
+      name: 'fix-preview-rename',
+      rest: 'Did the thing.',
+    })
+    // Quoted/backticked/spaced proposals are still proposals; slug() finishes.
+    expect(parseTaskBranchProposal('BRANCH: `Update Workspace Docs`\ndone')?.name).toBe(
+      'Update Workspace Docs',
+    )
+  })
+
+  test('no line at all is the normal absent case', () => {
+    expect(parseTaskBranchProposal('all done, tests pass')).toBeNull()
+    // Mid-prose mentions are prose, only the FIRST line is protocol.
+    expect(parseTaskBranchProposal('did stuff\nBRANCH: too-late')).toBeNull()
+  })
+
+  test('an unusable proposal is stripped but names nothing', () => {
+    expect(parseTaskBranchProposal('BRANCH: ??\ndone')).toEqual({ name: null, rest: 'done' })
+    expect(parseTaskBranchProposal(`BRANCH: ${'x'.repeat(80)}\ndone`)?.name).toBeNull()
+    expect(parseTaskBranchProposal('BRANCH: a name, with prose\ndone')?.name).toBeNull()
+  })
+
+  test('the BRANCH line never swallows a QUESTION on the last line', () => {
+    const parsed = parseTaskBranchProposal('BRANCH: pick-a-db\nBlocked.\nQUESTION: pg or sqlite?')
+    expect(parsed?.name).toBe('pick-a-db')
+    expect(parseTaskQuestion(parsed?.rest ?? '')).toBe('pg or sqlite?')
+  })
+
+  test('the prompt asks for the branch name only when told to', () => {
+    const task = { title: 'Add rate limiting' } as TaskRecord
+    expect(buildTaskPrompt(task)).not.toContain('BRANCH:')
+    expect(buildTaskPrompt(task, { askBranchName: true })).toContain("'BRANCH: <name>'")
   })
 })
 
@@ -592,6 +630,171 @@ describe('createTaskRunner', () => {
 
 // Hardening (CVE-2026-25725 lesson): a worktree-written .claude/settings.json
 // or .mcp.json must never be loaded by the NEXT resumed turn.
+// --- the agent names its own branch (turn 1) ---
+
+describe('agent-named task branches', () => {
+  test('a valid proposal renames the branch, updates the record and leaves the reply clean', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'les docs sont à jours ?', 'check the docs')
+    const fake = fakeClaude(
+      () => 'BRANCH: update-workspace-docs\n\ndocs refreshed, checks pass',
+      ['docs.txt'],
+    )
+    const seen: TaskRecord[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onTask: (record) => seen.push(structuredClone(record)),
+      runAgentFn: fake.run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const record = loadTask(repo, task.id)
+    expect(record?.branch).toBe('codesema/task-update-workspace-docs')
+    expect(tryGit(['rev-parse', '--abbrev-ref', 'HEAD'], record?.worktree ?? '')).toBe(
+      'codesema/task-update-workspace-docs',
+    )
+    // The protocol line never reaches the conversation.
+    expect(record?.turns[0]?.response).toBe('docs refreshed, checks pass')
+    // The turn's commit landed on the renamed branch.
+    expect(tryGit(['log', '-1', '--pretty=%s', 'codesema/task-update-workspace-docs'], repo)).toBe(
+      `task(${task.id}): les docs sont à jours ? — turn 1`,
+    )
+    // The UI learns the new name before the end-of-turn record.
+    expect(seen.map((r) => r.branch)).toContain('codesema/task-update-workspace-docs')
+    expect(fake.prompts[0]).toContain("'BRANCH: <name>'")
+  })
+
+  test('a question turn still gets to name its branch', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'pick a db', 'set up storage')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(
+        () => 'BRANCH: wire-storage-layer\nBlocked.\nQUESTION: postgres or sqlite?',
+      ).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record?.branch).toBe('codesema/task-wire-storage-layer')
+    expect(record?.turns[0]?.question).toBe('postgres or sqlite?')
+    expect(record?.turns[0]?.response).toBe('Blocked.\nQUESTION: postgres or sqlite?')
+  })
+
+  test('an absent or unusable proposal silently keeps the generated name', async () => {
+    const repo = makeRepo()
+    const silent = makeTask(repo, 'Add feature', 'write feature.txt')
+    const garbage = makeTask(repo, 'Other feature', 'write other.txt')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude((options) =>
+        options.prompt.includes('write other.txt')
+          ? 'BRANCH: ¯\\_(ツ)_/¯\ndone anyway'
+          : 'done, no protocol line',
+      ).run,
+    })
+    runner.start(silent)
+    runner.start(garbage)
+    await until(
+      () =>
+        status(repo, silent.id) === 'waiting_for_you' &&
+        status(repo, garbage.id) === 'waiting_for_you',
+    )
+    expect(loadTask(repo, silent.id)?.branch).toBe('codesema/task-add-feature')
+    expect(loadTask(repo, silent.id)?.turns[0]?.response).toBe('done, no protocol line')
+    expect(loadTask(repo, garbage.id)?.branch).toBe('codesema/task-other-feature')
+    // Unusable, but still protocol: it does not leak into the conversation.
+    expect(loadTask(repo, garbage.id)?.turns[0]?.response).toBe('done anyway')
+    // No error surfaced either way.
+    expect(readTaskEvents(repo, garbage.id).map((e) => e.type)).not.toContain('error')
+  })
+
+  test('a name already taken gets the numeric suffix', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'codesema/task-fix-preview-rename'], { cwd: repo })
+    const task = makeTask(repo, 'something vague', 'fix it')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'BRANCH: fix-preview-rename\nfixed').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(loadTask(repo, task.id)?.branch).toBe('codesema/task-fix-preview-rename-2')
+  })
+
+  test("a work-on conversation is never asked for a name and never renames the user's branch", async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo })
+    const task = createTask(repo, {
+      title: 'work on my branch',
+      prompt: 'keep going',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    const fake = fakeClaude(() => 'BRANCH: much-nicer-name\nkept going')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fake.run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(loadTask(repo, task.id)?.branch).toBe('feature/mine')
+    expect(tryGit(['rev-parse', '--verify', 'codesema/task-much-nicer-name'], repo)).toBeNull()
+    expect(fake.prompts[0]).not.toContain('BRANCH:')
+    // The line was never asked for, so on a work-on task it stays plain prose.
+    expect(loadTask(repo, task.id)?.turns[0]?.response).toBe('BRANCH: much-nicer-name\nkept going')
+  })
+
+  test('turn 2 never asks again, and a late BRANCH line stays prose', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'transcripted', 'start work')
+    const prompts: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      // Non-resumable: turn 2 replays the standing instructions, which is
+      // exactly where a re-ask would show up.
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        return Promise.resolve(
+          prompts.length === 1
+            ? 'BRANCH: rename-me-once\nstep one done'
+            : 'BRANCH: rename-me-twice\nstep two done',
+        )
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(loadTask(repo, task.id)?.branch).toBe('codesema/task-rename-me-once')
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    expect(prompts[0]).toContain("'BRANCH: <name>'")
+    expect(prompts[1]).not.toContain("'BRANCH: <name>'")
+    // Not parsed on turn 2: the branch keeps turn 1's name and the line is prose.
+    expect(loadTask(repo, task.id)?.branch).toBe('codesema/task-rename-me-once')
+    expect(loadTask(repo, task.id)?.turns[1]?.response).toBe(
+      'BRANCH: rename-me-twice\nstep two done',
+    )
+  })
+})
+
 describe('taskCommandFor hardening', () => {
   test('claude task commands ignore repo settings and repo MCP config', () => {
     const cmd = taskCommandFor('claude -p', { session: null })
