@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import type { TaskEvent, TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
+import { setLanguage } from './i18n.js'
 import type { RunContainerTurnOptions } from './task-isolation.js'
 import {
   buildTaskPrompt,
@@ -72,6 +73,35 @@ describe('buildTaskPrompt / parseTaskQuestion', () => {
     expect(prompt).toContain('QUESTION: <your question>')
     // The roles layer is gone: the task prompt is neutral, no role section.
     expect(prompt).not.toContain('Role instructions:')
+  })
+
+  describe('language rule', () => {
+    afterEach(() => setLanguage(null))
+
+    test('no configured language: the agent mirrors the user, not a fixed name', () => {
+      const prompt = buildTaskPrompt(task)
+      expect(prompt).toContain("reply in the language of the user's messages")
+      expect(prompt).not.toContain('write every reply')
+    })
+
+    test('a configured language names it explicitly', () => {
+      setLanguage('fr')
+      const prompt = buildTaskPrompt(task)
+      expect(prompt).toContain('write every reply to the user in French')
+    })
+
+    test('the rule scopes to the summary and QUESTION line, not code or commits', () => {
+      const prompt = buildTaskPrompt(task)
+      expect(prompt).toContain("QUESTION: <text>' line")
+      expect(prompt).toContain('code identifiers, file paths and commit messages stay as they are')
+    })
+
+    test('the BRANCH protocol stays English regardless of the language rule', () => {
+      setLanguage('fr')
+      const prompt = buildTaskPrompt(task, { askBranchName: true })
+      expect(prompt).toContain('kebab-case English branch name')
+      expect(prompt).toContain('always in English, regardless of the language rule above')
+    })
   })
 
   test('a QUESTION on the last line is parsed, mid-prose mentions are not', () => {
@@ -462,6 +492,10 @@ describe('createTaskRunner', () => {
     expect(prompts[1]).toContain('Previous turns of this task:')
     expect(prompts[1]).toContain('start work')
     expect(prompts[1]).toContain('New instruction: yes, continue')
+    // Standing instructions (language rule included) are replayed on EVERY
+    // turn for a provider that cannot resume a session, not just the first.
+    expect(prompts[0]).toContain("reply in the language of the user's messages")
+    expect(prompts[1]).toContain("reply in the language of the user's messages")
   })
 
   test('interrupt SIGTERMs the running turn and persists interrupted', async () => {

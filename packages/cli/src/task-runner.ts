@@ -19,6 +19,7 @@ import {
 import type { TaskEvent, TaskRecord, TaskStatus } from './contract.js'
 import { fixCommandFor } from './fix.js'
 import { git, tryGit } from './git.js'
+import { reviewLanguage } from './i18n.js'
 import type { ChecksConfig } from './repo-config.js'
 import {
   containerTaskCommandFor,
@@ -83,6 +84,22 @@ export function taskCommandFor(command: string, opts: { session: TaskSession | n
 }
 
 /**
+ * Task-turn language instruction, driven by the same `language` config as
+ * review.ts's languageRule(): explicit config wins, otherwise the agent
+ * mirrors whatever language the user's own messages are in. Unlike a
+ * review's structured fields (summary, messages, narrative), a task turn is
+ * a conversation, so this is scoped in buildTaskPrompt to the summary and
+ * the QUESTION line only — never code identifiers, paths, or commit
+ * messages.
+ */
+function taskLanguageRule(): string {
+  const language = reviewLanguage()
+  return language
+    ? `write every reply to the user in ${language}`
+    : "reply in the language of the user's messages"
+}
+
+/**
  * Standing instructions sent with the first turn (and replayed for providers
  * without session resume). The QUESTION protocol is the whole question
  * mechanism: a turn ends either in a summary or in that final line.
@@ -110,12 +127,13 @@ export function buildTaskPrompt(task: TaskRecord, opts: { askBranchName?: boolea
       : []),
     '- Follow the existing code style and conventions of the repository.',
     '- If the repo has cheap checks (typecheck, unit tests, lint), run them and fix what YOUR changes broke before finishing.',
+    `- Language: ${taskLanguageRule()}. This covers your summary and any 'QUESTION: <text>' line; code identifiers, file paths and commit messages stay as they are.`,
     "- If you cannot proceed without a human decision, end your reply with a single final line of the exact form 'QUESTION: <your question>' (nothing after that line). Ask only when truly blocked.",
     '- Otherwise end your reply with a short plain-text summary of what you did and how you verified it (no code fences).',
     // FIRST line, because the QUESTION protocol already owns the last one.
     ...(opts.askBranchName
       ? [
-          "- Start this reply with a single first line of the exact form 'BRANCH: <name>', where <name> is a 2-5 word kebab-case English branch name for this task (e.g. 'fix-preview-rename'). Then continue with your reply as usual.",
+          "- Start this reply with a single first line of the exact form 'BRANCH: <name>', where <name> is a 2-5 word kebab-case English branch name for this task (e.g. 'fix-preview-rename') — always in English, regardless of the language rule above. Then continue with your reply as usual.",
         ]
       : []),
   ]
