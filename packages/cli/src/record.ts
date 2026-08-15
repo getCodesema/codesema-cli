@@ -15,6 +15,10 @@ const ARCHIVES_KEPT_PER_BRANCH = 5
 function slug(s: string): string {
   return (
     s
+      // NFKD + strip combining marks so accented branch names transliterate
+      // ("évol/été" → "evol-ete") instead of collapsing into dashes.
+      .normalize('NFKD')
+      .replace(/\p{M}+/gu, '')
       .toLowerCase()
       .replace(/[^a-z0-9._-]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'review'

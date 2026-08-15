@@ -85,6 +85,24 @@ describe('createTaskWorktree', () => {
     expect(wt.branch).toBe('codesema/task-task')
   })
 
+  test('accented titles transliterate instead of losing letters', () => {
+    const repo = makeRepo('main')
+    const wt = createTaskWorktree(repo, 'aaaabbbbcccc', 'Réponds-moi : où est l’été ?')
+    expect(wt.branch).toBe('codesema/task-reponds-moi-ou-est-l-ete')
+  })
+
+  test('a long title is capped on a word boundary', () => {
+    const repo = makeRepo('main')
+    const wt = createTaskWorktree(
+      repo,
+      'aaaabbbbcccc',
+      'mets à jour toute la documentation du workspace avec les derniers commits',
+    )
+    expect(wt.branch).toBe('codesema/task-mets-a-jour-toute-la-documentation-du')
+    const wt2 = createTaskWorktree(repo, 'ddddeeeeffff', 'x'.repeat(60))
+    expect(wt2.branch).toBe(`codesema/task-${'x'.repeat(40)}`)
+  })
+
   test('a branch name collision gets a numeric suffix', () => {
     const repo = makeRepo('main')
     execFileSync('git', ['branch', 'codesema/task-fix-the-bug'], { cwd: repo })

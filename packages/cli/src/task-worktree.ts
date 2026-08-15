@@ -39,14 +39,25 @@ export function taskWorktreePath(cwd: string, taskId: string): string {
   return join(cwd, '.codesema', 'worktrees', taskId)
 }
 
+const SLUG_MAX = 40
+
 /** Same slugging as review archive names (record.ts), with 'task' as last resort. */
 function slug(s: string): string {
-  return (
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'task'
-  )
+  const full = s
+    // NFKD + strip combining marks: "Réponds" → "reponds", not "r-ponds".
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  if (full.length <= SLUG_MAX) {
+    return full || 'task'
+  }
+  // Titles are free-form prose: cap the branch name, cutting on a word when one
+  // fits, mid-word for a single overlong token.
+  const cut = full.slice(0, SLUG_MAX + 1)
+  const atDash = cut.lastIndexOf('-')
+  return (atDash > 0 ? cut.slice(0, atDash) : full.slice(0, SLUG_MAX)).replace(/-+$/g, '')
 }
 
 /**
