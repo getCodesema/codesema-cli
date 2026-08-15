@@ -222,8 +222,12 @@ export type RunTaskTurnOptions = {
   signal?: AbortSignal
   /** Journal sink: the caller appends to the store and broadcasts. */
   onEvent: (event: AppendTaskEventInput) => void
-  /** Cumulative streamed text (SSE only, never persisted). */
-  onText?: (text: string) => void
+  /**
+   * One streamed agent message (SSE only, never persisted): `text` is
+   * cumulative WITHIN the message, `seq` is its index in the turn. Providers
+   * without a message-aware stream deliver everything as message 0.
+   */
+  onText?: (text: string, seq: number) => void
   /** Cumulative token count of the turn (SSE live meter; final value persisted on the turn). */
   onTokens?: (total: number) => void
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
@@ -288,7 +292,9 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
       parser.push(text.slice(fed))
       fed = text.length
     } else {
-      opts.onText?.(text)
+      // No stream-json: the raw stdout is one growing blob with no message
+      // boundary to read — it is message 0, forever.
+      opts.onText?.(text, 0)
     }
   }
   const raw = caged
@@ -343,7 +349,11 @@ export type TaskTurnIo = {
   emit: (input: AppendTaskEventInput) => void
   /** Persists the (mutated) record with a fresh updated_at, then broadcasts it. */
   persist: () => void
-  /** SSE-only progress line on the task_text channel; never persisted. */
+  /**
+   * SSE-only progress line on the task_text channel; never persisted. Sent
+   * WITHOUT a message index on purpose: this is a status line that replaces
+   * the previous one, not a message added to a conversation.
+   */
   text: (text: string) => void
 }
 
@@ -386,7 +396,13 @@ export type TaskRunnerOptions = {
   /** Broadcast hooks, called AFTER the corresponding store write. */
   onTask?: (record: TaskRecord) => void
   onEvent?: (taskId: string, event: TaskEvent) => void
-  onText?: (taskId: string, text: string) => void
+  /**
+   * Live text of the task. `seq` present: the agent's message of that index in
+   * the running turn (bubbles that ACCUMULATE client-side). `seq` absent: a
+   * bare progress line of whatever else streams on that channel — the
+   * end-of-turn review (TaskTurnIo.text) — which replaces the previous one.
+   */
+  onText?: (taskId: string, text: string, seq?: number) => void
   /** Live token meter of the in-flight turn (SSE only; the final count lands on the turn). */
   onTokens?: (taskId: string, total: number) => void
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
@@ -682,7 +698,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       timeoutMs: opts.timeoutMs,
       signal: controller.signal,
       onEvent: (event) => emit(record.id, event),
-      onText: (text) => opts.onText?.(record.id, text),
+      onText: (text, seq) => opts.onText?.(record.id, text, seq),
       onTokens: (total) => opts.onTokens?.(record.id, total),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
       ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),

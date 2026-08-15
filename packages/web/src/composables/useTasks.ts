@@ -37,7 +37,15 @@ import {
   purgeDeadStorageKeys,
   readPersistedActiveProject,
 } from './useProjects'
-import { compareByActivity, mergeEvent, streamsLiveText } from './useTaskBoard'
+import {
+  applyLiveText,
+  compareByActivity,
+  keepsLiveMessages,
+  mergeEvent,
+  settlesLiveMessages,
+  streamsLiveText,
+  type LiveMessage,
+} from './useTaskBoard'
 
 export type TaskState = {
   /** Registry id of the repo this task lives in. */
@@ -45,8 +53,12 @@ export type TaskState = {
   record: TaskRecord
   /** Journal events seen so far; complete only after hydrate(projectId, id). */
   events: TaskEvent[]
-  /** Cumulative streamed text of the in-flight turn (SSE only, volatile). */
+  /** Progress line of the automatic review while 'reviewing' (SSE only,
+   * volatile): each frame REPLACES it — it is a status line, not a message. */
   liveText: string
+  /** Messages the agent streamed during the turn in flight, in order (SSE
+   * only, volatile): they accumulate as bubbles until the journal takes over. */
+  liveMessages: LiveMessage[]
   /** Live token meter of the in-flight turn (task_meta frames, volatile). */
   liveTokens: number
   /** Sandboxed checks result (volatile mirror of checks.json): hydrated by
@@ -94,6 +106,7 @@ function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): 
       record,
       events: [],
       liveText: '',
+      liveMessages: [],
       liveTokens: 0,
       checks: null,
     })
@@ -101,13 +114,16 @@ function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): 
   }
   const previous = current.record.status
   current.record = record
-  // The stream text belongs to the turn in flight — the agent's ('running')
-  // AND its automatic review ('reviewing'), which streams its own progress on
-  // the same channel. Any other status settles the turn in the journal: drop
-  // the volatile copy. Entering 'reviewing' drops it too, once: the agent's
-  // last words are already in the journal, and leaving them under the review
-  // banner until the first progress line arrives would attribute them to the
-  // review.
+  // The agent's bubbles die with its turn: any other status means the journal
+  // (turn.response) is now the one telling what was said.
+  if (!keepsLiveMessages(record.status)) {
+    current.liveMessages = []
+  }
+  // The progress line belongs to the turn in flight — in practice the
+  // automatic review ('reviewing'), the only thing left streaming un-indexed
+  // text on that channel. Any other status settles the turn in the journal:
+  // drop the volatile copy. Entering 'reviewing' drops it too, once: a stale
+  // line left under the review banner would be attributed to the review.
   if (
     !streamsLiveText(record.status) ||
     (record.status === 'reviewing' && previous !== 'reviewing')
@@ -126,6 +142,12 @@ function pushEvent(store: TaskStore, projectId: string, taskId: string, event: T
   if (event.type === 'turn_started') {
     current.liveText = ''
     current.liveTokens = 0
+  }
+  // The turn's reply (or question) just landed in the journal, which renders
+  // it in full: the live bubbles hand over right here, before the status
+  // frame even arrives, so the two never show at once.
+  if (settlesLiveMessages(event.type)) {
+    current.liveMessages = []
   }
   // The review's verdict lands as a journal card: its progress lines have
   // said everything they had to say, drop them right away rather than let
@@ -174,7 +196,9 @@ function openStream(
     const envelope = parseFrame<'task_text'>(e)
     const current = store.get(taskKey(envelope.project_id, envelope.task_id))
     if (current) {
-      current.liveText = envelope.event.data.text
+      // Two channels in one frame: an indexed agent message accumulates, a
+      // bare progress line replaces the previous one.
+      applyLiveText(current, envelope.event.data)
     }
   })
   source.addEventListener('task_meta', (e) => {

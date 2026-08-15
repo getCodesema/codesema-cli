@@ -239,7 +239,16 @@ function followTail(): void {
   }
 }
 
-watch(() => [props.state.events.length, props.state.liveText.length], followTail)
+watch(
+  () => [
+    props.state.events.length,
+    props.state.liveText.length,
+    // A new bubble AND more text in the current one both grow the thread.
+    props.state.liveMessages.length,
+    props.state.liveMessages.at(-1)?.text.length ?? 0,
+  ],
+  followTail,
+)
 
 // ── Thread: interleave each turn's user prompt with its journal events ────
 // The i-th turn_started event opens record.turns[i]; the prompt renders as a
@@ -405,17 +414,19 @@ function ctxFor(event: TaskEvent): TaskEventCtx {
   }
 }
 
-// The live block covers BOTH streams: the agent writing its turn, and the
-// review reading the diff afterwards — same channel, two very different
-// things, so the block says which one is talking.
-const streaming = computed(
-  () => props.state.liveText.trim().length > 0 && streamsLiveText(record.value.status),
+// The live area covers BOTH streams of the task_text channel — two very
+// different things, so they render differently. The agent's turn is a
+// CONVERSATION: each message it streams is its own bubble and they
+// accumulate, the last one still being written (previous ones would
+// otherwise vanish the moment the agent picked up a tool). The review is a
+// status line: one sober block, replaced as it progresses.
+const liveBubbles = computed(() =>
+  record.value.status === 'running' ? props.state.liveMessages : [],
 )
-const reviewStreaming = computed(() => record.value.status === 'reviewing')
-// A review that streams nothing yet is STILL running: the block shows for the
+// A review that streams nothing yet is STILL running: its block shows for the
 // whole 'reviewing' phase (tag + elapsed), text or no text — a silent gap is
 // exactly what made the review look like it did nothing.
-const showLive = computed(() => streaming.value || reviewStreaming.value)
+const reviewStreaming = computed(() => record.value.status === 'reviewing')
 
 // ── Quick replies: enumerated options of the ACTIVE question, one click ───
 const questionActive = computed(() => record.value.status === 'waiting_for_you')
@@ -837,24 +848,38 @@ const wait = computed(() =>
             </details>
           </template>
 
-          <!-- Live stream of the turn in flight. While 'reviewing' it is the
-               review reading the diff, not the agent writing: the block wears
-               a review tag and a sober frame instead of an agent bubble. -->
-          <div v-if="showLive" class="cv-live" :class="{ 'cv-live--review': reviewStreaming }">
-            <span v-if="reviewStreaming" class="cv-live-tag">
-              {{ t('workspace.evReviewStarted') }}
-            </span>
-            <p v-if="streaming" class="cv-live-text">
+          <!-- Live stream of the agent's turn: one bubble per message it
+               streamed, in order — the history of the turn stays readable
+               while it keeps writing. Only the last bubble is in flight
+               (caret + "the agent is writing"); the settled ones step back. -->
+          <div
+            v-for="(bubble, index) in liveBubbles"
+            :key="bubble.seq"
+            class="cv-live"
+            :class="{ 'cv-live--settled': index < liveBubbles.length - 1 }"
+          >
+            <p class="cv-live-text">
+              {{ bubble.text
+              }}<span v-if="index === liveBubbles.length - 1" class="cv-caret" aria-hidden="true" />
+            </p>
+            <p v-if="index === liveBubbles.length - 1" class="cv-live-hint">
+              {{ t('workspace.agentWriting') }}
+            </p>
+          </div>
+
+          <!-- While 'reviewing' it is the review reading the diff, not the
+               agent writing: a sober frame with a tag naming what runs, and
+               a single progress line replaced as the review advances. -->
+          <div v-if="reviewStreaming" class="cv-live cv-live--review">
+            <span class="cv-live-tag">{{ t('workspace.evReviewStarted') }}</span>
+            <p v-if="state.liveText.trim().length > 0" class="cv-live-text">
               {{ state.liveText }}<span class="cv-caret" aria-hidden="true" />
             </p>
             <!-- Only the elapsed time is the REVIEW's own: the live token
                  meter belongs to the agent turn that just ended. -->
             <p class="cv-live-hint">
-              <template v-if="reviewStreaming">
-                <span class="cv-live-dot" aria-hidden="true" />{{ t('workspace.reviewRunning')
-                }}<template v-if="runningElapsed"> — {{ runningElapsed }}</template>
-              </template>
-              <template v-else>{{ t('workspace.agentWriting') }}</template>
+              <span class="cv-live-dot" aria-hidden="true" />{{ t('workspace.reviewRunning')
+              }}<template v-if="runningElapsed"> — {{ runningElapsed }}</template>
             </p>
           </div>
 
@@ -1464,6 +1489,13 @@ const wait = computed(() =>
   border-radius: 10px;
   background: var(--cs-amber-soft);
   max-width: 85%;
+}
+
+/* Messages the agent has finished: same bubble, one notch quieter — the last
+   one is the only place text is still landing. */
+.cv-live--settled {
+  background: var(--cs-surface);
+  border: 1px solid var(--cs-line-2);
 }
 
 /* The review is not the agent talking: sober panel + ring, no amber bubble,

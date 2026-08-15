@@ -183,6 +183,74 @@ export function streamsLiveText(status: TaskStatus): boolean {
 }
 
 /**
+ * One message the agent streamed during the turn in flight: `seq` is its
+ * index in the turn (the provider's own message boundaries), `text` its
+ * body so far. Volatile — nothing of this is persisted server-side.
+ */
+export type LiveMessage = { seq: number; text: string }
+
+/**
+ * Live bubbles belong to the AGENT's turn and to it alone: on any other
+ * status the turn has settled in the journal (which then renders its
+ * response), and the review streams a status line, not a conversation.
+ */
+export function keepsLiveMessages(status: TaskStatus): boolean {
+  return status === 'running'
+}
+
+/**
+ * Journal events that HAND OVER the turn's live bubbles: the reply (message)
+ * or the question the agent ended on is now a journal line rendering the full
+ * turn response, and a new turn starts from a blank slate. Dropping the
+ * bubbles right there is what keeps the hand-over free of a visual double,
+ * without waiting for the status frame that follows.
+ */
+export function settlesLiveMessages(type: TaskEventType): boolean {
+  return type === 'turn_started' || type === 'message' || type === 'question'
+}
+
+/**
+ * Inserts one streamed message, keyed by seq: the same seq REWRITES the
+ * bubble in flight (the text is cumulative within a message), a new one is
+ * appended. Blank text never opens a bubble — an assistant message made of
+ * tool calls alone says nothing. Same shape as mergeEvent: the common case
+ * (append at the tail) stays O(1), and a mid-turn reconnect that starts at
+ * seq 4 shows one bubble, not four phantoms.
+ */
+export function mergeLiveMessage(messages: LiveMessage[], message: LiveMessage): void {
+  if (message.text.trim().length === 0) {
+    return
+  }
+  const last = messages[messages.length - 1]
+  if (!last || message.seq > last.seq) {
+    messages.push(message)
+    return
+  }
+  const at = messages.findIndex((existing) => existing.seq >= message.seq)
+  if (messages[at]?.seq === message.seq) {
+    messages[at] = message
+    return
+  }
+  messages.splice(at, 0, message)
+}
+
+/** The two things a task_text frame can carry — see TaskEnvelope. */
+export type LiveTextTarget = { liveText: string; liveMessages: LiveMessage[] }
+
+/**
+ * Applies one task_text frame. A frame with a message index is a piece of the
+ * agent's conversation and accumulates; a frame without one is a progress
+ * line (the automatic review) and replaces the previous line.
+ */
+export function applyLiveText(target: LiveTextTarget, data: { text: string; seq?: number }): void {
+  if (typeof data.seq === 'number') {
+    mergeLiveMessage(target.liveMessages, { seq: data.seq, text: data.text })
+    return
+  }
+  target.liveText = data.text
+}
+
+/**
  * Thread folding: runs of tool_use/tool_result collapse into ONE block per
  * turn (the raw feed is detail, not conversation — it hides behind a
  * disclosure that shows "agent working" live, then a compact summary). Every

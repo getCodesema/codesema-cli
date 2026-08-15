@@ -622,6 +622,35 @@ describe('createTaskManager', () => {
     expect(envelopes).toHaveLength(3)
   })
 
+  test('task_text carries the message index when there is one, and nothing when there is not', () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    const record = seedTask(project.path)
+    expect(manager.interrupt(project.id, record.id)).toEqual({ ok: true })
+    const hooks = rig.runnerOptions()
+    // The agent's second message of the turn: an indexed bubble.
+    hooks.onText?.(record.id, 'second message', 1)
+    // The review's progress line: no index, it replaces the previous line.
+    hooks.onText?.(record.id, 'reading the diff')
+
+    expect(envelopes.filter((e) => e.event.name === 'task_text')).toEqual([
+      {
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task_text', data: { text: 'second message', seq: 1 } },
+      },
+      {
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task_text', data: { text: 'reading the diff' } },
+      },
+    ])
+  })
+
   test('reply and interrupt delegate to the right project runner and propagate its verdict', () => {
     const projectA = register(makeRepo())
     const projectB = register(makeRepo())

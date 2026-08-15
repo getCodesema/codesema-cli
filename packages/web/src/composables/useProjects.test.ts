@@ -123,6 +123,7 @@ function state(partial: Partial<TaskRecord> & { id: string }): TaskState {
     record: record(partial),
     events: [],
     liveText: '',
+    liveMessages: [],
     liveTokens: 0,
     checks: null,
   }

@@ -70,14 +70,24 @@ import {
 /**
  * Everything a subscriber (the SSE stream) receives. 'task' carries the full
  * record on every state change (idempotent upserts client-side), 'task_event'
- * one journal line, 'task_text' the cumulative streamed text of the current
- * turn (SSE only, never persisted — see the tasks store). project_id scopes
- * the frame to the repo the task lives in.
+ * one journal line, 'task_text' live text of the current turn (SSE only,
+ * never persisted — see the tasks store). project_id scopes the frame to the
+ * repo the task lives in.
+ *
+ * A 'task_text' frame carrying `seq` is the agent's message of that index in
+ * the running turn, cumulative within the message: the client APPENDS a new
+ * seq as a new bubble and only rewrites the one it already has. Without
+ * `seq` the frame is a bare progress line (the end-of-turn review) that
+ * replaces the previous one.
  */
 export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task'; data: TaskRecord } }
   | { project_id: string; task_id: string; event: { name: 'task_event'; data: TaskEvent } }
-  | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
+  | {
+      project_id: string
+      task_id: string
+      event: { name: 'task_text'; data: { text: string; seq?: number } }
+    }
   | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
   | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
   // PROJECT-scoped, hence no task_id: the checks setup agent proposes a
@@ -546,11 +556,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           task_id: taskId,
           event: { name: 'task_event', data: event },
         }),
-      onText: (taskId, text) =>
+      onText: (taskId, text, seq) =>
         emit({
           project_id: projectId,
           task_id: taskId,
-          event: { name: 'task_text', data: { text } },
+          // The index rides along only when there IS one: a frame without it
+          // is a progress line, and the client must not turn it into a bubble.
+          event: { name: 'task_text', data: { text, ...(seq === undefined ? {} : { seq }) } },
         }),
       onTokens: (taskId, tokens) =>
         emit({

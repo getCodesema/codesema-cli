@@ -318,6 +318,66 @@ describe('createClaudeTaskParser', () => {
     expect(parser.finalText()).toBe('final answer')
   })
 
+  test('each assistant message streams under its own index, never concatenated', () => {
+    const texts: [string, number][] = []
+    const parser = createClaudeTaskParser({ onText: (text, seq) => texts.push([text, seq]) })
+    const delta = (text: string) =>
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+      })
+    // First message: streamed, then confirmed by its complete frame (which
+    // also carries the tool call it ends on).
+    parser.push(delta('let me '))
+    parser.push(delta('look'))
+    parser.push(
+      line({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'let me look' },
+            { type: 'tool_use', name: 'Read', input: {} },
+          ],
+        },
+      }),
+    )
+    parser.push(
+      line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }),
+    )
+    // Second message: a NEW index, starting from an empty text.
+    parser.push(delta('found it'))
+    parser.push(
+      line({ type: 'assistant', message: { content: [{ type: 'text', text: 'found it' }] } }),
+    )
+    expect(texts).toEqual([
+      ['let me ', 0],
+      ['let me look', 0],
+      ['let me look', 0],
+      ['found it', 1],
+      ['found it', 1],
+    ])
+    // No result frame: the LAST message is the reply, not every message glued.
+    expect(parser.finalText()).toBe('found it')
+  })
+
+  test('a text-less assistant message only shifts the index, it opens nothing', () => {
+    const texts: [string, number][] = []
+    const parser = createClaudeTaskParser({ onText: (text, seq) => texts.push([text, seq]) })
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: {} }] },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'done' } },
+      }),
+    )
+    expect(texts).toEqual([['done', 1]])
+  })
+
   test('corrupt lines and unknown events are ignored', () => {
     const parser = createClaudeTaskParser({})
     parser.push('not json\n')

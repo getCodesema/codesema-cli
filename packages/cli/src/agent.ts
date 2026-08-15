@@ -228,8 +228,15 @@ export type ClaudeTaskParserHandlers = {
   onToolUse?: (name: string, inputSummary: string) => void
   /** Summarized tool output (bounded). */
   onToolResult?: (summary: string) => void
-  /** Cumulative streamed text, same contract as createClaudeStreamParser. */
-  onText?: (text: string) => void
+  /**
+   * Text of ONE assistant message, cumulative WITHIN that message only.
+   * `seq` is that message's index in the turn: a turn is a conversation, not
+   * one paragraph — claude splits its reply around every tool call, and each
+   * of those messages is a separate thing the agent SAID. Successive messages
+   * therefore never concatenate, and a consumer tells "more text on the
+   * current message" (same seq) from "a new message" (bigger seq).
+   */
+  onText?: (text: string, seq: number) => void
   /**
    * Cumulative LLM tokens (input+output) of the turn so far. Fired on every
    * usage-bearing frame: completed assistant messages accumulate, the final
@@ -258,7 +265,12 @@ function usageTotal(usage: unknown): number | null {
 export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): ClaudeStreamParser {
   const { onText } = handlers
   let lineBuffer = ''
-  let streamedText = ''
+  /** Index of the message currently being streamed (its bubble, client-side). */
+  let messageSeq = 0
+  /** Cumulative text of THAT message; reset at every message boundary. */
+  let messageText = ''
+  /** Last non-empty message text: the turn's reply when no result frame comes. */
+  let lastText = ''
   let resultText: string | null = null
   let tokensSettled = 0
 
@@ -270,8 +282,10 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
       .map((block) => block.text)
       .join('')
     if (text) {
-      streamedText = text
-      onText?.(streamedText)
+      // Authoritative version of what the partial deltas were building.
+      messageText = text
+      lastText = text
+      onText?.(messageText, messageSeq)
     }
     for (const block of blocks) {
       if (block.type === 'tool_use' && typeof block.name === 'string') {
@@ -283,6 +297,12 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
       tokensSettled += usage
       handlers.onTokens?.(tokensSettled)
     }
+    // A complete assistant message CLOSES the current one: whatever streams
+    // next is a new message (typically after the tool calls this one asked
+    // for). An empty message never produced text, so it only shifts the
+    // index — it can never open an empty bubble downstream.
+    messageSeq++
+    messageText = ''
   }
 
   const handleLine = (line: string) => {
@@ -311,8 +331,9 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
         inner.delta?.type === 'text_delta' &&
         inner.delta.text
       ) {
-        streamedText += inner.delta.text
-        onText?.(streamedText)
+        messageText += inner.delta.text
+        lastText = messageText
+        onText?.(messageText, messageSeq)
       }
       return
     }
@@ -359,12 +380,19 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
         handleLine(lineBuffer)
         lineBuffer = ''
       }
-      return resultText ?? (streamedText || null)
+      // Fallback for a stream cut before its result frame: the LAST message
+      // is the reply (the earlier ones were steps on the way there).
+      return resultText ?? (lastText || null)
     },
   }
 }
 
-/** Parses claude's JSONL stream: text_delta events while streaming, result at the end. */
+/**
+ * Parses claude's JSONL stream: text_delta events while streaming, result at
+ * the end. onText carries the current MESSAGE's text (see the task parser),
+ * which is exactly what a partial-JSON reader wants — the review's JSON never
+ * spans two messages.
+ */
 export function createClaudeStreamParser(onText?: (text: string) => void): ClaudeStreamParser {
   return createClaudeTaskParser(onText ? { onText } : {})
 }

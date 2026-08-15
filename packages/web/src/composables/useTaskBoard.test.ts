@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import type { TaskEvent, TaskRecord, TaskStatus } from '../types'
+import type { TaskEvent, TaskEventType, TaskRecord, TaskStatus } from '../types'
 import {
   agentCounts,
+  applyLiveText,
   clockTime,
   compareByActivity,
   eventSummary,
@@ -13,14 +14,17 @@ import {
   formatTokens,
   groupQueue,
   groupThreadEvents,
+  keepsLiveMessages,
   lastQuestion,
   matchesQuery,
   mergeEvent,
+  mergeLiveMessage,
   oldestWaiting,
   queueSectionOf,
   replyModeOf,
   reviewRefOf,
   sectionOf,
+  settlesLiveMessages,
   severityBreakdown,
   splitInlineCode,
   streamsLiveText,
@@ -28,6 +32,7 @@ import {
   titleFromPrompt,
   verdictLabelKey,
   waitingSince,
+  type LiveMessage,
 } from './useTaskBoard'
 
 function record(partial: Partial<TaskRecord>): TaskRecord {
@@ -331,6 +336,94 @@ describe('mergeEvent', () => {
     const events: TaskEvent[] = [event({ seq: 1 }), event({ seq: 3 })]
     mergeEvent(events, event({ seq: 2 }))
     expect(events.map((e) => e.seq)).toEqual([1, 2, 3])
+  })
+})
+
+describe('mergeLiveMessage', () => {
+  test('a new index appends a bubble, the same index rewrites the one in flight', () => {
+    const messages: LiveMessage[] = []
+    mergeLiveMessage(messages, { seq: 0, text: 'let me' })
+    mergeLiveMessage(messages, { seq: 0, text: 'let me look' })
+    mergeLiveMessage(messages, { seq: 1, text: 'found it' })
+    expect(messages).toEqual([
+      { seq: 0, text: 'let me look' },
+      { seq: 1, text: 'found it' },
+    ])
+  })
+
+  test('blank text never opens a bubble', () => {
+    const messages: LiveMessage[] = []
+    mergeLiveMessage(messages, { seq: 0, text: '   \n' })
+    expect(messages).toEqual([])
+  })
+
+  test('a mid-turn reconnect starting at a late index shows one bubble, not phantoms', () => {
+    const messages: LiveMessage[] = []
+    mergeLiveMessage(messages, { seq: 4, text: 'still here' })
+    expect(messages).toEqual([{ seq: 4, text: 'still here' }])
+  })
+
+  test('an out-of-order frame lands at its place', () => {
+    const messages: LiveMessage[] = [
+      { seq: 1, text: 'one' },
+      { seq: 3, text: 'three' },
+    ]
+    mergeLiveMessage(messages, { seq: 2, text: 'two' })
+    expect(messages.map((m) => m.seq)).toEqual([1, 2, 3])
+  })
+})
+
+describe('applyLiveText', () => {
+  test('an indexed frame accumulates as a message, leaving the progress line alone', () => {
+    const target = { liveText: 'reading the diff', liveMessages: [] as LiveMessage[] }
+    applyLiveText(target, { text: 'first', seq: 0 })
+    applyLiveText(target, { text: 'second', seq: 1 })
+    expect(target.liveMessages).toEqual([
+      { seq: 0, text: 'first' },
+      { seq: 1, text: 'second' },
+    ])
+    expect(target.liveText).toBe('reading the diff')
+  })
+
+  test('a frame without an index is a status line: it replaces, it never piles up', () => {
+    const target = { liveText: '', liveMessages: [] as LiveMessage[] }
+    applyLiveText(target, { text: 'reading the diff' })
+    applyLiveText(target, { text: 'writing the verdict' })
+    expect(target.liveText).toBe('writing the verdict')
+    expect(target.liveMessages).toEqual([])
+  })
+})
+
+describe('keepsLiveMessages', () => {
+  test('only the agent turn owns bubbles; the review and every settled state drop them', () => {
+    expect(keepsLiveMessages('running')).toBe(true)
+    const dropped: TaskStatus[] = [
+      'queued',
+      'reviewing',
+      'waiting_for_you',
+      'review_ok',
+      'review_ko',
+      'shipped',
+      'failed',
+      'interrupted',
+    ]
+    for (const status of dropped) {
+      expect(keepsLiveMessages(status)).toBe(false)
+    }
+  })
+})
+
+describe('settlesLiveMessages', () => {
+  test('the turn reply, its question and a new turn hand the bubbles over', () => {
+    for (const type of ['turn_started', 'message', 'question'] as TaskEventType[]) {
+      expect(settlesLiveMessages(type)).toBe(true)
+    }
+  })
+
+  test('everything else leaves the live bubbles alone', () => {
+    for (const type of ['tool_use', 'tool_result', 'commit', 'checks'] as TaskEventType[]) {
+      expect(settlesLiveMessages(type)).toBe(false)
+    }
   })
 })
 

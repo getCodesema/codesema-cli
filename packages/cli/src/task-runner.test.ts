@@ -282,6 +282,69 @@ describe('runTaskTurn', () => {
     expect(fake.commands[0]).toContain('--session-id')
   })
 
+  test('streamed text is reported per agent message, each under its own index', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const texts: [string, number][] = []
+    // Two things said around one tool call: two messages, two bubbles.
+    const raw = jsonl([
+      { type: 'system', subtype: 'init', session_id: 'sess-123' },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'reading the file' },
+            { type: 'tool_use', name: 'Read', input: { file_path: 'a.txt' } },
+          ],
+        },
+      },
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'all done' }] } },
+      { type: 'result', result: 'all done' },
+    ])
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      onText: (text, seq) => texts.push([text, seq]),
+      runAgentFn: (options) => {
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    expect(texts).toEqual([
+      ['reading the file', 0],
+      ['all done', 1],
+    ])
+  })
+
+  test('a provider without stream-json streams everything as message 0', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const texts: [string, number][] = []
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'my-agent --run',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      onText: (text, seq) => texts.push([text, seq]),
+      runAgentFn: (options) => {
+        options.onText?.('half')
+        options.onText?.('half a reply')
+        return Promise.resolve('half a reply')
+      },
+    })
+    expect(texts).toEqual([
+      ['half', 0],
+      ['half a reply', 0],
+    ])
+  })
+
   test('a QUESTION last line turns the outcome into a question', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'demo', 'do the thing')

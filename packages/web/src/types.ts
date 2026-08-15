@@ -328,7 +328,15 @@ export type TaskChecks = {
 export type TaskEnvelope =
   | { project_id: string; task_id: string; event: { name: 'task'; data: TaskRecord } }
   | { project_id: string; task_id: string; event: { name: 'task_event'; data: TaskEvent } }
-  | { project_id: string; task_id: string; event: { name: 'task_text'; data: { text: string } } }
+  // 'task_text' with a `seq` is the agent's message of that index in the
+  // running turn (cumulative within the message: a new seq is a new bubble,
+  // the same seq rewrites the one in flight). Without `seq` it is a bare
+  // progress line — the end-of-turn review — replacing the previous one.
+  | {
+      project_id: string
+      task_id: string
+      event: { name: 'task_text'; data: { text: string; seq?: number } }
+    }
   | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
   | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
   // Agent-assisted checks setup: PROJECT-scoped, no task_id — the proposal
