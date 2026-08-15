@@ -31,15 +31,23 @@ Re-running on the same branch reviews **incrementally**: the agent gets the prev
 
 ## Workspace
 
-`codesema` (or `codesema workspace`) opens a **local agentic workspace**: a web UI where you hand tasks to your AI agent in natural language. Each task lives in its own conversation and works in an isolated git worktree (`.codesema/worktrees/<task-id>/`) on its own branch (`codesema/task-<slug>`), so several tasks run in parallel without touching your checkout. The agent never commits: the runner commits the worktree at the end of each turn.
+`codesema` (or `codesema workspace`) opens a **local agentic workspace**: a web UI where you hand tasks to your AI agent in natural language. Each task is a conversation that **owns a git branch** and works in its own worktree (`.codesema/worktrees/<task-id>/`), so several tasks run in parallel without touching your checkout. The agent never commits: the runner commits the worktree at the end of each turn.
 
-**One workspace drives several repos.** Launched from inside a git repository, that repo is auto-registered as a project and becomes the current one; launched from anywhere else, the workspace opens on the projects you already registered (add more from the UI, by path). The registry is a small global file (`~/.config/codesema/projects.json`) mapping stable ids to repo roots — each repo keeps its own tasks and worktrees under its own `.codesema/`, so removing a project only unregisters it and never touches the repo. The concurrency cap is **global**: 3 running tasks at a time by default across all projects (`maxParallelTasks` in the config), extra ones queue FIFO.
+**Fork, or work on.** A conversation either **forks** a fresh branch (`codesema/task-<slug>`) from a base — the default — or **works on** an existing branch directly, keeping its name and its history. `origin/x` and `x` are the same branch (a remote-only branch gets a local tracking head), and a branch can only be owned by one active conversation at a time: starting a second one on it opens the existing conversation instead. Abandoning a conversation removes its worktree and deletes the branch only when it forked it — a branch you asked it to work on is never deleted.
+
+**One workspace drives several repos.** Launched from inside a git repository, that repo is auto-registered as a project and becomes the current one; launched from anywhere else, the workspace opens on the projects you already registered (add more from the UI, by path, or pick one of the repos it finds next to your launch directory). The registry is a small global file (`~/.config/codesema/projects.json`) mapping stable ids to repo roots — each repo keeps its own tasks and worktrees under its own `.codesema/`, so removing a project only unregisters it and never touches the repo. The concurrency cap is **global**: 3 running tasks at a time by default across all projects (`maxParallelTasks` in the config), extra ones queue FIFO.
+
+**The UI is a work queue, not a dashboard.** The sidebar is a tree, per project, of the open merge requests (via `gh`/`glab`) and the active branches, with the conversations working on them nested underneath — derived `codesema/task-*` branches stay out of it, since the conversation already carries them. The middle column groups every conversation into **Needs you**, **In progress**, **Ready to ship** and a **Done** pile; the right side is a focus deck of up to **3** conversations side by side, pinnable (📌) so opening a new one replaces the loose column instead of the ones you kept. Each conversation has **Conversation**, **Diff** and **Checks** tabs, quick-reply buttons extracted from the agent's own question, and a reply field that parks your message while the agent runs and sends it the moment the turn ends.
 
 A task moves through explicit statuses: `queued` → `running`, then `waiting_for_you` when the agent ends its turn on a question (reply to start the next turn), or — when a turn finishes with changes — `reviewing`: every finished turn passes an **automatic local review** (the same review engine as `codesema review`, on the task's branch) before anything leaves your machine, landing on `review_ok` or `review_ko`. **Ship** then pushes the branch and opens the MR via `gh`/`glab` (status `shipped`); per-task **auto-ship** chains it without a click on a green review. `failed` and `interrupted` round out the lifecycle: an interrupted task (Ctrl-C, crash) keeps its worktree and session, and resumes when you reply to it.
 
+**Checks run in a sandbox.** Alongside the review, every turn that commits runs the repo's typecheck, tests and lint in an ephemeral `docker`/`podman` container mounted on the task's worktree, with `--network none` and cpu/memory caps. The plan comes from your `checks` key in `.codesema/config.json` if you wrote one, otherwise from what the repo already declares — lefthook's `pre-push`/`pre-commit` hooks or its CI workflow jobs, filtered through a strict command allowlist — otherwise from the lockfile and the `typecheck`/`test`/`lint` scripts of `package.json`. If none of that fits, the Checks tab can ask your agent to _propose_ a configuration: it runs read-only on files codesema hands it, its JSON answer is sanitized, and nothing is written until you click Apply. Checks never block a task; they are a second opinion next to the review, visible in the tab and on the ready-to-ship card.
+
+**Each task can run in its own container.** With `docker` or `podman` installed, the workspace cages every task by default: the turn runs inside a container built from your `.devcontainer` (or `node:22`), with the worktree as its only host mount, its own `$HOME` volume so the agent session survives across turns, and an internal network whose only exit is a proxy allowing the agent's own API domains. Inside that box the agent keeps its full tool set — the container is the boundary, not a permission prompt. Commits stay on the host, so your git credentials never enter it, and the review and the checks remain independent counter-verification. The mode is decided once at startup and printed: `isolation` set to `container` makes the cage mandatory (a task refuses to start without it), `policy` always runs on your machine with the host hardening, and `auto` (the default) falls back to `policy` while telling you why. Only `claude` is caged today; the allowed domains are yours to change with `isolationAllowedDomains`.
+
 There are no named agent roles: every task gets the same anonymous dev agent with a neutral prompt — you define your workflow in the tasks you write, the tool stays out of the way.
 
-Tasks live as long as the process runs (no detached daemon). The first Ctrl-C shuts down cleanly — agents stopped, tasks persisted as `interrupted`, worktrees kept for resume — and a second one force-quits. Task state (record + append-only event journal) is stored under `.codesema/tasks/<id>/` of the task's repo.
+Tasks live as long as the process runs (no detached daemon). The first Ctrl-C shuts down cleanly — agents stopped, tasks persisted as `interrupted`, worktrees kept for resume — and a second one force-quits. Task state (record, append-only event journal, latest checks run) is stored under `.codesema/tasks/<id>/` of the task's repo.
 
 ## Dual review
 
@@ -70,11 +78,14 @@ Before uploading, sync scans the diff for anything that looks like a committed s
 
 The review subprocess is locked down. The prompt already contains everything the agent needs (branch names, commit subjects, changed files, the diff), so `codesema review` runs the known agent CLIs with their tools switched off: `claude` gets `--tools "" --strict-mcp-config --setting-sources user` (no tools, no MCP servers, the repo's own `.claude/` settings ignored) and `codex` gets `--sandbox read-only --ask-for-approval never` with `AGENTS.md` loading disabled. Known agents also receive a minimal environment — `PATH`, `HOME`, locale, proxy settings and the provider's own variables — so your other credentials and tokens never reach the subprocess. Flags you set yourself and custom agent commands are left untouched, and "Run fixes" intentionally keeps the edit tools it needs.
 
+Workspace tasks are the opposite case — they exist to edit code — so they are contained instead: in a container when one is available, and otherwise on the host with `--strict-mcp-config --setting-sources user`, so a turn that writes a `.claude/settings.json` or `.mcp.json` into its own worktree cannot have it loaded by the next turn. A custom agent command gets none of this and says so at startup.
+
 ## Requirements
 
 - Node.js ≥ 20 and `git`
 - An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI) and `gemini` (Google) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'` (e.g. `--agent 'opencode run "$(cat)"'`)
-- Optional: `glab` or `gh` on the PATH, to auto-detect the target branch from the open MR/PR
+- Optional: `glab` or `gh` on the PATH, to auto-detect the target branch from the open MR/PR (and to list MRs and ship from the workspace)
+- Optional: `docker` or `podman`, for the workspace's sandboxed checks and per-task container isolation (without one, checks report they cannot run and tasks fall back to the host hardening)
 
 ## Configuration
 
@@ -90,6 +101,17 @@ Interactive: language → agent → model → effort, then where to save. Two le
 | Repo   | `.codesema/config.json`          | Team/project override, wins over global |
 
 CLI flags always win over both. `target`, `port`, `timeout` and `language` can also be set in either file.
+
+### Workspace keys
+
+| Key                       | File           | Effect                                                                                                                |
+| ------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `maxParallelTasks`        | global or repo | Tasks running at once, **across all projects** (default `3`); the rest queue FIFO.                                    |
+| `isolation`               | global or repo | `auto` (default), `container` (required, a task refuses to start without it) or `policy` (always run on the host).    |
+| `isolationAllowedDomains` | global or repo | Domains the caged agent may reach (default `api.anthropic.com`, `platform.claude.com`); max 32, plain hostnames only. |
+| `checks`                  | repo only      | `{ image, install, commands, network, timeoutSeconds }` — replaces the automatic detection of the sandboxed checks.   |
+
+`isolation` and `checks` are repo-settable on purpose: the container and the checks are properties of the project, and a repo can only narrow what the agent reaches, never widen its rights on your machine. Sync fields stay global-only.
 
 ### Language
 
@@ -163,13 +185,15 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 | `~/.config/codesema/config.json`    | Global config (language, agent, model, effort, sync credentials), mode `0600`. |
 | `~/.config/codesema/projects.json`  | Global registry of workspace projects (id → git repo root).                    |
 | `~/.config/codesema/workspace.lock` | Guards against two workspace processes on the same machine.                    |
-| `.codesema/config.json`             | Repo config, overrides the global one.                                         |
+| `.codesema/config.json`             | Repo config, overrides the global one (also holds `checks`).                   |
 | `.codesema/input.json`              | The prepared MR diff handed to the agent (`prep`).                             |
 | `.codesema/review.json`             | The latest review written by the agent.                                        |
 | `.codesema/reviews/`                | Archived reviews (5 kept per branch, used for incremental re-review).          |
 | `.codesema/PROMPT.md`               | Your team's extra review instructions, merged into the prompt.                 |
 | `.codesema/RULES.md`                | Your team's review rules (one `[Cn]` grid line each), hunted first.            |
-| `.codesema/tasks/<id>/`             | Workspace task records and their append-only event journals.                   |
+| `.codesema/tasks/<id>/task.json`    | One workspace task record (status, branch, turns, isolation mode).             |
+| `.codesema/tasks/<id>/events.jsonl` | That task's append-only event journal (one JSON line per event).               |
+| `.codesema/tasks/<id>/checks.json`  | That task's latest sandboxed checks run (per-command status and output tail).  |
 | `.codesema/worktrees/<id>/`         | One isolated git worktree per workspace task.                                  |
 | `.codesema-ignore`                  | Glob patterns excluded from the diff.                                          |
 
