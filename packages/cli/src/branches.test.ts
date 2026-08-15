@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -22,7 +22,9 @@ function commitFile(name: string, content: string, msg: string) {
 }
 
 beforeAll(() => {
-  repo = mkdtempSync(join(tmpdir(), 'codesema-branches-test-'))
+  // realpathSync: on macOS os.tmpdir() is a symlink (/var/folders → /private/var)
+  // that git resolves, so raw mkdtemp paths never equal git's own output.
+  repo = realpathSync(mkdtempSync(join(tmpdir(), 'codesema-branches-test-')))
   run(['init', '-b', 'main'])
   commitFile('base.txt', 'a\n', 'init: base')
   run(['checkout', '-b', 'feature/a'])
@@ -31,7 +33,7 @@ beforeAll(() => {
   commitFile('b.txt', 'b\n', 'feat: b')
   run(['checkout', 'main'])
 
-  otherWorktree = mkdtempSync(join(tmpdir(), 'codesema-branches-test-wt-'))
+  otherWorktree = realpathSync(mkdtempSync(join(tmpdir(), 'codesema-branches-test-wt-')))
   run(['worktree', 'add', otherWorktree, 'feature/b'])
 })
 
