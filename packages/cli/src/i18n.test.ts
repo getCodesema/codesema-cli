@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { isSupportedLanguage, reviewLanguage, setLanguage, t, uiLocale } from './i18n.js'
+import { CATALOGS, isSupportedLanguage, reviewLanguage, setLanguage, t, uiLocale } from './i18n.js'
 
 afterEach(() => setLanguage(null))
+
+describe('catalog parity', () => {
+  test('every catalog defines exactly the keys of the English one', () => {
+    const enKeys = Object.keys(CATALOGS.en).toSorted()
+    for (const catalog of Object.values(CATALOGS)) {
+      expect(Object.keys(catalog).toSorted()).toEqual(enKeys)
+    }
+  })
+})
 
 describe('t', () => {
   test('interpolates params', () => {

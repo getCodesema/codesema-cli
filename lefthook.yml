@@ -1,5 +1,7 @@
 pre-commit:
   commands:
+    secrets:
+      run: gitleaks protect --staged --redact
     format:
       glob: '*'
       run: bunx prettier --write --ignore-unknown {staged_files}

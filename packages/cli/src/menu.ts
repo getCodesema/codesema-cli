@@ -6,11 +6,13 @@ import { show } from './show.js'
 import { linkCommand, loadSyncCredentials, syncCommand } from './sync.js'
 import { select } from './tui.js'
 import { configCommand } from './wizard.js'
+import { workspace } from './workspace.js'
 
-export type MenuItemId = 'review' | 'dualReview' | 'show' | 'cloud' | 'config' | 'quit'
+export type MenuItemId =
+  'workspace' | 'review' | 'dualReview' | 'show' | 'cloud' | 'config' | 'quit'
 export type CloudItemId = 'sync' | 'link' | 'syncDelete' | 'back'
 export type MenuActionId =
-  'review' | 'dualReview' | 'show' | 'sync' | 'link' | 'syncDelete' | 'config'
+  'workspace' | 'review' | 'dualReview' | 'show' | 'sync' | 'link' | 'syncDelete' | 'config'
 
 export type MenuItem<Id extends string> = {
   id: Id
@@ -27,6 +29,16 @@ export function buildMenuItems(context: MenuContext): MenuItem<MenuItemId>[] {
   // Repo-scoped actions stay visible outside a repo (hiding the product's main
   // action reads as a regression); the hint says where to run them instead.
   return [
+    // Headline entry: the workspace IS the product (plan decision n°7) — a
+    // bare interactive `codesema` opens it directly, this menu is reached via
+    // `codesema menu`.
+    {
+      // Multi-project: the workspace opens anywhere (a repo auto-registers as
+      // a project, elsewhere it opens on the registry), so never repo-gated.
+      id: 'workspace',
+      label: t('menu.workspace'),
+      hint: t('menu.workspaceHint'),
+    },
     {
       id: 'review',
       label: t('menu.review'),
@@ -105,6 +117,7 @@ function currentContext(cwd: string): MenuContext {
 
 function buildActions(cwd: string): MenuActions {
   return {
+    workspace: () => workspace({ open: true, cwd }),
     review: () => review({ open: true, cwd }),
     dualReview: () => review({ open: true, cwd, dual: true }),
     show: () =>

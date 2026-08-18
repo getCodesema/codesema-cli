@@ -7,6 +7,42 @@ export type LocalBranch = {
   lastCommitRelative: string
   subject: string
   isCurrent: boolean
+  /** Path of the worktree this branch is checked out in (the main worktree counts), null otherwise. */
+  worktreePath: string | null
+}
+
+export type GitWorktree = { path: string; branch: string | null }
+
+/** Parses `git worktree list --porcelain`: paragraphs separated by a blank line, one `worktree <path>` and an
+ *  optional `branch refs/heads/<name>` line each (absent when detached). */
+export function listWorktrees(cwd: string): GitWorktree[] {
+  const out = tryGit(['worktree', 'list', '--porcelain'], cwd)
+  if (!out) {
+    return []
+  }
+
+  const worktrees: GitWorktree[] = []
+  let path: string | null = null
+  let branch: string | null = null
+  const flush = () => {
+    if (path) {
+      worktrees.push({ path, branch })
+    }
+    path = null
+    branch = null
+  }
+  for (const line of out.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      flush()
+      path = line.slice('worktree '.length)
+    } else if (line.startsWith('branch ')) {
+      branch = line.slice('branch '.length).replace(/^refs\/heads\//, '')
+    } else if (line === '') {
+      flush()
+    }
+  }
+  flush()
+  return worktrees
 }
 
 export function listLocalBranches(cwd: string): LocalBranch[] {
@@ -23,6 +59,12 @@ export function listLocalBranches(cwd: string): LocalBranch[] {
     return []
   }
   const current = tryGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
+  const worktreeByBranch = new Map<string, string>()
+  for (const wt of listWorktrees(cwd)) {
+    if (wt.branch) {
+      worktreeByBranch.set(wt.branch, wt.path)
+    }
+  }
   return out
     .split('\n')
     .filter(Boolean)
@@ -33,6 +75,7 @@ export function listLocalBranches(cwd: string): LocalBranch[] {
         lastCommitRelative,
         subject: subjectParts.join('\t'),
         isCurrent: name === current,
+        worktreePath: worktreeByBranch.get(name) ?? null,
       }
     })
     .filter((b) => b.name)

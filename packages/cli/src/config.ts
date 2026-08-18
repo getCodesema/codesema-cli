@@ -13,6 +13,18 @@ export type CodesemaConfig = {
   target?: string | undefined
   port?: number | undefined
   timeout?: number | undefined
+  /** Cap of concurrently running workspace tasks (default in task-runner.ts). */
+  maxParallelTasks?: number | undefined
+  /**
+   * How workspace tasks are contained. 'auto' (default) runs them in a
+   * per-task container when a container runtime is available and the agent
+   * image builds, and falls back to the host policy hardening otherwise;
+   * 'container' requires the cage (task creation 409s without it); 'policy'
+   * always runs on the host.
+   */
+  isolation?: IsolationMode | undefined
+  /** Domains the caged agent may reach through the egress proxy (CONNECT only). */
+  isolationAllowedDomains?: string[] | undefined
   /** UI and review language (ISO 639-1). */
   language?: SupportedLanguage | undefined
   /** Cloud sync (codesema.com): base URL override and workspace credentials. */
@@ -21,6 +33,51 @@ export type CodesemaConfig = {
   syncSecret?: string | undefined
   /** Explicit opt-in for pushing every completed review; credentials alone never auto-push. */
   syncAutoPush?: boolean | undefined
+}
+
+/** Configured isolation policy for workspace tasks (see CodesemaConfig.isolation). */
+export type IsolationMode = 'auto' | 'container' | 'policy'
+
+const ISOLATION_MODES: ReadonlySet<string> = new Set(['auto', 'container', 'policy'])
+
+export function isIsolationMode(value: unknown): value is IsolationMode {
+  return typeof value === 'string' && ISOLATION_MODES.has(value)
+}
+
+/** Enough for a handful of provider endpoints; a longer list is a proxy, not an allowlist. */
+const ALLOWED_DOMAINS_MAX = 32
+const ALLOWED_DOMAIN_MAX_CHARS = 253
+
+/**
+ * A domain goes verbatim into the generated squid allowlist: only plain
+ * hostnames survive (letters, digits, dots, dashes), everything else is
+ * dropped rather than escaped. An empty result means "no override", not "deny
+ * everything" — the isolation defaults apply.
+ */
+export function sanitizeAllowedDomains(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+  const domains: string[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'string') {
+      continue
+    }
+    const domain = entry.trim().toLowerCase()
+    if (
+      !domain ||
+      domain.length > ALLOWED_DOMAIN_MAX_CHARS ||
+      !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(domain) ||
+      domains.includes(domain)
+    ) {
+      continue
+    }
+    domains.push(domain)
+    if (domains.length >= ALLOWED_DOMAINS_MAX) {
+      break
+    }
+  }
+  return domains.length > 0 ? domains : undefined
 }
 
 type ConfigScope = 'global' | 'repo'
@@ -32,6 +89,7 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+    const allowedDomains = sanitizeAllowedDomains(raw.isolationAllowedDomains)
     return {
       ...(str(raw.agent) ? { agent: str(raw.agent) } : {}),
       ...(str(raw.agentId) ? { agentId: str(raw.agentId) } : {}),
@@ -51,6 +109,15 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
         : {}),
       ...(Number.isInteger(raw.port) ? { port: raw.port as number } : {}),
       ...(Number.isInteger(raw.timeout) ? { timeout: raw.timeout as number } : {}),
+      ...(Number.isInteger(raw.maxParallelTasks) && (raw.maxParallelTasks as number) >= 1
+        ? { maxParallelTasks: raw.maxParallelTasks as number }
+        : {}),
+      // Repo-settable on purpose: like `checks`, the cage is a property of the
+      // project (its devcontainer, the endpoints its agent needs), and a repo
+      // can only ever narrow what the agent reaches — never widen its host
+      // rights, since the host path is the policy fallback either way.
+      ...(isIsolationMode(raw.isolation) ? { isolation: raw.isolation } : {}),
+      ...(allowedDomains !== undefined ? { isolationAllowedDomains: allowedDomains } : {}),
     }
   } catch {
     return {}

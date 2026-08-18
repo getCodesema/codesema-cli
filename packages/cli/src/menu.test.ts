@@ -17,6 +17,7 @@ describe('buildMenuItems', () => {
       for (const inRepo of [true, false]) {
         const items = buildMenuItems({ hasSyncCredentials, inRepo })
         expect(items.map((item) => item.id)).toEqual([
+          'workspace',
           'review',
           'dualReview',
           'show',
@@ -33,6 +34,8 @@ describe('buildMenuItems', () => {
     for (const id of ['review', 'dualReview', 'show'] as const) {
       expect(items.find((item) => item.id === id)?.hint).toBe(t('menu.needRepo'))
     }
+    // The multi-project workspace opens anywhere: never repo-gated.
+    expect(items.find((item) => item.id === 'workspace')?.hint).toBe(t('menu.workspaceHint'))
   })
 
   test('the cloud hint reflects whether a workspace exists', () => {
@@ -117,6 +120,9 @@ describe('dispatchMenuAction', () => {
   function spyActions(): { actions: MenuActions; calls: MenuActionId[] } {
     const calls: MenuActionId[] = []
     const actions: MenuActions = {
+      workspace: async () => {
+        calls.push('workspace')
+      },
       review: async () => {
         calls.push('review')
       },
@@ -144,6 +150,7 @@ describe('dispatchMenuAction', () => {
 
   test('routes each id to its matching action and none other', async () => {
     const ids: MenuActionId[] = [
+      'workspace',
       'review',
       'dualReview',
       'show',

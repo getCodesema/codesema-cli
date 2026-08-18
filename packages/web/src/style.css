@@ -1,5 +1,25 @@
+/* Vendored fonts (no CDN at runtime): latin variable subsets, served from
+   /fonts by the CLI. One woff2 per family covers every weight we use. */
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/instrument-sans-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-latin.woff2') format('woff2');
+}
+
 /* "Semaphore" light theme: single light mode, token values from DESIGN.md.
-   The green/amber/red trio is semantic (pass/check/block), never decorative. */
+   The green/amber/red trio is semantic (pass/check/block), never decorative.
+   Only the standalone review UI consumes these directly; the workspace remaps
+   them onto the dark --cs-* system below (see .ws-root). */
 :root {
   --codesema-bg: #faf1ea;
   --codesema-panel: #fffdfb;
@@ -44,9 +64,11 @@
   --codesema-diff-del: #fae7e5;
   --codesema-diff-del-gut: #e7d2cf;
 
-  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --font-display: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans:
+    'Instrument Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display:
+    'Instrument Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * {
@@ -66,6 +88,124 @@ body {
 
 .codesema-muted {
   color: var(--codesema-ink-3);
+}
+
+/* ── Workspace tokens (--cs-*) ────────────────────────────────────────────
+   Transcribed from the T4 maquette: ONE dark theme, no prefers-color-scheme.
+   Doctrine: neutral borders by default — COLOR IS A STATE. Amber = the human
+   is needed (glow reserved for live dots), green = ready/ok, red = failure,
+   :focus-visible on every interactive element. Only the workspace consumes
+   these; the standalone review UI keeps the light --codesema-* palette. */
+:root {
+  /* Grounds */
+  --cs-bg: #0a0d10;
+  --cs-panel: #0e1216;
+  --cs-panel-deep: #0c0f13;
+  --cs-surface: #12181e;
+  --cs-surface-2: #141a20;
+  --cs-inset: #0b0f13;
+  /* Conversation header ground (maquette), between panel and surface */
+  --cs-head: #10161c;
+  /* Lines: neutral by default; -3 is the hover/relief step */
+  --cs-line: #1d252e;
+  --cs-line-2: #222c36;
+  --cs-line-3: #26303a;
+  /* Text */
+  --cs-text: #e8edf2;
+  --cs-text-2: #aeb9c4;
+  --cs-muted: #8a97a4;
+  --cs-ghost: #5c6975;
+  /* Green: go / ready to ship */
+  --cs-green: #46b17b;
+  --cs-green-hover: #5fcd94;
+  --cs-green-text: #5fcd94;
+  --cs-on-green: #06110b;
+  --cs-green-soft: rgba(70, 177, 123, 0.12);
+  --cs-green-ring: #2b5a41;
+  /* Amber: attention / the agent needs the human */
+  --cs-amber: #d9a441;
+  --cs-amber-text: #e8c46a;
+  --cs-amber-soft: #2a2113;
+  --cs-amber-card: #1a1610;
+  --cs-amber-line: #5a4a23;
+  --cs-amber-glow: 0 0 6px #d9a44188;
+  /* Red, discreet: danger / failure */
+  --cs-red: #d96459;
+  --cs-red-text: #c96a5a;
+  --cs-red-soft: rgba(217, 100, 89, 0.12);
+  --cs-red-line: #3a2a26;
+  /* Focus ring stays blue so keyboard focus is never mistaken for a state */
+  --cs-blue: #5b9dd9;
+  --cs-focus-ring: #5b9dd9;
+  --cs-dot-idle: #3d454e;
+  --cs-hover: rgba(255, 255, 255, 0.04);
+  --cs-active: rgba(255, 255, 255, 0.07);
+  --cs-diff-add: rgba(70, 177, 123, 0.1);
+  --cs-diff-add-gut: rgba(70, 177, 123, 0.18);
+  --cs-diff-del: rgba(217, 100, 89, 0.1);
+  --cs-diff-del-gut: rgba(217, 100, 89, 0.18);
+  --cs-shadow-panel: 0 10px 30px -16px rgba(0, 0, 0, 0.45);
+  --cs-shadow-card: 0 10px 24px -18px rgba(0, 0, 0, 0.55);
+}
+
+/* Inside the workspace, remap the legacy --codesema-* palette onto the cs
+   tokens so reused components (PreviewPanel, DiffView, ReviewShell) follow
+   the dark theme without being touched. Standalone review mode has no
+   .ws-root ancestor and keeps its light palette exactly as before. */
+.ws-root {
+  --codesema-bg: var(--cs-bg);
+  --codesema-panel: var(--cs-surface);
+  --codesema-ink: var(--cs-text);
+  --codesema-ink-2: var(--cs-text-2);
+  --codesema-ink-3: var(--cs-muted);
+  --codesema-line: var(--cs-line);
+  --codesema-line-2: var(--cs-line-2);
+  --codesema-accent: var(--cs-green);
+  --codesema-accent-soft: var(--cs-green-soft);
+  --codesema-amber: var(--cs-amber);
+  --codesema-amber-soft: var(--cs-amber-soft);
+  --codesema-risk-high: var(--cs-red-text);
+  --codesema-risk-high-soft: var(--cs-red-soft);
+  --codesema-risk-med: var(--cs-amber-text);
+  --codesema-risk-med-soft: var(--cs-amber-soft);
+  --codesema-risk-low: var(--cs-green-text);
+  --codesema-risk-low-soft: var(--cs-green-soft);
+  --codesema-signal-go: var(--cs-green);
+  --codesema-signal-check: var(--cs-amber);
+  --codesema-signal-stop: var(--cs-red);
+  --codesema-dot-idle: var(--cs-dot-idle);
+  --codesema-line-idle: var(--cs-line-2);
+  --codesema-diff-add: var(--cs-diff-add);
+  --codesema-diff-add-gut: var(--cs-diff-add-gut);
+  --codesema-diff-del: var(--cs-diff-del);
+  --codesema-diff-del-gut: var(--cs-diff-del-gut);
+}
+
+/* Non-negotiable rule: every interactive element shows a keyboard focus
+   ring. Scoped to the workspace so the review UI is left as-is. */
+.ws-root :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--cs-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Dark thin scrollbars inside the workspace (the global ones stay warm for
+   the standalone review UI below). */
+.ws-root *::-webkit-scrollbar-thumb {
+  background: var(--cs-line-2);
+}
+.ws-root *::-webkit-scrollbar-thumb:hover {
+  background: var(--cs-line-3);
+}
+
+/* Sobriety rule: the amber pulse of live dots stops for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .ws-root *,
+  .ws-root *::before,
+  .ws-root *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Thin warm scrollbars (DESIGN.md section 4) */

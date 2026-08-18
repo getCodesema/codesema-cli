@@ -3,7 +3,10 @@ import {
   agentEnv,
   claudeStreamCommand,
   createClaudeStreamParser,
+  createClaudeTaskParser,
   hardenedReviewCommand,
+  runAgent,
+  TASK_TOOL_SUMMARY_MAX,
 } from './agent.js'
 
 describe('claudeStreamCommand', () => {
@@ -215,5 +218,219 @@ describe('createClaudeStreamParser', () => {
       `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'full text' }] } })}\n`,
     )
     expect(parser.finalText()).toBe('full text')
+  })
+})
+
+describe('createClaudeTaskParser', () => {
+  const line = (event: unknown) => `${JSON.stringify(event)}\n`
+
+  test('captures the session id from the system init event', () => {
+    let sessionId = ''
+    const parser = createClaudeTaskParser({
+      onInit: (id) => {
+        sessionId = id
+      },
+    })
+    parser.push(line({ type: 'system', subtype: 'init', session_id: 'sess-abc' }))
+    expect(sessionId).toBe('sess-abc')
+  })
+
+  test('reports tool_use with a summarized input, once per complete message', () => {
+    const calls: [string, string][] = []
+    const parser = createClaudeTaskParser({
+      onToolUse: (name, input) => calls.push([name, input]),
+    })
+    parser.push(
+      line({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Bash', input: { command: 'bun test' } },
+            { type: 'text', text: 'running the tests' },
+          ],
+        },
+      }),
+    )
+    expect(calls).toEqual([['Bash', '{"command":"bun test"}']])
+  })
+
+  test('tool inputs and results are truncated to the summary ceiling', () => {
+    const inputs: string[] = []
+    const results: string[] = []
+    const parser = createClaudeTaskParser({
+      onToolUse: (_name, input) => inputs.push(input),
+      onToolResult: (summary) => results.push(summary),
+    })
+    const big = 'x'.repeat(5000)
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Write', input: { content: big } }] },
+      }),
+    )
+    parser.push(
+      line({ type: 'user', message: { content: [{ type: 'tool_result', content: big }] } }),
+    )
+    expect(inputs[0]?.length).toBeLessThanOrEqual(TASK_TOOL_SUMMARY_MAX)
+    expect(inputs[0]?.endsWith('…')).toBe(true)
+    expect(results[0]?.length).toBeLessThanOrEqual(TASK_TOOL_SUMMARY_MAX)
+  })
+
+  test('tool_result content given as text blocks is flattened', () => {
+    const results: string[] = []
+    const parser = createClaudeTaskParser({ onToolResult: (summary) => results.push(summary) })
+    parser.push(
+      line({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              content: [
+                { type: 'text', text: 'line one ' },
+                { type: 'text', text: 'line two' },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+    expect(results).toEqual(['line one line two'])
+  })
+
+  test('text streaming and the final result behave like the review parser', () => {
+    const texts: string[] = []
+    const parser = createClaudeTaskParser({ onText: (text) => texts.push(text) })
+    parser.push(
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hel' } },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'lo' } },
+      }),
+    )
+    parser.push(line({ type: 'result', result: 'final answer' }))
+    expect(texts).toEqual(['hel', 'hello'])
+    expect(parser.finalText()).toBe('final answer')
+  })
+
+  test('each assistant message streams under its own index, never concatenated', () => {
+    const texts: [string, number][] = []
+    const parser = createClaudeTaskParser({ onText: (text, seq) => texts.push([text, seq]) })
+    const delta = (text: string) =>
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+      })
+    // First message: streamed, then confirmed by its complete frame (which
+    // also carries the tool call it ends on).
+    parser.push(delta('let me '))
+    parser.push(delta('look'))
+    parser.push(
+      line({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'let me look' },
+            { type: 'tool_use', name: 'Read', input: {} },
+          ],
+        },
+      }),
+    )
+    parser.push(
+      line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }),
+    )
+    // Second message: a NEW index, starting from an empty text.
+    parser.push(delta('found it'))
+    parser.push(
+      line({ type: 'assistant', message: { content: [{ type: 'text', text: 'found it' }] } }),
+    )
+    expect(texts).toEqual([
+      ['let me ', 0],
+      ['let me look', 0],
+      ['let me look', 0],
+      ['found it', 1],
+      ['found it', 1],
+    ])
+    // No result frame: the LAST message is the reply, not every message glued.
+    expect(parser.finalText()).toBe('found it')
+  })
+
+  test('a text-less assistant message only shifts the index, it opens nothing', () => {
+    const texts: [string, number][] = []
+    const parser = createClaudeTaskParser({ onText: (text, seq) => texts.push([text, seq]) })
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: {} }] },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'done' } },
+      }),
+    )
+    expect(texts).toEqual([['done', 1]])
+  })
+
+  test('corrupt lines and unknown events are ignored', () => {
+    const parser = createClaudeTaskParser({})
+    parser.push('not json\n')
+    parser.push(line({ type: 'system', subtype: 'other' }))
+    parser.push(line({ type: 'user', message: { content: 'plain string content' } }))
+    expect(parser.finalText()).toBeNull()
+  })
+})
+
+describe('runAgent abort', () => {
+  test('aborting the signal kills the agent and rejects as interrupted', async () => {
+    const controller = new AbortController()
+    const promise = runAgent({
+      command: 'sleep 5',
+      prompt: '',
+      cwd: process.cwd(),
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    })
+    setTimeout(() => controller.abort(), 50)
+    await expect(promise).rejects.toThrow(/interrupted|interrompu/)
+  })
+})
+
+describe('createClaudeTaskParser tokens', () => {
+  test('accumulates assistant usage and lets the result frame settle the total', () => {
+    const seen: number[] = []
+    const parser = createClaudeTaskParser({ onTokens: (n) => seen.push(n) })
+    const line = (obj: unknown) => JSON.stringify(obj) + '\n'
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [], usage: { input_tokens: 100, output_tokens: 50 } },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'assistant',
+        message: { content: [], usage: { input_tokens: 200, output_tokens: 80 } },
+      }),
+    )
+    // The provider-billed total on the result frame wins when larger.
+    parser.push(
+      line({ type: 'result', result: 'done', usage: { input_tokens: 400, output_tokens: 150 } }),
+    )
+    expect(seen).toEqual([150, 430, 550])
+  })
+
+  test('frames without usage never fire the meter', () => {
+    const seen: number[] = []
+    const parser = createClaudeTaskParser({ onTokens: (n) => seen.push(n) })
+    parser.push(JSON.stringify({ type: 'assistant', message: { content: [] } }) + '\n')
+    parser.push(JSON.stringify({ type: 'result', result: 'done' }) + '\n')
+    expect(seen).toEqual([])
   })
 })

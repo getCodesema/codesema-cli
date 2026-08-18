@@ -20,7 +20,16 @@
     "no-param-reassign": "error",
     "no-underscore-dangle": [
       "error",
-      { "allow": ["__CODESEMA_VERSION__", "__CODESEMA_LOCALE__", "__CODESEMA_FIX_TOKEN__"] }
+      {
+        "allow": [
+          "__CODESEMA_VERSION__",
+          "__CODESEMA_LOCALE__",
+          "__CODESEMA_FIX_TOKEN__",
+          "__CODESEMA_CONFIG_TOKEN__",
+          "__CODESEMA_MRREVIEW_TOKEN__",
+          "__CODESEMA_TASKS_TOKEN__"
+        ]
+      }
     ],
     "oxc/no-map-spread": "off",
     "typescript/consistent-type-definitions": ["error", "type"],

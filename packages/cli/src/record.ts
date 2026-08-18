@@ -10,11 +10,18 @@ import { join } from 'node:path'
 import { sanitizeRecord, type ReviewRecord } from './contract.js'
 import { t } from './i18n.js'
 
-const ARCHIVES_KEPT_PER_BRANCH = 5
+// A task branch gets ONE archive per reviewed turn: keeping only a handful
+// would drop the reviews the conversation still links to (each review_done
+// event points at its own archive). 20 turns of history is the bound.
+const ARCHIVES_KEPT_PER_BRANCH = 20
 
 function slug(s: string): string {
   return (
     s
+      // NFKD + strip combining marks so accented branch names transliterate
+      // ("évol/été" → "evol-ete") instead of collapsing into dashes.
+      .normalize('NFKD')
+      .replace(/\p{M}+/gu, '')
       .toLowerCase()
       .replace(/[^a-z0-9._-]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'review'

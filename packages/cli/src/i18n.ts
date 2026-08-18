@@ -3,20 +3,29 @@
 // by the Record<MessageKey, string> type on non-English catalogs).
 
 const en = {
-  'cli.help': `codesema — local merge request review, step by step
+  'cli.help': `codesema — local agentic workspace and merge request review
 
 Usage:
-  codesema                            Opens an interactive menu (review, show, sync, link, config) in
-                                      an interactive terminal; behaves like \`review\` otherwise. Pick
-                                      a local branch, the web UI opens immediately and fills in live
-                                      while your AI agent reviews. First run only: a short wizard picks
-                                      the language, agent, model and effort (saved globally — change it
-                                      with \`codesema config\`)
-  codesema review [--branch <name>] [--target <branch>] [--agent <cmd>] [--full] [--no-open]
-                                      Same flow; --branch skips the branch picker (also skipped
-                                      when stdin is not a terminal, e.g. CI). Re-runs on the same
-                                      branch update the previous review incrementally; --full
-                                      forces a review from scratch
+  codesema                            Opens the local agentic workspace in an interactive terminal
+                                      (same as \`codesema workspace\`); behaves like \`review\` otherwise.
+                                      First run only: a short wizard picks the language, agent, model
+                                      and effort (saved globally — change it with \`codesema config\`)
+  codesema workspace [--port <n>] [--no-open]
+                                      Local agentic workspace: a web UI where you hand tasks to your
+                                      AI agent in natural language. Each task works in its own git
+                                      worktree and branch, several run in parallel, every finished
+                                      turn gets an automatic local review before you ship (push + MR).
+                                      One workspace drives several repos: launched from a git repo it
+                                      registers it as a project; add more from the web UI
+  codesema review [--branch <name>] [--target <branch>] [--agent <cmd>] [--full] [--dual]
+                  [--fail-on <level>] [--no-open]
+                                      Review a local branch: the web UI opens immediately and fills in
+                                      live while your AI agent reviews. --branch skips the branch
+                                      picker (also skipped when stdin is not a terminal, e.g. CI).
+                                      Re-runs on the same branch update the previous review
+                                      incrementally; --full forces a review from scratch
+  codesema menu                       Interactive menu over all of the above (review, show, workspace,
+                                      sync, link, config)
   codesema config                     Change the language, AI agent, model, effort and auto-sync (interactive)
   codesema prep [--target <branch>]   Only detect branches, compute the MR diff, write
                                       .codesema/input.json for your own agent flow
@@ -33,19 +42,23 @@ Options:
   --agent <cmd>       Agent command override for this run. Receives the prompt on stdin,
                       must print the review JSON on stdout
   --review <file>     Agent output to display (default: .codesema/review.json, else last archived review)
+  --out <file>        Destination of \`export\` (- for stdout)
   --port <n>          Preferred port for the local server (default: 4400)
   --timeout <s>       Agent time budget in seconds for \`review\` (default: 900)
   --full              Review from scratch instead of updating the previous review
   --dual              Dual review: two independent reviewers run in parallel (same agent,
                       different angles), then a judge model merges their findings
+  --fail-on <level>   CI gate: run the review once, then exit 2 when a finding is at or above
+                      <level> (critical, major, minor, info) or when changes are requested
+  --force             \`sync\`: upload even though the diff looks like it carries a secret
   --no-open           Do not open the browser
   -h, --help          Show this help
   -v, --version       Show version
 
 Config precedence: CLI flags > .codesema/config.json (repo) > ~/.config/codesema/config.json (global).
 
-\`review\` and \`show\` check the npm registry once at startup to tell you when a newer
-version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
+Every command checks the npm registry once at startup (nothing is sent) and, in an interactive
+terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
 `,
   'cli.unknownCommand': 'unknown command: {command}',
   'cli.intFlagError': '--{name} {raw}: expected an integer between {min} and {max}',
@@ -344,26 +357,90 @@ version exists (nothing is sent). Set CODESEMA_NO_UPDATE_CHECK=1 to disable.
   'menu.cloudHintActive': 'workspace connected',
   'menu.cloudHintSetup': 'sync your reviews to codesema.com',
   'menu.back': 'Back',
+
+  // --- projects ---
+  'projects.notGitRoot': '{path} is not the root of a git repository',
+
+  // --- task runner ---
+  'agent.interrupted': 'agent interrupted',
+  'task.noBase':
+    'could not detect a base branch for the task (no origin/HEAD, develop, main or master)',
+  'task.unknownBase': "base branch '{base}' does not exist in this repository",
+  'task.unknownBranch': "branch '{branch}' does not exist in this repository",
+  'task.branchInUse': "branch '{branch}' is already checked out in another worktree ({path})",
+
+  // --- task ship ---
+  'ship.mrReviewLine':
+    'Local codesema review: {verdict} ({n} finding) | Local codesema review: {verdict} ({n} findings)',
+  'ship.mrGeneratedNote': 'Generated by codesema.',
+
+  // --- workspace server ---
+  'menu.workspace': 'Workspace (beta)',
+  'menu.workspaceHint': 'give tasks to agents running in parallel worktrees',
+  'workspace.intro': 'agentic workspace · give tasks from the web UI',
+
+  // --- workspace lifecycle ---
+  'workspace.shuttingDown':
+    'shutting down — interrupting active agents (press Ctrl-C again to force quit)…',
+  'workspace.locked':
+    'another codesema workspace is already running (pid {pid}, port {port}) — stop it first, or delete {path} if it is stale',
+  'workspace.projects': 'projects:',
+  'workspace.noProjects':
+    'no project registered yet — launch codesema from a git repository, or add one from the web UI',
+  'workspace.resumable':
+    '{n} interrupted task can be resumed — click Resume in the web UI: | {n} interrupted tasks can be resumed — click Resume in the web UI:',
+  'workspace.customAgentWarning':
+    '⚠ custom agent command ({command}): no hardening applies — full environment, no read-only harness, repo-provided settings honored. Only use a command you fully trust.',
+
+  // --- task isolation (container cage) ---
+  'workspace.isolationContainer':
+    '🛡 container isolation ON ({runtime}): each task runs in its own container — full agent tools inside, egress limited to {domains}',
+  'workspace.isolationPolicy':
+    '⚠ container isolation OFF: {reason} — tasks run on this machine with the policy hardening (edit tools in the worktree, user settings only, strict MCP config)',
+  'isolation.noRuntime':
+    'container isolation: no container runtime found (install docker or podman) — this task was created with the cage required',
+  'isolation.buildFailed': 'container isolation: the agent image could not be built — {error}',
+  'isolation.proxyFailed': 'container isolation: the egress proxy could not be started — {error}',
+  'isolation.homeFailed':
+    "container isolation: the task's home volume could not be prepared — {error}",
+  'isolation.unavailable': 'container isolation is unavailable: {reason}',
+  'isolation.reasonConfigured': "isolation is set to 'policy' in the configuration",
+  'isolation.reasonAgent':
+    'the cage only provides claude-code, and the configured agent is {command}',
+  'isolation.reasonNoRuntime': 'no container runtime found (install docker or podman)',
+  'isolation.reasonUnreachable': '{runtime} is installed but its engine does not answer',
+  'isolation.reasonReady': '{runtime} is available',
 }
 
 export type MessageKey = keyof typeof en
 
 const fr: Record<MessageKey, string> = {
-  'cli.help': `codesema : revue de merge request locale, étape par étape
+  'cli.help': `codesema : workspace agentique local et revue de merge request
 
 Usage :
-  codesema                            Ouvre un menu interactif (review, show, sync, link, config)
-                                      dans un terminal interactif ; se comporte comme \`review\` sinon.
-                                      Choisissez une branche locale, l'UI web s'ouvre immédiatement et
-                                      se remplit en direct pendant que votre agent IA travaille. Premier
-                                      lancement uniquement : un court assistant choisit la langue,
-                                      l'agent, le modèle et l'effort (sauvegardés globalement,
-                                      modifiables avec \`codesema config\`)
-  codesema review [--branch <nom>] [--target <branche>] [--agent <cmd>] [--full] [--no-open]
-                                      Même flux ; --branch saute le sélecteur de branche (sauté
-                                      aussi quand stdin n'est pas un terminal, ex. CI). Relancer
-                                      sur la même branche met à jour la revue précédente de façon
-                                      incrémentale ; --full force une revue complète
+  codesema                            Ouvre le workspace agentique local dans un terminal interactif
+                                      (équivaut à \`codesema workspace\`) ; se comporte comme \`review\`
+                                      sinon. Premier lancement uniquement : un court assistant choisit
+                                      la langue, l'agent, le modèle et l'effort (sauvegardés
+                                      globalement, modifiables avec \`codesema config\`)
+  codesema workspace [--port <n>] [--no-open]
+                                      Workspace agentique local : une UI web où vous confiez des
+                                      tâches en langage naturel à votre agent IA. Chaque tâche
+                                      travaille dans son propre worktree git et sa branche, plusieurs
+                                      tournent en parallèle, chaque tour terminé passe par une revue
+                                      locale automatique avant l'envoi (push + MR). Un seul workspace
+                                      pilote plusieurs dépôts : lancé depuis un dépôt git il
+                                      l'enregistre comme projet ; ajoutez-en depuis l'UI web
+  codesema review [--branch <nom>] [--target <branche>] [--agent <cmd>] [--full] [--dual]
+                  [--fail-on <niveau>] [--no-open]
+                                      Revue d'une branche locale : l'UI web s'ouvre immédiatement et
+                                      se remplit en direct pendant que votre agent IA travaille.
+                                      --branch saute le sélecteur de branche (sauté aussi quand stdin
+                                      n'est pas un terminal, ex. CI). Relancer sur la même branche met
+                                      à jour la revue précédente de façon incrémentale ; --full force
+                                      une revue complète
+  codesema menu                       Menu interactif regroupant tout (review, show, workspace,
+                                      sync, link, config)
   codesema config                     Changer la langue, l'agent IA, le modèle, l'effort et l'auto-sync (interactif)
   codesema prep [--target <branche>]  Détecte seulement les branches, calcule le diff de la MR,
                                       écrit .codesema/input.json pour votre propre flux d'agent
@@ -380,19 +457,25 @@ Options :
   --agent <cmd>       Commande d'agent pour ce lancement. Reçoit le prompt sur stdin,
                       doit afficher le JSON de la revue sur stdout
   --review <fichier>  Sortie d'agent à afficher (défaut : .codesema/review.json, sinon dernière revue archivée)
+  --out <fichier>     Destination de \`export\` (- pour stdout)
   --port <n>          Port préféré du serveur local (défaut : 4400)
   --timeout <s>       Budget de temps de l'agent en secondes pour \`review\` (défaut : 900)
   --full              Revue complète au lieu de mettre à jour la revue précédente
   --dual              Revue duale : deux reviewers indépendants en parallèle (même agent,
                       angles différents), puis un modèle juge fusionne leurs notes
+  --fail-on <niveau>  Garde-fou CI : lance la revue une fois, puis sort en code 2 si une note
+                      atteint <niveau> (critical, major, minor, info) ou si des changements
+                      sont demandés
+  --force             \`sync\` : envoie même si le diff semble contenir un secret
   --no-open           Ne pas ouvrir le navigateur
   -h, --help          Afficher cette aide
   -v, --version       Afficher la version
 
 Priorité de config : flags CLI > .codesema/config.json (repo) > ~/.config/codesema/config.json (globale).
 
-\`review\` et \`show\` interrogent une fois le registre npm au démarrage pour signaler qu'une nouvelle
-version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
+Chaque commande interroge une fois le registre npm au démarrage (rien n'est envoyé) et, dans un
+terminal interactif, propose la mise à jour si une nouvelle version existe.
+CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
 `,
   'cli.unknownCommand': 'commande inconnue : {command}',
   'cli.intFlagError': '--{name} {raw} : entier attendu entre {min} et {max}',
@@ -699,9 +782,67 @@ version existe (rien n'est envoyé). CODESEMA_NO_UPDATE_CHECK=1 pour désactiver
   'menu.cloudHintActive': 'workspace connecté',
   'menu.cloudHintSetup': 'synchronisez vos reviews sur codesema.com',
   'menu.back': 'Retour',
+
+  // --- projects ---
+  'projects.notGitRoot': "{path} n'est pas la racine d'un dépôt git",
+
+  // --- task runner ---
+  'agent.interrupted': 'agent interrompu',
+  'task.noBase':
+    'impossible de détecter la branche de base de la tâche (ni origin/HEAD, ni develop, main ou master)',
+  'task.unknownBase': "la branche de base '{base}' n'existe pas dans ce dépôt",
+  'task.unknownBranch': "la branche '{branch}' n'existe pas dans ce dépôt",
+  'task.branchInUse': "la branche '{branch}' est déjà extraite dans un autre worktree ({path})",
+
+  // --- task ship ---
+  'ship.mrReviewLine':
+    'Revue codesema locale : {verdict} ({n} note) | Revue codesema locale : {verdict} ({n} notes)',
+  'ship.mrGeneratedNote': 'Générée par codesema.',
+
+  // --- workspace server ---
+  'menu.workspace': 'Workspace (bêta)',
+  'menu.workspaceHint': 'confiez des tâches à des agents travaillant dans des worktrees parallèles',
+  'workspace.intro': "workspace agentique · confiez des tâches depuis l'UI web",
+
+  // --- workspace lifecycle ---
+  'workspace.shuttingDown':
+    'arrêt en cours — interruption des agents actifs (Ctrl-C à nouveau pour forcer)…',
+  'workspace.locked':
+    'un autre workspace codesema tourne déjà (pid {pid}, port {port}) — arrêtez-le, ou supprimez {path} s’il est périmé',
+  'workspace.projects': 'projets :',
+  'workspace.noProjects':
+    "aucun projet enregistré — lancez codesema depuis un dépôt git, ou ajoutez-en un depuis l'UI web",
+  'workspace.resumable':
+    "{n} tâche interrompue peut reprendre — cliquez Reprendre dans l'UI web : | {n} tâches interrompues peuvent reprendre — cliquez Reprendre dans l'UI web :",
+  'workspace.customAgentWarning':
+    "⚠ commande d'agent custom ({command}) : aucun durcissement ne s'applique — environnement complet, pas de harnais lecture seule, réglages du repo honorés. À n'utiliser qu'avec une commande de confiance totale.",
+
+  // --- task isolation (container cage) ---
+  'workspace.isolationContainer':
+    "🛡 isolation container ACTIVE ({runtime}) : chaque tâche tourne dans son propre container — outils de l'agent complets à l'intérieur, sortie réseau limitée à {domains}",
+  'workspace.isolationPolicy':
+    '⚠ isolation container INACTIVE : {reason} — les tâches tournent sur cette machine avec le durcissement policy (outils d’édition dans le worktree, réglages utilisateur seuls, config MCP stricte)',
+  'isolation.noRuntime':
+    'isolation container : aucun runtime de container trouvé (installez docker ou podman) — cette tâche a été créée avec la cage exigée',
+  'isolation.buildFailed':
+    "isolation container : l'image de l'agent n'a pas pu être construite — {error}",
+  'isolation.proxyFailed': "isolation container : le proxy de sortie n'a pas pu démarrer — {error}",
+  'isolation.homeFailed':
+    "isolation container : le volume home de la tâche n'a pas pu être préparé — {error}",
+  'isolation.unavailable': "l'isolation container est indisponible : {reason}",
+  'isolation.reasonConfigured': "l'isolation est réglée sur « policy » dans la configuration",
+  'isolation.reasonAgent': "la cage ne fournit que claude-code, or l'agent configuré est {command}",
+  'isolation.reasonNoRuntime': 'aucun runtime de container trouvé (installez docker ou podman)',
+  'isolation.reasonUnreachable': '{runtime} est installé mais son moteur ne répond pas',
+  'isolation.reasonReady': '{runtime} est disponible',
 }
 
-const CATALOGS = { en, fr } satisfies Record<string, Record<MessageKey, string>>
+/**
+ * Exported for the parity test only: the fr annotation above already enforces
+ * key parity at compile time, the runtime test guards against that annotation
+ * being dropped in a refactor.
+ */
+export const CATALOGS = { en, fr } satisfies Record<string, Record<MessageKey, string>>
 
 /** ISO 639-1 codes of the languages codesema ships catalogs for. */
 export type SupportedLanguage = keyof typeof CATALOGS
