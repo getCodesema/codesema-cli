@@ -50,7 +50,7 @@ export type PrepInput = {
   head_sha: string
   repo_root: string
   commits: string[]
-  files: { path: string; additions: number; deletions: number }[]
+  files: { path: string; previousPath?: string; additions: number; deletions: number }[]
   custom_instructions: string | null
   /** Team rules from .codesema/RULES.md, one "[Cn] rule" grid line each. */
   rules: string[] | null
@@ -213,8 +213,33 @@ function truncateSubject(subject: string): string {
 export type DiffSummary = {
   merge_base: string
   commits: string[]
-  files: { path: string; additions: number; deletions: number }[]
+  files: { path: string; previousPath?: string; additions: number; deletions: number }[]
   diff: string
+}
+
+function parseNumstat(raw: string): DiffSummary['files'] {
+  const records = raw.split('\0')
+  const files: DiffSummary['files'] = []
+  for (let i = 0; i < records.length - 1; i += 1) {
+    const [add = '0', del = '0', ...rest] = (records[i] ?? '').split('\t')
+    let path = rest.join('\t')
+    let previousPath: string | undefined
+    if (!path) {
+      // Rename/copy record: `add\tdel\t` followed by two NUL-separated paths (source, destination).
+      previousPath = records[i + 1]
+      i += 2
+      path = records[i] ?? ''
+    }
+    if (path) {
+      files.push({
+        path,
+        ...(previousPath ? { previousPath } : {}),
+        additions: Number.isFinite(Number(add)) ? Number(add) : 0,
+        deletions: Number.isFinite(Number(del)) ? Number(del) : 0,
+      })
+    }
+  }
+  return files
 }
 
 /**
@@ -240,22 +265,12 @@ export function computeDiffSummary(sourceRef: string, targetRef: string, cwd: st
     .filter(Boolean)
     .map(truncateSubject)
 
-  const files = (
+  const files = parseNumstat(
     tryGit(
-      ['-c', 'core.quotePath=false', 'diff', '--numstat', range, '--', '.', ...excludes],
+      ['-c', 'core.quotePath=false', 'diff', '--numstat', '-z', range, '--', '.', ...excludes],
       cwd,
-    ) ?? ''
+    ) ?? '',
   )
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [add = '0', del = '0', ...rest] = line.split('\t')
-      return {
-        path: rest.join('\t'),
-        additions: Number.isFinite(Number(add)) ? Number(add) : 0,
-        deletions: Number.isFinite(Number(del)) ? Number(del) : 0,
-      }
-    })
 
   return { merge_base: mb, commits, files, diff }
 }

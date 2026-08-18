@@ -70,7 +70,7 @@ export type LiveInput = {
   branch: string
   target: string
   commits: string[]
-  files: { path: string; additions: number; deletions: number }[]
+  files: { path: string; previousPath?: string; additions: number; deletions: number }[]
   additions: number
   deletions: number
   incremental: boolean
@@ -185,6 +185,8 @@ export type PreviewFileStatus = 'added' | 'deleted' | 'modified' | 'renamed'
 
 export type PreviewFile = {
   path: string
+  /** Source path of a rename or copy. */
+  previousPath?: string
   additions: number
   deletions: number
   status: PreviewFileStatus

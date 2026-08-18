@@ -37,6 +37,42 @@ describe('parseDiff', () => {
     expect(rows[5]).toMatchObject({ kind: 'ctx', oldNo: 12, newNo: 13 })
   })
 
+  test('a 100%-similarity rename yields a hunkless file at the destination path', () => {
+    const pureRename = `diff --git a/a.txt b/renamed.txt
+similarity index 100%
+rename from a.txt
+rename to renamed.txt
+`
+    const { files } = parseDiff(pureRename)
+    expect(files.map((f) => f.path)).toEqual(['renamed.txt'])
+    expect(files[0]).toMatchObject({ addCount: 0, delCount: 0, rows: [], hunks: [] })
+  })
+
+  test('a rename with edits yields a single file (no duplicate from the rename header)', () => {
+    const renameWithEdit = `diff --git a/a.txt b/renamed.txt
+similarity index 83%
+rename from a.txt
+rename to renamed.txt
+index 1111111..2222222 100644
+--- a/a.txt
++++ b/renamed.txt
+@@ -1,2 +1,3 @@
+ base
+ keep
++extra
+diff --git a/other.txt b/other.txt
+index 3333333..4444444 100644
+--- a/other.txt
++++ b/other.txt
+@@ -1 +1 @@
+-x
++y
+`
+    const { files } = parseDiff(renameWithEdit)
+    expect(files.map((f) => f.path)).toEqual(['renamed.txt', 'other.txt'])
+    expect(files[0]).toMatchObject({ addCount: 1, delCount: 0 })
+  })
+
   test('findings: added line -> byLine, deleted line -> negative key, outside diff -> topFindings, unknown file -> unmatched', () => {
     const onAdd = finding({ line: 11 })
     const noLine = finding({ line: 999 })
