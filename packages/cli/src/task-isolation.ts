@@ -385,7 +385,7 @@ const fallbackBase = (input: BaseImageInput): BaseImage => {
  *      `build.dockerfile` relative to the devcontainer folder, plus a simple
  *      STRING postCreateCommand;
  *   2. the image the checks detection picked for this repo;
- *   3. node:22.
+ *   3. `DEFAULT_BASE_IMAGE` — node:26.
  *
  * Everything the core does not cover (features, docker-compose, an array or
  * object postCreateCommand, a build context outside the devcontainer folder)
