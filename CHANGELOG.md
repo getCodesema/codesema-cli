@@ -3,6 +3,12 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.12.1] - unreleased
+
+### Fixed
+
+- Renamed files in the preview panel: `git diff --numstat` is now parsed in NUL-delimited (`-z`) form, so a rename keeps its destination path instead of the combined `old => new` string — the file shows its `renamed` status (not `modified`) and clicking it no longer yields an empty diff. The source path is kept as `previousPath` (in `files[]` of the preview API and `.codesema/input.json`): the file list shows `old → new`, and the per-file diff passes both paths to git so a rename renders as a rename (with only its real edits) rather than as a full new file. The per-file diff is also filtered to the requested file's section, so a rename source that matches a directory or a still-existing copy source can't drag an unrelated file's diff into the panel.
+
 ## [0.12.0] - 2026-08-18
 
 ### Added

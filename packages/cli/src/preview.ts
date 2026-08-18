@@ -8,6 +8,8 @@ export type PreviewFileStatus = 'added' | 'deleted' | 'modified' | 'renamed'
 
 export type PreviewFile = {
   path: string
+  /** Source path of a rename or copy; the diff pathspec needs it for git to re-detect the pair. */
+  previousPath?: string
   additions: number
   deletions: number
   status: PreviewFileStatus
@@ -128,6 +130,29 @@ export async function resolvePreviewRefs(
   }
 }
 
+/**
+ * Keeps only the section(s) of a multi-file diff whose header targets `path`.
+ * The two-path pathspec used for renames can drag in unrelated sections: the
+ * source path may match a whole directory in the target ref, or still exist
+ * with its own changes when the record is a copy. Falls back to the full diff
+ * if no header matches (defensive: never hide everything).
+ */
+export function pickDiffSection(raw: string, path: string): string {
+  let keep = false
+  let matched = false
+  const kept: string[] = []
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      keep = line.endsWith(` b/${path}`)
+      matched ||= keep
+    }
+    if (keep) {
+      kept.push(line)
+    }
+  }
+  return matched ? kept.join('\n') : raw
+}
+
 /** File status per path, from `git diff --name-status` (additions/deletions come from computeDiffSummary). */
 function fileStatuses(range: string, cwd: string): Map<string, PreviewFileStatus> {
   const excludes = excludePathspecs(cwd)
@@ -185,14 +210,19 @@ export async function buildFileDiff(
   const root = repoRoot(cwd)
   const refs = await resolvePreviewRefs(root, source, listMrs)
   const summary = computeDiffSummary(refs.sourceRef, refs.targetRef, root)
-  if (!summary.files.some((f) => f.path === path)) {
+  const file = summary.files.find((f) => f.path === path)
+  if (!file) {
     throw new Error(`path is not part of this diff: ${path}`)
   }
   const range = `${refs.targetRef}...${refs.sourceRef}`
-  const raw = git(
-    ['-c', 'core.quotePath=false', 'diff', '--no-color', '-U10', range, '--', path],
+  const paths = file.previousPath ? [path, file.previousPath] : [path]
+  let raw = git(
+    ['-c', 'core.quotePath=false', 'diff', '--no-color', '-U10', range, '--', ...paths],
     root,
   )
+  if (file.previousPath) {
+    raw = pickDiffSection(raw, path)
+  }
   if (raw.length > PREVIEW_DIFF_MAX_CHARS) {
     return { diff: raw.slice(0, PREVIEW_DIFF_MAX_CHARS), truncated: true }
   }

@@ -9,6 +9,7 @@ import {
   buildPreview,
   parsePreviewPath,
   parsePreviewSource,
+  pickDiffSection,
   PREVIEW_DIFF_MAX_CHARS,
   resolvePreviewRefs,
 } from './preview.js'
@@ -48,6 +49,31 @@ describe('parsePreviewSource', () => {
   })
 })
 
+describe('pickDiffSection', () => {
+  const rename = `diff --git a/utils b/utils/main.sh
+similarity index 100%
+rename from utils
+rename to utils/main.sh
+`
+  const neighbour = `diff --git a/utils/other.txt b/utils/other.txt
+index 1111111..2222222 100644
+--- a/utils/other.txt
++++ b/utils/other.txt
+@@ -1 +1 @@
+-old
++new
+`
+
+  test('keeps only the section targeting the requested path', () => {
+    expect(pickDiffSection(rename + neighbour, 'utils/main.sh').trimEnd()).toBe(rename.trimEnd())
+    expect(pickDiffSection(neighbour + rename, 'utils/main.sh').trimEnd()).toBe(rename.trimEnd())
+  })
+
+  test('falls back to the full diff when no header matches', () => {
+    expect(pickDiffSection(neighbour, 'utils/main.sh')).toBe(neighbour)
+  })
+})
+
 describe('parsePreviewPath', () => {
   test('accepts a plain relative path', () => {
     expect(parsePreviewPath(new URLSearchParams('path=src/a.ts'))).toBe('src/a.ts')
@@ -77,6 +103,8 @@ function commitFile(name: string, content: string, msg: string) {
 beforeAll(() => {
   repo = mkdtempSync(join(tmpdir(), 'codesema-preview-test-'))
   run(['init', '-b', 'main'])
+  // Pins rename detection (git's default) against a developer's global diff.renames=false.
+  run(['config', 'diff.renames', 'true'])
   commitFile('a.txt', 'base\n', 'init: base')
   run(['checkout', '-b', 'feature/x'])
   commitFile('a.txt', 'changed\n', 'feat: change')
@@ -157,7 +185,13 @@ describe('buildPreview', () => {
     try {
       const preview = await buildPreview(repo, { kind: 'branch', name: 'feature/rename' })
       expect(preview.files).toEqual([
-        { path: 'renamed.txt', additions: 0, deletions: 0, status: 'renamed' },
+        {
+          path: 'renamed.txt',
+          previousPath: 'a.txt',
+          additions: 0,
+          deletions: 0,
+          status: 'renamed',
+        },
       ])
       const result = await buildFileDiff(
         repo,
@@ -165,8 +199,8 @@ describe('buildPreview', () => {
         'renamed.txt',
       )
       expect(result.truncated).toBe(false)
-      expect(result.diff).toContain('a/renamed.txt')
-      expect(result.diff).toContain('+base')
+      expect(result.diff).toContain('rename from a.txt')
+      expect(result.diff).toContain('rename to renamed.txt')
     } finally {
       run(['checkout', 'feature/x'])
     }

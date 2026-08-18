@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { parseDiff, type Finding } from '../composables/useDiff'
-import type { PreviewFileDiff, PreviewResult, ReviewSource } from '../types'
+import type { PreviewFile, PreviewFileDiff, PreviewResult, ReviewSource } from '../types'
 import DiffView from './DiffView.vue'
 
 const props = defineProps<{
@@ -95,6 +95,10 @@ const STATUS_LABEL: Record<string, string> = {
   modified: 'M',
   renamed: 'R',
 }
+
+function fileLabel(file: PreviewFile): string {
+  return file.previousPath ? `${file.previousPath} → ${file.path}` : file.path
+}
 </script>
 
 <template>
@@ -140,7 +144,7 @@ const STATUS_LABEL: Record<string, string> = {
             <span class="pv-file-status" :class="`pv-file-status--${file.status}`">{{
               STATUS_LABEL[file.status]
             }}</span>
-            <span class="pv-file-path">{{ file.path }}</span>
+            <span class="pv-file-path" :title="fileLabel(file)">{{ fileLabel(file) }}</span>
             <span class="pv-file-delta">
               <span class="pv-add">+{{ file.additions }}</span>
               <span class="pv-del">−{{ file.deletions }}</span>

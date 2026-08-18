@@ -65,6 +65,10 @@ const hasPartialContent = computed(
 
 const FILE_PREVIEW_MAX = 12
 const previewFiles = computed(() => input.value?.files.slice(0, FILE_PREVIEW_MAX) ?? [])
+
+function fileLabel(file: { path: string; previousPath?: string }): string {
+  return file.previousPath ? `${file.previousPath} → ${file.path}` : file.path
+}
 const hiddenFilesCount = computed(() =>
   Math.max(0, (input.value?.files.length ?? 0) - FILE_PREVIEW_MAX),
 )
@@ -198,7 +202,7 @@ function severityDot(severity?: string): string {
         <div class="live-panel-tag">{{ $t('app.tabFiles') }}</div>
         <div class="live-files">
           <div v-for="file in previewFiles" :key="file.path" class="live-file">
-            <span class="live-file-path">{{ file.path }}</span>
+            <span class="live-file-path" :title="fileLabel(file)">{{ fileLabel(file) }}</span>
             <span class="live-file-delta"
               ><span class="live-add">+{{ file.additions }}</span>
               <span class="live-del">−{{ file.deletions }}</span></span
