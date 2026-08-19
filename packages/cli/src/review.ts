@@ -241,8 +241,8 @@ function buildIncrementalPrompt(
   return { prompt, sinceSha: since }
 }
 
-function detectAgentCommand(cwd: string): string {
-  const [first] = detectAgents(cwd)
+async function detectAgentCommand(cwd: string): Promise<string> {
+  const [first] = await detectAgents(cwd)
   if (first) {
     return defaultCommand(first)
   }
@@ -729,7 +729,7 @@ export async function review(opts: {
       console.log('')
     }
   }
-  agentCommand ??= detectAgentCommand(cwd)
+  agentCommand ??= await detectAgentCommand(cwd)
 
   // Agent inherited from the repo config (neither --agent nor global): require approval.
   const repoAgent = cwd ? loadRepoConfig(cwd).agent : undefined
@@ -750,7 +750,7 @@ export async function review(opts: {
     branch = picked
   }
 
-  const prepared = prep({ branch, target: opts.target ?? config.target, cwd, quiet: true })
+  const prepared = await prep({ branch, target: opts.target ?? config.target, cwd, quiet: true })
   // Best-effort, never blocking: offline, unlinked workspace, a non-200 or a
   // timeout all silently degrade to null (local review unchanged).
   const input: PrepInput = {

@@ -163,7 +163,7 @@ export type CreateTaskReviewerOptions = {
 
 type FlowRunner = (
   opts: CreateTaskReviewerOptions,
-  input: ReturnType<typeof prep>,
+  input: Awaited<ReturnType<typeof prep>>,
   io: TaskTurnIo,
 ) => Promise<SimpleOutcome | DualOutcome>
 
@@ -242,7 +242,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       }
 
       io.emit({ type: 'review_started', data: { turn: record.turns.length, mode } })
-      const input = prepFn({
+      const input = await prepFn({
         branch: record.branch,
         target: record.base,
         cwd: record.worktree,

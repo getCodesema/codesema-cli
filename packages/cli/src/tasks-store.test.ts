@@ -24,7 +24,9 @@ import {
   loadTask,
   readTaskChecks,
   readTaskEvents,
+  resetJournalCursors,
   saveTask,
+  setJournalReader,
   taskDir,
   tasksDir,
   writeTaskChecks,
@@ -37,6 +39,10 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Both are process-wide test seams: leaving either armed would leak the
+  // counting reader (or a warm cursor) into the next test.
+  setJournalReader(null)
+  resetJournalCursors()
   rmSync(cwd, { recursive: true, force: true })
 })
 
@@ -255,6 +261,189 @@ describe('appendTaskEvent / readTaskEvents', () => {
   test('malformed id: read returns empty, append throws loudly', () => {
     expect(readTaskEvents(cwd, '../oops')).toEqual([])
     expect(() => appendTaskEvent(cwd, '../oops', { type: 'message', data: {} })).toThrow()
+  })
+})
+
+describe('journal cost: the in-memory seq cursor', () => {
+  let record: TaskRecord
+
+  beforeEach(() => {
+    record = createTask(cwd, input)
+  })
+
+  /** Arms the read seam and returns the paths it was asked to read, in order. */
+  function countReads(): string[] {
+    const reads: string[] = []
+    setJournalReader((path) => {
+      reads.push(path)
+      try {
+        return readFileSync(path, 'utf8')
+      } catch {
+        return null
+      }
+    })
+    return reads
+  }
+
+  test('10 000 appends on one task read the journal exactly once', () => {
+    const reads = countReads()
+    for (let i = 0; i < 10_000; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'tool_use', data: { tool: 'Edit', ok: true } })
+    }
+    // The acceptance criterion is a CALL COUNT, never a stopwatch: recomputing
+    // the seq by re-reading the whole journal made an append O(journal size).
+    expect(reads).toHaveLength(1)
+    setJournalReader(null)
+    const events = readTaskEvents(cwd, record.id)
+    expect(events).toHaveLength(10_000)
+    expect(events.at(-1)?.seq).toBe(10_000)
+  })
+
+  test('a first append on an existing journal reads once, then resumes at max + 1', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'hi' } })
+    resetJournalCursors()
+    const reads = countReads()
+    expect(appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'again' } }).seq).toBe(
+      3,
+    )
+    expect(reads).toHaveLength(1)
+    // The cursor is warm now: the next appends cost no read at all.
+    expect(appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'more' } }).seq).toBe(4)
+    expect(reads).toHaveLength(1)
+  })
+
+  test('seq stays strictly increasing and gapless across store restarts', () => {
+    for (let i = 0; i < 5; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'message', data: { n: i } })
+    }
+    resetJournalCursors()
+    for (let i = 0; i < 5; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'message', data: { n: 5 + i } })
+    }
+    resetJournalCursors()
+    const last = appendTaskEvent(cwd, record.id, { type: 'shipped', data: {} })
+    expect(last.seq).toBe(11)
+    expect(readTaskEvents(cwd, record.id).map((e) => e.seq)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    ])
+  })
+
+  test('a crash-truncated tail is still repaired by the first append after a restart', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: {} })
+    appendTaskEvent(cwd, record.id, { type: 'message', data: {} })
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    // Crash mid-append: the tail line has no newline. Only IT may be lost.
+    appendFileSync(journal, '{"seq":3,"at":"2026-08-14T10:0')
+    resetJournalCursors()
+    const e = appendTaskEvent(cwd, record.id, { type: 'error', data: { message: 'boom' } })
+    expect(e.seq).toBe(3)
+    expect(readFileSync(journal, 'utf8')).toContain('10:0\n{')
+    expect(readTaskEvents(cwd, record.id).map((x) => x.seq)).toEqual([1, 2, 3])
+  })
+
+  test('the cold cursor takes the max of the VALID seqs and never throws', () => {
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    writeFileSync(
+      journal,
+      `${[
+        '{"seq":1,"at":"2026-08-14T10:00:00.000Z","type":"turn_started","data":{}}',
+        'not json at all',
+        '{"seq":"NaN","type":"message","data":{}}',
+        '{"seq":7,"at":"2026-08-14T10:02:00.000Z","type":"message","data":{"text":"seven"}}',
+        '{"seq":4,"at":"2026-08-14T10:03:00.000Z","type":"hyper_event","data":{}}',
+        '',
+      ].join('\n')}`,
+    )
+    const e = appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'after' } })
+    expect(e.seq).toBe(8)
+    expect(readTaskEvents(cwd, record.id).map((x) => x.seq)).toEqual([1, 7, 8])
+  })
+
+  test('an append made behind our back invalidates the cached cursor', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: {} })
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    // Another writer (or a hand edit) grew the file: the size no longer matches
+    // what this process left, so the cursor is re-derived instead of trusted.
+    appendFileSync(
+      journal,
+      '{"seq":9,"at":"2026-08-14T10:04:00.000Z","type":"message","data":{}}\n',
+    )
+    const reads = countReads()
+    expect(appendTaskEvent(cwd, record.id, { type: 'message', data: {} }).seq).toBe(10)
+    expect(reads).toHaveLength(1)
+  })
+
+  test('readTaskEvents({afterSeq}) stays exact on a journal written through the cursor', () => {
+    for (let i = 1; i <= 50; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'message', data: { n: i } })
+    }
+    const caught = readTaskEvents(cwd, record.id, { afterSeq: 30 })
+    expect(caught.map((e) => e.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 31))
+    // File order, not just the seq set: the SSE catch-up of J5 replays it as is.
+    expect(caught.map((e) => e.data.n)).toEqual(Array.from({ length: 20 }, (_, i) => i + 31))
+    expect(readTaskEvents(cwd, record.id, { afterSeq: 50 })).toEqual([])
+    expect(readTaskEvents(cwd, record.id, { afterSeq: 0 })).toHaveLength(50)
+  })
+
+  test('a .codesema/tasks tree written by 0.12 is resumed without a gap', () => {
+    // Fixture written by hand in the 0.12 on-disk format (unchanged here): a
+    // task directory this process has never touched, journal included.
+    const id = 'a1b2c3d4e5f6'
+    const dir = join(tasksDir(cwd), id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'task.json'),
+      `${JSON.stringify(
+        {
+          version: 1,
+          id,
+          title: 'Written by 0.12',
+          status: 'waiting_for_you',
+          base: 'main',
+          branch: 'codesema/task-written-by-012',
+          worktree: join(cwd, '.codesema', 'worktrees', id),
+          agent_session_id: 'sess-012',
+          turns: [
+            {
+              prompt: 'do the thing',
+              response: 'done',
+              question: null,
+              started_at: '2026-08-14T09:00:00.000Z',
+              ended_at: '2026-08-14T09:05:00.000Z',
+            },
+          ],
+          review_ref: null,
+          work_ms: 300_000,
+          wait_ms: 0,
+          auto_ship: false,
+          work_on: false,
+          isolation: 'policy',
+          created_at: '2026-08-14T09:00:00.000Z',
+          updated_at: '2026-08-14T09:05:00.000Z',
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    writeFileSync(
+      join(dir, 'events.jsonl'),
+      `${[
+        '{"seq":1,"at":"2026-08-14T09:00:00.000Z","type":"turn_started","data":{"turn":1}}',
+        '{"seq":2,"at":"2026-08-14T09:01:00.000Z","type":"tool_use","data":{"tool":"Edit","file":"a.ts","ok":true,"note":null}}',
+        '{"seq":3,"at":"2026-08-14T09:05:00.000Z","type":"message","data":{"text":"done"}}',
+      ].join('\n')}\n`,
+    )
+
+    const e = appendTaskEvent(cwd, id, { type: 'review_started', data: { turn: 1 } })
+    expect(e.seq).toBe(4)
+    expect(readTaskEvents(cwd, id).map((x) => x.seq)).toEqual([1, 2, 3, 4])
+    expect(readTaskEvents(cwd, id, { afterSeq: 2 }).map((x) => x.type)).toEqual([
+      'message',
+      'review_started',
+    ])
+    // The rest of the 0.12 tree stays readable, not just its journal.
+    expect(loadTask(cwd, id)?.title).toBe('Written by 0.12')
   })
 })
 

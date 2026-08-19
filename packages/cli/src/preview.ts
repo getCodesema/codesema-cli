@@ -101,7 +101,7 @@ export async function resolvePreviewRefs(
     }
     const checkedOut = currentBranch(root)
     const headRef = source.name === checkedOut ? 'HEAD' : source.name
-    const { target } = detectTarget(source.name, undefined, root, headRef)
+    const { target } = await detectTarget(source.name, undefined, root, headRef)
     if (target.replace(/^origin\//, '') === source.name) {
       throw new Error(`branch ${source.name} cannot be its own target`)
     }

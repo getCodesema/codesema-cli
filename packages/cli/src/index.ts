@@ -156,7 +156,7 @@ async function runCommand(
       })
       break
     case 'prep':
-      prep({
+      await prep({
         branch: values.branch,
         target: values.target ?? loadConfig(repoRoot).target,
         cwd: process.cwd(),
