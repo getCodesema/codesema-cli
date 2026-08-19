@@ -2,6 +2,7 @@
 
 export * from './reasons.js'
 export * from './tasks.js'
+export * from './ticket.js'
 
 export type NarrativeConfidence = 'high' | 'medium' | 'low'
 export type NarrativeRisk = 'high' | 'medium' | 'low'
