@@ -66,6 +66,8 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
 
   'git.notFound': 'git not found on PATH — install git (https://git-scm.com) and retry',
 
+  'probes.waiting': 'still waiting for {probes} — {seconds}s max per probe, all launched at once',
+
   'agent.timeout': 'agent timed out after {s}s — raise it with --timeout <seconds>',
   'agent.exitCode': 'agent command exited with code {code}',
   'agent.noneFound':
@@ -482,6 +484,9 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'cli.failOnError': "--fail-on {raw} invalide : attendu l'un de {values}",
 
   'git.notFound': 'git introuvable sur le PATH : installez git (https://git-scm.com) et réessayez',
+
+  'probes.waiting':
+    'toujours en attente de {probes} — {seconds}s max par sonde, toutes lancées en même temps',
 
   'agent.timeout': "délai de l'agent dépassé après {s}s : augmentez-le avec --timeout <secondes>",
   'agent.exitCode': "la commande d'agent a quitté avec le code {code}",

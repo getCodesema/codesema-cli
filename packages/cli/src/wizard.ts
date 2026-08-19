@@ -9,8 +9,9 @@ import {
   trustRepoAgent,
   type CodesemaConfig,
 } from './config.js'
-import { tryExec } from './git.js'
+import { tryExecAsync, type ProbeExecFn } from './git.js'
 import { setLanguage, t, type SupportedLanguage } from './i18n.js'
+import { runProbes } from './probes.js'
 import { isInteractive, select, textInput } from './tui.js'
 import { bold, dim } from './ui.js'
 
@@ -70,8 +71,23 @@ export const AGENT_DEFS: AgentDef[] = [
   },
 ]
 
-export function detectAgents(cwd: string): AgentDef[] {
-  return AGENT_DEFS.filter((def) => tryExec(def.bin, ['--version'], cwd) !== null)
+/**
+ * Agents available on PATH, in AGENT_DEFS order. Every `<bin> --version` probe
+ * is launched before the first one answers (runProbes), so detection costs one
+ * shared 8s window instead of one per agent — the old sequential filter chained
+ * up to three timeouts before the workspace could even boot.
+ */
+export async function detectAgents(
+  cwd: string,
+  execFn: ProbeExecFn = tryExecAsync,
+): Promise<AgentDef[]> {
+  const outcomes = await runProbes(
+    AGENT_DEFS.map((def) => ({
+      label: def.bin,
+      run: () => execFn(def.bin, ['--version'], cwd),
+    })),
+  )
+  return AGENT_DEFS.filter((_, index) => outcomes[index] !== null)
 }
 
 /** Default headless command for a provider (no model or effort). */
@@ -150,7 +166,7 @@ export async function runAgentWizard(
     return null
   }
 
-  const detected = detectAgents(cwd)
+  const detected = await detectAgents(cwd)
   const missing = AGENT_DEFS.filter((d) => !detected.includes(d))
   if (missing.length) {
     console.log(`  ${dim(t('wizard.notOnPath', { bins: missing.map((d) => d.bin).join(', ') }))}`)

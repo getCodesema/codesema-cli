@@ -123,7 +123,7 @@ export function createMrReviewRunner(opts: {
     }
 
     try {
-      const input = prep({
+      const input = await prep({
         branch: branchForPrep,
         target: targetForPrep,
         cwd: worktreeDir,

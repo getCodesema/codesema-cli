@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { t } from './i18n.js'
 
 // Set by git itself on the hooks it invokes (this CLI's own pre-commit/pre-push,
@@ -50,19 +50,52 @@ export function tryGit(args: string[], cwd: string): string | null {
   }
 }
 
+/**
+ * Budget of ONE probe of an optional external CLI (gh, glab, an agent binary).
+ * Shared by tryExec and tryExecAsync: parallelising the boot must not shorten
+ * an individual probe, it only stops the probes from queueing behind each other.
+ */
+export const PROBE_TIMEOUT_MS = 8000
+
 /** Optional external command (gh, glab): null if missing, failing, or too slow. */
 export function tryExec(cmd: string, args: string[], cwd: string): string | null {
   try {
     return execFileSync(cmd, args, {
       cwd,
       encoding: 'utf8',
-      timeout: 8000,
+      timeout: PROBE_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'ignore'],
       env: subprocessEnv(),
     }).trim()
   } catch {
     return null
   }
+}
+
+/**
+ * Signature every boot probe is injected through in tests: no test ever runs a
+ * real forge or agent binary, it asserts on the argv it was handed.
+ */
+export type ProbeExecFn = (cmd: string, args: string[], cwd: string) => Promise<string | null>
+
+/**
+ * Non-blocking sibling of tryExec, same semantics (null when the binary is
+ * missing, fails, or exceeds PROBE_TIMEOUT_MS) and same per-probe budget.
+ * It exists because execFileSync makes tryExec structurally sequential: boot
+ * probes can only overlap through an async spawn. argv only, never a shell
+ * string — no host-side interpolation.
+ */
+export function tryExecAsync(cmd: string, args: string[], cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      cmd,
+      args,
+      { cwd, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: subprocessEnv() },
+      (err, stdout) => {
+        resolve(err ? null : stdout.trim())
+      },
+    )
+  })
 }
 
 export function repoRoot(cwd: string): string {

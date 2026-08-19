@@ -3,8 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { subprocessEnv } from './git.js'
-import { computeDiffSummary, computePrepInput, detectTarget, prep } from './prep.js'
+import { subprocessEnv, type ProbeExecFn } from './git.js'
+import {
+  computeDiffSummary,
+  computePrepInput,
+  detectTarget,
+  prep,
+  targetFromForge,
+} from './prep.js'
+import { AGENT_DEFS, detectAgents } from './wizard.js'
 
 let repo: string
 
@@ -40,27 +47,27 @@ afterAll(() => {
 })
 
 describe('detectTarget', () => {
-  test('valid --target resolved, source = flag', () => {
-    expect(detectTarget('feature/x', 'develop', repo)).toEqual({
+  test('valid --target resolved, source = flag', async () => {
+    expect(await detectTarget('feature/x', 'develop', repo)).toEqual({
       target: 'develop',
       source: '--target flag',
     })
   })
 
-  test('--target not found: explicit error', () => {
-    expect(() => detectTarget('feature/x', 'nope', repo)).toThrow(/branch not found/)
+  test('--target not found: explicit error', async () => {
+    await expect(detectTarget('feature/x', 'nope', repo)).rejects.toThrow(/branch not found/)
   })
 
-  test('heuristic: branch at the closest merge-base (develop, not main)', () => {
-    const { target, source } = detectTarget('feature/x', undefined, repo)
+  test('heuristic: branch at the closest merge-base (develop, not main)', async () => {
+    const { target, source } = await detectTarget('feature/x', undefined, repo)
     expect(target).toBe('develop')
     expect(source).toContain('heuristic')
   })
 })
 
 describe('prep', () => {
-  test('complete input, non-ASCII paths intact', () => {
-    const input = prep({ target: 'develop', cwd: repo })
+  test('complete input, non-ASCII paths intact', async () => {
+    const input = await prep({ target: 'develop', cwd: repo })
     expect(input.branch).toBe('feature/x')
     expect(input.target).toBe('develop')
     expect(input.commits).toEqual(['feat: fichier accentué'])
@@ -69,42 +76,42 @@ describe('prep', () => {
     expect(input.diff).not.toContain('\\303')
   })
 
-  test('rules: null without RULES.md, formatted [Cn] grid lines with it', () => {
-    expect(prep({ target: 'develop', cwd: repo, quiet: true }).rules).toBeNull()
+  test('rules: null without RULES.md, formatted [Cn] grid lines with it', async () => {
+    expect((await prep({ target: 'develop', cwd: repo, quiet: true })).rules).toBeNull()
     mkdirSync(join(repo, '.codesema'), { recursive: true })
     const rulesPath = join(repo, '.codesema', 'RULES.md')
     writeFileSync(rulesPath, '# Rules\n- no any | Where to look: exported APIs\n')
     try {
-      const input = prep({ target: 'develop', cwd: repo, quiet: true })
+      const input = await prep({ target: 'develop', cwd: repo, quiet: true })
       expect(input.rules).toEqual(['[C1] no any | Where to look: exported APIs'])
     } finally {
       rmSync(rulesPath, { force: true })
     }
   })
 
-  test('current branch = target: error', () => {
+  test('current branch = target: error', async () => {
     run(['checkout', 'develop'])
     try {
-      expect(() => prep({ target: 'develop', cwd: repo })).toThrow(/target branch itself/)
+      await expect(prep({ target: 'develop', cwd: repo })).rejects.toThrow(/target branch itself/)
     } finally {
       run(['checkout', 'feature/x'])
     }
   })
 
-  test('detached HEAD: error', () => {
+  test('detached HEAD: error', async () => {
     run(['checkout', '--detach'])
     try {
-      expect(() => prep({ target: 'develop', cwd: repo })).toThrow(/detached HEAD/)
+      await expect(prep({ target: 'develop', cwd: repo })).rejects.toThrow(/detached HEAD/)
     } finally {
       run(['checkout', 'feature/x'])
     }
   })
 
-  test('truncation counts code points and never splits a surrogate pair', () => {
+  test('truncation counts code points and never splits a surrogate pair', async () => {
     run(['checkout', '-b', 'feature/emoji-subject', 'develop'])
     try {
       commitFile('emoji.txt', 'x\n', `feat: ${'🚀'.repeat(200)}`)
-      const input = prep({ target: 'develop', cwd: repo, quiet: true })
+      const input = await prep({ target: 'develop', cwd: repo, quiet: true })
       const subject = input.commits[0] ?? ''
       expect(subject.endsWith('…')).toBe(true)
       expect(Array.from(subject)).toHaveLength(120)
@@ -114,11 +121,11 @@ describe('prep', () => {
     }
   })
 
-  test('overlong commit subjects are truncated with an ellipsis', () => {
+  test('overlong commit subjects are truncated with an ellipsis', async () => {
     run(['checkout', '-b', 'feature/long-subject', 'develop'])
     try {
       commitFile('long.txt', 'x\n', `feat: ${'y'.repeat(400)}`)
-      const input = prep({ target: 'develop', cwd: repo, quiet: true })
+      const input = await prep({ target: 'develop', cwd: repo, quiet: true })
       expect(input.commits).toHaveLength(1)
       expect(input.commits[0]?.length).toBeLessThanOrEqual(120)
       expect(input.commits[0]?.startsWith('feat: ')).toBe(true)
@@ -128,12 +135,12 @@ describe('prep', () => {
     }
   })
 
-  test('impact_candidates: null when the diff touches no supported source file', () => {
-    const input = prep({ target: 'develop', cwd: repo, quiet: true })
+  test('impact_candidates: null when the diff touches no supported source file', async () => {
+    const input = await prep({ target: 'develop', cwd: repo, quiet: true })
     expect(input.impact_candidates).toBeNull()
   })
 
-  test('diff carries 10 context lines around each change', () => {
+  test('diff carries 10 context lines around each change', async () => {
     run(['checkout', 'develop'])
     const lines = Array.from({ length: 30 }, (_, i) => `line${i + 1}`)
     writeFileSync(join(repo, 'context.txt'), `${lines.join('\n')}\n`)
@@ -145,7 +152,7 @@ describe('prep', () => {
       writeFileSync(join(repo, 'context.txt'), `${lines.join('\n')}\n`)
       run(['add', '-A'])
       run(['commit', '-m', 'feat: change middle line'])
-      const input = prep({ target: 'develop', cwd: repo, quiet: true })
+      const input = await prep({ target: 'develop', cwd: repo, quiet: true })
       expect(input.diff).toContain('line7\n')
       expect(input.diff).toContain('line23\n')
     } finally {
@@ -153,7 +160,7 @@ describe('prep', () => {
     }
   })
 
-  test('impact_candidates: filled when a changed export has callers outside the diff', () => {
+  test('impact_candidates: filled when a changed export has callers outside the diff', async () => {
     run(['checkout', 'develop'])
     writeFileSync(
       join(repo, 'greeting.ts'),
@@ -172,7 +179,7 @@ describe('prep', () => {
         'export function greetUser(name: string, loud: boolean): string {\n  return name\n}\n',
         'feat: loud greeting',
       )
-      const input = prep({ target: 'develop', cwd: repo, quiet: true })
+      const input = await prep({ target: 'develop', cwd: repo, quiet: true })
       const symbol = input.impact_candidates?.symbols.find((s) => s.name === 'greetUser')
       expect(symbol?.change).toBe('modified')
       expect(symbol?.used_at).toContain('consumer.ts:2')
@@ -184,17 +191,17 @@ describe('prep', () => {
 })
 
 describe('computePrepInput', () => {
-  test('computes the exact same input as prep, without writing .codesema/input.json', () => {
+  test('computes the exact same input as prep, without writing .codesema/input.json', async () => {
     rmSync(join(repo, '.codesema'), { recursive: true, force: true })
-    const input = computePrepInput({ target: 'develop', cwd: repo })
+    const input = await computePrepInput({ target: 'develop', cwd: repo })
     expect(input.branch).toBe('feature/x')
     expect(input.target).toBe('develop')
     expect(input.commits).toEqual(['feat: fichier accentué'])
     expect(existsSync(join(repo, '.codesema', 'input.json'))).toBe(false)
   })
 
-  test('prep still writes input.json by consuming computePrepInput', () => {
-    const input = prep({ target: 'develop', cwd: repo, quiet: true })
+  test('prep still writes input.json by consuming computePrepInput', async () => {
+    const input = await prep({ target: 'develop', cwd: repo, quiet: true })
     expect(existsSync(join(repo, '.codesema', 'input.json'))).toBe(true)
     expect(JSON.parse(readFileSync(join(repo, '.codesema', 'input.json'), 'utf8')).branch).toBe(
       input.branch,
@@ -214,5 +221,72 @@ describe('computeDiffSummary', () => {
 
   test('throws when there is no merge base between the two refs', () => {
     expect(() => computeDiffSummary('feature/x', 'does-not-exist', repo)).toThrow(/no merge-base/)
+  })
+})
+
+describe('boot probes', () => {
+  /** Records every launch and holds the answers, so launches and answers are distinguishable. */
+  function heldExec() {
+    const launches: { cmd: string; args: string[] }[] = []
+    const releases: ((value: string | null) => void)[] = []
+    const execFn: ProbeExecFn = (cmd, args) => {
+      launches.push({ cmd, args })
+      return new Promise<string | null>((resolve) => releases.push(resolve))
+    }
+    return {
+      launches,
+      execFn,
+      release: (values: (string | null)[]) => {
+        releases.forEach((resolve, index) => resolve(values[index] ?? null))
+      },
+    }
+  }
+
+  test('both forge probes are launched before the first one answers', async () => {
+    const rig = heldExec()
+    const pending = targetFromForge(repo, rig.execFn)
+    // No await yet: glab and gh are already in flight together. Chained, they
+    // cost 8s + 8s; concurrent, one shared window.
+    expect(rig.launches.map((l) => l.cmd)).toEqual(['glab', 'gh'])
+    // Never a real forge CLI and never a shell string: the argv IS the assertion.
+    expect(rig.launches[0]?.args).toEqual(['mr', 'view', '--output', 'json'])
+    expect(rig.launches[1]?.args).toEqual([
+      'pr',
+      'view',
+      '--json',
+      'baseRefName',
+      '--jq',
+      '.baseRefName',
+    ])
+
+    rig.release([null, null])
+    expect(await pending).toBeNull()
+  })
+
+  test('gitlab still wins over github when both answer', async () => {
+    const rig = heldExec()
+    const pending = targetFromForge(repo, rig.execFn)
+    rig.release([JSON.stringify({ target_branch: 'develop' }), 'main'])
+    expect(await pending).toEqual({ target: 'develop', source: 'gitlab (glab mr view)' })
+  })
+
+  test('github answers alone when glab has nothing usable', async () => {
+    const rig = heldExec()
+    const pending = targetFromForge(repo, rig.execFn)
+    rig.release(['{ not json', 'develop'])
+    expect(await pending).toEqual({ target: 'develop', source: 'github (gh pr view)' })
+  })
+
+  test('the whole boot fans out: forge and agent probes all fly before any answer', async () => {
+    const rig = heldExec()
+    const forge = targetFromForge(repo, rig.execFn)
+    const agents = detectAgents(repo, rig.execFn)
+    // Five probes (2 forges + 3 agents), zero answers so far: sequentially this
+    // is where the ~40s of boot went.
+    expect(rig.launches.map((l) => l.cmd)).toEqual(['glab', 'gh', ...AGENT_DEFS.map((d) => d.bin)])
+
+    rig.release([null, null, null, null, null])
+    expect(await forge).toBeNull()
+    expect(await agents).toEqual([])
   })
 })

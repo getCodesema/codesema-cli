@@ -135,12 +135,12 @@ function installShutdownHandlers(
  * one-time approval `codesema review` performs interactively. Outside a repo
  * there is no repo config, hence no TOFU surface to check.
  */
-function resolveAgentCommand(
+async function resolveAgentCommand(
   cwd: string,
   repoRoot: string | null,
   configured: string | undefined,
-): string {
-  const [detected] = detectAgents(cwd)
+): Promise<string> {
+  const [detected] = await detectAgents(cwd)
   const agentCommand = configured ?? (detected ? defaultCommand(detected) : undefined)
   if (!agentCommand) {
     throw new Error(t('agent.noneFound', { bins: AGENT_DEFS.map((d) => d.bin).join(', ') }))
@@ -163,7 +163,7 @@ export async function workspace(opts: {
   // project, a plain directory opens the workspace on the registry as-is.
   const repoRoot = tryGit(['rev-parse', '--show-toplevel'], opts.cwd)
   const config = loadConfig(repoRoot)
-  const agentCommand = resolveAgentCommand(opts.cwd, repoRoot, config.agent)
+  const agentCommand = await resolveAgentCommand(opts.cwd, repoRoot, config.agent)
   // A custom (non claude/codex/gemini) agent command gets NO hardening flags:
   // full env, no read-only harness, no strict-mcp. The user chose it, but the
   // workspace must say so out loud once per boot.

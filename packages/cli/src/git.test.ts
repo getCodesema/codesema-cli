@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { subprocessEnv } from './git.js'
+import { PROBE_TIMEOUT_MS, subprocessEnv, tryExecAsync } from './git.js'
 
 describe('subprocessEnv', () => {
   test('purges variables that redirect git to a different repo', () => {
@@ -61,5 +61,23 @@ describe('subprocessEnv', () => {
         process.env.GIT_DIR = previous
       }
     }
+  })
+})
+
+describe('tryExecAsync', () => {
+  test('keeps tryExec semantics: null when the binary is missing, never a throw', async () => {
+    expect(await tryExecAsync('codesema-no-such-binary', ['--version'], process.cwd())).toBeNull()
+  })
+
+  test('keeps tryExec semantics: trimmed stdout on success, argv only', async () => {
+    expect(await tryExecAsync('git', ['--version'], process.cwd())).toMatch(/^git version/)
+  })
+
+  test('null on a failing command, like its blocking sibling', async () => {
+    expect(await tryExecAsync('git', ['not-a-git-command'], process.cwd())).toBeNull()
+  })
+
+  test('the per-probe budget is unchanged (8s), only the waiting is shared', () => {
+    expect(PROBE_TIMEOUT_MS).toBe(8000)
   })
 })

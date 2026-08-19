@@ -10,11 +10,13 @@ import {
   refExists,
   repoRoot,
   revListCount,
-  tryExec,
+  tryExecAsync,
   tryGit,
+  type ProbeExecFn,
 } from './git.js'
 import { t } from './i18n.js'
 import { buildImpactCandidates, type ImpactCandidates } from './impact.js'
+import { runProbes } from './probes.js'
 import { loadRules } from './rules.js'
 import type { ServerContext } from './server-context.js'
 import { renderFieldRows, type FieldRow } from './ui.js'
@@ -81,14 +83,40 @@ function sameBranch(a: string, b: string): boolean {
   return short(a) === short(b)
 }
 
-function targetFromForge(cwd: string): { target: string; source: string } | null {
+/**
+ * Target branch as the forge CLIs see it. Both probes are launched before the
+ * first one answers, so the pair costs one shared 8s window instead of 16s
+ * chained; the per-probe timeout is untouched and gitlab still wins over github
+ * when both answer.
+ */
+export async function targetFromForge(
+  cwd: string,
+  execFn: ProbeExecFn = tryExecAsync,
+): Promise<{ target: string; source: string } | null> {
   // Each probe blocks up to 8s; when origin clearly names one forge, skip the other.
   // An unrecognized remote (self-hosted on a custom domain) still probes both.
   const hint = detectForgeHint(cwd)
   const skipGitlab = hint === 'github'
   const skipGithub = hint === 'gitlab'
 
-  const glabOut = skipGitlab ? null : tryExec('glab', ['mr', 'view', '--output', 'json'], cwd)
+  const probes = [
+    ...(skipGitlab
+      ? []
+      : [{ label: 'glab', run: () => execFn('glab', ['mr', 'view', '--output', 'json'], cwd) }]),
+    ...(skipGithub
+      ? []
+      : [
+          {
+            label: 'gh',
+            run: () =>
+              execFn('gh', ['pr', 'view', '--json', 'baseRefName', '--jq', '.baseRefName'], cwd),
+          },
+        ]),
+  ]
+  const outcomes = await runProbes(probes)
+  const byLabel = new Map(probes.map((probe, index) => [probe.label, outcomes[index] ?? null]))
+
+  const glabOut = byLabel.get('glab') ?? null
   if (glabOut) {
     try {
       const name = (JSON.parse(glabOut) as { target_branch?: string }).target_branch
@@ -102,9 +130,7 @@ function targetFromForge(cwd: string): { target: string; source: string } | null
       // unexpected glab output: fall through to the next fallback
     }
   }
-  const ghOut = skipGithub
-    ? null
-    : tryExec('gh', ['pr', 'view', '--json', 'baseRefName', '--jq', '.baseRefName'], cwd)
+  const ghOut = byLabel.get('gh') ?? null
   if (ghOut) {
     const ref = resolveRef(ghOut, cwd)
     if (ref) {
@@ -153,12 +179,12 @@ function targetFromHeuristic(
   return best ? { target: best.target, source: 'heuristic (nearest merge-base)' } : null
 }
 
-export function detectTarget(
+export async function detectTarget(
   current: string,
   flag: string | undefined,
   cwd: string,
   headRef = 'HEAD',
-): { target: string; source: string } {
+): Promise<{ target: string; source: string }> {
   if (flag) {
     const ref = resolveRef(flag, cwd)
     if (!ref) {
@@ -166,7 +192,7 @@ export function detectTarget(
     }
     return { target: ref, source: '--target flag' }
   }
-  const forge = headRef === 'HEAD' ? targetFromForge(cwd) : null
+  const forge = headRef === 'HEAD' ? await targetFromForge(cwd) : null
   const detected = forge ?? targetFromOriginHead(cwd) ?? targetFromHeuristic(current, headRef, cwd)
   if (!detected) {
     throw new Error(t('prep.noTarget'))
@@ -276,11 +302,11 @@ export function computeDiffSummary(sourceRef: string, targetRef: string, cwd: st
 }
 
 /** Pure calculation behind `prep`: no disk writes, safe to call for a preview. */
-export function computePrepInput(opts: {
+export async function computePrepInput(opts: {
   branch?: string | undefined
   target?: string | undefined
   cwd: string
-}): PrepInput {
+}): Promise<PrepInput> {
   const cwd = repoRoot(opts.cwd)
   const checkedOut = currentBranch(cwd)
   const branch = opts.branch ?? checkedOut
@@ -292,7 +318,7 @@ export function computePrepInput(opts: {
   }
   const headRef = opts.branch && opts.branch !== checkedOut ? opts.branch : 'HEAD'
 
-  const { target, source } = detectTarget(branch, opts.target, cwd, headRef)
+  const { target, source } = await detectTarget(branch, opts.target, cwd, headRef)
   if (sameBranch(target, branch)) {
     throw new Error(t('prep.targetIsSelf', { branch }))
   }
@@ -328,13 +354,13 @@ export function computePrepInput(opts: {
   }
 }
 
-export function prep(opts: {
+export async function prep(opts: {
   branch?: string | undefined
   target?: string | undefined
   cwd: string
   quiet?: boolean | undefined
-}): PrepInput {
-  const input = computePrepInput(opts)
+}): Promise<PrepInput> {
+  const input = await computePrepInput(opts)
   const {
     branch,
     target,

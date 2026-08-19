@@ -11,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
@@ -166,24 +167,140 @@ export type AppendTaskEventInput = {
   reason_code?: ReasonCode
 }
 
+/** Tolerant read of a journal: null when there is none, or it cannot be read. */
+function defaultJournalReader(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+let journalReader: (path: string) => string | null = defaultJournalReader
+
+/**
+ * Test seam: every read of an events.jsonl content goes through this hook, so a
+ * test can count journal reads (an append must cost zero of them once the
+ * cursor is warm) without instrumenting readFileSync globally. Pass null to
+ * restore the real read.
+ */
+export function setJournalReader(reader: ((path: string) => string | null) | null): void {
+  journalReader = reader ?? defaultJournalReader
+}
+
+/**
+ * What this process knows about a journal without reading it again. `seq` is
+ * the highest seq written so far (0 on an empty or unreadable journal), `size`
+ * the byte length events.jsonl had when we last left it, and `needsNewline`
+ * says the tail line is unterminated (a crash mid-append) so the next append
+ * must close it first.
+ */
+type JournalCursor = {
+  seq: number
+  size: number
+  needsNewline: boolean
+}
+
+/**
+ * Journal cursors, keyed by the events.jsonl path. Filled by ONE tolerant read
+ * at first access, then kept up to date in memory: appending an event costs a
+ * write, never a re-read of the whole journal — a chatty turn writes tens of
+ * thousands of tool_use/tool_result lines, and re-reading each time made an
+ * append O(journal size).
+ *
+ * Correct as long as a single process appends to a given journal, which is what
+ * D1 guarantees (one workspace process per machine behind the global lock). The
+ * stat guard below still catches an outside append, so the cache degrades to a
+ * re-read instead of corrupting the journal; a second concurrent writer would
+ * have to be revisited together with the store itself.
+ *
+ * Never persisted: after a crash or a restart the map is empty, the first
+ * append re-reads the journal and the seq resumes from the highest valid seq on
+ * disk — the same single code path as a cold first access, never a counter
+ * reset to 0.
+ */
+const journalCursors = new Map<string, JournalCursor>()
+
+/** Test seam: drops the in-memory cursors, i.e. simulates a store restart. */
+export function resetJournalCursors(): void {
+  journalCursors.clear()
+}
+
+/** Size of the journal on disk; 0 when there is none. Metadata only, no read. */
+function journalSize(path: string): number {
+  try {
+    return statSync(path).size
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Derives a cursor from disk with ONE tolerant read: illegible lines are
+ * ignored (they must not reset the counter) and nothing here ever throws —
+ * invariant 5, the journal is informative, never a reason to fail a task.
+ */
+function readJournalCursor(path: string): JournalCursor {
+  const raw = journalReader(path)
+  if (raw === null) {
+    return { seq: 0, size: 0, needsNewline: false }
+  }
+  let seq = 0
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) {
+      continue
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const event = sanitizeTaskEvent(parsed)
+    if (event && event.seq > seq) {
+      seq = event.seq
+    }
+  }
+  return {
+    seq,
+    size: Buffer.byteLength(raw, 'utf8'),
+    needsNewline: raw.length > 0 && !raw.endsWith('\n'),
+  }
+}
+
+/**
+ * The cursor to write the next event with. Reads the journal only when this
+ * process has never touched it, or when its size no longer matches what we
+ * left (hand editing, a crash-truncated tail, an outside writer): the memory
+ * copy is dropped rather than trusted.
+ */
+function journalCursor(path: string): JournalCursor {
+  const cached = journalCursors.get(path)
+  if (cached && cached.size === journalSize(path)) {
+    return cached
+  }
+  const fresh = readJournalCursor(path)
+  journalCursors.set(path, fresh)
+  return fresh
+}
+
 /**
  * Appends one journal line with an auto-incremented seq (1-based, one past the
  * highest valid seq already on disk — corrupt lines don't reset the counter)
  * and at = now. The event is sanitized before writing so the journal stays
- * bounded no matter what the caller passes in data.
+ * bounded no matter what the caller passes in data. The seq comes from the
+ * in-memory cursor, so the journal is read once per task per process, not once
+ * per event.
  */
 export function appendTaskEvent(cwd: string, id: string, input: AppendTaskEventInput): TaskEvent {
   if (!isTaskId(id)) {
     throw new Error(`invalid task id: ${id}`)
   }
-  let last = 0
-  for (const event of readTaskEvents(cwd, id)) {
-    if (event.seq > last) {
-      last = event.seq
-    }
-  }
+  const dir = taskDir(cwd, id)
+  const path = join(dir, 'events.jsonl')
+  const cursor = journalCursor(path)
   const event = sanitizeTaskEvent({
-    seq: last + 1,
+    seq: cursor.seq + 1,
     at: new Date().toISOString(),
     type: input.type,
     data: input.data,
@@ -194,22 +311,17 @@ export function appendTaskEvent(cwd: string, id: string, input: AppendTaskEventI
     // caller fails loudly instead of writing an unreadable line.
     throw new Error('invalid task event')
   }
-  const dir = taskDir(cwd, id)
   mkdirSync(dir, { recursive: true })
-  const path = join(dir, 'events.jsonl')
   // A crash mid-append can leave a truncated tail with no newline; appending
   // directly would glue this event onto the broken line and lose both. Close
   // the broken line first so only the corrupt one is sacrificed.
-  let prefix = ''
-  try {
-    const raw = readFileSync(path, 'utf8')
-    if (raw.length > 0 && !raw.endsWith('\n')) {
-      prefix = '\n'
-    }
-  } catch {
-    // No journal yet: nothing to repair.
-  }
-  appendFileSync(path, `${prefix}${JSON.stringify(event)}\n`)
+  const line = `${cursor.needsNewline ? '\n' : ''}${JSON.stringify(event)}\n`
+  appendFileSync(path, line)
+  journalCursors.set(path, {
+    seq: event.seq,
+    size: cursor.size + Buffer.byteLength(line, 'utf8'),
+    needsNewline: false,
+  })
   return event
 }
 
@@ -267,10 +379,8 @@ export function readTaskEvents(cwd: string, id: string, opts?: { afterSeq?: numb
     return []
   }
   const path = join(taskDir(cwd, id), 'events.jsonl')
-  let raw: string
-  try {
-    raw = readFileSync(path, 'utf8')
-  } catch {
+  const raw = journalReader(path)
+  if (raw === null) {
     return []
   }
   const afterSeq = opts?.afterSeq
