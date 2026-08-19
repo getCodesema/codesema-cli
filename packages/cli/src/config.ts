@@ -14,7 +14,13 @@ export type CodesemaConfig = {
   target?: string | undefined
   port?: number | undefined
   timeout?: number | undefined
-  /** Cap of concurrently running workspace tasks (default in task-runner.ts). */
+  /**
+   * DEPRECATED (T1.3): superseded by `maxConcurrentAgents`. Still READ and
+   * HONORED as its alias — never ignored in silence (invariant § 0.3 n°2) —
+   * with a named boot warning (workspace.ts's maxParallelNotice) whenever it
+   * is set. When BOTH keys are present, `maxConcurrentAgents` wins the value
+   * (design.md Decision 5) and the warning still fires.
+   */
   maxParallelTasks?: number | undefined
   /**
    * How many of the most-recently-updated TERMINATED (shipped/failed) tasks
@@ -25,6 +31,14 @@ export type CodesemaConfig = {
    * whatever this is set to.
    */
   taskRetentionCount?: number | undefined
+  /**
+   * Machine-wide load cap (T1.3, D4): the maximum number of heavy processes
+   * — agent turns, end-of-turn reviews and containerized checks confounded in
+   * ONE budget — this workspace runs at once, across every project.
+   * Undefined applies DEFAULT_MAX_CONCURRENT_AGENTS (load-cap.ts, currently
+   * 4). See `maxParallelTasks` for the key this replaces.
+   */
+  maxConcurrentAgents?: number | undefined
   /**
    * Semantic watchdog budgets (D3), in SECONDS like `timeout`. Absent means the
    * D3 defaults apply (30 min of silence, 2 h of one tool in flight, a 30 s
@@ -151,6 +165,9 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       ...(Number.isInteger(raw.taskRetentionCount) && (raw.taskRetentionCount as number) >= 0
         ? { taskRetentionCount: raw.taskRetentionCount as number }
         : {}),
+      ...(Number.isInteger(raw.maxConcurrentAgents) && (raw.maxConcurrentAgents as number) >= 1
+        ? { maxConcurrentAgents: raw.maxConcurrentAgents as number }
+        : {}),
       // Read from either scope, but resolved ONCE at boot for the whole
       // workspace: see the TODO(T1.4) on CodesemaConfig. Whichever file holds
       // them, they can only ever change when a run is cut — never what the run
@@ -173,6 +190,38 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
     }
   } catch {
     return {}
+  }
+}
+
+/**
+ * Whether `key` is PRESENT in the raw JSON at `path` but not usable as a
+ * positive integer — as opposed to simply absent. `parseConfig` drops such a
+ * value in silence, the same whitelist-and-truncate doctrine every other
+ * malformed numeric field in this file gets (a bad `port` or `timeout`
+ * quietly falls back to its own default too). The two machine-cap keys
+ * (`maxConcurrentAgents`, `maxParallelTasks`, T1.3) are the one place this
+ * distinction is surfaced to a caller that wants to WARN about it
+ * (workspace.ts's boot notices) rather than merely absorb it: adversarial
+ * review, MINEUR — a user who typed `maxConcurrentAgents: 0` meant to size
+ * their machine's parallelism, and silently getting
+ * DEFAULT_MAX_CONCURRENT_AGENTS instead is exactly the silent failure mode
+ * invariant § 0.3 n°2 forbids elsewhere. Never throws: unreadable or
+ * unparsable JSON reads as "nothing to warn about" — parseConfig's own catch
+ * already degrades that case to defaults, and this must not double-report it.
+ */
+export function hasInvalidPositiveIntKey(
+  path: string,
+  key: 'maxConcurrentAgents' | 'maxParallelTasks',
+): boolean {
+  if (!existsSync(path)) {
+    return false
+  }
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+    const value = raw[key]
+    return value !== undefined && !(Number.isInteger(value) && (value as number) >= 1)
+  } catch {
+    return false
   }
 }
 

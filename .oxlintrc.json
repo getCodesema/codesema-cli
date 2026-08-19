@@ -57,6 +57,12 @@
       }
     },
     {
+      "files": ["packages/web/src/components/**"],
+      "rules": {
+        "unicorn/filename-case": ["error", { "case": "pascalCase" }]
+      }
+    },
+    {
       "files": ["packages/web/src/composables/**"],
       "rules": {
         "unicorn/filename-case": ["error", { "case": "camelCase" }]

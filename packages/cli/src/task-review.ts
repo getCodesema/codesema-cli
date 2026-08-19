@@ -14,6 +14,7 @@ import { ensureWorkDir } from './config.js'
 import { sanitizeRecord, type Finding, type ReviewRecord, type TaskRecord } from './contract.js'
 import { buildAgentFixPrompt } from './fix.js'
 import { isAncestor, refExists, tryGit } from './git.js'
+import { createLoadCap, DEFAULT_MAX_CONCURRENT_AGENTS, type LoadCap } from './load-cap.js'
 import { prep } from './prep.js'
 import { archiveRecord, readJson } from './record.js'
 import {
@@ -204,6 +205,25 @@ export type CreateTaskReviewerOptions = {
   runSimpleFlowFn?: typeof runSimpleFlow
   runDualFlowFn?: typeof runDualFlow
   archiveRecordFn?: typeof archiveRecord
+  /**
+   * Machine-wide load cap (T1.3, D4): the review agent is a heavy consumer
+   * like a turn or a checks run, and must acquire its OWN 'review' slot
+   * before actually running — never while holding another one (the runner
+   * already released the turn's slot before calling this hook; see
+   * task-runner.ts's finishTurn/runTurn). Injectable (§ 0.4); defaults to a
+   * fresh, private cap so every existing test that does not care about
+   * cross-consumer concurrency keeps working unmodified.
+   *
+   * The acquire is made INTERRUPTIBLE with `io.signal` (adversarial review
+   * fix): without it, a review parked on a saturated cap sat there until the
+   * shutdown's own DRAIN_TIMEOUT_MS gave up — up to 30s of a Ctrl-C looking
+   * hung, on a status ('reviewing') the record itself calls "uninterruptible,
+   * a status with no way out inside this session". `io.signal` is exactly
+   * the signal `runner.shutdown()` aborts; on abort while queued, `acquire`
+   * hands back immediately and the `io.signal.aborted` check right below
+   * settles the task as 'interrupted', slot never taken.
+   */
+  loadCap?: Pick<LoadCap, 'acquire'>
 }
 
 type FlowRunner = (
@@ -276,6 +296,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
   const mode: TaskReviewMode = opts.mode ?? 'simple'
   const prepFn = opts.prepFn ?? prep
   const archive = opts.archiveRecordFn ?? archiveRecord
+  const loadCap = opts.loadCap ?? createLoadCap(DEFAULT_MAX_CONCURRENT_AGENTS)
 
   return async (record, io) => {
     // The runner already persisted 'reviewing' before calling.
@@ -341,7 +362,27 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         settleInterrupted(record, io)
         return
       }
-      const outcome = await runReviewFlow(opts, input, io)
+      // T1.3 (D4): the review agent is a heavy consumer of the machine load
+      // cap, gated tightly around the actual agent call — never around prep
+      // (local git work) nor around the archive/settle that follows (no
+      // process, nothing worth budgeting). Acquired here, not earlier: the
+      // runner already released the turn's OWN slot before this hook was
+      // even called, so there is nothing held to self-deadlock against.
+      const release = await loadCap.acquire('review', io.signal)
+      let outcome: SimpleOutcome | DualOutcome
+      try {
+        if (io.signal.aborted) {
+          // The shutdown landed while this review was queued for a slot — or
+          // fired WHILE it was queued, in which case `acquire` already handed
+          // this back immediately instead of leaving it parked (see the
+          // `loadCap` option doc above). Either way nothing was ever spawned.
+          settleInterrupted(record, io)
+          return
+        }
+        outcome = await runReviewFlow(opts, input, io)
+      } finally {
+        release()
+      }
 
       if (io.signal.aborted) {
         // The agent was killed by the shutdown: whatever came back is a

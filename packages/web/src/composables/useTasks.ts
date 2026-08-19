@@ -61,6 +61,14 @@ export type TaskState = {
   liveMessages: LiveMessage[]
   /** Live token meter of the in-flight turn (task_meta frames, volatile). */
   liveTokens: number
+  /**
+   * Machine-wide load cap occupation (T1.3, D4), volatile: the last
+   * `task_meta` frame that carried one. Null until such a frame has been
+   * seen — which is NOT proof the cap was never touched, only that nothing
+   * here has said so yet (adversarial review, MAJEUR 2: this field existed on
+   * the wire but nothing read it).
+   */
+  liveLoadCap: { occupied: number; max: number; queued: number; waitingForSlot: boolean } | null
   /** Sandboxed checks result (volatile mirror of checks.json): hydrated by
    * GET /api/tasks/:id/checks on demand, updated by 'task_checks' frames.
    * Null until either happened — which is NOT proof no checks ever ran. */
@@ -113,6 +121,7 @@ export function upsertRecord(store: TaskStore, projectId: string, record: TaskRe
       liveText: '',
       liveMessages: [],
       liveTokens: 0,
+      liveLoadCap: null,
       checks: null,
     })
     return
@@ -168,6 +177,31 @@ function pushEvent(store: TaskStore, projectId: string, taskId: string, event: T
   mergeEvent(current.events, event)
 }
 
+/** The payload of a 'task_meta' SSE frame — see TaskEnvelope in types.ts. */
+type TaskMetaData = Extract<TaskEnvelope, { event: { name: 'task_meta' } }>['event']['data']
+
+/**
+ * Applies one 'task_meta' frame: an ordinary token-meter tick updates the
+ * live count, a load-cap transition (T1.3, D4) updates the occupation —
+ * NEVER both from the same frame. Exported for its test (adversarial review
+ * round 3, MAJEUR 4): the previous round's `if (load_cap)` guard protected
+ * `liveLoadCap` from being wiped by a plain tick, but left `liveTokens`
+ * unguarded the OTHER way — a load-cap frame's `tokens: 0` (accurate for
+ * THAT frame; no turn has produced any yet) would silently zero a live count
+ * an earlier tick already established, correct only by the accident of event
+ * ordering, not by construction.
+ */
+export function applyTaskMetaFrame(
+  current: Pick<TaskState, 'liveTokens' | 'liveLoadCap'>,
+  data: TaskMetaData,
+): void {
+  if (data.load_cap) {
+    current.liveLoadCap = { ...data.load_cap, waitingForSlot: data.waiting_for_slot ?? false }
+  } else {
+    current.liveTokens = data.tokens
+  }
+}
+
 function parseFrame<N extends TaskEnvelope['event']['name']>(
   e: Event,
 ): Extract<TaskEnvelope, { event: { name: N } }> {
@@ -176,6 +210,84 @@ function parseFrame<N extends TaskEnvelope['event']['name']>(
 
 /** Agent-assisted checks setup, one state per PROJECT (never per task). */
 type ChecksSetupStore = Map<string, ChecksSetupState>
+
+/**
+ * Every listener the task stream installs, as plain functions of an `Event`
+ * — the SSE wiring made testable (T1.3 round 4, MAJEUR 4). Extracted from
+ * `openStream` because the listener BODIES are where a store update can quietly
+ * stop going through the function that guards it: replacing
+ * `applyTaskMetaFrame(current, …)` with a direct pair of assignments left the
+ * whole suite green while re-introducing the very bug that function exists to
+ * prevent (a load-cap frame's `tokens: 0` zeroing a live count). Nothing here
+ * touches `EventSource`, so a test drives them with a `{ data }` object.
+ */
+export function taskStreamHandlers(
+  store: TaskStore,
+  setups: ChecksSetupStore,
+  connected: Ref<boolean>,
+  connections: Ref<number>,
+): Record<string, (e: Event) => void> {
+  return {
+    open: () => {
+      connected.value = true
+      connections.value++
+    },
+    // EventSource retries on its own; we only surface the connection state.
+    error: () => {
+      connected.value = false
+    },
+    task: (e) => {
+      const envelope = parseFrame<'task'>(e)
+      upsertRecord(store, envelope.project_id, envelope.event.data)
+    },
+    task_event: (e) => {
+      const envelope = parseFrame<'task_event'>(e)
+      pushEvent(store, envelope.project_id, envelope.task_id, envelope.event.data)
+    },
+    task_text: (e) => {
+      const envelope = parseFrame<'task_text'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        // Two channels in one frame: an indexed agent message accumulates, a
+        // bare progress line replaces the previous one.
+        applyLiveText(current, envelope.event.data)
+      }
+    },
+    task_meta: (e) => {
+      const envelope = parseFrame<'task_meta'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        applyTaskMetaFrame(current, envelope.event.data)
+      }
+    },
+    // Checks transitions (running → per-check update → final): each frame
+    // carries the WHOLE checks.json, so replacing is always correct — and a
+    // `null` payload (a 'running' the server took back because the run never
+    // started) puts the conversation back to "never ran", which is what
+    // re-enables its "Re-run checks" button.
+    task_checks: (e) => {
+      const envelope = parseFrame<'task_checks'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        current.checks = envelope.event.data
+      }
+    },
+    // Agent-assisted setup: the run's progress and its final proposal. The
+    // frame is project-scoped (no task_id) and its payload is parsed
+    // defensively — a bare proposal object reads as "ready" just like a state
+    // envelope.
+    checks_proposal: (e) => {
+      const envelope = parseFrame<'checks_proposal'>(e)
+      const projectId = envelope.project_id
+      // Merged, not replaced: applying consumes the proposal server-side and
+      // broadcasts an idle state that must not erase the local confirmation.
+      setups.set(
+        projectId,
+        mergeChecksSetup(setups.get(projectId), parseChecksSetup(envelope.event.data)),
+      )
+    },
+  }
+}
 
 function openStream(
   store: TaskStore,
@@ -186,60 +298,11 @@ function openStream(
   // The initial replay covers every task of every registered project; the
   // rail shows them all, only the right panel scopes to the active card.
   const source = new EventSource('/api/tasks/events')
-  source.addEventListener('open', () => {
-    connected.value = true
-    connections.value++
-  })
-  // EventSource retries on its own; we only surface the connection state.
-  source.addEventListener('error', () => {
-    connected.value = false
-  })
-  source.addEventListener('task', (e) => {
-    const envelope = parseFrame<'task'>(e)
-    upsertRecord(store, envelope.project_id, envelope.event.data)
-  })
-  source.addEventListener('task_event', (e) => {
-    const envelope = parseFrame<'task_event'>(e)
-    pushEvent(store, envelope.project_id, envelope.task_id, envelope.event.data)
-  })
-  source.addEventListener('task_text', (e) => {
-    const envelope = parseFrame<'task_text'>(e)
-    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
-    if (current) {
-      // Two channels in one frame: an indexed agent message accumulates, a
-      // bare progress line replaces the previous one.
-      applyLiveText(current, envelope.event.data)
-    }
-  })
-  source.addEventListener('task_meta', (e) => {
-    const envelope = parseFrame<'task_meta'>(e)
-    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
-    if (current) {
-      current.liveTokens = envelope.event.data.tokens
-    }
-  })
-  // Checks transitions (running → per-check update → final): each frame
-  // carries the WHOLE checks.json, so replacing is always correct.
-  source.addEventListener('task_checks', (e) => {
-    const envelope = parseFrame<'task_checks'>(e)
-    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
-    if (current) {
-      current.checks = envelope.event.data
-    }
-  })
-  // Agent-assisted setup: the run's progress and its final proposal. The frame
-  // is project-scoped (no task_id) and its payload is parsed defensively —
-  // a bare proposal object reads as "ready" just like a state envelope.
-  source.addEventListener('checks_proposal', (e) => {
-    const envelope = parseFrame<'checks_proposal'>(e)
-    const projectId = envelope.project_id
-    // Merged, not replaced: applying consumes the proposal server-side and
-    // broadcasts an idle state that must not erase the local confirmation.
-    setups.set(
-      projectId,
-      mergeChecksSetup(setups.get(projectId), parseChecksSetup(envelope.event.data)),
-    )
-  })
+  for (const [name, handler] of Object.entries(
+    taskStreamHandlers(store, setups, connected, connections),
+  )) {
+    source.addEventListener(name, handler)
+  }
   return source
 }
 

@@ -24,6 +24,7 @@ import type { CostDegradation } from './cost.js'
 import { DEFAULT_TIMEOUT_S } from './fix.js'
 import { refExists, tryGit } from './git.js'
 import { setLanguage } from './i18n.js'
+import { createLoadCap, type LoadCap } from './load-cap.js'
 import { projectIdFor } from './projects.js'
 import { CAGE_FORWARDED_ENV, type RunContainerTurnOptions } from './task-isolation.js'
 import {
@@ -1017,6 +1018,405 @@ describe('createTaskRunner', () => {
     await until(() => status(repo, task.id) === 'waiting_for_you')
     expect(readQueue(repo).entries).toEqual([])
     expect(runner.runningCount()).toBe(0)
+  })
+})
+
+// --- T1.3 (D4): the machine-wide load cap --------------------------------
+
+describe('machine load cap (T1.3, D4)', () => {
+  test('AC1/AC3: a slot held by something ELSE on the shared machine cap blocks a turn on an otherwise-free project, and it starts the moment the slot frees — with a reason distinguishable from the project-busy one', async () => {
+    const repo = makeRepo()
+    const cap = createLoadCap(1)
+    // Simulates a heavy consumer this runner does not own (a review, a checks
+    // run, or a turn on ANOTHER project) already holding the one machine slot.
+    const holderRelease = cap.tryAcquire('review')
+    expect(holderRelease).not.toBeNull()
+
+    const task = makeTask(repo, 'machine-blocked', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    runner.start(task)
+
+    // Never gets a chance to run: nothing about ITS OWN project is busy — the
+    // MACHINE is. The record names that, and the wording differs from the
+    // project-busy one ('another task of this project is already active').
+    await until(() => loadTask(repo, task.id)?.reason !== undefined)
+    expect(status(repo, task.id)).toBe('queued')
+    expect(loadTask(repo, task.id)?.reason).toEqual({
+      code: 'resource_busy',
+      detail:
+        'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run',
+    })
+    expect(loadTask(repo, task.id)?.reason?.detail).not.toBe(
+      'another task of this project is already active',
+    )
+
+    holderRelease?.()
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  // Round 4 (mineur): T1.3 is what turned "a slot freed ANYWHERE on the
+  // machine" into a reason to poke every runner in the process. A runner that
+  // shut down and kept its subscription would go on being pumped by every
+  // other project's releases for the rest of the process's life — a leak this
+  // ticket created and its own shutdown has to close.
+  test('shutdown unsubscribes the runner from the machine-wide slot notifications', async () => {
+    const repo = makeRepo()
+    const real = createLoadCap(2)
+    let live = 0
+    const cap: LoadCap = {
+      ...real,
+      onSlotFreed(listener) {
+        live++
+        const off = real.onSlotFreed(listener)
+        return () => {
+          live--
+          off()
+        }
+      },
+    }
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    expect(live).toBe(1)
+    await runner.shutdown()
+    // The mutant this kills: dropping `unsubscribeSlotFreed()` from
+    // `shutdown()` — nothing else in the suite ever looks at the listener set.
+    expect(live).toBe(0)
+  })
+
+  // Adversarial review round 3, MINEUR: a task that waits on the machine cap,
+  // gets its slot, and later waits again (a fresh reply, machine saturated a
+  // second time) gets journaled BOTH times, never silently treated as
+  // "already stated" from its FIRST wait.
+  //
+  // What kills what, MEASURED rather than reasoned (round 4, point 5 — the
+  // previous note here had it exactly backwards). Instrumenting both
+  // `machineWaiting.delete` sites over the whole CLI suite: the one on
+  // `launch()`'s success path fires 11 times with the id actually present;
+  // the one at the top of `schedule()` fires ZERO times — by the time a human
+  // gesture re-schedules a task, `launch()` has already cleared it. So the
+  // reachable cleanup is `launch()`'s, and `schedule()`'s is the unreached
+  // belt.
+  //
+  // Neither delete is killable on its own, and NOT because either is
+  // unreachable — because they cover for each other: drop `launch()`'s and
+  // the id stays in the set until `schedule()`'s (until then dead code) picks
+  // it up on the next reply, which restores `enteringWait` just in time.
+  // Removing BOTH turns this test red, which is the honest statement of what
+  // it protects: that the id is cleared SOMEWHERE between two waits. Anyone
+  // deleting one of them on the grounds that "it never fires" should delete
+  // `schedule()`'s, not `launch()`'s — and even then only knowing this test
+  // will no longer notice a later refactor that removes the other.
+  test('a task that gets its slot and later waits again on the machine cap is journaled BOTH times', async () => {
+    const repo = makeRepo()
+    const cap = createLoadCap(1)
+    const holderA = cap.tryAcquire('review')
+    expect(holderA).not.toBeNull()
+
+    const task = makeTask(repo, 'twice-blocked', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: fakeClaude(() => 'done\nQUESTION: next?').run,
+    })
+    runner.start(task)
+
+    const machineBusyEvents = () =>
+      readTaskEvents(repo, task.id).filter(
+        (e) => e.type === 'queue' && e.data.name === 'machine_busy',
+      )
+    await until(() => machineBusyEvents().length >= 1)
+    expect(machineBusyEvents()).toHaveLength(1)
+
+    // Freed: the task obtains the slot, runs its turn, settles.
+    holderA?.()
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const holderB = cap.tryAcquire('review')
+    expect(holderB).not.toBeNull()
+    expect(runner.reply(task.id, 'continue')).toMatchObject({ ok: true })
+
+    await until(() => machineBusyEvents().length >= 2)
+    expect(machineBusyEvents()).toHaveLength(2)
+
+    holderB?.()
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+  })
+
+  test('AC6: two concurrent start() on DIFFERENT projects sharing a cap of 1 never both pass, and the loser is retried once the winner is done', async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    const cap = createLoadCap(1)
+    let releaseGate: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      await gate
+      const raw = claudeStream('done')
+      options.onText?.(raw)
+      return raw
+    }
+    const runnerA = createTaskRunner({
+      cwd: repoA,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn,
+    })
+    const runnerB = createTaskRunner({
+      cwd: repoB,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn,
+    })
+    const taskA = makeTask(repoA, 'a', 'work a')
+    const taskB = makeTask(repoB, 'b', 'work b')
+    // Both start() calls run to completion, synchronously, before this test
+    // itself awaits anything: the reservation inside launch() is what decides
+    // the winner, not a race this test could ever observe mid-flight.
+    runnerA.start(taskA)
+    runnerB.start(taskB)
+    expect(cap.snapshot().occupied).toBe(1)
+
+    const aRunning = () => status(repoA, taskA.id) === 'running'
+    const bRunning = () => status(repoB, taskB.id) === 'running'
+    await until(() => aRunning() || bRunning())
+    // Exactly one — never both, never neither.
+    expect(aRunning() !== bRunning()).toBe(true)
+    const [loserRepo, loserTask] = aRunning() ? [repoB, taskB] : [repoA, taskA]
+    expect(loadTask(loserRepo, loserTask.id)?.status).toBe('queued')
+    expect(loadTask(loserRepo, loserTask.id)?.reason?.code).toBe('resource_busy')
+
+    releaseGate()
+    await until(
+      () =>
+        status(repoA, taskA.id) === 'waiting_for_you' &&
+        status(repoB, taskB.id) === 'waiting_for_you',
+    )
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  test('AC5: N+2 mixed turns, reviews and checks on a shared cap all get served and released, no interlock', async () => {
+    // Three projects; a cap of 2 so at least one of the three must queue.
+    const repos = [makeRepo(), makeRepo(), makeRepo()]
+    const cap = createLoadCap(2)
+    // Two extra, unrelated heavy consumers occupy load beyond what the three
+    // turns alone would need — mixed kinds, exactly AC5's "types mélangés".
+    const reviewRelease = await cap.acquire('review')
+    let releaseGate: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      await gate
+      const raw = claudeStream('done')
+      options.onText?.(raw)
+      return raw
+    }
+    const runners = repos.map((repo) =>
+      createTaskRunner({
+        cwd: repo,
+        command: 'claude -p',
+        timeoutMs: 5000,
+        loadCap: cap,
+        runAgentFn,
+      }),
+    )
+    const tasks = repos.map((repo, i) => makeTask(repo, `t${i}`, `work ${i}`))
+
+    for (const [i, runner] of runners.entries()) {
+      runner.start(tasks[i]!)
+    }
+    // Exactly one turn (cap 2 minus the one review already held) can be
+    // running at once; the other two stay machine-blocked in their own
+    // project queue.
+    await until(() => runners.some((r) => r.runningCount() === 1))
+    expect(cap.snapshot().occupied).toBe(2)
+
+    // A fourth, unrelated consumer now joins the FIFO BEHIND the two
+    // machine-blocked turns — the cap is genuinely full at this point (review
+    // + the one running turn), so this one queues rather than jumping in.
+    const checksAcquire = cap.acquire('checks')
+    await Promise.resolve()
+    expect(cap.snapshot().queued).toBeGreaterThanOrEqual(1)
+
+    // Release the review: the machine cap's own FIFO hands that slot straight
+    // to checks (the only thing actually PARKED in it — the two blocked turns
+    // retry via onSlotFreed instead, since launch()'s tryAcquire never
+    // queues). Opening the gate then lets the running turn finish, freeing
+    // its slot for the two still-blocked turns, one after the other.
+    reviewRelease()
+    releaseGate()
+    await until(() => tasks.every((task, i) => status(repos[i]!, task.id) === 'waiting_for_you'))
+    const checksRelease = await checksAcquire
+    checksRelease()
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 2, queued: 0 })
+    for (const runner of runners) {
+      expect(runner.runningCount()).toBe(0)
+    }
+  })
+
+  test("design.md Decision 4: the turn's slot is released BEFORE onTurnDone can acquire its own, so a cap of 1 never self-deadlocks", async () => {
+    const repo = makeRepo()
+    const cap = createLoadCap(1)
+    const task = makeTask(repo, 'self-deadlock guard', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: fakeClaude(() => 'done').run,
+      onTurnDone: async (record, io) => {
+        // Simulates the REAL reviewer (task-review.ts): it acquires its OWN
+        // 'review' slot from the SAME shared cap. With a cap of 1 and the
+        // turn's own slot still held, this acquire would never resolve — the
+        // assertion below is exactly that it does.
+        const release = await cap.acquire('review')
+        record.status = 'review_ok'
+        io.persist()
+        release()
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'review_ok')
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  // CRITIQUE/MAJEUR 1 (adversarial review): the D2 vocabulary requirement is
+  // "journal AND API", not API alone — and only ONCE per transition, not once
+  // per retried launch() attempt.
+  test('entering the machine-cap wait journals exactly one "queue" event, however many times onSlotFreed retries it', async () => {
+    const repo = makeRepo()
+    const cap = createLoadCap(1)
+    const holderRelease = cap.tryAcquire('turn')
+    const task = makeTask(repo, 'journaled wait', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    runner.start(task)
+    await until(() => loadTask(repo, task.id)?.reason?.code === 'resource_busy')
+
+    // Chain the ONE slot through two more unrelated consumers via a DIRECT
+    // FIFO hand-off (cap stays saturated throughout: it is never actually
+    // free until the very last release) — each hand-off fires onSlotFreed,
+    // so our task's pump() retries and misses AGAIN each time. Only the
+    // FINAL, real release ever lets it in.
+    const w1 = cap.acquire('checks')
+    holderRelease?.() // hands straight to w1; the cap stays full
+    const w1Release = await w1
+    await Promise.resolve()
+
+    const w2 = cap.acquire('review')
+    w1Release() // hands straight to w2; still full
+    const w2Release = await w2
+    await Promise.resolve()
+
+    const queueEvents = readTaskEvents(repo, task.id).filter((e) => e.type === 'queue')
+    expect(queueEvents).toHaveLength(1)
+    expect(queueEvents[0]?.data).toEqual({
+      name: 'machine_busy',
+      message:
+        'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run',
+    })
+    expect(queueEvents[0]?.reason_code).toBe('resource_busy')
+
+    w2Release() // nobody left queued: this one actually frees the slot
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    // Still exactly one: obtaining the slot is not a second "entering wait".
+    expect(readTaskEvents(repo, task.id).filter((e) => e.type === 'queue')).toHaveLength(1)
+  })
+
+  // Same requirement, the project-busy motif (schedule()'s own branch).
+  test('waiting behind another task of the SAME project journals its own distinct "queue" event, once', async () => {
+    const repo = makeRepo()
+    let releaseGate: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      await gate
+      const raw = claudeStream('done')
+      options.onText?.(raw)
+      return raw
+    }
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+    })
+    const first = makeTask(repo, 'first', 'work one')
+    const second = makeTask(repo, 'second', 'work two')
+    runner.start(first)
+    await until(() => status(repo, first.id) === 'running')
+    runner.start(second)
+    await until(() => loadTask(repo, second.id)?.reason?.code === 'resource_busy')
+
+    const queueEvents = readTaskEvents(repo, second.id).filter((e) => e.type === 'queue')
+    expect(queueEvents).toHaveLength(1)
+    expect(queueEvents[0]?.data).toEqual({
+      name: 'project_busy',
+      message: 'another task of this project is already active',
+    })
+
+    releaseGate()
+    await until(() => status(repo, first.id) === 'waiting_for_you')
+    await until(
+      () => status(repo, second.id) === 'waiting_for_you' || status(repo, second.id) === 'running',
+    )
+  })
+
+  // MAJEUR 3 (adversarial review): removing releaseLoadSlot() from launch()'s
+  // async `.finally()` is a mutant zero test caught — a worktree that never
+  // materializes leaked the machine-cap slot FOR GOOD, since nothing else in
+  // the process would ever release it again.
+  test('a materialization failure releases the machine-cap slot: the cap recovers, it does not leak', async () => {
+    const repo = makeRepo()
+    const blocker = await acquireWorktreeLock(repo)
+    const impatient: WorktreeLockFn = (cwd, signal) =>
+      acquireWorktreeLock(cwd, { timeoutMs: 5, sleepFn: () => Promise.resolve(), signal })
+    const cap = createLoadCap(1)
+    const task = makeTask(repo, 'materialization fails', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      loadCap: cap,
+      runAgentFn: fakeClaude(() => 'must not run').run,
+      worktreeLockFn: impatient,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    // The turn never ran (the worktree lock gave up first), yet the slot
+    // `launch()` reserved before any of that must be back: nothing else in
+    // this process would ever free it otherwise.
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+    blocker.release()
+    // Proven by USE, not just by the counter: a fresh acquire succeeds.
+    const fresh = cap.tryAcquire('turn')
+    expect(fresh).not.toBeNull()
+    fresh?.()
   })
 })
 

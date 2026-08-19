@@ -57,6 +57,19 @@ export function queueSectionOf(status: TaskStatus): QueueSection {
 }
 
 /**
+ * The exact English `reason.detail` task-runner.ts attaches to a MACHINE-cap
+ * wait (its private `MACHINE_LOAD_DETAIL` constant) — hand-mirrored here
+ * (§ 0.4 convention: `packages/web/src/types.ts` already mirrors the contract
+ * by hand) because it is the ONLY thing on a `TaskRecord` that tells the two
+ * `resource_busy` motifs apart. `data.name` ('machine_busy'/'project_busy')
+ * lives on the task's `queue` journal EVENT, not on the record itself, and
+ * WorkQueue.vue's #N pill only ever has the record — never that task's
+ * events (adversarial review round 3, MAJEUR 3: "à défaut reason.detail").
+ */
+const MACHINE_LOAD_WAIT_DETAIL =
+  'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'
+
+/**
  * Which promise the #N pill's tooltip may make. "N conversations ahead in this
  * project" is only true while the project HAS something running, and the
  * record says so itself: `resource_busy` is exactly the code the server writes
@@ -64,13 +77,42 @@ export function queueSectionOf(status: TaskStatus): QueueSection {
  * whose worktree would not materialize, say — means the line is STOPPED, not
  * busy, and pointing at conversations ahead of it would send the human looking
  * for agents that are not there.
+ *
+ * T1.3 (D4) split `resource_busy` into two motifs, and this pill used to
+ * conflate them (adversarial review round 3, MAJEUR 3): a task alone in an
+ * otherwise idle project, held back by the MACHINE-wide cap, was told "N
+ * conversations ahead in this project" — there are none, nothing runs there.
+ * `reason.detail` is the discriminant (see `MACHINE_LOAD_WAIT_DETAIL` above).
  */
 export function queueRankHintKey(
   record: Pick<TaskRecord, 'reason'>,
-): 'workspace.queuePositionHint' | 'workspace.queuePositionHintIdle' {
-  return record.reason?.code === 'resource_busy'
-    ? 'workspace.queuePositionHint'
-    : 'workspace.queuePositionHintIdle'
+):
+  | 'workspace.queuePositionHint'
+  | 'workspace.queuePositionHintIdle'
+  | 'workspace.queuePositionHintMachine' {
+  if (record.reason?.code !== 'resource_busy') {
+    return 'workspace.queuePositionHintIdle'
+  }
+  return record.reason.detail === MACHINE_LOAD_WAIT_DETAIL
+    ? 'workspace.queuePositionHintMachine'
+    : 'workspace.queuePositionHint'
+}
+
+/**
+ * The conversation header's status phrase for a 'queued' task: the plain "in
+ * line" phrase (EXECUTION_STATUS.queued.phraseKey), UNLESS the last task_meta
+ * frame said this wait is for a MACHINE slot rather than this project's own
+ * admission (T1.3, D4). Null for every other status — the caller falls back
+ * to EXECUTION_STATUS as before. Adversarial review round 3, MAJEUR 4/AC-12:
+ * `liveLoadCap`/`waitingForSlot` existed on the store and nothing derived a
+ * label from them; this is that derivation, and the component using it is
+ * what actually satisfies "the UI CAN derive the label".
+ */
+export function queuePhraseKey(
+  status: TaskStatus,
+  waitingForSlot: boolean,
+): 'workspace.phaseQueuedMachine' | null {
+  return status === 'queued' && waitingForSlot ? 'workspace.phaseQueuedMachine' : null
 }
 
 export type QueueGroups<T> = Record<QueueSection, T[]>
@@ -455,6 +497,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   cost: 'workspace.evCost',
   branch: 'workspace.evBranch',
   resource: 'workspace.evResource',
+  queue: 'workspace.evQueue',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -487,6 +530,8 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   // will rattrap is not the cry-wolf red 'error' would paint on a task that
   // otherwise shipped or was abandoned cleanly.
   resource: 'idle',
+  // Neutral: an ordinary wait for a resource is not a degradation (DP8(b)/DP9).
+  queue: 'idle',
 }
 
 export function eventTone(type: TaskEventType): EventTone {
@@ -538,6 +583,12 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   // anglais servi tel quel" trap). Restoring keys here would change nothing;
   // removing that branch would break it. See RESOURCE_NAME_LABEL_KEY below.
   resource: [],
+  // Rendered from `data.name` (queueEventText below), never from the raw
+  // `data.message` the server writes: that field is an ENGLISH sentence
+  // (adversarial review round 3, MAJEUR 4) and, being always present, made
+  // the `?? label` fallback below structurally unreachable — the translated
+  // 'workspace.evQueue' label was dead code no journal line ever showed.
+  queue: [],
 }
 
 /**
@@ -558,6 +609,24 @@ function resourceSummary(data: TaskEventData, label: string): string {
   const name = firstString(data, ['name'])
   const key = name ? RESOURCE_NAME_LABEL_KEY[name] : undefined
   return key ? t(key) : label
+}
+
+/**
+ * `data.name` of a 'queue' event → its own translated detail, distinct from
+ * the generic 'En attente' label (DP9's grammar: the type names the domain,
+ * `data.name` names the incident). An unrecognized name (an older bundle
+ * reading a future producer's event, whitelist-and-truncate) degrades to the
+ * plain label rather than showing nothing or a raw token.
+ */
+const QUEUE_NAME_KEY: Record<string, MessageKey> = {
+  machine_busy: 'workspace.evQueueMachine',
+  project_busy: 'workspace.evQueueProject',
+}
+
+function queueEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? QUEUE_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.queue)
 }
 
 /**
@@ -606,6 +675,9 @@ export function eventSummary(event: TaskEvent): string {
   }
   if (event.type === 'resource') {
     return clip(resourceSummary(event.data, label))
+  }
+  if (event.type === 'queue') {
+    return clip(queueEventText(event.data))
   }
   const details = summaryDetails(event)
   if (details.length > 0) {

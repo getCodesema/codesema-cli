@@ -129,6 +129,20 @@ export type TaskEventType =
    * type itself — `resource` names the DOMAIN, not the incident.
    */
   | 'resource'
+  /**
+   * A task just started waiting on a resource it does not hold yet (T1.3,
+   * D4/D2): `data.name` is `'machine_busy'` (the machine-wide load cap has no
+   * free slot) or `'project_busy'` (another task of the same project is
+   * active). A NEUTRAL line like 'cost', never 'error': an ordinary wait is
+   * not a degradation to paint red (DP8(b)/DP9), it is stated once per
+   * TRANSITION into that wait — never re-journaled on every retry that still
+   * finds the resource busy. `reason_code` is always 'resource_busy'.
+   *
+   * Kept on its own single line at the end of this union on purpose:
+   * concurrent tickets each append their own member here, and a line nobody
+   * else touches is a rebase conflict that resolves itself.
+   */
+  | 'queue'
 
 /**
  * How a task's agent turns are contained.
@@ -153,14 +167,22 @@ export type TaskEvent = {
   type: TaskEventType
   data: TaskEventData
   /**
-   * Machine-readable name of the degradation this event reports, when it
-   * reports one. A DEDICATED field, never a key inside `data`: the code is
-   * ADDED to the payload, so the readable message every producer already puts
-   * in `data` stays exactly where — and what — it was.
+   * Machine-readable name of the degradation — or a qualifiable WAIT, per DP14
+   * — this event reports, when it reports one. A DEDICATED field, never a key
+   * inside `data`: the code is ADDED to the payload, so the readable message
+   * every producer already puts in `data` stays exactly where — and what — it
+   * was.
+   *
+   * "Degradation" alone would contradict this union's own 'queue' entry
+   * (T1.3, D4): a NEUTRAL line, never an error, that STILL always carries
+   * `reason_code: 'resource_busy'` (adversarial review round 3, MINEUR — the
+   * two docstrings used to disagree). DP14's actual test is whether the code
+   * qualifies an arrest/refusal a "terminal or retryable" question makes sense
+   * for, not whether the line itself is bad news.
    *
    * OPTIONAL, and its honest default is absence: a journal line written before
-   * this field existed claims no code, and so does any event that is not a
-   * degradation.
+   * this field existed claims no code, and so does any event that is neither a
+   * degradation nor a qualifiable wait.
    */
   reason_code?: ReasonCode
 }
@@ -356,6 +378,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'cost',
   'branch',
   'resource',
+  'queue',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])

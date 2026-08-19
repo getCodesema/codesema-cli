@@ -131,6 +131,7 @@ function state(partial: Partial<TaskRecord> & { id: string }): TaskState {
     liveText: '',
     liveMessages: [],
     liveTokens: 0,
+    liveLoadCap: null,
     checks: null,
   }
 }

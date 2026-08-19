@@ -34,6 +34,7 @@ import {
 } from './contract.js'
 import { refExists, tryGit } from './git.js'
 import { t } from './i18n.js'
+import { createLoadCap, type LoadCap, type LoadCapSnapshot } from './load-cap.js'
 import { listProjects, listProjectsDetailed, type Project } from './projects.js'
 import { readChecksConfig } from './repo-config.js'
 import { runChecks } from './task-checks.js'
@@ -54,7 +55,11 @@ import {
   DEFAULT_TASK_RETENTION,
   type TaskRetentionOutcome,
 } from './task-retention.js'
-import { createTaskReviewer, readTaskReview } from './task-review.js'
+import {
+  createTaskReviewer,
+  readTaskReview,
+  type CreateTaskReviewerOptions,
+} from './task-review.js'
 import {
   createTaskRunner,
   type TaskActionResult,
@@ -77,6 +82,7 @@ import {
   onStoreUnreadable,
   readTaskChecks,
   readTaskEvents,
+  removeTaskChecks,
   saveTask,
   taskIdsOnDisk,
   taskReason,
@@ -105,8 +111,43 @@ export type TaskEnvelope =
       task_id: string
       event: { name: 'task_text'; data: { text: string; seq?: number } }
     }
-  | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
-  | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
+  | {
+      project_id: string
+      task_id: string
+      event: {
+        name: 'task_meta'
+        data: {
+          tokens: number
+          /**
+           * Occupation of the machine-wide load cap (T1.3, D4) at the instant
+           * this frame was emitted — so the UI can render "waiting for a
+           * machine slot" instead of an undifferentiated "waiting". OPTIONAL
+           * and its honest default is ABSENCE (invariant § 0.3 n°1): a frame
+           * this field predates (an ordinary token-meter tick) carries none,
+           * and a client that does not know the field simply ignores it.
+           */
+          load_cap?: LoadCapSnapshot
+          /**
+           * Whether THIS frame reports "still waiting for a slot" (true) or
+           * "just obtained one" (false) — adversarial review fix: two frames
+           * carrying the identical `load_cap` snapshot are otherwise
+           * byte-for-byte indistinguishable, and the whole point of shipping
+           * `load_cap` was to let the UI say "waiting for a machine slot"
+           * rather than a mute "waiting". Present only alongside `load_cap`.
+           */
+          waiting_for_slot?: boolean
+        }
+      }
+    }
+  /**
+   * The task's whole checks.json after a transition — or `null`, which is
+   * the ONLY way to say "there is no checks result any more" (T1.3 round 4,
+   * MAJEUR 1: a 'running' snapshot written for a run that never started must
+   * be taken BACK, and no `TaskChecks` value expresses "never ran" — the
+   * absence of the file is that state). A client assigns the payload as-is;
+   * `TaskState.checks` was already nullable for exactly the same reason.
+   */
+  | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks | null } }
   // PROJECT-scoped, hence no task_id: the checks setup agent proposes a
   // configuration for the whole repo, not for one conversation.
   | { project_id: string; event: { name: 'checks_proposal'; data: ChecksSetupState } }
@@ -275,12 +316,40 @@ export type CreateTaskManagerOptions = {
   /** Watchdog budgets (D3), read from the config by resolveWatchdogBudgets. */
   watchdog?: WatchdogBudgets | undefined
   /**
-   * INERT since T1.2: the number of active tasks follows from "one active
-   * task per project", not from a global budget. Still accepted (and still
-   * fed by the `maxParallelTasks` config key) so nothing breaks while T1.3
-   * turns that key into the machine-load cap of D4, or retires it.
+   * INERT since T1.2, and STILL inert after T1.3: the number of active tasks
+   * follows from "one active task per project", not from a global budget.
+   * Still accepted (and still fed by the deprecated `maxParallelTasks` config
+   * key) so that key keeps a value to round-trip; the REAL machine-wide
+   * budget is `maxConcurrentAgents` below.
    */
   maxParallel?: number
+  /**
+   * Machine-wide load cap (T1.3, D4): sizes the DEFAULT `loadCap` instance
+   * (undefined applies DEFAULT_MAX_CONCURRENT_AGENTS). Ignored when `loadCap`
+   * is injected directly — the workspace resolves this from config via
+   * `resolveMaxConcurrentAgents` (workspace.ts).
+   */
+  maxConcurrentAgents?: number | undefined
+  /**
+   * Machine-wide load cap (T1.3, D4), injectable (§ 0.4): the default builds
+   * ONE fresh `createLoadCap(maxConcurrentAgents)` shared by every project's
+   * runner and by the review/checks call sites in this file. Tests inject a
+   * tiny cap (or share one instance across two managers/runners) to exercise
+   * cross-project contention without spawning real agents.
+   */
+  loadCap?: LoadCap
+  /**
+   * Aborted when the workspace is shutting down (workspace.ts's `draining`).
+   * Threaded into the checks runner's own load-cap wait (adversarial review
+   * fix): a checks run has no queue of its own like a turn does, and without
+   * this its `acquire('checks')` could sit parked on a saturated cap for the
+   * whole DRAIN_TIMEOUT_MS with nothing able to wake it — the same failure
+   * mode the reviewer's `io.signal` fixes for reviews. OPTIONAL: a caller
+   * that never wires it up keeps today's behavior (an unattended checks run
+   * outlives the process either way; only the WAIT becomes interruptible
+   * when this is given).
+   */
+  shutdownSignal?: AbortSignal
   /**
    * Result of the boot probe (workspace.ts): decides the isolation every new
    * task is created with. Absent means "nothing probed" — tasks are then
@@ -300,6 +369,18 @@ export type CreateTaskManagerOptions = {
    * (the no-changes path never spawns anything).
    */
   reviewTurnFn?: TaskTurnReviewFn
+  /**
+   * Test seam on the reviewer's CONSTRUCTION, not on its behaviour (T1.3
+   * round 4, MAJEUR 3). `reviewTurnFn` above replaces the reviewer wholesale,
+   * which is exactly why it could never prove what the DEFAULT one is built
+   * with: dropping `loadCap` from the `createTaskReviewer({…})` call below
+   * left the whole suite green, and that call is the ticket's central
+   * requirement — without it the end-of-turn review goes back to running
+   * OUTSIDE the machine-wide cap, the very state T1.3 exists to remove. This
+   * seam lets a test capture the options the manager actually hands the
+   * reviewer factory and assert the cap instance is among them.
+   */
+  createReviewerFn?: (options: CreateTaskReviewerOptions) => TaskTurnReviewFn
   /** Test seam: the default pushes to origin and drives the real gh/glab. */
   shipTaskFn?: typeof shipTask
   /** Test seam: the default reads the global registry (projects.ts). */
@@ -602,6 +683,14 @@ type ProjectContext = {
 export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const registered = opts.listProjectsFn ?? listProjects
   const notice = opts.onNotice ?? ((message: string) => console.warn(message))
+  /**
+   * Machine-wide load cap (T1.3, D4): ONE instance for the whole manager,
+   * shared by every project's runner AND by the review/checks call sites
+   * below — the cap is explicitly cross-project, unlike the per-project
+   * queue. Injectable (§ 0.4: tests share a tiny cap across several
+   * projects); `maxConcurrentAgents` sizes the default instance.
+   */
+  const loadCap = opts.loadCap ?? createLoadCap(opts.maxConcurrentAgents)
   /**
    * Boot recovery of ONE repo, fenced. A repo whose queue file is read-only,
    * whose disk is full, or whose store is unreadable degrades ON ITS OWN: the
@@ -927,6 +1016,23 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     if (!hasCommit || !record.worktree || !existsSync(record.worktree)) {
       return { ok: false, code: 409, error: 'task has no commit to check' }
     }
+    // Adversarial review round 3, MAJEUR 2: a shutdown that beat this call to
+    // the start line is NOT a checks failure — no container was ever going to
+    // run. The previous round threw into the generic catch below, which wrote
+    // checks.json 'error' (a red line, in English, with a fabricated
+    // 'started_at') for a run that never started. Settled the same way a
+    // reviewer caught by the same race settles (task-review.ts's
+    // `settleInterrupted`): one 'interrupted' journal line, no checks.json
+    // write at all — never broadcast 'running' for work about to be abandoned.
+    if (opts.shutdownSignal?.aborted) {
+      const event = appendTaskEvent(cwd, id, {
+        type: 'interrupted',
+        data: { reason: 'shutdown' },
+        reason_code: 'interrupted_by_user',
+      })
+      emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+      return { ok: true }
+    }
     const headSha = tryGit(['rev-parse', 'HEAD'], record.worktree) ?? ''
     ctx.checking.add(id)
     const broadcast = (snapshot: TaskChecks): void => {
@@ -934,6 +1040,31 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // subscribers always see exactly what a later GET will read.
       const clean = writeTaskChecks(cwd, id, snapshot)
       emit({ project_id: projectId, task_id: id, event: { name: 'task_checks', data: clean } })
+    }
+    // Whatever checks.json said BEFORE this call overwrote it with 'running'
+    // — null on a task that never ran any (T1.3 round 4, MAJEUR 1). Captured
+    // here, one line above the overwrite, because the run may still turn out
+    // never to start (the load-cap wait below can be abandoned by a
+    // shutdown), and a 'running' left behind is not a cosmetic residue: the
+    // UI derives `checksRunning` from it, `canRunChecks` from that, and the
+    // "Re-run checks" button's `:disabled` from that — so the conversation
+    // would keep a permanently greyed button, across restarts, for a run
+    // nothing is doing. The round-3 note calling this "sans conséquence
+    // visible" was wrong.
+    const checksBefore = readTaskChecks(cwd, id)
+    /**
+     * Puts checks.json back exactly where `checksBefore` found it and says so
+     * on the stream. `null` means there was no file: it is DELETED rather
+     * than overwritten, because no TaskChecks value can mean "never ran" —
+     * and the frame carries that same null, the wire's only way to say it.
+     */
+    const undoRunning = (): void => {
+      if (checksBefore) {
+        broadcast(checksBefore)
+        return
+      }
+      removeTaskChecks(cwd, id)
+      emit({ project_id: projectId, task_id: id, event: { name: 'task_checks', data: null } })
     }
     // 'running' is on disk (and on the stream) before this returns: the POST
     // caller's immediate GET already sees the run.
@@ -949,7 +1080,36 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     void (async () => {
       try {
         let final: TaskChecks
+        // T1.3 (D4): a checks run is a heavy consumer of the machine load
+        // cap like a turn or a review — acquired tightly around the actual
+        // call, released whether it resolves or "fails" (runChecks never
+        // REJECTS by contract, but the catch below is the belt to this
+        // module's braces). `opts.shutdownSignal` makes the WAIT itself
+        // interruptible (adversarial review fix): a checks run has no
+        // project queue of its own, so without it a parked acquire() had no
+        // way to be woken by a shutdown at all.
+        const release = await loadCap.acquire('checks', opts.shutdownSignal)
         try {
+          if (opts.shutdownSignal?.aborted) {
+            // The wait was abandoned, not granted (a no-op Release): the run
+            // itself never started. Adversarial review round 3, MAJEUR 2:
+            // this used to throw into the catch below, which wrote
+            // checks.json 'error' — a red line for a run nothing broke. No
+            // fabricated verdict is written here either; instead the
+            // 'running' this call broadcast before the wait is UNDONE (round
+            // 4, MAJEUR 1), because leaving it would outlive the process and
+            // disable the UI's re-run button for good. The journal gets the
+            // same 'interrupted' line the entry guard above emits, never
+            // 'checks'/'error'.
+            undoRunning()
+            const event = appendTaskEvent(cwd, id, {
+              type: 'interrupted',
+              data: { reason: 'shutdown' },
+              reason_code: 'interrupted_by_user',
+            })
+            emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+            return
+          }
           final = await run({
             worktree: record.worktree,
             config: readChecksConfig(cwd),
@@ -967,6 +1127,8 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
             checks: [],
             error: err instanceof Error ? err.message : String(err),
           }
+        } finally {
+          release()
         }
         const clean = writeTaskChecks(cwd, id, final)
         emit({ project_id: projectId, task_id: id, event: { name: 'task_checks', data: clean } })
@@ -1036,9 +1198,19 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const cwd = project.path
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict; the reviewer shares the task agent command and timeout.
+    // `loadCap` is NOT optional garnish here: it is what makes the end-of-turn
+    // review a citizen of the machine-wide budget (T1.3, D4) instead of a
+    // fourth heavy process running beside it. Round 4, MAJEUR 3: dropping it
+    // used to be invisible — `createReviewerFn` above exists so a test sees
+    // this exact argument list.
     const reviewTurn =
       opts.reviewTurnFn ??
-      createTaskReviewer({ cwd, command: opts.command, timeoutMs: opts.timeoutMs })
+      (opts.createReviewerFn ?? createTaskReviewer)({
+        cwd,
+        command: opts.command,
+        timeoutMs: opts.timeoutMs,
+        loadCap,
+      })
     // T5: auto-ship chains on the review verdict, INSIDE the onTurnDone hook
     // so it only ever fires after the reviewer's final transition. Green
     // reviews only — an assumed-KO ship is always a human click. ship() never
@@ -1102,6 +1274,24 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           project_id: projectId,
           task_id: taskId,
           event: { name: 'task_meta', data: { tokens } },
+        }),
+      // Machine-wide load cap (T1.3, D4): ONE instance shared by every
+      // project's runner and by the review/checks call sites below.
+      loadCap,
+      // A turn's admission just entered — or left — a wait on the machine
+      // cap. `tokens: 0` is literally true here (no turn has produced any
+      // yet), not a filler: this frame's news is `load_cap` PLUS
+      // `waiting_for_slot`, which is what actually tells the two transitions
+      // apart (adversarial review fix: the snapshot alone is byte-identical
+      // on both).
+      onLoadCapWait: (taskId, snapshot, waiting) =>
+        emit({
+          project_id: projectId,
+          task_id: taskId,
+          event: {
+            name: 'task_meta',
+            data: { tokens: 0, load_cap: snapshot, waiting_for_slot: waiting },
+          },
         }),
       // The head of the line left (or someone joined it): everyone still
       // waiting moved a rank, and no other frame would ever say so. Their

@@ -11,6 +11,27 @@ describe('catalog parity', () => {
   })
 })
 
+// T1.3 round 4 (mineur): parity above only proves the KEYS exist in both
+// catalogs — a French entry copy-pasted from the English one satisfies it
+// perfectly. These five keys are the ticket's own, and three of them are the
+// only French an operator ever reads about the machine-wide cap.
+describe('the machine-cap keys are actually translated, not copied', () => {
+  const keys = [
+    'workspace.evQueue',
+    'workspace.evQueueMachine',
+    'workspace.evQueueProject',
+    'workspace.queuePositionHintMachine',
+    'workspace.phaseQueuedMachine',
+  ] as const
+
+  test('every one of them differs from its English source', () => {
+    for (const key of keys) {
+      expect(catalogs.fr?.[key]).toBeDefined()
+      expect(catalogs.fr?.[key]).not.toBe(catalogs.en?.[key])
+    }
+  })
+})
+
 describe('t', () => {
   test('interpolates params and picks plural forms (no window: English)', () => {
     expect(t('header.copyPrompt', { n: 3 })).toBe('Copy for agent (3)')

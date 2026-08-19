@@ -119,6 +119,26 @@ export function shortSha(sha: string): string {
   return sha.slice(0, 7)
 }
 
+/**
+ * Whether "head verified {sha}" is actually TRUE right now (adversarial
+ * review round 3, MAJEUR 2): `head_sha` is written as soon as a run is
+ * REQUESTED, well before any container starts — 'running' has one, an
+ * interrupted-before-start run's stale checks.json can have one too. Only
+ * 'passed' and 'failed' mean a container actually ran checks against that
+ * head; 'running' has not finished verifying anything yet, 'error' means the
+ * runner itself broke before producing a verdict, and 'unconfigured' never
+ * ran at all.
+ */
+export function checksHeadVerified(
+  checks: Pick<TaskChecks, 'status' | 'head_sha'> | null,
+): boolean {
+  return (
+    checks !== null &&
+    checks.head_sha !== '' &&
+    (checks.status === 'passed' || checks.status === 'failed')
+  )
+}
+
 // ── Plan provenance (optional server field) ───────────────────────────────
 // The server labels WHERE the executed plan came from: the repo's .codesema
 // config, its own lefthook/CI declarations, or the lockfile scripts. The

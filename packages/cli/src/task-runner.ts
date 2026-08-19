@@ -45,6 +45,12 @@ import {
 import { fixCommandFor } from './fix.js'
 import { git, refExists, revListCount, tryGit } from './git.js'
 import { reviewLanguage, t } from './i18n.js'
+import {
+  createLoadCap,
+  DEFAULT_MAX_CONCURRENT_AGENTS,
+  type LoadCap,
+  type LoadCapSnapshot,
+} from './load-cap.js'
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
 import {
@@ -82,10 +88,14 @@ import {
 /**
  * Historical default of the `maxParallelTasks` config key.
  *
- * INERT since T1.2: admission is decided by the project's persisted queue and
- * its one-active-task-per-project guard (task-queue.ts), never by a slot
- * budget. Kept — with the pool below — so the configuration key keeps a value
- * to read while T1.3 settles the machine-load cap it is meant to become.
+ * INERT since T1.2, and STILL inert after T1.3: admission is decided by the
+ * project's persisted queue and its one-active-task-per-project guard
+ * (task-queue.ts), never by a slot budget. `maxParallelTasks` itself did not
+ * retire — T1.3 turned it into a DEPRECATED alias of `maxConcurrentAgents`
+ * (config.ts, workspace.ts), which feeds `load-cap.ts`'s real semaphore
+ * instead. This constant, `TaskSlotPool` and `TaskRunnerOptions.maxParallel`
+ * /`.slots` stay exactly as inert as T1.2 left them, kept only so the
+ * deprecated key still parses into a shape nothing reads for admission.
  */
 export const DEFAULT_MAX_PARALLEL_TASKS = 3
 
@@ -850,12 +860,14 @@ export type TaskTurnReviewFn = (record: TaskRecord, io: TaskTurnIo) => Promise<v
  * Shared concurrency budget of the pre-T1.2 workspace: one pool backed every
  * runner and `max` capped the number of 'running' tasks across every repo.
  *
- * INERT since T1.2: the number of active tasks now follows from "one active
- * task per project" (task-queue.ts), so a pool neither caps two projects
- * against each other nor lets two tasks of the SAME project run. The type and
- * its factory survive only as the shape the `maxParallelTasks` config key
- * still parses into; T1.3 turns that key into the machine-load cap of D4 (or
- * retires it), and this goes with it.
+ * INERT since T1.2, and STILL inert after T1.3: the number of active tasks
+ * follows from "one active task per project" (task-queue.ts), so a pool
+ * neither caps two projects against each other nor lets two tasks of the SAME
+ * project run. The REAL machine-wide budget T1.3 adds is `load-cap.ts`'s
+ * semaphore, a separate module — this type and its factory survive only as
+ * the shape `maxParallelTasks` (now a deprecated alias, see
+ * DEFAULT_MAX_PARALLEL_TASKS) still parses into; nothing reads `.running` or
+ * `.pumps` for admission any more.
  */
 export type TaskSlotPool = {
   max: number
@@ -959,6 +971,26 @@ export type TaskRunnerOptions = {
    * created for it to release.
    */
   releaseAgentHomeFn?: (opts: { taskId: string }) => Promise<ReleaseAgentHomeResult>
+  /**
+   * Machine-wide load cap (T1.3, D4): the REAL budget now, unlike `slots`
+   * above. Injectable (§ 0.4) so tests can share ONE instance across several
+   * runners (the machine cap is cross-project by nature) or set a tiny
+   * plafond without touching real config; defaults to a FRESH
+   * `createLoadCap(DEFAULT_MAX_CONCURRENT_AGENTS)` per runner when absent, so
+   * every existing single-runner test keeps its previous (uncapped in
+   * practice, since 4 comfortably covers them) behavior.
+   */
+  loadCap?: LoadCap
+  /**
+   * A task's turn just entered — or left — a wait on the machine load cap.
+   * Called with the cap's occupation at that instant, so the caller (the
+   * manager) can turn it into a `task_meta` frame the UI reads as "waiting
+   * for a machine slot" instead of an undifferentiated "waiting". `waiting`
+   * discriminates the two calls this can be — true on the way IN (no slot),
+   * false on the way OUT (slot obtained) — since the snapshot alone can be
+   * byte-identical between them (adversarial review fix).
+   */
+  onLoadCapWait?: (taskId: string, snapshot: LoadCapSnapshot, waiting: boolean) => void
 }
 
 export type TaskRunner = {
@@ -1116,6 +1148,25 @@ function composeTurnPrompt(record: TaskRecord, command: string): string {
 const QUEUED_BEHIND_DETAIL = 'another task of this project is already active'
 
 /**
+ * Reason a task carries while it waits for a slot of the MACHINE-wide load
+ * cap (T1.3, D4) rather than for its own project's admission guard. Distinct
+ * wording from QUEUED_BEHIND_DETAIL on purpose — AC3 of machine-load-cap asks
+ * for the two motifs to be tellable apart on `resource_busy`, and a shared
+ * sentence would make them the same fact to anyone reading the record.
+ *
+ * HAND-MIRRORED in the web bundle as `MACHINE_LOAD_WAIT_DETAIL`
+ * (packages/web/src/composables/useTaskBoard.ts), which compares against it
+ * to tell the two `resource_busy` motifs apart on a record that carries no
+ * events. Changing a single character here without changing it THERE makes
+ * the queue's #N pill silently fall back to the project-busy wording, and no
+ * test in this package would notice (round 4, mineur: the cross-reference
+ * used to point only one way, so a change starting on THIS side had nothing
+ * to warn it).
+ */
+const MACHINE_LOAD_DETAIL =
+  'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'
+
+/**
  * Detail carried by a task whose end-of-turn review a shutdown cut short.
  * The SINGLE source: the reviewer settles that case itself and the runner
  * covers the reviewer that does not, so the same sentence lands in the same
@@ -1184,6 +1235,20 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
   })
   /** Entry time into waiting_for_you; updated_at is the cross-restart fallback. */
   const waitingSince = new Map<string, number>()
+  /**
+   * Machine-wide load cap (T1.3, D4). A fresh, private instance when the
+   * caller does not share one — see TaskRunnerOptions.loadCap.
+   */
+  const loadCap = opts.loadCap ?? createLoadCap(DEFAULT_MAX_CONCURRENT_AGENTS)
+  /**
+   * Ids whose CURRENT `reason` is the machine-cap wait (MACHINE_LOAD_DETAIL),
+   * so schedule()'s generic "nothing named this wait, clear the reason"
+   * cleanup does not blindly erase what launch() just wrote. Unlike `blocked`
+   * below, membership here never removes an id from nextRunnable()'s
+   * candidates: the whole point of the machine cap is that the SAME id is
+   * retried — via onSlotFreed — once a slot frees anywhere on the machine.
+   */
+  const machineWaiting = new Set<string>()
 
   const persist = (record: TaskRecord): void => {
     // saveTask writes verbatim: bumping updated_at here keeps the listTasks
@@ -1391,8 +1456,11 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
    * previous one still had a review agent in its worktree.
    *
    * The containerized checks stay fire-and-forget on purpose: they run beside
-   * the review, touch no task state, and their share of the machine budget is
-   * T3.1's subject, not this claim's.
+   * the review, touch no task state, and — since T1.3 — acquire their OWN
+   * 'checks' slot of the machine load cap at their own call site
+   * (task-server.ts's startChecks), independently of this claim: a checks run
+   * that outlives the review must not hold up the project's next task, and it
+   * never did.
    */
   const finishTurn = async (
     record: TaskRecord,
@@ -1812,6 +1880,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
    * What one admission attempt did.
    * - 'started': the turn is in flight and owns the claim.
    * - 'busy': the project already has an active task; nothing moved.
+   * - 'machine_busy': the project was free, but the machine-wide load cap
+   *   (T1.3, D4) had no slot. The project claim was given straight back — see
+   *   launch() — so `queue.activeTask()` reads null again, exactly as before
+   *   the attempt; the task keeps its place in the queue, its 'queued'
+   *   status and a `resource_busy`/MACHINE_LOAD_DETAIL reason, and
+   *   `onSlotFreed` retries it once a slot frees anywhere.
    * - 'blocked': the turn could NOT be started (a worktree that will not
    *   materialize). The task keeps its place in the queue and its 'queued'
    *   status — a turn that never started is not a failed turn — and the reason
@@ -1819,7 +1893,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
    *   `blocked`) so it never holds the line up, and a human gesture or the
    *   next boot puts it back in the running.
    */
-  type LaunchOutcome = 'started' | 'busy' | 'blocked'
+  type LaunchOutcome = 'started' | 'busy' | 'machine_busy' | 'blocked'
 
   /**
    * Ids whose worktree refused to materialize in THIS session, mapped to the
@@ -1909,6 +1983,21 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       runnable = record
       break
     }
+    // Whatever put these ids here left the line for a reason OTHER than the
+    // machine cap: gone from the store, or no longer 'queued' (adversarial
+    // review round 3, MINEUR — corrected comment: `machineWaiting` is
+    // per-runner, IN-MEMORY state, empty at every boot, so this is never
+    // "a stale entry from a crashed process" or boot reconciliation — it is
+    // THIS session observing, on a LATER pump(), that a record it once marked
+    // machine-waiting moved on some other way (a reply, an abandon) within
+    // the very session that set the flag). Nothing else prunes it on THIS
+    // path — only dropFromQueue() does, for the human-gesture departures — so
+    // without this an id swept out here would keep claiming (in memory only;
+    // nothing re-persists it) that the machine is full for it long after it
+    // stopped being a candidate at all.
+    for (const id of stale) {
+      machineWaiting.delete(id)
+    }
     if (tryQueueWrite(() => queue.removeMany(stale), 0) > 0) {
       queueChanged()
     }
@@ -1935,10 +2024,14 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         if (!record) {
           return
         }
-        // 'busy' means somebody else took the claim in between: stop. 'blocked'
-        // put this id in `blocked`, so the next lap picks a different one and
-        // the loop always makes progress.
-        if (launch(record) === 'busy') {
+        // 'busy' means somebody else took the claim in between: stop. So does
+        // 'machine_busy' — the project claim was given straight back, so
+        // looping again would just pick the SAME head and hit the SAME full
+        // cap, forever, on this very tick. 'blocked' put this id in `blocked`,
+        // so the next lap picks a different one and the loop always makes
+        // progress.
+        const outcome = launch(record)
+        if (outcome === 'busy' || outcome === 'machine_busy') {
           return
         }
       }
@@ -1964,6 +2057,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // It is leaving the line: nothing left to step over, and a task id created
     // again later must not inherit this session's verdict.
     unblock(taskId)
+    machineWaiting.delete(taskId)
     const wasQueued = tryQueueWrite(() => queue.remove(taskId), false)
     const wasActive = queue.activeTask() === taskId
     if (wasActive) {
@@ -1996,8 +2090,22 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
    */
   const abandonsInFlight = new Set<Promise<void>>()
 
-  /** The turn itself, on a worktree that already exists. Settles its own outcome. */
-  const runTurn = (record: TaskRecord, controller: AbortController): Promise<void> => {
+  /**
+   * The turn itself, on a worktree that already exists. Settles its own
+   * outcome.
+   *
+   * `releaseLoadSlot` frees the machine-cap slot (T1.3) the instant the
+   * agent's OWN process settles — success or failure — and BEFORE finishTurn
+   * can call `onTurnDone`. That ordering is what keeps a cap of 1 from
+   * dead-locking itself: `onTurnDone` may acquire a 'review' slot from the
+   * SAME budget, and a turn still holding its 'turn' slot while awaiting a
+   * review that awaits that very slot would never resolve either side.
+   */
+  const runTurn = (
+    record: TaskRecord,
+    controller: AbortController,
+    releaseLoadSlot: () => void,
+  ): Promise<void> => {
     record.status = 'running'
     // The task is moving again: whatever reason it last stopped for is history,
     // and a record that kept claiming it would be lying about the present. The
@@ -2035,8 +2143,10 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         .then((outcome) => {
           // The agent process is done: the task stops being interruptible as a
           // running turn here, even though the review that follows still holds
-          // the project's claim.
+          // the project's claim. The machine-cap 'turn' slot goes with it —
+          // BEFORE finishTurn, which is what may acquire 'review' next.
           active.delete(record.id)
+          releaseLoadSlot()
           return finishTurn(record, outcome, startedAt, attempt)
         })
         // CHAINED, not the two-argument form: the turn's own rejection lands
@@ -2047,6 +2157,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         .catch((err: unknown) => {
           const aborted = controller.signal.aborted
           active.delete(record.id)
+          releaseLoadSlot()
           failTurn(record, err, startedAt, { aborted, attempt })
         })
         .catch((err: unknown) => {
@@ -2063,15 +2174,73 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // carried: two concurrent admissions on this project must not interleave.
     // A refusal means another task of the project is already active; the head
     // stays where it is and waits for that one to release.
-    //
-    // T1.3 INSERTION POINT: the machine-load cap (D4) belongs on the next line,
-    // between this claim and the dequeue below. The entry stays in queue.json
-    // until the turn has really started, so a task held back by the machine cap
-    // is still visibly IN its project's queue — 'waiting for the project' and
-    // 'waiting for the machine' stay tellable apart, which they would not be if
-    // the dequeue happened at claim time.
     if (!queue.claimActive(record.id)) {
       return 'busy'
+    }
+    // T1.3 (D4): the machine-wide load cap, tried SYNCHRONOUSLY right here —
+    // still before any `await` — the exact property the project claim above
+    // just demonstrated. `tryAcquire` never blocks and never queues (see
+    // load-cap.ts), so this is a plain test-and-set: on a miss the project
+    // claim is handed straight back and the entry stays IN queue.json (the
+    // dequeue is further down, past this point) — 'waiting for the project'
+    // and 'waiting for the machine' stay tellable apart on the record.
+    const loadRelease = loadCap.tryAcquire('turn')
+    const snapshot = loadCap.snapshot()
+    if (!loadRelease) {
+      queue.releaseActive(record.id)
+      // A TRANSITION, not a re-statement: `machineWaiting` already holding
+      // this id means a PREVIOUS attempt (retried by onSlotFreed after some
+      // OTHER consumer's release, which does not imply a slot is free for
+      // THIS one) already journaled and broadcast the exact same fact. A
+      // free-for-all cap shared by every project can retry the same head
+      // many times over before it ever gets in — persisting and emitting on
+      // every miss would journal (and write, and push an SSE frame for)
+      // nothing NEW each time (adversarial review, MINEUR).
+      const enteringWait = !machineWaiting.has(record.id)
+      machineWaiting.add(record.id)
+      record.reason = taskReason('resource_busy', MACHINE_LOAD_DETAIL)
+      if (enteringWait) {
+        // D2 vocabulary, applied per the spec's letter: the wait is visible
+        // in BOTH the journal and the API, not the API alone (adversarial
+        // review, MAJEUR 1). `queue` is its own event type, never `error` —
+        // an ordinary wait is not a degradation to paint red (DP8(b)/DP9).
+        //
+        // try/catch (adversarial review round 3, MINEUR): these are disk
+        // writes (appendTaskEvent, saveTask) that CAN throw (ENOSPC, EACCES).
+        // Unguarded, a throw here would surface as an unrelated 500 on the
+        // direct start()/schedule() path, and be swallowed WITHOUT A TRACE on
+        // the onSlotFreed path — notifyFreed's per-listener catch (load-cap.ts)
+        // has no logging at all, unlike this runner's own `notify()`.
+        try {
+          emit(record.id, {
+            type: 'queue',
+            data: { name: 'machine_busy', message: MACHINE_LOAD_DETAIL },
+            reason_code: 'resource_busy',
+          })
+          persist(record)
+        } catch (err) {
+          console.warn(
+            `codesema: failed to record a machine-cap wait: ${preview(errorMessage(err))}`,
+          )
+        }
+        notify(() => opts.onLoadCapWait?.(record.id, snapshot, true))
+      }
+      return 'machine_busy'
+    }
+    machineWaiting.delete(record.id)
+    notify(() => opts.onLoadCapWait?.(record.id, snapshot, false))
+    /** Idempotent: `runTurn` releases it right when the agent settles (before
+     * `finishTurn` can acquire a 'review' slot from the SAME budget — see its
+     * doc comment); this is the backstop for every OTHER exit of this
+     * function (materialization failure, an abort before the turn ever ran,
+     * a synchronous throw between here and the promise chain below). */
+    let loadReleased = false
+    const releaseLoadSlot = (): void => {
+      if (loadReleased) {
+        return
+      }
+      loadReleased = true
+      loadRelease()
     }
     // Set only once the turn actually owns the claim through its promise chain;
     // until then the finally below frees it, whatever went wrong in between.
@@ -2115,11 +2284,6 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
           // Failing here costs nothing — the record is untouched, the entry is
           // still in the file, and the catch below is honest when it says the
           // turn never started.
-          //
-          // T1.3 INSERTION POINT: the machine-load cap (D4) goes between the
-          // claim above and this dequeue, so a task held back by the machine is
-          // still visibly IN its project's queue — 'waiting for the project'
-          // and 'waiting for the machine' stay tellable apart.
           queue.remove(record.id)
           if (controller.signal.aborted) {
             // Interrupted while the worktree was still materializing: the turn
@@ -2139,7 +2303,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
           // any more (this also covers the id a human retried through
           // schedule()).
           unblock(record.id)
-          const running = runTurn(record, controller)
+          const running = runTurn(record, controller, releaseLoadSlot)
           queueChanged()
           return running
         })
@@ -2180,6 +2344,11 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
           persist(record)
         })
         .finally(() => {
+          // Backstop: the ONLY path that reaches here without having already
+          // released via runTurn is "materialization failed / aborted before
+          // the turn ever ran" — releaseLoadSlot's own guard makes the second
+          // call (after runTurn already released) a no-op.
+          releaseLoadSlot()
           active.delete(record.id)
           inflight.delete(record.id)
           releaseSlot(record.id)
@@ -2194,6 +2363,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // Hermetic: the claim is released on EVERY path that did not hand it
         // to a turn promise. Leaking it would freeze the project for good —
         // nothing else in the process would ever free it again.
+        releaseLoadSlot()
         active.delete(record.id)
         queue.releaseActive(record.id)
       }
@@ -2213,6 +2383,16 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // A human asked for this turn: whatever this id failed at earlier in the
     // session, it gets a fresh attempt (and its journal a fresh line).
     unblock(record.id)
+    // A fresh attempt starts unwitnessed by the machine cap too — the pump()
+    // call below re-adds it (and re-persists the reason) the moment launch()
+    // actually sees the cap full. MEASURED (round 4): over the whole CLI
+    // suite this line never actually removes anything — `launch()`'s own
+    // success-path delete has always cleared the id first (11 effective
+    // removals there, 0 here). It is the belt to that brace, kept for a
+    // future call path that reaches `schedule()` without having gone through
+    // a successful `launch()`; the test 'journaled BOTH times' only goes red
+    // when BOTH deletes are gone, so nothing here is proven in isolation.
+    machineWaiting.delete(record.id)
     let enqueued: EnqueueResult
     try {
       enqueued = queue.enqueue(record.id)
@@ -2247,8 +2427,28 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // whenever the position was 1 was a lie precisely in the case that hurts:
     // nothing running, the task simply could not materialize.
     if (queue.activeTask() !== null) {
+      // Same transition discipline as the machine-cap wait right below: only
+      // journal (and only once) the FIRST time this record is stated to be
+      // waiting on ITS PROJECT's own slot, not every schedule() call that
+      // finds it still there (adversarial review, MAJEUR 1 — the spec asks
+      // for the wait in the journal AND the API, twice over, not a re-quoted
+      // line per retry).
+      const alreadyStated =
+        record.reason?.code === 'resource_busy' && record.reason.detail === QUEUED_BEHIND_DETAIL
       record.reason = taskReason('resource_busy', QUEUED_BEHIND_DETAIL)
+      if (!alreadyStated) {
+        emit(record.id, {
+          type: 'queue',
+          data: { name: 'project_busy', message: QUEUED_BEHIND_DETAIL },
+          reason_code: 'resource_busy',
+        })
+      }
       persist(record)
+    } else if (machineWaiting.has(record.id)) {
+      // launch() (called by the pump() above) already settled the record
+      // with the machine-cap reason on this very attempt — nothing to add,
+      // and nothing to clear: doing either here would race whatever
+      // onSlotFreed's next retry does to the SAME record.
     } else if (!blocked.has(record.id)) {
       // Waiting for something this runner has no name for (a drain in
       // progress, a task ahead of it that a gesture will revive). Saying
@@ -2260,6 +2460,20 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     }
     return { ok: true, queue_position: position }
   }
+
+  // T1.3 (D4): a slot freeing ANYWHERE on the machine — another project's
+  // turn, a review, a checks run — may be exactly what this project's head is
+  // waiting for. The machine cap has no queue of its own for `launch()`
+  // (tryAcquire never blocks, never queues — see load-cap.ts), so this is the
+  // only thing that ever retries a 'machine_busy' head; without it, a task
+  // parked on the machine cap would sit there until some UNRELATED gesture on
+  // THIS project's own queue (a reply, a Stop) happened to call pump() again.
+  // The unsubscribe is KEPT and called by shutdown() (adversarial review
+  // round 3, MINEUR): thrown away, this runner would keep getting pumped by
+  // every machine-wide slot release for the rest of the process's life —
+  // T1.3 is what turns "a slot freed anywhere" into a reason to poke EVERY
+  // runner, a coupling `TaskSlotPool` never created (it was inert before).
+  const unsubscribeSlotFreed = loadCap.onSlotFreed(() => pump())
 
   // A queue this project's previous session left behind starts as soon as a
   // runner exists for that project — nothing else would ever pick it up, and
@@ -2646,6 +2860,10 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 
     async shutdown() {
       draining = true
+      // Stops this runner from being pumped by every OTHER project's slot
+      // releases once it is going down itself (adversarial review round 3,
+      // MINEUR): the listener otherwise outlives the runner it was built for.
+      unsubscribeSlotFreed()
       // The queued tasks are LEFT ALONE, on purpose (T1.2). They stay 'queued'
       // in queue.json, which outlives this process: the next boot re-hydrates
       // the file, reconciles it with the records and starts the head. Marking

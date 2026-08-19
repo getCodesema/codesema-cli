@@ -550,6 +550,24 @@ export function writeTaskChecks(cwd: string, id: string, checks: TaskChecks): Ta
 }
 
 /**
+ * Erases a task's checks.json — the ONLY way back to "nothing ever ran here",
+ * which no `writeTaskChecks` payload can express (`TaskChecks` has no "never
+ * ran" status; the ABSENCE of the file is that state, and `readTaskChecks`
+ * returns null for it). Used to undo a 'running' snapshot for a run that
+ * turned out never to start (task-server.ts's abandoned load-cap wait): the
+ * alternative — leaving 'running' behind — strands the UI's "Re-run checks"
+ * button disabled forever, since it derives from `status === 'running'`.
+ * Silent on an absent file and on an unknown id: erasing what is not there
+ * is already the requested state, never an error.
+ */
+export function removeTaskChecks(cwd: string, id: string): void {
+  if (!isTaskId(id)) {
+    return
+  }
+  rmSync(join(taskDir(cwd, id), 'checks.json'), { force: true })
+}
+
+/**
  * Reads the journal in file order. Corrupt or truncated lines (crash mid-append,
  * hand editing) are silently skipped — the journal is informative, never a
  * reason to fail a task. afterSeq filters to events strictly newer, for SSE
