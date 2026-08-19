@@ -559,12 +559,15 @@ async function handleTaskCreate(
   })
   if (!created.ok) {
     // existing_task_id rides along on the uniqueness 409: the web client
-    // opens that conversation instead of showing a dead-end error.
+    // opens that conversation instead of showing a dead-end error. reason_code
+    // rides along the same way, verbatim: the readable error stays the message,
+    // the code is what a machine can branch on.
     return sendJson(res, created.code, {
       error: created.error,
       ...(created.existing_task_id !== undefined
         ? { existing_task_id: created.existing_task_id }
         : {}),
+      ...(created.reason_code !== undefined ? { reason_code: created.reason_code } : {}),
     })
   }
   return sendJson(res, 201, created.record)

@@ -30,7 +30,13 @@ import {
   type RunContainerTurnOptions,
 } from './task-isolation.js'
 import { createTaskWorktree, removeTaskWorktree, renameTaskBranch } from './task-worktree.js'
-import { appendTaskEvent, loadTask, saveTask, type AppendTaskEventInput } from './tasks-store.js'
+import {
+  appendTaskEvent,
+  loadTask,
+  saveTask,
+  taskReason,
+  type AppendTaskEventInput,
+} from './tasks-store.js'
 
 /** Concurrent 'running' tasks by default; overridable via the maxParallelTasks config. */
 export const DEFAULT_MAX_PARALLEL_TASKS = 3
@@ -647,10 +653,17 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     }
     if (aborted) {
       record.status = 'interrupted'
+      // An abort is always a human stopping this task: Ctrl-C on the workspace
+      // (draining) or the interrupt button. The payload stays EXACTLY what it
+      // has always been — the code rides in its own field next to it — and the
+      // record restates the same thing, the readable message in `detail`.
+      const message = draining ? 'shutdown' : preview(errorMessage(err))
       emit(record.id, {
         type: 'interrupted',
-        data: draining ? { reason: 'shutdown' } : { message: preview(errorMessage(err)) },
+        data: draining ? { reason: 'shutdown' } : { message },
+        reason_code: 'interrupted_by_user',
       })
+      record.reason = taskReason('interrupted_by_user', message)
     } else {
       record.status = 'failed'
       emit(record.id, { type: 'error', data: { message: preview(errorMessage(err)) } })
@@ -724,6 +737,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       return
     }
     record.status = 'running'
+    // The task is moving again: whatever reason it last stopped for is history,
+    // and a record that kept claiming it would be lying about the present.
+    delete record.reason
     persist(record)
     const startedAt = Date.now()
     const turn = runTaskTurn({
@@ -892,7 +908,11 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         turn.ended_at = new Date().toISOString()
       }
       record.status = 'interrupted'
-      emit(taskId, { type: 'interrupted', data: {} })
+      // Same degradation as the shutdown path above, so the same code: a
+      // vocabulary that read differently depending on which producer emitted
+      // it would be unusable by the web mirror and by the post-mortem.
+      emit(taskId, { type: 'interrupted', data: {}, reason_code: 'interrupted_by_user' })
+      record.reason = taskReason('interrupted_by_user')
       persist(record)
       return { ok: true }
     },
@@ -952,7 +972,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
           turn.ended_at = new Date().toISOString()
         }
         record.status = 'interrupted'
-        emit(id, { type: 'interrupted', data: { reason: 'shutdown' } })
+        emit(id, {
+          type: 'interrupted',
+          data: { reason: 'shutdown' },
+          reason_code: 'interrupted_by_user',
+        })
+        record.reason = taskReason('interrupted_by_user', 'shutdown')
         persist(record)
       }
       for (const controller of active.values()) {

@@ -243,6 +243,31 @@ export type TaskEventType =
   /** Isolation decided for the task at creation, with the reason behind it. */
   | 'isolation'
 
+/**
+ * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
+ * decision D2). Widened with `string` on purpose: a code minted by a NEWER
+ * server must arrive as an unknown token the UI ignores, never as a type error
+ * nor as a label it invents. Extensible, never renamed.
+ */
+export type ReasonCode =
+  | 'checks_failed'
+  | 'review_blocked'
+  | 'criteria_unmet'
+  | 'merge_conflict'
+  | 'branch_diverged'
+  | 'agent_error'
+  | 'inactivity_timeout'
+  | 'interrupted_by_user'
+  | 'resource_busy'
+  | 'forge_unreachable'
+
+/** A degradation, fully stated: the code plus the producer's own message. */
+export type TaskReason = {
+  code: ReasonCode | string
+  /** The readable message the code names; never replaced by it. */
+  detail?: string
+}
+
 /** How a task's agent turns are contained (mirrors the contract). */
 export type TaskIsolation = 'container' | 'policy'
 
@@ -257,6 +282,10 @@ export type TaskEvent = {
   at: string
   type: TaskEventType
   data: TaskEventData
+  /** Names the degradation this event reports; absent on events that report
+   * none and on journal lines written before the field existed. Its own field,
+   * never a key of `data` — the payload keeps carrying the readable message. */
+  reason_code?: ReasonCode | string
 }
 
 export type TaskRecord = {
@@ -278,6 +307,10 @@ export type TaskRecord = {
   work_on?: boolean
   /** Containment of the task's turns, fixed at creation. Absent on older records = 'policy'. */
   isolation?: TaskIsolation
+  /** Why the task is where it is, when that is a degradation. Absent on
+   * records written before reason codes existed, and on tasks nothing went
+   * wrong with — absence claims nothing. */
+  reason?: TaskReason
   created_at: string
   updated_at: string
 }

@@ -1,5 +1,6 @@
 // All agent input passes through here: whitelist and truncate, never throw.
 
+export * from './reasons.js'
 export * from './tasks.js'
 
 export type NarrativeConfidence = 'high' | 'medium' | 'low'

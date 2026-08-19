@@ -3,6 +3,13 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **Reason codes** (`@codesema/contract` 0.6.0, decision D2): a closed, shared vocabulary for every degradation codesema reports, so CLI and web stop reading free-form strings. `REASON_CODES` is a frozen table of ten codes — `checks_failed`, `review_blocked`, `criteria_unmet`, `merge_conflict`, `branch_diverged`, `agent_error`, `inactivity_timeout`, `interrupted_by_user`, `resource_busy`, `forge_unreachable` — each carrying `terminal: boolean`, the answer to "does waiting change anything?": the five terminal ones need the WORK on the branch to change (a red check, a blocking review, an unmet criterion, a conflict, a branch left behind), the five retryable ones need the RUN or its environment to change (a crashed agent, a watchdog cut, a human stopping the task, a busy resource, an unreachable forge). The table is extensible and never renamed: a test locks every code by name, so adding an eleventh passes and renaming one breaks. Alongside it: `sanitizeReasonCode` (whitelist, `null` on anything unknown, never throws), `isTerminalReason`, and `TaskReason = { code, detail? }` whose `detail` is bounded to 2 000 characters so a reason always fits a flat event payload or an HTTP body.
+- Codes now travel with the four degradations that already existed, **added to** their readable message and never replacing it (they keep their exact wording and payload): the graceful shutdown and the interrupt button mark the task `interrupted_by_user`, a review that comes back KO marks it `review_blocked`, a task creation refused because the requested container cage is unavailable answers `resource_busy`, and a ship that pushed the branch but found no `gh`/`glab` to open the merge request reports `forge_unreachable`. The code rides in its own `reason_code` field on the journal event — never as a key inside `data`, whose payloads are untouched — and the full `{ code, detail }`, detail being the producer's own message verbatim, lands on the task record as the optional `reason`. A record or journal line written by 0.12 simply carries none, and a task that moves on (a turn restarting, a review coming back OK, a merge request finally opened) drops the reason it was carrying rather than keeping a stale claim. `POST /api/tasks` propagates the code verbatim in its refusal body, next to the message, the way it already does with `existing_task_id`.
+
 ## [0.12.1] - unreleased
 
 ### Fixed

@@ -22,6 +22,7 @@ import {
   TASK_BASE_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
+  type ReasonCode,
   type ReviewRecord,
   type TaskChecks,
   type TaskEvent,
@@ -64,6 +65,7 @@ import {
   readTaskChecks,
   readTaskEvents,
   saveTask,
+  taskReason,
   writeTaskChecks,
 } from './tasks-store.js'
 
@@ -127,6 +129,12 @@ export type TaskCreateResult =
       error: string
       /** On the 409 of the one-active-conversation-per-branch guard: the conversation to open instead. */
       existing_task_id?: string
+      /**
+       * Names the refusal for a machine, next to (never instead of) the
+       * readable `error`. Optional: a refusal the D2 vocabulary has no word
+       * for carries its message alone rather than a code that misnames it.
+       */
+      reason_code?: ReasonCode
     }
 
 /** Shared 404 for a project id absent from the registry (fits both result types). */
@@ -413,8 +421,17 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       const event = appendTaskEvent(cwd, id, {
         type: 'shipped',
         data: { mr_url: outcome.mrUrl, ...(outcome.note !== null ? { note: outcome.note } : {}) },
+        // Added beside the note, which keeps saying the same thing in words.
+        ...(outcome.reasonCode ? { reason_code: outcome.reasonCode } : {}),
       })
       emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+      // A ship that stopped short of an MR says so on the record too; a clean
+      // one clears whatever reason an earlier degradation had left there.
+      if (outcome.reasonCode) {
+        record.reason = taskReason(outcome.reasonCode, outcome.note ?? undefined)
+      } else {
+        delete record.reason
+      }
       record.status = 'shipped'
       record.updated_at = new Date().toISOString()
       saveTask(cwd, record)
@@ -755,6 +772,10 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           ok: false,
           code: 409,
           error: t('isolation.unavailable', { reason: probe.reason }),
+          // The cage was ASKED for and is not there right now: an engine that
+          // does not answer is a resource the machine currently lacks, so the
+          // refusal is retryable — the readable error keeps saying why.
+          reason_code: 'resource_busy',
         }
       }
       const record = createTask(ctx.project.path, {

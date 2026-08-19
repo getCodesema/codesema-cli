@@ -293,6 +293,42 @@ describe('shipTask', () => {
     expect(forge.calls.map((c) => c.cli)).toEqual(['gh', 'glab'])
   })
 
+  test('no forge CLI: the push-only ship names itself forge_unreachable', async () => {
+    const cwd = makeDir()
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({}) // both 'missing'
+    const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    expect(outcome.pushed).toBe(true)
+    if (!outcome.pushed) {
+      return
+    }
+    // The code is ADDED to the note, which keeps saying the same thing in words.
+    expect(outcome.reasonCode).toBe('forge_unreachable')
+    expect(outcome.note).toContain('no forge CLI')
+  })
+
+  test('a forge CLI that ran and failed is not named unreachable', async () => {
+    const cwd = makeDir()
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({ gh: { kind: 'error', message: 'API rate limit exceeded' } })
+    const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    expect(outcome.pushed).toBe(true)
+    if (!outcome.pushed) {
+      return
+    }
+    // The forge answered: no D2 code fits, and a wrong code is worse than none.
+    expect(outcome.reasonCode).toBeUndefined()
+    expect(outcome.note).toBe('gh failed: API rate limit exceeded')
+  })
+
+  test('a ship that opened its MR claims no degradation at all', async () => {
+    const cwd = makeDir()
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({ gh: { kind: 'ok', stdout: 'https://github.com/o/r/pull/42\n' } })
+    const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    expect(outcome.pushed && outcome.reasonCode).toBeUndefined()
+  })
+
   test('gh missing, glab creates the MR: glab URL wins', async () => {
     const cwd = makeDir()
     const git = gitExec({ kind: 'ok', stdout: '' })

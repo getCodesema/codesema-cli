@@ -349,6 +349,43 @@ describe('createTaskManager', () => {
     expect(rig.starts).toHaveLength(0)
   })
 
+  test('the cage-unavailable 409 names itself resource_busy, message untouched', () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      isolation: {
+        available: false,
+        mode: 'policy',
+        reason: 'docker is installed but its engine does not answer',
+        configured: 'container',
+        runtime: 'docker',
+      },
+    })
+    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    // The code is ADDED beside the readable error, which is unchanged.
+    expect(created).toMatchObject({
+      ok: false,
+      code: 409,
+      reason_code: 'resource_busy',
+      error: expect.stringContaining('does not answer'),
+    })
+  })
+
+  test('a refusal the vocabulary has no word for carries no code at all', () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const refused = manager.create(project.id, {
+      title: 't',
+      prompt: 'p',
+      autoShip: false,
+      base: 'nope',
+      branch: 'also-nope',
+    })
+    expect(refused).toMatchObject({ ok: false, code: 400 })
+    expect(refused.ok ? true : 'reason_code' in refused).toBe(false)
+  })
+
   test('an unprobed manager creates policy tasks: nothing pretends to be caged', () => {
     const project = register(makeRepo())
     const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
@@ -822,6 +859,40 @@ describe('manager.ship', () => {
     expect(envelopes.map((e) => e.event.name)).toEqual(['task_event', 'task'])
     expect(envelopes.every((e) => e.project_id === project.id)).toBe(true)
     expect(envelopes.at(-1)?.event.data).toMatchObject({ status: 'shipped' })
+  })
+
+  test('ship without a forge CLI: the shipped event and the record both name it', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const note =
+      'no forge CLI (gh or glab) available — branch pushed, open the merge request manually'
+    const stub = shipStub({ pushed: true, mrUrl: null, note, reasonCode: 'forge_unreachable' })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    // The journal keeps the note it always carried, and gains the code beside it.
+    expect(readTaskEvents(cwd, record.id)).toMatchObject([
+      { type: 'shipped', data: { mr_url: null, note }, reason_code: 'forge_unreachable' },
+    ])
+    expect(loadTask(cwd, record.id)?.reason).toEqual({ code: 'forge_unreachable', detail: note })
+    // Shipped all the same: the branch IS on origin.
+    expect(loadTask(cwd, record.id)?.status).toBe('shipped')
+  })
+
+  test('a ship that opened its MR clears any reason the task was carrying', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd, 'review_ko')
+    record.reason = { code: 'review_blocked', detail: 'review failed: agent timed out' }
+    saveTask(cwd, record)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    const shipped = loadTask(cwd, record.id)
+    expect(shipped && 'reason' in shipped).toBe(false)
+    expect(readTaskEvents(cwd, record.id)[0]).not.toHaveProperty('reason_code')
   })
 
   test('push failure: status unchanged, readable error event, 502 result', async () => {
@@ -1899,6 +1970,44 @@ describe('workspace server end to end', () => {
       { type: 'system', subtype: 'init', session_id: 'sess-e2e' },
       { type: 'result', result: response },
     ])
+
+  test('a refusal over HTTP carries reason_code in its body, next to the message', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      isolation: {
+        available: false,
+        mode: 'policy',
+        reason: 'docker is installed but its engine does not answer',
+        configured: 'container',
+        runtime: 'docker',
+      },
+    })
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5197,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const refused = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ project_id: project.id, title: 't', prompt: 'p' }),
+      })
+      expect(refused.status).toBe(409)
+      const body = JSON.parse(refused.body) as { error: string; reason_code?: string }
+      // Both halves reach the client: the message a human reads, and the code
+      // a machine branches on.
+      expect(body.reason_code).toBe('resource_busy')
+      expect(body.error).toContain('does not answer')
+      expect(manager.list(project.id)).toHaveLength(0)
+    } finally {
+      await started.stop()
+    }
+  })
 
   test('create over HTTP runs a turn to waiting_for_you, then reply runs turn 2', async () => {
     const project = register(makeRepo())

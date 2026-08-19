@@ -133,6 +133,59 @@ describe('runner shutdown', () => {
     expect(runner.runningCount()).toBe(0)
   })
 
+  test('shutdown names the degradation: interrupted_by_user beside an untouched payload', async () => {
+    const repo = makeRepo()
+    const running = makeTask(repo, 'in flight', 'long work')
+    const queued = makeTask(repo, 'still queued', 'later work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      maxParallel: 1,
+      runAgentFn: hangingAgent,
+    })
+    runner.start(running)
+    await until(() => status(repo, running.id) === 'running')
+    runner.start(queued)
+
+    await runner.shutdown()
+
+    for (const id of [running.id, queued.id]) {
+      const event = readTaskEvents(repo, id).find((e) => e.type === 'interrupted')
+      // The code is ADDED: it rides in its own field, and the readable payload
+      // the journal has always carried is byte-for-byte what it was.
+      expect(event?.reason_code).toBe('interrupted_by_user')
+      expect(event?.data).toEqual({ reason: 'shutdown' })
+      // The record restates it, with that same message in detail.
+      expect(loadTask(repo, id)?.reason).toEqual({
+        code: 'interrupted_by_user',
+        detail: 'shutdown',
+      })
+    }
+  })
+
+  test('a restarted turn drops the reason it stopped for: no stale claim', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'stopped then resumed', 'work')
+    const agent = questionAgent()
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      maxParallel: 1,
+      runAgentFn: agent.run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(runner.interrupt(task.id)).toEqual({ ok: true })
+    expect(loadTask(repo, task.id)?.reason).toEqual({ code: 'interrupted_by_user' })
+
+    expect(runner.reply(task.id, 'carry on')).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record && 'reason' in record).toBe(false)
+  })
+
   test('start and reply are refused while draining', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'late arrival', 'work')

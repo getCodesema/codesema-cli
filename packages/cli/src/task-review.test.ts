@@ -270,6 +270,59 @@ describe('createTaskReviewer', () => {
     expect(rig.events[1]?.data.message).toBe('review failed: agent timed out')
   })
 
+  test('a failed review names its degradation: review_blocked, message untouched', async () => {
+    const repo = makeRepo()
+    const record = makeTaskWithWorktree(repo, 'named failure')
+    commitChange(record.worktree, 'work.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'agent timed out' })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    // The code is added BESIDE the message, in its own field: the payload the
+    // journal always carried is unchanged.
+    expect(rig.events[1]?.reason_code).toBe('review_blocked')
+    expect(rig.events[1]?.data).toEqual({ message: 'review failed: agent timed out' })
+    // And the record restates the whole thing, message included.
+    expect(record.reason).toEqual({
+      code: 'review_blocked',
+      detail: 'review failed: agent timed out',
+    })
+  })
+
+  test('a request_changes verdict is a review_blocked record too, with no invented detail', async () => {
+    const repo = makeRepo()
+    const record = makeTaskWithWorktree(repo, 'blocked by findings')
+    commitChange(record.worktree, 'work.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReview('request_changes', [
+        { file: 'work.txt', severity: 'critical', message: 'boom' },
+      ]),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ko')
+    expect(record.reason).toEqual({ code: 'review_blocked' })
+  })
+
+  test('a review that passes clears the reason an earlier degradation left behind', async () => {
+    const repo = makeRepo()
+    const record = makeTaskWithWorktree(repo, 'recovered')
+    commitChange(record.worktree, 'work.txt')
+    record.reason = { code: 'review_blocked', detail: 'review failed: agent timed out' }
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ok')
+    expect('reason' in record).toBe(false)
+  })
+
   test('a prep crash follows the same review_ko path', async () => {
     const repo = makeRepo()
     const record = makeTaskWithWorktree(repo, 'bad prep')

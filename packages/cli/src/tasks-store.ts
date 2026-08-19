@@ -20,11 +20,14 @@ import {
   sanitizeTaskChecks,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
+  TASK_REASON_DETAIL_MAX,
+  type ReasonCode,
   type TaskChecks,
   type TaskEvent,
   type TaskEventData,
   type TaskEventType,
   type TaskIsolation,
+  type TaskReason,
   type TaskRecord,
 } from './contract.js'
 
@@ -141,9 +144,26 @@ export function listTasks(cwd: string): TaskRecord[] {
   )
 }
 
+/**
+ * Builds the reason a producer states on a record: the code, plus that
+ * producer's OWN readable message in `detail`, verbatim. The message is never
+ * replaced — the code only names it — and the bound is applied HERE because
+ * saveTask writes records exactly as handed to it.
+ */
+export function taskReason(code: ReasonCode, detail?: string): TaskReason {
+  const text = typeof detail === 'string' ? detail.trim().slice(0, TASK_REASON_DETAIL_MAX) : ''
+  return { code, ...(text ? { detail: text } : {}) }
+}
+
 export type AppendTaskEventInput = {
   type: TaskEventType
   data: TaskEventData
+  /**
+   * Names the degradation this event reports, when it reports one. Optional
+   * and carried BESIDE `data`, never inside it: producers keep writing the
+   * exact payload they always wrote, and the code is added to it.
+   */
+  reason_code?: ReasonCode
 }
 
 /**
@@ -167,6 +187,7 @@ export function appendTaskEvent(cwd: string, id: string, input: AppendTaskEventI
     at: new Date().toISOString(),
     type: input.type,
     data: input.data,
+    ...(input.reason_code ? { reason_code: input.reason_code } : {}),
   })
   if (!event) {
     // Unreachable through the typed input; kept as a hard invariant so a bad
