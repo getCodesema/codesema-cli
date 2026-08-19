@@ -49,4 +49,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   interrupted: TaskEventLine,
   isolation: TaskEventLine,
   cost: TaskEventLine,
+  branch: TaskEventLine,
 }

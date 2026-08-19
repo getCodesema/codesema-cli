@@ -244,6 +244,21 @@ describe('eventSummary', () => {
     expect(eventSummary(event({ type: 'error', data: {} }))).toBe('Error')
   })
 
+  // T1.6: the branch facts (rename declined, branch preserved, anchor
+  // fallback) all read their text the same way message events do, but
+  // through their own type — never mistaken for the agent's own words.
+  test('branch uses its text, like message but through its own type', () => {
+    expect(
+      eventSummary(
+        event({
+          type: 'branch',
+          data: { name: 'branch_preserved', text: 'kept codesema/task-x: it carries a commit' },
+        }),
+      ),
+    ).toBe('kept codesema/task-x: it carries a commit')
+    expect(eventSummary(event({ type: 'branch', data: {} }))).toBe('Branch')
+  })
+
   test('long payloads are clipped', () => {
     const long = eventSummary(event({ type: 'message', data: { text: 'x'.repeat(500) } }))
     expect(long.length).toBeLessThanOrEqual(140)
@@ -262,6 +277,10 @@ describe('eventTone', () => {
     expect(eventTone('turn_started')).toBe('check')
     expect(eventTone('review_started')).toBe('check')
     expect(eventTone('tool_use')).toBe('idle')
+  })
+
+  test('branch facts are neutral: none of them is a failure of the work', () => {
+    expect(eventTone('branch')).toBe('idle')
   })
 })
 

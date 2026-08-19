@@ -597,14 +597,19 @@ const BODYLESS_TASK_ACTIONS: Record<
  * Body of a task action. Success carries `queue_position` when the gesture left
  * the task WAITING (a reply or a resume behind another task of the same repo):
  * the caller renders the right thing without a round-trip, exactly like the
- * creation response. A refusal carries its `reason_code` next to — never
- * instead of — the readable message, the way POST /api/tasks already does.
+ * creation response. `preserved_branch` (T1.6) is set only by an abandon that
+ * kept the branch instead of deleting it. A refusal carries its `reason_code`
+ * next to — never instead of — the readable message, the way POST /api/tasks
+ * already does.
  */
 function taskActionBody(result: TaskActionResult): Record<string, unknown> {
   return result.ok
     ? {
         ok: true,
         ...(result.queue_position === undefined ? {} : { queue_position: result.queue_position }),
+        ...(result.preserved_branch === undefined
+          ? {}
+          : { preserved_branch: result.preserved_branch }),
       }
     : { error: result.error, ...(result.reason_code ? { reason_code: result.reason_code } : {}) }
 }
