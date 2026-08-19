@@ -8,6 +8,7 @@ import {
   loadConfig,
   loadGlobalConfig,
   loadRepoConfig,
+  resolveWatchdogBudgets,
   saveGlobalConfig,
   saveRepoConfig,
   trustRepoAgent,
@@ -229,5 +230,101 @@ describe('isolation configuration', () => {
     expect(loadRepoConfig(repoDir).isolationAllowedDomains).toBeUndefined()
     saveRepoConfig(repoDir, { isolationAllowedDomains: ['!!!'] })
     expect(loadRepoConfig(repoDir).isolationAllowedDomains).toBeUndefined()
+  })
+})
+
+describe('watchdog budgets (D3)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-wd-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-wd-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('no configuration: 30 min, 2 h and 30 s (D3)', () => {
+    expect(resolveWatchdogBudgets(loadConfig(repoDir))).toEqual({
+      inactivityMs: 30 * 60_000,
+      toolBudgetMs: 2 * 60 * 60_000,
+      heartbeatMs: 30_000,
+    })
+  })
+
+  test('the three budgets are readable from the config and override the defaults', () => {
+    saveRepoConfig(repoDir, {
+      watchdogInactivitySeconds: 600,
+      watchdogToolBudgetSeconds: 5400,
+      watchdogHeartbeatSeconds: 10,
+    })
+    const config = loadConfig(repoDir)
+    expect(config.watchdogInactivitySeconds).toBe(600)
+    expect(config.watchdogToolBudgetSeconds).toBe(5400)
+    expect(config.watchdogHeartbeatSeconds).toBe(10)
+    expect(resolveWatchdogBudgets(config)).toEqual({
+      inactivityMs: 600_000,
+      toolBudgetMs: 5_400_000,
+      heartbeatMs: 10_000,
+    })
+  })
+
+  // NOTE: this is loadConfig's merge, not per-project resolution. The workspace
+  // resolves these three ONCE at boot from the launch repo and applies them to
+  // every registered project (TODO(T1.4)); the README says so rather than
+  // promising a per-repo behaviour that does not exist yet.
+  test('a repo budget wins over the global one, field by field', () => {
+    saveGlobalConfig({ watchdogInactivitySeconds: 60, watchdogHeartbeatSeconds: 5 })
+    saveRepoConfig(repoDir, { watchdogInactivitySeconds: 120 })
+    expect(resolveWatchdogBudgets(loadConfig(repoDir))).toEqual({
+      inactivityMs: 120_000,
+      toolBudgetMs: 2 * 60 * 60_000,
+      heartbeatMs: 5_000,
+    })
+  })
+
+  test('an unusable value falls back to its default rather than to a run cut on sight', () => {
+    saveRepoConfig(repoDir, {
+      watchdogInactivitySeconds: 0,
+      watchdogToolBudgetSeconds: -1,
+      watchdogHeartbeatSeconds: 1.5,
+    })
+    const config = loadRepoConfig(repoDir)
+    expect(config.watchdogInactivitySeconds).toBeUndefined()
+    expect(config.watchdogToolBudgetSeconds).toBeUndefined()
+    expect(config.watchdogHeartbeatSeconds).toBeUndefined()
+    expect(resolveWatchdogBudgets(config)).toEqual({
+      inactivityMs: 30 * 60_000,
+      toolBudgetMs: 2 * 60 * 60_000,
+      heartbeatMs: 30_000,
+    })
+  })
+
+  test('timeout gets the same guard: it is the last-resort ceiling now', () => {
+    // Since T1.7 nothing else watches the wall clock, so a 0 or a negative
+    // would read as "kill on sight" instead of "no ceiling".
+    saveRepoConfig(repoDir, { timeout: 0 })
+    expect(loadRepoConfig(repoDir).timeout).toBeUndefined()
+    saveRepoConfig(repoDir, { timeout: -30 })
+    expect(loadRepoConfig(repoDir).timeout).toBeUndefined()
+    saveRepoConfig(repoDir, { timeout: 1.5 })
+    expect(loadRepoConfig(repoDir).timeout).toBeUndefined()
+    saveRepoConfig(repoDir, { timeout: 3600 })
+    expect(loadRepoConfig(repoDir).timeout).toBe(3600)
+  })
+
+  test('a budget that is not a number at all is simply absent', () => {
+    saveRepoConfig(repoDir, { watchdogInactivitySeconds: '600' as never })
+    expect(loadRepoConfig(repoDir).watchdogInactivitySeconds).toBeUndefined()
   })
 })

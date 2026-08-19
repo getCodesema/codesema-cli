@@ -70,6 +70,10 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
 
   'agent.timeout': 'agent timed out after {s}s — raise it with --timeout <seconds>',
   'agent.exitCode': 'agent command exited with code {code}',
+  'agent.inactivity':
+    'agent said nothing for {m} min with no tool running — stopped as dead by the watchdog',
+  'agent.toolBudget':
+    'agent tool has been running for {m} min without coming back — stopped as stuck by the watchdog',
   'agent.noneFound':
     "no supported agent CLI found on PATH (looked for: {bins}) — pass one with --agent '<command>' (it receives the full prompt on stdin and must print the review JSON on stdout)",
   'agent.noJsonReview':
@@ -490,6 +494,10 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
 
   'agent.timeout': "délai de l'agent dépassé après {s}s : augmentez-le avec --timeout <secondes>",
   'agent.exitCode': "la commande d'agent a quitté avec le code {code}",
+  'agent.inactivity':
+    'agent silencieux depuis {m} min sans aucun outil en cours : arrêté comme mort par le chien de garde',
+  'agent.toolBudget':
+    "outil de l'agent en cours depuis {m} min sans retour : arrêté comme bloqué par le chien de garde",
   'agent.noneFound':
     "aucune CLI d'agent trouvée sur le PATH (recherchées : {bins}) : passez-en une avec --agent '<commande>' (elle reçoit le prompt complet sur stdin et doit afficher le JSON de la revue sur stdout)",
   'agent.noJsonReview':

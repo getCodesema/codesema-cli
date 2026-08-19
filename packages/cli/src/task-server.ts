@@ -10,7 +10,7 @@
 // across N projects ride one EventSource.
 
 import { existsSync } from 'node:fs'
-import type { AgentRunOptions } from './agent.js'
+import type { AgentRunOptions, WatchdogBudgets } from './agent.js'
 import {
   createChecksSetupRunner,
   type ChecksSetupRunner,
@@ -226,7 +226,10 @@ export type TaskManager = {
 export type CreateTaskManagerOptions = {
   /** Raw configured agent command, shared by every project. */
   command: string
+  /** Last-resort absolute ceiling of a turn; the watchdog is what detects a dead one. */
   timeoutMs: number
+  /** Watchdog budgets (D3), read from the config by resolveWatchdogBudgets. */
+  watchdog?: WatchdogBudgets | undefined
   /** GLOBAL cap of concurrently running tasks, all projects confounded. */
   maxParallel?: number
   /**
@@ -595,6 +598,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       cwd,
       command: opts.command,
       timeoutMs: opts.timeoutMs,
+      ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
       slots: pool,
       onTurnDone,
       // Cage inputs, read from the project's own config: its checks image is

@@ -229,7 +229,7 @@ describe('missingReviewedFiles', () => {
 })
 
 describe('runAgentJsonWithRetry', () => {
-  const opts: AgentRunOptions = { command: 'noop', prompt: 'P', cwd: '/', timeoutMs: 1000 }
+  const opts: AgentRunOptions = { command: 'noop', prompt: 'P', cwd: '/', absoluteCapMs: 1000 }
 
   test('valid output parses on the first run, no retry', async () => {
     const calls: string[] = []

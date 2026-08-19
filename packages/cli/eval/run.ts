@@ -41,7 +41,7 @@ async function runLane(
     env: agentEnv(agent),
     prompt,
     cwd: process.cwd(),
-    timeoutMs,
+    absoluteCapMs: timeoutMs,
   })
   return groundReview(sanitizeReview(JSON.parse(extractReviewJson(raw))), fixture.input.diff).review
 }

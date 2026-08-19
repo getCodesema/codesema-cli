@@ -133,6 +133,21 @@ export type TaskRecord = {
    * a stale reason is a lie about the present.
    */
   reason?: TaskReason
+  /**
+   * Last liveness beat of this task's agent (ISO-8601), written by the
+   * semantic watchdog's heartbeat. It is what lets a reader tell a task that
+   * is LONG from a task that is DEAD: `updated_at` only moves when something
+   * happens, so a working agent deep inside a forty-minute tool call looks
+   * exactly like a crashed one without it. Only meaningful while the task is
+   * `running` — a starting turn CLEARS it, so a stale stamp can never be read
+   * as a live one, and on a stopped task it is simply the last beat there was.
+   *
+   * OPTIONAL, and absence is the honest default: a record written before this
+   * field existed claims no beat, and so does a task that is not running. It
+   * is deliberately NOT a journal line — a beat every 30 s would grow
+   * events.jsonl without ever saying anything new.
+   */
+  heartbeat_at?: string
   created_at: string
   updated_at: string
 }
@@ -142,6 +157,8 @@ export const TASK_TITLE_MAX = 200
 export const TASK_BASE_MAX = 200
 export const TASK_PATH_MAX = 500
 export const TASK_SESSION_ID_MAX = 200
+/** Bound for a timestamp read back from disk: an ISO-8601 instant, nothing longer. */
+export const TASK_TIMESTAMP_MAX = 40
 /** Applies to a turn's prompt, response and question alike. */
 export const TASK_TURN_TEXT_MAX = 20_000
 export const TASK_TURNS_MAX = 500
@@ -282,6 +299,12 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // newer vocabulary, tampered file) drops the key entirely rather than
     // claiming a reason no reader can name. Never throws.
     ...(reason ? { reason } : {}),
+    // Same doctrine: optional, whitelisted to a plain bounded string, dropped
+    // entirely when it is not one. A missing beat means "we know nothing",
+    // never "the agent is dead".
+    ...(typeof r.heartbeat_at === 'string' && r.heartbeat_at
+      ? { heartbeat_at: r.heartbeat_at.slice(0, TASK_TIMESTAMP_MAX) }
+      : {}),
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

@@ -25,12 +25,25 @@
 // box READ-ONLY (container-git.ts) so the agent can see what it changed
 // without being able to rewrite a single ref.
 
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { knownAgent } from './agent.js'
+import {
+  AGENT_KILL_GRACE_MS,
+  AGENT_SETTLE_GRACE_MS,
+  AGENT_WATCHDOG_DEFAULTS,
+  AgentWatchdogError,
+  armStreamWatchdog,
+  knownAgent,
+  systemClock,
+  watchdogMessage,
+  type AgentClock,
+  type AgentHeartbeat,
+  type AgentWatchdogCause,
+  type WatchdogBudgets,
+} from './agent.js'
 import type { IsolationMode } from './config.js'
 import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
 import type { TaskIsolation } from './contract.js'
@@ -1115,76 +1128,206 @@ export function containerRunArgs(spec: ContainerRunSpec): string[] {
 export type ContainerSpawnOptions = {
   file: string
   args: string[]
+  /**
+   * The AGENT command line running inside the box (not the runtime argv):
+   * says whether the stdout coming back can be decoded as claude JSONL, which
+   * is what the watchdog reads its tool signals from.
+   */
+  command: string
   /** Turn prompt, written to the container's stdin. */
   input: string
+  /** Last-resort ceiling; the watchdog is what detects a dead run (effectiveAbsoluteCapMs). */
   timeoutMs: number
   signal?: AbortSignal | undefined
   /** Cumulative stdout, same contract as runAgent's onText. */
   onText?: ((text: string) => void) | undefined
   /** Kills the container by NAME: killing the client alone leaves it running. */
   onKill: () => void
+  /** Watchdog budgets (D3 defaults when absent) — the caged turn gets the same guard as the host one. */
+  watchdog?: WatchdogBudgets | undefined
+  /** Liveness beat, one per heartbeat period. */
+  onHeartbeat?: ((beat: AgentHeartbeat) => void) | undefined
+  /** Test seams: injected clock and process spawn (no real container, no real wait). */
+  clock?: AgentClock | undefined
+  spawnProcessFn?: ContainerProcessSpawnFn | undefined
 }
+
+/** Process seam of the real container spawn: tests hand back a recording double. */
+export type ContainerProcessSpawnFn = (
+  file: string,
+  args: string[],
+  options: SpawnOptions,
+) => ChildProcess
 
 /** Streaming spawn seam: tests replace it, unit tests never spawn a container. */
 export type ContainerSpawnFn = (opts: ContainerSpawnOptions) => Promise<string>
 
 /**
- * Real spawn: argv array, NO shell on the host. Timeout and interrupt both
- * kill the container by name (the client dying would otherwise leave the
- * agent running inside its box) and then SIGTERM the client itself.
+ * Bounded wait between the container kill and signalling the CLIENT: `docker
+ * kill` has to reach the engine and the client usually exits on its own once
+ * the container is gone. Signalling the client first would orphan the box.
+ */
+export const CONTAINER_KILL_GRACE_MS = 5_000
+
+/**
+ * Real spawn: argv array, NO shell on the host. The caged turn carries the
+ * same semantic watchdog as the host one (runAgent): silence with no tool out,
+ * or a tool that never comes back, kills the run with `inactivity_timeout` —
+ * the cage is the DEFAULT path whenever a runtime exists, so leaving it
+ * unwatched would leave the bug the watchdog exists to fix in place.
+ *
+ * The kill escalation is ordered and every step is bounded: close stdin → kill
+ * the CONTAINER by name (the client dying alone leaves the agent running in
+ * its box) → wait → SIGTERM the client → wait → SIGKILL it → close stdout →
+ * wait → settle anyway. stdout stays open until the very end so the agent's
+ * last words survive its death, and the final settle exists because no signal
+ * is a guarantee: a promise that never settles turns Ctrl-C into a hang.
  */
 export const spawnContainer: ContainerSpawnFn = (opts) =>
   new Promise((resolve, reject) => {
-    const child = spawn(opts.file, opts.args, { stdio: ['pipe', 'pipe', 'inherit'] })
+    const clock = opts.clock ?? systemClock
+    const spawnProcessFn = opts.spawnProcessFn ?? spawn
+    const child = spawnProcessFn(opts.file, opts.args, { stdio: ['pipe', 'pipe', 'inherit'] })
+    const stdin = child.stdin
+    const stdout = child.stdout
+    stdin?.on('error', () => {})
+
     let out = ''
-    let timedOut = false
+    let capped = false
     let aborted = false
-    const stop = () => {
-      opts.onKill()
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // already gone
+    let killing = false
+    let settled = false
+    let cut: { cause: AgentWatchdogCause; elapsedMs: number } | null = null
+    let capCancel: (() => void) | null = null
+    let stepCancel: (() => void) | null = null
+
+    const stopTimers = (): void => {
+      armed.stop()
+      capCancel?.()
+      stepCancel?.()
+      capCancel = null
+      stepCancel = null
+    }
+    const finish = (outcome: () => void): void => {
+      if (settled) {
+        return
       }
-    }
-    const timer = setTimeout(() => {
-      timedOut = true
-      stop()
-    }, opts.timeoutMs)
-    const onAbort = () => {
-      aborted = true
-      stop()
-    }
-    if (opts.signal?.aborted) {
-      onAbort()
-    } else {
-      opts.signal?.addEventListener('abort', onAbort, { once: true })
-    }
-    child.stdout.on('data', (d: Buffer) => {
-      out += d.toString()
-      opts.onText?.(out)
-    })
-    child.on('error', (err) => {
-      clearTimeout(timer)
+      settled = true
+      stopTimers()
       opts.signal?.removeEventListener('abort', onAbort)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      opts.signal?.removeEventListener('abort', onAbort)
-      if (aborted) {
+      outcome()
+    }
+    const settleFromState = (code: number | null): void => {
+      // A watchdog cut owns the outcome: a human hitting Stop during the kill
+      // is reacting to it, not causing it, and overwriting the cause would
+      // lose the reason code and the resumable status that goes with it.
+      if (cut) {
+        reject(new AgentWatchdogError(cut.cause, watchdogMessage(cut.cause, cut.elapsedMs)))
+      } else if (aborted) {
         reject(new Error(t('agent.interrupted')))
-      } else if (timedOut) {
+      } else if (capped) {
         reject(new Error(t('agent.timeout', { s: Math.round(opts.timeoutMs / 1000) })))
       } else if (code === 0) {
         resolve(out)
       } else {
         reject(new Error(t('agent.exitCode', { code })))
       }
+    }
+    const killClient = (signal: NodeJS.Signals): void => {
+      try {
+        child.kill(signal)
+      } catch {
+        // already gone
+      }
+    }
+    const escalateKill = (): void => {
+      if (killing) {
+        return
+      }
+      killing = true
+      // Nothing left for the budgets to say, and a beat during the death
+      // throes would only claim life where there is none.
+      armed.stop()
+      // 1. stdin: already closed in today's flow (the prompt is written and
+      //    stdin ended as soon as the run starts), kept first because the
+      //    order is the contract — EOF is the gentlest way to ask an agent to
+      //    leave, and the guard above absorbs a redundant close.
+      try {
+        stdin?.end()
+      } catch {
+        // already gone
+      }
+      // 2. the container, by NAME: the box is what holds the agent.
+      opts.onKill()
+      stepCancel = clock.setTimer(() => {
+        // 3. the client, once the box has had its chance to take it down.
+        killClient('SIGTERM')
+        stepCancel = clock.setTimer(() => {
+          // 4. a client that ignored SIGTERM, and only then 5. stdout.
+          killClient('SIGKILL')
+          try {
+            stdout?.destroy()
+          } catch {
+            // stream already gone
+          }
+          // 6. no signal is a promise the process is gone; report anyway.
+          stepCancel = clock.setTimer(() => {
+            stepCancel = null
+            finish(() => settleFromState(null))
+          }, AGENT_SETTLE_GRACE_MS)
+        }, AGENT_KILL_GRACE_MS)
+      }, CONTAINER_KILL_GRACE_MS)
+    }
+
+    const armed = armStreamWatchdog({
+      command: opts.command,
+      // The cage's stdout is relayed raw to the caller (runTaskTurn owns the
+      // TEXT parser); this watchdog keeps its own count-only reader.
+      callerDecodes: false,
+      budgets: opts.watchdog ?? AGENT_WATCHDOG_DEFAULTS,
+      clock,
+      ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
+      onExpire: (cause, elapsedMs) => {
+        if (killing) {
+          return
+        }
+        cut = { cause, elapsedMs }
+        escalateKill()
+      },
     })
-    child.stdin.on('error', () => {})
-    child.stdin.write(opts.input)
-    child.stdin.end()
+
+    capCancel = clock.setTimer(() => {
+      capCancel = null
+      if (killing) {
+        return
+      }
+      capped = true
+      escalateKill()
+    }, opts.timeoutMs)
+
+    function onAbort(): void {
+      aborted = true
+      escalateKill()
+    }
+    if (opts.signal?.aborted) {
+      onAbort()
+    } else {
+      opts.signal?.addEventListener('abort', onAbort, { once: true })
+    }
+    stdout?.on('data', (d: Buffer) => {
+      const chunk = d.toString()
+      out += chunk
+      armed.push(chunk)
+      opts.onText?.(out)
+    })
+    child.on('error', (err) => {
+      finish(() => reject(err))
+    })
+    child.on('close', (code: number | null) => {
+      finish(() => settleFromState(code))
+    })
+    stdin?.write(opts.input)
+    stdin?.end()
   })
 
 let cachedRuntime: Promise<string | null> | null = null
@@ -1221,7 +1364,14 @@ export type RunContainerTurnOptions = {
   /** Raw agent command line to run inside the cage (already flagged). */
   command: string
   prompt: string
+  /** Last-resort ceiling; the watchdog is what detects a dead run (effectiveAbsoluteCapMs). */
   timeoutMs: number
+  /** Watchdog budgets (D3 defaults when absent): the caged turn is watched like the host one. */
+  watchdog?: WatchdogBudgets | undefined
+  /** Liveness beat, one per heartbeat period. */
+  onHeartbeat?: ((beat: AgentHeartbeat) => void) | undefined
+  /** Injected clock (test seam): no test ever waits out a budget. */
+  clock?: AgentClock | undefined
   /** Effective egress allowlist. */
   allowedDomains?: readonly string[]
   /** Repo checks config, used by the base-image resolution. */
@@ -1299,8 +1449,14 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
   return spawnFn({
     file: runtime,
     args,
+    // The AGENT command, not the runtime argv: the watchdog reads its tool
+    // signals from what comes back on stdout, which this describes.
+    command: opts.command,
     input: opts.prompt,
     timeoutMs: opts.timeoutMs,
+    ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
+    ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
+    ...(opts.clock ? { clock: opts.clock } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     ...(opts.onText ? { onText: opts.onText } : {}),
     onKill: () => {
