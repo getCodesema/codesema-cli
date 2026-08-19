@@ -24,4 +24,12 @@ describe('TASK_EVENT_COMPONENTS', () => {
   test("'queue' (T1.3) routes to the generic neutral line, not a checks card", () => {
     expect(TASK_EVENT_COMPONENTS.queue).toBe(TaskEventLine)
   })
+
+  // Same claim for T2.4: the CHANGELOG states 'issue' is rendered by the
+  // generic neutral line. Re-routing it to TaskEventMessage — whose text comes
+  // from the turn's response and would swallow the line entirely (DP15) — must
+  // fail here rather than in a user's journal.
+  test("'issue' (T2.4) routes to the generic neutral line, not a bespoke renderer", () => {
+    expect(TASK_EVENT_COMPONENTS.issue).toBe(TaskEventLine)
+  })
 })

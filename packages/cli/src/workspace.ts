@@ -470,6 +470,6 @@ export async function workspace(
   // the shutdown handlers are installed (a Ctrl-C drains it instead of killing
   // it mid-turn), and the boot has already said what it found. A turn that
   // started before any of that could neither be watched nor stopped.
-  logResumedQueues(taskManager.startPending())
+  logResumedQueues(await taskManager.startPending())
   // The listening server keeps the event loop (and therefore the tasks) alive.
 }

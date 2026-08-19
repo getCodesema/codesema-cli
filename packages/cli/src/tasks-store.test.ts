@@ -15,7 +15,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   TASK_CHECK_TAIL_MAX,
   TASK_EVENT_DATA_STRING_MAX,
+  TICKET_BODY_HASH_TAG,
   type TaskChecks,
+  type TaskIssueRef,
+  type TaskIssueSnapshot,
   type TaskRecord,
 } from './contract.js'
 import {
@@ -99,6 +102,44 @@ describe('createTask', () => {
   test('.codesema/ gets its auto .gitignore (ensureWorkDir reused)', () => {
     createTask(cwd, input)
     expect(readFileSync(join(cwd, '.codesema', '.gitignore'), 'utf8')).toBe('*\n')
+  })
+
+  // T2.4/D7 (round-2 adversarial review, mineur): `issue` and `issueSnapshot`
+  // are documented as ALWAYS given together. A single guard now enforces
+  // that instead of two independent conditional spreads that could silently
+  // drift apart under a future edit.
+  describe('issue / issueSnapshot are always given together', () => {
+    const issueRef: TaskIssueRef = {
+      forge: 'github',
+      project: 'acme/repo',
+      iid: 1,
+      url: 'https://github.com/acme/repo/issues/1',
+    }
+    const issueSnapshot: TaskIssueSnapshot = {
+      body_hash: `${TICKET_BODY_HASH_TAG}:${'a'.repeat(64)}`,
+      criteria: [],
+      taken_at: new Date().toISOString(),
+    }
+
+    test('both present together is accepted, and both land on the record', () => {
+      const record = createTask(cwd, { ...input, issue: issueRef, issueSnapshot })
+      expect(record.issue).toEqual(issueRef)
+      expect(record.issue_snapshot).toEqual(issueSnapshot)
+    })
+
+    test('neither present is accepted, and neither field is written', () => {
+      const record = createTask(cwd, input)
+      expect(record.issue).toBeUndefined()
+      expect(record.issue_snapshot).toBeUndefined()
+    })
+
+    test('issue without issueSnapshot throws rather than writing a half-bound record', () => {
+      expect(() => createTask(cwd, { ...input, issue: issueRef })).toThrow()
+    })
+
+    test('issueSnapshot without issue throws rather than writing a half-bound record', () => {
+      expect(() => createTask(cwd, { ...input, issueSnapshot })).toThrow()
+    })
   })
 })
 

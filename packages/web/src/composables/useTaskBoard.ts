@@ -502,6 +502,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   branch: 'workspace.evBranch',
   resource: 'workspace.evResource',
   queue: 'workspace.evQueue',
+  issue: 'workspace.evIssue',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -536,10 +537,44 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   resource: 'idle',
   // Neutral: an ordinary wait for a resource is not a degradation (DP8(b)/DP9).
   queue: 'idle',
+  // Static fallback only: 'edited'/'not_ticket' (waiting on a human) and
+  // 'cosmetic'/'bound' (routine) read very differently — see the per-name
+  // tone lookup below, consulted first.
+  issue: 'idle',
 }
 
-export function eventTone(type: TaskEventType): EventTone {
-  return EVENT_TONE[type]
+/**
+ * `data.name` is what actually distinguishes an 'issue' event's tone (DP9):
+ * `edited`/`not_ticket` need a human decision, `bound`/`coverage_gap`/`cosmetic`
+ * are routine. Falls back to `EVENT_TONE.issue` for a name this build does
+ * not know (a newer server), which is deliberately the ROUTINE tone —
+ * defaulting an unknown cause to "check" would paint every future addition
+ * red or amber before anyone decided it should be.
+ */
+const ISSUE_EVENT_TONE: Record<string, EventTone> = {
+  edited: 'check',
+  not_ticket: 'check',
+  // A ticket whose frozen snapshot cannot be read back is silently out of
+  // edit detection until a human re-binds it: amber, like the two above, for
+  // the same reason — it is waiting on a person, not on the machine.
+  snapshot_unreadable: 'check',
+  bound: 'idle',
+  coverage_gap: 'idle',
+  cosmetic: 'idle',
+}
+
+/**
+ * `event.type` decides the tone for every domain but 'issue' (DP9), whose
+ * `data.name` carries the actual cause — `edited`/`not_ticket` are amber
+ * (waiting on a human), the rest are neutral. Takes the whole event rather
+ * than the bare type for exactly this one case.
+ */
+export function eventTone(event: Pick<TaskEvent, 'type' | 'data'>): EventTone {
+  if (event.type === 'issue') {
+    const name = typeof event.data.name === 'string' ? event.data.name : ''
+    return ISSUE_EVENT_TONE[name] ?? EVENT_TONE.issue
+  }
+  return EVENT_TONE[event.type]
 }
 
 /** First non-empty string among the given data keys, or null. */
@@ -593,6 +628,15 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   // the `?? label` fallback below structurally unreachable — the translated
   // 'workspace.evQueue' label was dead code no journal line ever showed.
   queue: [],
+  // Rendered from `data.name` (issueEventText below), never from the raw
+  // `data.message` the server writes: that field is an ENGLISH sentence built
+  // in task-issue.ts and, being posed by ALL of the six 'issue' constructors,
+  // it made the `?? label` fallback at the end of `eventSummary`
+  // structurally unreachable — the translated 'workspace.evIssue' label was
+  // dead code no journal line ever showed, and a French workspace read six
+  // English sentences (round-4 adversarial review, majeur 1; same defect
+  // T1.3 closed for 'queue').
+  issue: [],
 }
 
 /**
@@ -631,6 +675,67 @@ function queueEventText(data: TaskEventData): string {
   const name = firstString(data, ['name'])
   const key = name ? QUEUE_NAME_KEY[name] : undefined
   return key ? t(key) : t(EVENT_LABEL_KEY.queue)
+}
+
+/**
+ * `data.name` of an 'issue' event → its own translated key (DP9's grammar:
+ * the type names the domain, `data.name` names the incident). An
+ * unrecognized name — an older bundle reading a newer server's event —
+ * degrades to the plain 'Ticket' label rather than showing a raw token.
+ */
+const ISSUE_NAME_KEY: Record<string, MessageKey> = {
+  bound: 'workspace.evIssueBound',
+  coverage_gap: 'workspace.evIssueCoverageGap',
+  cosmetic: 'workspace.evIssueCosmetic',
+  not_ticket: 'workspace.evIssueNotTicket',
+  snapshot_unreadable: 'workspace.evIssueSnapshotUnreadable',
+}
+
+const ISSUE_SECTION_KEY: Record<string, MessageKey> = {
+  context: 'workspace.evIssueSectionContext',
+  goal: 'workspace.evIssueSectionGoal',
+  scope: 'workspace.evIssueSectionScope',
+  out_of_scope: 'workspace.evIssueSectionOutOfScope',
+}
+
+/** A comma-joined `data` list rendered as translated items, or "none". */
+function issueList(data: TaskEventData, key: string, labels?: Record<string, MessageKey>): string {
+  const raw = typeof data[key] === 'string' ? data[key] : ''
+  const items = raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+  if (items.length === 0) {
+    return t('workspace.evIssueNone')
+  }
+  // An id (or a section name) this bundle does not know is shown verbatim:
+  // a criterion id IS its own label, and an unknown section is better named
+  // by its wire token than dropped.
+  return items.map((item) => (labels?.[item] ? t(labels[item]) : item)).join(', ')
+}
+
+/**
+ * The journal line of an 'issue' event, from its `data.name` and — for
+ * 'edited' — from the machine-readable diff DP13 requires it to carry: WHICH
+ * sections moved and WHICH acceptance criteria appeared or disappeared, by
+ * stable id. `sections_unknown` is the snapshot that has no per-section
+ * breakdown at all: it must never render as "none moved", which is the
+ * opposite of what the body hash just proved.
+ */
+function issueEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  if (name === 'edited') {
+    return t('workspace.evIssueEdited', {
+      sections:
+        data.sections_unknown === true
+          ? t('workspace.evIssueSectionsUnknown')
+          : issueList(data, 'sections', ISSUE_SECTION_KEY),
+      added: issueList(data, 'criteria_added'),
+      removed: issueList(data, 'criteria_removed'),
+    })
+  }
+  const key = name ? ISSUE_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.issue)
 }
 
 /**
@@ -682,6 +787,9 @@ export function eventSummary(event: TaskEvent): string {
   }
   if (event.type === 'queue') {
     return clip(queueEventText(event.data))
+  }
+  if (event.type === 'issue') {
+    return clip(issueEventText(event.data))
   }
   const details = summaryDetails(event)
   if (details.length > 0) {

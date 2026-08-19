@@ -54,4 +54,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   // T1.3: a plain line, like 'cost' and 'isolation' — a neutral fact, never
   // rendered as an error.
   queue: TaskEventLine,
+  issue: TaskEventLine,
 }

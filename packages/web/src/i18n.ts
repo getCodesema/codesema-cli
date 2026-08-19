@@ -273,6 +273,27 @@ const en = {
   'workspace.evQueue': 'Waiting',
   'workspace.evQueueMachine': 'Waiting for a machine slot',
   'workspace.evQueueProject': 'Waiting: another task of this project is already active',
+  'workspace.evIssue': 'Ticket',
+  // One per `data.name` of an 'issue' event (DP9: the type names the domain,
+  // `data.name` names the incident). The server ALSO writes an English
+  // `data.message`; these are what the journal actually shows, so that a
+  // French workspace never reads a sentence built server-side.
+  'workspace.evIssueBound': 'Conversation created from a forge ticket',
+  'workspace.evIssueCoverageGap':
+    'This ticket carries content outside the five contract sections: an edit there will not be detected',
+  'workspace.evIssueCosmetic':
+    'Cosmetic edit on the forge: what this contract reads of the ticket has not changed',
+  'workspace.evIssueEdited':
+    'Ticket edited on the forge — sections: {sections}; criteria added: {added}; removed: {removed}',
+  'workspace.evIssueNotTicket': 'The ticket no longer passes the ticket contract',
+  'workspace.evIssueSnapshotUnreadable':
+    'The frozen ticket could not be read back: edits to this ticket are no longer detected',
+  'workspace.evIssueNone': 'none',
+  'workspace.evIssueSectionsUnknown': 'unknown (this snapshot has no per-section breakdown)',
+  'workspace.evIssueSectionContext': 'context',
+  'workspace.evIssueSectionGoal': 'goal',
+  'workspace.evIssueSectionScope': 'scope',
+  'workspace.evIssueSectionOutOfScope': 'out of scope',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -713,6 +734,23 @@ const fr: Record<MessageKey, string> = {
   'workspace.evQueue': 'En attente',
   'workspace.evQueueMachine': "En attente d'un slot machine",
   'workspace.evQueueProject': 'En attente : une autre tâche de ce projet est déjà active',
+  'workspace.evIssue': 'Ticket',
+  'workspace.evIssueBound': 'Conversation créée depuis un ticket de la forge',
+  'workspace.evIssueCoverageGap':
+    'Ce ticket porte du contenu hors des cinq sections du contrat : une édition à cet endroit ne sera pas détectée',
+  'workspace.evIssueCosmetic':
+    "Édition cosmétique sur la forge : ce que ce contrat lit du ticket n'a pas changé",
+  'workspace.evIssueEdited':
+    'Ticket modifié sur la forge — sections : {sections} ; critères ajoutés : {added} ; retirés : {removed}',
+  'workspace.evIssueNotTicket': 'Le ticket ne passe plus le contrat de ticket',
+  'workspace.evIssueSnapshotUnreadable':
+    'Le ticket figé est illisible : les éditions de ce ticket ne sont plus détectées',
+  'workspace.evIssueNone': 'aucun',
+  'workspace.evIssueSectionsUnknown': 'inconnues (ce snapshot ne ventile pas par section)',
+  'workspace.evIssueSectionContext': 'contexte',
+  'workspace.evIssueSectionGoal': 'objectif',
+  'workspace.evIssueSectionScope': 'périmètre',
+  'workspace.evIssueSectionOutOfScope': 'hors périmètre',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',

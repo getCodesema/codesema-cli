@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  acceptanceCriterionId,
   isActiveTaskStatus,
   isTaskId,
   sanitizeTaskChecks,
@@ -11,15 +12,48 @@ import {
   TASK_CHECKS_LIST_MAX,
   TASK_EVENT_DATA_KEYS_MAX,
   TASK_EVENT_DATA_STRING_MAX,
+  TASK_ISSUE_PROJECT_MAX,
+  TASK_ISSUE_URL_MAX,
   TASK_TIMESTAMP_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
   TASK_TURNS_MAX,
+  TICKET_BODY_HASH_TAG,
+  TICKET_CRITERIA_MAX,
   type TaskChecks,
   type TaskEvent,
+  type TaskIssueRef,
+  type TaskIssueSnapshot,
   type TaskRecord,
   type TaskStatus,
 } from './index.js'
+
+/** A syntactically valid, correctly-tagged canonical body hash — no need for a real one in tests. */
+const FAKE_BODY_HASH = `${TICKET_BODY_HASH_TAG}:${'a'.repeat(64)}`
+/** Same shape, a different value: distinguishes section hashes from each other in tests. */
+const fakeHash = (byte: string): string => `${TICKET_BODY_HASH_TAG}:${byte.repeat(64)}`
+const FAKE_RAW_HASH = `sha256:raw:${'f'.repeat(64)}`
+
+const validIssue: TaskIssueRef = {
+  forge: 'github',
+  project: 'getCodesema/codesema-cli',
+  iid: 42,
+  url: 'https://github.com/getCodesema/codesema-cli/issues/42',
+}
+
+const CRITERION_TEXT = 'WHEN x THE SYSTEM SHALL y'
+const validSnapshot: TaskIssueSnapshot = {
+  body_hash: FAKE_BODY_HASH,
+  section_hashes: {
+    context: fakeHash('b'),
+    goal: fakeHash('c'),
+    scope: fakeHash('d'),
+    out_of_scope: fakeHash('e'),
+  },
+  criteria: [{ id: acceptanceCriterionId(CRITERION_TEXT), text: CRITERION_TEXT }],
+  raw_body_hash: FAKE_RAW_HASH,
+  taken_at: '2026-08-14T09:00:00.000Z',
+}
 
 const validRecord: TaskRecord = {
   version: 1,
@@ -631,6 +665,168 @@ describe('sanitizeTaskRecord', () => {
   })
 })
 
+describe('sanitizeTaskRecord — issue binding (T2.4)', () => {
+  test('a record with issue + issue_snapshot round-trips unchanged', () => {
+    const withIssue = { ...validRecord, issue: validIssue, issue_snapshot: validSnapshot }
+    expect(sanitizeTaskRecord(structuredClone(withIssue))).toEqual(withIssue)
+  })
+
+  test('record 0.12 (or any task without a ticket) carries neither field', () => {
+    // FROZEN fixture: no `issue`/`issue_snapshot` key anywhere, exactly what
+    // every record written before this ticket (and every title+prompt task
+    // created after it) looks like.
+    const r = sanitizeTaskRecord(structuredClone(validRecord))
+    expect(r).toEqual(validRecord)
+    expect(r && 'issue' in r).toBe(false)
+    expect(r && 'issue_snapshot' in r).toBe(false)
+  })
+
+  test('issue: a non-object drops the whole field rather than inventing one', () => {
+    for (const junk of [null, 'github#42', 42, [], true]) {
+      const r = sanitizeTaskRecord({ ...validRecord, issue: junk })
+      expect(r && 'issue' in r).toBe(false)
+    }
+  })
+
+  test('issue: an unknown forge drops the field', () => {
+    const r = sanitizeTaskRecord({ ...validRecord, issue: { ...validIssue, forge: 'bitbucket' } })
+    expect(r && 'issue' in r).toBe(false)
+  })
+
+  test('issue: iid must be a positive decimal integer, never a numeric string', () => {
+    for (const iid of ['12', '12a', 1.5, '0x1f', 0, -1, Number.NaN, null, undefined]) {
+      const r = sanitizeTaskRecord({ ...validRecord, issue: { ...validIssue, iid } })
+      expect(r && 'issue' in r).toBe(false)
+    }
+    // A genuine positive integer passes, whatever its magnitude within safety.
+    expect(
+      sanitizeTaskRecord({ ...validRecord, issue: { ...validIssue, iid: 1 } })?.issue?.iid,
+    ).toBe(1)
+  })
+
+  test('issue: url must be an http(s) URL', () => {
+    for (const url of ['not a url', 'ftp://example.com/1', '', 'javascript:alert(1)']) {
+      const r = sanitizeTaskRecord({ ...validRecord, issue: { ...validIssue, url } })
+      expect(r && 'issue' in r).toBe(false)
+    }
+  })
+
+  test('issue: project and url are truncated to their bounds, never rejected for length', () => {
+    const longProject = 'p'.repeat(TASK_ISSUE_PROJECT_MAX + 50)
+    const longUrl = `https://example.com/${'x'.repeat(TASK_ISSUE_URL_MAX)}`
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      issue: { ...validIssue, project: longProject, url: longUrl },
+    })
+    expect(r?.issue?.project.length).toBe(TASK_ISSUE_PROJECT_MAX)
+    expect(r?.issue?.url.length).toBe(TASK_ISSUE_URL_MAX)
+  })
+
+  test('issue_snapshot: a non-object drops the field, never throws', () => {
+    for (const junk of [null, 'a hash', 42, [], true]) {
+      const r = sanitizeTaskRecord({ ...validRecord, issue_snapshot: junk })
+      expect(r && 'issue_snapshot' in r).toBe(false)
+    }
+  })
+
+  test('issue_snapshot: body_hash must be a correctly-tagged sha256 digest, or the field is dropped', () => {
+    const upper = `${TICKET_BODY_HASH_TAG}:${'A'.repeat(64)}`
+    for (const body_hash of [
+      '',
+      'not-hex',
+      'a'.repeat(64), // bare hash, no tag at all
+      `${TICKET_BODY_HASH_TAG}:${'a'.repeat(63)}`,
+      `${TICKET_BODY_HASH_TAG}:${'a'.repeat(65)}`,
+      `sha256:t1:${'a'.repeat(64)}`, // a DIFFERENT (prior) scheme tag, not the one this build produces
+      upper,
+    ]) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        issue_snapshot: { ...validSnapshot, body_hash },
+      })
+      // Uppercase hex is lower-cased and accepted; everything else drops the snapshot.
+      if (body_hash === upper) {
+        expect(r?.issue_snapshot?.body_hash).toBe(FAKE_BODY_HASH)
+      } else {
+        expect(r && 'issue_snapshot' in r).toBe(false)
+      }
+    }
+  })
+
+  // T2.4 adversarial review (mineur): `section_hashes` is a BREAKDOWN of
+  // `body_hash`, not a second gate — its own field is optional and degrades
+  // on its own (only that key drops), the surrounding snapshot must not.
+  // `body_hash` alone must keep reconciliation working: dropping the whole
+  // snapshot on this field's malformation would silently retire edit
+  // detection forever for any producer that wrote a spec-conforming
+  // snapshot without ever emitting section_hashes.
+  test('issue_snapshot: section_hashes must be a full, correctly-tagged set, or ONLY that field drops', () => {
+    for (const section_hashes of [
+      null,
+      'not-an-object',
+      {},
+      { context: FAKE_BODY_HASH, goal: FAKE_BODY_HASH, scope: FAKE_BODY_HASH }, // out_of_scope missing
+      {
+        context: FAKE_BODY_HASH,
+        goal: FAKE_BODY_HASH,
+        scope: FAKE_BODY_HASH,
+        out_of_scope: 'not-a-hash',
+      },
+    ]) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        issue_snapshot: { ...validSnapshot, section_hashes },
+      })
+      // The snapshot survives, with body_hash and criteria intact — only
+      // section_hashes itself is gone.
+      expect(r?.issue_snapshot?.body_hash).toBe(FAKE_BODY_HASH)
+      expect(r?.issue_snapshot).not.toHaveProperty('section_hashes')
+    }
+  })
+
+  test('issue_snapshot: a fully valid section_hashes IS kept', () => {
+    const r = sanitizeTaskRecord({ ...validRecord, issue_snapshot: validSnapshot })
+    expect(r?.issue_snapshot?.section_hashes).toEqual(validSnapshot.section_hashes)
+  })
+
+  test('issue_snapshot: raw_body_hash is optional and independently whitelisted', () => {
+    const withoutRaw = { ...validSnapshot } as Record<string, unknown>
+    delete withoutRaw.raw_body_hash
+    const r1 = sanitizeTaskRecord({ ...validRecord, issue_snapshot: withoutRaw })
+    expect(r1 && 'issue_snapshot' in r1).toBe(true)
+    expect(r1?.issue_snapshot && 'raw_body_hash' in r1.issue_snapshot).toBe(false)
+
+    // A malformed raw_body_hash drops ONLY that field — never the snapshot.
+    const r2 = sanitizeTaskRecord({
+      ...validRecord,
+      issue_snapshot: { ...validSnapshot, raw_body_hash: 'not-a-hash' },
+    })
+    expect(r2 && 'issue_snapshot' in r2).toBe(true)
+    expect(r2?.issue_snapshot && 'raw_body_hash' in r2.issue_snapshot).toBe(false)
+    expect(r2?.issue_snapshot?.body_hash).toBe(FAKE_BODY_HASH)
+  })
+
+  test('issue_snapshot: oversized criteria are truncated to the ticket bound, not refused', () => {
+    const many = Array.from({ length: TICKET_CRITERIA_MAX + 20 }, (_, i) => ({
+      text: `WHEN input ${i} THE SYSTEM SHALL respond`,
+    }))
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      issue_snapshot: { ...validSnapshot, criteria: many },
+    })
+    expect(r?.issue_snapshot?.criteria.length).toBe(TICKET_CRITERIA_MAX)
+  })
+
+  test('issue_snapshot: an unreadable taken_at falls back to now rather than dropping the snapshot', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      issue_snapshot: { ...validSnapshot, taken_at: 42 },
+    })
+    expect(r?.issue_snapshot?.body_hash).toBe(FAKE_BODY_HASH)
+    expect(typeof r?.issue_snapshot?.taken_at).toBe('string')
+  })
+})
+
 describe('isActiveTaskStatus', () => {
   test('only shipped and failed are terminal', () => {
     const active: TaskStatus[] = [
@@ -704,6 +900,7 @@ describe('sanitizeTaskEvent', () => {
       // this test passed green while never covering the member this ticket
       // actually added.
       'queue',
+      'issue',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

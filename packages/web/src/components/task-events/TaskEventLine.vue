@@ -17,7 +17,7 @@ const TONE_COLOR = {
   idle: 'var(--cs-dot-idle)',
 } as const
 
-const dotColor = computed(() => TONE_COLOR[eventTone(props.event.type)])
+const dotColor = computed(() => TONE_COLOR[eventTone(props.event)])
 const summary = computed(() => eventSummary(props.event))
 const stamp = computed(() => clockTime(props.event.at))
 </script>

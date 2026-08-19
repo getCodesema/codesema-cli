@@ -18,12 +18,16 @@ import type { AgentRunOptions } from './agent.js'
 import { writeJsonAtomic } from './atomic-write.js'
 import {
   isTerminalReason,
+  TICKET_BODY_HASH_TAG,
   type ReviewRecord,
   type TaskChecks,
   type TaskEvent,
+  type TaskIssueRef,
+  type TaskIssueSnapshot,
   type TaskRecord,
   type Verdict,
 } from './contract.js'
+import type { ForgeCli, ForgeCliOutcome, ForgeIssuesExecFn } from './forge-issues.js'
 import { createLoadCap } from './load-cap.js'
 import { addProject, listProjects, projectsPath, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
@@ -45,6 +49,7 @@ import type { TaskRetentionOutcome } from './task-retention.js'
 import { readTaskReview, type CreateTaskReviewerOptions } from './task-review.js'
 import { pendingResumeTurn, type TaskRunner, type TaskRunnerOptions } from './task-runner.js'
 import {
+  BOOT_ISSUE_RECONCILE_CONCURRENCY,
   createTaskManager,
   QUEUE_BROADCAST_MAX,
   queueEntriesRetired,
@@ -357,7 +362,7 @@ describe('createTaskManager', () => {
     const input = { title: 't', prompt: 'p', autoShip: false }
     expect(manager.list('deadbeef')).toBeNull()
     expect(manager.get('deadbeef', 'aaaaaaaaaaaa')).toBeNull()
-    expect(manager.create('deadbeef', input)).toEqual({
+    expect(await manager.create('deadbeef', input)).toEqual({
       ok: false,
       code: 404,
       error: 'unknown project',
@@ -373,7 +378,7 @@ describe('createTaskManager', () => {
     expect(rig.allRunnerOptions).toHaveLength(0)
   })
 
-  test('isolation: an available cage makes new tasks caged, and says so in the journal', () => {
+  test('isolation: an available cage makes new tasks caged, and says so in the journal', async () => {
     const project = register(makeRepo())
     const rig = fakeRunner()
     const manager = createTaskManager({
@@ -387,7 +392,7 @@ describe('createTaskManager', () => {
         runtime: 'podman',
       },
     })
-    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(created.ok).toBe(true)
     const record = created.ok ? created.record : null
     expect(record?.isolation).toBe('container')
@@ -399,7 +404,7 @@ describe('createTaskManager', () => {
     expect(isolation?.data).toMatchObject({ isolation: 'container', reason: 'podman is available' })
   })
 
-  test("isolation 'auto' without a cage falls back to policy WITH the reason journaled", () => {
+  test("isolation 'auto' without a cage falls back to policy WITH the reason journaled", async () => {
     const project = register(makeRepo())
     const rig = fakeRunner()
     const manager = createTaskManager({
@@ -413,7 +418,7 @@ describe('createTaskManager', () => {
         runtime: null,
       },
     })
-    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(created.ok).toBe(true)
     const id = created.ok ? created.record.id : ''
     expect(loadTask(project.path, id)?.isolation).toBe('policy')
@@ -422,7 +427,7 @@ describe('createTaskManager', () => {
     expect(String(isolation?.data.reason)).toContain('no container runtime found')
   })
 
-  test("isolation 'container' with no cage refuses the creation (409), leaving nothing behind", () => {
+  test("isolation 'container' with no cage refuses the creation (409), leaving nothing behind", async () => {
     const project = register(makeRepo())
     const rig = fakeRunner()
     const manager = createTaskManager({
@@ -436,14 +441,14 @@ describe('createTaskManager', () => {
         runtime: 'docker',
       },
     })
-    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(created).toMatchObject({ ok: false, code: 409 })
     expect(created.ok ? '' : created.error).toContain('does not answer')
     expect(listTasks(project.path)).toHaveLength(0)
     expect(rig.starts).toHaveLength(0)
   })
 
-  test('the cage-unavailable 409 names itself resource_busy, message untouched', () => {
+  test('the cage-unavailable 409 names itself resource_busy, message untouched', async () => {
     const project = register(makeRepo())
     const manager = createTaskManager({
       ...managerOpts,
@@ -456,7 +461,7 @@ describe('createTaskManager', () => {
         runtime: 'docker',
       },
     })
-    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     // The code is ADDED beside the readable error, which is unchanged.
     expect(created).toMatchObject({
       ok: false,
@@ -466,10 +471,10 @@ describe('createTaskManager', () => {
     })
   })
 
-  test('a refusal the vocabulary has no word for carries no code at all', () => {
+  test('a refusal the vocabulary has no word for carries no code at all', async () => {
     const project = register(makeRepo())
     const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
-    const refused = manager.create(project.id, {
+    const refused = await manager.create(project.id, {
       title: 't',
       prompt: 'p',
       autoShip: false,
@@ -480,10 +485,10 @@ describe('createTaskManager', () => {
     expect(refused.ok ? true : 'reason_code' in refused).toBe(false)
   })
 
-  test('an unprobed manager creates policy tasks: nothing pretends to be caged', () => {
+  test('an unprobed manager creates policy tasks: nothing pretends to be caged', async () => {
     const project = register(makeRepo())
     const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
-    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(created.ok && created.record.isolation).toBe('policy')
     expect(manager.workspaceInfo()).toMatchObject({
       isolation_available: false,
@@ -511,7 +516,7 @@ describe('createTaskManager', () => {
     })
   })
 
-  test('the egress allowlist and the repo checks config reach the runner', () => {
+  test('the egress allowlist and the repo checks config reach the runner', async () => {
     const project = register(makeRepo())
     mkdirSync(join(project.path, '.codesema'), { recursive: true })
     writeFileSync(
@@ -524,38 +529,40 @@ describe('createTaskManager', () => {
       ...rig,
       allowedDomains: ['api.anthropic.com', 'registry.npmjs.org'],
     })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     const options = rig.runnerOptions()
     expect(options.allowedDomains).toEqual(['api.anthropic.com', 'registry.npmjs.org'])
     expect(options.checksConfig?.image).toBe('oven/bun:1')
   })
 
-  test('create validates title and prompt before touching the store', () => {
+  test('create validates title and prompt before touching the store', async () => {
     const project = register(makeRepo())
     const rig = fakeRunner()
     const manager = createTaskManager({ ...managerOpts, ...rig })
 
     const base = { prompt: 'do it', autoShip: false }
-    expect(manager.create(project.id, { ...base, title: '   ' })).toMatchObject({
+    expect(await manager.create(project.id, { ...base, title: '   ' })).toMatchObject({
       ok: false,
       code: 400,
     })
-    expect(manager.create(project.id, { ...base, title: 'x'.repeat(201) })).toMatchObject({
-      ok: false,
-      code: 400,
-    })
-    expect(manager.create(project.id, { title: 't', prompt: '', autoShip: false })).toMatchObject({
+    expect(await manager.create(project.id, { ...base, title: 'x'.repeat(201) })).toMatchObject({
       ok: false,
       code: 400,
     })
     expect(
-      manager.create(project.id, { title: 't', prompt: 'p'.repeat(20_001), autoShip: false }),
+      await manager.create(project.id, { title: 't', prompt: '', autoShip: false }),
+    ).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    expect(
+      await manager.create(project.id, { title: 't', prompt: 'p'.repeat(20_001), autoShip: false }),
     ).toMatchObject({ ok: false, code: 400 })
     expect(manager.list(project.id)).toHaveLength(0)
     expect(rig.starts).toHaveLength(0)
   })
 
-  test('create validates an explicit base: unknown, option-lookalike and oversized are 400', () => {
+  test('create validates an explicit base: unknown, option-lookalike and oversized are 400', async () => {
     const repo = makeRepo()
     execFileSync('git', ['branch', 'feature'], { cwd: repo, stdio: 'ignore' })
     const project = register(repo)
@@ -563,16 +570,16 @@ describe('createTaskManager', () => {
     const manager = createTaskManager({ ...managerOpts, ...rig })
 
     const input = { title: 't', prompt: 'p', autoShip: false }
-    expect(manager.create(project.id, { ...input, base: 'nope' })).toMatchObject({
+    expect(await manager.create(project.id, { ...input, base: 'nope' })).toMatchObject({
       ok: false,
       code: 400,
       error: expect.stringContaining('nope'),
     })
-    expect(manager.create(project.id, { ...input, base: '-evil' })).toMatchObject({
+    expect(await manager.create(project.id, { ...input, base: '-evil' })).toMatchObject({
       ok: false,
       code: 400,
     })
-    expect(manager.create(project.id, { ...input, base: 'b'.repeat(201) })).toMatchObject({
+    expect(await manager.create(project.id, { ...input, base: 'b'.repeat(201) })).toMatchObject({
       ok: false,
       code: 400,
     })
@@ -581,7 +588,7 @@ describe('createTaskManager', () => {
     expect(rig.starts).toHaveLength(0)
 
     // Valid base (trimmed): recorded on the task, branch/worktree still lazy.
-    const created = manager.create(project.id, { ...input, base: '  feature  ' })
+    const created = await manager.create(project.id, { ...input, base: '  feature  ' })
     expect(created.ok).toBe(true)
     if (!created.ok) {
       return
@@ -592,14 +599,14 @@ describe('createTaskManager', () => {
     expect(rig.starts.map((r) => r.id)).toEqual([created.record.id])
 
     // A blank base means absent: auto-detection at launch, base stays empty.
-    const blank = manager.create(project.id, { ...input, base: '   ' })
+    const blank = await manager.create(project.id, { ...input, base: '   ' })
     expect(blank.ok).toBe(true)
     if (blank.ok) {
       expect(blank.record.base).toBe('')
     }
   })
 
-  test('create work-on: branch/base exclusivity and branch validation are 400, nothing persisted', () => {
+  test('create work-on: branch/base exclusivity and branch validation are 400, nothing persisted', async () => {
     const repo = makeRepo()
     execFileSync('git', ['branch', 'feature'], { cwd: repo, stdio: 'ignore' })
     const project = register(repo)
@@ -607,19 +614,19 @@ describe('createTaskManager', () => {
     const manager = createTaskManager({ ...managerOpts, ...rig })
 
     const input = { title: 't', prompt: 'p', autoShip: false }
-    expect(manager.create(project.id, { ...input, branch: 'feature', base: 'main' })).toMatchObject(
-      { ok: false, code: 400, error: expect.stringContaining('exclusive') },
-    )
-    expect(manager.create(project.id, { ...input, branch: 'ghost' })).toMatchObject({
+    expect(
+      await manager.create(project.id, { ...input, branch: 'feature', base: 'main' }),
+    ).toMatchObject({ ok: false, code: 400, error: expect.stringContaining('exclusive') })
+    expect(await manager.create(project.id, { ...input, branch: 'ghost' })).toMatchObject({
       ok: false,
       code: 400,
       error: expect.stringContaining('ghost'),
     })
-    expect(manager.create(project.id, { ...input, branch: '-evil' })).toMatchObject({
+    expect(await manager.create(project.id, { ...input, branch: '-evil' })).toMatchObject({
       ok: false,
       code: 400,
     })
-    expect(manager.create(project.id, { ...input, branch: 'b'.repeat(201) })).toMatchObject({
+    expect(await manager.create(project.id, { ...input, branch: 'b'.repeat(201) })).toMatchObject({
       ok: false,
       code: 400,
     })
@@ -627,7 +634,7 @@ describe('createTaskManager', () => {
     expect(rig.starts).toHaveLength(0)
   })
 
-  test('create work-on: records the branch verbatim, work_on, and the MR target as base', () => {
+  test('create work-on: records the branch verbatim, work_on, and the MR target as base', async () => {
     const repo = makeRepo()
     const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
     run(['branch', 'feature'])
@@ -641,7 +648,7 @@ describe('createTaskManager', () => {
     const input = { title: 't', prompt: 'p', autoShip: false }
 
     // No target: base is the same trunk auto-detection as fork mode.
-    const plain = manager.create(project.id, { ...input, branch: '  feature  ' })
+    const plain = await manager.create(project.id, { ...input, branch: '  feature  ' })
     expect(plain.ok).toBe(true)
     if (!plain.ok) {
       return
@@ -655,7 +662,7 @@ describe('createTaskManager', () => {
     expect(rig.starts.map((r) => r.id)).toEqual([plain.record.id])
 
     // A remote-only target resolves and becomes the base.
-    const targeted = manager.create(project.id, {
+    const targeted = await manager.create(project.id, {
       ...input,
       branch: 'feature-two',
       target: 'release',
@@ -666,14 +673,18 @@ describe('createTaskManager', () => {
     }
 
     // An unresolvable target falls back to auto-detection — never a 400.
-    const bogus = manager.create(project.id, { ...input, branch: 'feature-three', target: 'nope' })
+    const bogus = await manager.create(project.id, {
+      ...input,
+      branch: 'feature-three',
+      target: 'nope',
+    })
     expect(bogus.ok).toBe(true)
     if (bogus.ok) {
       expect(bogus.record.base).toBe('main')
     }
   })
 
-  test('create work-on: ONE active conversation per branch — 409 with existing_task_id; terminal tasks never block', () => {
+  test('create work-on: ONE active conversation per branch — 409 with existing_task_id; terminal tasks never block', async () => {
     const repo = makeRepo()
     execFileSync('git', ['branch', 'feature'], { cwd: repo, stdio: 'ignore' })
     const project = register(repo)
@@ -685,7 +696,7 @@ describe('createTaskManager', () => {
     saveTask(repo, seeded)
 
     const input = { title: 't', prompt: 'p', autoShip: false }
-    const refused = manager.create(project.id, { ...input, branch: 'feature' })
+    const refused = await manager.create(project.id, { ...input, branch: 'feature' })
     expect(refused).toMatchObject({
       ok: false,
       code: 409,
@@ -697,11 +708,11 @@ describe('createTaskManager', () => {
     // shipped (and failed) are terminal: the branch is free again.
     seeded.status = 'shipped'
     saveTask(repo, seeded)
-    const allowed = manager.create(project.id, { ...input, branch: 'feature' })
+    const allowed = await manager.create(project.id, { ...input, branch: 'feature' })
     expect(allowed.ok).toBe(true)
   })
 
-  test('create work-on: a branch checked out in ANY worktree (main included) is a 409, nothing persisted', () => {
+  test('create work-on: a branch checked out in ANY worktree (main included) is a 409, nothing persisted', async () => {
     const repo = makeRepo()
     const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
     run(['branch', 'feature'])
@@ -712,13 +723,13 @@ describe('createTaskManager', () => {
     const input = { title: 't', prompt: 'p', autoShip: false }
 
     // 'main' is held by the MAIN worktree.
-    expect(manager.create(project.id, { ...input, branch: 'main' })).toMatchObject({
+    expect(await manager.create(project.id, { ...input, branch: 'main' })).toMatchObject({
       ok: false,
       code: 409,
       error: expect.stringContaining('checked out'),
     })
     // 'feature' is held by a secondary worktree.
-    expect(manager.create(project.id, { ...input, branch: 'feature' })).toMatchObject({
+    expect(await manager.create(project.id, { ...input, branch: 'feature' })).toMatchObject({
       ok: false,
       code: 409,
       error: expect.stringContaining('checked out'),
@@ -727,7 +738,7 @@ describe('createTaskManager', () => {
     expect(rig.starts).toHaveLength(0)
   })
 
-  test('create persists a queued task in ITS project repo, broadcasts, hands to the runner', () => {
+  test('create persists a queued task in ITS project repo, broadcasts, hands to the runner', async () => {
     const projectA = register(makeRepo())
     const projectB = register(makeRepo())
     const rig = fakeRunner()
@@ -735,7 +746,7 @@ describe('createTaskManager', () => {
     const envelopes: TaskEnvelope[] = []
     manager.subscribe((envelope) => envelopes.push(envelope))
 
-    const created = manager.create(projectB.id, {
+    const created = await manager.create(projectB.id, {
       title: '  Audit the auth flow  ',
       prompt: 'look at login',
       autoShip: true,
@@ -877,6 +888,184 @@ describe('createTaskManager', () => {
     expect(all.map((entry) => entry.project.id)).toEqual([projectA.id, projectB.id])
     expect(all[0]?.records.map((r) => r.id)).toEqual([a.id])
     expect(new Set(all[1]?.records.map((r) => r.id))).toEqual(new Set([b1.id, b2.id]))
+  })
+})
+
+// --- manager.create — from a forge issue (T2.4) ----------------------------
+
+/** A repo with an `origin` remote: `getIssue` refuses to probe without one. */
+function makeRepoWithRemote(remote = 'https://github.com/acme/repo.git'): string {
+  const repo = makeRepo()
+  execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: repo, stdio: 'ignore' })
+  return repo
+}
+
+type ForgeCall = { cli: ForgeCli; args: string[]; cwd: string }
+
+/** The only way a forge binary is ever "run" in this file: the argv IS the assertion. */
+function forgeRig(reply: (call: ForgeCall) => ForgeCliOutcome) {
+  const calls: ForgeCall[] = []
+  const execFn: ForgeIssuesExecFn = (cli, args, cwd) => {
+    const call = { cli, args, cwd }
+    calls.push(call)
+    return Promise.resolve(reply(call))
+  }
+  return { calls, execFn }
+}
+
+/** A gh `issue view --json <fields>` payload, as `parseGhIssue` reads it. */
+function ghIssuePayload(body: string, title = 'Fix flaky worktree cleanup'): string {
+  return JSON.stringify({
+    number: 42,
+    title,
+    body,
+    state: 'OPEN',
+    labels: [],
+    author: { id: 'u1', is_bot: false, login: 'octocat', name: 'The Octocat' },
+    createdAt: '2026-07-20T09:00:00Z',
+    updatedAt: '2026-07-28T10:00:00Z',
+    url: 'https://github.com/acme/repo/issues/42',
+  })
+}
+
+/** A gh candidate answering `issue view` with `body`/`title`, `missing` for anything else. */
+function ghIssueRig(body: string, title?: string) {
+  return forgeRig((call) => {
+    if (call.cli === 'gh' && call.args[0] === 'issue' && call.args[1] === 'view') {
+      return { kind: 'ok', stdout: ghIssuePayload(body, title) }
+    }
+    return { kind: 'missing' }
+  })
+}
+
+const ISSUE_CRITERIA = [
+  'WHEN a ticket is launched THE SYSTEM SHALL lint its body',
+  'WHEN a section is missing THE SYSTEM SHALL name that section',
+  'WHEN the body is conforming THE SYSTEM SHALL accept it',
+]
+
+/** A conforming ticket body (five sections, three EARS criteria). */
+function conformingTicketBody(): string {
+  return [
+    '**Context**\n\nTickets are launched from the workspace.',
+    '**Goal**\n\nFreeze the ticket format once.',
+    '**Scope**\n\npackages/contract/src/ticket.ts',
+    `**Acceptance criteria**\n\n${ISSUE_CRITERIA.map((c) => `- ${c}`).join('\n')}`,
+    '**Out of scope**\n\nPosting the issue on the forge.',
+  ].join('\n\n')
+}
+
+const VALID_ISSUE_REF: TaskIssueRef = {
+  forge: 'github',
+  project: 'acme/repo',
+  iid: 42,
+  url: 'https://github.com/acme/repo/issues/42',
+}
+
+describe('manager.create — from a forge issue (T2.4)', () => {
+  test('a conforming issue is admitted: title from the issue, criteria frozen in issue_snapshot', async () => {
+    const project = register(makeRepoWithRemote())
+    const rig = fakeRunner()
+    const { calls, execFn } = ghIssueRig(conformingTicketBody())
+    const manager = createTaskManager({ ...managerOpts, ...rig, issueExecFn: execFn })
+
+    const created = await manager.create(project.id, {
+      autoShip: false,
+      issue: VALID_ISSUE_REF,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      throw new Error('unreachable')
+    }
+    expect(created.record.title).toBe('Fix flaky worktree cleanup')
+    expect(created.record.issue).toEqual(VALID_ISSUE_REF)
+    expect(created.record.issue_snapshot?.criteria.map((c) => c.text)).toEqual(ISSUE_CRITERIA)
+    // Persisted, not just returned.
+    const persisted = loadTask(project.path, created.record.id)
+    expect(persisted?.issue).toEqual(VALID_ISSUE_REF)
+    expect(persisted?.issue_snapshot?.criteria).toHaveLength(3)
+    // The read went through the injected seam: no real binary, no network.
+    expect(calls.some((c) => c.cli === 'gh' && c.args.includes('view'))).toBe(true)
+    // The admission-time 'issue' journal event is there, named 'bound'.
+    const bound = readTaskEvents(project.path, created.record.id).find(
+      (e) => e.type === 'issue' && e.data.name === 'bound',
+    )
+    expect(bound).toBeDefined()
+  })
+
+  test('the title+prompt path stays available, unaffected: no issue, no criteria', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    const created = await manager.create(project.id, {
+      title: 'plain task',
+      prompt: 'do the thing',
+      autoShip: false,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      throw new Error('unreachable')
+    }
+    expect(created.record.issue).toBeUndefined()
+    expect(created.record.issue_snapshot).toBeUndefined()
+  })
+
+  test('iid that is not a decimal integer is refused before any forge call, no residue', async () => {
+    const project = register(makeRepoWithRemote())
+    const rig = fakeRunner()
+    const { calls, execFn } = ghIssueRig(conformingTicketBody())
+    const manager = createTaskManager({ ...managerOpts, ...rig, issueExecFn: execFn })
+    const before = listTasks(project.path).length
+
+    for (const iid of ['12', 1.5, '0x1f', 0, -1]) {
+      const refused = await manager.create(project.id, {
+        autoShip: false,
+        issue: { ...VALID_ISSUE_REF, iid },
+      })
+      expect(refused.ok).toBe(false)
+      if (refused.ok) {
+        throw new Error('unreachable')
+      }
+      expect(refused.code).toBe(400)
+    }
+    expect(calls).toHaveLength(0)
+    expect(listTasks(project.path)).toHaveLength(before)
+  })
+
+  test('a body that fails the ticket lint is refused, naming the reason, no residue at all', async () => {
+    const project = register(makeRepoWithRemote())
+    const rig = fakeRunner()
+    const broken = conformingTicketBody().replace('**Goal**', '**Not a section**')
+    const { execFn } = ghIssueRig(broken)
+    const manager = createTaskManager({ ...managerOpts, ...rig, issueExecFn: execFn })
+
+    const refused = await manager.create(project.id, { autoShip: false, issue: VALID_ISSUE_REF })
+    expect(refused.ok).toBe(false)
+    if (refused.ok) {
+      throw new Error('unreachable')
+    }
+    expect(refused.code).toBe(400)
+    expect(refused.error).toContain('section_missing')
+    // No record, no worktree, no queue entry: the refusal left nothing behind.
+    expect(listTasks(project.path)).toHaveLength(0)
+    expect(existsSync(queuePath(project.path))).toBe(false)
+    expect(rig.starts).toHaveLength(0)
+  })
+
+  test('the forge being unreachable refuses the creation with forge_unreachable, no residue', async () => {
+    const project = register(makeRepoWithRemote())
+    const rig = fakeRunner()
+    const { execFn } = forgeRig(() => ({ kind: 'missing' }))
+    const manager = createTaskManager({ ...managerOpts, ...rig, issueExecFn: execFn })
+
+    const refused = await manager.create(project.id, { autoShip: false, issue: VALID_ISSUE_REF })
+    expect(refused.ok).toBe(false)
+    if (refused.ok) {
+      throw new Error('unreachable')
+    }
+    expect(refused.code).toBe(502)
+    expect(refused.reason_code).toBe('forge_unreachable')
+    expect(listTasks(project.path)).toHaveLength(0)
   })
 })
 
@@ -1408,6 +1597,955 @@ describe('manager.checks', () => {
   })
 })
 
+// --- issue reconciliation (T2.4/D7/DP13) -----------------------------------
+
+/** A real emit/persist `io`, so the reconciliation's journal writes are observable. */
+function taskIo(cwd: string, record: TaskRecord) {
+  const emitted: TaskEvent[] = []
+  const io = {
+    emit: (input: Parameters<typeof appendTaskEvent>[2]) => {
+      emitted.push(appendTaskEvent(cwd, record.id, input))
+    },
+    persist: () => saveTask(cwd, record),
+    text: () => {},
+    signal: new AbortController().signal,
+  }
+  return { io, emitted }
+}
+
+/** Seeds a 'queued', admitted-from-issue task with a real manager, fakeRunner, and no queue.json. */
+async function seedIssueTask(project: Project, body: string): Promise<TaskRecord> {
+  const rig = fakeRunner()
+  const { execFn } = ghIssueRig(body)
+  const manager = createTaskManager({ ...managerOpts, ...rig, issueExecFn: execFn })
+  const created = await manager.create(project.id, { autoShip: false, issue: VALID_ISSUE_REF })
+  if (!created.ok) {
+    throw new Error('fixture setup failed')
+  }
+  return created.record
+}
+
+describe('onTurnDone — issue reconciliation (T2.4/DP13, pre-review recomparison point)', () => {
+  test('hash unchanged: no journal line, review runs normally', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    let reviewRan = false
+    const { execFn } = ghIssueRig(body)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async (r) => {
+        reviewRan = true
+        r.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa') // forces the lazy context/runner to exist
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(reviewRan).toBe(true)
+    expect(record.status).toBe('review_ok')
+    expect(emitted.some((e) => e.type === 'issue')).toBe(false)
+  })
+
+  test('edited: waiting_for_you, named journal event, review is SKIPPED (never restarts a turn)', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    let reviewRan = false
+    const edited = body.replace(
+      'Tickets are launched from the workspace.',
+      'Tickets are launched from somewhere else now.',
+    )
+    const { execFn } = ghIssueRig(edited)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async () => {
+        reviewRan = true
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(reviewRan).toBe(false)
+    expect(record.status).toBe('waiting_for_you')
+    const event = emitted.find((e) => e.type === 'issue')
+    expect(event?.data.name).toBe('edited')
+    expect(event?.data.sections).toBe('context')
+    // Persisted, not just mutated in memory.
+    expect(loadTask(project.path, record.id)?.status).toBe('waiting_for_you')
+  })
+
+  test('body no longer lints: not_ticket, waiting_for_you, distinct name from edited, review SKIPPED', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    let reviewRan = false
+    const broken = body.replace('**Goal**', '**Not a section**')
+    const { execFn } = ghIssueRig(broken)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async () => {
+        reviewRan = true
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(reviewRan).toBe(false)
+    expect(record.status).toBe('waiting_for_you')
+    const event = emitted.find((e) => e.type === 'issue')
+    expect(event?.data.name).toBe('not_ticket')
+    expect(String(event?.data.message)).toContain('section_missing')
+  })
+
+  test('cosmetic (raw moved, canonical meaning did not): neutral line, status untouched, review still runs', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    let reviewRan = false
+    const crlf = body.replaceAll('\n', '\r\n')
+    const { execFn } = ghIssueRig(crlf)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async (r) => {
+        reviewRan = true
+        r.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(reviewRan).toBe(true)
+    expect(record.status).toBe('review_ok')
+    const event = emitted.find((e) => e.type === 'issue')
+    expect(event?.data.name).toBe('cosmetic')
+    expect(event?.reason_code).toBeUndefined()
+  })
+
+  test('forge unreachable: continues on the snapshot, forge_unreachable journaled on error, review still runs', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    let reviewRan = false
+    const { execFn } = forgeRig(() => ({ kind: 'missing' }))
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async (r) => {
+        reviewRan = true
+        r.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(reviewRan).toBe(true)
+    const event = emitted.find((e) => e.type === 'error' && e.reason_code === 'forge_unreachable')
+    expect(event).toBeDefined()
+    expect(record.reason?.code).toBe('forge_unreachable')
+  })
+
+  // DP14, adversarial review: a `forge_unreachable` left by an EARLIER
+  // reconciliation is a claim about that past attempt. The moment the forge
+  // answers again, the claim is stale and must not linger as a silent lie
+  // about the task's present state — cleared even on 'unchanged', whose own
+  // journal stays silent (the silence is about the LINE, not the fix).
+  test('a stale forge_unreachable reason is cleared once the forge answers again, even on "unchanged"', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    // Set directly on the in-memory record passed to onTurnDone below —
+    // never reloaded from disk, same pattern every other test in this
+    // describe block uses: the second manager's OWN generic boot recovery
+    // (unrelated to T2.4) would otherwise stamp a 'running' record it finds
+    // on disk as 'interrupted'/orphaned before this test ever runs, clobbering
+    // whatever reason a reload would see.
+    record.reason = { code: 'forge_unreachable', detail: 'an earlier attempt could not reach it' }
+
+    let reviewRan = false
+    const { execFn } = ghIssueRig(body) // same body: the outcome is 'unchanged'
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async (r) => {
+        reviewRan = true
+        r.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(reviewRan).toBe(true)
+    // 'unchanged' stays silent on the journal — the fix is not an event.
+    expect(emitted.some((e) => e.type === 'issue')).toBe(false)
+    expect(record.reason).toBeUndefined()
+  })
+
+  // DP14, same doctrine, on the 'cosmetic' path: the reason clears AND the
+  // neutral cosmetic line still fires — the two are independent.
+  test('a stale forge_unreachable reason is also cleared on "cosmetic", alongside its own neutral line', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    record.reason = { code: 'forge_unreachable', detail: 'an earlier attempt could not reach it' }
+
+    const crlf = body.replaceAll('\n', '\r\n')
+    const { execFn } = ghIssueRig(crlf)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async (r) => {
+        r.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(emitted.find((e) => e.type === 'issue')?.data.name).toBe('cosmetic')
+    expect(record.reason).toBeUndefined()
+  })
+
+  // Round-2 adversarial review, majeur 3: the erasure's SPECIFICITY (only
+  // ever a forge_unreachable) was uncovered — the two existing DP14 tests
+  // both plant `forge_unreachable` and never check that a DIFFERENT reason
+  // is left alone. `record.reason !== undefined` would pass every existing
+  // assertion while erasing every code, not just this one's own.
+  test('a non-forge reason (resource_busy) survives an "unchanged" reconciliation untouched', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    record.reason = {
+      code: 'resource_busy',
+      detail: 'another task of this project is already active',
+    }
+
+    const { execFn } = ghIssueRig(body) // same body: 'unchanged'
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async (r) => {
+        r.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(emitted.some((e) => e.type === 'issue')).toBe(false)
+    expect(record.reason).toEqual({
+      code: 'resource_busy',
+      detail: 'another task of this project is already active',
+    })
+  })
+
+  test('a non-forge reason (checks_failed) survives a "cosmetic" reconciliation untouched', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    record.reason = { code: 'checks_failed', detail: 'lint failed on 2 files' }
+
+    const crlf = body.replaceAll('\n', '\r\n')
+    const { execFn } = ghIssueRig(crlf)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      issueExecFn: execFn,
+      reviewTurnFn: async (r) => {
+        r.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { io, emitted } = taskIo(project.path, record)
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(emitted.find((e) => e.type === 'issue')?.data.name).toBe('cosmetic')
+    expect(record.reason).toEqual({ code: 'checks_failed', detail: 'lint failed on 2 files' })
+  })
+})
+
+describe('boot — issue reconciliation (T2.4/D7)', () => {
+  test('a project with no ticketed task makes no forge call at all', () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'plain, no issue')
+    const { calls, execFn } = forgeRig(() => ({ kind: 'missing' }))
+    createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    expect(calls).toHaveLength(0)
+    void project
+  })
+
+  test('a queued task whose issue was edited moves to waiting_for_you and leaves the queue', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([record.id])
+
+    const edited = body.replace(
+      'Tickets are launched from the workspace.',
+      'Tickets are launched from somewhere else now.',
+    )
+    const { execFn } = ghIssueRig(edited)
+    // Nothing calls startPending() here: this proves reconciliation itself
+    // runs regardless (a workspace that never queues anything still gets an
+    // honest 'waiting_for_you'), independent of the CRITICAL ordering test
+    // right below.
+    createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+
+    await until(() => loadTask(project.path, record.id)?.status === 'waiting_for_you')
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([])
+    const journal = readTaskEvents(project.path, record.id)
+    expect(journal.some((e) => e.type === 'issue' && e.data.name === 'edited')).toBe(true)
+  })
+
+  // CRITICAL, adversarial review: `startPending()`'s first `context()` call
+  // builds a runner whose first `pump()` is SYNCHRONOUS — before the fix,
+  // this always won the race against the boot reconciliation pass's very
+  // first `await`, deterministically starting a full agent turn on a queued
+  // task's STALE ticket, every single time, regardless of forge latency. The
+  // fix makes `startPending()` await the whole reconciliation pass first.
+  // No `until()` polling here on purpose: if the ordering is right, this is
+  // no longer a race to wait out — `startPending()` resolving IS the proof.
+  test('startPending() never pumps a queued task whose issue was edited: reconciliation lands first, deterministically', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+    const edited = body.replace(
+      'Tickets are launched from the workspace.',
+      'Tickets are launched from somewhere else now.',
+    )
+    const { execFn } = ghIssueRig(edited)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig, issueExecFn: execFn })
+
+    await manager.startPending()
+
+    expect(loadTask(project.path, record.id)?.status).toBe('waiting_for_you')
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([])
+    // The deterministic bug this guards against: the fake runner's `start`
+    // must never have been called for this record — no agent turn is ever
+    // launched on a stale ticket, not even a narrow-window one.
+    expect(rig.starts.map((t) => t.id)).not.toContain(record.id)
+  })
+
+  test('an unreachable forge at boot leaves the task on its snapshot, journaled, never blocking', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+    const { execFn } = forgeRig(() => ({ kind: 'missing' }))
+    createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+
+    await until(() =>
+      readTaskEvents(project.path, record.id).some(
+        (e) => e.type === 'error' && e.reason_code === 'forge_unreachable',
+      ),
+    )
+    // The task was NEVER dropped from the queue: an unreachable forge is not an edit.
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([record.id])
+    expect(loadTask(project.path, record.id)?.reason?.code).toBe('forge_unreachable')
+  })
+
+  // Round-2 adversarial review, mineur: the test above compares the observed
+  // peak against the constant ITSELF, so a mutant widening the cap (6 → 12)
+  // would still pass — the test would just be asserting a bigger number
+  // against itself. Pin the published value literally so that mutant dies
+  // here instead of surviving unnoticed.
+  test('the published boot reconciliation concurrency cap is 6', () => {
+    expect(BOOT_ISSUE_RECONCILE_CONCURRENCY).toBe(6)
+  })
+
+  // Majeur 3, adversarial review: an unbounded fan-out opens one subprocess
+  // per ticketed task, on the same tick, across every registered project —
+  // a real rate-limit hazard. The concurrency-limited pool must never exceed
+  // its own published cap, however many tasks boot finds.
+  test(`boot never runs more than ${BOOT_ISSUE_RECONCILE_CONCURRENCY} forge calls at once, across every ticketed task combined`, async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const total = BOOT_ISSUE_RECONCILE_CONCURRENCY * 2 + 1
+    for (let i = 0; i < total; i += 1) {
+      await seedIssueTask(project, body)
+    }
+    let inFlight = 0
+    let peak = 0
+    const execFn: ForgeIssuesExecFn = (_cli, _args, _cwd) => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      return new Promise((resolveCall) => {
+        setTimeout(() => {
+          inFlight -= 1
+          resolveCall({ kind: 'ok', stdout: ghIssuePayload(body) })
+        }, 5)
+      })
+    }
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    await manager.startPending()
+    expect(peak).toBeLessThanOrEqual(BOOT_ISSUE_RECONCILE_CONCURRENCY)
+    // Sanity: with `total` well above the cap and a real delay per call, the
+    // pool really did run several calls at once rather than accidentally
+    // serializing (which would make the bound above trivially true).
+    expect(peak).toBeGreaterThan(1)
+  })
+
+  // The reload guard (`loadTask` + `isActiveTaskStatus`) that lets boot
+  // reconciliation apply its result only at a BOUNDARY — this test fails red
+  // if that guard is removed, which is exactly the adversarial review's
+  // "two guards ... entirely non-tested" finding.
+  test('a task that ships while its own boot reconciliation is still in flight is never reopened', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+    const edited = body.replace(
+      'Tickets are launched from the workspace.',
+      'Tickets are launched from somewhere else now.',
+    )
+    let releaseForge: (() => void) | undefined
+    const gate = new Promise<void>((resolveGate) => {
+      releaseForge = resolveGate
+    })
+    const execFn: ForgeIssuesExecFn = async (_cli, _args, _cwd) => {
+      await gate
+      return { kind: 'ok', stdout: ghIssuePayload(edited) }
+    }
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    const pending = manager.startPending()
+
+    // While the forge round trip is still gated open, the task ships via a
+    // completely different path (e.g. a human's own manual action) — the
+    // in-memory closure inside the reconciliation pass is now stale.
+    const inFlight = loadTask(project.path, record.id)
+    if (!inFlight) {
+      throw new Error('fixture setup failed')
+    }
+    inFlight.status = 'shipped'
+    saveTask(project.path, inFlight)
+
+    releaseForge?.()
+    await pending
+
+    expect(loadTask(project.path, record.id)?.status).toBe('shipped')
+    // The 'edited' outcome must not even have been journaled against a task
+    // that is no longer at a boundary.
+    const journal = readTaskEvents(project.path, record.id)
+    expect(journal.some((e) => e.type === 'issue' && e.data.name === 'edited')).toBe(false)
+  })
+
+  // The enumeration filter (`isActiveTaskStatus(record.status)` in the
+  // targets loop) — removing it calls the forge for every TERMINAL ticketed
+  // task of the whole history, on every boot, which is exactly what majeur 3
+  // warns amplifies. Synchronous on purpose: the enumeration loop runs to
+  // completion before the pool's first `await`, so this needs no `until()`.
+  test('a shipped ticketed task is never probed at boot, even with a stale snapshot', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    const shipped = loadTask(project.path, record.id)
+    if (!shipped) {
+      throw new Error('fixture setup failed')
+    }
+    shipped.status = 'shipped'
+    saveTask(project.path, shipped)
+
+    // A snapshot the forge would report as 'edited' if it were ever asked —
+    // it must simply never be asked.
+    const edited = body.replace(
+      'Tickets are launched from the workspace.',
+      'Tickets are launched from somewhere else now.',
+    )
+    const { calls, execFn } = ghIssueRig(edited)
+    createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    expect(calls).toHaveLength(0)
+  })
+
+  // Round-2 adversarial review, majeur 1: reproduced verbatim — a task whose
+  // process died mid-turn carries `interrupted_by_user`, posed by the
+  // ordinary (non-T2.4) boot recovery. `applyIssueReconcile`'s 'unreachable'
+  // branch used to overwrite ANY reason unconditionally; the DP14 erasure
+  // logic then cleared what was BY THEN a forge_unreachable IT had posed,
+  // losing the real reason for good on the very next boot. Two full boots.
+  test('a stale forge_unreachable never overwrites — nor, later, erases — an unrelated reason another mechanism already posed', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    const interrupted = loadTask(project.path, record.id)
+    if (!interrupted) {
+      throw new Error('fixture setup failed')
+    }
+    interrupted.status = 'interrupted'
+    interrupted.reason = {
+      code: 'interrupted_by_user',
+      detail: 'orphaned by an earlier session: nothing was queued to start it',
+    }
+    saveTask(project.path, interrupted)
+
+    // Boot 1: forge unreachable. THIS attempt's own event still names
+    // forge_unreachable (a true statement about what just happened) — but
+    // the record's persisted reason must survive untouched.
+    const { execFn: unreachableExecFn } = forgeRig(() => ({ kind: 'missing' }))
+    const boot1 = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: unreachableExecFn,
+    })
+    await boot1.startPending()
+    expect(loadTask(project.path, record.id)?.reason?.code).toBe('interrupted_by_user')
+    expect(
+      readTaskEvents(project.path, record.id).some(
+        (e) => e.type === 'error' && e.reason_code === 'forge_unreachable',
+      ),
+    ).toBe(true)
+
+    // Boot 2: forge answers again (same body: 'unchanged'). The erasure
+    // logic must never touch a reason it did not itself pose.
+    const { execFn: unchangedExecFn } = ghIssueRig(body)
+    const boot2 = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: unchangedExecFn,
+    })
+    await boot2.startPending()
+    expect(loadTask(project.path, record.id)?.reason?.code).toBe('interrupted_by_user')
+  })
+
+  // Round-2 adversarial review, majeur 4: `pendingResumeTurn` requires
+  // `status === 'interrupted'` — an 'interrupted' record with its last
+  // turn's `response === null` IS the Resume affordance. The boot guard used
+  // to treat 'interrupted' as a boundary like any other, silently retiring
+  // that affordance forever the moment an edit landed.
+  test('an interrupted, mid-flight ticketed task keeps its Resume affordance: journaled, status untouched', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    const interrupted = loadTask(project.path, record.id)
+    if (!interrupted) {
+      throw new Error('fixture setup failed')
+    }
+    interrupted.status = 'interrupted'
+    interrupted.turns.push({
+      prompt: 'do work',
+      response: null,
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    saveTask(project.path, interrupted)
+    expect(pendingResumeTurn(interrupted)).not.toBeNull() // sanity: genuinely resumable
+
+    const edited = body.replace(
+      'Tickets are launched from the workspace.',
+      'Tickets are launched from somewhere else now.',
+    )
+    const { execFn } = ghIssueRig(edited)
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    await manager.startPending()
+
+    const fresh = loadTask(project.path, record.id)
+    expect(fresh?.status).toBe('interrupted')
+    expect(pendingResumeTurn(fresh!)).not.toBeNull()
+    const journal = readTaskEvents(project.path, record.id)
+    expect(journal.some((e) => e.type === 'issue' && e.data.name === 'edited')).toBe(true)
+  })
+
+  // Round-2 adversarial review, majeur 5, four fixes.
+  test('a hung forge call degrades to forge_unreachable at the deadline, never blocking startPending() past it', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+    // A forge call that never settles at all — the pathological case a
+    // Promise.race against a plain per-call timeout cannot protect against
+    // on its own if nothing else bounds it.
+    const execFn: ForgeIssuesExecFn = () => new Promise(() => {})
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: execFn,
+      bootIssueReconcileDeadlineMs: 20,
+    })
+    await manager.startPending()
+    expect(loadTask(project.path, record.id)?.reason?.code).toBe('forge_unreachable')
+    // 'unreachable' never touches the queue — the task keeps its place in line.
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([record.id])
+  })
+
+  test('a notice is printed before the wait, naming how many ticketed tasks are being reconciled', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    await seedIssueTask(project, body)
+    const notices: string[] = []
+    const { execFn } = ghIssueRig(body)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: execFn,
+      onNotice: (message) => notices.push(message),
+    })
+    await manager.startPending()
+    expect(notices.some((m) => m.includes('reconciling 1 ticketed task'))).toBe(true)
+  })
+
+  test('a project with no origin remote skips the forge entirely for every one of its ticketed tasks, at once', async () => {
+    // Borrow a realistic issue/issue_snapshot from a repo that DOES have a
+    // remote — the shapes are unrelated to which repo they end up saved on.
+    const withRemote = register(makeRepoWithRemote())
+    const donor = await seedIssueTask(withRemote, conformingTicketBody())
+    const donorFresh = loadTask(withRemote.path, donor.id)
+    if (!donorFresh?.issue || !donorFresh.issue_snapshot) {
+      throw new Error('fixture setup failed')
+    }
+    // Retire the donor immediately: it exists only to hand over a realistic
+    // issue/issue_snapshot shape, and must not itself count as a ticketed
+    // task the boot pass below also has to (correctly) reach the forge for.
+    donorFresh.status = 'shipped'
+    saveTask(withRemote.path, donorFresh)
+
+    const noRemote = register(makeRepo())
+    const a = seedTask(noRemote.path, 'no-remote task A')
+    const b = seedTask(noRemote.path, 'no-remote task B')
+    for (const t of [a, b]) {
+      // 'interrupted', not the default 'queued': a bare seedTask() record has
+      // no queue.json entry, and the ordinary (unrelated) boot recovery would
+      // otherwise flag it as an orphaned 0.12-style record and pose its OWN
+      // reason first — exactly what majeur 1's fix then correctly refuses to
+      // overwrite, which would make this test assert the wrong thing.
+      t.status = 'interrupted'
+      t.issue = donorFresh.issue
+      t.issue_snapshot = donorFresh.issue_snapshot
+      saveTask(noRemote.path, t)
+    }
+
+    const { calls, execFn } = forgeRig(() => ({
+      kind: 'ok',
+      stdout: ghIssuePayload(conformingTicketBody()),
+    }))
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    await manager.startPending()
+
+    // No forge call was EVER made for this project: the per-project remote
+    // precheck alone skipped both of its ticketed tasks at once.
+    expect(calls).toHaveLength(0)
+    expect(loadTask(noRemote.path, a.id)?.reason?.code).toBe('forge_unreachable')
+    expect(loadTask(noRemote.path, b.id)?.reason?.code).toBe('forge_unreachable')
+  })
+
+  /**
+   * Borrows a realistic `issue` + `issue_snapshot` from a repo that HAS a
+   * remote, then plants it on a task of ANOTHER repo. The shapes are unrelated
+   * to which repo they end up saved on, and this is the only way to give a
+   * repo a ticketed task without registering it first.
+   */
+  async function donorIssue(): Promise<{ issue: TaskIssueRef; snapshot: TaskIssueSnapshot }> {
+    const withRemote = register(makeRepoWithRemote())
+    const donor = await seedIssueTask(withRemote, conformingTicketBody())
+    const fresh = loadTask(withRemote.path, donor.id)
+    if (!fresh?.issue || !fresh.issue_snapshot) {
+      throw new Error('fixture setup failed')
+    }
+    // Retire it: it exists only to hand over a shape, and must not itself
+    // count as a ticketed task the passes below have to reach a forge for.
+    fresh.status = 'shipped'
+    saveTask(withRemote.path, fresh)
+    return { issue: fresh.issue, snapshot: fresh.issue_snapshot }
+  }
+
+  /** Plants a 'queued' ticketed task on `repo` (registered or not) and queues it. */
+  function plantTicketedTask(
+    repo: string,
+    origin: { issue: TaskIssueRef; snapshot: TaskIssueSnapshot },
+  ): TaskRecord {
+    const record = seedTask(repo, 'planted ticketed task')
+    record.issue = origin.issue
+    record.issue_snapshot = origin.snapshot
+    record.status = 'queued'
+    saveTask(repo, record)
+    writeJsonAtomic(queuePath(repo), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+    return record
+  }
+
+  // Round-4 adversarial review, MAJEUR 2. `sanitizeIssueSnapshot` drops the
+  // WHOLE snapshot when `body_hash` carries a tag this build does not produce
+  // — which is exactly what the previous revision of this very branch wrote
+  // (`sha256:t1:`), and what any future bump of TICKET_BODY_HASH_TAG will do
+  // to every already-bound task. `TaskRecord.issue` survives that drop, so the
+  // task keeps claiming it carries a ticket while both recomparison points
+  // skip it forever on their `!record.issue_snapshot` guard, and the first
+  // rewrite of the record erases the snapshot from disk. That was total,
+  // permanent silence; invariant 2 forbids it.
+  test('a snapshot tagged for a scheme this build no longer produces is NAMED, not silently dropped', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+    // Rewrite task.json with the PREVIOUS tag, byte for byte what the earlier
+    // revision of this branch persisted.
+    const raw = JSON.parse(
+      readFileSync(join(taskDir(project.path, record.id), 'task.json'), 'utf8'),
+    ) as {
+      issue_snapshot: { body_hash: string }
+    }
+    raw.issue_snapshot.body_hash = raw.issue_snapshot.body_hash.replace(
+      `${TICKET_BODY_HASH_TAG}:`,
+      'sha256:t1:',
+    )
+    writeJsonAtomic(join(taskDir(project.path, record.id), 'task.json'), raw)
+    // Precondition: the sanitizer really does drop the whole snapshot while
+    // keeping `issue` — the exact asymmetry this test exists for.
+    expect(loadTask(project.path, record.id)?.issue).toBeTruthy()
+    expect(loadTask(project.path, record.id)?.issue_snapshot).toBeUndefined()
+
+    const notices: string[] = []
+    const { calls, execFn } = ghIssueRig(body)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: execFn,
+      onNotice: (message) => notices.push(message),
+    })
+    await manager.startPending()
+
+    const journal = readTaskEvents(project.path, record.id)
+    expect(journal.some((e) => e.type === 'issue' && e.data.name === 'snapshot_unreadable')).toBe(
+      true,
+    )
+    expect(notices.some((m) => m.includes(record.id) && m.includes('edit detection'))).toBe(true)
+    // DP10 holds: no eleventh D2 code, and nothing is stopped — the task keeps
+    // its status and its place, it is only the edit detector that retired.
+    expect(loadTask(project.path, record.id)?.reason).toBeUndefined()
+    expect(loadTask(project.path, record.id)?.status).toBe('queued')
+    // And no forge call was made for it: there is nothing to compare against.
+    expect(calls).toHaveLength(0)
+  })
+
+  // Round-4 adversarial review, MINEUR 1: `canPoseReason` is a TWO-part
+  // condition and only its first half (`!record.reason`) was covered. Dropping
+  // `|| code === 'forge_unreachable'` left every test green while a SECOND
+  // forge failure stopped refreshing the detail — the journal would keep
+  // showing "no-remote" once the real cause had become "deadline exceeded" —
+  // and `mutated` went false, so neither saveTask nor the broadcast happened.
+  test('a second forge failure REFRESHES the forge_unreachable detail it posed itself', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [{ id: record.id, enqueued_at: new Date().toISOString() }],
+    })
+
+    // First pass: no forge CLI answers at all.
+    const { execFn: noCli } = forgeRig(() => ({ kind: 'missing' }))
+    await createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: noCli }).startPending()
+    const first = loadTask(project.path, record.id)?.reason
+    expect(first?.code).toBe('forge_unreachable')
+    expect(first?.detail).toBe('no-cli')
+
+    // Second pass, SAME record, different cause: the hard deadline.
+    const hangs: ForgeIssuesExecFn = () => new Promise(() => {})
+    await createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: hangs,
+      bootIssueReconcileDeadlineMs: 20,
+    }).startPending()
+
+    const second = loadTask(project.path, record.id)?.reason
+    expect(second?.code).toBe('forge_unreachable')
+    expect(second?.detail).toContain('deadline')
+    // The stale cause is gone from the persisted record, not merely shadowed.
+    expect(second?.detail).not.toContain('no-cli')
+  })
+
+  // Round-4 adversarial review, MINEUR 2: `applyUnreachableAt`'s own shutdown
+  // guard was dead weight in the suite — the only aborted-signal test used a
+  // repo WITH a remote, which reaches it through the worker, and the worker
+  // checks the signal itself first. The no-remote path calls it DIRECTLY, with
+  // no check in front of it: this is the one door that proves the guard.
+  test('an already-aborted shutdown signal blocks the no-remote degradation too, before any write', async () => {
+    const origin = await donorIssue()
+    const noRemote = register(makeRepo())
+    const record = plantTicketedTask(noRemote.path, origin)
+
+    const controller = new AbortController()
+    controller.abort()
+    const { calls, execFn } = forgeRig(() => ({ kind: 'missing' }))
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: execFn,
+      shutdownSignal: controller.signal,
+    })
+    await manager.startPending()
+
+    expect(calls).toHaveLength(0)
+    const after = loadTask(noRemote.path, record.id)
+    expect(after?.reason).toBeUndefined()
+    expect(readTaskEvents(noRemote.path, record.id)).toHaveLength(0)
+  })
+
+  test('an already-aborted shutdown signal stops the T2.4 boot pass from writing anything', async () => {
+    const project = register(makeRepoWithRemote())
+    const body = conformingTicketBody()
+    const record = await seedIssueTask(project, body)
+
+    const edited = body.replace(
+      'Tickets are launched from the workspace.',
+      'Tickets are launched from somewhere else now.',
+    )
+    const { execFn } = ghIssueRig(edited)
+    const controller = new AbortController()
+    controller.abort()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      issueExecFn: execFn,
+      shutdownSignal: controller.signal,
+    })
+    await manager.startPending()
+
+    // The T2.4 pass itself never wrote anything: no forge_unreachable reason
+    // posed, and no reconciliation-caused 'issue' event beyond admission's
+    // own 'bound' — whatever the ordinary (unrelated) boot recovery for a
+    // 'running' record left by a dead process independently produces (this
+    // signal does not gate that mechanism, and it is not this test's
+    // concern).
+    const after = loadTask(project.path, record.id)
+    expect(after?.reason?.code).not.toBe('forge_unreachable')
+    const reconcileEvents = readTaskEvents(project.path, record.id).filter(
+      (e) => e.type === 'issue' && e.data.name !== 'bound',
+    )
+    expect(reconcileEvents).toHaveLength(0)
+  })
+
+  // Round-4 adversarial review, MAJEUR 3 — the round-1 critique through a
+  // SECOND door. `startPending()` awaits the boot pass, which closes the door
+  // for every project registered when the manager was built. A project
+  // registered LATER never went through it: any human gesture on it builds its
+  // context, `context()` rebuilds its queue from queue.json BEFORE the runner
+  // exists, and the runner's first `pump()` is SYNCHRONOUS — so a full agent
+  // turn starts on a stale ticket, deterministically, and its work is then
+  // thrown away without a review ('edited' skips it).
+  //
+  // Both tests below use the REAL runner and a REAL agent seam: a fakeRunner
+  // cannot show a pump that should not have happened.
+  describe('a project registered mid-session', () => {
+    /** Real manager + real runner; counts every agent invocation. */
+    function realManager(
+      issueExecFn: ForgeIssuesExecFn,
+      onNotice?: (message: string) => void,
+    ): { manager: TaskManager; invocations: () => number } {
+      let invocations = 0
+      const manager = createTaskManager({
+        command: 'claude -p',
+        timeoutMs: 5000,
+        issueExecFn,
+        ...(onNotice ? { onNotice } : {}),
+        runAgentFn: async (options: AgentRunOptions) => {
+          invocations += 1
+          const raw = `${JSON.stringify({ type: 'result', result: 'done' })}\n`
+          options.onText?.(raw)
+          return raw
+        },
+      })
+      return { manager, invocations: () => invocations }
+    }
+
+    test('never starts a turn on its ticketed task before this session compared it to the forge', async () => {
+      const body = conformingTicketBody()
+      const origin = await donorIssue()
+      // Prepared on disk, deliberately NOT registered: it must be invisible to
+      // the boot pass's synchronous enumeration.
+      const late = makeRepoWithRemote()
+      const record = plantTicketedTask(late, origin)
+
+      register(makeRepo()) // an ordinary project, so the boot pass has work
+      const edited = body.replace(
+        'Tickets are launched from the workspace.',
+        'Tickets are launched from somewhere else now.',
+      )
+      const notices: string[] = []
+      const { manager, invocations } = realManager(ghIssueRig(edited).execFn, (message) =>
+        notices.push(message),
+      )
+      await manager.startPending()
+
+      // NOW it joins the workspace, and a human gesture builds its context.
+      const lateProject = register(late)
+      manager.checks(lateProject.id, 'aaaaaaaaaaaa')
+
+      await until(() => loadTask(late, record.id)?.status === 'waiting_for_you')
+      // The whole point: not one agent turn ran on the stale ticket.
+      expect(invocations()).toBe(0)
+      expect(readQueue(late).entries.map((e) => e.id)).toEqual([])
+      expect(
+        readTaskEvents(late, record.id).some((e) => e.type === 'issue' && e.data.name === 'edited'),
+      ).toBe(true)
+      // Invariant 2: the hold is SAID, never a queue that silently stops.
+      expect(notices.some((m) => m.includes('held out of the queue'))).toBe(true)
+      await manager.shutdown()
+    })
+
+    test('and starts it as soon as that comparison says the ticket did not move', async () => {
+      const body = conformingTicketBody()
+      const origin = await donorIssue()
+      const late = makeRepoWithRemote()
+      const record = plantTicketedTask(late, origin)
+
+      register(makeRepo())
+      // Same body: 'unchanged'. The hold must be a DELAY, not a deadlock —
+      // nothing else in the process would ever pump this queue again.
+      const { manager, invocations } = realManager(ghIssueRig(body).execFn)
+      await manager.startPending()
+
+      const lateProject = register(late)
+      manager.checks(lateProject.id, 'aaaaaaaaaaaa')
+
+      await until(() => invocations() > 0, 8000)
+      expect(loadTask(late, record.id)?.status).not.toBe('queued')
+      await manager.shutdown()
+    })
+  })
+})
+
 // --- HTTP surface ---------------------------------------------------------
 
 type RawResponse = { status: number; body: string }
@@ -1502,6 +2640,7 @@ describe('task routes with a stub manager', () => {
     const record = seedTask(project.path, 'stubbed task', 'stub work')
     const calls = {
       creates: [] as string[],
+      createInputs: [] as unknown[],
       replies: [] as { project: string; id: string; message: string }[],
       ships: [] as string[],
       abandons: [] as string[],
@@ -1516,11 +2655,12 @@ describe('task routes with a stub manager', () => {
       listAll: () => [{ project, records: [record] }],
       get: (projectId, id) =>
         known(projectId) && id === record.id ? { record, events: [] } : null,
-      create: (projectId) => {
+      create: async (projectId, input) => {
         if (!known(projectId)) {
           return { ok: false, code: 404, error: 'unknown project' }
         }
         calls.creates.push(projectId)
+        calls.createInputs.push(input)
         return { ok: true, record }
       },
       reply: (projectId, id, message) => {
@@ -1579,7 +2719,7 @@ describe('task routes with a stub manager', () => {
         isolation_reason: 'stub',
         isolation_configured: 'policy',
       }),
-      startPending: () => [],
+      startPending: () => Promise.resolve([]),
       sweepOrphanedVolumes: async () => {},
       applyRetention: async () => {},
       checksApply: (projectId) => {
@@ -1671,6 +2811,44 @@ describe('task routes with a stub manager', () => {
       })
       expect(badBody.status).toBe(400)
       expect(calls.creates).toEqual([project.id])
+
+      // T2.4: `issue` is an alternative to title/prompt, reaching the manager verbatim
+      // as `unknown` — validation is entirely task-issue.ts's job, not serve.ts's.
+      const fromIssue = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({
+          project_id: project.id,
+          issue: { forge: 'github', project: 'acme/repo', iid: 42, url: 'https://x/42' },
+        }),
+      })
+      expect(fromIssue.status).toBe(201)
+      const lastInput = calls.createInputs.at(-1) as Record<string, unknown>
+      expect(lastInput.title).toBeUndefined()
+      expect(lastInput.prompt).toBeUndefined()
+      expect(lastInput.issue).toEqual({
+        forge: 'github',
+        project: 'acme/repo',
+        iid: 42,
+        url: 'https://x/42',
+      })
+
+      // Neither title/prompt NOR issue: refused before the manager is reached.
+      const neither = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ project_id: project.id }),
+      })
+      expect(neither.status).toBe(400)
+      expect(calls.creates).toEqual([project.id, project.id])
+
+      // issue must be an object, not an array or a scalar.
+      const issueIsArray = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ project_id: project.id, issue: [] }),
+      })
+      expect(issueIsArray.status).toBe(400)
 
       // DNS-rebinding guard stays active on every task route.
       const rebound = await rawRequest(started.port, `/api/tasks?project=${project.id}`, {
@@ -2671,8 +3849,16 @@ describe('workspace server end to end', () => {
       },
     })
 
-    const first = manager.create(projectA.id, { title: 'A', prompt: 'task one', autoShip: false })
-    const second = manager.create(projectB.id, { title: 'B', prompt: 'task two', autoShip: false })
+    const first = await manager.create(projectA.id, {
+      title: 'A',
+      prompt: 'task one',
+      autoShip: false,
+    })
+    const second = await manager.create(projectB.id, {
+      title: 'B',
+      prompt: 'task two',
+      autoShip: false,
+    })
     expect(first.ok && second.ok).toBe(true)
     if (!first.ok || !second.ok) {
       return
@@ -2722,7 +3908,11 @@ describe('workspace server end to end', () => {
     expect(manager.checks(projectA.id, checksRecord.id)).toEqual({ ok: true })
     await until(() => cap.snapshot().occupied === 1)
 
-    const created = manager.create(projectB.id, { title: 'B', prompt: 'task b', autoShip: false })
+    const created = await manager.create(projectB.id, {
+      title: 'B',
+      prompt: 'task b',
+      autoShip: false,
+    })
     expect(created.ok).toBe(true)
     if (!created.ok) {
       return
@@ -2933,8 +4123,10 @@ describe('workspace server end to end', () => {
       },
     })
 
-    const created = projects.map((project, i) =>
-      manager.create(project.id, { title: `p${i}`, prompt: `work ${i}`, autoShip: false }),
+    const created = await Promise.all(
+      projects.map((project, i) =>
+        manager.create(project.id, { title: `p${i}`, prompt: `work ${i}`, autoShip: false }),
+      ),
     )
     expect(created.every((c) => c.ok)).toBe(true)
     const ids = created.map((c) => (c.ok ? c.record.id : ''))
@@ -2977,7 +4169,11 @@ describe('workspace server end to end', () => {
     const envelopes: TaskEnvelope[] = []
     manager.subscribe((envelope) => envelopes.push(envelope))
 
-    const created = manager.create(projectB.id, { title: 'B', prompt: 'work', autoShip: false })
+    const created = await manager.create(projectB.id, {
+      title: 'B',
+      prompt: 'work',
+      autoShip: false,
+    })
     expect(created.ok).toBe(true)
     if (!created.ok) {
       return
@@ -3046,9 +4242,21 @@ describe('workspace server end to end', () => {
       },
     })
 
-    const first = manager.create(project.id, { title: 'A', prompt: 'task one', autoShip: false })
-    const second = manager.create(project.id, { title: 'B', prompt: 'task two', autoShip: false })
-    const third = manager.create(project.id, { title: 'C', prompt: 'task three', autoShip: false })
+    const first = await manager.create(project.id, {
+      title: 'A',
+      prompt: 'task one',
+      autoShip: false,
+    })
+    const second = await manager.create(project.id, {
+      title: 'B',
+      prompt: 'task two',
+      autoShip: false,
+    })
+    const third = await manager.create(project.id, {
+      title: 'C',
+      prompt: 'task three',
+      autoShip: false,
+    })
     expect(first.ok && second.ok && third.ok).toBe(true)
     if (!first.ok || !second.ok || !third.ok) {
       return
@@ -3097,9 +4305,21 @@ describe('workspace server end to end', () => {
           options.signal?.addEventListener('abort', () => reject(new Error('agent interrupted')))
         }),
     })
-    const first = dying.create(project.id, { title: 'A', prompt: 'task one', autoShip: false })
-    const second = dying.create(project.id, { title: 'B', prompt: 'task two', autoShip: false })
-    const third = dying.create(project.id, { title: 'C', prompt: 'task three', autoShip: false })
+    const first = await dying.create(project.id, {
+      title: 'A',
+      prompt: 'task one',
+      autoShip: false,
+    })
+    const second = await dying.create(project.id, {
+      title: 'B',
+      prompt: 'task two',
+      autoShip: false,
+    })
+    const third = await dying.create(project.id, {
+      title: 'C',
+      prompt: 'task three',
+      autoShip: false,
+    })
     expect(first.ok && second.ok && third.ok).toBe(true)
     if (!first.ok || !second.ok || !third.ok) {
       return
@@ -3127,7 +4347,7 @@ describe('workspace server end to end', () => {
 
     // The explicit step the workspace takes AFTER the server listens, and it
     // says what it resumed.
-    const resumed = reborn.startPending()
+    const resumed = await reborn.startPending()
     expect(resumed.map((entry) => ({ id: entry.project.id, queued: entry.queued }))).toEqual([
       { id: project.id, queued: 2 },
     ])
@@ -3291,9 +4511,21 @@ describe('workspace server end to end', () => {
       }
     })
 
-    const first = manager.create(project.id, { title: 'A', prompt: 'task one', autoShip: false })
-    const second = manager.create(project.id, { title: 'B', prompt: 'task two', autoShip: false })
-    const third = manager.create(project.id, { title: 'C', prompt: 'task three', autoShip: false })
+    const first = await manager.create(project.id, {
+      title: 'A',
+      prompt: 'task one',
+      autoShip: false,
+    })
+    const second = await manager.create(project.id, {
+      title: 'B',
+      prompt: 'task two',
+      autoShip: false,
+    })
+    const third = await manager.create(project.id, {
+      title: 'C',
+      prompt: 'task three',
+      autoShip: false,
+    })
     expect(first.ok && second.ok && third.ok).toBe(true)
     if (!first.ok || !second.ok || !third.ok) {
       return
@@ -3339,17 +4571,17 @@ describe('workspace server end to end', () => {
         queuedFrames.push(`${envelope.event.data.id}#${envelope.event.data.queue_position ?? '-'}`)
       }
     })
-    const head = manager.create(project.id, { title: 'A', prompt: 'one', autoShip: false })
+    const head = await manager.create(project.id, { title: 'A', prompt: 'one', autoShip: false })
     expect(head.ok).toBe(true)
     await until(() => manager.list(project.id)?.some((r) => r.status === 'running') === true)
 
-    const second = manager.create(project.id, { title: 'B', prompt: 'two', autoShip: false })
+    const second = await manager.create(project.id, { title: 'B', prompt: 'two', autoShip: false })
     expect(second.ok).toBe(true)
     if (!second.ok) {
       return
     }
     const afterSecond = queuedFrames.length
-    const third = manager.create(project.id, { title: 'C', prompt: 'three', autoShip: false })
+    const third = await manager.create(project.id, { title: 'C', prompt: 'three', autoShip: false })
     expect(third.ok).toBe(true)
     if (!third.ok) {
       return
@@ -3367,9 +4599,9 @@ describe('workspace server end to end', () => {
     // an uncapped broadcast hurts, so the line has to be longer than the cap.
     const many = QUEUE_BROADCAST_MAX + 12
     for (let n = 0; n < many; n += 1) {
-      expect(manager.create(project.id, { title: `f${n}`, prompt: 'x', autoShip: false }).ok).toBe(
-        true,
-      )
+      expect(
+        (await manager.create(project.id, { title: `f${n}`, prompt: 'x', autoShip: false })).ok,
+      ).toBe(true)
     }
     const before = queuedFrames.length
     // Stopping the SECOND one moves every rank behind it: uncapped this is
@@ -3388,7 +4620,7 @@ describe('workspace server end to end', () => {
   // T1.2 re-review, MINOR 4: a refused creation used to leave a 'queued'
   // record on disk that NOTHING could ever start — not in queue.json, not
   // replyable, not resumable. A card promising an agent that is not coming.
-  test('a creation the queue refuses leaves no zombie: the record is settled, named and abandonable', () => {
+  test('a creation the queue refuses leaves no zombie: the record is settled, named and abandonable', async () => {
     const project = register(makeRepo())
     const manager = createTaskManager({
       command: 'claude -p',
@@ -3401,9 +4633,9 @@ describe('workspace server end to end', () => {
     })
     // One real task first, so the project's context (and its boot
     // reconciliation) is behind us before the queue is stuffed.
-    expect(manager.create(project.id, { title: 'seed', prompt: 'seed', autoShip: false }).ok).toBe(
-      true,
-    )
+    expect(
+      (await manager.create(project.id, { title: 'seed', prompt: 'seed', autoShip: false })).ok,
+    ).toBe(true)
     // A queue already at its cap: the next enqueue refuses, honestly.
     writeJsonAtomic(queuePath(project.path), {
       version: 1,
@@ -3419,7 +4651,11 @@ describe('workspace server end to end', () => {
       }
     })
 
-    const refused = manager.create(project.id, { title: 'A', prompt: 'work', autoShip: false })
+    const refused = await manager.create(project.id, {
+      title: 'A',
+      prompt: 'work',
+      autoShip: false,
+    })
     expect(refused.ok).toBe(false)
     if (refused.ok) {
       return
@@ -3440,7 +4676,7 @@ describe('workspace server end to end', () => {
 
   // T1.2 re-review, MINOR 5: containing a listener's exception is right;
   // hiding it is the silent degradation invariant 2 forbids.
-  test('a subscriber that throws is contained AND reported, never swallowed', () => {
+  test('a subscriber that throws is contained AND reported, never swallowed', async () => {
     const project = register(makeRepo())
     const notices: string[] = []
     const manager = createTaskManager({
@@ -3454,7 +4690,11 @@ describe('workspace server end to end', () => {
     })
     manager.subscribe((envelope) => seen.push(envelope.event.name))
 
-    const created = manager.create(project.id, { title: 'A', prompt: 'work', autoShip: false })
+    const created = await manager.create(project.id, {
+      title: 'A',
+      prompt: 'work',
+      autoShip: false,
+    })
     expect(created.ok).toBe(true)
 
     // The other subscribers still got their frames…
@@ -3546,14 +4786,16 @@ describe('workspace server end to end', () => {
           options.signal?.addEventListener('abort', () => reject(new Error('aborted')))
         }),
     })
-    const made = ['a', 'b', 'c', 'd'].map((title) => {
-      const created = manager.create(project.id, { title, prompt: title, autoShip: false })
-      expect(created.ok).toBe(true)
-      if (!created.ok) {
-        throw new Error('creation refused')
-      }
-      return created.record
-    })
+    const made = await Promise.all(
+      ['a', 'b', 'c', 'd'].map(async (title) => {
+        const created = await manager.create(project.id, { title, prompt: title, autoShip: false })
+        expect(created.ok).toBe(true)
+        if (!created.ok) {
+          throw new Error('creation refused')
+        }
+        return created.record
+      }),
+    )
     const [a, b, c, d] = made as [TaskRecord, TaskRecord, TaskRecord, TaskRecord]
     await until(() => loadTask(project.path, a.id)?.status === 'running')
     expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([b.id, c.id, d.id])
@@ -3823,7 +5065,7 @@ describe('workspace server end to end', () => {
       )
       expect(last?.reason_code).toBe('interrupted_by_user')
     }
-    expect(manager.startPending()).toEqual([])
+    expect(await manager.startPending()).toEqual([])
     expect(prompts).toEqual([])
     expect(existsSync(queuePath(project.path))).toBe(false)
 
@@ -3866,7 +5108,7 @@ describe('workspace server end to end', () => {
       },
     })
 
-    const created = manager.create(project.id, {
+    const created = await manager.create(project.id, {
       title: 'Night shift',
       prompt: 'do it while I sleep',
       autoShip: true,
@@ -3909,7 +5151,7 @@ describe('workspace server end to end', () => {
       },
     })
 
-    const created = manager.create(project.id, {
+    const created = await manager.create(project.id, {
       title: 'Risky change',
       prompt: 'try it',
       autoShip: true,
