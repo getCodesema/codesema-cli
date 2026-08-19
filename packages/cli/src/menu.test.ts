@@ -4,6 +4,7 @@ import {
   buildCloudMenuItems,
   buildMenuItems,
   dispatchMenuAction,
+  REVIEW_FLAGS,
   reviewFlagsPassed,
   type MenuActionId,
   type MenuActions,
@@ -107,8 +108,33 @@ describe('reviewFlagsPassed', () => {
     expect(reviewFlagsPassed({ dual: true })).toBe(true)
   })
 
+  // Regression: --fail-on was missing from REVIEW_FLAGS, so a gated review
+  // launched from a terminal opened the workspace and exited 0 in silence.
+  test('--fail-on forces the review command instead of the workspace', () => {
+    expect(reviewFlagsPassed({ 'fail-on': 'major' })).toBe(true)
+    for (const gate of ['critical', 'major', 'minor', 'info', 'request_changes']) {
+      expect(reviewFlagsPassed({ 'fail-on': gate })).toBe(true)
+    }
+  })
+
   test('flags of other commands still open the menu', () => {
     expect(reviewFlagsPassed({ review: 'develop-20260713', out: 'review.md' })).toBe(false)
+    // --force belongs to `sync`, which `review` never reads: it stays out too.
+    expect(reviewFlagsPassed({ force: true })).toBe(false)
+  })
+
+  test('REVIEW_FLAGS is exactly the set of flags the review command consumes', () => {
+    expect([...REVIEW_FLAGS]).toEqual([
+      'branch',
+      'target',
+      'agent',
+      'full',
+      'dual',
+      'no-open',
+      'port',
+      'timeout',
+      'fail-on',
+    ])
   })
 
   test('a flag parsed as false still counts as passed', () => {
