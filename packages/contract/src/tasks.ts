@@ -21,6 +21,36 @@ export type TaskStatus =
   | 'failed'
   | 'interrupted'
 
+/**
+ * Ticks in one US dollar: the cost unit of `cost_ticks` is 1 tick = 1e-10 USD.
+ *
+ * Money is carried as a NON-NEGATIVE INTEGER count of ticks, never as a float:
+ * a float makes sums non-associative and comparisons unstable, which a running
+ * total of turns cannot survive. 1e-10 USD is fine enough that the shortest
+ * billable turn still rounds to something other than zero.
+ */
+export const TICKS_PER_USD = 10_000_000_000
+
+/**
+ * WHERE a `cost_ticks` figure comes from. A cost is a claim, so it never
+ * travels without saying who is making it.
+ *
+ * - 'harness': the agent harness's OWN estimate of what the turn cost, read
+ *   from the figure it reports at the end of a run. It covers everything the
+ *   run consumed — output tokens, cache, subagents — but it is still an
+ *   ESTIMATE computed from a table bundled in that harness's build, not an
+ *   invoice from the provider's billing system.
+ * - 'lower_bound': computed here from the token counters the stream reported,
+ *   at published first-party rates, over input and cache ONLY. Every line item
+ *   left out is positive, so the real bill is this figure OR MORE, never less.
+ *
+ * The two are not interchangeable and a reader must be able to tell them
+ * apart, which is the whole reason this field exists.
+ */
+export type CostBasis = 'harness' | 'lower_bound'
+
+const COST_BASES: ReadonlySet<CostBasis> = new Set(['harness', 'lower_bound'])
+
 export type TaskTurn = {
   prompt: string
   response: string | null
@@ -29,6 +59,27 @@ export type TaskTurn = {
   ended_at: string | null
   /** Total LLM tokens (input+output) consumed by this turn, when the agent's stream reports usage. */
   tokens?: number
+  /**
+   * What this turn cost, as a non-negative INTEGER number of ticks
+   * (1 tick = 1e-10 USD, see TICKS_PER_USD). Counted by the CLI from the
+   * stream's own token counters — never a figure stated by the model.
+   *
+   * OPTIONAL, and its honest default is ABSENCE, which means UNKNOWN — it does
+   * NOT mean 0. A turn written before this field existed, a turn whose model
+   * the price table does not know, and a turn that ran on a partner-operated
+   * platform whose price list this build does not carry, all carry no cost at
+   * all rather than a zero no reader could tell from a free turn.
+   */
+  cost_ticks?: number
+  /**
+   * Provenance of `cost_ticks` (see CostBasis): whether the figure is the
+   * harness's own estimate or this build's input-and-cache lower bound.
+   *
+   * OPTIONAL, and meaningless without a figure: a turn with no `cost_ticks`
+   * never carries a basis — a provenance for a number that is not there
+   * describes nothing.
+   */
+  cost_basis?: CostBasis
 }
 
 export type TaskEventType =
@@ -46,6 +97,14 @@ export type TaskEventType =
   | 'interrupted'
   /** Isolation decided for the task at creation, with the reason behind it. */
   | 'isolation'
+  /**
+   * Something worth stating about what a turn COST: which figure was used,
+   * or why none could be. A NEUTRAL line, never an error — a cost that cannot
+   * be established is a gap in the accounting, not a failure of the work, and
+   * painting it red would cry wolf on every turn run against an unpriced
+   * model. The distinct cause is named in `data.name`.
+   */
+  | 'cost'
 
 /**
  * How a task's agent turns are contained.
@@ -148,6 +207,29 @@ export type TaskRecord = {
    * events.jsonl without ever saying anything new.
    */
   heartbeat_at?: string
+  /**
+   * Running total of what this task cost: the SUM of the `cost_ticks` its
+   * turns carry, same unit (1 tick = 1e-10 USD) and same integer discipline.
+   *
+   * OPTIONAL with the same honest default as the turn's: ABSENT means
+   * UNKNOWN, not 0. A task written by 0.12, and a task not one of whose turns
+   * could be priced, carry nothing — never a `0` that would read as "free".
+   */
+  cost_ticks?: number
+  /**
+   * HOW MANY turns that total covers. A partial total is honest only if its
+   * coverage is legible: `cost_turns` 2 on a task with 5 turns says plainly
+   * that three turns are missing from the figure. Absent whenever
+   * `cost_ticks` is, for the same reason.
+   */
+  cost_turns?: number
+  /**
+   * Provenance of the total (see CostBasis), DERIVED from the turns it sums:
+   * 'harness' only when every covered turn is itself 'harness'. A single turn
+   * on the fallback table drags the whole total down to 'lower_bound' — a sum
+   * is never more authoritative than its weakest term.
+   */
+  cost_basis?: CostBasis
   created_at: string
   updated_at: string
 }
@@ -192,6 +274,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'error',
   'interrupted',
   'isolation',
+  'cost',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
@@ -217,6 +300,68 @@ const isoOrNow = (v: unknown): string => (typeof v === 'string' && v ? v : new D
 const nonNegativeInt = (v: unknown): number =>
   Number.isInteger(v) && (v as number) >= 0 ? (v as number) : 0
 
+/**
+ * `nonNegativeInt`'s OPTIONAL twin, for `cost_ticks`: same predicate, but the
+ * fallback is absence instead of `0`.
+ *
+ * A required counter (work_ms, tokens read as a total) can degrade to 0 and
+ * still be honest — "no time measured" and "no time spent" are close enough.
+ * A cost cannot: on this field, `0` means "this turn was free", which is a
+ * claim, and the whole point of `cost_ticks` is that absence means UNKNOWN. So
+ * anything the predicate rejects — a float, a negative, a string, a value too
+ * large to be an exact integer — drops the key rather than inventing a zero.
+ * Whitelist and truncate doctrine, never throws.
+ *
+ * `-0` is rejected explicitly: it passes both `Number.isSafeInteger` and
+ * `>= 0`, and a negative zero on a money field is a value nobody meant to
+ * write. It costs one expression to refuse and leaves no doubt in memory.
+ */
+const optionalCostTicks = (v: unknown): number | null =>
+  Number.isSafeInteger(v) && (v as number) >= 0 && !Object.is(v, -0) ? (v as number) : null
+
+/**
+ * Coverage of a record's total: how many turns the figure sums.
+ *
+ * Bounded to `[1, kept]`, where `kept` is the number of turns this record
+ * actually keeps after sanitizing. A coverage of `0` describes a total that
+ * covers nothing (so there is no total), and a coverage larger than the record
+ * has turns claims a completeness the file cannot back — both are the kind of
+ * hand-edited or future-written value this layer exists to refuse.
+ */
+const optionalCostTurns = (v: unknown, kept: number): number | null => {
+  const n = optionalCostTicks(v)
+  return n !== null && n >= 1 && n <= Math.min(kept, TASK_TURNS_MAX) ? n : null
+}
+
+/**
+ * Whitelist for `cost_basis`: a provenance nobody can name is worse than none,
+ * so an unknown value drops the key instead of guessing which of the two it
+ * meant. Callers additionally drop it when there is no `cost_ticks` to
+ * describe.
+ */
+const optionalCostBasis = (v: unknown): CostBasis | null =>
+  COST_BASES.has(v as CostBasis) ? (v as CostBasis) : null
+
+/**
+ * `cost_ticks` and `cost_basis` are ONE FACT in two keys, so they survive or
+ * fall TOGETHER — in both directions.
+ *
+ * A provenance with no figure describes nothing; a figure whose provenance
+ * nobody can name cannot be interpreted either (is it the harness's estimate
+ * of the whole run, or a floor over input and cache only?), and worse, a
+ * half-kept pair makes two readers disagree about whether the turn carries a
+ * cost at all — which is how a re-run silently REPLACES a figure it should
+ * have added to. Anything that breaks the pair therefore drops both keys.
+ */
+const costPair = (
+  rawTicks: unknown,
+  rawBasis: unknown,
+): { cost_ticks: number; cost_basis: CostBasis } | null => {
+  const ticks = optionalCostTicks(rawTicks)
+  const basis = optionalCostBasis(rawBasis)
+  return ticks === null || basis === null ? null : { cost_ticks: ticks, cost_basis: basis }
+}
+
 function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
   if (!raw || typeof raw !== 'object') {
     return null
@@ -227,6 +372,7 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
   if (!prompt.trim()) {
     return null
   }
+  const cost = costPair(t.cost_ticks, t.cost_basis)
   return {
     prompt,
     response:
@@ -238,6 +384,11 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
     ...(typeof t.tokens === 'number' && Number.isFinite(t.tokens) && t.tokens >= 0
       ? { tokens: Math.min(Math.round(t.tokens), 1_000_000_000) }
       : {}),
+    // Absence is PRESERVED as absence, exactly like `tokens`: a turn with no
+    // cost on disk comes back with no cost in memory. Figure and provenance
+    // are one fact and travel as one (see costPair) — never one without the
+    // other, in either direction.
+    ...cost,
   }
 }
 
@@ -270,6 +421,14 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
   }
   const created_at = isoOrNow(r.created_at)
   const reason = sanitizeTaskReason(r.reason)
+  // The record's total is a TRIO — figure, coverage, provenance — written
+  // together by the runner and only meaningful together: a total whose reader
+  // cannot tell how complete or how authoritative it is says nothing useful.
+  // Any one of the three missing or unusable drops all three.
+  const totalPair = costPair(r.cost_ticks, r.cost_basis)
+  const costTurns = optionalCostTurns(r.cost_turns, turns.length)
+  const total =
+    totalPair === null || costTurns === null ? null : { ...totalPair, cost_turns: costTurns }
   return {
     version: 1,
     id,
@@ -305,6 +464,10 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     ...(typeof r.heartbeat_at === 'string' && r.heartbeat_at
       ? { heartbeat_at: r.heartbeat_at.slice(0, TASK_TIMESTAMP_MAX) }
       : {}),
+    // Same optional-with-absence rule as on the turn: a record written by 0.12
+    // has no total to state, and one whose value is unusable states none
+    // either — a `0` here would claim the task was free.
+    ...total,
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

@@ -13,13 +13,16 @@ import {
   type AgentRunOptions,
 } from './agent.js'
 import { loadConfig, resolveWatchdogBudgets } from './config.js'
-import type { TaskEvent, TaskRecord, TaskStatus } from './contract.js'
+import type { TaskEvent, TaskRecord, TaskStatus, TaskTurn } from './contract.js'
+import type { CostDegradation } from './cost.js'
 import { DEFAULT_TIMEOUT_S } from './fix.js'
 import { tryGit } from './git.js'
 import { setLanguage } from './i18n.js'
-import type { RunContainerTurnOptions } from './task-isolation.js'
+import { CAGE_FORWARDED_ENV, type RunContainerTurnOptions } from './task-isolation.js'
 import {
   buildTaskPrompt,
+  costEvent,
+  costRunEnv,
   createTaskRunner,
   createTaskSlotPool,
   parseTaskBranchProposal,
@@ -28,7 +31,7 @@ import {
   supportsSessionResume,
   taskCommandFor,
 } from './task-runner.js'
-import { appendTaskEvent, createTask, loadTask, readTaskEvents } from './tasks-store.js'
+import { appendTaskEvent, createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
 
 // --- pure helpers ---
 
@@ -280,6 +283,8 @@ describe('runTaskTurn', () => {
       response: 'all done',
       sessionId: 'sess-123',
       tokens: 0,
+      // No usage frame in this stream: the cost is UNKNOWN, never 0.
+      cost: null,
     })
     expect(events.map((e) => e.type)).toEqual([
       'turn_started',
@@ -414,6 +419,8 @@ describe('runTaskTurn', () => {
       response: 'plain text answer',
       sessionId: null,
       tokens: 0,
+      // Not a stream-json provider: nothing to price, so no cost — not 0.
+      cost: null,
     })
   })
 
@@ -1418,5 +1425,864 @@ describe('heartbeat reaches the record', () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'fresh', 'work')
     expect(loadTask(repo, task.id)?.heartbeat_at).toBeUndefined()
+  })
+})
+
+// --- cost (T1.8) ---
+
+/** claude-opus-5 lower bound: $5/MTok base input, $0.50/MTok cache read. */
+const OPUS5_BOUND = (input: number, cacheRead = 0) => input * 50_000 + cacheRead * 5_000
+
+type Usage = {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation?: Record<string, number>
+}
+
+/** claude stream-json carrying usage, exactly as the provider reports it. */
+const costStream = (
+  response: string,
+  model: string,
+  usage: Usage,
+  result: Record<string, unknown> = {},
+) =>
+  jsonl([
+    { type: 'system', subtype: 'init', session_id: 'sess-123' },
+    {
+      type: 'assistant',
+      message: { id: 'msg_01', model, content: [{ type: 'text', text: response }], usage },
+    },
+    // Claude Code repeats the same usage on every content block of the same
+    // API response: the parser must charge it once.
+    {
+      type: 'assistant',
+      message: { id: 'msg_01', model, content: [{ type: 'text', text: response }], usage },
+    },
+    { type: 'result', subtype: 'success', result: response, ...result },
+  ])
+
+const runWithUsage = (
+  model: string,
+  usage: Usage,
+  result: Record<string, unknown> = {},
+  response = 'done',
+) => ({
+  run: (options: AgentRunOptions) => {
+    const raw = costStream(response, model, usage, result)
+    options.onText?.(raw)
+    return Promise.resolve(raw)
+  },
+})
+
+const costEvents = (repo: string, id: string) =>
+  readTaskEvents(repo, id).filter((e) => e.type === 'cost')
+
+describe('costEvent — every cause reads as itself', () => {
+  /**
+   * Keyed by CAUSE, so this table is exhaustive at COMPILE time: the day a
+   * tenth degradation is added to CostDegradation, this object stops
+   * typechecking until it is described here too.
+   */
+  const CASES: Record<
+    CostDegradation['cause'],
+    { degradation: CostDegradation; name: string; says: string }
+  > = {
+    partner_platform: {
+      degradation: { cause: 'partner_platform', signal: 'CLAUDE_CODE_USE_BEDROCK' },
+      name: 'cost_partner_platform_unpriced',
+      says: 'partner-operated platform',
+    },
+    model_unpriced: {
+      degradation: { cause: 'model_unpriced', model: 'x' },
+      name: 'cost_model_unpriced',
+      says: 'no row in the fallback price table',
+    },
+    price_expired: {
+      degradation: { cause: 'price_expired', model: 'x', at: '2027-01-01' },
+      name: 'cost_price_expired',
+      says: 'rate windows do not cover this turn',
+    },
+    turn_undated: {
+      degradation: { cause: 'turn_undated', model: 'x', at: '' },
+      name: 'cost_turn_undated',
+      says: 'no readable start date',
+    },
+    counters_unusable: {
+      degradation: { cause: 'counters_unusable', model: 'x' },
+      name: 'cost_counters_unusable',
+      says: 'not usable token counts',
+    },
+    harness_amount_unusable: {
+      degradation: { cause: 'harness_amount_unusable', subtype: 'success' },
+      name: 'cost_harness_amount_unusable',
+      says: 'not a usable amount',
+    },
+    drift: {
+      degradation: { cause: 'drift', lowerBoundTicks: 2, harnessTicks: 1 },
+      name: 'cost_drift',
+      says: 'structurally cannot',
+    },
+    turn_unrepresentable: {
+      degradation: { cause: 'turn_unrepresentable', keptTicks: 9, droppedTicks: 4 },
+      name: 'cost_turn_unrepresentable',
+      says: 'UNDERSTATES',
+    },
+    total_unrepresentable: {
+      degradation: { cause: 'total_unrepresentable', turns: 3 },
+      name: 'cost_total_unrepresentable',
+      says: 'NOT an unpriced task',
+    },
+  }
+
+  test('each of the nine causes gets its own name, a neutral type and a true message', () => {
+    const entries = Object.entries(CASES)
+    expect(entries).toHaveLength(9)
+    const names = new Set<string>()
+    for (const [cause, { degradation, name, says }] of entries) {
+      // The table's key really is the cause it describes.
+      expect(degradation.cause).toBe(cause as CostDegradation['cause'])
+      const event = costEvent(degradation)
+      // Neutral vehicle, never 'error': a gap in the accounting is not a
+      // failure of the work.
+      expect(event.type).toBe('cost')
+      expect(event.data.name).toBe(name)
+      // The name is ADDED to a readable message, it never replaces it, and
+      // the message states the REAL cause.
+      expect(String(event.data.message)).toContain(says)
+      names.add(name)
+    }
+    // No two causes share a name: that is the whole point of naming them.
+    expect(names.size).toBe(entries.length)
+  })
+})
+
+describe('costRunEnv — what the meter is allowed to read', () => {
+  const HOST = {
+    PATH: '/usr/bin',
+    CLAUDE_CODE_USE_BEDROCK: '1',
+    ANTHROPIC_API_KEY: 'k',
+    SOME_OTHER_SECRET: 'nope',
+  }
+
+  test('on the host: the environment the agent itself gets', () => {
+    const env = costRunEnv(false, 'claude -p', HOST)
+    // agentEnv keeps CLAUDE_*/ANTHROPIC_* for claude, and drops the rest.
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe('1')
+    expect(env.SOME_OTHER_SECRET).toBeUndefined()
+  })
+
+  test('in the cage: ONLY the variables the cage actually forwards', () => {
+    const env = costRunEnv(true, 'claude -p', HOST)
+    // CAGE_FORWARDED_ENV carries neither of the partner switches, so the
+    // meter must not see one: an operator with CLAUDE_CODE_USE_BEDROCK
+    // exported for another tool would otherwise have every caged turn
+    // declared "partner platform" and stripped of its cost, while the agent
+    // inside the box was in fact billing first-party.
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined()
+    expect(CAGE_FORWARDED_ENV).not.toContain('CLAUDE_CODE_USE_BEDROCK')
+    expect(CAGE_FORWARDED_ENV).not.toContain('CLAUDE_CODE_USE_VERTEX')
+    // What IS forwarded comes through, so the set stays derived, not guessed.
+    expect(env.ANTHROPIC_API_KEY).toBe('k')
+    expect(env.SOME_OTHER_SECRET).toBeUndefined()
+  })
+
+  test('a custom command inherits everything, and so does the meter', () => {
+    expect(costRunEnv(false, 'my-agent --run', HOST).SOME_OTHER_SECRET).toBe('nope')
+  })
+})
+
+describe('turn cost', () => {
+  test('no result cost: the turn carries the input-and-cache LOWER BOUND', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'bounded', 'work')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: runWithUsage('claude-opus-5', {
+        input_tokens: 1_000,
+        output_tokens: 400,
+        cache_read_input_tokens: 20_000,
+      }).run,
+    })
+    expect(outcome.cost).toEqual({ ticks: OPUS5_BOUND(1_000, 20_000), basis: 'lower_bound' })
+    expect(Number.isSafeInteger(outcome.cost?.ticks)).toBe(true)
+    expect(events.some((e) => e.type === 'cost')).toBe(false)
+  })
+
+  test('a result frame with a cost supersedes the bound and declares "harness"', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'harnessed', 'work')
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: runWithUsage(
+        'claude-opus-5',
+        { input_tokens: 1_000, output_tokens: 400 },
+        {
+          total_cost_usd: 0.25,
+          modelUsage: { 'claude-opus-5': { costUSD: 0.25 } },
+        },
+      ).run,
+    })
+    // The harness figure covers output and subagents; the bound does not.
+    expect(outcome.cost).toEqual({ ticks: 2_500_000_000, basis: 'harness' })
+    expect(outcome.cost?.ticks).toBeGreaterThan(OPUS5_BOUND(1_000))
+  })
+
+  test('an unpriced model: no cost at all, plus a NEUTRAL named journal event', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'unpriced', 'work')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: runWithUsage('some-other-model-v3', {
+        input_tokens: 1_000,
+        output_tokens: 400,
+      }).run,
+    })
+    expect(outcome.cost).toBeNull()
+    const degraded = events.find((e) => e.data.name === 'cost_model_unpriced')
+    expect(degraded).toBeDefined()
+    // Neutral vehicle: a gap in the accounting is not an error of the work.
+    expect(degraded?.type).toBe('cost')
+    expect(degraded?.data.model).toBe('some-other-model-v3')
+    // The readable message is there too, and it says the REAL cause.
+    expect(String(degraded?.data.message)).toContain('some-other-model-v3')
+    expect(String(degraded?.data.message)).toContain('no row in the fallback price table')
+  })
+
+  test('a partner-platform run is left unpriced, harness figure included', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'bedrock', 'work')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: runWithUsage(
+        'us.anthropic.claude-opus-4-5-20251101-v1:0',
+        { input_tokens: 1_000, output_tokens: 400 },
+        { total_cost_usd: 0.25 },
+      ).run,
+    })
+    // Never a first-party figure on somebody else's invoice.
+    expect(outcome.cost).toBeNull()
+    const degraded = events.find((e) => e.data.name === 'cost_partner_platform_unpriced')
+    expect(degraded?.type).toBe('cost')
+    expect(String(degraded?.data.message)).toContain('partner-operated platform')
+  })
+
+  test('cost_drift: a bound above the harness figure is reported, never blocking', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'drifting', 'work')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: runWithUsage(
+        'claude-opus-5',
+        { input_tokens: 1_000_000 },
+        { total_cost_usd: 0.01 },
+      ).run,
+    })
+    const drift = events.find((e) => e.data.name === 'cost_drift')
+    expect(drift?.type).toBe('cost')
+    expect(drift?.data.lower_bound_ticks).toBe(OPUS5_BOUND(1_000_000))
+    expect(drift?.data.harness_ticks).toBe(100_000_000)
+    // Informative only: the turn still ends with the harness figure.
+    expect(outcome.cost).toEqual({ ticks: 100_000_000, basis: 'harness' })
+  })
+
+  test('the record total equals the sum of its turns, with coverage and basis', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'summed', 'first instruction')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) =>
+        options.prompt.includes('second instruction')
+          ? runWithUsage('claude-opus-5', { input_tokens: 2_000 }).run(options)
+          : runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run(options),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const afterFirst = loadTask(repo, task.id)
+    expect(afterFirst?.turns[0]?.cost_ticks).toBe(OPUS5_BOUND(1_000))
+    expect(afterFirst?.turns[0]?.cost_basis).toBe('lower_bound')
+    expect(afterFirst?.cost_ticks).toBe(OPUS5_BOUND(1_000))
+    expect(afterFirst?.cost_turns).toBe(1)
+    expect(afterFirst?.cost_basis).toBe('lower_bound')
+
+    expect(runner.reply(task.id, 'second instruction')).toEqual({ ok: true })
+    await until(() => (loadTask(repo, task.id)?.turns.length ?? 0) === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    const turns = record?.turns ?? []
+    expect(turns).toHaveLength(2)
+    expect(turns[1]?.cost_ticks).toBe(OPUS5_BOUND(2_000))
+    // The invariant itself: the record's total IS the sum of its turns.
+    const sum = turns.reduce((acc, turn) => acc + (turn.cost_ticks ?? 0), 0)
+    expect(record?.cost_ticks).toBe(sum)
+    expect(record?.cost_ticks).toBe(OPUS5_BOUND(3_000))
+    expect(record?.cost_turns).toBe(2)
+    expect(Number.isSafeInteger(record?.cost_ticks)).toBe(true)
+  })
+
+  test('one lower-bound turn makes the record total a lower bound', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'mixed', 'first instruction')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) =>
+        options.prompt.includes('second instruction')
+          ? // No harness figure on this one: it can only be bounded.
+            runWithUsage('claude-opus-5', { input_tokens: 2_000 }).run(options)
+          : runWithUsage('claude-opus-5', { input_tokens: 1_000 }, { total_cost_usd: 0.25 }).run(
+              options,
+            ),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(loadTask(repo, task.id)?.cost_basis).toBe('harness')
+
+    expect(runner.reply(task.id, 'second instruction')).toEqual({ ok: true })
+    await until(() => (loadTask(repo, task.id)?.turns.length ?? 0) === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record?.turns[0]?.cost_basis).toBe('harness')
+    expect(record?.turns[1]?.cost_basis).toBe('lower_bound')
+    // A sum is never more authoritative than its weakest term.
+    expect(record?.cost_basis).toBe('lower_bound')
+    expect(record?.cost_turns).toBe(2)
+  })
+
+  test('an INTERRUPTED turn keeps the cost it had already accrued', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'killed mid-flight', 'work')
+    const usage = { input_tokens: 1_000, cache_read_input_tokens: 20_000 }
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: (options) =>
+        new Promise((_resolve, reject) => {
+          // The agent streams its first response, then hangs until it is killed.
+          options.onText?.(
+            jsonl([
+              { type: 'system', subtype: 'init', session_id: 'sess-123' },
+              {
+                type: 'assistant',
+                message: { id: 'msg_01', model: 'claude-opus-5', content: [], usage },
+              },
+            ]),
+          )
+          options.signal?.addEventListener('abort', () => reject(new Error('agent interrupted')))
+        }),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'running')
+    await until(() => (loadTask(repo, task.id)?.status ?? '') === 'running')
+    expect(runner.interrupt(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    const record = loadTask(repo, task.id)
+    // The turn SPENT this before it was killed: dropping it would report a
+    // cut turn as free.
+    expect(record?.turns[0]?.cost_ticks).toBe(OPUS5_BOUND(1_000, 20_000))
+    expect(record?.turns[0]?.cost_basis).toBe('lower_bound')
+    expect(record?.cost_ticks).toBe(OPUS5_BOUND(1_000, 20_000))
+    expect(record?.cost_turns).toBe(1)
+  })
+
+  /**
+   * Interrupts a turn after it has streamed `usage`, then resumes it with a
+   * second stream. Returns the record once the resumed turn has settled.
+   */
+  const interruptThenResume = async (
+    repo: string,
+    task: TaskRecord,
+    first: Usage,
+    second: (options: AgentRunOptions) => Promise<string>,
+  ) => {
+    let attempt = 0
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: (options) => {
+        attempt++
+        if (attempt > 1) {
+          return second(options)
+        }
+        options.onText?.(
+          jsonl([
+            { type: 'system', subtype: 'init', session_id: 'sess-123' },
+            {
+              type: 'assistant',
+              message: { id: 'msg_01', model: 'claude-opus-5', content: [], usage: first },
+            },
+          ]),
+        )
+        return new Promise<string>((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('agent interrupted')))
+        })
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'running')
+    expect(runner.interrupt(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'interrupted')
+    const afterKill = loadTask(repo, task.id)?.turns[0]?.cost_ticks
+    expect(runner.resume(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    return { afterKill, record: loadTask(repo, task.id) }
+  }
+
+  test('resume: a second attempt that measured NOTHING keeps the first floor', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'resumed blind', 'work')
+    // The resumed attempt streams no usage at all: it cannot prove the turn
+    // was free, so what the killed attempt spent must survive.
+    const { afterKill, record } = await interruptThenResume(
+      repo,
+      task,
+      { input_tokens: 1_000, cache_read_input_tokens: 20_000 },
+      (options) => fakeClaude(() => 'done').run(options),
+    )
+    expect(afterKill).toBe(OPUS5_BOUND(1_000, 20_000))
+    // resume() re-ran the very same turn, in place.
+    expect(record?.turns).toHaveLength(1)
+    expect(record?.turns[0]?.cost_ticks).toBe(OPUS5_BOUND(1_000, 20_000))
+    expect(record?.turns[0]?.cost_basis).toBe('lower_bound')
+    expect(record?.cost_ticks).toBe(OPUS5_BOUND(1_000, 20_000))
+    expect(record?.cost_turns).toBe(1)
+  })
+
+  test('resume: a second floor ADDS to the first — the turn burned both', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'resumed bounded', 'work')
+    const { record } = await interruptThenResume(repo, task, { input_tokens: 1_000 }, (options) =>
+      runWithUsage('claude-opus-5', { input_tokens: 400 }).run(options),
+    )
+    expect(record?.turns).toHaveLength(1)
+    expect(record?.turns[0]?.cost_ticks).toBe(OPUS5_BOUND(1_400))
+    expect(record?.turns[0]?.cost_basis).toBe('lower_bound')
+    expect(record?.cost_ticks).toBe(OPUS5_BOUND(1_400))
+  })
+
+  test('resume: a harness figure ADDS to a floor, and the sum is a lower bound', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'resumed harnessed', 'work')
+    const { record } = await interruptThenResume(repo, task, { input_tokens: 1_000 }, (options) =>
+      runWithUsage('claude-opus-5', { input_tokens: 400 }, { total_cost_usd: 0.25 }).run(options),
+    )
+    // The killed attempt's floor plus the resumed attempt's harness estimate.
+    expect(record?.turns).toHaveLength(1)
+    expect(record?.turns[0]?.cost_ticks).toBe(OPUS5_BOUND(1_000) + 2_500_000_000)
+    // One term is a floor, so the whole turn is: a sum is never more
+    // authoritative than its weakest term.
+    expect(record?.turns[0]?.cost_basis).toBe('lower_bound')
+    expect(record?.cost_basis).toBe('lower_bound')
+  })
+
+  /** Drives a turn through the CAGE seam with a usage-bearing stream. */
+  const cagedTurn = async (
+    repo: string,
+    task: TaskRecord,
+    model: string,
+    events: { type: string; data: Record<string, unknown> }[],
+  ) =>
+    runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runContainerTurnFn: (options) => {
+        const raw = costStream('done', model, { input_tokens: 1_000 })
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+
+  test('IN THE CAGE: a host-only partner variable never strips the cost', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged first-party', 'work', 'container')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    // The operator has the switch exported in their shell for another tool.
+    // The cage does NOT forward it, so the agent inside bills first-party —
+    // and the meter must read the environment of the process that RUNS, not
+    // ours. Getting this wrong deletes T1.8's whole output for the task.
+    const previous = process.env.CLAUDE_CODE_USE_BEDROCK
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    try {
+      const outcome = await cagedTurn(repo, task, 'claude-opus-5', events)
+      expect(outcome.cost).toEqual({ ticks: OPUS5_BOUND(1_000), basis: 'lower_bound' })
+      expect(events.some((e) => e.data.name === 'cost_partner_platform_unpriced')).toBe(false)
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CLAUDE_CODE_USE_BEDROCK
+      } else {
+        process.env.CLAUDE_CODE_USE_BEDROCK = previous
+      }
+    }
+  })
+
+  test('IN THE CAGE: a partner-shaped model id still strips the cost', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged bedrock', 'work', 'container')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    // The signal that survives the box is the one that comes back ON the
+    // stream, and it is the one that catches a real Bedrock run.
+    const outcome = await cagedTurn(
+      repo,
+      task,
+      'us.anthropic.claude-opus-4-5-20251101-v1:0',
+      events,
+    )
+    expect(outcome.cost).toBeNull()
+    expect(events.some((e) => e.data.name === 'cost_partner_platform_unpriced')).toBe(true)
+  })
+
+  test('ON THE HOST: the partner variable is read, and strips the cost', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'host bedrock', 'work')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const previous = process.env.CLAUDE_CODE_USE_BEDROCK
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    try {
+      const outcome = await runTaskTurn({
+        cwd: repo,
+        task,
+        prompt: 'work',
+        command: 'claude -p',
+        timeoutMs: 1000,
+        onEvent: (e) => events.push(e),
+        runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run,
+      })
+      expect(outcome.cost).toBeNull()
+      const degraded = events.find((e) => e.data.name === 'cost_partner_platform_unpriced')
+      expect(degraded?.data.signal).toBe('CLAUDE_CODE_USE_BEDROCK')
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CLAUDE_CODE_USE_BEDROCK
+      } else {
+        process.env.CLAUDE_CODE_USE_BEDROCK = previous
+      }
+    }
+  })
+
+  test('a turn with no readable start date says THAT, not "model unpriced"', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'undated', 'work')
+    // A record whose turn lost its stamp: the model IS in the table, so
+    // blaming the model would send a maintainer to the wrong place.
+    const firstTurn = task.turns[0]
+    if (firstTurn) {
+      firstTurn.started_at = ''
+    }
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run,
+    })
+    expect(outcome.cost).toBeNull()
+    const degraded = events.find((e) => e.type === 'cost')
+    expect(degraded?.data.name).toBe('cost_turn_undated')
+    expect(String(degraded?.data.message)).toContain('no readable start date')
+    expect(events.some((e) => e.data.name === 'cost_model_unpriced')).toBe(false)
+  })
+
+  test('a turn with NO stamp at all prices nothing: there is no clock on this path', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'no turn to date', 'work')
+    // The last-resort fallback, where a clock reading would otherwise slip in
+    // and quietly bill the turn at today's rate. Empty is the honest answer.
+    task.turns = []
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run,
+    })
+    expect(outcome.cost).toBeNull()
+    expect(events.find((e) => e.type === 'cost')?.data.name).toBe('cost_turn_undated')
+  })
+
+  test('a complete result frame with a broken amount names its own cause', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'broken amount', 'work')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }, { total_cost_usd: -3 })
+        .run,
+    })
+    // The bound takes over, and the broken figure is not swallowed.
+    expect(outcome.cost).toEqual({ ticks: OPUS5_BOUND(1_000), basis: 'lower_bound' })
+    const degraded = events.find((e) => e.data.name === 'cost_harness_amount_unusable')
+    expect(degraded?.type).toBe('cost')
+    expect(degraded?.data.subtype).toBe('success')
+  })
+
+  test('a budget-cut result frame is read: its figures are complete', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'budget cut', 'work')
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: runWithUsage(
+        'claude-opus-5',
+        { input_tokens: 1_000 },
+        { subtype: 'error_max_budget_usd', is_error: true, total_cost_usd: 0.25 },
+      ).run,
+    })
+    expect(outcome.cost).toEqual({ ticks: 2_500_000_000, basis: 'harness' })
+  })
+
+  test('subagent frames are excluded from the floor, but not from the tokens', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'with subagents', 'work')
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'work',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: (options) => {
+        const raw = jsonl([
+          { type: 'system', subtype: 'init', session_id: 'sess-123' },
+          {
+            type: 'assistant',
+            message: {
+              id: 'msg_main',
+              model: 'claude-opus-5',
+              content: [],
+              usage: { input_tokens: 1_000, output_tokens: 10 },
+            },
+          },
+          {
+            type: 'assistant',
+            parent_tool_use_id: 'toolu_01',
+            message: {
+              id: 'msg_sub',
+              model: 'claude-opus-5',
+              content: [],
+              usage: { input_tokens: 500_000, output_tokens: 20 },
+            },
+          },
+          { type: 'result', subtype: 'success', result: 'done' },
+        ])
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    // The floor is the MAIN loop's input and cache only.
+    expect(outcome.cost).toEqual({ ticks: OPUS5_BOUND(1_000), basis: 'lower_bound' })
+    // The tokens still count the whole tree: those were burned by this turn.
+    expect(outcome.tokens).toBe(1_000 + 10 + 500_000 + 20)
+  })
+
+  test("an attempt's cost is folded AT MOST ONCE, whichever way the turn exits", async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'both exits', 'work')
+    // finishTurn folds the cost and THEN goes on to persist; a host callback
+    // that throws there sends the very same attempt into failTurn through the
+    // promise chain's .catch. Without the marker on the attempt, the same
+    // figure is folded twice — and since the fold is additive, the turn (and
+    // the record total derived from it) doubles.
+    let thrown = false
+    let broadcasts = 0
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run,
+      onTask: (broadcast) => {
+        broadcasts++
+        // Blow up on the FIRST broadcast that already carries the folded cost:
+        // that is finishTurn's own persist, after accrueCost has run.
+        if (!thrown && broadcast.cost_ticks !== undefined) {
+          thrown = true
+          throw new Error('broadcast blew up after the fold')
+        }
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'failed')
+
+    const record = loadTask(repo, task.id)
+    // Counted once, not twice.
+    expect(record?.turns[0]?.cost_ticks).toBe(OPUS5_BOUND(1_000))
+    expect(record?.cost_ticks).toBe(OPUS5_BOUND(1_000))
+    expect(record?.cost_turns).toBe(1)
+    // Both exit paths really did run for this one attempt.
+    expect(thrown).toBe(true)
+    expect(broadcasts).toBeGreaterThan(2)
+  })
+
+  test('a turn whose sum leaves the exact integer range keeps its figure and SAYS so', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'overflowing turn', 'work')
+    // A turn already carrying a figure at the top of the exact range: the new
+    // attempt's measure cannot be added to it. Nothing downstream can notice
+    // on its own — the turn still carries a usable figure, so the record total
+    // stays an ordinary total — which is why the event is the only signal.
+    const firstTurn = task.turns[0]
+    if (firstTurn) {
+      firstTurn.cost_ticks = Number.MAX_SAFE_INTEGER
+      firstTurn.cost_basis = 'harness'
+    }
+    saveTask(repo, task)
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const record = loadTask(repo, task.id)
+    expect(record?.turns[0]?.cost_ticks).toBe(Number.MAX_SAFE_INTEGER)
+    const said = costEvents(repo, task.id).find((e) => e.data.name === 'cost_turn_unrepresentable')
+    expect(said).toBeDefined()
+    expect(said?.data.kept_ticks).toBe(Number.MAX_SAFE_INTEGER)
+    expect(said?.data.dropped_ticks).toBe(OPUS5_BOUND(1_000))
+    expect(String(said?.data.message)).toContain('UNDERSTATES')
+  })
+
+  test('a record total that leaves the exact integer range is DROPPED and SAID', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'overflowing total', 'work')
+    const settled = (ticks: number): TaskTurn => ({
+      prompt: 'an earlier instruction',
+      response: 'done',
+      question: null,
+      started_at: '2026-08-19T09:00:00.000Z',
+      ended_at: '2026-08-19T09:01:00.000Z',
+      cost_ticks: ticks,
+      cost_basis: 'harness',
+    })
+    // Two settled turns whose figures cannot be summed exactly, plus the live
+    // one. The record also carries a STALE total, so its removal is visible:
+    // keeping it would state a figure that is no longer the sum of anything.
+    task.turns.unshift(settled(Number.MAX_SAFE_INTEGER), settled(Number.MAX_SAFE_INTEGER))
+    task.cost_ticks = 42
+    task.cost_turns = 2
+    task.cost_basis = 'harness'
+    // start() always reloads from disk, so the seeded record has to be there.
+    saveTask(repo, task)
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const record = loadTask(repo, task.id)
+    // The stale total is gone — all three keys, since they are one fact.
+    expect(record && 'cost_ticks' in record).toBe(false)
+    expect(record && 'cost_turns' in record).toBe(false)
+    expect(record && 'cost_basis' in record).toBe(false)
+    // The turns themselves are untouched: only the SUM is unstatable.
+    expect(record?.turns).toHaveLength(3)
+    expect(record?.turns[0]?.cost_ticks).toBe(Number.MAX_SAFE_INTEGER)
+    expect(record?.turns[2]?.cost_ticks).toBe(OPUS5_BOUND(1_000))
+    // And it does not look like an unpriced task: the cause is in the journal,
+    // with the coverage the sum would have had.
+    const said = costEvents(repo, task.id).find((e) => e.data.name === 'cost_total_unrepresentable')
+    expect(said).toBeDefined()
+    expect(said?.type).toBe('cost')
+    expect(said?.data.turns).toBe(3)
+    expect(String(said?.data.message)).toContain('NOT an unpriced task')
+  })
+
+  test('a task no turn of which could be priced keeps no total: unknown, not 0', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'unknown cost', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: runWithUsage('some-other-model-v3', {
+        input_tokens: 1_000,
+        output_tokens: 400,
+      }).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record && 'cost_ticks' in record).toBe(false)
+    expect(record && 'cost_turns' in record).toBe(false)
+    expect(record && 'cost_basis' in record).toBe(false)
+    expect(record?.turns[0] && 'cost_ticks' in record.turns[0]).toBe(false)
+    // But the tokens were still counted: only the PRICE is unknown.
+    expect(record?.turns[0]?.tokens).toBe(1_400)
+    // And the degradation reached the journal, on a neutral line.
+    expect(costEvents(repo, task.id).map((e) => e.data.name)).toEqual(['cost_model_unpriced'])
+  })
+
+  test('a stream with no usage at all leaves the task without a cost', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'no usage', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record && 'cost_ticks' in record).toBe(false)
+    expect(costEvents(repo, task.id)).toEqual([])
   })
 })

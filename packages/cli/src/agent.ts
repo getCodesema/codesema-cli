@@ -1,5 +1,13 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import type { ReasonCode } from './contract.js'
+import {
+  createCostMeter,
+  type CostCounters,
+  type CostDegradation,
+  type PriceRow,
+  type RunEnv,
+  type SettledCost,
+} from './cost.js'
 import { t } from './i18n.js'
 
 const CLAUDE_STREAM_JSON_FLAG = '--output-format stream-json'
@@ -288,6 +296,33 @@ export type ClaudeTaskParserHandlers = {
    * result event is authoritative when it carries usage.
    */
   onTokens?: (total: number) => void
+  /**
+   * BEST cost known for the turn so far (ticks, 1 tick = 1e-10 USD, plus its
+   * provenance), republished at every change and `null` when the figure it
+   * last published stops being true. A turn cut short therefore leaves the
+   * caller holding exactly what is still defensible, never a stale number.
+   */
+  onCost?: (cost: SettledCost | null) => void
+  /**
+   * Something the accounting could not do, named and explained. NEUTRAL: a
+   * cost that could not be established is a gap, not an error.
+   */
+  onCostDegraded?: (degradation: CostDegradation) => void
+}
+
+export type ClaudeTaskParserOptions = {
+  /**
+   * When the TURN started, ISO — the instant the price table is read at. Never
+   * "now": a turn is billed at the rate in force while it ran, and there is no
+   * clock anywhere on this path to substitute one. Absent (or unreadable)
+   * prices nothing and says so, which is exactly right for the callers that
+   * ask for no cost at all (the review parser).
+   */
+  at?: string
+  /** Environment the agent ran with, for partner-platform detection. */
+  env?: RunEnv
+  /** Test seam: the price table to use. */
+  prices?: readonly PriceRow[]
 }
 
 /**
@@ -296,18 +331,69 @@ export type ClaudeTaskParserHandlers = {
  * events are read from the complete `assistant`/`user` messages only, never
  * from partial stream_events, so each tool call is reported exactly once.
  */
-/** input+output of one usage payload; cache reads are billed input too but negligible for a live counter. */
-function usageTotal(usage: unknown): number | null {
+const num = (v: unknown): number => (typeof v === 'number' ? v : 0)
+
+/**
+ * True for a frame produced INSIDE a subagent: Claude Code stamps those with
+ * the id of the tool call that spawned them. The main loop's own frames carry
+ * no such field.
+ */
+function isSubagentFrame(event: Record<string, unknown>): boolean {
+  const parent = event.parent_tool_use_id
+  return typeof parent === 'string' && parent.length > 0
+}
+
+/**
+ * One usage payload, read as the four things it actually reports: base input,
+ * output, cache reads and cache writes split by TTL.
+ *
+ * `total` (input+output) is what the LLM token meter has always shown and
+ * stays exactly that. `counters` is what the fallback price table can bill —
+ * output is absent from it on purpose (per-frame `output_tokens` is a
+ * documented placeholder, see cost.ts).
+ *
+ * Cache writes come from `cache_creation.ephemeral_5m_input_tokens` /
+ * `ephemeral_1h_input_tokens`, which say WHICH rate applies. The flat
+ * `cache_creation_input_tokens` total is deliberately NOT used as a
+ * substitute: it does not name a TTL, and picking one would be guessing a
+ * price.
+ */
+function usageSplit(
+  usage: unknown,
+): { input: number; output: number; total: number; counters: CostCounters } | null {
   if (!usage || typeof usage !== 'object') {
     return null
   }
-  const u = usage as { input_tokens?: unknown; output_tokens?: unknown }
-  const input = typeof u.input_tokens === 'number' ? u.input_tokens : 0
-  const output = typeof u.output_tokens === 'number' ? u.output_tokens : 0
-  return input > 0 || output > 0 ? input + output : null
+  const u = usage as {
+    input_tokens?: unknown
+    output_tokens?: unknown
+    cache_read_input_tokens?: unknown
+    cache_creation?: unknown
+  }
+  const input = num(u.input_tokens)
+  const output = num(u.output_tokens)
+  const cacheRead = num(u.cache_read_input_tokens)
+  const creation = (u.cache_creation ?? {}) as {
+    ephemeral_5m_input_tokens?: unknown
+    ephemeral_1h_input_tokens?: unknown
+  }
+  const cacheWrite5m = num(creation.ephemeral_5m_input_tokens)
+  const cacheWrite1h = num(creation.ephemeral_1h_input_tokens)
+  if (input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite5m <= 0 && cacheWrite1h <= 0) {
+    return null
+  }
+  return {
+    input,
+    output,
+    total: input + output,
+    counters: { input, cacheRead, cacheWrite5m, cacheWrite1h },
+  }
 }
 
-export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): ClaudeStreamParser {
+export function createClaudeTaskParser(
+  handlers: ClaudeTaskParserHandlers,
+  options: ClaudeTaskParserOptions = {},
+): ClaudeStreamParser {
   const { onText } = handlers
   const summarize = (value: unknown): string => (handlers.countOnly ? '' : summarizePayload(value))
   let lineBuffer = ''
@@ -319,6 +405,27 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
   let lastText = ''
   let resultText: string | null = null
   let tokensSettled = 0
+  /**
+   * `message.id`s whose usage was already counted. Claude Code emits ONE
+   * assistant frame per content block and every one of them repeats the same
+   * usage for the same API response, so counting frames instead of responses
+   * inflates the total several-fold. A frame with no id cannot be
+   * deduplicated and is counted as it comes.
+   */
+  const countedResponses = new Set<string>()
+  // Cost bookkeeping lives in cost.ts: this parser reports frames, it does not
+  // decide what they are worth.
+  const cost = createCostMeter(
+    {
+      ...(handlers.onCost ? { onCost: handlers.onCost } : {}),
+      ...(handlers.onCostDegraded ? { onDegraded: handlers.onCostDegraded } : {}),
+    },
+    {
+      at: options.at ?? '',
+      env: options.env ?? {},
+      ...(options.prices ? { rows: options.prices } : {}),
+    },
+  )
 
   const handleAssistant = (event: Record<string, unknown>) => {
     const message = event.message as { content?: ClaudeContentBlock[] } | undefined
@@ -338,10 +445,38 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
         handlers.onToolUse?.(block.name, summarize(block.input ?? {}))
       }
     }
-    const usage = usageTotal((event.message as { usage?: unknown } | undefined)?.usage)
-    if (usage !== null) {
-      tokensSettled += usage
-      handlers.onTokens?.(tokensSettled)
+    const framed = event.message as { id?: unknown; usage?: unknown; model?: unknown } | undefined
+    const usage = usageSplit(framed?.usage)
+    const messageId = typeof framed?.id === 'string' && framed.id ? framed.id : null
+    // One API RESPONSE is one charge and one token count, however many frames
+    // carry it: the repeats of an already-counted id are dropped here, and the
+    // cost meter applies the same rule on its own side.
+    const fresh = messageId === null || !countedResponses.has(messageId)
+    if (usage !== null && fresh) {
+      if (messageId !== null) {
+        countedResponses.add(messageId)
+      }
+      if (usage.total > 0) {
+        // The TOKEN meter counts the whole tree, subagents included: those
+        // tokens were consumed by this turn, and `turn.tokens` has always
+        // meant "what this turn burned". Only the price of them is a separate
+        // question, answered just below.
+        tokensSettled += usage.total
+        handlers.onTokens?.(tokensSettled)
+      }
+      // A frame carrying `parent_tool_use_id` is a SUBAGENT's, not the main
+      // loop's — the official cost-tracking guide skips exactly these when
+      // summing per-step usage. Skipping them is what makes "subagents are
+      // excluded from the lower bound" true BY CONSTRUCTION rather than by
+      // hope; the harness's own estimate does include them, so the bound stays
+      // a bound either way.
+      if (!isSubagentFrame(event)) {
+        cost.response(
+          messageId,
+          typeof framed?.model === 'string' ? framed.model : '',
+          usage.counters,
+        )
+      }
     }
     // A complete assistant message CLOSES the current one: whatever streams
     // next is a new message (typically after the tool calls this one asked
@@ -349,6 +484,25 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
     // index — it can never open an empty bubble downstream.
     messageSeq++
     messageText = ''
+  }
+
+  /** The closing frame: the turn's reply, and the usage as the provider billed it. */
+  const handleResult = (event: Record<string, unknown>) => {
+    if (typeof event.result === 'string') {
+      resultText = event.result
+    }
+    // The harness's own cost estimate rides on this frame; it is the nominal
+    // figure because it is the only one covering output and subagents. The
+    // meter validates it (see CostMeter.result) — this parser just forwards.
+    cost.result(event)
+    const usage = usageSplit(event.usage)
+    if (usage === null) {
+      return
+    }
+    if (usage.total > tokensSettled) {
+      tokensSettled = usage.total
+      handlers.onTokens?.(tokensSettled)
+    }
   }
 
   const handleLine = (line: string) => {
@@ -400,15 +554,7 @@ export function createClaudeTaskParser(handlers: ClaudeTaskParserHandlers): Clau
       return
     }
     if (event.type === 'result') {
-      if (typeof event.result === 'string') {
-        resultText = event.result
-      }
-      // The result frame's usage is the whole turn as the provider billed it.
-      const usage = usageTotal(event.usage)
-      if (usage !== null && usage > tokensSettled) {
-        tokensSettled = usage
-        handlers.onTokens?.(tokensSettled)
-      }
+      handleResult(event)
     }
   }
 
