@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { AGENT_WATCHDOG_DEFAULTS, type WatchdogBudgets } from './agent.js'
 import { isSupportedLanguage, type SupportedLanguage } from './i18n.js'
 
 export type CodesemaConfig = {
@@ -15,6 +16,21 @@ export type CodesemaConfig = {
   timeout?: number | undefined
   /** Cap of concurrently running workspace tasks (default in task-runner.ts). */
   maxParallelTasks?: number | undefined
+  /**
+   * Semantic watchdog budgets (D3), in SECONDS like `timeout`. Absent means the
+   * D3 defaults apply (30 min of silence, 2 h of one tool in flight, a 30 s
+   * heartbeat) — see AGENT_WATCHDOG_DEFAULTS and resolveWatchdogBudgets.
+   *
+   * TODO(T1.4): these are read ONCE at boot, from the launch repo's effective
+   * config, and applied to every registered project. They are therefore a
+   * WORKSPACE-WIDE setting today, whichever file they sit in — a second
+   * project's `.codesema/config.json` is not consulted for them. Per-project
+   * resolution belongs to T1.4 (config resolved per project); until then the
+   * README documents them as global on purpose.
+   */
+  watchdogInactivitySeconds?: number | undefined
+  watchdogToolBudgetSeconds?: number | undefined
+  watchdogHeartbeatSeconds?: number | undefined
   /**
    * How workspace tasks are contained. 'auto' (default) runs them in a
    * per-task container when a container runtime is available and the agent
@@ -89,6 +105,10 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+    // A budget is a whole number of seconds, at least one: anything else is
+    // dropped so the D3 default applies, never a 0 that would kill on sight.
+    const secs = (v: unknown) =>
+      Number.isInteger(v) && (v as number) >= 1 ? (v as number) : undefined
     const allowedDomains = sanitizeAllowedDomains(raw.isolationAllowedDomains)
     return {
       ...(str(raw.agent) ? { agent: str(raw.agent) } : {}),
@@ -108,9 +128,25 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
         ? { syncAutoPush: raw.syncAutoPush }
         : {}),
       ...(Number.isInteger(raw.port) ? { port: raw.port as number } : {}),
-      ...(Number.isInteger(raw.timeout) ? { timeout: raw.timeout as number } : {}),
+      // Since T1.7 this is the run's LAST-RESORT ceiling and nothing else is
+      // watching the wall clock, so a 0 or a negative would mean "kill on
+      // sight": same guard as the watchdog budgets, the default applies.
+      ...(secs(raw.timeout) !== undefined ? { timeout: secs(raw.timeout) } : {}),
       ...(Number.isInteger(raw.maxParallelTasks) && (raw.maxParallelTasks as number) >= 1
         ? { maxParallelTasks: raw.maxParallelTasks as number }
+        : {}),
+      // Read from either scope, but resolved ONCE at boot for the whole
+      // workspace: see the TODO(T1.4) on CodesemaConfig. Whichever file holds
+      // them, they can only ever change when a run is cut — never what the run
+      // is allowed to reach.
+      ...(secs(raw.watchdogInactivitySeconds) !== undefined
+        ? { watchdogInactivitySeconds: secs(raw.watchdogInactivitySeconds) }
+        : {}),
+      ...(secs(raw.watchdogToolBudgetSeconds) !== undefined
+        ? { watchdogToolBudgetSeconds: secs(raw.watchdogToolBudgetSeconds) }
+        : {}),
+      ...(secs(raw.watchdogHeartbeatSeconds) !== undefined
+        ? { watchdogHeartbeatSeconds: secs(raw.watchdogHeartbeatSeconds) }
         : {}),
       // Repo-settable on purpose: like `checks`, the cage is a property of the
       // project (its devcontainer, the endpoints its agent needs), and a repo
@@ -172,6 +208,23 @@ export function loadConfig(repoRoot: string | null): CodesemaConfig {
   const global = loadGlobalConfig()
   const repo = repoRoot ? loadRepoConfig(repoRoot) : {}
   return { ...global, ...repo }
+}
+
+/**
+ * The three watchdog budgets in force, in milliseconds: what the config says
+ * where it says something usable, D3's defaults everywhere else. parseConfig
+ * already dropped anything that was not a positive whole number of seconds, so
+ * a hand-mangled config degrades to the defaults instead of to a run that dies
+ * instantly.
+ */
+export function resolveWatchdogBudgets(config: CodesemaConfig): WatchdogBudgets {
+  const ms = (seconds: number | undefined, fallback: number): number =>
+    seconds !== undefined ? seconds * 1000 : fallback
+  return {
+    inactivityMs: ms(config.watchdogInactivitySeconds, AGENT_WATCHDOG_DEFAULTS.inactivityMs),
+    toolBudgetMs: ms(config.watchdogToolBudgetSeconds, AGENT_WATCHDOG_DEFAULTS.toolBudgetMs),
+    heartbeatMs: ms(config.watchdogHeartbeatSeconds, AGENT_WATCHDOG_DEFAULTS.heartbeatMs),
+  }
 }
 
 // Trust store (TOFU) for repo-provided agent commands. Kept in the GLOBAL config,

@@ -507,7 +507,7 @@ export function createChecksSetupRunner(opts: CreateChecksSetupRunnerOptions): C
             command: hardenedReviewCommand(command),
             prompt,
             cwd: project.path,
-            timeoutMs,
+            absoluteCapMs: timeoutMs,
             ...(env !== undefined ? { env } : {}),
           })
           const proposal = sanitizeChecksProposal(extractProposalJson(raw))

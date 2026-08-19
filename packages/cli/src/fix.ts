@@ -173,7 +173,7 @@ export function createFixRunner(opts: {
         command: fixCommandFor(opts.command),
         prompt: buildAgentFixPrompt(record, selected),
         cwd: opts.cwd,
-        timeoutMs: opts.timeoutMs,
+        absoluteCapMs: opts.timeoutMs,
       })
         .then((out) => {
           summary = out.trim().slice(0, MAX_SUMMARY_CHARS)

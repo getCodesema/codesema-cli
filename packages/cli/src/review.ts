@@ -441,7 +441,7 @@ export async function runSimpleFlow(opts: {
         env: agentEnv(opts.agentCommand),
         prompt: opts.prompt,
         cwd: opts.input.repo_root,
-        timeoutMs: opts.timeoutMs,
+        absoluteCapMs: opts.timeoutMs,
         onText: (text) => {
           const partial = forwardPartial(text)
           if (!partial) {
@@ -523,7 +523,7 @@ export async function runDualFlow(opts: {
         env,
         prompt,
         cwd: input.repo_root,
-        timeoutMs,
+        absoluteCapMs: timeoutMs,
         onText: (text) => {
           const partial = forward(text)
           if (!partial) {
@@ -613,7 +613,7 @@ export async function runDualFlow(opts: {
             closing,
           ].join('\n\n'),
           cwd: input.repo_root,
-          timeoutMs,
+          absoluteCapMs: timeoutMs,
           onText: (text) => {
             const now = Date.now()
             if (now - lastJudgeParse < PARTIAL_PARSE_INTERVAL_MS) {

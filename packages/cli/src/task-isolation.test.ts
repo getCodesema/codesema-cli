@@ -1,8 +1,17 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync, type ChildProcess } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  AGENT_KILL_GRACE_MS,
+  AGENT_SETTLE_GRACE_MS,
+  agentReasonCode,
+  AgentWatchdogError,
+  type AgentClock,
+  type AgentHeartbeat,
+  type WatchdogBudgets,
+} from './agent.js'
 import {
   CAGE_GIT_COMMON_DIR,
   containerGitStateDir,
@@ -21,6 +30,7 @@ import {
   buildSquidConfig,
   BUN_CLAUDE_INSTALL_COMMAND,
   CAGE_FORWARDED_ENV,
+  CONTAINER_KILL_GRACE_MS,
   containerRunArgs,
   containerTaskCommandFor,
   DEFAULT_BASE_IMAGE,
@@ -38,6 +48,7 @@ import {
   resolveTaskIsolation,
   runContainerTurn,
   runtimeIsPodman,
+  spawnContainer,
   teardownEgressProxy,
   type BaseImage,
   type ContainerSpawnOptions,
@@ -1175,6 +1186,32 @@ describe('runContainerTurn', () => {
     expect(run?.args.slice(-3)).toEqual(['sh', '-lc', 'claude -p --dangerously-skip-permissions'])
   })
 
+  test('the cage turn is handed the watchdog budgets, its beat and the agent command', async () => {
+    const { exec, spawned, spawnFn } = rig()
+    const beats: AgentHeartbeat[] = []
+    const budgets = { inactivityMs: 60_000, toolBudgetMs: 120_000, heartbeatMs: 5_000 }
+    await runContainerTurn({
+      taskId,
+      worktree: makeDir(),
+      command: 'claude -p --output-format stream-json',
+      prompt: 'p',
+      timeoutMs: 1000,
+      watchdog: budgets,
+      onHeartbeat: (beat) => beats.push(beat),
+      runtime: 'docker',
+      claudeVersion: '2.1.233',
+      execFn: exec,
+      spawnFn,
+      env: {},
+    })
+    const run = spawned[0]
+    expect(run?.watchdog).toEqual(budgets)
+    expect(run?.onHeartbeat).toBeDefined()
+    // The AGENT command, not the runtime argv: it is what says whether the
+    // stdout coming back can be decoded into tool signals.
+    expect(run?.command).toBe('claude -p --output-format stream-json')
+  })
+
   test('a devcontainer in the worktree decides the base image of the cage', async () => {
     const { calls, exec, spawnFn } = rig()
     const worktree = makeDir()
@@ -1401,5 +1438,252 @@ describe('the default allowlist', () => {
     const config = buildSquidConfig(DEFAULT_ISOLATION_ALLOWED_DOMAINS)
     expect(config).not.toContain('registry.npmjs.org')
     expect(config).not.toContain('github.com')
+  })
+})
+
+// --- the caged turn is watched like the host one (T1.7) --------------------
+
+describe('spawnContainer semantic watchdog', () => {
+  const CAGED_COMMAND =
+    'claude -p --dangerously-skip-permissions --output-format stream-json --include-partial-messages --verbose'
+
+  const BUDGETS: WatchdogBudgets = {
+    inactivityMs: 30 * 60_000,
+    toolBudgetMs: 120 * 60_000,
+    heartbeatMs: 30_000,
+  }
+
+  /** Virtual time: no test waits out a budget counted in hours. */
+  function fakeClock(): AgentClock & { advance: (ms: number) => void } {
+    let now = 1_000_000
+    let nextId = 1
+    const timers = new Map<number, { due: number; fn: () => void }>()
+    return {
+      now: () => now,
+      setTimer(fn, ms) {
+        const id = nextId++
+        timers.set(id, { due: now + ms, fn })
+        return () => timers.delete(id)
+      },
+      advance(ms) {
+        const target = now + ms
+        for (;;) {
+          let pick: [number, { due: number; fn: () => void }] | null = null
+          for (const entry of timers) {
+            if (entry[1].due <= target && (pick === null || entry[1].due < pick[1].due)) {
+              pick = entry
+            }
+          }
+          if (pick === null) {
+            break
+          }
+          timers.delete(pick[0])
+          now = pick[1].due
+          pick[1].fn()
+        }
+        now = target
+      },
+    }
+  }
+
+  type FakeClient = {
+    child: ChildProcess
+    ops: string[]
+    stdout: (chunk: string) => void
+    close: (code: number | null) => void
+  }
+
+  function fakeClient(ops: string[]): FakeClient {
+    const stdoutListeners: ((d: Buffer) => void)[] = []
+    const closeListeners: ((code: number | null) => void)[] = []
+    let stdinEnded = false
+    const child = {
+      pid: 999,
+      stdin: {
+        on: () => child.stdin,
+        write: () => true,
+        end: () => {
+          ops.push(stdinEnded ? 'stdin:end(noop)' : 'stdin:end')
+          stdinEnded = true
+        },
+      },
+      stdout: {
+        on(event: string, listener: (d: Buffer) => void) {
+          if (event === 'data') {
+            stdoutListeners.push(listener)
+          }
+          return child.stdout
+        },
+        destroy: () => ops.push('stdout:destroy'),
+      },
+      on(event: string, listener: (arg: never) => void) {
+        if (event === 'close') {
+          closeListeners.push(listener as (code: number | null) => void)
+        }
+        return child
+      },
+      kill: (signal?: NodeJS.Signals) => {
+        ops.push(`client.kill:${signal}`)
+        return true
+      },
+    }
+    return {
+      child: child as unknown as ChildProcess,
+      ops,
+      stdout: (chunk) => {
+        for (const listener of stdoutListeners) {
+          listener(Buffer.from(chunk))
+        }
+      },
+      close: (code) => {
+        for (const listener of closeListeners) {
+          listener(code)
+        }
+      },
+    }
+  }
+
+  function startCagedRun(over: { command?: string; timeoutMs?: number } = {}) {
+    const ops: string[] = []
+    const client = fakeClient(ops)
+    const clock = fakeClock()
+    const beats: AgentHeartbeat[] = []
+    const promise = spawnContainer({
+      file: 'docker',
+      args: ['run', '--rm', '-i'],
+      command: over.command ?? CAGED_COMMAND,
+      input: 'do the thing',
+      timeoutMs: over.timeoutMs ?? 10 * 60 * 60_000,
+      watchdog: BUDGETS,
+      clock,
+      onHeartbeat: (beat) => beats.push(beat),
+      onKill: () => ops.push('container:kill'),
+      spawnProcessFn: () => client.child,
+    })
+    return { ops, client, clock, beats, promise }
+  }
+
+  const frame = (event: unknown) => `${JSON.stringify(event)}\n`
+
+  test('a mute caged agent is cut with inactivity_timeout', async () => {
+    const rig = startCagedRun()
+    rig.clock.advance(30 * 60_000)
+    // The container is what holds the agent: it is killed by NAME first, and
+    // the client's stdin (already closed at start) is the no-op first step.
+    expect(rig.ops).toEqual(['stdin:end', 'stdin:end(noop)', 'container:kill'])
+    rig.clock.advance(CONTAINER_KILL_GRACE_MS + AGENT_KILL_GRACE_MS)
+    rig.client.close(null)
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AgentWatchdogError)
+    expect(agentReasonCode(err)).toBe('inactivity_timeout')
+  })
+
+  test('the escalation is ordered: stdin, the container, the client, then stdout', async () => {
+    const rig = startCagedRun()
+    rig.clock.advance(30 * 60_000)
+    expect(rig.ops.slice(1)).toEqual(['stdin:end(noop)', 'container:kill'])
+    // Bounded wait, then the client — never before the box, which would orphan it.
+    rig.clock.advance(CONTAINER_KILL_GRACE_MS)
+    expect(rig.ops.slice(1)).toEqual(['stdin:end(noop)', 'container:kill', 'client.kill:SIGTERM'])
+    // Bounded wait, then SIGKILL, and stdout LAST so the agent's final words survive.
+    rig.clock.advance(AGENT_KILL_GRACE_MS)
+    expect(rig.ops.slice(1)).toEqual([
+      'stdin:end(noop)',
+      'container:kill',
+      'client.kill:SIGTERM',
+      'client.kill:SIGKILL',
+      'stdout:destroy',
+    ])
+    rig.client.close(null)
+    await expect(rig.promise).rejects.toBeInstanceOf(AgentWatchdogError)
+  })
+
+  test('a client that never closes still settles, with the watchdog cause', async () => {
+    const rig = startCagedRun()
+    rig.clock.advance(
+      30 * 60_000 + CONTAINER_KILL_GRACE_MS + AGENT_KILL_GRACE_MS + AGENT_SETTLE_GRACE_MS,
+    )
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AgentWatchdogError)
+  })
+
+  test('a tool in flight inside the box suspends inactivity, its own budget cuts', async () => {
+    const rig = startCagedRun()
+    rig.client.stdout(
+      frame({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'bun test' } }] },
+      }),
+    )
+    // 100 min inside one tool: far past inactivity, under the tool budget.
+    rig.clock.advance(100 * 60_000)
+    expect(rig.ops).not.toContain('container:kill')
+    rig.clock.advance(
+      25 * 60_000 + CONTAINER_KILL_GRACE_MS + AGENT_KILL_GRACE_MS + AGENT_SETTLE_GRACE_MS,
+    )
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect((err as AgentWatchdogError).watchdogCause).toBe('tool_budget')
+  })
+
+  test('a caged agent that keeps talking is never cut', async () => {
+    const rig = startCagedRun()
+    for (let i = 0; i < 8; i++) {
+      rig.clock.advance(25 * 60_000)
+      rig.client.stdout(frame({ type: 'stream_event', event: { type: 'ping' } }))
+    }
+    expect(rig.ops).not.toContain('container:kill')
+    rig.client.close(0)
+    await expect(rig.promise).resolves.toContain('stream_event')
+  })
+
+  test('the beat comes from the cage too, so a long caged task is not a dead one', async () => {
+    const rig = startCagedRun()
+    rig.clock.advance(90_000)
+    expect(rig.beats).toHaveLength(3)
+    expect(rig.beats[2]?.idleMs).toBe(90_000)
+    rig.client.close(0)
+    await expect(rig.promise).resolves.toBe('')
+  })
+
+  test('the absolute ceiling stays armed and distinct from a watchdog cut', async () => {
+    const rig = startCagedRun({ timeoutMs: 10 * 60_000 })
+    for (let i = 0; i < 2; i++) {
+      rig.clock.advance(5 * 60_000)
+      rig.client.stdout(frame({ type: 'stream_event', event: { type: 'ping' } }))
+    }
+    rig.clock.advance(CONTAINER_KILL_GRACE_MS + AGENT_KILL_GRACE_MS)
+    rig.client.close(null)
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect(err).not.toBeInstanceOf(AgentWatchdogError)
+    expect(agentReasonCode(err)).toBeNull()
+    expect((err as Error).message).toMatch(/600s/)
+  })
+
+  test('an exit code and an interrupt stay their own rejections', async () => {
+    const failing = startCagedRun()
+    failing.client.close(3)
+    const exitErr = await failing.promise.catch((e: unknown) => e)
+    expect((exitErr as Error).message).toMatch(/3/)
+
+    const controller = new AbortController()
+    const ops: string[] = []
+    const client = fakeClient(ops)
+    const promise = spawnContainer({
+      file: 'docker',
+      args: ['run'],
+      command: CAGED_COMMAND,
+      input: 'p',
+      timeoutMs: 60_000,
+      clock: fakeClock(),
+      signal: controller.signal,
+      onKill: () => ops.push('container:kill'),
+      spawnProcessFn: () => client.child,
+    })
+    controller.abort()
+    expect(ops).toContain('container:kill')
+    client.close(null)
+    const err = await promise.catch((e: unknown) => e)
+    expect(agentReasonCode(err)).toBeNull()
+    expect((err as Error).message).toMatch(/interrupted|interrompu/)
   })
 })

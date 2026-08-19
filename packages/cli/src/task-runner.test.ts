@@ -1,10 +1,20 @@
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, type ChildProcess } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
-import type { AgentRunOptions } from './agent.js'
+import {
+  AGENT_KILL_GRACE_MS,
+  AGENT_WATCHDOG_DEFAULTS,
+  AgentWatchdogError,
+  effectiveAbsoluteCapMs,
+  runAgent,
+  type AgentClock,
+  type AgentRunOptions,
+} from './agent.js'
+import { loadConfig, resolveWatchdogBudgets } from './config.js'
 import type { TaskEvent, TaskRecord, TaskStatus } from './contract.js'
+import { DEFAULT_TIMEOUT_S } from './fix.js'
 import { tryGit } from './git.js'
 import { setLanguage } from './i18n.js'
 import type { RunContainerTurnOptions } from './task-isolation.js'
@@ -612,6 +622,129 @@ describe('createTaskRunner', () => {
     await until(() => status(repo, task.id) === 'failed')
     const error = readTaskEvents(repo, task.id).find((e) => e.type === 'error')
     expect(error?.data.message).toBe('agent exploded')
+    // A failure that names nothing claims no code: the codes are ADDED where
+    // there is one to add, never invented to fill the field.
+    expect(error?.reason_code).toBeUndefined()
+    expect(loadTask(repo, task.id)?.reason).toBeUndefined()
+  })
+
+  test('a watchdog kill is RESUMABLE, names inactivity_timeout, and keeps the worktree', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'stuck', 'work')
+    let stuck = true
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        if (stuck) {
+          return Promise.reject(
+            new AgentWatchdogError('inactivity', 'agent said nothing for 30 min'),
+          )
+        }
+        const raw = claudeStream('picked it back up')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    // 'interrupted', never 'failed': inactivity_timeout is retryable in D2 —
+    // what has to change is the run, not the work — and 'failed' is terminal.
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    const record = loadTask(repo, task.id)
+    // The readable message stays exactly what the producer wrote; the code
+    // rides beside it, on the record and on the journal line alike.
+    expect(record?.reason?.code).toBe('inactivity_timeout')
+    expect(record?.reason?.detail).toBe('agent said nothing for 30 min')
+    const event = readTaskEvents(repo, task.id).find((e) => e.type === 'interrupted')
+    expect(event?.reason_code).toBe('inactivity_timeout')
+    // Distinct from a human Stop, which says 'agent interrupted' and claims
+    // interrupted_by_user.
+    expect(event?.data.message).toBe('agent said nothing for 30 min')
+    // T1.6: the branch and whatever the agent wrote before it died are the
+    // only account of the cut — a watchdog that tidied up would erase it.
+    expect(record?.worktree).not.toBe('')
+    expect(existsSync(record?.worktree ?? '')).toBe(true)
+
+    // And the turn can actually be picked back up, work intact.
+    stuck = false
+    expect(runner.resume(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const resumed = loadTask(repo, task.id)
+    expect(resumed?.turns).toHaveLength(1)
+    expect(resumed?.turns[0]?.response).toBe('picked it back up')
+    // Moving again drops the reason it was carrying: a stale claim is a lie.
+    expect(resumed?.reason).toBeUndefined()
+  })
+
+  test('a Stop landing on a run the watchdog already cut keeps the watchdog cause', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'cut then stopped', 'work')
+    let stop: () => void = () => {}
+    let armed = false
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: () =>
+        new Promise((_resolve, reject) => {
+          // The agent is already being killed by the watchdog when the human
+          // hits Stop: they are REACTING to a task that stopped answering.
+          stop = () => reject(new AgentWatchdogError('inactivity', 'agent said nothing'))
+          armed = true
+        }),
+    })
+    runner.start(task)
+    await until(() => armed)
+    runner.interrupt(task.id)
+    stop()
+    await until(() => loadTask(repo, task.id)?.reason !== undefined)
+    const record = loadTask(repo, task.id)
+    expect(record?.status).toBe('interrupted')
+    // Both paths land on 'interrupted', so only the CODE tells them apart —
+    // and it must name what actually happened.
+    expect(record?.reason?.code).toBe('inactivity_timeout')
+    const event = readTaskEvents(repo, task.id).find((e) => e.type === 'interrupted')
+    expect(event?.reason_code).toBe('inactivity_timeout')
+  })
+
+  test('a tool-budget kill names the same code as a silent one', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'stuck tool', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: () =>
+        Promise.reject(new AgentWatchdogError('tool_budget', 'tool never came back')),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'interrupted')
+    // Two budgets, one code: from the outside the run died of silence.
+    expect(loadTask(repo, task.id)?.reason?.code).toBe('inactivity_timeout')
+    expect(loadTask(repo, task.id)?.reason?.detail).toBe('tool never came back')
+  })
+
+  test('the runner hands its watchdog budgets down to the agent run', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'budgets', 'work')
+    const seen: (AgentRunOptions['watchdog'] | undefined)[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      watchdog: { inactivityMs: 60_000, toolBudgetMs: 120_000, heartbeatMs: 5_000 },
+      runAgentFn: (options) => {
+        seen.push(options.watchdog)
+        const raw = claudeStream('done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(seen[0]).toEqual({ inactivityMs: 60_000, toolBudgetMs: 120_000, heartbeatMs: 5_000 })
   })
 
   test('maxParallel caps concurrency: extra tasks queue FIFO and run later', async () => {
@@ -1000,7 +1133,11 @@ describe('container isolation branch', () => {
     expect(call?.taskId).toBe(task.id)
     expect(call?.worktree).toBe(repo)
     expect(call?.prompt).toBe('do it')
-    expect(call?.timeoutMs).toBe(1234)
+    // The cage is the DEFAULT path wherever a runtime exists, so it gets the
+    // same watchdog as the host path — and the same raised ceiling, since a
+    // 1 234 ms one would cancel the watchdog before it ever ticked.
+    expect(call?.timeoutMs).toBe(effectiveAbsoluteCapMs(1234, AGENT_WATCHDOG_DEFAULTS))
+    expect(call?.watchdog).toEqual(AGENT_WATCHDOG_DEFAULTS)
     expect(call?.allowedDomains).toEqual(['api.anthropic.com', 'registry.npmjs.org'])
     expect(call?.checksConfig?.image).toBe('oven/bun:1')
   })
@@ -1093,5 +1230,193 @@ describe('container isolation branch', () => {
     const last = readTaskEvents(repo, task.id).at(-1)
     expect(last?.type).toBe('interrupted')
     expect(last?.data.reason).toBe('shutdown')
+  })
+})
+
+// --- T1.7: the DEFAULT configuration, end to end ---------------------------
+
+describe('watchdog on the default configuration', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+  })
+
+  /** Virtual time: the D3 budgets are counted in hours, no test may wait one. */
+  function fakeClock(): AgentClock & { advance: (ms: number) => void } {
+    let now = 1_000_000
+    let nextId = 1
+    const timers = new Map<number, { due: number; fn: () => void }>()
+    return {
+      now: () => now,
+      setTimer(fn, ms) {
+        const id = nextId++
+        timers.set(id, { due: now + ms, fn })
+        return () => timers.delete(id)
+      },
+      advance(ms) {
+        const target = now + ms
+        for (;;) {
+          let pick: [number, { due: number; fn: () => void }] | null = null
+          for (const entry of timers) {
+            if (entry[1].due <= target && (pick === null || entry[1].due < pick[1].due)) {
+              pick = entry
+            }
+          }
+          if (pick === null) {
+            break
+          }
+          timers.delete(pick[0])
+          now = pick[1].due
+          pick[1].fn()
+        }
+        now = target
+      },
+    }
+  }
+
+  function fakeChild(): {
+    child: ChildProcess
+    ops: string[]
+    close: (code: number | null) => void
+  } {
+    const ops: string[] = []
+    const closeListeners: ((code: number | null) => void)[] = []
+    const child = {
+      pid: 777,
+      stdin: { on: () => child.stdin, write: () => true, end: () => ops.push('stdin:end') },
+      stdout: { on: () => child.stdout, destroy: () => ops.push('stdout:destroy') },
+      on(event: string, listener: (arg: never) => void) {
+        if (event === 'close') {
+          closeListeners.push(listener as (code: number | null) => void)
+        }
+        return child
+      },
+      kill: (signal?: NodeJS.Signals) => {
+        ops.push(`child.kill:${signal}`)
+        return true
+      },
+    }
+    return {
+      child: child as unknown as ChildProcess,
+      ops,
+      close: (code) => {
+        for (const listener of closeListeners) {
+          listener(code)
+        }
+      },
+    }
+  }
+
+  test('a mute agent is cut at 30 min with inactivity_timeout, never by the ceiling', async () => {
+    // The exact chain the workspace composes at boot (workspace.ts): no config
+    // anywhere, so `timeout` falls back to DEFAULT_TIMEOUT_S (900 s) and the
+    // budgets to D3 (1 800 s / 7 200 s). Before T1.7's effective ceiling, that
+    // 900 s ceiling fired first and the watchdog could never tick once: a live
+    // task still died at 15 min, and a dead one still went unnamed.
+    const configDir = mkdtempSync(join(tmpdir(), 'codesema-wd-e2e-'))
+    cleanups.push(configDir)
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    const config = loadConfig(null)
+    const timeoutMs = (config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
+    const watchdog = resolveWatchdogBudgets(config)
+    expect(timeoutMs).toBe(900_000)
+    expect(watchdog).toEqual(AGENT_WATCHDOG_DEFAULTS)
+
+    const repo = makeRepo()
+    const task = makeTask(repo, 'mute agent', 'work')
+    const clock = fakeClock()
+    const fake = fakeChild()
+    let started = false
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs,
+      watchdog,
+      // The REAL runAgent, with only the process and the clock injected: the
+      // runner composes absoluteCapMs and the budgets exactly as in production.
+      runAgentFn: (options) => {
+        started = true
+        return runAgent({
+          ...options,
+          clock,
+          spawnFn: () => fake.child,
+          killFn: (pid, signal) => fake.ops.push(`kill:${pid}:${signal}`),
+        })
+      },
+    })
+    runner.start(task)
+    await until(() => started)
+
+    // 15 min: what used to kill this task. Nothing happens.
+    clock.advance(15 * 60_000 + 1000)
+    expect(fake.ops.filter((op) => op.includes('SIGTERM'))).toEqual([])
+    // 30 min of silence: the watchdog, and only the watchdog, cuts it.
+    clock.advance(15 * 60_000)
+    expect(fake.ops.filter((op) => op.includes('SIGTERM'))).toHaveLength(1)
+    clock.advance(AGENT_KILL_GRACE_MS)
+    fake.close(null)
+
+    await until(() => status(repo, task.id) === 'interrupted')
+    const record = loadTask(repo, task.id)
+    expect(record?.reason?.code).toBe('inactivity_timeout')
+    // Named by the watchdog, never by the ceiling: no `agent.timeout` wording.
+    expect(record?.reason?.detail).not.toContain('900')
+    expect(existsSync(record?.worktree ?? '')).toBe(true)
+  })
+})
+
+describe('heartbeat reaches the record', () => {
+  test('a long tool keeps beating on heartbeat_at, without moving updated_at', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'long tool', 'run the suite')
+    const beats: TaskRecord[] = []
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onTask: (record) => beats.push(structuredClone(record)),
+      runAgentFn: async (options) => {
+        // The agent is deep inside a tool: nothing streams, and only a beat
+        // can tell this apart from a crash.
+        options.onHeartbeat?.({ at: 1000, idleMs: 30_000, inFlightTools: 1 })
+        options.onHeartbeat?.({ at: 2000, idleMs: 60_000, inFlightTools: 1 })
+        await gate
+        const raw = claudeStream('suite green')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    runner.start(task)
+    await until(() => (loadTask(repo, task.id)?.heartbeat_at ?? null) !== null)
+
+    const running = loadTask(repo, task.id)
+    expect(running?.status).toBe('running')
+    expect(typeof running?.heartbeat_at).toBe('string')
+    // A beat says the agent is alive, not that anything happened: the activity
+    // sort must not be reordered by a task that is merely breathing.
+    const beatFrames = beats.filter((r) => r.heartbeat_at !== undefined)
+    expect(beatFrames.length).toBeGreaterThanOrEqual(1)
+    const stamps = new Set(beats.map((r) => r.updated_at))
+    expect(stamps.size).toBe(1)
+
+    release()
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    // The beat survives on disk and stays readable after the turn.
+    expect(loadTask(repo, task.id)?.heartbeat_at).toBe(running?.heartbeat_at)
+  })
+
+  test('a record with no beat claims none — absence is never "dead"', () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'fresh', 'work')
+    expect(loadTask(repo, task.id)?.heartbeat_at).toBeUndefined()
   })
 })

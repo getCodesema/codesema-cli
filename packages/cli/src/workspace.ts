@@ -14,7 +14,7 @@
 // racing this one's registry and task stores.
 
 import { knownAgent } from './agent.js'
-import { isRepoAgentTrusted, loadConfig, loadRepoConfig } from './config.js'
+import { isRepoAgentTrusted, loadConfig, loadRepoConfig, resolveWatchdogBudgets } from './config.js'
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
 import { tryGit } from './git.js'
 import { t, uiLocale } from './i18n.js'
@@ -199,6 +199,10 @@ export async function workspace(opts: {
     taskManager = createTaskManager({
       command: agentCommand,
       timeoutMs,
+      // What actually decides a task is dead (D3): silence with no tool out,
+      // or one tool that never comes back. `timeoutMs` above is only the last
+      // resort under it.
+      watchdog: resolveWatchdogBudgets(config),
       isolation: probe,
       allowedDomains,
       ...(config.maxParallelTasks !== undefined ? { maxParallel: config.maxParallelTasks } : {}),

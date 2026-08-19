@@ -117,14 +117,23 @@ CLI flags always win over both. `target`, `port`, `timeout` and `language` can a
 
 ### Workspace keys
 
-| Key                       | File           | Effect                                                                                                                                                                             |
-| ------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxParallelTasks`        | global or repo | Tasks running at once, **across all projects** (default `3`); the rest queue FIFO. Bounds tasks, not machine load: end-of-turn review agents and checks containers run outside it. |
-| `isolation`               | global or repo | `auto` (default), `container` (required, a task refuses to start without it) or `policy` (always run on the host).                                                                 |
-| `isolationAllowedDomains` | global or repo | Domains the caged agent may reach (default `api.anthropic.com`, `platform.claude.com`); max 32, plain hostnames only.                                                              |
-| `checks`                  | repo only      | `{ image, install, commands, network, timeoutSeconds }` — replaces the automatic detection of the sandboxed checks.                                                                |
+| Key                         | File           | Effect                                                                                                                                                                             |
+| --------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxParallelTasks`          | global or repo | Tasks running at once, **across all projects** (default `3`); the rest queue FIFO. Bounds tasks, not machine load: end-of-turn review agents and checks containers run outside it. |
+| `isolation`                 | global or repo | `auto` (default), `container` (required, a task refuses to start without it) or `policy` (always run on the host).                                                                 |
+| `isolationAllowedDomains`   | global or repo | Domains the caged agent may reach (default `api.anthropic.com`, `platform.claude.com`); max 32, plain hostnames only.                                                              |
+| `checks`                    | repo only      | `{ image, install, commands, network, timeoutSeconds }` — replaces the automatic detection of the sandboxed checks.                                                                |
+| `watchdogInactivitySeconds` | workspace-wide | Silence, **tools aside**, past which a task's agent is considered dead and killed (default `1800`, 30 min).                                                                        |
+| `watchdogToolBudgetSeconds` | workspace-wide | How long a tool may stay in flight before the agent is considered stuck (default `7200`, 2 h). The inactivity count is suspended while a tool runs.                                |
+| `watchdogHeartbeatSeconds`  | workspace-wide | Period of the liveness beat that tells a long task from a dead one (default `30`).                                                                                                 |
 
 `isolation` and `checks` are repo-settable on purpose: the container and the checks are properties of the project, and a repo can only narrow what the agent reaches, never widen its rights on your machine. Sync fields stay global-only.
+
+The three `watchdog*` keys are **workspace-wide today**, and that is a limitation, not a design: they are read once at startup — from your global config, or from the `.codesema/config.json` of the repository you launched the workspace in — and the same three budgets then apply to every registered project. A second project's own config is not consulted for them. Per-project resolution is coming with the per-project configuration work; until then, set them globally (`~/.config/codesema/config.json`) unless you drive a single repository.
+
+The watchdog measures **life, not duration**: the last frame the agent's stream produced, and whether a tool is still out. It watches both paths a turn can take — on the host and inside the container cage. `timeout` stays as the last-resort absolute ceiling under it, never as the thing that detects a dead task; on task turns that ceiling is automatically raised above the watchdog budgets, because a ceiling below them would fire first and cancel the watchdog outright (it is a config key for the workspace — the `--timeout` **flag** applies to `codesema review`, which `codesema workspace` does not accept).
+
+A task the watchdog kills is left **`interrupted`, not `failed`**: `inactivity_timeout` says the _run_ has to change, not the work on the branch, so the conversation stays resumable — its worktree, its branch and its commits are kept, and **Resume** re-runs the very turn that was cut. While a turn runs, its record carries a `heartbeat_at` stamp refreshed every heartbeat period: that is what tells a task deep inside a forty-minute tool call from one whose agent has died.
 
 ### Language
 
@@ -189,7 +198,8 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 
 - `could not detect the target branch`: no MR/PR found and no develop/main/master to compare against; pass `--target <branch>`.
 - `empty diff … nothing to review`: codesema reviews **committed** work, commit your changes first.
-- `agent timed out`: raise the budget with `--timeout <seconds>` (default 900).
+- `agent timed out`: the run hit its absolute ceiling — raise it with `--timeout <seconds>` on `codesema review` (default 900), or with the `timeout` config key for the workspace.
+- `agent said nothing for … min` / `agent tool has been running for … min`: the semantic watchdog stopped a task it considers dead or stuck. The conversation stays `interrupted` and resumable, worktree intact; raise `watchdogInactivitySeconds` / `watchdogToolBudgetSeconds` if your agent legitimately goes quiet that long.
 - `no supported agent CLI found`: install `claude`, or pick "Custom command" in `codesema config` (the command receives the prompt on stdin and must print the review JSON on stdout).
 - Port busy: codesema scans 20 ports from the preferred one (default 4400); pick another base with `--port <n>`.
 - The web page says the review failed: the terminal has the full error; the server stays up so you can read both.

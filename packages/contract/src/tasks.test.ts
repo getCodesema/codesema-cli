@@ -11,6 +11,7 @@ import {
   TASK_CHECKS_LIST_MAX,
   TASK_EVENT_DATA_KEYS_MAX,
   TASK_EVENT_DATA_STRING_MAX,
+  TASK_TIMESTAMP_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
   TASK_TURNS_MAX,
@@ -233,6 +234,25 @@ describe('sanitizeTaskRecord', () => {
       expect(r).not.toBeNull()
       expect(r && 'reason' in r).toBe(false)
     }
+  })
+
+  test('heartbeat_at: absent claims nothing, a plain stamp round-trips', () => {
+    // A record written before the semantic watchdog existed carries no beat,
+    // and absence must read as "nothing known", never as "the agent is dead".
+    const none = sanitizeTaskRecord(validRecord)
+    expect(none && 'heartbeat_at' in none).toBe(false)
+    const beating = sanitizeTaskRecord({ ...validRecord, heartbeat_at: '2026-08-19T10:00:00.000Z' })
+    expect(beating?.heartbeat_at).toBe('2026-08-19T10:00:00.000Z')
+  })
+
+  test('heartbeat_at: anything that is not a plain bounded string is dropped', () => {
+    for (const heartbeat_at of [42, null, {}, [], '', false]) {
+      const r = sanitizeTaskRecord({ ...validRecord, heartbeat_at })
+      expect(r).not.toBeNull()
+      expect(r && 'heartbeat_at' in r).toBe(false)
+    }
+    const long = sanitizeTaskRecord({ ...validRecord, heartbeat_at: 'z'.repeat(5000) })
+    expect(long?.heartbeat_at).toHaveLength(TASK_TIMESTAMP_MAX)
   })
 
   test('reason: an over-long detail is truncated, the record stays valid', () => {

@@ -12,12 +12,18 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import {
+  AGENT_WATCHDOG_DEFAULTS,
   agentEnv,
+  agentReasonCode,
   claudeStreamCommand,
   createClaudeTaskParser,
+  effectiveAbsoluteCapMs,
+  emitsClaudeStreamJson,
   flagPresent,
   runAgent,
+  type AgentHeartbeat,
   type AgentRunOptions,
+  type WatchdogBudgets,
 } from './agent.js'
 import type { TaskEvent, TaskRecord, TaskStatus, TaskTurn } from './contract.js'
 import { fixCommandFor } from './fix.js'
@@ -227,7 +233,12 @@ export type RunTaskTurnOptions = {
   prompt: string
   /** Raw configured agent command; per-turn flags are added here. */
   command: string
+  /** Last-resort absolute ceiling of the turn; the watchdog is what detects a dead one. */
   timeoutMs: number
+  /** Watchdog budgets (D3), applied to the host path AND to the caged one; D3 defaults when absent. */
+  watchdog?: WatchdogBudgets | undefined
+  /** Liveness beat of the running agent, one per heartbeat period. */
+  onHeartbeat?: ((beat: AgentHeartbeat) => void) | undefined
   signal?: AbortSignal
   /** Journal sink: the caller appends to the store and broadcasts. */
   onEvent: (event: AppendTaskEventInput) => void
@@ -279,7 +290,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
     sessionId = session.id
   }
   let tokens = 0
-  const parser = command.includes('--output-format stream-json')
+  const parser = emitsClaudeStreamJson(command)
     ? createClaudeTaskParser({
         onInit: (id) => {
           sessionId = id
@@ -306,13 +317,22 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
       opts.onText?.(text, 0)
     }
   }
+  const budgets = opts.watchdog ?? AGENT_WATCHDOG_DEFAULTS
+  // A ceiling BELOW the watchdog budgets would cancel the watchdog outright —
+  // the shipped default was a 900 s ceiling under a 1 800 s inactivity budget,
+  // so a live task still died of the wall clock at 15 min and a dead one still
+  // never named itself. The turn's ceiling is therefore raised, never lowered,
+  // to sit above the largest budget plus the whole kill escalation.
+  const absoluteCapMs = effectiveAbsoluteCapMs(opts.timeoutMs, budgets)
   const raw = caged
     ? await (opts.runContainerTurnFn ?? runContainerTurn)({
         taskId: opts.task.id,
         worktree: opts.cwd,
         command,
         prompt: opts.prompt,
-        timeoutMs: opts.timeoutMs,
+        timeoutMs: absoluteCapMs,
+        watchdog: budgets,
+        ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
         ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
         ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
         ...(opts.signal ? { signal: opts.signal } : {}),
@@ -322,8 +342,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
         command,
         prompt: opts.prompt,
         cwd: opts.cwd,
-        timeoutMs: opts.timeoutMs,
+        absoluteCapMs,
         env: agentEnv(command),
+        watchdog: budgets,
+        ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
         ...(opts.signal ? { signal: opts.signal } : {}),
         onText,
       })
@@ -421,7 +443,16 @@ export type TaskRunnerOptions = {
   cwd: string
   /** Raw configured agent command. */
   command: string
+  /** Last-resort absolute ceiling of a turn; the watchdog is what detects a dead one. */
   timeoutMs: number
+  /**
+   * Watchdog budgets (D3) handed to every turn, host and caged alike; the D3
+   * defaults apply when absent.
+   *
+   * TODO(T1.4): resolved ONCE at boot from the launch repo and shared by every
+   * project — per-project config resolution is T1.4's job.
+   */
+  watchdog?: WatchdogBudgets | undefined
   /** Cap of this runner's own pool; ignored when `slots` is provided. */
   maxParallel?: number
   /** Shared slot pool (global cap across runners); defaults to a private pool of maxParallel. */
@@ -532,6 +563,21 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // saveTask writes verbatim: bumping updated_at here keeps the listTasks
     // activity sort honest on every transition.
     record.updated_at = new Date().toISOString()
+    saveTask(opts.cwd, record)
+    opts.onTask?.(record)
+  }
+
+  /**
+   * Liveness beat of a RUNNING turn: `heartbeat_at` only, deliberately not
+   * `updated_at` — a beat says the agent is alive, not that anything happened,
+   * and the activity sort must not be reordered by a task that is merely
+   * breathing. One small atomic write per period per running task, and one SSE
+   * frame, which is what lets the UI tell a LONG task from a DEAD one; a
+   * journal line every 30 s would grow events.jsonl without ever saying
+   * anything new.
+   */
+  const beat = (record: TaskRecord): void => {
+    record.heartbeat_at = new Date().toISOString()
     saveTask(opts.cwd, record)
     opts.onTask?.(record)
   }
@@ -651,7 +697,20 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     if (turn && !turn.ended_at) {
       turn.ended_at = new Date().toISOString()
     }
-    if (aborted) {
+    // A run the semantic watchdog cut is NOT a dead end: `inactivity_timeout`
+    // is RETRYABLE in D2 — what has to change is the run or its environment,
+    // never the work on the branch — so the task lands on 'interrupted', which
+    // both reply() and resume() accept, with its worktree and its commits
+    // intact. 'failed' is terminal and would cost the user the whole turn. The
+    // code is read BEFORE `aborted` on purpose: a human hitting Stop during the
+    // kill escalation is reacting to the cut, not causing it.
+    const watchdogCode = agentReasonCode(err)
+    if (watchdogCode) {
+      record.status = 'interrupted'
+      const message = preview(errorMessage(err))
+      emit(record.id, { type: 'interrupted', data: { message }, reason_code: watchdogCode })
+      record.reason = taskReason(watchdogCode, message)
+    } else if (aborted) {
       record.status = 'interrupted'
       // An abort is always a human stopping this task: Ctrl-C on the workspace
       // (draining) or the interrupt button. The payload stays EXACTLY what it
@@ -668,6 +727,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       record.status = 'failed'
       emit(record.id, { type: 'error', data: { message: preview(errorMessage(err)) } })
     }
+    // The worktree is deliberately left alone on every one of these paths
+    // (T1.6): the branch and whatever the agent had written before it stopped
+    // are the only account of what happened.
     persist(record)
   }
 
@@ -738,8 +800,11 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     }
     record.status = 'running'
     // The task is moving again: whatever reason it last stopped for is history,
-    // and a record that kept claiming it would be lying about the present.
+    // and a record that kept claiming it would be lying about the present. The
+    // previous turn's last beat goes with it — absence reads as "nothing known
+    // yet", which is true, where a stale stamp would read as "long dead".
     delete record.reason
+    delete record.heartbeat_at
     persist(record)
     const startedAt = Date.now()
     const turn = runTaskTurn({
@@ -748,6 +813,8 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       prompt: composeTurnPrompt(record, opts.command),
       command: opts.command,
       timeoutMs: opts.timeoutMs,
+      ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
+      onHeartbeat: () => beat(record),
       signal: controller.signal,
       onEvent: (event) => emit(record.id, event),
       onText: (text, seq) => opts.onText?.(record.id, text, seq),
