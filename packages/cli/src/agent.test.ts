@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
 import {
   AGENT_KILL_GRACE_MS,
@@ -15,9 +16,11 @@ import {
   emitsClaudeStreamJson,
   hardenedReviewCommand,
   MAX_TIMER_MS,
+  promptFileCommand,
   runAgent,
   systemClock,
   TASK_TOOL_SUMMARY_MAX,
+  usesPromptFile,
   WATCHDOG_CAP_MARGIN_MS,
   watchdogTickMs,
   type AgentClock,
@@ -84,6 +87,26 @@ describe('hardenedReviewCommand', () => {
     )
   })
 
+  test('grok: every tool denied by rule, the tool list being no lock at all', () => {
+    expect(hardenedReviewCommand('grok --prompt-file {promptFile} -m grok-4.6')).toBe(
+      "grok --prompt-file {promptFile} -m grok-4.6 --deny '*'",
+    )
+  })
+
+  test('grok: a permission choice of the user is left alone', () => {
+    const bypass = 'grok --prompt-file {promptFile} --always-approve'
+    expect(hardenedReviewCommand(bypass)).toBe(bypass)
+    const narrowed = 'grok --prompt-file {promptFile} --tools read_file'
+    expect(hardenedReviewCommand(narrowed)).toBe(narrowed)
+    const ruled = "grok --prompt-file {promptFile} --deny 'run_terminal_command'"
+    expect(hardenedReviewCommand(ruled)).toBe(ruled)
+  })
+
+  test('grok: hardening is idempotent, the quoted rule never re-read as a flag', () => {
+    const once = hardenedReviewCommand('grok --prompt-file {promptFile}')
+    expect(hardenedReviewCommand(once)).toBe(once)
+  })
+
   test('gemini and custom commands are unchanged', () => {
     expect(hardenedReviewCommand('gemini -m gemini-2.5-pro')).toBe('gemini -m gemini-2.5-pro')
     expect(hardenedReviewCommand('opencode run "$(cat)"')).toBe('opencode run "$(cat)"')
@@ -141,6 +164,18 @@ describe('agentEnv', () => {
     const env = agentEnv('gemini', { ...source, GOOGLE_CLOUD_PROJECT: 'p' })
     expect(env?.GEMINI_API_KEY).toBe('g-x')
     expect(env?.GOOGLE_CLOUD_PROJECT).toBe('p')
+    expect(env?.DATABASE_URL).toBeUndefined()
+  })
+
+  test('grok: XAI_* and GROK_* pass, other providers stripped', () => {
+    const env = agentEnv('grok --prompt-file {promptFile}', {
+      ...source,
+      XAI_API_KEY: 'xai-x',
+      GROK_SANDBOX: 'read-only',
+    })
+    expect(env?.XAI_API_KEY).toBe('xai-x')
+    expect(env?.GROK_SANDBOX).toBe('read-only')
+    expect(env?.ANTHROPIC_API_KEY).toBeUndefined()
     expect(env?.DATABASE_URL).toBeUndefined()
   })
 
@@ -401,6 +436,43 @@ describe('createClaudeTaskParser', () => {
     parser.push(line({ type: 'system', subtype: 'other' }))
     parser.push(line({ type: 'user', message: { content: 'plain string content' } }))
     expect(parser.finalText()).toBeNull()
+  })
+})
+
+describe('promptFileCommand', () => {
+  test('the placeholder is recognised and substituted, quoted, everywhere it appears', () => {
+    expect(usesPromptFile('grok --prompt-file {promptFile}')).toBe(true)
+    expect(usesPromptFile('claude -p')).toBe(false)
+    expect(promptFileCommand('grok --prompt-file {promptFile}', '/tmp/a b/prompt.txt')).toBe(
+      'grok --prompt-file "/tmp/a b/prompt.txt"',
+    )
+  })
+})
+
+describe('runAgent prompt file', () => {
+  test('the prompt reaches a private file, stdin is closed empty, the file goes on settle', async () => {
+    const rig = startRun({ command: 'grok --prompt-file {promptFile}' })
+    const spawned = rig.spawned[0]?.command ?? ''
+    const path = /--prompt-file "([^"]+)"/.exec(spawned)?.[1] ?? ''
+    expect(path).not.toBe('')
+    expect(readFileSync(path, 'utf8')).toBe('go')
+    // Nothing is pushed down a stdin the agent will not read — but it is still
+    // closed, or the agent would wait on an EOF that never comes.
+    expect(rig.fake.ops).toEqual(['stdin:end'])
+
+    rig.fake.stdout('{"verdict":"comment"}')
+    rig.fake.close(0)
+    await rig.promise
+    expect(existsSync(path)).toBe(false)
+  })
+
+  test('a run that dies still takes its prompt file with it', async () => {
+    const rig = startRun({ command: 'grok --prompt-file {promptFile}' })
+    const path = /--prompt-file "([^"]+)"/.exec(rig.spawned[0]?.command ?? '')?.[1] ?? ''
+    expect(existsSync(path)).toBe(true)
+    rig.fake.close(1)
+    await expect(rig.promise).rejects.toThrow()
+    expect(existsSync(path)).toBe(false)
   })
 })
 

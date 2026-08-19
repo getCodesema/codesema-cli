@@ -185,7 +185,8 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'wizard.customCommand': 'Custom command',
   'wizard.stdinStdout': 'stdin → stdout',
   'wizard.fullCommandTitle': 'Full agent command',
-  'wizard.fullCommandPlaceholder': 'reads the prompt on stdin, prints the review JSON on stdout',
+  'wizard.fullCommandPlaceholder':
+    'reads the prompt on stdin (or names {promptFile}), prints the review JSON on stdout',
   'wizard.modelFor': 'Model for {label}?',
   'wizard.cliDefault': 'CLI default',
   'wizard.letDecide': 'let {bin} decide',
@@ -614,7 +615,7 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'wizard.stdinStdout': 'stdin → stdout',
   'wizard.fullCommandTitle': "Commande d'agent complète",
   'wizard.fullCommandPlaceholder':
-    'lit le prompt sur stdin, affiche le JSON de la revue sur stdout',
+    'lit le prompt sur stdin (ou nomme {promptFile}), affiche le JSON de la revue sur stdout',
   'wizard.modelFor': 'Modèle pour {label} ?',
   'wizard.cliDefault': 'Défaut CLI',
   'wizard.letDecide': 'laisser {bin} décider',

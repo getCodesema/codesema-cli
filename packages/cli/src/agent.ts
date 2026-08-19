@@ -1,11 +1,14 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ReasonCode } from './contract.js'
 import { t } from './i18n.js'
 
 const CLAUDE_STREAM_JSON_FLAG = '--output-format stream-json'
 const CLAUDE_STREAM_FLAGS = `${CLAUDE_STREAM_JSON_FLAG} --include-partial-messages --verbose`
 
-const AGENT_BINS = ['claude', 'codex', 'gemini'] as const
+const AGENT_BINS = ['claude', 'codex', 'gemini', 'grok'] as const
 type KnownAgent = (typeof AGENT_BINS)[number]
 
 export function knownAgent(command: string): KnownAgent | null {
@@ -29,13 +32,42 @@ export function flagPresent(command: string, flag: string): boolean {
 }
 
 /**
+ * Placeholder a command puts where its CLI expects a PATH to the prompt.
+ *
+ * Node hands a spawned child a Unix SOCKET as stdin, not a pipe (libuv builds
+ * stdio out of socketpair), and opening /dev/stdin on a socket fails with
+ * ENXIO. So an agent that cannot read a stream cannot be bridged with
+ * `--prompt-file /dev/stdin` either, and passing the prompt as an argument
+ * caps it at one page short of 128 KiB (MAX_ARG_STRLEN) — a limit a real diff
+ * reaches. Such a command names {promptFile} instead: the prompt is written to
+ * a private temp file, the placeholder becomes its quoted path, and the file is
+ * deleted when the run settles, whatever ended it.
+ */
+export const PROMPT_FILE_PLACEHOLDER = '{promptFile}'
+
+export function usesPromptFile(command: string): boolean {
+  return command.includes(PROMPT_FILE_PLACEHOLDER)
+}
+
+/** Substitutes the placeholder, quoted: a temp dir can carry spaces on Windows. */
+export function promptFileCommand(command: string, path: string): string {
+  return command.replaceAll(PROMPT_FILE_PLACEHOLDER, `"${path}"`)
+}
+
+/**
  * The review agent is a pure text transformer (prompt on stdin, review JSON on
  * stdout), so tools, MCP servers and repo-provided agent settings are switched
  * off at the CLI level for known agents; a hostile repo cannot reach the agent
  * through its own .claude/ or AGENTS.md. Flags the user already set win.
  * Gemini has no CLI flag for this (tools are settings.json-only); its headless
- * policy engine already denies shell/write tools. Do NOT apply this to the fix
- * runner: applying fixes needs the edit tools.
+ * policy engine already denies shell/write tools. Grok is cut off by a permission
+ * rule rather than a tool list: `--tools ""` and an unknown allowlist both leave
+ * every tool reachable (verified on grok 1.0.5), while `--deny '*'` refuses the
+ * shell AND the file tools. Grok still LOADS the repo's AGENTS.md/CLAUDE.md and
+ * has no flag to stop it (codex's project_doc_max_bytes has no equivalent), so
+ * what the deny rule buys is the absence of execution, not the absence of
+ * injected instructions. Do NOT apply this to the fix runner: applying fixes
+ * needs the edit tools.
  */
 export function hardenedReviewCommand(command: string): string {
   const agent = knownAgent(command)
@@ -76,6 +108,25 @@ export function hardenedReviewCommand(command: string): string {
     const base = stdinMarker ? command.slice(0, -2) : command
     return [base, ...flags, ...(stdinMarker ? ['-'] : [])].join(' ')
   }
+  if (agent === 'grok') {
+    // Any permission-shaping flag means the user made this call themselves:
+    // a narrower --tools, a rule of their own, or a deliberate bypass
+    // (--always-approve, --permission-mode bypassPermissions) all win.
+    const owned = [
+      '--deny',
+      '--disallowedTools',
+      '--allow',
+      '--allowedTools',
+      '--tools',
+      '--disallowed-tools',
+      '--permission-mode',
+      '--always-approve',
+    ]
+    if (owned.some((flag) => flagPresent(command, flag))) {
+      return command
+    }
+    return `${command} --deny '*'`
+  }
   return command
 }
 
@@ -113,6 +164,7 @@ const AGENT_ENV_PREFIXES: Record<KnownAgent, string[]> = {
   claude: ['ANTHROPIC_', 'CLAUDE_'],
   codex: ['OPENAI_', 'CODEX_'],
   gemini: ['GEMINI_', 'GOOGLE_'],
+  grok: ['XAI_', 'GROK_'],
 }
 
 /**
@@ -857,7 +909,17 @@ export type AgentRunOptions = {
 
 export function runAgent(opts: AgentRunOptions): Promise<string> {
   const streamCommand = claudeStreamCommand(opts.command)
-  const command = streamCommand ?? opts.command
+  const baseCommand = streamCommand ?? opts.command
+  // 0o700 on the directory: the prompt carries the whole diff, so it is never
+  // readable by another user of the machine while the agent works on it.
+  const promptDir = usesPromptFile(baseCommand)
+    ? mkdtempSync(join(tmpdir(), 'codesema-prompt-'))
+    : null
+  const promptPath = promptDir === null ? null : join(promptDir, 'prompt.txt')
+  if (promptPath !== null) {
+    writeFileSync(promptPath, opts.prompt, { mode: 0o600 })
+  }
+  const command = promptPath === null ? baseCommand : promptFileCommand(baseCommand, promptPath)
   const clock = opts.clock ?? systemClock
   const budgets = opts.watchdog ?? AGENT_WATCHDOG_DEFAULTS
   const spawnFn = opts.spawnFn ?? spawn
@@ -914,6 +976,16 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
       settled = true
       stopTimers()
       opts.signal?.removeEventListener('abort', onAbort)
+      // Removed by name, never recursively: this deletes exactly the two
+      // things it created, and leaves anything else alone.
+      if (promptPath !== null && promptDir !== null) {
+        try {
+          unlinkSync(promptPath)
+          rmdirSync(promptDir)
+        } catch {
+          // a temp file the OS will collect anyway: never worth failing a run
+        }
+      }
       outcome()
     }
 
@@ -1055,7 +1127,11 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
       // work are what a killed task has to show for itself.
       finish(() => settleFromState(code))
     })
-    stdin?.write(opts.prompt)
+    // An agent reading a prompt FILE still gets an immediate EOF: it must never
+    // be left waiting on a stdin that will stay empty.
+    if (promptPath === null) {
+      stdin?.write(opts.prompt)
+    }
     stdin?.end()
   })
 }

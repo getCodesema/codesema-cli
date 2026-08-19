@@ -84,7 +84,11 @@ describe('detectAgents', () => {
       await Promise.resolve()
       return cmd === 'codex' ? null : `${cmd} ok`
     }
-    expect((await detectAgents('/repo', execFn)).map((d) => d.id)).toEqual(['claude', 'gemini'])
+    expect((await detectAgents('/repo', execFn)).map((d) => d.id)).toEqual([
+      'claude',
+      'gemini',
+      'grok',
+    ])
     expect(calls).toEqual(AGENT_DEFS.map((d) => d.bin))
   })
 })

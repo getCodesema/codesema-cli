@@ -7,7 +7,7 @@
 
 **Review your merge requests locally, with the AI agent you already use.**
 
-Run one command on a branch: `codesema` computes the MR diff, hands it to **your** AI agent (Claude Code, Codex, Gemini, …), and opens a local web UI where the review appears live. You then read it like a guided tour: what to look at first, step by step, with findings pinned to the diff.
+Run one command on a branch: `codesema` computes the MR diff, hands it to **your** AI agent (Claude Code, Codex, Gemini, Grok, …), and opens a local web UI where the review appears live. You then read it like a guided tour: what to look at first, step by step, with findings pinned to the diff.
 
 - **Your agent, your subscription.** The review runs through the agent CLI you already pay for. No account, no API key, no cloud: everything happens on your machine.
 - **Zero runtime dependencies.** `npm install codesema` installs exactly one package, shipped unminified so you can audit the code that reads your diff.
@@ -89,14 +89,14 @@ The second only exists once a workspace is linked: `codesema review` then asks t
 
 Before uploading, sync scans the diff for anything that looks like a committed secret (dotenv files, private keys, and AWS/GitHub/Slack/Google/Stripe/OpenAI/Anthropic credentials) and refuses to send it. Fix the diff, or pass `--force` once you have checked.
 
-The review subprocess is locked down. The prompt already contains everything the agent needs (branch names, commit subjects, changed files, the diff), so `codesema review` runs the known agent CLIs with their tools switched off: `claude` gets `--tools "" --strict-mcp-config --setting-sources user` (no tools, no MCP servers, the repo's own `.claude/` settings ignored) and `codex` gets `--sandbox read-only --ask-for-approval never` with `AGENTS.md` loading disabled. Known agents also receive a minimal environment — `PATH`, `HOME`, locale, proxy settings and the provider's own variables — so your other credentials and tokens never reach the subprocess. Flags you set yourself and custom agent commands are left untouched, and "Run fixes" intentionally keeps the edit tools it needs.
+The review subprocess is locked down. The prompt already contains everything the agent needs (branch names, commit subjects, changed files, the diff), so `codesema review` runs the known agent CLIs with their tools switched off: `claude` gets `--tools "" --strict-mcp-config --setting-sources user` (no tools, no MCP servers, the repo's own `.claude/` settings ignored), `codex` gets `--sandbox read-only --ask-for-approval never` with `AGENTS.md` loading disabled, and `grok` gets `--deny '*'` — a permission rule rather than a tool list, because an empty or unknown `--tools` value leaves every tool reachable while the rule refuses the shell and the file tools alike. Grok still reads the repo's `AGENTS.md`/`CLAUDE.md` and offers no flag to stop it, so there the hardening buys the absence of execution, not the absence of injected instructions. Known agents also receive a minimal environment — `PATH`, `HOME`, locale, proxy settings and the provider's own variables — so your other credentials and tokens never reach the subprocess. Flags you set yourself and custom agent commands are left untouched, and "Run fixes" intentionally keeps the edit tools it needs.
 
 Workspace tasks are the opposite case — they exist to edit code — so they are contained instead: in a container when one is available, and otherwise on the host with `--strict-mcp-config --setting-sources user`, so a turn that writes a `.claude/settings.json` or `.mcp.json` into its own worktree cannot have it loaded by the next turn. A custom agent command gets none of this and says so at startup.
 
 ## Requirements
 
 - Node.js ≥ 20 and `git`
-- An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI) and `gemini` (Google) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'` (e.g. `--agent 'opencode run "$(cat)"'`)
+- An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI), `gemini` (Google) and `grok` (xAI) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'` (e.g. `--agent 'opencode run "$(cat)"'`). A CLI that cannot read its prompt from stdin at all takes it as a **file**: put `{promptFile}` where the path goes and codesema writes the prompt to a private temp file, substitutes its quoted path and deletes it when the run ends — that is how `grok` is run (`grok --prompt-file {promptFile}`)
 - Optional: `glab` or `gh` on the PATH, to auto-detect the target branch from the open MR/PR (and to list MRs and ship from the workspace)
 - Optional: `docker` or `podman`, for the workspace's sandboxed checks and per-task container isolation (without one, checks report they cannot run and tasks fall back to the host hardening)
 
@@ -200,7 +200,7 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 - `empty diff … nothing to review`: codesema reviews **committed** work, commit your changes first.
 - `agent timed out`: the run hit its absolute ceiling — raise it with `--timeout <seconds>` on `codesema review` (default 900), or with the `timeout` config key for the workspace.
 - `agent said nothing for … min` / `agent tool has been running for … min`: the semantic watchdog stopped a task it considers dead or stuck. The conversation stays `interrupted` and resumable, worktree intact; raise `watchdogInactivitySeconds` / `watchdogToolBudgetSeconds` if your agent legitimately goes quiet that long.
-- `no supported agent CLI found`: install `claude`, or pick "Custom command" in `codesema config` (the command receives the prompt on stdin and must print the review JSON on stdout).
+- `no supported agent CLI found`: install `claude`, or pick "Custom command" in `codesema config` (the command receives the prompt on stdin — or on a file path, if it names `{promptFile}` — and must print the review JSON on stdout).
 - Port busy: codesema scans 20 ports from the preferred one (default 4400); pick another base with `--port <n>`.
 - The web page says the review failed: the terminal has the full error; the server stays up so you can read both.
 
@@ -234,7 +234,7 @@ the environment of the processes it spawns.
   `SHELL`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `TZ`, the 8 proxy
   variables, the 4 `XDG_*` ones and the 4 CA-bundle ones — plus the provider's
   own prefixes (`ANTHROPIC_`/`CLAUDE_`, `OPENAI_`/`CODEX_`,
-  `GEMINI_`/`GOOGLE_`), widened to `AWS_` or `GOOGLE_`/`GCP_` only when
+  `GEMINI_`/`GOOGLE_`, `XAI_`/`GROK_`), widened to `AWS_` or `GOOGLE_`/`GCP_` only when
   `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` is set. Everything else
   in your environment — cloud keys, tokens, database URLs — never reaches the
   subprocess. A custom agent command inherits the full environment (its needs
