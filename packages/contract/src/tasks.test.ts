@@ -217,6 +217,245 @@ describe('sanitizeTaskRecord', () => {
     expect(r?.version).toBe(1)
   })
 
+  test('cost_ticks: a 0.12 record has none, on the record and on its turns', () => {
+    // FROZEN fixture of a record as codesema 0.12 wrote it: no `cost_ticks`
+    // key anywhere, because the cost unit did not exist yet.
+    const record012 = {
+      version: 1,
+      id: 'c3d4e5f6a7b8',
+      title: 'Cache the preview diff',
+      status: 'waiting_for_you',
+      base: 'main',
+      branch: 'codesema/task-cache-the-preview-diff',
+      worktree: '/repo/.codesema/worktrees/c3d4e5f6a7b8',
+      agent_session_id: null,
+      turns: [
+        {
+          prompt: 'Cache the preview diff',
+          response: 'Done.',
+          question: null,
+          started_at: '2026-08-14T09:00:00.000Z',
+          ended_at: '2026-08-14T09:04:00.000Z',
+          tokens: 4_200,
+        },
+      ],
+      review_ref: null,
+      work_ms: 240_000,
+      wait_ms: 0,
+      auto_ship: false,
+      work_on: false,
+      isolation: 'policy',
+      created_at: '2026-08-14T09:00:00.000Z',
+      updated_at: '2026-08-14T09:04:00.000Z',
+    }
+    const r = sanitizeTaskRecord(structuredClone(record012))
+    // Read back with NO degradation: same record, same status, same isolation.
+    expect(r).toEqual(record012 as TaskRecord)
+    expect(r?.status).toBe('waiting_for_you')
+    expect(r?.isolation).toBe('policy')
+    expect(r?.version).toBe(1)
+    // And no value invented for the cost, on the record or on the turn.
+    expect(r && 'cost_ticks' in r).toBe(false)
+    expect(r?.turns[0] && 'cost_ticks' in r.turns[0]).toBe(false)
+    expect(r?.turns[0]?.cost_ticks).toBeUndefined()
+  })
+
+  test('cost_ticks: a non-negative integer round-trips, on the turn and the record', () => {
+    const complete = { cost_ticks: 12_500_000, cost_basis: 'harness' as const }
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      ...complete,
+      cost_turns: 1,
+      turns: [{ ...validRecord.turns[0], ...complete }],
+    })
+    expect(r?.cost_ticks).toBe(12_500_000)
+    expect(r?.cost_basis).toBe('harness')
+    expect(r?.cost_turns).toBe(1)
+    expect(r?.turns[0]?.cost_ticks).toBe(12_500_000)
+    expect(r?.turns[0]?.cost_basis).toBe('harness')
+    // A truthful zero is a value, not an absence.
+    const free = sanitizeTaskRecord({
+      ...validRecord,
+      cost_ticks: 0,
+      cost_basis: 'harness',
+      cost_turns: 1,
+    })
+    expect(free?.cost_ticks).toBe(0)
+    expect(free && 'cost_ticks' in free).toBe(true)
+  })
+
+  test('cost_ticks: anything not a non-negative integer drops the key, never a 0', () => {
+    for (const cost_ticks of [
+      1.5,
+      -1,
+      -0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 2,
+      '12500',
+      null,
+      {},
+      [12_500],
+      true,
+    ]) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        cost_ticks,
+        turns: [{ ...validRecord.turns[0], cost_ticks }],
+      })
+      expect(r).not.toBeNull()
+      // Dropped, NOT degraded to 0: a 0 would read as "this task was free".
+      expect(r && 'cost_ticks' in r).toBe(false)
+      expect(r?.cost_ticks).toBeUndefined()
+      expect(r?.turns[0] && 'cost_ticks' in r.turns[0]).toBe(false)
+    }
+  })
+
+  test('cost_basis: the two known provenances round-trip, on the turn and the record', () => {
+    for (const cost_basis of ['harness', 'lower_bound'] as const) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        cost_ticks: 12_500_000,
+        // One turn on the record, so the coverage is 1: see the bound below.
+        cost_turns: 1,
+        cost_basis,
+        turns: [{ ...validRecord.turns[0], cost_ticks: 12_500_000, cost_basis }],
+      })
+      expect(r?.cost_basis).toBe(cost_basis)
+      expect(r?.cost_turns).toBe(1)
+      expect(r?.turns[0]?.cost_basis).toBe(cost_basis)
+    }
+  })
+
+  test('cost_basis: a provenance nobody can name is never guessed — and takes the figure with it', () => {
+    for (const cost_basis of ['invoice', 'HARNESS', '', 1, null, {}, true]) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        cost_ticks: 12_500_000,
+        cost_basis,
+        cost_turns: 1,
+        turns: [{ ...validRecord.turns[0], cost_ticks: 12_500_000, cost_basis }],
+      })
+      expect(r).not.toBeNull()
+      // Never guessed, and never kept alone: an uninterpretable figure is
+      // worse than none (see the coupling test below).
+      expect(r && 'cost_basis' in r).toBe(false)
+      expect(r && 'cost_ticks' in r).toBe(false)
+      expect(r?.turns[0] && 'cost_basis' in r.turns[0]).toBe(false)
+      expect(r?.turns[0] && 'cost_ticks' in r.turns[0]).toBe(false)
+    }
+  })
+
+  test('cost_turns is bounded by the turns the record actually keeps', () => {
+    // The producer only ever writes a coverage it computed from the turns it
+    // holds; this layer has to hold the same claim against a hand-edited or
+    // future-written file, because the coverage is what makes a partial total
+    // honest in the first place.
+    const priced = { cost_ticks: 9, cost_basis: 'harness' as const }
+    const oneTurn = { ...validRecord, ...priced, turns: [validRecord.turns[0]] }
+    // A coverage matching the turns held: kept.
+    expect(sanitizeTaskRecord({ ...oneTurn, cost_turns: 1 })?.cost_turns).toBe(1)
+    for (const cost_turns of [0, 2, 999, TASK_TURNS_MAX + 1, -1]) {
+      const r = sanitizeTaskRecord({ ...oneTurn, cost_turns })
+      expect(r).not.toBeNull()
+      // A total covering nothing, or covering more turns than exist, is not a
+      // total: the whole trio goes.
+      expect(r && 'cost_turns' in r).toBe(false)
+      expect(r && 'cost_ticks' in r).toBe(false)
+      expect(r && 'cost_basis' in r).toBe(false)
+    }
+    // A record with no turns at all can carry no coverage, hence no total.
+    const empty = sanitizeTaskRecord({ ...validRecord, ...priced, cost_turns: 1, turns: [] })
+    expect(empty && 'cost_ticks' in empty).toBe(false)
+  })
+
+  test('a negative zero is not a figure, on the turn or the record', () => {
+    // -0 satisfies both Number.isSafeInteger and >= 0, so nothing else catches
+    // it; a negative zero on a money field is a value nobody meant to write.
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      cost_ticks: -0,
+      cost_basis: 'harness',
+      cost_turns: 1,
+      turns: [{ ...validRecord.turns[0], cost_ticks: -0, cost_basis: 'harness' }],
+    })
+    expect(r && 'cost_ticks' in r).toBe(false)
+    expect(r?.turns[0] && 'cost_ticks' in r.turns[0]).toBe(false)
+    expect(r?.turns[0] && 'cost_basis' in r.turns[0]).toBe(false)
+  })
+
+  test('cost_ticks and cost_basis fall TOGETHER, in both directions', () => {
+    // Half the fact is no fact. A turn keeping a figure whose provenance was
+    // dropped would make two readers disagree about whether it carries a cost
+    // — and that disagreement silently REPLACES the figure, instead of adding
+    // to it, when the turn is resumed after an interrupt.
+    const halves = [
+      { cost_ticks: 4_000, cost_basis: 'invoice' },
+      { cost_ticks: 4_000, cost_basis: undefined },
+      { cost_ticks: 1.5, cost_basis: 'harness' },
+      { cost_ticks: undefined, cost_basis: 'harness' },
+    ]
+    for (const half of halves) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        ...half,
+        cost_turns: 1,
+        turns: [{ ...validRecord.turns[0], ...half }],
+      })
+      expect(r).not.toBeNull()
+      expect(r && 'cost_ticks' in r).toBe(false)
+      expect(r && 'cost_basis' in r).toBe(false)
+      // The record's total is a TRIO: its coverage goes with the rest.
+      expect(r && 'cost_turns' in r).toBe(false)
+      expect(r?.turns[0] && 'cost_ticks' in r.turns[0]).toBe(false)
+      expect(r?.turns[0] && 'cost_basis' in r.turns[0]).toBe(false)
+    }
+  })
+
+  test('the record total needs all THREE of figure, coverage and provenance', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      cost_ticks: 4_000,
+      cost_basis: 'harness',
+      // Coverage missing: a total nobody can tell the completeness of.
+      cost_turns: undefined,
+    })
+    expect(r && 'cost_ticks' in r).toBe(false)
+    expect(r && 'cost_basis' in r).toBe(false)
+    expect(r && 'cost_turns' in r).toBe(false)
+  })
+
+  test('cost_basis and cost_turns never outlive the figure they describe', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      // No cost_ticks at all, but a provenance and a coverage claiming to
+      // describe one: a basis for a number that is not there says nothing.
+      cost_basis: 'harness',
+      cost_turns: 3,
+      turns: [{ ...validRecord.turns[0], cost_basis: 'harness' }],
+    })
+    expect(r && 'cost_ticks' in r).toBe(false)
+    expect(r && 'cost_basis' in r).toBe(false)
+    expect(r && 'cost_turns' in r).toBe(false)
+    expect(r?.turns[0] && 'cost_basis' in r.turns[0]).toBe(false)
+  })
+
+  test('cost_turns: a coverage that is not a count drops the whole total, never a 0', () => {
+    for (const cost_turns of [1.5, -1, Number.NaN, '2', null, {}]) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        cost_ticks: 100,
+        cost_basis: 'harness',
+        cost_turns,
+      })
+      expect(r).not.toBeNull()
+      expect(r && 'cost_turns' in r).toBe(false)
+      // A total whose completeness nobody can tell says nothing useful.
+      expect(r && 'cost_ticks' in r).toBe(false)
+      expect(r && 'cost_basis' in r).toBe(false)
+    }
+  })
+
   test('reason: a known code round-trips with its detail', () => {
     const reason = { code: 'review_blocked' as const, detail: 'review failed: agent timed out' }
     expect(sanitizeTaskRecord({ ...validRecord, reason })?.reason).toEqual(reason)
@@ -356,6 +595,7 @@ describe('sanitizeTaskEvent', () => {
       'error',
       'interrupted',
       'isolation',
+      'cost',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

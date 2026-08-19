@@ -26,11 +26,19 @@ import {
   type WatchdogBudgets,
 } from './agent.js'
 import type { TaskEvent, TaskRecord, TaskStatus, TaskTurn } from './contract.js'
+import {
+  foldTurnCost,
+  totalCost,
+  turnCostOf,
+  type CostDegradation,
+  type SettledCost,
+} from './cost.js'
 import { fixCommandFor } from './fix.js'
 import { git, tryGit } from './git.js'
 import { reviewLanguage } from './i18n.js'
 import type { ChecksConfig } from './repo-config.js'
 import {
+  CAGE_FORWARDED_ENV,
   containerTaskCommandFor,
   runContainerTurn,
   type RunContainerTurnOptions,
@@ -206,12 +214,180 @@ export function parseTaskQuestion(response: string): string | null {
   return match?.[1]?.trim() || null
 }
 
+/**
+ * The journal line for something the cost accounting could not do.
+ *
+ * NEUTRAL by type ('cost', not 'error'): a figure that cannot be established
+ * is a gap in the accounting, not a failure of the work — painting it red
+ * would cry wolf on every turn run against a model this build cannot price.
+ *
+ * Each cause is reported AS ITSELF: the message says what actually happened,
+ * never a catch-all. `data.name` carries the machine-readable cause and the
+ * readable message stays where every producer puts it — the name is ADDED, it
+ * does not replace. No `reason_code`: the shared vocabulary (D2) qualifies why
+ * a TASK stopped, and none of these stops anything.
+ */
+export function costEvent(degradation: CostDegradation): AppendTaskEventInput {
+  switch (degradation.cause) {
+    case 'partner_platform':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_partner_platform_unpriced',
+          signal: degradation.signal,
+          message: `cost not recorded: this run bills through a partner-operated platform (${degradation.signal}), whose price list this build does not carry — a first-party figure would be the wrong invoice, so none is written`,
+        },
+      }
+    case 'model_unpriced':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_model_unpriced',
+          model: degradation.model,
+          message: `cost unknown: model ${degradation.model} has no row in the fallback price table — the turn is left without a cost rather than counted as free`,
+        },
+      }
+    case 'price_expired':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_price_expired',
+          model: degradation.model,
+          at: degradation.at,
+          message: `cost unknown: no price on record for ${degradation.model} applies on ${degradation.at} — its known rate windows do not cover this turn, and an out-of-window rate is a wrong rate, so none is applied`,
+        },
+      }
+    case 'turn_undated':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_turn_undated',
+          model: degradation.model,
+          at: degradation.at || '(none)',
+          message: `cost unknown: this turn carries no readable start date (${degradation.at || 'empty'}), and a price is only ever read at the date the turn ran — ${degradation.model} is in the table, but no rate can be selected without a date, and "now" is not an answer`,
+        },
+      }
+    case 'counters_unusable':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_counters_unusable',
+          model: degradation.model,
+          message: `cost unknown: the usage counters reported for ${degradation.model} are not usable token counts (negative, fractional or out of exact range) — no figure is derived from them`,
+        },
+      }
+    case 'harness_amount_unusable':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_harness_amount_unusable',
+          subtype: degradation.subtype,
+          message: `cost estimate discarded: the ${degradation.subtype} result frame reports a cost that is not a usable amount (not finite, negative, or beyond the per-turn ceiling) — the turn falls back to the input-and-cache lower bound rather than record a broken figure`,
+        },
+      }
+    case 'turn_unrepresentable':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_turn_unrepresentable',
+          kept_ticks: degradation.keptTicks,
+          dropped_ticks: degradation.droppedTicks,
+          message: `cost not added: this turn already carried ${degradation.keptTicks} ticks and a further attempt measured ${degradation.droppedTicks}, whose sum leaves the exact integer range — the turn keeps the figure it had rather than take a wrong one, so it now UNDERSTATES what the turn cost`,
+        },
+      }
+    case 'total_unrepresentable':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_total_unrepresentable',
+          turns: degradation.turns,
+          message: `task total not recorded: the ${degradation.turns} priced turns of this task sum past the exact integer range, so the total is stated nowhere rather than stated wrong — the per-turn figures are untouched. This is NOT an unpriced task`,
+        },
+      }
+    case 'drift':
+      return {
+        type: 'cost',
+        data: {
+          name: 'cost_drift',
+          lower_bound_ticks: degradation.lowerBoundTicks,
+          harness_ticks: degradation.harnessTicks,
+          message: `cost cross-check: the input-and-cache lower bound (${degradation.lowerBoundTicks} ticks) exceeds the harness estimate kept for this turn (${degradation.harnessTicks} ticks), which it structurally cannot — one of the two price tables is out of date. The harness figure stands; this line is informative`,
+        },
+      }
+  }
+}
+
+/** A turn's cost with its provenance; the two never travel apart. */
+export type TurnCost = SettledCost
+
+/**
+ * One ATTEMPT at a turn: what its meter last published, and whether that
+ * measurement has already been folded onto the turn.
+ *
+ * The marker exists because an attempt has two exit paths and BOTH can run for
+ * the same attempt: `finishTurn` folds the cost and then goes on to commit,
+ * emit and persist — any of which can throw (a full disk on the journal, a
+ * host broadcast blowing up) — and the promise chain's `.catch` then runs
+ * `failTurn` with the very same figure. Folding is ADDITIVE since a resumed
+ * attempt's cost is disjoint from the killed one's, so without this marker the
+ * same attempt would be counted twice, on the turn and therefore on the
+ * record's derived total.
+ *
+ * INVARIANT: one attempt's measurement is folded AT MOST ONCE, whichever way
+ * the attempt leaves.
+ */
+export type TurnAttempt = { cost: TurnCost | null; folded: boolean }
+
+/**
+ * The environment the cost meter is allowed to read for its partner-platform
+ * detection: the one the process that ACTUALLY RUNS the agent will see, and
+ * nothing else.
+ *
+ * On the host that is `agentEnv`'s narrowed environment (or ours when the
+ * command is a custom one that inherits everything).
+ *
+ * IN THE CAGE it is `CAGE_FORWARDED_ENV` and only that: the container gets
+ * those variables by name and nothing more. Reading the host's environment
+ * there would be reading variables the agent never sees — an operator with
+ * `CLAUDE_CODE_USE_BEDROCK` exported for some other tool would have every
+ * caged turn declared "partner platform" and stripped of its cost, while the
+ * agent inside was in fact billing first-party. The model-SHAPE signal
+ * (`PARTNER_SHAPES`) stays active on both paths and is what actually catches a
+ * real Bedrock or Vertex run, because the ids come back on the stream itself.
+ *
+ * Deriving the cage's set from `CAGE_FORWARDED_ENV` rather than hard-coding an
+ * exclusion keeps this honest: the day those variables are genuinely forwarded,
+ * detection resumes by itself.
+ */
+export function costRunEnv(
+  caged: boolean,
+  command: string,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (!caged) {
+    return agentEnv(command, source) ?? source
+  }
+  const env: NodeJS.ProcessEnv = {}
+  for (const name of CAGE_FORWARDED_ENV) {
+    const value = source[name]
+    if (value !== undefined) {
+      env[name] = value
+    }
+  }
+  return env
+}
+
 export type TaskTurnOutcome =
   | {
       kind: 'done'
       response: string
       sessionId: string | null
       tokens: number
+      /**
+       * What the turn cost and WHERE the figure comes from, or null when
+       * UNKNOWN — which is never 0.
+       */
+      cost: TurnCost | null
       /** First turn only: the branch name the agent proposed for the task. */
       branchProposal?: string
     }
@@ -221,6 +397,11 @@ export type TaskTurnOutcome =
       question: string
       sessionId: string | null
       tokens: number
+      /**
+       * What the turn cost and WHERE the figure comes from, or null when
+       * UNKNOWN — which is never 0.
+       */
+      cost: TurnCost | null
       /** First turn only: the branch name the agent proposed for the task. */
       branchProposal?: string
     }
@@ -250,6 +431,14 @@ export type RunTaskTurnOptions = {
   onText?: (text: string, seq: number) => void
   /** Cumulative token count of the turn (SSE live meter; final value persisted on the turn). */
   onTokens?: (total: number) => void
+  /**
+   * Best cost known for the turn SO FAR, with its provenance, republished at
+   * every change (`null` when nothing is claimable any more). Published as it
+   * accrues rather than only at the end, so a caller can persist what a turn
+   * had already spent when it was killed — an interrupted turn's cost is not
+   * lost, it is simply a lower bound.
+   */
+  onCost?: (cost: TurnCost | null) => void
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
   /** Egress allowlist of the cage (container isolation only). */
   allowedDomains?: readonly string[] | undefined
@@ -290,19 +479,39 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
     sessionId = session.id
   }
   let tokens = 0
+  // Absence is the honest default: a turn whose cost was never established
+  // carries none, and no reader may read that as "it was free".
+  let cost: TurnCost | null = null
+  // The price table is read at the instant the TURN started, never at "now":
+  // a turn is billed at the rate that was in force while it ran. The turn was
+  // appended by the caller before this runs, so its stamp is already on the
+  // record — and when it is not, the answer is an EMPTY stamp that prices
+  // nothing and says so, never a clock reading that would quietly bill the
+  // turn at today's rate.
+  const startedAt = opts.task.turns.at(-1)?.started_at ?? ''
   const parser = emitsClaudeStreamJson(command)
-    ? createClaudeTaskParser({
-        onInit: (id) => {
-          sessionId = id
+    ? createClaudeTaskParser(
+        {
+          onInit: (id) => {
+            sessionId = id
+          },
+          onToolUse: (name, input) => opts.onEvent({ type: 'tool_use', data: { name, input } }),
+          onToolResult: (summary) => opts.onEvent({ type: 'tool_result', data: { summary } }),
+          ...(opts.onText ? { onText: opts.onText } : {}),
+          onTokens: (total) => {
+            tokens = total
+            opts.onTokens?.(total)
+          },
+          // The meter republishes at every change, `null` included: the last
+          // thing it said is what this turn can honestly claim.
+          onCost: (settled) => {
+            cost = settled
+            opts.onCost?.(settled)
+          },
+          onCostDegraded: (degradation) => opts.onEvent(costEvent(degradation)),
         },
-        onToolUse: (name, input) => opts.onEvent({ type: 'tool_use', data: { name, input } }),
-        onToolResult: (summary) => opts.onEvent({ type: 'tool_result', data: { summary } }),
-        ...(opts.onText ? { onText: opts.onText } : {}),
-        onTokens: (total) => {
-          tokens = total
-          opts.onTokens?.(total)
-        },
-      })
+        { at: startedAt, env: costRunEnv(caged, command) },
+      )
     : null
   let fed = 0
   // Both paths deliver the SAME cumulative stdout, so the stream-json parser
@@ -366,10 +575,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   const question = parseTaskQuestion(response)
   if (question) {
     opts.onEvent({ type: 'question', data: { question: preview(question) } })
-    return { kind: 'question', response, question, sessionId, tokens, ...branch }
+    return { kind: 'question', response, question, sessionId, tokens, cost, ...branch }
   }
   opts.onEvent({ type: 'message', data: { text: preview(response) } })
-  return { kind: 'done', response, sessionId, tokens, ...branch }
+  return { kind: 'done', response, sessionId, tokens, cost, ...branch }
 }
 
 export type TaskActionResult = { ok: true } | { ok: false; code: number; error: string }
@@ -515,6 +724,63 @@ export type TaskRunner = {
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
+/**
+ * Folds ONE attempt's measurement into the turn, then RECOMPUTES the record's
+ * total from the turns it actually carries. The total is derived, never
+ * incremented, so it can only ever equal the sum of its terms — and it comes
+ * with its coverage (`cost_turns`) and its provenance (`cost_basis`), because
+ * a total whose reader cannot tell how complete or how authoritative it is
+ * says nothing useful.
+ *
+ * The SAME rule applies whether the attempt finished or died (see
+ * `foldTurnCost`): a `resume()` re-runs the very turn a Ctrl-C cut short, so
+ * an attempt that measured nothing must never erase what an earlier one
+ * recorded, and an attempt that measured something adds to it.
+ *
+ * A task not one of whose turns could be priced keeps no total at all —
+ * unknown, not zero.
+ */
+function accrueCost(
+  record: TaskRecord,
+  turn: TaskTurn | undefined,
+  cost: TurnCost | null,
+  onDegraded?: (degradation: CostDegradation) => void,
+): void {
+  if (turn) {
+    const folded = foldTurnCost(turnCostOf(turn), cost)
+    if (folded.kind === 'set') {
+      turn.cost_ticks = folded.cost.ticks
+      turn.cost_basis = folded.cost.basis
+    } else if (folded.kind === 'unrepresentable') {
+      // The turn keeps what it had — replacing it with a wrong number would be
+      // worse — but nothing downstream can notice on its own (the turn still
+      // carries a usable figure, so the record total stays an ordinary total).
+      // Saying it here is the only place it gets said.
+      onDegraded?.({
+        cause: 'turn_unrepresentable',
+        keptTicks: folded.kept.ticks,
+        droppedTicks: folded.dropped.ticks,
+      })
+    }
+  }
+  const total = totalCost(record.turns)
+  if (total.kind === 'total') {
+    record.cost_ticks = total.ticks
+    record.cost_turns = total.turns
+    record.cost_basis = total.basis
+    return
+  }
+  // Nothing to state: the fields go rather than carry a stale total.
+  delete record.cost_ticks
+  delete record.cost_turns
+  delete record.cost_basis
+  if (total.kind === 'unrepresentable') {
+    // NOT the same thing as an unpriced task, and it must not look like one:
+    // there ARE figures, their sum simply does not fit an exact integer.
+    onDegraded?.({ cause: 'total_unrepresentable', turns: total.turns })
+  }
+}
+
 /** Transcript replay for providers without session resume (one-shot turns). */
 function transcript(record: TaskRecord): string {
   const parts = ['Previous turns of this task:']
@@ -643,7 +909,30 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     persist(record)
   }
 
-  const finishTurn = (record: TaskRecord, outcome: TaskTurnOutcome, startedAt: number): void => {
+  /**
+   * Folds an attempt's cost onto the turn, exactly once (see TurnAttempt).
+   * Both exit paths go through here and no other place writes a turn's cost.
+   */
+  const foldAttemptCost = (
+    record: TaskRecord,
+    turn: TaskTurn | undefined,
+    attempt: TurnAttempt | undefined,
+  ): void => {
+    if (attempt?.folded) {
+      return
+    }
+    if (attempt) {
+      attempt.folded = true
+    }
+    accrueCost(record, turn, attempt?.cost ?? null, (d) => emit(record.id, costEvent(d)))
+  }
+
+  const finishTurn = (
+    record: TaskRecord,
+    outcome: TaskTurnOutcome,
+    startedAt: number,
+    attempt?: TurnAttempt,
+  ): void => {
     record.work_ms += Date.now() - startedAt
     adoptBranchProposal(record, outcome)
     record.agent_session_id = outcome.sessionId ?? record.agent_session_id
@@ -656,6 +945,10 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         turn.tokens = outcome.tokens
       }
     }
+    // `attempt.cost` and `outcome.cost` are the same last publication of the
+    // same meter; the attempt carries it so the failure path can fold the same
+    // figure — or, having seen it folded here, decline to fold it again.
+    foldAttemptCost(record, turn, attempt ?? { cost: outcome.cost, folded: false })
     if (outcome.kind === 'done') {
       commitTurn(record)
       if (opts.onTurnDone) {
@@ -690,13 +983,24 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     record: TaskRecord,
     err: unknown,
     startedAt: number,
-    aborted: boolean,
+    /** How the turn died, and the attempt that died. */
+    death: { aborted: boolean; attempt?: TurnAttempt },
   ): void => {
+    const { aborted } = death
     record.work_ms += Date.now() - startedAt
     const turn = record.turns.at(-1)
     if (turn && !turn.ended_at) {
       turn.ended_at = new Date().toISOString()
     }
+    // A turn that was killed still SPENT what it had spent. The meter's last
+    // published figure is folded onto the turn with its own basis: dropping it
+    // would report a cut turn as free, which is the one reading this field
+    // must never allow. Same fold as the success path — an attempt that
+    // measured nothing erases nothing — and at most once per attempt, since a
+    // finishTurn that folded and THEN threw lands right here. It happens
+    // BEFORE any branching, so the watchdog's exit folds exactly like the
+    // others: no exit path of this function may leave a turn's spend unwritten.
+    foldAttemptCost(record, turn, death.attempt)
     // A run the semantic watchdog cut is NOT a dead end: `inactivity_timeout`
     // is RETRYABLE in D2 — what has to change is the run or its environment,
     // never the work on the branch — so the task lands on 'interrupted', which
@@ -794,7 +1098,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       ensureWorktree(record)
     } catch (err) {
       active.delete(record.id)
-      failTurn(record, err, Date.now(), false)
+      failTurn(record, err, Date.now(), { aborted: false })
       releaseSlot(record.id)
       return
     }
@@ -807,6 +1111,10 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     delete record.heartbeat_at
     persist(record)
     const startedAt = Date.now()
+    // This attempt at the turn: the meter's last published figure — what it
+    // had already spent if it dies — and the marker that keeps that figure
+    // from being folded twice when both exit paths run.
+    const attempt: TurnAttempt = { cost: null, folded: false }
     const turn = runTaskTurn({
       cwd: record.worktree,
       task: record,
@@ -819,13 +1127,18 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       onEvent: (event) => emit(record.id, event),
       onText: (text, seq) => opts.onText?.(record.id, text, seq),
       onTokens: (total) => opts.onTokens?.(record.id, total),
+      onCost: (cost) => {
+        attempt.cost = cost
+      },
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
       ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
       ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
       ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
     })
-      .then((outcome) => finishTurn(record, outcome, startedAt))
-      .catch((err: unknown) => failTurn(record, err, startedAt, controller.signal.aborted))
+      .then((outcome) => finishTurn(record, outcome, startedAt, attempt))
+      .catch((err: unknown) =>
+        failTurn(record, err, startedAt, { aborted: controller.signal.aborted, attempt }),
+      )
       .finally(() => {
         active.delete(record.id)
         inflight.delete(record.id)

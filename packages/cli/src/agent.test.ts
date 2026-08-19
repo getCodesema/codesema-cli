@@ -23,8 +23,10 @@ import {
   type AgentClock,
   type AgentHeartbeat,
   type AgentWatchdogCause,
+  type ClaudeTaskParserOptions,
   type WatchdogBudgets,
 } from './agent.js'
+import type { CostDegradation, PriceRow, SettledCost } from './cost.js'
 
 describe('claudeStreamCommand', () => {
   test('claude -p basic: stream flags added', () => {
@@ -1397,5 +1399,242 @@ describe('createClaudeTaskParser countOnly', () => {
     // still holds far more than the ceiling and the result is unchanged.
     expect(Array.from(inputs[0] ?? '')).toHaveLength(TASK_TOOL_SUMMARY_MAX)
     expect(inputs[0]?.endsWith('…')).toBe(true)
+  })
+})
+
+// --- per-turn cost (T1.8) ---------------------------------------------------
+
+const line = (obj: unknown) => JSON.stringify(obj) + '\n'
+
+/** One assistant frame, with the message id the stream repeats across blocks. */
+const assistant = (
+  model: string,
+  usage: Record<string, unknown>,
+  id = 'msg_01',
+  content: unknown[] = [],
+) => line({ type: 'assistant', message: { id, model, content, usage } })
+
+/** A task parser wired to record everything the cost meter publishes. */
+const collect = (options: ClaudeTaskParserOptions = {}) => {
+  const costs: (SettledCost | null)[] = []
+  const degraded: CostDegradation[] = []
+  const parser = createClaudeTaskParser(
+    {
+      onCost: (cost) => costs.push(cost),
+      onCostDegraded: (d) => degraded.push(d),
+    },
+    { at: '2026-08-19T10:00:00.000Z', env: {}, ...options },
+  )
+  return { costs, degraded, parser }
+}
+
+describe('createClaudeTaskParser cost', () => {
+  test('the lower bound is counted by the CLI from the stream counters', () => {
+    const { costs, degraded, parser } = collect()
+    // claude-opus-5: $5/MTok base input => 50 000 ticks per token.
+    parser.push(assistant('claude-opus-5', { input_tokens: 100, output_tokens: 50 }))
+    expect(costs).toEqual([{ ticks: 100 * 50_000, basis: 'lower_bound' }])
+    expect(degraded).toEqual([])
+  })
+
+  test('cache reads and both cache-write TTLs are billed, at their own rates', () => {
+    const { costs, parser } = collect()
+    parser.push(
+      assistant('claude-opus-5', {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: 20_000,
+        cache_creation: {
+          ephemeral_5m_input_tokens: 1_000,
+          ephemeral_1h_input_tokens: 2_000,
+        },
+      }),
+    )
+    // input 100 x 50 000 + read 20 000 x 5 000 + 5m 1 000 x 62 500 + 1h 2 000 x 100 000.
+    expect(costs).toEqual([
+      {
+        ticks: 100 * 50_000 + 20_000 * 5_000 + 1_000 * 62_500 + 2_000 * 100_000,
+        basis: 'lower_bound',
+      },
+    ])
+  })
+
+  test('the frames of ONE response are charged once, however many blocks it has', () => {
+    const { costs, parser } = collect()
+    const usage = { input_tokens: 1_000, output_tokens: 50, cache_read_input_tokens: 10_000 }
+    // Claude Code emits one frame per content block, all with the same id and
+    // the same usage: counting frames would inflate the turn several-fold.
+    parser.push(assistant('claude-opus-5', usage, 'msg_A'))
+    parser.push(assistant('claude-opus-5', usage, 'msg_A'))
+    parser.push(assistant('claude-opus-5', usage, 'msg_A'))
+    expect(costs).toEqual([{ ticks: 1_000 * 50_000 + 10_000 * 5_000, basis: 'lower_bound' }])
+  })
+
+  test('the TOKEN meter deduplicates by message id too — the same bug, same fix', () => {
+    const seen: number[] = []
+    const usage = { input_tokens: 100, output_tokens: 50 }
+    const parser = createClaudeTaskParser({ onTokens: (n) => seen.push(n) })
+    parser.push(assistant('claude-opus-5', usage, 'msg_A'))
+    parser.push(assistant('claude-opus-5', usage, 'msg_A'))
+    parser.push(assistant('claude-opus-5', usage, 'msg_B'))
+    expect(seen).toEqual([150, 300])
+  })
+
+  test('subagent frames never reach the price table', () => {
+    const { costs, parser } = collect()
+    parser.push(assistant('claude-opus-5', { input_tokens: 1_000 }, 'msg_main'))
+    // Claude Code stamps a subagent's frames with the tool call that spawned
+    // them; the official cost-tracking guide skips exactly these.
+    parser.push(
+      line({
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_01',
+        message: {
+          id: 'msg_sub',
+          model: 'claude-opus-5',
+          content: [],
+          usage: { input_tokens: 500_000 },
+        },
+      }),
+    )
+    expect(costs).toEqual([{ ticks: 1_000 * 50_000, basis: 'lower_bound' }])
+  })
+
+  test('subagent tokens ARE still counted: the turn burned them', () => {
+    const seen: number[] = []
+    const parser = createClaudeTaskParser({ onTokens: (n) => seen.push(n) })
+    parser.push(assistant('claude-opus-5', { input_tokens: 100, output_tokens: 50 }, 'msg_main'))
+    parser.push(
+      line({
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_01',
+        message: {
+          id: 'msg_sub',
+          model: 'claude-opus-5',
+          content: [],
+          usage: { input_tokens: 200, output_tokens: 80 },
+        },
+      }),
+    )
+    expect(seen).toEqual([150, 430])
+  })
+
+  test('a figure the model merely SAYS is never the cost', () => {
+    const { costs, parser } = collect()
+    parser.push(
+      assistant('claude-opus-5', { input_tokens: 10, output_tokens: 10 }, 'msg_01', [
+        { type: 'text', text: 'This turn cost me $12.34, about 999999999 ticks.' },
+      ]),
+    )
+    // Derived from the counters alone; the prose in the reply changes nothing.
+    expect(costs).toEqual([{ ticks: 10 * 50_000, basis: 'lower_bound' }])
+  })
+
+  test('the result frame supersedes the bound with the harness estimate', () => {
+    const { costs, parser } = collect()
+    parser.push(assistant('claude-opus-5', { input_tokens: 100, output_tokens: 50 }))
+    parser.push(
+      line({
+        type: 'result',
+        subtype: 'success',
+        result: 'done',
+        total_cost_usd: 0.25,
+        modelUsage: { 'claude-opus-5': { costUSD: 0.25 } },
+        usage: { input_tokens: 400, output_tokens: 150 },
+      }),
+    )
+    expect(costs.at(-1)).toEqual({ ticks: 2_500_000_000, basis: 'harness' })
+  })
+
+  test('a result frame that FAILED leaves the bound in place, zeroes and all', () => {
+    const { costs, parser } = collect()
+    parser.push(assistant('claude-opus-5', { input_tokens: 100, output_tokens: 50 }))
+    parser.push(
+      line({
+        type: 'result',
+        subtype: 'error_during_execution',
+        result: 'crashed',
+        total_cost_usd: 0,
+        usage: {},
+      }),
+    )
+    // A 0 on an error frame is UNKNOWN: it must not overwrite what we counted.
+    expect(costs.at(-1)).toEqual({ ticks: 100 * 50_000, basis: 'lower_bound' })
+  })
+
+  test('a model with no price row: no cost at all, and a named degradation', () => {
+    const { costs, degraded, parser } = collect()
+    parser.push(assistant('some-other-model-v3', { input_tokens: 100, output_tokens: 50 }))
+    expect(costs).toEqual([])
+    expect(degraded).toEqual([{ cause: 'model_unpriced', model: 'some-other-model-v3' }])
+  })
+
+  test('a run on a partner platform is left unpriced, on either signal', () => {
+    const byEnv = collect({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } })
+    byEnv.parser.push(assistant('claude-opus-5', { input_tokens: 100, output_tokens: 50 }))
+    expect(byEnv.costs).toEqual([])
+    expect(byEnv.degraded).toEqual([
+      { cause: 'partner_platform', signal: 'CLAUDE_CODE_USE_BEDROCK' },
+    ])
+
+    const byShape = collect()
+    byShape.parser.push(
+      assistant('us.anthropic.claude-opus-4-5-20251101-v1:0', {
+        input_tokens: 100,
+        output_tokens: 50,
+      }),
+    )
+    expect(byShape.costs).toEqual([])
+    expect(byShape.degraded[0]?.cause).toBe('partner_platform')
+  })
+
+  test('the degradation is reported once per model, not once per frame', () => {
+    const { degraded, parser } = collect()
+    parser.push(assistant('some-other-model-v3', { input_tokens: 10 }, 'a'))
+    parser.push(assistant('some-other-model-v3', { input_tokens: 10 }, 'b'))
+    parser.push(assistant('some-other-model-v3', { input_tokens: 10 }, 'c'))
+    expect(degraded).toEqual([{ cause: 'model_unpriced', model: 'some-other-model-v3' }])
+  })
+
+  test('a frame with no usage never fires the cost meter', () => {
+    const { costs, degraded, parser } = collect()
+    parser.push(
+      line({ type: 'assistant', message: { id: 'x', content: [], model: 'claude-opus-5' } }),
+    )
+    parser.push(line({ type: 'result', subtype: 'success', result: 'done' }))
+    expect(costs).toEqual([])
+    expect(degraded).toEqual([])
+  })
+
+  test('the price is read at the TURN’s date, not at "now"', () => {
+    const rows: PriceRow[] = [
+      {
+        model: 'claude-opus-5',
+        until: '2026-08-18',
+        input_cents_per_mtok: 500,
+        cache_read_cents_per_mtok: 50,
+        cache_write_5m_cents_per_mtok: 625,
+        cache_write_1h_cents_per_mtok: 1_000,
+      },
+    ]
+    const before = collect({ at: '2026-08-17T10:00:00.000Z', prices: rows })
+    before.parser.push(assistant('claude-opus-5', { input_tokens: 1_000 }))
+    expect(before.costs).toEqual([{ ticks: 1_000 * 50_000, basis: 'lower_bound' }])
+
+    const after = collect({ at: '2026-08-19T10:00:00.000Z', prices: rows })
+    after.parser.push(assistant('claude-opus-5', { input_tokens: 1_000 }))
+    expect(after.costs).toEqual([])
+    expect(after.degraded).toEqual([
+      { cause: 'price_expired', model: 'claude-opus-5', at: '2026-08-19T10:00:00.000Z' },
+    ])
+  })
+
+  test('the token meter is untouched by the cost path', () => {
+    const tokens: number[] = []
+    const parser = createClaudeTaskParser({ onTokens: (n) => tokens.push(n) })
+    parser.push(assistant('some-other-model-v3', { input_tokens: 100, output_tokens: 50 }, 'a'))
+    parser.push(assistant('claude-opus-5', { input_tokens: 200, output_tokens: 80 }, 'b'))
+    // Tokens are counted whether or not the model can be priced.
+    expect(tokens).toEqual([150, 430])
   })
 })

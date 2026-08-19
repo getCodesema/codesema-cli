@@ -217,6 +217,27 @@ export type TaskStatus =
   | 'failed'
   | 'interrupted'
 
+/**
+ * Ticks in one US dollar: `cost_ticks` is counted in ticks, 1 tick = 1e-10 USD
+ * (mirrors packages/contract/src/tasks.ts). Money travels as a non-negative
+ * integer, never as a float.
+ */
+export const TICKS_PER_USD = 10_000_000_000
+
+/**
+ * WHERE a cost figure comes from (mirrors packages/contract/src/tasks.ts).
+ *
+ * - 'harness': the agent harness's own estimate of the run, covering output,
+ *   cache and subagents — an ESTIMATE from its bundled price table, not an
+ *   invoice.
+ * - 'lower_bound': computed by the CLI over input and cache tokens only, at
+ *   published first-party rates. Everything omitted is positive, so the real
+ *   bill is this figure OR MORE.
+ *
+ * Anything the UI ever shows must be able to say which of the two it is.
+ */
+export type CostBasis = 'harness' | 'lower_bound'
+
 export type TaskTurn = {
   prompt: string
   response: string | null
@@ -225,6 +246,18 @@ export type TaskTurn = {
   ended_at: string | null
   /** Total LLM tokens of the turn, when the agent stream reported usage. */
   tokens?: number
+  /**
+   * What the turn cost, as a non-negative INTEGER of ticks (see
+   * TICKS_PER_USD), counted by the CLI from the stream's token counters.
+   * ABSENT means UNKNOWN — never `0`, and never rendered as "0 $": a turn
+   * without this field shows no cost at all.
+   */
+  cost_ticks?: number
+  /**
+   * Provenance of `cost_ticks` (see CostBasis). Absent whenever the figure is
+   * — a provenance with no number behind it describes nothing.
+   */
+  cost_basis?: CostBasis
 }
 
 export type TaskEventType =
@@ -242,6 +275,12 @@ export type TaskEventType =
   | 'interrupted'
   /** Isolation decided for the task at creation, with the reason behind it. */
   | 'isolation'
+  /**
+   * Something worth stating about what a turn COST, or why no figure could be
+   * established. A NEUTRAL line, never an error: a gap in the accounting is
+   * not a failure of the work. The distinct cause is named in `data.name`.
+   */
+  | 'cost'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
@@ -316,6 +355,24 @@ export type TaskRecord = {
    * something happens. Only meaningful while `running` (a starting turn clears
    * it); absent = nothing known, never "dead". */
   heartbeat_at?: string
+  /**
+   * Running total of the task's cost: the sum of the `cost_ticks` its turns
+   * carry, same unit. ABSENT means UNKNOWN (records written before the field
+   * existed, tasks not one of whose turns could be priced) — the UI renders
+   * nothing then, and above all not "0 $".
+   */
+  cost_ticks?: number
+  /**
+   * How many turns that total covers. A partial total is only honest if its
+   * coverage is legible next to it. Absent whenever `cost_ticks` is.
+   */
+  cost_turns?: number
+  /**
+   * Provenance of the total (see CostBasis), derived from the turns it sums:
+   * 'harness' only when every covered turn is. Absent whenever `cost_ticks`
+   * is.
+   */
+  cost_basis?: CostBasis
   created_at: string
   updated_at: string
 }

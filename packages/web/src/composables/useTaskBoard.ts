@@ -435,6 +435,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   error: 'workspace.evError',
   interrupted: 'workspace.evInterrupted',
   isolation: 'workspace.evIsolation',
+  cost: 'workspace.evCost',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -456,6 +457,9 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   error: 'stop',
   interrupted: 'idle',
   isolation: 'idle',
+  // Neutral on purpose: a cost that could not be established is a gap in the
+  // accounting, not a failure of the work.
+  cost: 'idle',
 }
 
 export function eventTone(type: TaskEventType): EventTone {
@@ -495,6 +499,7 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   error: ['message', 'error', 'summary'],
   interrupted: ['message', 'summary'],
   isolation: ['reason', 'isolation'],
+  cost: ['message', 'summary'],
 }
 
 /**

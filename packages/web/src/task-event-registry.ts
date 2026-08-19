@@ -48,4 +48,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   error: TaskEventLine,
   interrupted: TaskEventLine,
   isolation: TaskEventLine,
+  cost: TaskEventLine,
 }
