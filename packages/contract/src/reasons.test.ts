@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   isTerminalReason,
   REASON_CODES,
+  reasonCodeOf,
   sanitizeReasonCode,
   sanitizeTaskReason,
   TASK_EVENT_DATA_STRING_MAX,
@@ -124,6 +125,42 @@ describe('sanitizeReasonCode', () => {
     ]) {
       expect(() => sanitizeReasonCode(raw)).not.toThrow()
       expect(sanitizeReasonCode(raw)).toBeNull()
+    }
+  })
+})
+
+describe('reasonCodeOf', () => {
+  test('reads both spellings, because both really exist in the wild', () => {
+    // Producers write `reasonCode` (ShipOutcome, WorktreeLockBusyError); the
+    // wire, the journal and anything read back from disk write `reason_code`.
+    // A reader that knew one spelling would silently drop half the
+    // degradations it exists to surface.
+    expect(reasonCodeOf({ reasonCode: 'resource_busy' })).toBe('resource_busy')
+    expect(reasonCodeOf({ reason_code: 'resource_busy' })).toBe('resource_busy')
+    expect(
+      reasonCodeOf(Object.assign(new Error('busy'), { reasonCode: 'forge_unreachable' })),
+    ).toBe('forge_unreachable')
+  })
+
+  test('the producer spelling wins when a value carries both', () => {
+    expect(reasonCodeOf({ reasonCode: 'agent_error', reason_code: 'checks_failed' })).toBe(
+      'agent_error',
+    )
+  })
+
+  test('anything that names no known code is null, never a throw', () => {
+    for (const raw of [
+      undefined,
+      null,
+      'resource_busy',
+      42,
+      {},
+      new Error('plain'),
+      { reasonCode: 'not_a_code' },
+      { reason_code: 99 },
+    ]) {
+      expect(() => reasonCodeOf(raw)).not.toThrow()
+      expect(reasonCodeOf(raw)).toBeNull()
     }
   })
 })

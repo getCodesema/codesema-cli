@@ -49,6 +49,13 @@ export type PrepInput = {
   target: string
   target_source: string
   merge_base: string
+  /**
+   * Commit the reviewed range STARTS at, when the caller pinned one (a task
+   * conversation anchoring on where it began). Absent on every ordinary MR
+   * review, where the range is the merge-base with the target — and absent is
+   * the honest default: no pin, no claim.
+   */
+  baseline?: string
   head_sha: string
   repo_root: string
   commits: string[]
@@ -372,20 +379,34 @@ function parseNumstat(raw: string): DiffSummary['files'] {
  * shared by computePrepInput (local branch vs. detected target) and the web
  * preview endpoints (arbitrary local or remote-tracking refs, e.g. an MR not
  * checked out locally).
+ *
+ * `baseline` narrows the SCOPE of the measurement without touching the
+ * IDENTITY of the comparison. The target keeps naming the branch this work is
+ * headed for — it labels the review, keys its archive and drives the
+ * incremental lookup — while the range starts where the work actually began.
+ * That is what a task conversation needs: on a branch that already carried
+ * commits before the conversation opened, `target...source` measures those too.
+ * Without a baseline, nothing changes: the range is the merge-base of target
+ * and source, exactly as before.
  */
-export function computeDiffSummary(sourceRef: string, targetRef: string, cwd: string): DiffSummary {
-  const mb = mergeBase(targetRef, sourceRef, cwd)
+export function computeDiffSummary(
+  sourceRef: string,
+  targetRef: string,
+  cwd: string,
+  baseline?: string | undefined,
+): DiffSummary {
+  // The baseline IS the base of the range it opens: no merge-base to look for.
+  const mb = baseline ?? mergeBase(targetRef, sourceRef, cwd)
   if (!mb) {
     throw new Error(t('prep.noMergeBase', { target: targetRef, branch: sourceRef }))
   }
 
   const excludes = excludePathspecs(cwd)
-  const range = `${targetRef}...${sourceRef}`
+  const range = baseline ? `${baseline}..${sourceRef}` : `${targetRef}...${sourceRef}`
+  const commitRange = baseline ? `${baseline}..${sourceRef}` : `${targetRef}..${sourceRef}`
   const diff = mrDiff(range, cwd, excludes)
 
-  const commits = (
-    tryGit(['log', '--pretty=%s', `${targetRef}..${sourceRef}`, '--max-count=30'], cwd) ?? ''
-  )
+  const commits = (tryGit(['log', '--pretty=%s', commitRange, '--max-count=30'], cwd) ?? '')
     .split('\n')
     .filter(Boolean)
     .map(truncateSubject)
@@ -404,6 +425,8 @@ export function computeDiffSummary(sourceRef: string, targetRef: string, cwd: st
 export async function computePrepInput(opts: {
   branch?: string | undefined
   target?: string | undefined
+  /** Pins where the reviewed range starts; see computeDiffSummary. */
+  baseline?: string | undefined
   cwd: string
 }): Promise<PrepInput> {
   const cwd = repoRoot(opts.cwd)
@@ -422,7 +445,12 @@ export async function computePrepInput(opts: {
     throw new Error(t('prep.targetIsSelf', { branch }))
   }
 
-  const { merge_base: mb, commits, files, diff } = computeDiffSummary(headRef, target, cwd)
+  const {
+    merge_base: mb,
+    commits,
+    files,
+    diff,
+  } = computeDiffSummary(headRef, target, cwd, opts.baseline)
   if (!diff.trim()) {
     const dirty = headRef === 'HEAD' ? tryGit(['status', '--porcelain'], cwd) : null
     const hint = dirty?.trim() ? t('prep.dirtyHint') : ''
@@ -441,6 +469,7 @@ export async function computePrepInput(opts: {
     target,
     target_source: source,
     merge_base: mb,
+    ...(opts.baseline ? { baseline: opts.baseline } : {}),
     head_sha: headSha(cwd, headRef),
     repo_root: cwd,
     commits,
@@ -456,6 +485,8 @@ export async function computePrepInput(opts: {
 export async function prep(opts: {
   branch?: string | undefined
   target?: string | undefined
+  /** Pins where the reviewed range starts; see computeDiffSummary. */
+  baseline?: string | undefined
   cwd: string
   quiet?: boolean | undefined
 }): Promise<PrepInput> {

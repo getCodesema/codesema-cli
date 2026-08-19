@@ -1,5 +1,5 @@
 import { execFileSync, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -13,10 +13,16 @@ import {
   type AgentRunOptions,
 } from './agent.js'
 import { loadConfig, resolveWatchdogBudgets } from './config.js'
-import type { TaskEvent, TaskRecord, TaskStatus, TaskTurn } from './contract.js'
+import {
+  isActiveTaskStatus,
+  type TaskEvent,
+  type TaskRecord,
+  type TaskStatus,
+  type TaskTurn,
+} from './contract.js'
 import type { CostDegradation } from './cost.js'
 import { DEFAULT_TIMEOUT_S } from './fix.js'
-import { tryGit } from './git.js'
+import { refExists, tryGit } from './git.js'
 import { setLanguage } from './i18n.js'
 import { CAGE_FORWARDED_ENV, type RunContainerTurnOptions } from './task-isolation.js'
 import {
@@ -27,11 +33,14 @@ import {
   createTaskSlotPool,
   parseTaskBranchProposal,
   parseTaskQuestion,
+  pendingResumeTurn,
   runTaskTurn,
   supportsSessionResume,
   taskCommandFor,
 } from './task-runner.js'
+import { branchCheckoutPath, type WorktreeLockFn } from './task-worktree.js'
 import { appendTaskEvent, createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
+import { acquireWorktreeLock, type WorktreeLockHandle } from './worktree-lock.js'
 
 // --- pure helpers ---
 
@@ -184,7 +193,12 @@ function makeRepo(): string {
   return repo
 }
 
+const openLocks: WorktreeLockHandle[] = []
+
 afterEach(() => {
+  for (const lock of openLocks.splice(0)) {
+    lock.release()
+  }
   for (const dir of cleanups.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -206,6 +220,11 @@ function makeTask(
     isolation,
   })
 }
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
 
 async function until(cond: () => boolean, timeoutMs = 3000): Promise<void> {
   const start = Date.now()
@@ -258,6 +277,12 @@ function fakeClaude(respond: (options: AgentRunOptions) => string, write?: strin
   }
   return fake
 }
+
+/** Agent that never resolves until its abort signal fires (a SIGTERMed run). */
+const hangingAgent = (options: AgentRunOptions): Promise<string> =>
+  new Promise((_resolve, reject) => {
+    options.signal?.addEventListener('abort', () => reject(new Error('agent interrupted')))
+  })
 
 // --- runTaskTurn ---
 
@@ -778,8 +803,10 @@ describe('createTaskRunner', () => {
     })
     runner.start(first)
     runner.start(second)
+    // The slot is taken synchronously; the status flips once the worktree has
+    // materialized (which now waits for the repo's worktree lock).
     expect(runner.runningCount()).toBe(1)
-    expect(status(repo, first.id)).toBe('running')
+    await until(() => status(repo, first.id) === 'running')
     expect(status(repo, second.id)).toBe('queued')
 
     release()
@@ -850,7 +877,7 @@ describe('createTaskRunner', () => {
     runnerA.start(first)
     runnerB.start(second)
     // ONE global slot: repo B's task queues even though its own runner is idle.
-    expect(status(repoA, first.id)).toBe('running')
+    await until(() => status(repoA, first.id) === 'running')
     expect(status(repoB, second.id)).toBe('queued')
     expect(runnerB.runningCount()).toBe(0)
 
@@ -968,6 +995,55 @@ describe('agent-named task branches', () => {
     expect(loadTask(repo, task.id)?.branch).toBe('codesema/task-fix-preview-rename-2')
   })
 
+  test('a work-on materialization that loses the lock keeps its branch claimed', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo })
+    const task = createTask(repo, {
+      title: 'work on my branch',
+      prompt: 'keep going',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    // A third party holds the repo lock and never lets go, with a budget short
+    // enough for a test: the materialization loses.
+    const blocker = await acquireWorktreeLock(repo)
+    const impatient: WorktreeLockFn = (cwd, signal) =>
+      acquireWorktreeLock(cwd, { timeoutMs: 5, sleepFn: () => Promise.resolve(), signal })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'must not run').run,
+      worktreeLockFn: impatient,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    const stopped = loadTask(repo, task.id)
+    expect(stopped?.reason?.code).toBe('resource_busy')
+    // Resumable, therefore ACTIVE, therefore still the owner of its branch —
+    // that is exactly what the server's one-conversation-per-branch guard
+    // reads. Under the old terminal 'failed' the branch was released, and a
+    // second conversation could have been opened on top of this one.
+    expect(isActiveTaskStatus(stopped?.status ?? 'failed')).toBe(true)
+    expect(stopped?.branch).toBe('feature/mine')
+    // Nothing was taken meanwhile: the branch is not checked out anywhere.
+    expect(branchCheckoutPath(repo, 'feature/mine')).toBeNull()
+
+    // And the claim is not a dead end: the conversation really does start on
+    // that branch once the lock frees.
+    blocker.release()
+    runner.reply(task.id, 'try again')
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const resumed = loadTask(repo, task.id)
+    expect(resumed?.branch).toBe('feature/mine')
+    expect(branchCheckoutPath(repo, 'feature/mine')).toBe(resumed?.worktree ?? '')
+  })
+
   test("a work-on conversation is never asked for a name and never renames the user's branch", async () => {
     const repo = makeRepo()
     execFileSync('git', ['branch', 'feature/mine'], { cwd: repo })
@@ -1029,6 +1105,962 @@ describe('agent-named task branches', () => {
     expect(loadTask(repo, task.id)?.turns[1]?.response).toBe(
       'BRANCH: rename-me-twice\nstep two done',
     )
+  })
+})
+
+describe('baseline recorded by the runner', () => {
+  test('the turn is measured from the start point, and the WIP left behind is announced', async () => {
+    const repo = makeRepo()
+    // The human's working tree at the moment the task starts: an uncommitted
+    // edit and a file that was never added.
+    writeFileSync(join(repo, 'base.txt'), 'a\nuncommitted local edit\n')
+    writeFileSync(join(repo, 'scratch.txt'), 'personal notes\n')
+    const task = makeTask(repo, 'Add feature', 'write feature.txt')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'feature written', ['feature.txt']).run,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const record = loadTask(repo, task.id)
+    expect(record?.baseline_sha).toMatch(/^[0-9a-f]{40}$/)
+    expect(record?.baseline_sha).toBe(
+      execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: repo }).toString().trim(),
+    )
+    // The agent did NOT inherit the human's work in progress…
+    expect(readFileSync(join(record?.worktree ?? '', 'base.txt'), 'utf8')).toBe('a\n')
+    expect(existsSync(join(record?.worktree ?? '', 'scratch.txt'))).toBe(false)
+    // …and that is said out loud, once, rather than left to be discovered.
+    const notice = readTaskEvents(repo, task.id).find(
+      (e) => typeof e.data.uncommitted_files === 'number',
+    )
+    expect(notice?.type).toBe('message')
+    expect(notice?.data.uncommitted_files).toBe(2)
+    expect(String(notice?.data.text)).toContain('NOT carried')
+    expect(String(notice?.data.text)).toContain(String(record?.baseline_sha).slice(0, 12))
+    // The turn's diff holds its work and nothing else.
+    const changed = (
+      tryGit(['diff', '--name-only', `${record?.baseline_sha}..HEAD`], record?.worktree ?? '') ?? ''
+    )
+      .split('\n')
+      .filter(Boolean)
+    expect(changed).toEqual(['feature.txt'])
+  })
+
+  test('a clean checkout is never told it left anything behind', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'Add feature', 'write feature.txt')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done', ['feature.txt']).run,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    expect(readTaskEvents(repo, task.id).some((e) => 'uncommitted_files' in e.data)).toBe(false)
+  })
+
+  test('the notice is a one-off: a second turn does not repeat it', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'scratch.txt'), 'personal notes\n')
+    const task = makeTask(repo, 'two turns', 'first')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done', ['one.txt']).run,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const notices = readTaskEvents(repo, task.id).filter((e) => 'uncommitted_files' in e.data)
+    expect(notices).toHaveLength(1)
+  })
+
+  test('a worktree rebuilt on a DIRTY checkout never moves the anchor', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo })
+    const task = createTask(repo, {
+      title: 'work on my branch',
+      prompt: 'keep going',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'turn done', ['turn1.txt']).run,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const first = loadTask(repo, task.id)
+    expect(first?.baseline_sha).toMatch(/^[0-9a-f]{40}$/)
+
+    // Crash: the worktree is gone. The human has been working in their own
+    // checkout meanwhile, so the rebuild happens on a DIRTY repo.
+    rmSync(first?.worktree ?? '', { recursive: true, force: true })
+    writeFileSync(join(repo, 'base.txt'), 'a\nhuman work in progress\n')
+    writeFileSync(join(repo, 'secret-notes.txt'), 'private\n')
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const second = loadTask(repo, task.id)
+    // WRITE-ONCE: the anchor belongs to the conversation. Moving it here would
+    // drop turn 1 out of every diff measured from it.
+    expect(second?.baseline_sha).toBe(first?.baseline_sha ?? '')
+    const changed = (
+      tryGit(['diff', '--name-only', `${second?.baseline_sha}..HEAD`], second?.worktree ?? '') ?? ''
+    )
+      .split('\n')
+      .filter(Boolean)
+    expect(changed).toContain('turn1.txt')
+    // And the human's private work in progress is nowhere near the branch.
+    expect(changed).not.toContain('secret-notes.txt')
+    expect(changed).not.toContain('base.txt')
+    expect(existsSync(join(second?.worktree ?? '', 'secret-notes.txt'))).toBe(false)
+  })
+
+  test('a materialization that names its degradation lands the code on the record', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'busy repo', 'work')
+    // The producer this exists for is the repo's worktree lock giving up
+    // (`resource_busy`); any failure that names itself travels the same way.
+    const named = Object.assign(new Error('worktree lock held by pid 4242'), {
+      reasonCode: 'resource_busy',
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: () => Promise.reject(named),
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    // The EVENT names the same outcome as the status: a task parked on
+    // 'interrupted', with a resume affordance, is not announced by an 'error'.
+    expect(readTaskEvents(repo, task.id).some((e) => e.type === 'error')).toBe(false)
+    const event = readTaskEvents(repo, task.id).find((e) => e.type === 'interrupted')
+    // The payload is untouched; the code rides beside it.
+    expect(event?.data).toEqual({ message: 'worktree lock held by pid 4242' })
+    expect(event?.reason_code).toBe('resource_busy')
+    const record = loadTask(repo, task.id)
+    expect(record?.reason).toEqual({
+      code: 'resource_busy',
+      detail: 'worktree lock held by pid 4242',
+    })
+    // 'resource_busy' is RETRYABLE: it must not land on a status nothing can
+    // pick back up. The turn is still there to resume.
+    expect(record?.status).toBe('interrupted')
+    expect(pendingResumeTurn(record as TaskRecord)).not.toBeNull()
+  })
+
+  test('a TERMINAL degradation lands on failed, and is announced as an error', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'unrecoverable', 'work')
+    // The other half of the rule: waiting changes nothing for a terminal code,
+    // so parking the task on 'interrupted' would offer a Resume that can only
+    // reproduce the same failure. 'failed' is the honest end of the line.
+    const named = Object.assign(new Error('the merge cannot be replayed'), {
+      reasonCode: 'merge_conflict',
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: () => Promise.reject(named),
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'failed')
+
+    const events = readTaskEvents(repo, task.id)
+    expect(events.some((e) => e.type === 'interrupted')).toBe(false)
+    const error = events.find((e) => e.type === 'error')
+    expect(error?.reason_code).toBe('merge_conflict')
+    expect(loadTask(repo, task.id)?.reason?.code).toBe('merge_conflict')
+  })
+
+  test('a producer that spells its code the wire way is read all the same', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'snake case producer', 'work')
+    // Producers in this codebase write `reasonCode`; the wire, the journal and
+    // anything read back from disk write `reason_code`. The READER tolerates
+    // both, or half the degradations would be dropped on the floor.
+    const named = Object.assign(new Error('nobody is answering'), {
+      reason_code: 'forge_unreachable',
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: () => Promise.reject(named),
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'interrupted')
+    expect(loadTask(repo, task.id)?.reason?.code).toBe('forge_unreachable')
+  })
+
+  test('an unnamed failure still lands as a plain error, with no invented code', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'plain failure', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: () => Promise.reject(new Error('agent exploded')),
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'failed')
+
+    const error = readTaskEvents(repo, task.id).find((e) => e.type === 'error')
+    expect(error?.reason_code).toBeUndefined()
+    expect('reason' in (loadTask(repo, task.id) ?? {})).toBe(false)
+  })
+
+  test('an interrupt while the worktree queues for the repo lock lands on INTERRUPTED', async () => {
+    const repo = makeRepo()
+    // Another holder has the repo lock, so the launch queues behind it for the
+    // whole 75 s budget: only the interrupt can end this.
+    openLocks.push(await acquireWorktreeLock(repo))
+    const task = makeTask(repo, 'queued behind the lock', 'work')
+    const fake = fakeClaude(() => 'must not run')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fake.run,
+    })
+
+    runner.start(task)
+    expect(runner.runningCount()).toBe(1)
+    expect(runner.interrupt(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    const record = loadTask(repo, task.id)
+    // 'failed' would be a dead end — nothing resumes from it — while
+    // 'interrupted' is exactly what the Resume button picks back up.
+    expect(record?.status).toBe('interrupted')
+    expect(record?.reason?.code).toBe('interrupted_by_user')
+    expect(fake.prompts).toHaveLength(0)
+  })
+
+  test('a materialization whose lock wait runs out carries resource_busy to the record', async () => {
+    const repo = makeRepo()
+    // A holder that never lets go, and a budget short enough for a test.
+    openLocks.push(await acquireWorktreeLock(repo))
+    const impatient: WorktreeLockFn = (cwd, signal) =>
+      acquireWorktreeLock(cwd, {
+        timeoutMs: 5,
+        sleepFn: () => Promise.resolve(),
+        signal,
+      })
+    const task = makeTask(repo, 'never gets its turn', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'must not run').run,
+      worktreeLockFn: impatient,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    const record = loadTask(repo, task.id)
+    // Retryable by name, with who was holding and for how long, all the way to
+    // the record — not just inside an error object nobody reads.
+    expect(record?.reason?.code).toBe('resource_busy')
+    expect(record?.reason?.detail).toContain(String(process.pid))
+    const event = readTaskEvents(repo, task.id).find((e) => e.type === 'interrupted')
+    expect(event?.reason_code).toBe('resource_busy')
+    // Retryable, so resumable: the whole point of the code.
+    expect(pendingResumeTurn(record as TaskRecord)).not.toBeNull()
+    expect(runner.resume(task.id)).toEqual({ ok: true })
+  })
+
+  test('an abandon that cannot get the repo lock cleans up anyway, and SAYS it did', async () => {
+    const repo = makeRepo()
+    // Short budgets: the wait runs out instead of holding the test for 75 s.
+    const impatient: WorktreeLockFn = (cwd, signal) =>
+      acquireWorktreeLock(cwd, {
+        timeoutMs: 5,
+        sleepFn: () => Promise.resolve(),
+        signal,
+      })
+    const task = makeTask(repo, 'to abandon', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      worktreeLockFn: impatient,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const worktree = loadTask(repo, task.id)?.worktree ?? ''
+
+    // A holder that never lets go, exactly when the abandon needs the lock.
+    openLocks.push(await acquireWorktreeLock(repo))
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+
+    // It cleaned up rather than strand the worktree forever…
+    expect(existsSync(worktree)).toBe(false)
+    expect(status(repo, task.id)).toBe('failed')
+    // …and the degradation is named and readable, not inferred later.
+    const notice = readTaskEvents(repo, task.id).find((e) =>
+      String(e.data.message).includes('WITHOUT the repo lock'),
+    )
+    expect(notice?.reason_code).toBe('resource_busy')
+    expect(String(notice?.data.message)).toContain(String(process.pid))
+  })
+
+  test('nothing may start a turn while an abandon is waiting for the repo lock', async () => {
+    const repo = makeRepo()
+    const impatient: WorktreeLockFn = (cwd, signal) =>
+      acquireWorktreeLock(cwd, {
+        timeoutMs: 400,
+        sleepFn: () => sleep(20),
+        signal,
+      })
+    const task = makeTask(repo, 'abandon me', 'work')
+    const fake = fakeClaude(() => 'done')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fake.run,
+      worktreeLockFn: impatient,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(fake.prompts).toHaveLength(1)
+
+    // A third party holds the repo lock, so the abandon parks inside its await
+    // — the exact window where its guards and its record snapshot are stale.
+    openLocks.push(await acquireWorktreeLock(repo))
+    const abandon = runner.abandon(task.id)
+    // Without the in-flight token this reply is accepted, runs a REAL agent
+    // turn on a worktree about to be deleted, and has its record overwritten
+    // by the abandon's snapshot.
+    expect(runner.reply(task.id, 'sneak a turn in')).toMatchObject({ ok: false, code: 409 })
+    expect(runner.resume(task.id)).toMatchObject({ ok: false, code: 409 })
+    expect(await runner.abandon(task.id)).toMatchObject({ ok: false, code: 409 })
+    expect(await abandon).toEqual({ ok: true })
+
+    // One turn ran, one turn survives, and the worktree is gone.
+    expect(fake.prompts).toHaveLength(1)
+    const record = loadTask(repo, task.id)
+    expect(record?.turns).toHaveLength(1)
+    expect(record?.status).toBe('failed')
+    expect(existsSync(record?.worktree ?? '')).toBe(false)
+  })
+
+  test('an abandon whose cleanup cannot happen REPORTS it instead of rejecting', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'unremovable', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // The lock itself is broken (an unwritable .codesema, a read-only mount):
+    // this is NOT a spent wait, so removeTaskWorktree lets it through — and
+    // the HTTP layer that dispatches abandon() has no catch, so an unhandled
+    // rejection here would take the whole server down.
+    const broken = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      worktreeLockFn: () => Promise.reject(new Error('EROFS: read-only file system')),
+    })
+    const result = await broken.abandon(task.id)
+
+    expect(result).toMatchObject({ ok: false, code: 500 })
+    expect(String((result as { error: string }).error)).toContain('EROFS')
+    // The task keeps what it still has: both are still true.
+    expect(status(repo, task.id)).toBe('waiting_for_you')
+    expect(existsSync(loadTask(repo, task.id)?.worktree ?? '')).toBe(true)
+    // And the runner did not stay stuck on it.
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+  })
+
+  test('an abandon never writes back the record it read before waiting', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'shipped under it', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // A third party holds the repo lock: the abandon parks inside its await,
+    // holding a snapshot taken BEFORE it.
+    const blocker = await acquireWorktreeLock(repo)
+    const abandon = runner.abandon(task.id)
+    // A ship settles in that window — it runs one layer up (task-server), on
+    // its own copy of the record, and writes it.
+    const shipped = loadTask(repo, task.id) as TaskRecord
+    shipped.status = 'shipped'
+    shipped.reason = { code: 'forge_unreachable', detail: 'pushed, no MR' }
+    saveTask(repo, shipped)
+    blocker.release()
+    expect(await abandon).toEqual({ ok: true })
+
+    // The abandon decided on a RE-READ, not on its snapshot: writing the old
+    // copy back would have buried a pushed branch under 'failed'.
+    const record = loadTask(repo, task.id)
+    expect(record?.status).toBe('shipped')
+    expect(record?.reason?.code).toBe('forge_unreachable')
+    expect(existsSync(record?.worktree ?? '')).toBe(false)
+  })
+
+  test('an abandon that fails puts a queued task back in its queue', async () => {
+    const repo = makeRepo()
+    const running = makeTask(repo, 'holds the only slot', 'work')
+    const waiting = makeTask(repo, 'still queued', 'work')
+    const fake = fakeClaude(() => 'done')
+    // The SAME runner, whose lock breaks only for the abandon: a queue belongs
+    // to its runner, so the requeue can only be observed on the one that
+    // dropped the task in the first place.
+    let lockBroken = false
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      maxParallel: 1,
+      runAgentFn: (options: AgentRunOptions) =>
+        options.prompt.includes('holds the only slot') ? hangingAgent(options) : fake.run(options),
+      worktreeLockFn: (cwd, signal) =>
+        lockBroken
+          ? Promise.reject(new Error('EROFS: read-only file system'))
+          : acquireWorktreeLock(cwd, signal ? { signal } : {}),
+    })
+    runner.start(running)
+    await until(() => status(repo, running.id) === 'running')
+    expect(runner.start(waiting)).toEqual({ ok: true })
+    expect(status(repo, waiting.id)).toBe('queued')
+
+    // The cleanup cannot happen: the task changes in no way — so it must not
+    // come out of this dropped from every queue, 'queued' and unstartable.
+    lockBroken = true
+    expect(await runner.abandon(waiting.id)).toMatchObject({ ok: false, code: 500 })
+    lockBroken = false
+
+    // Still in the queue (start() says so) and still reachable: it runs the
+    // moment the slot frees.
+    expect(runner.start(waiting)).toMatchObject({ ok: false, code: 409 })
+    runner.interrupt(running.id)
+    await until(() => status(repo, waiting.id) === 'waiting_for_you')
+  })
+
+  test('shutdown waits for an abandon that is still holding its record', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'abandoned at the door', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const worktree = loadTask(repo, task.id)?.worktree ?? ''
+
+    const blocker = await acquireWorktreeLock(repo)
+    const abandon = runner.abandon(task.id)
+    setTimeout(() => blocker.release(), 60)
+    // An abandon is a worktree removal followed by a record write: draining
+    // between the two would exit with the worktree gone and the record still
+    // naming it.
+    await runner.shutdown()
+    expect(status(repo, task.id)).toBe('failed')
+    expect(existsSync(worktree)).toBe(false)
+    expect(await abandon).toEqual({ ok: true })
+  })
+
+  test('a repo lock taken from a live pid is REPORTED where the human reads', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'stolen lock', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      // What acquireWorktreeLock hands back when its pid-recycling valve fires.
+      worktreeLockFn: async (cwd, signal) => ({
+        ...(await acquireWorktreeLock(cwd, signal ? { signal } : {})),
+        stolen: { pid: 4242, ageMs: 1_800_000 },
+      }),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const notice = readTaskEvents(repo, task.id).find((e) =>
+      String(e.data.message).includes('taken from pid 4242'),
+    )
+    expect(notice?.reason_code).toBe('resource_busy')
+    expect(String(notice?.data.message)).toContain('1800s')
+  })
+
+  test('a stolen lock is REPORTED on the rebuild path too, not just on the first fork', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'stolen on rebuild', 'work')
+    // Only the SECOND acquisition reports a steal, so the notice can only come
+    // from the path that adopts the branch back — the one this round added.
+    let acquisitions = 0
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'turn done', ['agent.txt']).run,
+      worktreeLockFn: async (cwd, signal) => {
+        acquisitions += 1
+        const handle = await acquireWorktreeLock(cwd, signal ? { signal } : {})
+        return acquisitions === 1 ? handle : { ...handle, stolen: { pid: 77, ageMs: 900_000 } }
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const first = loadTask(repo, task.id)
+    expect(readTaskEvents(repo, task.id).some((e) => e.type === 'error')).toBe(false)
+
+    rmSync(first?.worktree ?? '', { recursive: true, force: true })
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // Same branch (the rebuild adopted it) AND the degradation is named.
+    expect(loadTask(repo, task.id)?.branch).toBe(first?.branch ?? '')
+    const notice = readTaskEvents(repo, task.id).find((e) =>
+      String(e.data.message).includes('taken from pid 77'),
+    )
+    expect(notice?.reason_code).toBe('resource_busy')
+  })
+
+  test('a stolen lock is REPORTED on a work-on materialization too', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/shared'], { cwd: repo })
+    const task = createTask(repo, {
+      title: 'work on shared',
+      prompt: 'keep going',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/shared',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      worktreeLockFn: async (cwd, signal) => ({
+        ...(await acquireWorktreeLock(cwd, signal ? { signal } : {})),
+        stolen: { pid: 5150, ageMs: 1_200_000 },
+      }),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const notice = readTaskEvents(repo, task.id).find((e) =>
+      String(e.data.message).includes('taken from pid 5150'),
+    )
+    expect(notice?.reason_code).toBe('resource_busy')
+  })
+
+  test('a conversation interrupted BEFORE its first materialization still gets its anchor', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'scratch.txt'), 'work in progress\n')
+    // Another holder has the repo lock: the launch parks before materializing.
+    const blocker = await acquireWorktreeLock(repo)
+    const task = makeTask(repo, 'interrupted early', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done', ['agent.txt']).run,
+    })
+    runner.start(task)
+    expect(runner.interrupt(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'interrupted')
+
+    // Its turn was stamped ended_at by failTurn, yet NOTHING ran: no worktree,
+    // no branch, no commit. reply() is the documented way back.
+    const stopped = loadTask(repo, task.id)
+    expect(stopped?.worktree).toBe('')
+    expect(stopped?.turns[0]?.ended_at).not.toBeNull()
+    expect(stopped?.baseline_sha).toBeUndefined()
+
+    blocker.release()
+    runner.reply(task.id, 'try again')
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const resumed = loadTask(repo, task.id)
+    // The anchor is posted, because an empty worktree PROVED nothing could be
+    // on the branch — and the WIP notice, which lives in the same branch of
+    // the logic, is emitted with it.
+    expect(resumed?.baseline_sha).toMatch(/^[0-9a-f]{40}$/)
+    const notice = readTaskEvents(repo, task.id).find((e) => 'uncommitted_files' in e.data)
+    expect(notice?.data.uncommitted_files).toBe(1)
+    // And no journal line claims turns that never ran.
+    expect(
+      readTaskEvents(repo, task.id).some((e) => String(e.data.text).includes('already existed')),
+    ).toBe(false)
+  })
+
+  test('a work-on conversation names its BRANCH in the notice, never the MR target', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo })
+    writeFileSync(join(repo, 'scratch.txt'), 'work in progress\n')
+    const task = createTask(repo, {
+      title: 'work on my branch',
+      prompt: 'keep going',
+      autoShip: false,
+      // In work-on mode `base` is the MR TARGET: naming it beside the branch
+      // tip's sha would label the sha with something it has nothing to do with.
+      base: 'main',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const record = loadTask(repo, task.id)
+    const notice = readTaskEvents(repo, task.id).find((e) => 'uncommitted_files' in e.data)
+    expect(String(notice?.data.text)).toContain(
+      `feature/mine@${String(record?.baseline_sha).slice(0, 12)}`,
+    )
+    expect(String(notice?.data.text)).not.toContain('main@')
+  })
+
+  test('a 0.12 conversation resumed without an anchor gets none: its turns would vanish', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'legacy conversation', 'first')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'turn done', ['turn1.txt']).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // Rewind the record to what 0.12 wrote: no anchor, and a turn already ran.
+    const legacy = loadTask(repo, task.id)
+    const worktree = legacy?.worktree ?? ''
+    delete legacy?.baseline_sha
+    saveTask(repo, legacy as TaskRecord)
+    rmSync(worktree, { recursive: true, force: true })
+
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // Anchoring NOW would put turn 1's work behind the baseline and out of
+    // every review measured from it: better none, said out loud.
+    expect(loadTask(repo, task.id)?.baseline_sha).toBeUndefined()
+    const notice = readTaskEvents(repo, task.id).find((e) =>
+      String(e.data.text).includes('anchoring one now'),
+    )
+    expect(notice).toBeDefined()
+    expect(String(notice?.data.text)).toContain('main...HEAD')
+  })
+
+  // Rewritten (was: 'a fork rebuilt on a base that MOVED re-anchors, and says
+  // the anchor moved'). It locked the behaviour this round abrogates: a rebuild
+  // used to forge a BRAND-NEW branch, leaving the commits of the earlier turns
+  // on a branch nothing referenced any more. Re-forging is now the exception,
+  // not the rule, and the re-anchoring it forces is asserted by the test below.
+  test.each([
+    ['the base moved meanwhile', true],
+    ['the base did not move at all', false],
+  ])(
+    'a fork rebuilt after its worktree vanished goes back to its OWN branch (%s)',
+    async (_label, baseMoves) => {
+      const repo = makeRepo()
+      const task = makeTask(repo, 'rebuilt fork', 'work')
+      const runner = createTaskRunner({
+        cwd: repo,
+        command: 'codex exec -',
+        timeoutMs: 1000,
+        runAgentFn: fakeClaude(() => 'turn done', ['agent.txt']).run,
+      })
+      runner.start(task)
+      await until(() => status(repo, task.id) === 'waiting_for_you')
+      const first = loadTask(repo, task.id)
+      const work = tryGit(['rev-parse', 'HEAD'], first?.worktree ?? '')
+
+      // Crash: the worktree is gone. The BRANCH still carries turn 1's commit.
+      rmSync(first?.worktree ?? '', { recursive: true, force: true })
+      if (baseMoves) {
+        writeFileSync(join(repo, 'teammate.txt'), 'not the agent\n')
+        execFileSync('git', ['add', '-A'], { cwd: repo })
+        execFileSync('git', ['commit', '-m', 'feat: teammate work'], { cwd: repo, stdio: 'ignore' })
+      }
+
+      runner.reply(task.id, 'continue')
+      await until(() => loadTask(repo, task.id)?.turns.length === 2)
+      await until(() => status(repo, task.id) === 'waiting_for_you')
+
+      const second = loadTask(repo, task.id)
+      // Same branch, same lineage, immobile anchor: forking a fresh branch here
+      // would leave turn 1's commit on a branch nothing points at — out of the
+      // diff, out of the review, out of the ship, and not even deleted on abandon.
+      expect(second?.branch).toBe(first?.branch ?? '')
+      expect(second?.baseline_sha).toBe(first?.baseline_sha ?? '')
+      expect(refExists(`refs/heads/${first?.branch}-2`, repo)).toBe(false)
+      // The work of turn 1 is IN this worktree, not orphaned beside it.
+      expect(existsSync(join(second?.worktree ?? '', 'agent.txt'))).toBe(true)
+      expect(
+        tryGit(['merge-base', '--is-ancestor', work ?? '', 'HEAD'], second?.worktree ?? ''),
+      ).toBe('')
+      const changed = (
+        tryGit(['diff', '--name-only', `${second?.baseline_sha}..HEAD`], second?.worktree ?? '') ??
+        ''
+      )
+        .split('\n')
+        .filter(Boolean)
+      expect(changed).toContain('agent.txt')
+      expect(changed).not.toContain('teammate.txt')
+      // Nothing foreign happened, so nothing is announced: the notice below
+      // must stay a real signal, not a line printed on every rebuild.
+      expect(readTaskEvents(repo, task.id).some((e) => 'foreign_commits' in e.data)).toBe(false)
+    },
+  )
+
+  test('a rebuild NAMES the commits a third party pushed while the worktree was gone', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'shared branch', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'turn done', ['agent.txt']).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const first = loadTask(repo, task.id)
+    const branch = first?.branch ?? ''
+    // The conversation remembers where it left its branch.
+    expect(first?.head_sha).toBe(tryGit(['rev-parse', `refs/heads/${branch}`], repo) ?? '')
+
+    rmSync(first?.worktree ?? '', { recursive: true, force: true })
+    execFileSync('git', ['worktree', 'prune'], { cwd: repo })
+    // Somebody else pushes three commits onto the task's branch meanwhile.
+    const theirs = join(mkdtempSync(join(tmpdir(), 'codesema-theirs-')), 'wt')
+    cleanups.push(theirs)
+    execFileSync('git', ['worktree', 'add', theirs, branch], { cwd: repo, stdio: 'ignore' })
+    for (const n of [1, 2, 3]) {
+      writeFileSync(join(theirs, `theirs-${n}.txt`), 'not the agent\n')
+      execFileSync('git', ['add', '-A'], { cwd: theirs })
+      execFileSync('git', ['commit', '-m', `feat: theirs ${n}`], { cwd: theirs, stdio: 'ignore' })
+    }
+    execFileSync('git', ['worktree', 'remove', '--force', theirs], { cwd: repo, stdio: 'ignore' })
+
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // The branch is still adopted — that is where the conversation's own work
+    // is — but the anchor cannot catch what landed after it: foreign commits
+    // sit INSIDE baseline..HEAD, so the review would sign them as the agent's.
+    const second = loadTask(repo, task.id)
+    expect(second?.branch).toBe(branch)
+    expect(second?.baseline_sha).toBe(first?.baseline_sha ?? '')
+    const notice = readTaskEvents(repo, task.id).find((e) => 'foreign_commits' in e.data)
+    expect(notice?.data.foreign_commits).toBe(3)
+    expect(String(notice?.data.text)).toContain('from outside this conversation')
+    expect(String(notice?.data.text)).toContain(branch)
+    // And the tip it now remembers is the one it actually found.
+    expect(second?.head_sha).toBe(tryGit(['rev-parse', 'HEAD'], second?.worktree ?? '') ?? '')
+  })
+
+  test('a branch whose ref survives but whose object does not is re-forked, not fatal', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'dangling ref', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'turn done', ['agent.txt']).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const first = loadTask(repo, task.id)
+    const branch = first?.branch ?? ''
+
+    rmSync(first?.worktree ?? '', { recursive: true, force: true })
+    execFileSync('git', ['worktree', 'prune'], { cwd: repo })
+    // A partial clone, an interrupted fetch, a corrupted object store: the REF
+    // is still there and resolves, the commit it names is not. `rev-parse
+    // --verify` answers for the ref and says yes — which is exactly why the
+    // gate has to peel to a commit before trusting it.
+    const dangling = 'dead'.repeat(10)
+    writeFileSync(join(repo, '.git', 'refs', 'heads', `${branch}`), `${dangling}\n`)
+    expect(tryGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], repo)).toBe(
+      dangling,
+    )
+
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // The conversation survives — re-forked and out loud — instead of dying on
+    // a raw, locale-dependent git error with no reason code and no Resume.
+    expect(status(repo, task.id)).toBe('waiting_for_you')
+    const notice = readTaskEvents(repo, task.id).find((e) =>
+      String(e.data.text).includes('FRESH fork'),
+    )
+    expect(String(notice?.data.text)).toContain('no longer exists')
+    expect(readTaskEvents(repo, task.id).some((e) => e.type === 'error')).toBe(false)
+  })
+
+  test('a rebuild that CANNOT take its branch back re-forks, and names what it leaves', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'branch taken', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'turn done', ['agent.txt']).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const first = loadTask(repo, task.id)
+
+    // The worktree is gone AND somebody checked the branch out elsewhere: git
+    // will not hand it over, so a fresh fork is the only way to keep going.
+    rmSync(first?.worktree ?? '', { recursive: true, force: true })
+    // The registration of the deleted directory still claims the branch: drop
+    // it, exactly as a `git worktree prune` from any other tool would.
+    execFileSync('git', ['worktree', 'prune'], { cwd: repo })
+    const squatter = join(mkdtempSync(join(tmpdir(), 'codesema-squatter-')), 'wt')
+    cleanups.push(squatter)
+    execFileSync('git', ['worktree', 'add', squatter, first?.branch ?? ''], {
+      cwd: repo,
+      stdio: 'ignore',
+    })
+
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const second = loadTask(repo, task.id)
+    expect(second?.branch).not.toBe(first?.branch ?? '')
+    // New lineage, new anchor: keeping the old one would credit the agent with
+    // whatever the base gained meanwhile.
+    expect(second?.baseline_sha).toBe(
+      execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: repo }).toString().trim(),
+    )
+    // And the work left behind is NAMED — branch and commit count — instead of
+    // being left for the human to discover from a diff that lost a turn.
+    const notice = readTaskEvents(repo, task.id).find((e) => 'stranded_branch' in e.data)
+    expect(notice?.data.stranded_branch).toBe(first?.branch ?? '')
+    expect(notice?.data.stranded_commits).toBe(1)
+    expect(String(notice?.data.text)).toContain('FRESH fork')
+    expect(String(notice?.data.text)).toContain(first?.branch ?? '')
+    // Nothing was deleted: the commits are still reachable from that branch.
+    expect(refExists(`refs/heads/${first?.branch}`, repo)).toBe(true)
+    execFileSync('git', ['worktree', 'remove', '--force', squatter], { cwd: repo, stdio: 'ignore' })
+  })
+
+  test('a rebuild whose branch was DELETED re-forks, and says the branch is gone', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'branch deleted', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'turn done', ['agent.txt']).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const first = loadTask(repo, task.id)
+
+    rmSync(first?.worktree ?? '', { recursive: true, force: true })
+    execFileSync('git', ['worktree', 'prune'], { cwd: repo })
+    execFileSync('git', ['branch', '-D', first?.branch ?? ''], { cwd: repo, stdio: 'ignore' })
+
+    runner.reply(task.id, 'continue')
+    await until(() => loadTask(repo, task.id)?.turns.length === 2)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    // Nothing to strand — the branch itself is gone, and the freed name is
+    // taken again — but the conversation still says it was re-forked and that
+    // the earlier turns' commits are not in this worktree. That is the part
+    // nobody can guess, and it is said whether or not the base moved.
+    const notice = readTaskEvents(repo, task.id).find((e) =>
+      String(e.data.text).includes('FRESH fork'),
+    )
+    expect(String(notice?.data.text)).toContain('no longer exists')
+    expect(String(notice?.data.text)).toContain(first?.branch ?? '')
+  })
+
+  test('a fork records that it created its branch; a work-on adoption does not', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/theirs'], { cwd: repo })
+    const forked = makeTask(repo, 'forking', 'work')
+    const adopted = createTask(repo, {
+      title: 'adopting',
+      prompt: 'work',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/theirs',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+
+    runner.start(forked)
+    await until(() => status(repo, forked.id) === 'waiting_for_you')
+    runner.start(adopted)
+    await until(() => status(repo, adopted.id) === 'waiting_for_you')
+
+    expect(loadTask(repo, forked.id)?.created_branch).toBe(true)
+    // Absent, not false: the branch was already there, so it is not ours to delete.
+    expect('created_branch' in (loadTask(repo, adopted.id) ?? {})).toBe(false)
   })
 })
 

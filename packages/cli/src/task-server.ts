@@ -29,7 +29,7 @@ import {
   type TaskIsolation,
   type TaskRecord,
 } from './contract.js'
-import { tryGit } from './git.js'
+import { refExists, tryGit } from './git.js'
 import { t } from './i18n.js'
 import { listProjects, type Project } from './projects.js'
 import { readChecksConfig } from './repo-config.js'
@@ -154,8 +154,9 @@ export type TaskManager = {
    * T8 (POST /api/tasks/:id/resume). Restarts the turn an 'interrupted' task
    * died on, with no new instruction from the human: same prompt, same turn,
    * resumed provider session when the record kept one. 409 on any other
-   * status, on a task with no unfinished turn (only a reply moves that one),
-   * and on a task whose worktree is gone.
+   * status and on a task with no unfinished turn (only a reply moves that
+   * one). A worktree that vanished is rebuilt on the conversation's own
+   * branch, never refused.
    */
   resume: (projectId: string, id: string) => TaskActionResult
   interrupt: (projectId: string, id: string) => TaskActionResult
@@ -168,7 +169,7 @@ export type TaskManager = {
    */
   ship: (projectId: string, id: string) => Promise<TaskActionResult>
   /** Discards the task's work: worktree AND branch deleted, status 'failed'. 409 while running. */
-  abandon: (projectId: string, id: string) => TaskActionResult
+  abandon: (projectId: string, id: string) => Promise<TaskActionResult>
   /**
    * Manual checks trigger (POST /api/tasks/:id/checks). Starts a background
    * containerized run of the repo's checks on the task worktree; 409 while a
@@ -273,22 +274,37 @@ export type CreateTaskManagerOptions = {
  *    mean the previous codesema process died mid-turn: the agent process is
  *    gone, so the honest state is 'interrupted' — resumable, since the
  *    worktree and the unfinished turn are both still there.
- * 2. An 'interrupted' task whose MATERIALIZED worktree has vanished (deleted
- *    by hand, repo moved) is not resumable at all: its work is gone, and
- *    re-running the turn would fork a fresh branch and strand the commits.
- *    Same doctrine as abandon — a task without its worktree is 'failed' — so
- *    the UI never offers a Resume that would quietly lose work.
+ * 2. A task whose MATERIALIZED worktree has vanished (deleted by hand, repo
+ *    moved) is judged on its BRANCH, not on the checkout: the worktree is a
+ *    view, the branch is where the commits live. As long as that branch is
+ *    still there, ensureWorktree checks it back out in a fresh worktree — same
+ *    branch, same anchor, nothing stranded — so the task stays 'interrupted'
+ *    and Resume is honest. Only when the branch is gone TOO is the work
+ *    unrecoverable, and only then does the task become 'failed'.
+ *
+ *    (Until this ticket the rule was "no worktree ⇒ failed", because a rebuild
+ *    forked a NEW branch and left the earlier commits behind. That is exactly
+ *    the behaviour the runner no longer has.)
  */
-function reconciledStatus(record: TaskRecord): 'interrupted' | 'failed' | null {
+function reconciledStatus(cwd: string, record: TaskRecord): 'interrupted' | 'failed' | null {
   const orphan = record.status === 'running' || record.status === 'reviewing'
   if (!orphan && record.status !== 'interrupted') {
     return null
   }
   // A worktree the record NAMES but disk no longer has. An empty path is a
   // task that never materialized one: nothing was lost.
-  if (record.worktree !== '' && !existsSync(record.worktree)) {
+  if (
+    record.worktree !== '' &&
+    !existsSync(record.worktree) &&
+    // `^{commit}`, not the bare ref: a ref whose object is missing resolves
+    // perfectly well and carries no work at all (same trap as the runner's
+    // adoption gate and the baseline validation).
+    !(record.branch !== '' && refExists(`refs/heads/${record.branch}^{commit}`, cwd))
+  ) {
     return 'failed'
   }
+  // A recoverable one falls through to the ordinary rule: an already-interrupted
+  // task is left exactly as it is, journal included — nothing happened to it.
   return orphan ? 'interrupted' : null
 }
 
@@ -300,7 +316,7 @@ function reconciledStatus(record: TaskRecord): 'interrupted' | 'failed' | null {
  */
 function reconcileTasks(cwd: string): void {
   for (const record of listTasks(cwd)) {
-    const status = reconciledStatus(record)
+    const status = reconciledStatus(cwd, record)
     if (status === null) {
       continue
     }
@@ -315,7 +331,10 @@ function reconcileTasks(cwd: string): void {
       cwd,
       record.id,
       status === 'failed'
-        ? { type: 'error', data: { message: 'worktree is gone, the task cannot be resumed' } }
+        ? {
+            type: 'error',
+            data: { message: 'worktree and branch are both gone, the task cannot be resumed' },
+          }
         : { type: 'interrupted', data: { message: 'process exited while the task was active' } },
     )
   }
@@ -395,6 +414,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     if (ctx.shipping.has(id)) {
       return { ok: false, code: 409, error: 'ship already in progress' }
     }
+    // The mirror of the guard abandon() gets below: an abandon in flight is
+    // deleting this very worktree and will write the record when it lands.
+    // Pushing from a directory being removed is at best a broken push, and
+    // whichever of the two wrote last would erase the other's outcome.
+    if (ctx.runner.isAbandoning(id)) {
+      return { ok: false, code: 409, error: 'task is being abandoned' }
+    }
     const record = loadTask(cwd, id)
     if (!record) {
       return { ok: false, code: 404, error: 'task not found' }
@@ -403,6 +429,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     if (refusal) {
       return refusal
     }
+    // This `record` crosses the push (network, slow) before saveTask below —
+    // one of the four snapshot-across-an-await sites listed in task-runner.ts.
+    // It stays valid by EXCLUSION: `ctx.shipping` is claimed here, before any
+    // await, and reply/resume/abandon all consult it, so nothing else writes
+    // this record while the push is in flight.
     ctx.shipping.add(id)
     try {
       const run = opts.shipTaskFn ?? shipTask
@@ -853,10 +884,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     abandon(projectId, id) {
       const ctx = context(projectId)
       if (!ctx) {
-        return unknownProject
+        return Promise.resolve(unknownProject)
       }
+      // Removing a worktree waits for the repo lock, so this one is async
+      // where its siblings are not: the refusals stay immediate values.
       return ctx.shipping.has(id)
-        ? { ok: false, code: 409, error: 'ship in progress' }
+        ? Promise.resolve({ ok: false, code: 409, error: 'ship in progress' })
         : ctx.runner.abandon(id)
     },
 

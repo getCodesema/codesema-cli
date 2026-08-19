@@ -129,6 +129,8 @@ type FakeRunnerRig = {
   interrupts: string[]
   abandons: string[]
   resumes: string[]
+  /** Task ids the runner reports as having an abandon in flight. */
+  abandoning: Set<string>
 }
 
 /** Captures the manager→runner seam without ever launching an agent. */
@@ -140,6 +142,7 @@ function fakeRunner(): FakeRunnerRig {
     interrupts: [],
     abandons: [],
     resumes: [],
+    abandoning: new Set<string>(),
     runnerOptions: () => {
       const last = rig.allRunnerOptions.at(-1)
       if (!last) {
@@ -168,8 +171,9 @@ function fakeRunner(): FakeRunnerRig {
         },
         abandon: (id) => {
           rig.abandons.push(id)
-          return { ok: true }
+          return Promise.resolve({ ok: true as const })
         },
+        isAbandoning: (id) => rig.abandoning.has(id),
         shutdown: () => Promise.resolve(),
         runningCount: () => 0,
       }
@@ -216,17 +220,25 @@ describe('createTaskManager', () => {
     expect(readTaskEvents(repoB, queued.id)).toHaveLength(0)
   })
 
-  // T8. Resume re-runs the interrupted turn IN the task's worktree; without
-  // it, ensureWorktree would fork a fresh branch from the base and strand
-  // whatever the task had committed. Same doctrine as abandon: a task without
-  // its worktree is 'failed', said out loud, never a Resume that loses work.
-  test('boot fails an interrupted task whose materialized worktree is gone', () => {
+  // T8. A worktree is a VIEW; the branch is where the commits live. Boot
+  // therefore judges a vanished worktree on its branch: still there means the
+  // runner checks it back out — same branch, same anchor, nothing stranded —
+  // so the task stays resumable. Gone too means the work is unrecoverable, and
+  // only that is 'failed', said out loud.
+  test('boot judges a vanished worktree on its BRANCH, not on the checkout', () => {
     const repo = makeRepo()
     register(repo)
     const lost = seedTask(repo, 'worktree deleted by hand')
     lost.status = 'interrupted'
     lost.worktree = join(repo, '.codesema', 'worktrees', lost.id)
     saveTask(repo, lost)
+    // Same accident, but the branch survived it: the work is one checkout away.
+    const recoverable = seedTask(repo, 'worktree deleted, branch alive')
+    recoverable.status = 'interrupted'
+    recoverable.worktree = join(repo, '.codesema', 'worktrees', recoverable.id)
+    recoverable.branch = 'codesema/task-alive'
+    execFileSync('git', ['branch', 'codesema/task-alive'], { cwd: repo })
+    saveTask(repo, recoverable)
     // Never materialized one (a task interrupted while still queued): it has
     // nothing to lose, and its resume simply creates the worktree.
     const neverMaterialized = seedTask(repo, 'stopped while queued')
@@ -238,8 +250,10 @@ describe('createTaskManager', () => {
     expect(loadTask(repo, lost.id)?.status).toBe('failed')
     expect(readTaskEvents(repo, lost.id).at(-1)).toMatchObject({
       type: 'error',
-      data: { message: 'worktree is gone, the task cannot be resumed' },
+      data: { message: 'worktree and branch are both gone, the task cannot be resumed' },
     })
+    expect(loadTask(repo, recoverable.id)?.status).toBe('interrupted')
+    expect(readTaskEvents(repo, recoverable.id)).toHaveLength(0)
     expect(loadTask(repo, neverMaterialized.id)?.status).toBe('interrupted')
     expect(readTaskEvents(repo, neverMaterialized.id)).toHaveLength(0)
   })
@@ -275,7 +289,10 @@ describe('createTaskManager', () => {
     expect(manager.interrupt('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
     expect(manager.resume('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
     expect(await manager.ship('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
-    expect(manager.abandon('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    expect(await manager.abandon('deadbeef', 'aaaaaaaaaaaa')).toMatchObject({
+      ok: false,
+      code: 404,
+    })
     expect(rig.allRunnerOptions).toHaveLength(0)
   })
 
@@ -956,7 +973,7 @@ describe('manager.ship', () => {
       code: 409,
       error: 'ship in progress',
     })
-    expect(manager.abandon(project.id, record.id)).toEqual({
+    expect(await manager.abandon(project.id, record.id)).toEqual({
       ok: false,
       code: 409,
       error: 'ship in progress',
@@ -971,6 +988,41 @@ describe('manager.ship', () => {
     release({ pushed: true, mrUrl: null, note: null })
     expect(await inFlight).toEqual({ ok: true })
     expect(loadTask(project.path, record.id)?.status).toBe('shipped')
+  })
+
+  test('ship and abandon refuse each other, in BOTH directions', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    let release!: (outcome: ShipOutcome) => void
+    const pending = new Promise<ShipOutcome>((resolve) => {
+      release = resolve
+    })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: () => pending, ...rig })
+    const record = seedShippable(project.path)
+
+    // Direction 1 — abandon in flight, ship arrives. The abandon is deleting
+    // this very worktree and will write the record when it lands: a push from
+    // a directory being removed is broken at best, and whichever settled last
+    // would erase the other's outcome. Guarding only the other way would leave
+    // exactly half the race open.
+    rig.abandoning.add(record.id)
+    expect(await manager.ship(project.id, record.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task is being abandoned',
+    })
+    rig.abandoning.delete(record.id)
+
+    // Direction 2 — ship in flight, abandon arrives.
+    const inFlight = manager.ship(project.id, record.id)
+    expect(await manager.abandon(project.id, record.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'ship in progress',
+    })
+    expect(rig.abandons).toEqual([])
+    release({ pushed: true, mrUrl: null, note: null })
+    expect(await inFlight).toEqual({ ok: true })
   })
 })
 
@@ -1315,10 +1367,10 @@ describe('task routes with a stub manager', () => {
       },
       abandon: (projectId, id) => {
         if (!known(projectId)) {
-          return { ok: false, code: 404, error: 'unknown project' }
+          return Promise.resolve({ ok: false as const, code: 404, error: 'unknown project' })
         }
         calls.abandons.push(id)
-        return { ok: true }
+        return Promise.resolve({ ok: true as const })
       },
       checks: (projectId, id) => {
         if (!known(projectId)) {
@@ -2323,7 +2375,9 @@ describe('workspace server end to end', () => {
       return
     }
     // ONE global slot: project B's task queues even though its repo is idle.
-    expect(loadTask(projectA.path, first.record.id)?.status).toBe('running')
+    // A's status flips once its worktree has materialized (which now waits for
+    // the repo's worktree lock); B's must not move at all meanwhile.
+    await until(() => loadTask(projectA.path, first.record.id)?.status === 'running')
     expect(loadTask(projectB.path, second.record.id)?.status).toBe('queued')
 
     release()

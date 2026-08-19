@@ -13,7 +13,7 @@ import { join, resolve, sep } from 'node:path'
 import { ensureWorkDir } from './config.js'
 import { sanitizeRecord, type Finding, type ReviewRecord, type TaskRecord } from './contract.js'
 import { buildAgentFixPrompt } from './fix.js'
-import { tryGit } from './git.js'
+import { isAncestor, refExists, tryGit } from './git.js'
 import { prep } from './prep.js'
 import { archiveRecord, readJson } from './record.js'
 import {
@@ -146,6 +146,32 @@ const settle = (
   io.persist()
 }
 
+/**
+ * Why this review cannot measure from the task's baseline, or null when it
+ * can. Three distinct failures, three distinct sentences — "no anchor was ever
+ * recorded" and "the anchor was rebased away" call for different reactions
+ * from whoever reads the journal.
+ *
+ * The ancestor check is what makes the range trustworthy: `baseline..HEAD`
+ * whose left side is no longer behind HEAD measures nothing useful (a rebase
+ * turns it into a diff against a commit that is not in this history at all).
+ */
+export function baselineFallbackReason(record: TaskRecord): string | null {
+  const sha = record.baseline_sha
+  if (!sha) {
+    return 'no baseline commit was recorded for this task'
+  }
+  // '^{commit}' is what makes this a real existence check: `rev-parse --verify`
+  // alone accepts any well-formed 40-hex string, object or not.
+  if (!refExists(`${sha}^{commit}`, record.worktree)) {
+    return `baseline ${sha.slice(0, 12)} is not reachable from this worktree`
+  }
+  if (!isAncestor(sha, 'HEAD', record.worktree)) {
+    return `baseline ${sha.slice(0, 12)} is no longer an ancestor of HEAD (rebased?)`
+  }
+  return null
+}
+
 export type CreateTaskReviewerOptions = {
   /** MAIN repo root: review archives land here, never in the disposable worktree. */
   cwd: string
@@ -229,12 +255,37 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
 
   return async (record, io) => {
     // The runner already persisted 'reviewing' before calling.
+    //
+    // `record` is held across the whole flow (prep + agent, minutes) before
+    // io.persist() writes it back — one of the four snapshot-across-an-await
+    // sites listed in task-runner.ts. Valid by EXCLUSION: the task sits on
+    // 'reviewing' throughout, and every action refuses that status (start,
+    // reply, resume and interrupt through `active`, abandon and ship on the
+    // status itself). Nothing else writes this record meanwhile.
     try {
-      // Cumulative diff vs the base, not just this turn: earlier turns may
-      // have committed work this turn didn't touch. Three dots = merge-base,
-      // same range prep reviews. A git failure (null) falls through to prep,
-      // whose own error lands on the review_ko path below.
-      const changed = tryGit(['diff', '--name-only', `${record.base}...HEAD`], record.worktree)
+      // Everything the agent did in this conversation and nothing else: the
+      // baseline commit holds whatever the repo was carrying when the worktree
+      // was created, so `baseline..HEAD` is exactly the work. Cumulative, not
+      // per-turn: earlier turns may have committed work this one didn't touch.
+      //
+      // Without a usable baseline the range falls back to `base...HEAD`:
+      // three dots, merge-base, exactly what it always was — which on a
+      // work-on conversation also re-reviews the commits that predated it.
+      // That degradation is SAID, not swallowed.
+      const fallback = baselineFallbackReason(record)
+      if (fallback) {
+        io.emit({
+          type: 'message',
+          data: {
+            text: `${fallback}: reviewing ${record.base}...HEAD, which also covers work that predates this conversation`,
+          },
+        })
+      }
+      const baseline = fallback ? null : (record.baseline_sha ?? null)
+      const range = baseline ? `${baseline}..HEAD` : `${record.base}...HEAD`
+      // A git failure (null) falls through to prep, whose own error lands on
+      // the review_ko path below.
+      const changed = tryGit(['diff', '--name-only', range], record.worktree)
       if (changed !== null && !changed.trim()) {
         io.emit({ type: 'message', data: { text: 'no changes' } })
         settle(record, io, 'review_ok')
@@ -244,7 +295,11 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       io.emit({ type: 'review_started', data: { turn: record.turns.length, mode } })
       const input = await prepFn({
         branch: record.branch,
+        // IDENTITY stays the branch this work is headed for: it is what the
+        // review is titled and archived under, and what findPreviousReview
+        // matches on to keep re-reviews incremental. Only the SCOPE moves.
         target: record.base,
+        ...(baseline ? { baseline } : {}),
         cwd: record.worktree,
         quiet: true,
       })

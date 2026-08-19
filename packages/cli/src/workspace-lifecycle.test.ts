@@ -372,7 +372,13 @@ describe('resume', () => {
     expect(runner.reply(task.id, 'and now this')).toEqual({ ok: true })
   })
 
-  test('refused when the materialized worktree is gone', async () => {
+  // Rewritten (was: 'refused when the materialized worktree is gone', which
+  // asserted a 409 'task worktree is gone'). The refusal is gone AND the danger
+  // it named is gone with it: the rebuild takes the conversation's own branch
+  // back — where its commits are — instead of forking a fresh one beside them.
+  // That is what makes offering Resume honest; refusing would have been the
+  // only safe answer while the rebuild still stranded work.
+  test('rebuilds a materialized worktree that vanished, keeping the branch and its work', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'homeless', 'work')
     const runner = createTaskRunner({
@@ -385,17 +391,28 @@ describe('resume', () => {
     await until(() => status(repo, task.id) === 'running')
     runner.interrupt(task.id)
     await until(() => status(repo, task.id) === 'interrupted')
-    const { worktree } = loadTask(repo, task.id)!
-    expect(existsSync(worktree)).toBe(true)
-    // Deleted behind codesema's back: re-running the turn would fork a fresh
-    // branch and strand the commits made so far.
-    rmSync(worktree, { recursive: true, force: true })
-
-    expect(runner.resume(task.id)).toEqual({
-      ok: false,
-      code: 409,
-      error: 'task worktree is gone',
+    const before = loadTask(repo, task.id)!
+    expect(existsSync(before.worktree)).toBe(true)
+    // Deleted behind codesema's back (a cleaned tmpdir, a stray rm).
+    rmSync(before.worktree, { recursive: true, force: true })
+    // The base moves meanwhile: the rebuild must NOT follow it onto a new fork.
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'base moved'], {
+      cwd: repo,
+      stdio: 'ignore',
     })
+
+    expect(runner.resume(task.id)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'running')
+    const after = loadTask(repo, task.id)!
+    expect(existsSync(after.worktree)).toBe(true)
+    // Same branch, same anchor, and no orphan branch left behind: the work the
+    // conversation had committed stays inside the range the review measures.
+    expect(after.branch).toBe(before.branch)
+    expect(after.baseline_sha).toBe(before.baseline_sha ?? '')
+    expect(branchExists(repo, `${before.branch}-2`)).toBe(false)
+    expect(tryGit(['rev-parse', '--abbrev-ref', 'HEAD'], after.worktree)).toBe(before.branch)
+    runner.interrupt(task.id)
+    await until(() => status(repo, task.id) === 'interrupted')
   })
 
   test('gate: unknown id, non-interrupted statuses, and a drain in progress', async () => {
@@ -443,7 +460,11 @@ describe('abandon', () => {
     })
     runner.start(task)
     await until(() => status(repo, task.id) === 'running')
-    expect(runner.abandon(task.id)).toEqual({ ok: false, code: 409, error: 'task is running' })
+    expect(await runner.abandon(task.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task is running',
+    })
 
     runner.interrupt(task.id)
     await until(() => status(repo, task.id) === 'interrupted')
@@ -451,7 +472,7 @@ describe('abandon', () => {
     expect(existsSync(worktree)).toBe(true)
     expect(branchExists(repo, branch)).toBe(true)
 
-    expect(runner.abandon(task.id)).toEqual({ ok: true })
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
     expect(existsSync(worktree)).toBe(false)
     expect(branchExists(repo, branch)).toBe(false)
     const record = loadTask(repo, task.id)
@@ -481,14 +502,80 @@ describe('abandon', () => {
     runner.start(task)
     await until(() => status(repo, task.id) === 'waiting_for_you')
     const { worktree, branch } = loadTask(repo, task.id)!
-    expect(runner.abandon(task.id)).toEqual({ ok: true })
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
     // --force removal: dirty files do not save a worktree from an abandon.
     expect(existsSync(worktree)).toBe(false)
     expect(branchExists(repo, branch)).toBe(false)
     expect(status(repo, task.id)).toBe('failed')
   })
 
-  test('guard rails: unknown id, reviewing task, and a never-started task', () => {
+  test("abandoning a work-on conversation never deletes the user's own branch", async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo, stdio: 'ignore' })
+    const task = createTask(repo, {
+      title: 'on my branch',
+      prompt: 'work',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const { worktree } = loadTask(repo, task.id)!
+    // The conversation ADOPTED this branch; it never brought it into existence.
+    expect(loadTask(repo, task.id)?.created_branch).toBeUndefined()
+
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+    expect(existsSync(worktree)).toBe(false)
+    // Only the checkout is discarded: deleting a branch the human already had
+    // is never ours to decide.
+    expect(branchExists(repo, 'feature/mine')).toBe(true)
+  })
+
+  test('abandoning a conversation that created a local head from origin cleans it up', async () => {
+    const repo = makeRepo()
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim()
+    // The branch exists on origin only, as it does for a teammate's MR that was
+    // never pulled: materializing the conversation creates the LOCAL head.
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/feature/theirs', sha], { cwd: repo })
+    const task = createTask(repo, {
+      title: 'their branch',
+      prompt: 'work',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/theirs',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(loadTask(repo, task.id)?.created_branch).toBe(true)
+    expect(branchExists(repo, 'feature/theirs')).toBe(true)
+
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+    // The head this conversation created goes with it — origin, which is where
+    // that branch actually lives, is untouched.
+    expect(branchExists(repo, 'feature/theirs')).toBe(false)
+    expect(
+      tryGit(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/feature/theirs'], repo),
+    ).not.toBeNull()
+  })
+
+  test('guard rails: unknown id, reviewing task, and a never-started task', async () => {
     const repo = makeRepo()
     const runner = createTaskRunner({
       cwd: repo,
@@ -496,14 +583,14 @@ describe('abandon', () => {
       timeoutMs: 1000,
       runAgentFn: questionAgent().run,
     })
-    expect(runner.abandon('aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
+    expect(await runner.abandon('aaaaaaaaaaaa')).toMatchObject({ ok: false, code: 404 })
 
     // 'reviewing' means T4's review agent still works in the worktree.
     const reviewing = makeTask(repo, 'under review', 'work')
     const seeded = loadTask(repo, reviewing.id)!
     seeded.status = 'reviewing'
     saveTask(repo, seeded)
-    expect(runner.abandon(reviewing.id)).toEqual({
+    expect(await runner.abandon(reviewing.id)).toEqual({
       ok: false,
       code: 409,
       error: 'task is reviewing',
@@ -511,7 +598,7 @@ describe('abandon', () => {
 
     // A queued task never got a worktree: abandon still lands on 'failed'.
     const fresh = makeTask(repo, 'never started', 'work')
-    expect(runner.abandon(fresh.id)).toEqual({ ok: true })
+    expect(await runner.abandon(fresh.id)).toEqual({ ok: true })
     expect(status(repo, fresh.id)).toBe('failed')
   })
 })
@@ -533,7 +620,7 @@ test('abandoning a shipped task keeps the shipped status', async () => {
   shippedRecord.status = 'shipped'
   saveTask(repo, shippedRecord)
 
-  expect(runner.abandon(task.id)).toEqual({ ok: true })
+  expect(await runner.abandon(task.id)).toEqual({ ok: true })
   const after = loadTask(repo, task.id)
   expect(after?.status).toBe('shipped')
   expect(existsSync(after!.worktree)).toBe(false)

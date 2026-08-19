@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { Finding, ReviewRecord, TaskRecord, TaskStatus, Verdict } from './contract.js'
-import { archiveRecord } from './record.js'
+import { archiveRecord, findPreviousReview } from './record.js'
 import type { runSimpleFlow, SimpleOutcome } from './review.js'
 import {
   buildFixTurnPrompt,
@@ -47,7 +47,7 @@ function makeRepo(): string {
 }
 
 /** A persisted task with a real worktree, as the runner leaves it mid-review. */
-function makeTaskWithWorktree(repo: string, title: string): TaskRecord {
+async function makeTaskWithWorktree(repo: string, title: string): Promise<TaskRecord> {
   const record = createTask(repo, {
     title,
     prompt: 'do work',
@@ -56,10 +56,12 @@ function makeTaskWithWorktree(repo: string, title: string): TaskRecord {
     branch: '',
     worktree: '',
   })
-  const wt = createTaskWorktree(repo, record.id, title)
+  const wt = await createTaskWorktree(repo, record.id, title)
   record.base = wt.base
   record.branch = wt.branch
   record.worktree = wt.worktree
+  // Exactly what the runner records: the review measures from the baseline.
+  record.baseline_sha = wt.baseline
   record.status = 'reviewing'
   saveTask(repo, record)
   return record
@@ -155,7 +157,7 @@ describe('taskReviewVerdict', () => {
 describe('createTaskReviewer', () => {
   test('no diff vs base: review_ok without ever spawning a review', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'idle task')
+    const record = await makeTaskWithWorktree(repo, 'idle task')
     const rig = fakeIo(record)
     const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'must not be called' })
 
@@ -170,7 +172,7 @@ describe('createTaskReviewer', () => {
 
   test('approve verdict: review_ok, archive in the MAIN repo, review_done event', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'green task')
+    const record = await makeTaskWithWorktree(repo, 'green task')
     commitChange(record.worktree, 'feature.txt')
     const rig = fakeIo(record)
     const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
@@ -198,7 +200,7 @@ describe('createTaskReviewer', () => {
 
   test('review_done carries the archive ref, the summary and the severity spread', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'spread task')
+    const record = await makeTaskWithWorktree(repo, 'spread task')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
     const findings: Finding[] = [
@@ -234,7 +236,7 @@ describe('createTaskReviewer', () => {
 
   test('request_changes verdict lands on review_ko with the findings count', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'red task')
+    const record = await makeTaskWithWorktree(repo, 'red task')
     commitChange(record.worktree, 'buggy.txt')
     const rig = fakeIo(record)
     const finding: Finding = { file: 'buggy.txt', severity: 'critical', message: 'oh no' }
@@ -257,7 +259,7 @@ describe('createTaskReviewer', () => {
 
   test('a failed review is review_ko with an error event, never a throw', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'flaky review')
+    const record = await makeTaskWithWorktree(repo, 'flaky review')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
     const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'agent timed out' })
@@ -272,7 +274,7 @@ describe('createTaskReviewer', () => {
 
   test('a failed review names its degradation: review_blocked, message untouched', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'named failure')
+    const record = await makeTaskWithWorktree(repo, 'named failure')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
     const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'agent timed out' })
@@ -292,7 +294,7 @@ describe('createTaskReviewer', () => {
 
   test('a request_changes verdict is a review_blocked record too, with no invented detail', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'blocked by findings')
+    const record = await makeTaskWithWorktree(repo, 'blocked by findings')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
     const flow = fakeSimpleFlow({
@@ -311,7 +313,7 @@ describe('createTaskReviewer', () => {
 
   test('a review that passes clears the reason an earlier degradation left behind', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'recovered')
+    const record = await makeTaskWithWorktree(repo, 'recovered')
     commitChange(record.worktree, 'work.txt')
     record.reason = { code: 'review_blocked', detail: 'review failed: agent timed out' }
     const rig = fakeIo(record)
@@ -325,7 +327,7 @@ describe('createTaskReviewer', () => {
 
   test('a prep crash follows the same review_ko path', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'bad prep')
+    const record = await makeTaskWithWorktree(repo, 'bad prep')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
     const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
@@ -345,7 +347,7 @@ describe('createTaskReviewer', () => {
 
   test('session partials are relayed as SSE-only progress, never journal events', async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'streamed review')
+    const record = await makeTaskWithWorktree(repo, 'streamed review')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
     const flow = fakeSimpleFlow((options) => {
@@ -365,7 +367,7 @@ describe('createTaskReviewer', () => {
 
   test("mode 'dual' drives runDualFlow and tags the review_started event", async () => {
     const repo = makeRepo()
-    const record = makeTaskWithWorktree(repo, 'dual task')
+    const record = await makeTaskWithWorktree(repo, 'dual task')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
     const simple = fakeSimpleFlow({ ok: false, failure: 'run', message: 'wrong flow' })
@@ -384,6 +386,173 @@ describe('createTaskReviewer', () => {
     expect(dualCalls).toBe(1)
     expect(record.status).toBe('review_ok')
     expect(rig.events[0]).toMatchObject({ type: 'review_started', data: { mode: 'dual' } })
+  })
+})
+
+// --- the baseline the review measures from --------------------------------
+
+/** A work-on conversation: the branch already carries commits, the base is the MR target. */
+async function makeWorkOnTask(repo: string): Promise<TaskRecord> {
+  const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+  run(['checkout', '-b', 'feature'])
+  writeFileSync(join(repo, 'earlier.txt'), 'written before the conversation\n')
+  run(['add', '-A'])
+  run(['commit', '-m', 'feat: earlier work'])
+  run(['checkout', 'main'])
+
+  const record = createTask(repo, {
+    title: 'work on feature',
+    prompt: 'continue',
+    autoShip: false,
+    base: 'main',
+    branch: 'feature',
+    worktree: '',
+    workOn: true,
+  })
+  const wt = await createTaskWorktree(repo, record.id, record.title, { branch: 'feature' })
+  record.worktree = wt.worktree
+  record.baseline_sha = wt.baseline
+  record.status = 'reviewing'
+  saveTask(repo, record)
+  return record
+}
+
+describe('createTaskReviewer (baseline anchoring)', () => {
+  test('work-on: the review measures from the baseline, not from the MR target', async () => {
+    const repo = makeRepo()
+    const record = await makeWorkOnTask(repo)
+    commitChange(record.worktree, 'turn.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    // The baseline is the branch tip the conversation started from — NOT 'main'.
+    expect(record.baseline_sha).not.toBe(
+      execFileSync('git', ['rev-parse', 'main'], { cwd: repo }).toString().trim(),
+    )
+    // IDENTITY stays the branch this work is headed for; only the SCOPE moved.
+    expect(flow.calls[0]?.input.target).toBe('main')
+    expect(flow.calls[0]?.input.baseline).toBe(record.baseline_sha)
+    // Only this conversation's work is reviewed: the commit that predates it is
+    // behind the baseline and never reaches the reviewer.
+    expect(flow.calls[0]?.input.files.map((f) => f.path)).toEqual(['turn.txt'])
+    expect(flow.calls[0]?.input.diff).toContain('turn.txt')
+    expect(flow.calls[0]?.input.diff).not.toContain('earlier.txt')
+    // Nothing was said about a fallback, because none happened.
+    expect(rig.events.map((e) => e.type)).toEqual(['review_started', 'review_done'])
+  })
+
+  test('a 0.12 record with no baseline falls back on base...HEAD, and SAYS so', async () => {
+    const repo = makeRepo()
+    const record = await makeWorkOnTask(repo)
+    // Exactly what a record written before the baseline capture existed looks like.
+    delete record.baseline_sha
+    commitChange(record.worktree, 'turn.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    // The old behaviour, unchanged: the whole branch↔target gap, earlier
+    // commits included.
+    expect(flow.calls[0]?.input.target).toBe('main')
+    expect(flow.calls[0]?.input.files.map((f) => f.path).toSorted()).toEqual([
+      'earlier.txt',
+      'turn.txt',
+    ])
+    // …and the degradation is stated in the journal rather than swallowed.
+    expect(rig.events[0]?.type).toBe('message')
+    expect(String(rig.events[0]?.data.text)).toContain('no baseline')
+    expect(String(rig.events[0]?.data.text)).toContain('main...HEAD')
+    expect(record.status).toBe('review_ok')
+  })
+
+  test('a baseline this worktree cannot resolve falls back the same way, and names it', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'orphaned anchor')
+    // A sha that is a valid object name and names nothing here (a pruned
+    // object, a branch rebuilt elsewhere): anchoring on it would fail the whole
+    // review instead of measuring it.
+    record.baseline_sha = 'dead'.repeat(10)
+    commitChange(record.worktree, 'work.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(String(rig.events[0]?.data.text)).toContain('not reachable')
+    expect(String(rig.events[0]?.data.text)).toContain('deaddeaddead')
+    expect(flow.calls[0]?.input.target).toBe('main')
+    expect(record.status).toBe('review_ok')
+  })
+
+  test('a baseline no longer behind HEAD falls back too: a rebased anchor measures nothing', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'rebased anchor')
+    commitChange(record.worktree, 'work.txt')
+    // A real commit of this repo, but on another line of history: `baseline..HEAD`
+    // would diff against something HEAD never descended from.
+    const sibling = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: record.worktree })
+      .toString()
+      .trim()
+    execFileSync('git', ['checkout', '-q', '--detach', 'main'], { cwd: record.worktree })
+    writeFileSync(join(record.worktree, 'other.txt'), 'other line\n')
+    execFileSync('git', ['add', '-A'], { cwd: record.worktree })
+    execFileSync('git', ['commit', '-q', '-m', 'other history'], { cwd: record.worktree })
+    execFileSync('git', ['checkout', '-q', record.branch], { cwd: record.worktree })
+    record.baseline_sha = execFileSync('git', ['rev-parse', 'HEAD@{1}'], { cwd: record.worktree })
+      .toString()
+      .trim()
+    expect(record.baseline_sha).not.toBe(sibling)
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(String(rig.events[0]?.data.text)).toContain('no longer an ancestor')
+    expect(flow.calls[0]?.input.target).toBe('main')
+    expect(flow.calls[0]?.input.baseline).toBeUndefined()
+    expect(record.status).toBe('review_ok')
+  })
+
+  test('the review is keyed by BRANCH and TARGET, never by a sha: re-reviews stay incremental', async () => {
+    const repo = makeRepo()
+    const record = await makeWorkOnTask(repo)
+    commitChange(record.worktree, 'turn.txt')
+    const rig = fakeIo(record)
+    // The real flow builds its record's meta from the prep input (record.ts's
+    // buildRecord): mirror that, since the archive key is what is under test.
+    const flow = fakeSimpleFlow((options) => ({
+      ok: true,
+      record: {
+        ...fakeReview('approve'),
+        meta: {
+          ...fakeReview('approve').meta,
+          branch: options.input.branch,
+          target: options.input.target,
+          head_sha: options.input.head_sha,
+        },
+      },
+      reportLines: [],
+    }))
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    // What the header, the export and the prompt show is the branch and its
+    // target — a raw sha there would be unreadable, and it would change the
+    // archive key findPreviousReview matches on, silently killing incremental
+    // re-review.
+    const input = flow.calls[0]?.input
+    expect(input?.branch).toBe('feature')
+    expect(input?.target).toBe('main')
+    expect(input?.target).not.toMatch(/^[0-9a-f]{40}$/)
+    // Same for the prompt the reviewing agent is handed: it names the branch
+    // and its target, never the anchor's sha.
+    expect(flow.calls[0]?.prompt).toContain('main')
+    expect(flow.calls[0]?.prompt).not.toContain(String(record.baseline_sha))
+    // The next turn's incremental lookup finds this turn's archive.
+    expect(findPreviousReview(repo, 'feature', 'main')?.meta.head_sha).toBe(String(input?.head_sha))
   })
 })
 

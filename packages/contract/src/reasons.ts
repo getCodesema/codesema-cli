@@ -154,6 +154,24 @@ export function sanitizeReasonCode(raw: unknown): ReasonCode | null {
 }
 
 /**
+ * The reason code carried by a thrown value (or by any object that names one),
+ * whatever spelling it used. Producers write `reasonCode`; the wire, the
+ * journal and anything read back from disk write `reason_code`. A consumer that
+ * knew only one of the two would silently drop half the degradations it is
+ * meant to surface, so the READER tolerates both while producers keep to one.
+ *
+ * Never throws, and returns null for anything that names no known code —
+ * including a null/undefined value, or a code from a newer schema.
+ */
+export function reasonCodeOf(source: unknown): ReasonCode | null {
+  if (typeof source !== 'object' || source === null) {
+    return null
+  }
+  const bag = source as { reasonCode?: unknown; reason_code?: unknown }
+  return sanitizeReasonCode(bag.reasonCode) ?? sanitizeReasonCode(bag.reason_code)
+}
+
+/**
  * Does waiting change anything? False when it might. An unknown code (only
  * reachable from untyped callers) answers false too: refusing to close a door
  * we cannot see is the honest default — claiming a degradation terminal is the
