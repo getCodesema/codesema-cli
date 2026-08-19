@@ -173,6 +173,11 @@ export function oversizedArg(args: string[]): string | null {
 
 // --- Parsers -----------------------------------------------------------------
 
+/** Same word forge-issues.ts uses for an unreadable CLI answer — duplicated
+ * rather than imported, since this file must stay free of any dependency on
+ * the ladder that runs the CLIs (top-of-file rule: pure functions only). */
+const UNREADABLE = 'unreadable output'
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
@@ -365,6 +370,480 @@ export function parseGhIssue(raw: string): ForgeIssue | null {
 
 export function parseGlabIssue(raw: string): ForgeIssue | null {
   return glabIssueFrom(parseJson(raw))
+}
+
+// --- Hierarchy (T2.2, D8) -----------------------------------------------------
+//
+// GitHub's sub-issues answer through `gh api` (REST) rather than the
+// porcelain, so the payload is the RAW REST issue shape, not the camelCase
+// gh prints for `issue list --json`: `user.login` (not `author.login`),
+// `created_at`/`updated_at` (snake_case), and `html_url` for the page a
+// human would open — a raw REST issue's `url` field is the API endpoint,
+// and using it here would silently link to the wrong place. Labels keep the
+// porcelain shape (`{name}`), because REST and porcelain agree there.
+
+/** `GET .../issues/{n}/sub_issues` entry; validated field by field like every
+ * other issue list, one bad entry rejects the WHOLE array. */
+export function ghRestIssueFrom(entry: unknown): ForgeIssue | null {
+  if (typeof entry !== 'object' || entry === null) {
+    return null
+  }
+  const e = entry as Record<string, unknown>
+  return buildIssue({
+    number: readRecordProp(e, 'number'),
+    title: readRecordProp(e, 'title'),
+    author: readNested(readRecordProp(e, 'user'), 'login'),
+    createdAt: readRecordProp(e, 'created_at'),
+    updatedAt: readRecordProp(e, 'updated_at'),
+    url: readRecordProp(e, 'html_url'),
+    body: optionalText(readRecordProp(e, 'body')),
+    state: normalizeState(readRecordProp(e, 'state')),
+    labels: ghLabelNames(readRecordProp(e, 'labels')),
+  })
+}
+
+/** Parses and validates `gh api .../sub_issues` output; null on any shape mismatch. */
+export function parseGhSubIssueList(raw: string): ForgeIssue[] | null {
+  return parseIssueList(raw, ghRestIssueFrom)
+}
+
+/**
+ * GitHub's sub-issues write endpoints (`POST .../sub_issues`,
+ * `DELETE .../sub_issue`) take the CHILD's internal database `id` in the
+ * body — NOT its repo-scoped `number`, which is what the URL still uses for
+ * the PARENT. Reading the wrong field here would silently link the wrong
+ * issue, so this is its own narrow parser rather than a field inside
+ * `ghRestIssueFrom`. Null on anything that is not a positive integer id.
+ */
+export function ghIssueDatabaseId(raw: string): number | null {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+  const id = readRecordProp(data as Record<string, unknown>, 'id')
+  return typeof id === 'number' && Number.isInteger(id) && id > 0 ? id : null
+}
+
+/**
+ * GitLab's REST `id` (distinct from the issue's project-scoped `iid`) is the
+ * SAME internal integer a GraphQL global id is built from
+ * (`gid://gitlab/WorkItem/<id>`) — read off `GET projects/:fullpath/issues/<iid>`
+ * before either the hierarchy mutation or the children query, both of which
+ * only understand the global id. Null on anything that is not a positive
+ * integer id.
+ */
+export function glabIssueDatabaseId(raw: string): number | null {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+  const id = readRecordProp(data as Record<string, unknown>, 'id')
+  return typeof id === 'number' && Number.isInteger(id) && id > 0 ? id : null
+}
+
+/**
+ * Same REST answer as `glabIssueDatabaseId`, but also keeps `web_url` (the
+ * full absolute URL GitLab's REST API always returns for an issue) so the
+ * caller can derive an ORIGIN to prepend to the `webPath` GraphQL's
+ * `WorkItemType` hands back for each child — `WorkItemType` has no absolute
+ * URL field of its own (`web_path` only; verified against GitLab's GraphQL
+ * schema, see `WORKITEM_CHILDREN_QUERY`'s own comment). `new URL` never
+ * throws here: a malformed `web_url` degrades to `null`, same as any other
+ * shape mismatch in this file.
+ */
+export function glabIssueRestRef(raw: string): { id: number; origin: string } | null {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+  const record = data as Record<string, unknown>
+  const id = readRecordProp(record, 'id')
+  const webUrl = readRecordProp(record, 'web_url')
+  if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0 || typeof webUrl !== 'string') {
+    return null
+  }
+  try {
+    return { id, origin: new URL(webUrl).origin }
+  } catch {
+    return null
+  }
+}
+
+/** `GET .../issues/{n}/parent` (GitHub) or the `parent { iid }` field of the
+ * GraphQL hierarchy widget (GitLab) both answer with just the parent's
+ * repo-scoped number — this is the one field either side needs to answer
+ * "does this issue already have a real parent on the forge". */
+export function ghIssueNumberFromRest(raw: string): number | null {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+  const number = readRecordProp(data as Record<string, unknown>, 'number')
+  return isIssueNumber(number) ? number : null
+}
+
+/** GitLab's GraphQL `Label` exposes `title`, never the REST API's `name` —
+ * one more asymmetry the read side keeps rather than papering over. */
+function glabGraphqlLabelTitles(raw: unknown): string[] | null {
+  const nodes = readNested(raw, 'nodes')
+  if (!Array.isArray(nodes)) {
+    return null
+  }
+  const titles: string[] = []
+  for (const entry of nodes) {
+    const title = readNested(entry, 'title')
+    if (!isNonEmptyString(title)) {
+      return null
+    }
+    titles.push(title)
+  }
+  return titles
+}
+
+/**
+ * A `widgets` array answers a UNION: each entry only carries the fields of
+ * the inline fragment that matched its own type, so the widget this module
+ * wants is found by which KEY it carries, never by array position — a
+ * schema that reorders or adds widgets ahead of ours must not silently break
+ * this (D8 review, minor: "widget choisi par sa clé et non par position").
+ */
+function findWidget(widgets: unknown, key: string): Record<string, unknown> | undefined {
+  if (!Array.isArray(widgets)) {
+    return undefined
+  }
+  const found = widgets.find(
+    (w) => typeof w === 'object' && w !== null && key in (w as Record<string, unknown>),
+  )
+  return found as Record<string, unknown> | undefined
+}
+
+/**
+ * One `WorkItemWidgetHierarchy.children.nodes[]` entry, read off
+ * `Types::WorkItemType` — NOT `Types::IssueType`, which has no `widgets`
+ * field at all (this is CRITIQUE 1's fix: `Query.issue` cannot answer this
+ * query, only `Query.workItem` can). `webPath` (relative, nullable) is
+ * combined with `origin` (the REST-resolved parent's own host) into an
+ * absolute URL; description and labels live on their OWN widgets
+ * (`WorkItemWidgetDescription`, `WorkItemWidgetLabels`), never as plain
+ * fields of the work item itself.
+ */
+function glabWorkItemChildFrom(entry: unknown, origin: string): ForgeIssue | null {
+  if (typeof entry !== 'object' || entry === null) {
+    return null
+  }
+  const e = entry as Record<string, unknown>
+  const webPath = readRecordProp(e, 'webPath')
+  const descriptionWidget = findWidget(readRecordProp(e, 'widgets'), 'description')
+  const labelsWidget = findWidget(readRecordProp(e, 'widgets'), 'labels')
+  return buildIssue({
+    number: readRecordProp(e, 'iid'),
+    title: readRecordProp(e, 'title'),
+    author: readNested(readRecordProp(e, 'author'), 'username'),
+    createdAt: readRecordProp(e, 'createdAt'),
+    updatedAt: readRecordProp(e, 'updatedAt'),
+    // webPath is nullable on WorkItemType: a null here rejects this entry
+    // (never a fabricated URL), same posture as any other missing field.
+    url: typeof webPath === 'string' ? origin + webPath : undefined,
+    body: optionalText(descriptionWidget === undefined ? '' : descriptionWidget.description),
+    state: normalizeState(readRecordProp(e, 'state')),
+    // The Labels widget being ABSENT reads as "no labels" (an optional
+    // facet, same posture as an absent description); present-but-malformed
+    // still rejects the whole entry, via glabGraphqlLabelTitles.
+    labels: labelsWidget === undefined ? [] : glabGraphqlLabelTitles(labelsWidget.labels),
+  })
+}
+
+/**
+ * A GraphQL response is not a plain payload: on top of the union-rejecting
+ * shape rules every other parser in this file applies, it carries its OWN
+ * two-tier error protocol — a top-level `errors` array (the query/mutation
+ * could not even be attempted as written: a syntax mistake, an object
+ * `loads:` could not find, an authorization refusal, OR a genuine schema gap)
+ * versus a business error nested inside `data.<operation>.errors` (the
+ * mutation DID run and was refused). The two are never conflated: the caller
+ * in forge-issues.ts turns a RECOGNIZED schema gap into `unsupported` (D8
+ * decision 2 — an edition that cannot do this at all) and everything else,
+ * top-level or nested, into an honest `cli-error` (something real happened,
+ * or this module itself asked something wrong, and either way a retry on
+ * the SAME edition is not ruled out the way `unsupported` rules it out).
+ */
+export type GraphqlOutcome<T> =
+  | { kind: 'ok'; value: T }
+  | { kind: 'unsupported'; message: string }
+  | { kind: 'error'; message: string }
+
+/**
+ * graphql-ruby's "Field 'x' doesn't exist on type 'Y'" (verified against its
+ * own source, `fields_are_defined_on_type.rb`) fires on TWO very different
+ * situations that read identically: the entry point this module asks for
+ * being genuinely absent from the schema (`Y` is `Query`/`Mutation`), OR a
+ * plain typo in a LEAF field this module asks one of ITS OWN widget types
+ * for (`Y` is `WorkItemWidgetHierarchy` or similar) — a mistake entirely
+ * this module's own, indistinguishable from a real gap by the mention of
+ * "WorkItemWidgetHierarchy" alone (an earlier, wider version of this
+ * function keyed on exactly that mention, and so read "Field 'childrn'
+ * doesn't exist on type 'WorkItemWidgetHierarchy'" — this module's OWN
+ * typo — as "the edition can't do this": CRITIQUE 2's failure mode again,
+ * merely narrower). Only the FIRST situation is a genuine gap: `workItem`
+ * and `workItemUpdate` are the two entry points this module ever asks
+ * `Query`/`Mutation` for, both always spelled correctly here, so a report
+ * that either does not exist can only mean the schema itself lacks them.
+ *
+ * Three OTHER graphql-ruby shapes are genuine gaps for the same reason —
+ * the name they refuse is always one this module spells correctly, so
+ * refusing it can only mean the schema does not have it at all:
+ *   - `fragment_types_exist.rb`: "No such type WorkItemWidgetHierarchy, so
+ *     it can't be a fragment condition" — one of the three widget types
+ *     this module selects via an inline fragment;
+ *   - `variables_are_input_types.rb`: the source's own template is
+ *     `"#{type_name} isn't a defined input type (on $#{node.name})"` — for
+ *     this module's own variables that reads as "WorkItemID isn't a defined
+ *     input type (on $id)" (round 4 correction: an earlier version of this
+ *     comment quoted only the "isn't a defined input type" prefix as if it
+ *     were the WHOLE message, which it never is — the `.includes()` match
+ *     below only needs that prefix and still works regardless, but the
+ *     comment claiming to be "checked against the source" should actually
+ *     be) — the input type of `$id`/`$parentId` in every query and mutation
+ *     this module sends;
+ *   - `arguments_are_defined.rb`, the INPUT-OBJECT-LITERAL branch (its
+ *     `parent_name` case for `Language::Nodes::InputObject`, distinct from
+ *     the field-selection branch above): "InputObject 'WorkItemUpdateInput'
+ *     doesn't accept argument 'hierarchyWidget'" — `hierarchyWidget` is the
+ *     one literal key both of this module's mutations ever set inside
+ *     `input: {...}`, always spelled the same way, so this is the exact
+ *     shape an edition whose `WorkItemUpdateInput` never grew a hierarchy
+ *     widget answers with (an earlier fixture in this module's own test
+ *     suite had GUESSED a different, unverified shape for this exact case,
+ *     "Field 'hierarchyWidget' doesn't exist on type 'WorkItemUpdateInput'"
+ *     — checked against graphql-ruby's source and corrected: that is not
+ *     the message this rule actually produces).
+ */
+const GLAB_MISSING_ENTRY_POINTS: ReadonlyArray<{ field: string; onType: string }> = [
+  { field: 'workitem', onType: 'query' },
+  { field: 'workitemupdate', onType: 'mutation' },
+]
+const GLAB_MISSING_FRAGMENT_TYPES = [
+  'workitemwidgethierarchy',
+  'workitemwidgetdescription',
+  'workitemwidgetlabels',
+]
+const GLAB_MISSING_INPUT_TYPES = ['workitemid']
+const GLAB_MISSING_INPUT_ARGUMENTS: ReadonlyArray<{ onType: string; argument: string }> = [
+  { onType: 'workitemupdateinput', argument: 'hierarchywidget' },
+]
+
+function looksLikeSchemaGap(message: string): boolean {
+  const lower = message.toLowerCase()
+  const entryPointGone = GLAB_MISSING_ENTRY_POINTS.some(({ field, onType }) =>
+    lower.includes(`field '${field}' doesn't exist on type '${onType}'`),
+  )
+  const fragmentTypeGone = GLAB_MISSING_FRAGMENT_TYPES.some(
+    (t) => lower.includes(`no such type ${t}`) && lower.includes("can't be a fragment condition"),
+  )
+  const inputTypeGone = GLAB_MISSING_INPUT_TYPES.some((t) =>
+    lower.includes(`${t} isn't a defined input type`),
+  )
+  const inputArgumentGone = GLAB_MISSING_INPUT_ARGUMENTS.some(
+    ({ onType, argument }) =>
+      lower.includes(`inputobject '${onType}'`) &&
+      lower.includes(`doesn't accept argument '${argument}'`),
+  )
+  return entryPointGone || fragmentTypeGone || inputTypeGone || inputArgumentGone
+}
+
+type TopLevelErrors = { message: string; schemaGap: boolean }
+
+function graphqlTopLevelErrors(parsed: unknown): TopLevelErrors | null {
+  const errors = readNested(parsed, 'errors')
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return null
+  }
+  const messages = errors
+    .map((e) => readNested(e, 'message'))
+    .filter((m): m is string => isNonEmptyString(m))
+  const message = messages.length > 0 ? messages.join('; ') : 'the schema refused the query'
+  return { message, schemaGap: messages.some(looksLikeSchemaGap) }
+}
+
+/** Parses `glab api graphql` output for the hierarchy mutation
+ * (`workItemUpdate`, the only mutation this module ever sends), telling a
+ * RECOGNIZED schema-level "this edition cannot do that" (see
+ * `looksLikeSchemaGap`) apart from a business rejection the mutation itself
+ * raised, and apart from any OTHER top-level GraphQL error. */
+export function parseGlabHierarchyMutation(raw: string): GraphqlOutcome<true> {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const topLevel = graphqlTopLevelErrors(data)
+  if (topLevel !== null) {
+    return topLevel.schemaGap
+      ? { kind: 'unsupported', message: topLevel.message }
+      : { kind: 'error', message: topLevel.message }
+  }
+  const payload = readNested(readNested(data, 'data'), 'workItemUpdate')
+  if (typeof payload !== 'object' || payload === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const errors = readNested(payload, 'errors')
+  if (Array.isArray(errors) && errors.length > 0) {
+    const messages = errors.filter((m): m is string => isNonEmptyString(m))
+    return {
+      kind: 'error',
+      message: messages.length > 0 ? messages.join('; ') : 'the mutation was refused',
+    }
+  }
+  return { kind: 'ok', value: true }
+}
+
+/**
+ * The GraphQL query text, kept here (not forge-issues.ts) so the fields it
+ * asks for and the fields the parser below reads stay next to each other and
+ * cannot silently drift apart. Enters through `Query.workItem(id:)`, NEVER
+ * `Query.issue(id:)` — `Types::IssueType` (CE `app/graphql/types/issue_type.rb`,
+ * EE `ee/app/graphql/ee/types/issue_type.rb`) has no `widgets` field at all;
+ * only `Types::WorkItemType` does. `first: 100` is GitLab's own
+ * `default_max_page_size`: asking for more is silently CLAMPED to 100, never
+ * refused, so asking for the true cap (200) would have looked like a legal
+ * request that quietly returned less — `after` walks the cursor instead.
+ */
+export const GLAB_HIERARCHY_CHILDREN_QUERY =
+  'query($id: WorkItemID!, $after: String) { workItem(id: $id) { widgets { ... on WorkItemWidgetHierarchy { children(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { iid title state webPath author { username } createdAt updatedAt widgets { ... on WorkItemWidgetDescription { description } ... on WorkItemWidgetLabels { labels { nodes { title } } } } } } } } } }'
+
+export type GraphqlChildrenPage = {
+  issues: ForgeIssue[]
+  hasNextPage: boolean
+  endCursor: string | null
+}
+
+/** Parses one page of `GLAB_HIERARCHY_CHILDREN_QUERY`'s answer, walking down
+ * to `data.workItem.widgets[].children` — the ONE widget entry among the
+ * union that carries a `children` connection, found by key (`findWidget`),
+ * never by position. `workItem: null` (a bad id) degrades to UNREADABLE,
+ * never a throw; a schema without the widget type at all fails the query
+ * itself, caught above by the top-level `errors` check. */
+export function parseGlabHierarchyChildren(
+  raw: string,
+  origin: string,
+): GraphqlOutcome<GraphqlChildrenPage> {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const topLevel = graphqlTopLevelErrors(data)
+  if (topLevel !== null) {
+    return topLevel.schemaGap
+      ? { kind: 'unsupported', message: topLevel.message }
+      : { kind: 'error', message: topLevel.message }
+  }
+  const workItem = readNested(readNested(data, 'data'), 'workItem')
+  if (typeof workItem !== 'object' || workItem === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const hierarchy = findWidget(
+    readRecordProp(workItem as Record<string, unknown>, 'widgets'),
+    'children',
+  )
+  const children = hierarchy === undefined ? undefined : hierarchy.children
+  // No hierarchy widget in the answer (and no top-level error either): read
+  // as "no children" rather than refused — under-claiming is the safe
+  // direction (invariant: never assert a link that is not there).
+  if (children === undefined) {
+    return { kind: 'ok', value: { issues: [], hasNextPage: false, endCursor: null } }
+  }
+  const nodes = readNested(children, 'nodes')
+  if (!Array.isArray(nodes)) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const issues: ForgeIssue[] = []
+  for (const entry of nodes) {
+    const child = glabWorkItemChildFrom(entry, origin)
+    if (child === null) {
+      // One bad entry rejects the WHOLE array: never a partial list (same
+      // rule as parseIssueList).
+      return { kind: 'error', message: UNREADABLE }
+    }
+    issues.push(child)
+  }
+  const pageInfo = readNested(children, 'pageInfo')
+  const hasNextPage = readNested(pageInfo, 'hasNextPage')
+  const endCursor = readNested(pageInfo, 'endCursor')
+  return {
+    kind: 'ok',
+    value: {
+      issues,
+      hasNextPage: hasNextPage === true,
+      endCursor: isNonEmptyString(endCursor) ? endCursor : null,
+    },
+  }
+}
+
+/** `WorkItemWidgetHierarchy.parent { iid }` — GitHub's mirror is the plain
+ * REST `GET .../parent`, read by `ghIssueNumberFromRest`. `parent: null`
+ * (no hierarchy widget, or a work item with no parent) is a legitimate `ok`
+ * with `value: null`, never an error. */
+export const GLAB_HIERARCHY_PARENT_QUERY =
+  'query($id: WorkItemID!) { workItem(id: $id) { widgets { ... on WorkItemWidgetHierarchy { parent { iid } } } } }'
+
+export function parseGlabHierarchyParent(raw: string): GraphqlOutcome<number | null> {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const topLevel = graphqlTopLevelErrors(data)
+  if (topLevel !== null) {
+    return topLevel.schemaGap
+      ? { kind: 'unsupported', message: topLevel.message }
+      : { kind: 'error', message: topLevel.message }
+  }
+  const workItem = readNested(readNested(data, 'data'), 'workItem')
+  if (typeof workItem !== 'object' || workItem === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const hierarchy = findWidget(
+    readRecordProp(workItem as Record<string, unknown>, 'widgets'),
+    'parent',
+  )
+  const parent = hierarchy === undefined ? null : hierarchy.parent
+  if (parent === null || parent === undefined) {
+    return { kind: 'ok', value: null }
+  }
+  const iid = readNested(parent, 'iid')
+  return isIssueNumber(iid) ? { kind: 'ok', value: iid } : { kind: 'error', message: UNREADABLE }
+}
+
+/** `WorkItemWidgetHierarchy.children(first: 1)` — the cheapest possible
+ * existence probe, never the full list, for the mirror one-level guard ("a
+ * parent-with-children cannot become someone's child either"). */
+export const GLAB_HIERARCHY_HAS_CHILDREN_QUERY =
+  'query($id: WorkItemID!) { workItem(id: $id) { widgets { ... on WorkItemWidgetHierarchy { children(first: 1) { nodes { iid } } } } } }'
+
+export function parseGlabHierarchyHasChildren(raw: string): GraphqlOutcome<boolean> {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const topLevel = graphqlTopLevelErrors(data)
+  if (topLevel !== null) {
+    return topLevel.schemaGap
+      ? { kind: 'unsupported', message: topLevel.message }
+      : { kind: 'error', message: topLevel.message }
+  }
+  const workItem = readNested(readNested(data, 'data'), 'workItem')
+  if (typeof workItem !== 'object' || workItem === null) {
+    return { kind: 'error', message: UNREADABLE }
+  }
+  const hierarchy = findWidget(
+    readRecordProp(workItem as Record<string, unknown>, 'widgets'),
+    'children',
+  )
+  if (hierarchy === undefined) {
+    return { kind: 'ok', value: false }
+  }
+  const nodes = readNested(hierarchy.children, 'nodes')
+  return Array.isArray(nodes)
+    ? { kind: 'ok', value: nodes.length > 0 }
+    : { kind: 'error', message: UNREADABLE }
 }
 
 /**

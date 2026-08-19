@@ -10,13 +10,19 @@ import {
   createIssue,
   forgeIssueReason,
   getIssue,
+  GLAB_HIERARCHY_CLEAR_PARENT,
+  GLAB_HIERARCHY_SET_PARENT,
   ISSUE_LIST_MAX,
+  linkChildIssue,
+  listChildIssues,
   listIssues,
   runForgeCli,
   setLabels,
+  unlinkChildIssue,
   type ForgeCli,
   type ForgeCliOutcome,
   type ForgeIssuesExecFn,
+  type IssueHierarchyCache,
 } from './forge-issues.js'
 import { subprocessEnv } from './git.js'
 
@@ -122,6 +128,239 @@ const failing = (message: string) => (): ForgeCliOutcome => ({ kind: 'error', me
 const GITHUB_REMOTE = 'https://github.com/acme/repo.git'
 const GITLAB_REMOTE = 'https://gitlab.com/acme/repo.git'
 const SELF_HOSTED_REMOTE = 'https://forge.example.com/acme/repo.git'
+
+// --- Hierarchy fixtures (T2.2) ------------------------------------------------
+//
+// GitHub's sub-issues answer through `gh api`, so the payload is the RAW REST
+// issue shape — `user.login`, `created_at`/`updated_at`, `html_url` — never
+// the porcelain's camelCase GH_ISSUE above uses. GitLab's children answer
+// through `Query.workItem`, never `Query.issue` (CRITIQUE 1: `IssueType` has
+// no `widgets` field at all): `iid`, `webPath` (relative — combined with an
+// ORIGIN resolved off the REST answer, since `WorkItemType` has no absolute
+// URL of its own), `author.username`, and description/labels living on their
+// OWN nested widgets (`WorkItemWidgetDescription`, `WorkItemWidgetLabels`).
+function ghRestIssue(number: number) {
+  return {
+    number,
+    id: number * 100,
+    title: 'Add sidebar',
+    body: 'It needs a sidebar.',
+    state: 'open',
+    labels: [{ id: 1, name: 'bug', color: 'd73a4a' }],
+    user: { login: 'octocat' },
+    created_at: '2026-07-20T09:00:00Z',
+    updated_at: '2026-07-28T10:00:00Z',
+    html_url: `https://github.com/acme/repo/issues/${number}`,
+  }
+}
+
+const GLAB_ORIGIN = 'https://gitlab.com'
+
+/** `GET projects/:fullpath/issues/<n>` — used for EVERY glab resolve step
+ * (link/unlink/parent-check/has-children only read `.id`; the children list
+ * also reads `.web_url` for its origin). One fixture serves all of them. */
+function glabIssueRestAnswer(n: number) {
+  return JSON.stringify({ id: n * 100, web_url: `${GLAB_ORIGIN}/acme/repo/-/issues/${n}` })
+}
+
+function glabWorkItemChild(iid: number) {
+  return {
+    iid,
+    title: 'Fix login',
+    state: 'OPEN',
+    webPath: `/acme/repo/-/issues/${iid}`,
+    author: { username: 'jdoe' },
+    createdAt: '2026-07-20T09:30:00.123Z',
+    updatedAt: '2026-07-28T09:30:00.123Z',
+    widgets: [{ description: 'Login is broken.' }, { labels: { nodes: [{ title: 'bug' }] } }],
+  }
+}
+
+function glabChildrenPayload(
+  children: number[],
+  hasNextPage = false,
+  endCursor: string | null = null,
+) {
+  return JSON.stringify({
+    data: {
+      workItem: {
+        widgets: [
+          {
+            children: {
+              pageInfo: { hasNextPage, endCursor },
+              nodes: children.map(glabWorkItemChild),
+            },
+          },
+        ],
+      },
+    },
+  })
+}
+
+function glabParentPayload(parentIid: number | null) {
+  return JSON.stringify({
+    data: { workItem: { widgets: [{ parent: parentIid === null ? null : { iid: parentIid } }] } },
+  })
+}
+
+function glabHasChildrenPayload(hasAny: boolean) {
+  return JSON.stringify({
+    data: { workItem: { widgets: [{ children: { nodes: hasAny ? [{ iid: 999 }] : [] } }] } },
+  })
+}
+
+const GLAB_MUTATION_OK = JSON.stringify({ data: { workItemUpdate: { errors: [] } } })
+/** A RECOGNIZED schema gap: graphql-ruby's actual message (verified against
+ * its source, `arguments_are_defined.rb`, the input-object-literal branch)
+ * for an edition whose `WorkItemUpdateInput` never grew a `hierarchyWidget`
+ * argument — `hierarchyWidget` is the one literal key both of this
+ * module's mutations ever set, always spelled the same way (MAJEUR C's
+ * fix). */
+const GLAB_MUTATION_UNSUPPORTED = JSON.stringify({
+  errors: [
+    { message: "InputObject 'WorkItemUpdateInput' doesn't accept argument 'hierarchyWidget'" },
+  ],
+})
+/** A top-level GraphQL error that is NOT a recognized schema gap — an
+ * authorization refusal, naming none of this module's identifiers. Proves
+ * CRITIQUE 2's fix: this must stay `cli-error`, never `unsupported`. */
+const GLAB_TOPLEVEL_AUTH_ERROR = JSON.stringify({
+  errors: [{ message: 'You are not authorized to perform this action' }],
+})
+const GLAB_MUTATION_BUSINESS_ERROR = JSON.stringify({
+  data: { workItemUpdate: { errors: ["You don't have permission to update this work item"] } },
+})
+/** MAJEUR C: our OWN typo in a LEAF field of a widget we otherwise reach
+ * correctly — graphql-ruby's real message shape (`fields_are_defined_on_
+ * type.rb`) is IDENTICAL in form to a genuine gap ("Field 'x' doesn't exist
+ * on type 'Y'"), differing only in which `Y` it names. `Y` here is one of
+ * OUR widget types, never `Query`/`Mutation`, so this must NOT be read as
+ * "the edition can't do this" — it can only be this module's own mistake. */
+const GLAB_OUR_OWN_TYPO = JSON.stringify({
+  errors: [{ message: "Field 'childrn' doesn't exist on type 'WorkItemWidgetHierarchy'" }],
+})
+/** MINEUR: two REAL schema-gap shapes an earlier, narrower pass did not
+ * recognize (both verified against graphql-ruby's own source) — an edition
+ * without work items answers with these, not with a "Field … doesn't exist
+ * on type 'Query'" the way the entry-point case does. */
+const GLAB_MISSING_FRAGMENT_TYPE = JSON.stringify({
+  errors: [
+    { message: "No such type WorkItemWidgetHierarchy, so it can't be a fragment condition" },
+  ],
+})
+const GLAB_MISSING_INPUT_TYPE = JSON.stringify({
+  errors: [{ message: "WorkItemID isn't a defined input type (on $id)" }],
+})
+
+/** `--field=query=…` is always argv element index 2 of a `glab api graphql` call. */
+function glabQueryOf(call: { args: string[] }): string {
+  return call.args[2] ?? ''
+}
+
+/** Wraps a WRITE-focused execFn with the standard "no real parent, no real
+ * children" answers `guardOneLevel`'s two probes need to let a call through
+ * — so a test can focus on what the WRITE itself answers, without repeating
+ * the probe plumbing four times over. */
+function passGuard(onWrite: ForgeIssuesExecFn): ForgeIssuesExecFn {
+  return async (cli, args, cwd) => {
+    const q = glabQueryOf({ args })
+    if (q.includes('parent { iid }')) {
+      return { kind: 'ok', stdout: glabParentPayload(null) }
+    }
+    if (q.includes('first: 1)')) {
+      return { kind: 'ok', stdout: glabHasChildrenPayload(false) }
+    }
+    return onWrite(cli, args, cwd)
+  }
+}
+
+/** Extracts the database id a `--field=id=gid://gitlab/WorkItem/<id>` argv
+ * element carries, back into the test's own `n * 100` numbering. */
+function glabIdArgOf(call: { args: string[] }): number | undefined {
+  const arg = call.args.find((a) => a.startsWith('--field=id='))
+  const id = arg ? Number(arg.split('/').pop()) : Number.NaN
+  return Number.isFinite(id) ? id / 100 : undefined
+}
+
+/**
+ * A self-consistent fake forge for the hierarchy trio: `state` maps
+ * child → parent exactly like the module's own cache, but here it is the
+ * SOURCE OF TRUTH the mocked CLIs answer from — so a fresh `linkChildIssue`
+ * call (no shared cache) still gets a REAL answer about pre-existing
+ * relationships, the guarantee MAJEUR 3 asked for.
+ */
+function hierarchyReply(state: Map<number, number>) {
+  return (call: Call): ForgeCliOutcome => {
+    if (call.cli === 'gh') {
+      const path = call.args[1] ?? ''
+      const match = /issues\/(\d+)(\/(sub_issues|sub_issue|parent))?$/.exec(path)
+      const n = match ? Number(match[1]) : Number.NaN
+      const suffix = match?.[3]
+      if (suffix === 'sub_issues' && call.args.includes('POST')) {
+        const idArg = call.args.find((a) => a.startsWith('--field=sub_issue_id='))
+        state.set(Number(idArg?.split('=').pop()) / 100, n)
+        return { kind: 'ok', stdout: '' }
+      }
+      if (suffix === 'sub_issue' && call.args.includes('DELETE')) {
+        const idArg = call.args.find((a) => a.startsWith('--field=sub_issue_id='))
+        state.delete(Number(idArg?.split('=').pop()) / 100)
+        return { kind: 'ok', stdout: '' }
+      }
+      if (suffix === 'sub_issues') {
+        const children = [...state.entries()].filter(([, p]) => p === n).map(([c]) => c)
+        return { kind: 'ok', stdout: JSON.stringify(children.map(ghRestIssue)) }
+      }
+      if (suffix === 'parent') {
+        const parent = state.get(n)
+        // The exact message GitHub's REST API answers with for a genuinely
+        // missing parent (checked live against api.github.com/repos/cli/cli
+        // /issues/1/parent) — a generic "Not Found" would be a DIFFERENT
+        // 404 (issue-not-found) and must NOT be read as "no parent".
+        return parent === undefined
+          ? { kind: 'error', message: 'gh: No parent issue found (HTTP 404)' }
+          : { kind: 'ok', stdout: JSON.stringify({ number: parent }) }
+      }
+      return { kind: 'ok', stdout: JSON.stringify({ id: n * 100 }) }
+    }
+    const query = glabQueryOf(call)
+    if (query === '') {
+      // A plain REST resolve: projects/:fullpath/issues/<n> — no `--field=`
+      // arguments at all, so glabIdArgOf (which reads a graphql `id` field)
+      // would find nothing here; the number rides the PATH instead.
+      const m = /issues\/(\d+)$/.exec(call.args[1] ?? '')
+      return { kind: 'ok', stdout: glabIssueRestAnswer(m ? Number(m[1]) : 0) }
+    }
+    const n = glabIdArgOf(call)
+    if (query.includes('parentId: null')) {
+      if (n !== undefined) {
+        state.delete(n)
+      }
+      return { kind: 'ok', stdout: GLAB_MUTATION_OK }
+    }
+    if (query.includes('$parentId')) {
+      const parentArg = call.args.find((a) => a.startsWith('--field=parentId='))
+      const parentN = parentArg ? Number(parentArg.split('/').pop()) / 100 : undefined
+      if (n !== undefined && parentN !== undefined) {
+        state.set(n, parentN)
+      }
+      return { kind: 'ok', stdout: GLAB_MUTATION_OK }
+    }
+    if (query.includes('parent { iid }')) {
+      const parent = n === undefined ? undefined : state.get(n)
+      return { kind: 'ok', stdout: glabParentPayload(parent ?? null) }
+    }
+    if (query.includes('first: 1)')) {
+      const hasAny = n !== undefined && [...state.values()].includes(n)
+      return { kind: 'ok', stdout: glabHasChildrenPayload(hasAny) }
+    }
+    if (query.includes('WorkItemWidgetHierarchy')) {
+      const children =
+        n === undefined ? [] : [...state.entries()].filter(([, p]) => p === n).map(([c]) => c)
+      return { kind: 'ok', stdout: glabChildrenPayload(children) }
+    }
+    return { kind: 'ok', stdout: glabIssueRestAnswer(n ?? 0) }
+  }
+}
 
 describe('unavailability reasons', () => {
   test('no-remote is the answer of EVERY operation, and none of them probes', async () => {
@@ -835,5 +1074,990 @@ describe('runForgeCli', () => {
       expect(outcome.kind).toBe('ok')
       expect(outcome.kind === 'ok' && outcome.stdout.length).toBe(2_000_000)
     })
+  })
+})
+
+// --- T2.2: hierarchy ---------------------------------------------------------
+
+describe('hierarchy: link, list, unlink (T2.2)', () => {
+  test('GitHub: link probes the real parent and real children first, then resolves+writes', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig(hierarchyReply(new Map()))
+      expect(await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })).toEqual({
+        available: true,
+      })
+      expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'gh', 'gh', 'gh'])
+      expect(r.calls[0]?.args).toEqual(['api', 'repos/{owner}/{repo}/issues/10/parent'])
+      expect(r.calls[1]?.args).toEqual([
+        'api',
+        'repos/{owner}/{repo}/issues/20/sub_issues',
+        '--method',
+        'GET',
+        '--field=per_page=1',
+      ])
+      expect(r.calls[2]?.args).toEqual(['api', 'repos/{owner}/{repo}/issues/20'])
+      expect(r.calls[3]?.args).toEqual([
+        'api',
+        'repos/{owner}/{repo}/issues/10/sub_issues',
+        '--method',
+        'POST',
+        '--field=sub_issue_id=2000',
+      ])
+      const r2 = rig(hierarchyReply(new Map([[20, 10]])))
+      expect(
+        await unlinkChildIssue({ cwd: repo, execFn: r2.execFn, parent: 10, child: 20 }),
+      ).toEqual({ available: true })
+      expect(r2.calls.map((c) => c.cli)).toEqual(['gh', 'gh'])
+      expect(r2.calls[0]?.args).toEqual(['api', 'repos/{owner}/{repo}/issues/20'])
+      expect(r2.calls[1]?.args).toEqual([
+        'api',
+        'repos/{owner}/{repo}/issues/10/sub_issue',
+        '--method',
+        'DELETE',
+        '--field=sub_issue_id=2000',
+      ])
+    })
+  })
+
+  test('GitLab: link probes the real parent and real children first, then resolves+writes with a canonical WorkItem gid', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig(hierarchyReply(new Map()))
+      expect(await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })).toEqual({
+        available: true,
+      })
+      // Every glab hierarchy read needs its OWN resolve first — GraphQL
+      // cannot turn a project-scoped number into a gid on its own, unlike
+      // GitHub's REST paths, which take the plain number directly:
+      //   resolve(10), parent-query(10),
+      //   resolve(20), has-children-query(20),
+      //   resolve(20), resolve(10), mutate.
+      expect(r.calls.map((c) => c.cli)).toEqual(Array(7).fill('glab'))
+      expect(r.calls[0]?.args).toEqual(['api', 'projects/:fullpath/issues/10'])
+      expect(glabQueryOf(r.calls[1]!)).toContain('parent { iid }')
+      expect(r.calls[1]?.args).toContain('--field=id=gid://gitlab/WorkItem/1000')
+      expect(r.calls[2]?.args).toEqual(['api', 'projects/:fullpath/issues/20'])
+      expect(glabQueryOf(r.calls[3]!)).toContain('first: 1)')
+      expect(r.calls[3]?.args).toContain('--field=id=gid://gitlab/WorkItem/2000')
+      expect(r.calls[4]?.args).toEqual(['api', 'projects/:fullpath/issues/20'])
+      expect(r.calls[5]?.args).toEqual(['api', 'projects/:fullpath/issues/10'])
+      expect(glabQueryOf(r.calls[6]!)).toContain('$parentId')
+      expect(r.calls[6]?.args).toContain('--field=id=gid://gitlab/WorkItem/2000')
+      expect(r.calls[6]?.args).toContain('--field=parentId=gid://gitlab/WorkItem/1000')
+
+      const r2 = rig(hierarchyReply(new Map([[20, 10]])))
+      expect(
+        await unlinkChildIssue({ cwd: repo, execFn: r2.execFn, parent: 10, child: 20 }),
+      ).toEqual({ available: true })
+      // unlink runs no guard, no parent/has-children probe: resolve child then mutate.
+      expect(r2.calls.map((c) => c.cli)).toEqual(['glab', 'glab'])
+      expect(r2.calls[0]?.args).toEqual(['api', 'projects/:fullpath/issues/20'])
+      expect(glabQueryOf(r2.calls[1]!)).toContain('parentId: null')
+      expect(r2.calls[1]?.args).toContain('--field=id=gid://gitlab/WorkItem/2000')
+      expect(r2.calls[1]?.args).not.toContain('--field=parentId=gid://gitlab/WorkItem/1000')
+    })
+  })
+
+  test('listChildIssues reflects the forge after link and after unlink, on both forges', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const state = new Map<number, number>()
+      const r = rig(hierarchyReply(state))
+      await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      const after = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(after.available && after.issues.map((i) => i.number)).toEqual([20])
+      await unlinkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      const gone = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(gone).toMatchObject({ available: true, issues: [], truncated: false })
+    })
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const state = new Map<number, number>()
+      const r = rig(hierarchyReply(state))
+      await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      const after = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(after.available && after.issues.map((i) => i.number)).toEqual([20])
+      await unlinkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      const gone = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(gone).toMatchObject({ available: true, issues: [], truncated: false })
+    })
+  })
+
+  test('no hierarchy operation hands a credential to the forge CLI', async () => {
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const r = rig(missing)
+      const { execFn } = r
+      await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      await unlinkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      await listChildIssues({ cwd: repo, execFn, parent: 1 })
+      expect(r.calls.length).toBeGreaterThan(0)
+      for (const call of r.calls) {
+        expect(['gh', 'glab']).toContain(call.cli)
+        expect(call.args.some((arg) => /token|password|authorization|bearer/i.test(arg))).toBe(
+          false,
+        )
+      }
+    })
+  })
+})
+
+describe('hierarchy: unavailability never throws, and unsupported is narrowly named (T2.2)', () => {
+  test('every hierarchy operation degrades to a typed result instead of throwing', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const { execFn } = rig(failing('boom'))
+      const results = [
+        await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 }),
+        await unlinkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 }),
+        await listChildIssues({ cwd: repo, execFn, parent: 1 }),
+      ]
+      for (const result of results) {
+        expect(result.available).toBe(false)
+        expect('reason' in result && result.reason).toBe('cli-error')
+      }
+    })
+  })
+
+  test('GitLab: a RECOGNIZED schema gap answers a NAMED unavailability, not a bare cli-error', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const execFn = passGuard(async (_cli, args) =>
+        glabQueryOf({ args }).includes('$parentId')
+          ? { kind: 'ok', stdout: GLAB_MUTATION_UNSUPPORTED }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(1) },
+      )
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'unsupported' })
+      expect('detail' in result && result.detail).toContain('glab:')
+      expect('detail' in result && result.detail).toContain('hierarchyWidget')
+      expect(!result.available && forgeIssueReason(result)).toBeNull()
+    })
+  })
+
+  test('GitLab: an UNRECOGNIZED top-level error (authorization) stays cli-error, never "unsupported"', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const execFn = passGuard(async (_cli, args) =>
+        args.includes('graphql')
+          ? { kind: 'ok', stdout: GLAB_TOPLEVEL_AUTH_ERROR }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(1) },
+      )
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+      expect('detail' in result && result.detail).toContain('not authorized')
+    })
+  })
+
+  test('GitLab: OUR OWN typo in a widget leaf field stays cli-error, never "unsupported" (MAJEUR C)', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      // Same message SHAPE as a genuine gap ("Field 'x' doesn't exist on
+      // type 'Y'"), but Y is one of OUR widget types, not Query/Mutation —
+      // a blanket read of this shape is exactly what let this module's own
+      // earlier bug (`issue.widgets`) hide as "the edition can't do this"
+      // forever. This must be surfaced honestly instead.
+      const execFn = passGuard(async (_cli, args) =>
+        glabQueryOf({ args }).includes('$parentId')
+          ? { kind: 'ok', stdout: GLAB_OUR_OWN_TYPO }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(1) },
+      )
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+      expect('detail' in result && result.detail).toContain('childrn')
+    })
+  })
+
+  test('GitLab: a missing hierarchy widget TYPE answers "unsupported", not cli-error (MINEUR)', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const execFn = passGuard(async (_cli, args) =>
+        glabQueryOf({ args }).includes('$parentId')
+          ? { kind: 'ok', stdout: GLAB_MISSING_FRAGMENT_TYPE }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(1) },
+      )
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'unsupported' })
+    })
+  })
+
+  test('GitLab: a missing WorkItemID input type answers "unsupported", not cli-error (MINEUR)', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const execFn = passGuard(async (_cli, args) =>
+        glabQueryOf({ args }).includes('$parentId')
+          ? { kind: 'ok', stdout: GLAB_MISSING_INPUT_TYPE }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(1) },
+      )
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'unsupported' })
+    })
+  })
+
+  test('a business rejection of the mutation stays an honest cli-error, never "unsupported"', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const execFn = passGuard(async (_cli, args) =>
+        glabQueryOf({ args }).includes('$parentId')
+          ? { kind: 'ok', stdout: GLAB_MUTATION_BUSINESS_ERROR }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(1) },
+      )
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+      expect('detail' in result && result.detail).toContain("don't have permission")
+    })
+  })
+
+  test('rien ne prétend que le lien existe: an unsupported link never enters the local cache', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const hierarchy: IssueHierarchyCache = new Map()
+      const execFn = passGuard(async (_cli, args) =>
+        glabQueryOf({ args }).includes('$parentId')
+          ? { kind: 'ok', stdout: GLAB_MUTATION_UNSUPPORTED }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(1) },
+      )
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2, hierarchy })
+      expect(result).toMatchObject({ available: false, reason: 'unsupported' })
+      expect(hierarchy.has(2)).toBe(false)
+    })
+  })
+})
+
+describe('hierarchy: one level is enforced against the REAL forge (T2.2, MAJEUR 3)', () => {
+  test('auto-reference is refused before any forge call', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig(ok('{}'))
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 5, child: 5 })
+      expect(result).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect(r.calls).toEqual([])
+    })
+  })
+
+  test('A→B then B→C is refused on a FRESH call with NO shared cache: the guard asks the forge', async () => {
+    // The whole point of MAJEUR 3: two SEPARATE processes (no cache in
+    // common) must still refuse a real second level, because the second
+    // call queries the forge itself rather than trusting its own memory.
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const state = new Map<number, number>()
+      const r1 = rig(hierarchyReply(state))
+      expect(await linkChildIssue({ cwd: repo, execFn: r1.execFn, parent: 10, child: 20 })).toEqual(
+        { available: true },
+      )
+      // A fresh execFn/rig, no hierarchy option passed: nothing but `state`
+      // (standing in for the forge) ties this call to the previous one.
+      const r2 = rig(hierarchyReply(state))
+      const result = await linkChildIssue({ cwd: repo, execFn: r2.execFn, parent: 20, child: 30 })
+      expect(result).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect('detail' in result && result.detail).toContain('one level only')
+      // The refusal came from the parent-probe read, never from a write.
+      expect(r2.calls).toHaveLength(1)
+      expect(r2.calls[0]?.args).toEqual(['api', 'repos/{owner}/{repo}/issues/20/parent'])
+    })
+  })
+
+  test('linking a parent to its own child is refused, discovered from the forge', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const state = new Map([[10, 20]]) // 10 is already a child of 20, on the forge
+      const r = rig(hierarchyReply(state))
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      expect(result).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect('detail' in result && result.detail).toContain('already a child of 20')
+      expect(r.calls).toHaveLength(1)
+    })
+  })
+
+  test('a parent with real children cannot become someone else’s child either', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const state = new Map([[20, 10]]) // 10 already has a real child, 20
+      const r = rig(hierarchyReply(state))
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 99, child: 10 })
+      expect(result).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect('detail' in result && result.detail).toContain('already has children')
+      // The parent-probe (99 has none) ran, then the has-children probe (10
+      // has some) — two reads, still zero writes.
+      expect(r.calls).toHaveLength(2)
+    })
+  })
+
+  test('a cache HIT skips the forge probe entirely: an accelerator, not the source of truth', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const hierarchy: IssueHierarchyCache = new Map([[20, 10]])
+      const r = rig(hierarchyReply(new Map())) // the "forge" itself knows nothing
+      const result = await linkChildIssue({
+        cwd: repo,
+        execFn: r.execFn,
+        parent: 20,
+        child: 30,
+        hierarchy,
+      })
+      expect(result).toMatchObject({ available: false, reason: 'invalid-input' })
+      // Refused purely from the cache: no argv at all, even though the
+      // fake forge (if asked) would have said "no parent".
+      expect(r.calls).toEqual([])
+    })
+  })
+
+  test('a non-Map hierarchy value degrades to a fresh cache rather than throwing', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      // {} has no `.get`: without the `instanceof Map` guard, the very
+      // first `hierarchy.get(...)` inside the guard would throw a
+      // TypeError — parent !== child here on purpose, so the auto-reference
+      // shortcut (which never touches `hierarchy`) cannot mask the bug.
+      const poisoned = {} as unknown as IssueHierarchyCache
+      const r = rig(hierarchyReply(new Map()))
+      await expect(
+        linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 5, child: 6, hierarchy: poisoned }),
+      ).resolves.toEqual({ available: true })
+    })
+  })
+
+  test('an id that is zero, negative, or not an integer is refused before any probe', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig(ok('{}'))
+      for (const bad of [0, -1, 1.5]) {
+        expect(
+          await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: bad, child: 1 }),
+        ).toMatchObject({
+          available: false,
+          reason: 'invalid-input',
+        })
+        expect(
+          await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 1, child: bad }),
+        ).toMatchObject({ available: false, reason: 'invalid-input' })
+      }
+      expect(r.calls).toEqual([])
+    })
+  })
+})
+
+describe('hierarchy: a forge read failure during the one-level guard fails CLOSED, never open (T2.2, MAJEUR D)', () => {
+  test('the parent-probe itself failing (not a real 404) blocks the write entirely', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig((call) => {
+        if (call.cli === 'gh' && call.args.includes(`repos/{owner}/{repo}/issues/1/parent`)) {
+          // A genuine failure to read — a timeout, a transient 500 — never
+          // GitHub's specific "no parent" 404. Guessing "no parent" here
+          // would let a write through with NO idea whether `parent` already
+          // has one: the fail-open this MAJEUR is about.
+          return { kind: 'error', message: 'timed out after 8s' }
+        }
+        throw new Error(`unexpected call: ${JSON.stringify(call)}`)
+      })
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+      // Only the failed probe ran: the has-children probe and the write
+      // itself never got a chance to fire.
+      expect(r.calls).toHaveLength(1)
+    })
+  })
+
+  test('the has-children-probe itself failing blocks the write entirely', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig((call) => {
+        if (call.cli !== 'gh') {
+          throw new Error(`unexpected call: ${JSON.stringify(call)}`)
+        }
+        if (call.args.includes(`repos/{owner}/{repo}/issues/1/parent`)) {
+          return { kind: 'error', message: 'gh: No parent issue found (HTTP 404)' }
+        }
+        if (call.args.includes(`repos/{owner}/{repo}/issues/2/sub_issues`)) {
+          return { kind: 'error', message: 'connection reset' }
+        }
+        throw new Error(`unexpected call: ${JSON.stringify(call)}`)
+      })
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+      // The parent-probe ran (found none, honestly), then the has-children
+      // probe ran and failed: two reads, and still no write.
+      expect(r.calls).toHaveLength(2)
+    })
+  })
+})
+
+describe('hierarchy: GitHub\'s 404 discriminator names the REAL "no parent" answer, nothing else (T2.2, MAJEUR A)', () => {
+  test('the exact "No parent issue found" 404 (checked live against api.github.com) reads as no parent, write proceeds', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const state = new Map<number, number>()
+      const r = rig(hierarchyReply(state))
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 1, child: 2 })
+      expect(result).toEqual({ available: true })
+    })
+  })
+
+  test.each([
+    [
+      'a locked-issue validation error that happens to mention 404 in a URL',
+      'Validation Failed: issue "Fix 404 page on /docs" is locked (HTTP 422)',
+    ],
+    [
+      'a proxy relaying its OWN 404 page as a 502',
+      '<html><title>404 Not Found</title></html> (HTTP 502)',
+    ],
+    [
+      'a rate-limit message whose docs link ends in a 404 anchor',
+      'API rate limit exceeded. See https://docs.github.com/rest/issues#404 (HTTP 403)',
+    ],
+    [
+      'an old GHES build number that happens to contain 404',
+      'unsupported by this GitHub Enterprise Server (build 404) (HTTP 501)',
+    ],
+    ['a plain "issue not found" 404 — a DIFFERENT 404 than "no parent"', 'Not Found (HTTP 404)'],
+    [
+      'the exact sentinel phrase but a DIFFERENT status code — not a 404 at all',
+      'upstream said No parent issue found (HTTP 500)',
+    ],
+  ])(
+    '%s never reads as "no parent": the write is refused, not attempted',
+    async (_label, serverMessage) => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig((call) => {
+          if (call.cli === 'gh' && call.args.includes(`repos/{owner}/{repo}/issues/1/parent`)) {
+            return { kind: 'error', message: `gh: ${serverMessage}` }
+          }
+          throw new Error(`unexpected call: ${JSON.stringify(call)}`)
+        })
+        const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 1, child: 2 })
+        expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+        expect(r.calls).toHaveLength(1)
+      })
+    },
+  )
+})
+
+describe('hierarchy: a write never replays on a resolve-only failure (T2.2, MAJEUR 4)', () => {
+  test('linkChildIssue on a self-hosted remote where gh is unreachable end to end settles on glab', async () => {
+    // Renamed and re-scoped (round 5, MAJEUR): this used to claim it proved
+    // "a failed pre-write resolve still reaches glab" — i.e. that a `blocked`
+    // outcome falls through the write ladder. It never did: `pin` (MAJEUR 3)
+    // pins `linkChildIssue`'s write to whichever forge the GUARD verified,
+    // and here the guard itself never sees gh succeed, so it settles on glab
+    // BEFORE any write is attempted — `ghLinkCandidate`'s write-mode resolve,
+    // and therefore `blockedOnResolve`, is never even reached. What this
+    // test actually exercises is the guard settling on glab end to end (see
+    // the "one level is enforced" and "PINNED" describe blocks for that
+    // mechanism in isolation). The `blocked`/`error` distinction this title
+    // used to claim is proven below, on `unlinkChildIssue`, the one
+    // operation with no guard and no pin to intercept it first.
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const state = new Map<number, number>()
+      const r = rig((call) => {
+        if (call.cli === 'gh') {
+          return { kind: 'error', message: 'could not determine repository' }
+        }
+        return hierarchyReply(state)(call)
+      })
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      expect(result).toEqual({ available: true })
+      expect(r.calls.map((c) => c.cli)).toContain('gh')
+      expect(r.calls.map((c) => c.cli)).toContain('glab')
+    })
+  })
+
+  test('unlinkChildIssue: a blocked pre-write resolve on gh still falls through to a healthy glab (T2.2, round 5 MAJEUR)', async () => {
+    // `unlinkChildIssue` has no guard and no pin (design.md decision 3: the
+    // guard only exists for `linkChildIssue`), so it is the ONLY live
+    // consumer of the distinction `blockedOnResolve` draws between a failed
+    // pre-write READ (`blocked`, safe to keep walking the ladder even in
+    // write mode) and a failed WRITE itself (`error`, ladder stops — may
+    // already have landed). Killing ground for three mutants at once:
+    //   - blockedOnResolve → identity (no remap): the gh resolve failure
+    //     stays `error`, and write-mode's "a write never replays" rule stops
+    //     the ladder right there — glab is never tried.
+    //   - blockedOnResolve → always `blocked`: harmless on its own here, but
+    //     paired with the `continue` below it changes nothing observable
+    //     UNLESS the remap is what lets the ladder walk on to glab in the
+    //     first place — remove the remap (previous bullet) and this survives
+    //     with it; this test's SAME setup catches both because either
+    //     mutation, verified in isolation, turns this green test red.
+    //   - `attempt`'s `blocked` branch → `break` instead of `continue`: the
+    //     ladder stops at gh even though `blocked` is explicitly a "nothing
+    //     was written yet" outcome — glab is never tried either.
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const state = new Map<number, number>([[20, 10]]) // 20 is already a child of 10.
+      const r = rig((call) => {
+        if (call.cli === 'gh') {
+          // The pre-write resolve of the child (`gh api …/issues/20`) fails
+          // — nothing was ever written, so this must not be treated as a
+          // failed write.
+          return { kind: 'error', message: 'could not determine repository' }
+        }
+        return hierarchyReply(state)(call)
+      })
+      const result = await unlinkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      expect(result).toEqual({ available: true })
+      expect(r.calls.map((c) => c.cli)).toContain('gh')
+      expect(r.calls.map((c) => c.cli)).toContain('glab')
+    })
+  })
+
+  test('unlinkChildIssue: a MISSING gh binary at the pre-write resolve passes through as missing, never as blocked (T2.2, round 5 MAJEUR)', async () => {
+    // Companion to the test above, targeting `blockedOnResolve`'s OTHER
+    // half of its contract: `missing` (ENOENT) already means "nothing ran"
+    // and must pass through UNCHANGED, exactly like `invalid` does — only a
+    // genuine `error` gets remapped to `blocked`. On GITHUB_REMOTE, `gh` is
+    // the only candidate `unlinkChildIssue` is given (the hint excludes
+    // glab), so if the missing binary were wrongly turned into `blocked`
+    // here, `attempt` would set a `detail` that was never meant to exist,
+    // and the final reason would read `cli-error` instead of the honest
+    // `no-cli` — the same distinction a mutant that forces `blockedOnResolve`
+    // to ALWAYS answer `blocked` (regardless of input) collapses.
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const { execFn } = rig(missing)
+      const result = await unlinkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toEqual({ available: false, reason: 'no-cli' })
+    })
+  })
+})
+
+describe('hierarchy: a write is PINNED to the forge the guard actually verified (T2.2, MAJEUR 3)', () => {
+  test('a guard fully answered by gh refuses the write rather than falling through to glab on a blocked resolve', async () => {
+    // Reproduces the round-3 finding: on a self-hosted remote, gh answers
+    // BOTH guard probes honestly (no parent, no children) — the guard
+    // therefore validated GitHub's state, never GitLab's. If gh's pre-write
+    // resolve then fails, letting the ladder fall through to glab would
+    // write to a forge whose state the guard never checked. The write must
+    // refuse instead.
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const r = rig((call) => {
+        if (call.cli !== 'gh') {
+          throw new Error(`glab must never be called: ${JSON.stringify(call)}`)
+        }
+        const path = call.args[1] ?? ''
+        if (path.endsWith('/parent')) {
+          return { kind: 'error', message: 'gh: No parent issue found (HTTP 404)' }
+        }
+        if (call.args.includes('--field=per_page=1')) {
+          return { kind: 'ok', stdout: '[]' }
+        }
+        // The pre-write resolve of the child (`GET .../issues/20`).
+        return { kind: 'error', message: 'gh: API rate limit exceeded (HTTP 403)' }
+      })
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+      expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'gh', 'gh'])
+    })
+  })
+
+  test('a guard fully answered by glab pins the write to glab, even on a self-hosted remote where gh becomes reachable again by write time', async () => {
+    // Rewritten (round 5, MINEUR 2): this used to claim "self-hosted remote
+    // where gh is also reachable" while actually running on GITLAB_REMOTE —
+    // there, `detectForgeHint` already excludes gh from every candidate
+    // list on its own (`hint !== 'gitlab'`), so the `pin` guard in
+    // `candidatesFor` (`&& pin !== 'glab'`) was never exercised: the test
+    // passed for a reason that had nothing to do with the code it named.
+    // This version runs on a SELF-HOSTED remote — hint decides nothing — and
+    // makes gh fail during BOTH guard reads (so the guard settles on glab,
+    // pin = 'glab') but SUCCEED again by write time: only the `pin !==
+    // 'glab'` clause in `candidatesFor` stops the write ladder from trying
+    // gh first, since hint alone no longer excludes it here.
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const state = new Map<number, number>()
+      let ghCalls = 0
+      const r = rig((call) => {
+        if (call.cli === 'gh') {
+          ghCalls += 1
+          if (ghCalls <= 2) {
+            // Both guard probes (parent-of-parent, has-children): gh is down.
+            return { kind: 'error', message: 'could not determine repository' }
+          }
+          // gh is reachable again by write time — a leaked pin would let it
+          // happily answer the write it must never be asked to attempt.
+          return hierarchyReply(state)(call)
+        }
+        return hierarchyReply(state)(call)
+      })
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20 })
+      expect(result).toEqual({ available: true })
+      // Exactly the two guard-probe calls: the write itself never asks gh.
+      expect(ghCalls).toBe(2)
+      expect(r.calls.some((c) => c.cli === 'glab')).toBe(true)
+    })
+  })
+})
+
+describe('hierarchy: a guard split across two forges pins nothing usable (T2.2, MINEUR 1 round 5)', () => {
+  test('parent state read from gh and children state read from glab refuses locally, before any write is attempted', async () => {
+    // M04: forcing the `answeredBy` mismatch check to `false` in
+    // `guardOneLevel` survives with no test rougissant it. Reproduced here:
+    // on a self-hosted remote, gh answers the parent-of-parent probe
+    // honestly (no parent) but then goes down for the has-children probe,
+    // which therefore falls through to glab. The guard verified TWO
+    // DIFFERENT forges' state, never one forge's state as a whole — pinning
+    // a write to either would write to a forge whose relevant half was
+    // never actually checked. The correct answer is a local refusal, with
+    // zero write attempted.
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const r = rig((call) => {
+        if (call.cli === 'gh') {
+          const path = call.args[1] ?? ''
+          if (path.endsWith('/parent')) {
+            return { kind: 'error', message: 'gh: No parent issue found (HTTP 404)' }
+          }
+          if (call.args.includes('--field=per_page=1')) {
+            return { kind: 'error', message: 'gh: internal server error (HTTP 500)' }
+          }
+          // Only reached if the guard incorrectly proceeds to a pinned gh
+          // write (the mutant's behavior): the pre-write resolve fails too,
+          // so the observable reason still differs from the pristine one.
+          return { kind: 'error', message: 'gh: internal server error (HTTP 500)' }
+        }
+        const query = glabQueryOf(call)
+        if (query === '') {
+          return { kind: 'ok', stdout: glabIssueRestAnswer(2) }
+        }
+        if (query.includes('first: 1)')) {
+          return { kind: 'ok', stdout: glabHasChildrenPayload(false) }
+        }
+        throw new Error(`unexpected glab call: ${JSON.stringify(call)}`)
+      })
+      const result = await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect('detail' in result && result.detail).toContain(
+        'cannot pin the write to a single forge',
+      )
+      // 1 gh parent-probe + 1 gh has-children-probe (fails) + glab resolve +
+      // glab has-children query = 4 reads, and NOT ONE write attempt.
+      expect(r.calls).toHaveLength(4)
+    })
+  })
+})
+
+describe('hierarchy: the local cache is actually maintained (T2.2, MAJEUR 5)', () => {
+  test('a successful link WRITES child → parent into the cache', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const hierarchy: IssueHierarchyCache = new Map()
+      const r = rig(hierarchyReply(new Map()))
+      await linkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20, hierarchy })
+      expect(hierarchy.get(20)).toBe(10)
+    })
+  })
+
+  test('a successful unlink EVICTS the entry from the cache', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const hierarchy: IssueHierarchyCache = new Map([[20, 10]])
+      const r = rig(hierarchyReply(new Map([[20, 10]])))
+      await unlinkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20, hierarchy })
+      expect(hierarchy.has(20)).toBe(false)
+    })
+  })
+
+  test('unlink does NOT evict a cache entry belonging to a DIFFERENT parent', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      // The cache thinks 20's parent is 99 (stale or simply wrong); this
+      // call unlinks it from 10. The forge write still runs (and would
+      // detach whatever 20's REAL parent on the forge is — a documented
+      // GitLab-side asymmetry), but the cache entry for 20→99 is not this
+      // call's fact to erase.
+      const hierarchy: IssueHierarchyCache = new Map([[20, 99]])
+      const r = rig(hierarchyReply(new Map([[20, 10]])))
+      await unlinkChildIssue({ cwd: repo, execFn: r.execFn, parent: 10, child: 20, hierarchy })
+      expect(hierarchy.get(20)).toBe(99)
+    })
+  })
+
+  test('a successful listChildIssues SEEDS the cache for each returned child', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const hierarchy: IssueHierarchyCache = new Map()
+      const r = rig(hierarchyReply(new Map([[20, 10]])))
+      await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10, hierarchy })
+      expect(hierarchy.get(20)).toBe(10)
+    })
+  })
+
+  test('a successful listChildIssues PURGES a stale entry no longer returned by the forge', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      // The cache still believes 20 is a child of 10; the forge (now)
+      // disagrees — 10 has no children at all.
+      const hierarchy: IssueHierarchyCache = new Map([[20, 10]])
+      const r = rig(hierarchyReply(new Map()))
+      await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10, hierarchy })
+      expect(hierarchy.has(20)).toBe(false)
+    })
+  })
+})
+
+describe('hierarchy: pagination is real, and honest about its cap (T2.2)', () => {
+  test('GitLab walks the cursor across pages and caps at ISSUE_LIST_MAX, truncated true', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) => {
+        if (call.cli === 'glab' && glabQueryOf(call).includes('WorkItemWidgetHierarchy')) {
+          const after = call.args
+            .find((a) => a.startsWith('--field=after='))
+            ?.split('=')
+            .pop()
+          const page = after === undefined ? 1 : Number(after.replace('cursor', '')) + 1
+          const from = (page - 1) * 100 + 1
+          return {
+            kind: 'ok',
+            stdout: glabChildrenPayload(
+              Array.from({ length: 100 }, (_, i) => from + i),
+              true,
+              `cursor${page}`,
+            ),
+          }
+        }
+        return { kind: 'ok', stdout: glabIssueRestAnswer(10) }
+      })
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({ available: true, truncated: true })
+      expect(result.available && result.issues).toHaveLength(ISSUE_LIST_MAX)
+      // 3 pages of 100 is the first count that proves more than 200 exist —
+      // same budget the REST paths in this file already use.
+      expect(
+        r.calls.filter((c) => c.cli === 'glab' && glabQueryOf(c).includes('Hierarchy')).length,
+      ).toBe(3)
+    })
+  })
+
+  test('GitLab: hasNextPage false ends the walk without a wasted extra page', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.cli === 'glab' && glabQueryOf(call).includes('WorkItemWidgetHierarchy')
+          ? { kind: 'ok', stdout: glabChildrenPayload([20], false, null) }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(10) },
+      )
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({ available: true, truncated: false })
+      expect(
+        r.calls.filter((c) => c.cli === 'glab' && glabQueryOf(c).includes('Hierarchy')).length,
+      ).toBe(1)
+    })
+  })
+
+  test('GitHub: sub-issues answer in a single call, never paginated', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig(hierarchyReply(new Map(Array.from({ length: 42 }, (_, i) => [i + 1, 10]))))
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result.available && result.issues).toHaveLength(42)
+      expect(r.calls).toHaveLength(1)
+      expect(r.calls[0]?.args).toEqual([
+        'api',
+        'repos/{owner}/{repo}/issues/10/sub_issues',
+        '--method',
+        'GET',
+        '--field=per_page=100',
+      ])
+    })
+  })
+
+  test('GitHub: a page short of 100 proves the list complete, truncated false (MAJEUR E)', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig(hierarchyReply(new Map(Array.from({ length: 99 }, (_, i) => [i + 1, 10]))))
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({ available: true, truncated: false })
+    })
+  })
+
+  test('GitHub: a FULL page of exactly 100 does NOT prove completeness, truncated true (MAJEUR E)', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      // GitHub's "up to 100 sub-issues per parent" is documented as a
+      // PRODUCT limit, not a pagination guarantee this endpoint enforces —
+      // a full page must not be silently read as "that's everything", the
+      // same silent-truncation shape `capPage` exists to catch elsewhere.
+      const r = rig(hierarchyReply(new Map(Array.from({ length: 100 }, (_, i) => [i + 1, 10]))))
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({ available: true, truncated: true })
+      expect(result.available && result.issues).toHaveLength(100)
+      expect(r.calls).toHaveLength(1)
+    })
+  })
+
+  test('GitLab: loop-exhaustion exit (empty page 3, hasNextPage true) is still truncated true (MAJEUR 1)', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      // Pages 1 and 2 render exactly 100 nodes each — the cursor keeps
+      // advancing because `all.length > ISSUE_LIST_MAX` (200) is false at
+      // exactly 200. Page 3 renders ZERO nodes with hasNextPage:true, which
+      // is what a permission-filtered tail slice normally looks like: the
+      // loop reaches GLAB_CHILDREN_MAX_PAGES and falls through to the
+      // post-loop return WITHOUT ever hitting the `!hasNextPage` or
+      // `endCursor === null` early returns. Deriving `truncated` from length
+      // alone there would silently report 200 children as complete even
+      // though the forge just said there are more.
+      let call = 0
+      const r = rig((c) => {
+        if (c.cli === 'glab' && glabQueryOf(c).includes('WorkItemWidgetHierarchy')) {
+          call += 1
+          if (call <= 2) {
+            const from = (call - 1) * 100 + 1
+            return {
+              kind: 'ok',
+              stdout: glabChildrenPayload(
+                Array.from({ length: 100 }, (_, i) => from + i),
+                true,
+                `cursor${call}`,
+              ),
+            }
+          }
+          return { kind: 'ok', stdout: glabChildrenPayload([], true, 'cursor3') }
+        }
+        return { kind: 'ok', stdout: glabIssueRestAnswer(10) }
+      })
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({ available: true, truncated: true })
+      expect(result.available && result.issues).toHaveLength(200)
+      expect(
+        r.calls.filter((c) => c.cli === 'glab' && glabQueryOf(c).includes('Hierarchy')).length,
+      ).toBe(3)
+    })
+  })
+
+  test('GitLab: hasNextPage true with NO cursor forces truncated true rather than a length check (MAJEUR B)', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      // The forge explicitly says "there is more" (`hasNextPage: true`) but
+      // hands back no cursor to reach it — a single short page (1 child)
+      // would pass a length-only check as "complete", which is exactly the
+      // silent truncation this module's own comment on `glabChildrenCandidate`
+      // invokes to justify walking a cursor in the first place.
+      const r = rig((call) =>
+        call.cli === 'glab' && glabQueryOf(call).includes('WorkItemWidgetHierarchy')
+          ? { kind: 'ok', stdout: glabChildrenPayload([20], true, null) }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(10) },
+      )
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({ available: true, truncated: true })
+      expect(result.available && result.issues).toHaveLength(1)
+      // Nothing further COULD be walked to (no cursor): still a single call.
+      expect(
+        r.calls.filter((c) => c.cli === 'glab' && glabQueryOf(c).includes('Hierarchy')).length,
+      ).toBe(1)
+    })
+  })
+})
+
+describe('hierarchy: listChildIssues rejects the whole array on a shape mismatch (T2.2)', () => {
+  test('GitHub sub_issues: a truncated payload or one bad field rejects everything', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const good = JSON.stringify([ghRestIssue(20)])
+      const truncated = good.slice(0, 30)
+      const oneBad = JSON.stringify([ghRestIssue(20), { ...ghRestIssue(21), number: '21' }])
+      for (const payload of [truncated, oneBad]) {
+        const r = rig((call) =>
+          call.args[1] === 'repos/{owner}/{repo}/issues/10/sub_issues'
+            ? { kind: 'ok', stdout: payload }
+            : { kind: 'ok', stdout: '{}' },
+        )
+        const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+        expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+        expect(result).not.toHaveProperty('issues')
+      }
+    })
+  })
+
+  test('GitLab hierarchy widget: a truncated payload or one bad field rejects everything', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const good = glabChildrenPayload([20])
+      const truncated = good.slice(0, 40)
+      const oneBad = JSON.stringify({
+        data: {
+          workItem: {
+            widgets: [
+              {
+                children: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [glabWorkItemChild(20), { ...glabWorkItemChild(21), iid: '21' }],
+                },
+              },
+            ],
+          },
+        },
+      })
+      for (const payload of [truncated, oneBad]) {
+        const r = rig((call) =>
+          call.args.includes('graphql')
+            ? { kind: 'ok', stdout: payload }
+            : { kind: 'ok', stdout: glabIssueRestAnswer(10) },
+        )
+        const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+        expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+        expect(result).not.toHaveProperty('issues')
+      }
+    })
+  })
+
+  test('a hierarchy widget absent from the answer reads as no children, not a refusal', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const noWidget = JSON.stringify({ data: { workItem: { widgets: [] } } })
+      const r = rig((call) =>
+        call.args.includes('graphql')
+          ? { kind: 'ok', stdout: noWidget }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(10) },
+      )
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({ available: true, issues: [], truncated: false })
+    })
+  })
+
+  test('the hierarchy widget is found by its KEY, not its position in the widgets array', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const reordered = JSON.stringify({
+        data: {
+          workItem: {
+            widgets: [
+              { irrelevant: true },
+              {
+                children: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [glabWorkItemChild(20)],
+                },
+              },
+            ],
+          },
+        },
+      })
+      const r = rig((call) =>
+        call.args.includes('graphql')
+          ? { kind: 'ok', stdout: reordered }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(10) },
+      )
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result.available && result.issues.map((i) => i.number)).toEqual([20])
+    })
+  })
+
+  test('valid payloads still parse field by field: gh and glab shapes both come through', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      const r = rig(ok(JSON.stringify([ghRestIssue(20)])))
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({
+        available: true,
+        truncated: false,
+        issues: [
+          {
+            number: 20,
+            title: 'Add sidebar',
+            author: 'octocat',
+            labels: ['bug'],
+            url: 'https://github.com/acme/repo/issues/20',
+          },
+        ],
+      })
+    })
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.args.includes('graphql')
+          ? { kind: 'ok', stdout: glabChildrenPayload([20]) }
+          : { kind: 'ok', stdout: glabIssueRestAnswer(10) },
+      )
+      const result = await listChildIssues({ cwd: repo, execFn: r.execFn, parent: 10 })
+      expect(result).toMatchObject({
+        available: true,
+        truncated: false,
+        issues: [
+          {
+            number: 20,
+            title: 'Fix login',
+            author: 'jdoe',
+            labels: ['bug'],
+            // origin (from the RESOLVED parent's web_url) + webPath.
+            url: `${GLAB_ORIGIN}/acme/repo/-/issues/20`,
+          },
+        ],
+      })
+    })
+  })
+})
+
+describe('hierarchy mutation constants (T2.2, MINEUR 3 round 5)', () => {
+  // The read-side counterparts (GLAB_HIERARCHY_CHILDREN_QUERY etc.) are
+  // locked in forge-issues-parse.test.ts's "hierarchy query constants". The
+  // two WRITE constants lived unexported and unlocked until round 5: a typo
+  // here (`hierarchywidget`) reads to `looksLikeSchemaGap` exactly like a
+  // real schema gap, so our own bug would present GitLab as unable to link —
+  // silently, since `unsupported` maps to no journaled D2 code at all.
+  test('the set-parent mutation spells hierarchyWidget correctly', () => {
+    expect(GLAB_HIERARCHY_SET_PARENT).toContain('hierarchyWidget: {parentId: $parentId}')
+  })
+
+  test('the clear-parent mutation spells hierarchyWidget correctly', () => {
+    expect(GLAB_HIERARCHY_CLEAR_PARENT).toContain('hierarchyWidget: {parentId: null}')
   })
 })
