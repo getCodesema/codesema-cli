@@ -262,6 +262,7 @@ const en = {
   'workspace.evInterrupted': 'Interrupted',
   'workspace.evIsolation': 'Isolation',
   'workspace.evCost': 'Cost',
+  'workspace.evBranch': 'Branch',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -691,6 +692,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.evInterrupted': 'Interrompue',
   'workspace.evIsolation': 'Isolation',
   'workspace.evCost': 'Coût',
+  'workspace.evBranch': 'Branche',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',

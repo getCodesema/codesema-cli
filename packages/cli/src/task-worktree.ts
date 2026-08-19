@@ -2,6 +2,15 @@
 // kept under <repo>/.codesema/worktrees/<task-id>/ (NOT a tmpdir like the MR
 // review worktrees) so an interrupted task survives a reboot and can be
 // resumed. The parent .codesema/ directory auto-gitignores itself.
+//
+// DOCTRINE (T1.6): the branch is the deliverable even of a run that failed.
+// A worktree is disposable — it is a checkout, rebuilt on demand from the
+// branch it names — but a branch that carries a commit of the agent's own is
+// the one place that work survives once the checkout is gone. Every function
+// here that can make a branch disappear (renameTaskBranch, removeTaskWorktree)
+// is read against that rule by its caller: a branch is never deleted, and
+// never renamed, without saying so out loud when the attempt is refused or
+// when a caller chooses to keep one that carries work.
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -109,43 +118,76 @@ function freeBranchName(cwd: string, taskId: string, title: string): string {
 }
 
 /**
+ * Why `renameTaskBranch` refused, named for the caller's journal — never
+ * silent (T1.6). `not_a_fork` is unreachable from `adoptBranchProposal`
+ * today (it only calls this for a non-work-on task, whose branch is always
+ * `codesema/task-*` by construction) — kept because the PRIMITIVE has to
+ * answer correctly for any caller, present or future, not because this one
+ * exercises it.
+ */
+export type RenameRefusalReason =
+  /** Not a codesema/task-* fork: a work-on conversation works on the USER's branch. */
+  | 'not_a_fork'
+  /** The proposal slugs to nothing usable at all (slug()'s last resort, 'task'). */
+  | 'unusable_proposal'
+  /** The proposal slugs to the name the branch ALREADY has — nothing to rename. */
+  | 'already_named'
+  /** Published under refs/remotes/origin/<branch>: an MR may already point at it. */
+  | 'already_pushed'
+  /** `git branch -m` itself refused (a lock, a filesystem permission, a race). */
+  | 'git_refused'
+
+export type RenameBranchResult =
+  | { renamed: true; branch: string }
+  | { renamed: false; reason: RenameRefusalReason; current: string }
+
+/**
  * Renames a task's FORKED branch to the name the agent proposed on its first
  * turn (the slugged title it was created with says what you typed, not what
  * the task turned out to be — and that name becomes the MR source branch).
  * `git branch -m` keeps the linked worktree's HEAD on the branch, so the task
  * keeps working in place under its new name.
  *
- * Refused, silently, in every case where the current name is not ours to
- * change: a branch that is not a codesema/task-* fork (a work-on conversation
- * works on the USER's branch — the caller also checks record.work_on), a
- * branch already pushed (its name is published, an MR may point at it), an
- * unusable proposal, or a git refusal. Returns the new name, or null when
- * nothing was renamed: a cosmetic rename is never worth failing a turn over,
- * the task simply keeps the name it had.
+ * Refused, NAMED, in every case where the current name is not ours to change:
+ * a branch that is not a codesema/task-* fork (a work-on conversation works on
+ * the USER's branch — the caller also checks record.work_on), a branch
+ * already pushed (its name is published, an MR may point at it), an unusable
+ * proposal, or a git refusal. The reason and the name that stayed are always
+ * in the return value — the caller decides whether and how to journal it
+ * (T1.6, design.md D-B: this module keeps no journal of its own) — because a
+ * cosmetic rename is never worth failing a turn over, but a refusal that
+ * nobody can see is exactly the kind of silence this ticket exists to close.
  */
 export function renameTaskBranch(
   cwd: string,
   taskId: string,
   current: string,
   proposal: string,
-): string | null {
+): RenameBranchResult {
   if (!current.startsWith(TASK_BRANCH_PREFIX)) {
-    return null
+    return { renamed: false, reason: 'not_a_fork', current }
   }
   const wanted = slug(proposal)
-  // 'task' is slug()'s last resort (nothing usable in the proposal), and a
-  // proposal that slugs to the current name has nothing to rename — asking
-  // freeBranchName for it would only invent a pointless '-2' suffix.
-  if (wanted === 'task' || `${TASK_BRANCH_PREFIX}${wanted}` === current) {
-    return null
+  // 'task' is slug()'s last resort: nothing usable was in the proposal at all.
+  if (wanted === 'task') {
+    return { renamed: false, reason: 'unusable_proposal', current }
+  }
+  // A proposal that slugs to the current name has nothing to rename — a very
+  // ORDINARY case (the agent re-proposing the title it already has), not an
+  // unusable one. Asking freeBranchName for it would only invent a pointless
+  // '-2' suffix.
+  if (`${TASK_BRANCH_PREFIX}${wanted}` === current) {
+    return { renamed: false, reason: 'already_named', current }
   }
   // Published name: an MR (or a plain push) already refers to this branch.
   // Renaming here would strand the remote ref under the old name.
   if (refExists(`refs/remotes/origin/${current}`, cwd)) {
-    return null
+    return { renamed: false, reason: 'already_pushed', current }
   }
   const next = freeBranchName(cwd, taskId, proposal)
-  return tryGit(['branch', '-m', current, next], cwd) === null ? null : next
+  return tryGit(['branch', '-m', current, next], cwd) === null
+    ? { renamed: false, reason: 'git_refused', current }
+    : { renamed: true, branch: next }
 }
 
 export type TaskWorktree = {
@@ -406,6 +448,33 @@ export type WorktreeRemoval = {
   holder_age_ms?: number
   /** Same degradation as TaskWorktree.lock_stolen, on the removal side. */
   lock_stolen?: { pid: number; age_ms: number }
+}
+
+/**
+ * The primitive `abandon()` decides on (T1.6, design.md D-A): does `branch`
+ * still stand exactly on `anchor`, the commit its conversation started from?
+ * Equal means no commit of the task's own sits on it — the branch is
+ * disposable exactly like the worktree. Anything else — the tip moved, the
+ * branch is gone, or the caller could not even name an anchor — answers TRUE:
+ * "cannot prove this branch is empty" and "provably carries work" get the
+ * same, safe answer, because the doctrine above only lets a branch go once
+ * its emptiness is certain.
+ *
+ * Both sides are resolved to their OBJECT id with `^{commit}` before they are
+ * compared — never compared as the raw strings they arrived as. `baseline_sha`
+ * is stored ABBREVIATED (7 to 64 hex chars, `BASELINE_SHA_RE` in the
+ * contract): a string comparison against `rev-parse`'s always-full sha would
+ * never match, so every task whose anchor happens to be stored short would
+ * read as carrying a commit it never made — the exact false "has own commits"
+ * this primitive exists to rule out.
+ */
+export function branchHasOwnCommits(cwd: string, branch: string, anchor: string | null): boolean {
+  if (anchor === null) {
+    return true
+  }
+  const anchorObj = tryGit(['rev-parse', `${anchor}^{commit}`], cwd)
+  const tip = tryGit(['rev-parse', `refs/heads/${branch}^{commit}`], cwd)
+  return anchorObj === null || tip === null || tip !== anchorObj
 }
 
 export async function removeTaskWorktree(

@@ -1448,7 +1448,8 @@ describe('task routes with a stub manager', () => {
           return Promise.resolve({ ok: false as const, code: 404, error: 'unknown project' })
         }
         calls.abandons.push(id)
-        return Promise.resolve({ ok: true as const })
+        // T1.6: exercises the HTTP layer's propagation of `preserved_branch`.
+        return Promise.resolve({ ok: true as const, preserved_branch: record.branch })
       },
       checks: (projectId, id) => {
         if (!known(projectId)) {
@@ -1697,7 +1698,8 @@ describe('task routes with a stub manager', () => {
         { method: 'POST', headers },
       )
       expect(abandoned.status).toBe(200)
-      expect(JSON.parse(abandoned.body)).toEqual({ ok: true })
+      // T1.6: the manager's `preserved_branch` rides through taskActionBody verbatim.
+      expect(JSON.parse(abandoned.body)).toEqual({ ok: true, preserved_branch: record.branch })
       expect(calls.abandons).toEqual([record.id])
 
       // T8: resume takes no body at all — the instruction is on the record.

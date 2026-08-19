@@ -105,6 +105,19 @@ export type TaskEventType =
    * model. The distinct cause is named in `data.name`.
    */
   | 'cost'
+  /**
+   * A fact about a task's BRANCH that is worth stating but stops nothing and
+   * qualifies no D2 code (T1.6, decision DP14): a branch rename declined (the
+   * task keeps its slug), a branch abandon() kept because it carries a commit
+   * of its own, or the anchor `abandon()` had to fall back to because the
+   * record predates `baseline_sha`. NEUTRAL by type, never 'message' (that
+   * type is the agent's own words, rendered as a chat bubble and backed by
+   * the turn's full text — routing a branch fact through it would either
+   * duplicate the agent's last reply or never be seen) and never 'error' (none
+   * of the three stops anything). The distinct cause is named in `data.name`,
+   * same doctrine as `cost`.
+   */
+  | 'branch'
 
 /**
  * How a task's agent turns are contained.
@@ -330,6 +343,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'interrupted',
   'isolation',
   'cost',
+  'branch',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])

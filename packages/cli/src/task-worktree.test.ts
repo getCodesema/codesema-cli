@@ -1,11 +1,20 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { refExists, tryGit } from './git.js'
 import {
   branchCheckoutPath,
+  branchHasOwnCommits,
   BranchInUseError,
   createTaskWorktree,
   detectTaskBase,
@@ -40,6 +49,18 @@ afterEach(() => {
   for (const dir of cleanups.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+describe('T1.6 doctrine', () => {
+  test('the module states it before any deletion function', () => {
+    const source = readFileSync(join(import.meta.dir, 'task-worktree.ts'), 'utf8')
+    const doctrineAt = source.indexOf('the branch is the deliverable even of a run that failed')
+    const removeAt = source.indexOf('export async function removeTaskWorktree')
+    const renameAt = source.indexOf('export function renameTaskBranch')
+    expect(doctrineAt).toBeGreaterThan(-1)
+    expect(doctrineAt).toBeLessThan(removeAt)
+    expect(doctrineAt).toBeLessThan(renameAt)
+  })
 })
 
 describe('detectTaskBase', () => {
@@ -310,8 +331,8 @@ describe('renameTaskBranch', () => {
     const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'les docs sont à jours ?')
     expect(wt.branch).toBe('codesema/task-les-docs-sont-a-jours')
 
-    const next = renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'update-workspace-docs')
-    expect(next).toBe('codesema/task-update-workspace-docs')
+    const result = renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'update-workspace-docs')
+    expect(result).toEqual({ renamed: true, branch: 'codesema/task-update-workspace-docs' })
     expect(refExists('refs/heads/codesema/task-les-docs-sont-a-jours', repo)).toBe(false)
     expect(refExists('refs/heads/codesema/task-update-workspace-docs', repo)).toBe(true)
     // The linked worktree followed the rename: HEAD still points at the branch.
@@ -335,15 +356,20 @@ describe('renameTaskBranch', () => {
     const repo = makeRepo('main')
     const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'first title')
     execFileSync('git', ['branch', 'codesema/task-fix-preview-rename'], { cwd: repo })
-    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'Fix Preview Rename')).toBe(
-      'codesema/task-fix-preview-rename-2',
-    )
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'Fix Preview Rename')).toEqual({
+      renamed: true,
+      branch: 'codesema/task-fix-preview-rename-2',
+    })
   })
 
   test('a work-on branch (not a codesema/task-* fork) is never renamed', () => {
     const repo = makeRepo('main')
     execFileSync('git', ['branch', 'feature/mine'], { cwd: repo })
-    expect(renameTaskBranch(repo, 'aaaabbbbcccc', 'feature/mine', 'nicer-name')).toBeNull()
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', 'feature/mine', 'nicer-name')).toEqual({
+      renamed: false,
+      reason: 'not_a_fork',
+      current: 'feature/mine',
+    })
     expect(refExists('refs/heads/feature/mine', repo)).toBe(true)
     expect(refExists('refs/heads/codesema/task-nicer-name', repo)).toBe(false)
   })
@@ -354,16 +380,102 @@ describe('renameTaskBranch', () => {
     execFileSync('git', ['update-ref', `refs/remotes/origin/${wt.branch}`, wt.branch], {
       cwd: repo,
     })
-    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'much-better-name')).toBeNull()
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'much-better-name')).toEqual({
+      renamed: false,
+      reason: 'already_pushed',
+      current: wt.branch,
+    })
     expect(refExists(`refs/heads/${wt.branch}`, repo)).toBe(true)
   })
 
-  test('an unusable or identical proposal is a no-op', async () => {
+  test('a proposal with nothing usable in it is refused as unusable', async () => {
     const repo = makeRepo('main')
     const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'keep me')
-    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, '!!! ???')).toBeNull()
-    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'Keep me')).toBeNull()
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, '!!! ???')).toEqual({
+      renamed: false,
+      reason: 'unusable_proposal',
+      current: wt.branch,
+    })
     expect(refExists('refs/heads/codesema/task-keep-me', repo)).toBe(true)
+  })
+
+  // T1.6: distinct from 'unusable_proposal' — this proposal IS usable, it
+  // just names the branch's current name (the ordinary case of an agent
+  // re-proposing its own title).
+  test('a proposal identical to the current name is refused as already_named', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'keep me')
+    expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'Keep me')).toEqual({
+      renamed: false,
+      reason: 'already_named',
+      current: wt.branch,
+    })
+    expect(refExists('refs/heads/codesema/task-keep-me', repo)).toBe(true)
+  })
+
+  test('a git refusal is named, not swallowed', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'first title')
+    // The subdirectory `git branch -m` must write the new ref file into: made
+    // read-only, the rename itself fails (not the slugging, not the checks
+    // above it) — the one refusal this module cannot simulate any other way.
+    const refsSubdir = join(repo, '.git', 'refs', 'heads', 'codesema')
+    chmodSync(refsSubdir, 0o500)
+    try {
+      expect(renameTaskBranch(repo, 'aaaabbbbcccc', wt.branch, 'second title')).toEqual({
+        renamed: false,
+        reason: 'git_refused',
+        current: wt.branch,
+      })
+    } finally {
+      chmodSync(refsSubdir, 0o700)
+    }
+    expect(refExists(`refs/heads/${wt.branch}`, repo)).toBe(true)
+  })
+})
+
+describe('branchHasOwnCommits', () => {
+  test('equal to the anchor: no commit of its own', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'quiet task')
+    expect(branchHasOwnCommits(repo, wt.branch, wt.baseline)).toBe(false)
+  })
+
+  test('a commit past the anchor: carries work', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'busy task')
+    writeFileSync(join(wt.worktree, 'work.txt'), 'w\n')
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A'], {
+      cwd: wt.worktree,
+    })
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'work'], {
+      cwd: wt.worktree,
+      stdio: 'ignore',
+    })
+    expect(branchHasOwnCommits(repo, wt.branch, wt.baseline)).toBe(true)
+  })
+
+  test('an anchor the caller could not name: cannot prove it is empty, so TRUE', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'no anchor')
+    expect(branchHasOwnCommits(repo, wt.branch, null)).toBe(true)
+  })
+
+  test('a branch that no longer exists answers TRUE too', () => {
+    const repo = makeRepo('main')
+    expect(branchHasOwnCommits(repo, 'codesema/task-gone', 'deadbeef')).toBe(true)
+  })
+
+  test('T1.6 review fix: an ABBREVIATED anchor still matches the full tip it names', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'short anchor')
+    // baseline_sha is stored abbreviated in some records (BASELINE_SHA_RE
+    // accepts 7-64 hex chars): a STRING comparison against rev-parse's
+    // always-full sha would never match, wrongly reading an empty branch as
+    // carrying a commit of its own.
+    const abbreviated = wt.baseline.slice(0, 7)
+    expect(abbreviated.length).toBeLessThan(wt.baseline.length)
+    expect(branchHasOwnCommits(repo, wt.branch, abbreviated)).toBe(false)
   })
 })
 

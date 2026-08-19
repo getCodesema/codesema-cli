@@ -43,7 +43,7 @@ import {
   type SettledCost,
 } from './cost.js'
 import { fixCommandFor } from './fix.js'
-import { git, refExists, tryGit } from './git.js'
+import { git, refExists, revListCount, tryGit } from './git.js'
 import { reviewLanguage, t } from './i18n.js'
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
@@ -55,10 +55,14 @@ import {
 } from './task-isolation.js'
 import { createTaskQueue, type EnqueueResult, type TaskQueueIo } from './task-queue.js'
 import {
+  branchHasOwnCommits,
   BranchInUseError,
   createTaskWorktree,
   removeTaskWorktree,
   renameTaskBranch,
+  resolveBranchRef,
+  shortBranchName,
+  type RenameRefusalReason,
   type TaskWorktree,
   type WorktreeLockFn,
   type WorktreeRemoval,
@@ -620,6 +624,14 @@ export type TaskActionResult =
        * in) — same doctrine as the field on TaskRecord.
        */
       queue_position?: number
+      /**
+       * Set when abandon() kept the task's branch instead of deleting it,
+       * because it carries a commit of its own (T1.6): the name of the branch
+       * that survives the worktree. Absent is the honest default for every
+       * other gesture, and for an abandon that DID delete the branch — "no
+       * branch was preserved by this call", not "unknown".
+       */
+      preserved_branch?: string
     }
   | {
       ok: false
@@ -655,6 +667,147 @@ export function pendingResumeTurn(record: TaskRecord): TaskTurn | null {
   }
   const turn = record.turns.at(-1)
   return turn && turn.response === null ? turn : null
+}
+
+/** What `resolveAbandonAnchor` found, and whether it had to fall back to find it. */
+type AbandonAnchor = {
+  /**
+   * The commit `abandon()` compares the branch's tip against, resolved to its
+   * full OBJECT id (`^{commit}`) — never the stored string taken on trust.
+   * Null: nothing resolved to a real commit in THIS repo, whichever source
+   * was tried.
+   */
+  sha: string | null
+  /** True when `baseline_sha` was absent and `record.base` had to stand in for it. */
+  usedFallback: boolean
+}
+
+/**
+ * The repère `abandon()` decides a branch's fate against (T1.6, design.md
+ * D-A): `baseline_sha` (T1.5) when the record carries one — the exact commit
+ * this conversation started from. A record written before it existed (0.12,
+ * or a conversation that had already materialized when T1.5 shipped) has
+ * none, and falls back to `record.base` resolved — the SAME degradation
+ * T1.5 already applies to the review when no anchor was recorded — which the
+ * caller must journal rather than let decide in silence.
+ *
+ * EITHER SOURCE is resolved as an OBJECT before it is trusted: the contract's
+ * `sanitizeBaselineSha` only checks the SHAPE of a stored `baseline_sha` (7 to
+ * 64 hex characters), never that the object it names still exists in this
+ * repo — a `git filter-repo`, a re-clone into the same directory, a
+ * `.codesema/` restored from another clone's backup, a shallow fetch, or a
+ * hand-edited record can all leave a shape-valid sha that resolves to
+ * nothing. The caller tells "resolved via baseline_sha" from "resolved via
+ * the base fallback" from "resolved to nothing at all" by reading `sha` and
+ * `usedFallback` together — never by trusting `baseline_sha`'s mere presence.
+ */
+function resolveAbandonAnchor(cwd: string, record: TaskRecord): AbandonAnchor {
+  if (record.baseline_sha !== undefined) {
+    return {
+      sha: tryGit(['rev-parse', `${record.baseline_sha}^{commit}`], cwd),
+      usedFallback: false,
+    }
+  }
+  const ref = resolveBranchRef(cwd, shortBranchName(record.base))
+  return {
+    sha: ref ? tryGit(['rev-parse', `${ref}^{commit}`], cwd) : null,
+    usedFallback: true,
+  }
+}
+
+/** What `decideBranchFate` decided, for `abandon()` to act on and announce. */
+type BranchFateDecision = {
+  /** Passed to `removeTaskWorktree`: whether the BRANCH (not the worktree, always removed) goes too. */
+  deleteBranch: boolean
+  /** Whether the branch's tip differs from its anchor (or nothing could prove otherwise — the safe reading). */
+  hasOwnCommits: boolean
+  /** Commits ahead of the anchor, only when POSITIVE and countable — see decideBranchFate's doc. */
+  ownCommitsCount: number | null
+  /** Whether `record.branch` still names a real local ref, checked AFTER the commit decision, BEFORE removal. */
+  branchStillExists: boolean
+  /** Whether this task's branch was ever a candidate for deletion at all (false only for work-on). */
+  createdOrAdopted: boolean
+}
+
+/**
+ * Decides what `abandon()` does to a task's branch, and journals every
+ * degradation the decision runs into along the way (T1.6) — this is the
+ * doctrine at the top of task-worktree.ts, applied. Touches no worktree and
+ * no branch itself: only the DECISION is made here, under no lock, so it can
+ * run before `removeTaskWorktree` takes the repo lock and act on stale
+ * information about nothing (the branch cannot change shape while nobody
+ * holds that lock, this call included).
+ */
+function decideBranchFate(
+  cwd: string,
+  taskId: string,
+  record: TaskRecord,
+  emit: (id: string, input: AppendTaskEventInput) => void,
+): BranchFateDecision {
+  // work-on branches are NEVER deletable by abandon(), full stop — see the
+  // CRITIQUE note at the call site for why. Every other task (a fork) always
+  // brought its own branch into existence by construction (`worktree add -b`),
+  // so it is always "ours" to consider deleting. `record.created_branch` is
+  // deliberately NOT consulted: `sanitizeTaskRecord` (contract/src/tasks.ts)
+  // only ever writes that key when it is `true`, never `false` — so on any
+  // record actually read back from disk the field is `true | undefined`, and
+  // testing it here would describe a shape no record can occupy.
+  const createdOrAdopted = !record.work_on
+  let hasOwnCommits = false
+  // Purely descriptive, for the journal/API message below: how many commits,
+  // when that can be counted and is POSITIVE. Stays null when it cannot be
+  // counted, or resolves to 0 (a branch reset BACKWARD past its anchor still
+  // answers `hasOwnCommits: true` — tip differs from anchor — but
+  // `anchor..tip` counts zero commits ahead of it): "0 commits" is the one
+  // claim `hasOwnCommits: true` must never make.
+  let ownCommitsCount: number | null = null
+  if (record.branch !== '') {
+    const anchor = resolveAbandonAnchor(cwd, record)
+    if (anchor.sha === null) {
+      // The MAXIMAL degradation: nothing resolved to a real commit at all —
+      // whether `baseline_sha` named an object gone from this repo, or there
+      // was none and `record.base` resolves to nothing either. Journaled
+      // exactly like the milder fallback below: silence here would be the
+      // same silence T1.6 closed on the sibling path, and this one is worse.
+      emit(taskId, {
+        type: 'branch',
+        data: {
+          text: anchor.usedFallback
+            ? `this task's record has no baseline_sha, and ${record.base || '(no base recorded)'} does not resolve either: ${record.branch}'s commit history cannot be measured, so it is treated as carrying a commit of its own`
+            : `this task's baseline_sha does not name a commit that exists in this repo: ${record.branch}'s commit history cannot be measured against it, so it is treated as carrying a commit of its own`,
+          name: 'baseline_sha_unresolved',
+        },
+      })
+    } else if (anchor.usedFallback) {
+      // A precision loss, not a stop (DP14): no reason_code — the same
+      // family as T3.2's own `base...HEAD` fallback when no anchor was
+      // recorded. The cause is named in `data.name`, never inferred.
+      emit(taskId, {
+        type: 'branch',
+        data: {
+          text: `this task's record has no baseline_sha (a pre-baseline record): falling back to ${record.base} resolved (${anchor.sha.slice(0, 12)}) to decide whether ${record.branch} carries a commit of its own`,
+          name: 'baseline_sha_fallback',
+        },
+      })
+    }
+    hasOwnCommits = branchHasOwnCommits(cwd, record.branch, anchor.sha)
+    if (hasOwnCommits && anchor.sha !== null) {
+      const ahead = revListCount(`${anchor.sha}..refs/heads/${record.branch}`, cwd)
+      ownCommitsCount = ahead !== null && ahead > 0 ? ahead : null
+    }
+  }
+  // Checked AFTER the commit decision (which only needs the branch's NAME)
+  // and BEFORE removal: a branch already gone before this abandon ran (a
+  // stale checkout cleaned up out of band, an earlier partial abandon) must
+  // never be announced as "kept" just because nothing could prove it empty.
+  const branchStillExists = record.branch !== '' && refExists(`refs/heads/${record.branch}`, cwd)
+  return {
+    deleteBranch: createdOrAdopted && !hasOwnCommits,
+    hasOwnCommits,
+    ownCommitsCount,
+    branchStillExists,
+    createdOrAdopted,
+  }
 }
 
 /** Store/broadcast toolkit handed to the end-of-turn review hook. */
@@ -1088,7 +1241,16 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     } catch (err) {
       // A failed commit (missing git identity, hook failure) degrades to an
       // error event: the work is still in the worktree, the turn succeeded.
-      emit(record.id, { type: 'error', data: { message: preview(errorMessage(err)) } })
+      // T1.6: the message alone used to leave nobody knowing WHERE that work
+      // sits — the path and branch are ADDED, the original message untouched.
+      emit(record.id, {
+        type: 'error',
+        data: {
+          message: preview(errorMessage(err)),
+          worktree: record.worktree,
+          branch: record.branch,
+        },
+      })
       return
     }
     const sha = tryGit(['rev-parse', 'HEAD'], record.worktree)
@@ -1106,23 +1268,46 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     })
   }
 
+  /** T1.6: readable clause for each RenameRefusalReason, next to the kept name. */
+  const RENAME_REFUSAL_TEXT: Record<RenameRefusalReason, string> = {
+    not_a_fork: 'the branch is not a task fork',
+    unusable_proposal: 'the proposal yields no usable name',
+    already_named: 'the branch already has that name',
+    already_pushed: 'the branch is already published',
+    git_refused: 'git refused the rename',
+  }
+
   /**
    * Turn 1 only: adopt the branch name the agent proposed for itself, BEFORE
    * the commit, the review and the checks — everything downstream then sees a
    * single name. Never for a work-on task (that branch is the user's, the
    * prompt never even asks) and never past a push (renameTaskBranch refuses a
-   * published branch). Any refusal is a silent no-op: the task keeps the slug
-   * of its title, which is exactly the behaviour that existed before.
+   * published branch). A refusal never fails the turn — the task simply keeps
+   * the slug of its title — but T1.6 forbids the SILENCE that used to come
+   * with it: the reason and the kept name are always journaled.
+   *
+   * No `reason_code` (DP14): a cosmetic rename declining stops nothing, the
+   * turn goes on exactly as if it had never been proposed — none of D2's ten
+   * codes describes a non-event. The cause travels in `data.name` instead,
+   * the same doctrine as the neutral `cost` events (see `costEvent`).
    */
   const adoptBranchProposal = (record: TaskRecord, outcome: TaskTurnOutcome): void => {
     if (!outcome.branchProposal || record.work_on || record.turns.length > 1) {
       return
     }
-    const renamed = renameTaskBranch(opts.cwd, record.id, record.branch, outcome.branchProposal)
-    if (!renamed) {
+    const result = renameTaskBranch(opts.cwd, record.id, record.branch, outcome.branchProposal)
+    if (!result.renamed) {
+      emit(record.id, {
+        type: 'branch',
+        data: {
+          text: `branch rename to "${preview(outcome.branchProposal)}" declined (${RENAME_REFUSAL_TEXT[result.reason]}): keeping ${result.current}`,
+          name: `branch_rename_${result.reason}`,
+          kept_branch: result.current,
+        },
+      })
       return
     }
-    record.branch = renamed
+    record.branch = result.branch
     // Broadcast right away: the UI reads record.branch for the Diff tab and
     // for the ship, and the rest of the turn already runs on the new name.
     persist(record)
@@ -2235,17 +2420,26 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       try {
         // Abandon is the one place the branch dies with the worktree: the task's
         // work is explicitly discarded, unlike interrupt/shutdown which keep both.
-        // EXCEPT for a branch the conversation did not bring into existence —
-        // it pre-existed and belongs to the user, so only the checkout goes.
-        // `created_branch` is the precise answer to that question (a work-on
-        // conversation on a branch that only existed on origin DID create the
-        // local head, and cleaning it up leaves origin untouched); a record
-        // written before that field existed falls back on the coarse rule it
-        // was decided under, which is the honest default for a missing field.
+        // EXCEPT a branch this conversation never brought into existence, OR a
+        // work-on conversation full stop — a work-on branch is the USER's,
+        // whether this conversation materialized its local head from origin or
+        // adopted one that already existed locally, and deleting the ONLY copy
+        // of it (origin/<branch> can vanish between two turns — merged, renamed,
+        // cleaned up on the forge) is a loss this ticket exists to rule out.
+        //
+        // T1.6 adds a SECOND, narrower gate on top: even a branch this
+        // conversation created is kept when it carries a commit of its own —
+        // the doctrine at the top of task-worktree.ts. This can only WIDEN
+        // preservation, never narrow it. `decideBranchFate` runs the whole
+        // decision (and journals every degradation it meets) BEFORE
+        // removeTaskWorktree runs — the worktree lock does not protect a
+        // decision already made, and nothing about the branch's shape can
+        // change while no lock is held, this call included.
+        const fate = decideBranchFate(opts.cwd, taskId, record, emit)
         let removal: WorktreeRemoval
         try {
           removal = await removeTaskWorktree(opts.cwd, taskId, record.branch, {
-            deleteBranch: record.created_branch ?? !record.work_on,
+            deleteBranch: fate.deleteBranch,
             ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
           })
         } catch (err) {
@@ -2284,15 +2478,81 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
             reason_code: 'resource_busy',
           })
         }
+        // T1.6: signalled on its OWN 'branch' event, never folded into the
+        // 'worktree removed, task abandoned' line below — that message stays
+        // BYTE FOR BYTE what it always was, existing readers included, and
+        // the new fact gets a journal line of its own instead of growing the
+        // old one's payload. No `reason_code` (DP14): none of the three cases
+        // below is a degradation — a preserved branch is the doctrine working
+        // as intended, an already-gone branch is a fact stated once it is
+        // known, and an untouched work-on branch is the ordinary outcome.
+        //
+        // Emitted (and the API result built) from the PRE-await `record` and
+        // `fate`, not from `current` below: the branch was already decided
+        // and the worktree already removed accordingly BEFORE the repo-lock
+        // wait, so this is true regardless of whether the task record still
+        // exists to be re-read.
+        //
+        // `preserved_branch` NAMES a branch — it must never name one that is
+        // not there. `hasOwnCommits` alone answers "was it right not to
+        // delete it", never "does it exist to be pointed at": a branch
+        // cleaned up out of band before this abandon ran (a stale checkout,
+        // an earlier partial abandon) reads `hasOwnCommits: true` for the
+        // same reason a real survivor does — nothing could prove it empty —
+        // but there is no ref left to announce, so the API field and the
+        // 'branch_preserved' event are gated on `fate.branchStillExists` too.
+        let preservedBranchResult: { preserved_branch?: string } = {}
+        if (fate.hasOwnCommits && fate.branchStillExists) {
+          preservedBranchResult = { preserved_branch: record.branch }
+          emit(taskId, {
+            type: 'branch',
+            data: {
+              // A work-on branch is kept UNCONDITIONALLY (fate.createdOrAdopted
+              // is false): stating the commit as the REASON it was kept would
+              // claim a causality that does not hold for it, even though the
+              // commit itself is real and worth saying.
+              text: fate.createdOrAdopted
+                ? `worktree removed, task abandoned; ${record.branch} was KEPT: it carries a commit of its own`
+                : `worktree removed, task abandoned; ${record.branch} was never ours to delete (work-on) and carries a commit of its own`,
+              name: 'branch_preserved',
+              preserved_branch: record.branch,
+              ...(fate.ownCommitsCount !== null
+                ? { preserved_branch_commits: fate.ownCommitsCount }
+                : {}),
+            },
+          })
+        } else if (fate.hasOwnCommits && !fate.branchStillExists) {
+          emit(taskId, {
+            type: 'branch',
+            data: {
+              text: `${record.branch} could not be proven empty, but it was already gone before this abandon ran: nothing was deleted here, and nothing survives to point at`,
+              name: 'branch_gone',
+            },
+          })
+        } else if (!fate.hasOwnCommits && !fate.createdOrAdopted && fate.branchStillExists) {
+          // A work-on branch this abandon never had the right to touch, which
+          // also happens to carry nothing of its own: still worth a line,
+          // since 'worktree removed, task abandoned' alone would otherwise be
+          // the ONLY thing said about a branch this doctrine promises to
+          // always mention when it survives an abandon.
+          emit(taskId, {
+            type: 'branch',
+            data: {
+              text: `worktree removed, task abandoned; ${record.branch} was never ours to delete (work-on) and stays exactly where it was`,
+              name: 'branch_untouched',
+            },
+          })
+        }
         // NEVER persist a snapshot that crossed an await. `record` was read
         // before a wait on the repo lock that can last a minute; a ship settling
         // in that window has already written the record, and writing the old
         // copy back would erase the mr_url and resurrect the pre-ship status.
         // The removal is done either way — the worktree is gone — so a record
-        // that disappeared meanwhile is a success with nothing left to write.
+        // that disappeared meanwhile is a success with nothing left to write,
+        // except the branch verdict above, which is already written.
         const current = loadTask(opts.cwd, taskId)
         if (!current) {
-          return { ok: true }
+          return { ok: true, ...preservedBranchResult }
         }
         if (current.status === 'waiting_for_you') {
           accrueWait(current)
@@ -2309,7 +2569,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         }
         emit(taskId, { type: 'error', data: { message: 'worktree removed, task abandoned' } })
         persist(current)
-        return { ok: true }
+        return { ok: true, ...preservedBranchResult }
       } finally {
         abandoning.delete(taskId)
         abandonsInFlight.delete(inFlight)

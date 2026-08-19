@@ -453,6 +453,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   interrupted: 'workspace.evInterrupted',
   isolation: 'workspace.evIsolation',
   cost: 'workspace.evCost',
+  branch: 'workspace.evBranch',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -477,6 +478,10 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   // Neutral on purpose: a cost that could not be established is a gap in the
   // accounting, not a failure of the work.
   cost: 'idle',
+  // Neutral on purpose (T1.6, DP14): none of the three branch facts this
+  // carries stops anything — a declined rename, a preserved branch, a
+  // fallen-back-to anchor are none of them a failure of the work.
+  branch: 'idle',
 }
 
 export function eventTone(type: TaskEventType): EventTone {
@@ -517,6 +522,7 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   interrupted: ['message', 'summary'],
   isolation: ['reason', 'isolation'],
   cost: ['message', 'summary'],
+  branch: ['text'],
 }
 
 /**

@@ -1,5 +1,5 @@
 import { execFileSync, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -547,6 +547,37 @@ describe('createTaskRunner', () => {
     expect(readTaskEvents(repo, task.id).map((e) => e.type)).not.toContain('commit')
   })
 
+  test('T1.6: a commit git refuses names the worktree and the branch, and keeps the original message', async () => {
+    const repo = makeRepo()
+    // A hook every worktree of this repo shares (hooks live in the common
+    // .git dir, never per-worktree): the one realistic way to make `git
+    // commit` itself fail without touching the runner's own code.
+    const hook = join(repo, '.git', 'hooks', 'pre-commit')
+    writeFileSync(hook, '#!/bin/sh\nexit 1\n')
+    chmodSync(hook, 0o755)
+    const task = makeTask(repo, 'blocked commit', 'write a file')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'wrote it', ['agent.txt']).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const record = loadTask(repo, task.id)
+    // The turn still succeeds — only the commit was refused.
+    expect(record?.turns[0]?.response).toBe('wrote it')
+    const errorEvent = readTaskEvents(repo, task.id).find((e) => e.type === 'error')
+    expect(errorEvent?.data.worktree).toBe(record?.worktree)
+    expect(errorEvent?.data.branch).toBe(record?.branch)
+    // The original readable message is still there, not replaced by the new fields.
+    expect(typeof errorEvent?.data.message).toBe('string')
+    expect(String(errorEvent?.data.message).length).toBeGreaterThan(0)
+    // Nothing was committed: the work is still sitting in the worktree, uncommitted.
+    expect(tryGit(['status', '--porcelain'], record?.worktree ?? '')).not.toBe('')
+  })
+
   test('question -> waiting_for_you -> reply resumes the session in turn 2', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'pick a db', 'set up storage')
@@ -1090,6 +1121,120 @@ describe('agent-named task branches', () => {
     runner.start(task)
     await until(() => status(repo, task.id) === 'waiting_for_you')
     expect(loadTask(repo, task.id)?.branch).toBe('codesema/task-fix-preview-rename-2')
+  })
+
+  test('T1.6: a rename git refuses is journaled with its reason, and the task keeps its slug', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'something vague', 'fix it')
+    // Every codesema/task-* fork lives under this shared subdirectory: made
+    // read-only from inside the agent call (once the fork branch already
+    // exists), `git branch -m` can no longer write the renamed ref into it.
+    const refsSubdir = join(repo, '.git', 'refs', 'heads', 'codesema')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        chmodSync(refsSubdir, 0o500)
+        const raw = claudeStream('BRANCH: fix-preview-rename\nfixed')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    try {
+      runner.start(task)
+      await until(() => status(repo, task.id) === 'waiting_for_you')
+      const record = loadTask(repo, task.id)
+      // Refused: the task keeps the slug of its title.
+      expect(record?.branch).toBe('codesema/task-something-vague')
+      const refused = readTaskEvents(repo, task.id).find(
+        (e) => typeof e.data.name === 'string' && e.data.name.startsWith('branch_rename_'),
+      )
+      expect(refused?.data.name).toBe('branch_rename_git_refused')
+      expect(refused?.data.kept_branch).toBe('codesema/task-something-vague')
+      // No D2 code: a cosmetic rename declining stops nothing (DP14).
+      expect(refused?.reason_code).toBeUndefined()
+      // The turn itself never failed over a cosmetic rename.
+      expect(readTaskEvents(repo, task.id).map((e) => e.type)).not.toContain('error')
+    } finally {
+      chmodSync(refsSubdir, 0o700)
+    }
+  })
+
+  test('T1.6: an already-pushed rename is journaled too, not just git_refused', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'something vague', 'fix it')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        // Published from inside the agent call, once the fork branch exists
+        // (its name is now known) but before the turn finishes and tries the
+        // rename.
+        execFileSync(
+          'git',
+          ['update-ref', 'refs/remotes/origin/codesema/task-something-vague', 'HEAD'],
+          { cwd: repo },
+        )
+        const raw = claudeStream('BRANCH: fix-preview-rename\nfixed')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record?.branch).toBe('codesema/task-something-vague')
+    const refused = readTaskEvents(repo, task.id).find(
+      (e) => typeof e.data.name === 'string' && e.data.name.startsWith('branch_rename_'),
+    )
+    expect(refused?.data.name).toBe('branch_rename_already_pushed')
+    expect(refused?.data.kept_branch).toBe('codesema/task-something-vague')
+  })
+
+  test('T1.6: a rename to the name the branch already has is journaled as already_named', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'fix preview rename', 'fix it')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      // The agent proposes exactly the slug it already has.
+      runAgentFn: fakeClaude(() => 'BRANCH: fix-preview-rename\nfixed').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record?.branch).toBe('codesema/task-fix-preview-rename')
+    const refused = readTaskEvents(repo, task.id).find(
+      (e) => typeof e.data.name === 'string' && e.data.name.startsWith('branch_rename_'),
+    )
+    expect(refused?.data.name).toBe('branch_rename_already_named')
+  })
+
+  test('T1.6: a proposal with nothing usable is journaled as unusable_proposal', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'something vague', 'fix it')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      // 'task' passes parseTaskBranchProposal's own validity check (a plain
+      // identifier) but slugs to slug()'s LAST-RESORT sentinel: the one input
+      // that reaches renameTaskBranch's `unusable_proposal` path rather than
+      // being filtered out earlier as unparseable ('!!! ???' never reaches
+      // renameTaskBranch at all — parseTaskBranchProposal drops it first).
+      runAgentFn: fakeClaude(() => 'BRANCH: task\nfixed').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record?.branch).toBe('codesema/task-something-vague')
+    const refused = readTaskEvents(repo, task.id).find(
+      (e) => typeof e.data.name === 'string' && e.data.name.startsWith('branch_rename_'),
+    )
+    expect(refused?.data.name).toBe('branch_rename_unusable_proposal')
   })
 
   test('a work-on materialization that loses the lock keeps its branch claimed', async () => {

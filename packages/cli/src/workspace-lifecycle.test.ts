@@ -1446,7 +1446,62 @@ describe('abandon', () => {
     expect(branchExists(repo, 'feature/mine')).toBe(true)
   })
 
-  test('abandoning a conversation that created a local head from origin cleans it up', async () => {
+  // MAJEUR 1 of the T1.6 review round: this is the MOST COMMON work-on case
+  // (a plain adopted branch, `created_branch` absent) and it was signalling
+  // NOTHING when it carried commits — the branch survived (it always did),
+  // but neither the journal nor the API said a branch full of work had just
+  // been kept. `hasOwnCommits` is now computed unconditionally, so the signal
+  // fires here exactly as it does for a branch this conversation forked.
+  test("T1.6: a plain adopted work-on branch signals when it carries the user's commits", async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo, stdio: 'ignore' })
+    const task = createTask(repo, {
+      title: 'on my branch, real work',
+      prompt: 'work',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        writeFileSync(join(options.cwd, 'work.txt'), 'done\n')
+        const raw = claudeStream('shipped it')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(loadTask(repo, task.id)?.created_branch).toBeUndefined()
+
+    const result = await runner.abandon(task.id)
+    expect(result).toEqual({ ok: true, preserved_branch: 'feature/mine' })
+    expect(branchExists(repo, 'feature/mine')).toBe(true)
+    const preserved = readTaskEvents(repo, task.id).find((e) => e.data.name === 'branch_preserved')
+    expect(preserved).toMatchObject({
+      type: 'branch',
+      data: { preserved_branch: 'feature/mine', preserved_branch_commits: 1 },
+    })
+  })
+
+  // T1.6 REVIEW ROUND: this test used to be named "... cleans it up" and
+  // asserted the local head was DELETED. That is exactly the destroyed-work
+  // bug the adversarial review reproduced: origin/<branch> can vanish between
+  // two turns (merged, renamed, cleaned up on the forge — the nominal case of
+  // a colleague's MR), and the local head this conversation created is then
+  // the ONLY copy of any commit it carries. `abandon()` can no longer tell
+  // "empty, safe to delete" from "the origin copy just vanished" from inside
+  // this call, so a work-on conversation's branch is NEVER deleted here any
+  // more, full stop — whether this conversation created its local head or
+  // adopted one that already existed. The old intention (not letting empty
+  // local heads accumulate forever) stays valid; it is deferred to T1.9's
+  // configurable retention, which purges what abandon no longer dares to.
+  test('abandoning a work-on conversation never deletes the local head it created, even empty', async () => {
     const repo = makeRepo()
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim()
     // The branch exists on origin only, as it does for a teammate's MR that was
@@ -1472,13 +1527,412 @@ describe('abandon', () => {
     expect(loadTask(repo, task.id)?.created_branch).toBe(true)
     expect(branchExists(repo, 'feature/theirs')).toBe(true)
 
+    // No commit was ever made (questionAgent never writes): still kept.
     expect(await runner.abandon(task.id)).toEqual({ ok: true })
-    // The head this conversation created goes with it — origin, which is where
-    // that branch actually lives, is untouched.
-    expect(branchExists(repo, 'feature/theirs')).toBe(false)
+    expect(branchExists(repo, 'feature/theirs')).toBe(true)
     expect(
       tryGit(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/feature/theirs'], repo),
     ).not.toBeNull()
+  })
+
+  test('T1.6: preserved_branch_commits is never a fabricated 0 (branch reset backward past its anchor)', async () => {
+    const repo = makeRepo() // one commit, c1 ("init: base").
+    // A second commit BEFORE the task forks: the fork's baseline is this one.
+    writeFileSync(join(repo, 'second.txt'), 'b\n')
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-m', 'second commit'], { cwd: repo, stdio: 'ignore' })
+    const c1 = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: repo, encoding: 'utf8' }).trim()
+
+    const task = makeTask(repo, 'reset backward', 'do nothing new')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run, // never commits
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)!
+    expect(record.baseline_sha).toBeDefined() // the SECOND commit, HEAD at fork time.
+
+    // The branch is reset BACKWARD to an ancestor of its own anchor: its tip
+    // differs from the anchor (so `hasOwnCommits` reads true, the safe side),
+    // but nothing is "ahead" of that anchor — the opposite, if anything.
+    execFileSync('git', ['update-ref', `refs/heads/${record.branch}`, c1], { cwd: repo })
+
+    const result = await runner.abandon(task.id)
+    expect(result).toEqual({ ok: true, preserved_branch: record.branch })
+    const preserved = readTaskEvents(repo, task.id).find((e) => e.data.name === 'branch_preserved')
+    expect(preserved?.data.preserved_branch).toBe(record.branch)
+    // The one value this field must never carry: a fabricated 0 would claim
+    // "0 commits of its own" on a line whose whole point is that it DOES.
+    expect(preserved?.data.preserved_branch_commits).toBeUndefined()
+  })
+
+  // MINEUR of the T1.6 review round: the repli was silent exactly where it
+  // fails hardest — no baseline_sha AND `record.base` names nothing at all
+  // (a deleted base branch, or the '' a work-on task's base is left at when
+  // the server never set it). That is the maximal degradation, and it was
+  // the only one of the three T1.6 facts with no journal line.
+  test('T1.6: an unresolvable repli is journaled as baseline_sha_unresolved, not silently', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo, stdio: 'ignore' })
+    const task = createTask(repo, {
+      title: 'no base recorded',
+      prompt: 'work',
+      autoShip: false,
+      base: '',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)!
+    const legacy: Partial<TaskRecord> = { ...record }
+    delete legacy.baseline_sha
+    saveTask(repo, legacy as TaskRecord)
+
+    // An anchor that cannot be resolved at all reads as "has own commits"
+    // (branchHasOwnCommits's safe default), so this also signals a preserved
+    // branch — correctly: nothing here can prove it does NOT carry work.
+    expect(await runner.abandon(task.id)).toEqual({ ok: true, preserved_branch: 'feature/mine' })
+    const events = readTaskEvents(repo, task.id)
+    const unresolved = events.find((e) => e.data.name === 'baseline_sha_unresolved')
+    expect(unresolved).toBeDefined()
+    expect(unresolved?.type).toBe('branch')
+    expect(unresolved?.reason_code).toBeUndefined()
+    const preserved = events.find((e) => e.data.name === 'branch_preserved')
+    expect(preserved).toBeDefined()
+    expect(preserved?.data.preserved_branch_commits).toBeUndefined()
+    // Still never deleted: an adopted work-on branch, full stop.
+    expect(branchExists(repo, 'feature/mine')).toBe(true)
+  })
+
+  test('T1.6 REVIEW ROUND 3, MAJEUR 1: never announces a branch that is already gone', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'stale checkout', 'do the thing')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        writeFileSync(join(options.cwd, 'work.txt'), 'done\n')
+        const raw = claudeStream('shipped it')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)!
+
+    // Out-of-band cleanup BEFORE abandon runs: a stale checkout removed by
+    // hand, or an earlier partial abandon that deleted the branch but never
+    // wrote its record back. `branchHasOwnCommits` correctly cannot prove
+    // this branch was empty (its tip cannot even be read any more) — the
+    // DECISION not to delete is moot, but the ANNOUNCEMENT must not follow.
+    execFileSync('git', ['worktree', 'remove', '--force', record.worktree], {
+      cwd: repo,
+      stdio: 'ignore',
+    })
+    execFileSync('git', ['branch', '-D', record.branch], { cwd: repo, stdio: 'ignore' })
+    expect(branchExists(repo, record.branch)).toBe(false)
+
+    const result = await runner.abandon(task.id)
+    // No `preserved_branch`: naming a ref that does not exist is the exact
+    // lie this fix rules out.
+    expect(result).toEqual({ ok: true })
+    const events = readTaskEvents(repo, task.id)
+    expect(events.some((e) => e.data.name === 'branch_preserved')).toBe(false)
+    const gone = events.find((e) => e.data.name === 'branch_gone')
+    expect(gone).toBeDefined()
+    expect(gone?.type).toBe('branch')
+    expect(gone?.data.preserved_branch).toBeUndefined()
+    expect(gone?.reason_code).toBeUndefined()
+  })
+
+  test('T1.6 REVIEW ROUND 3, MAJEUR 2: an unresolvable baseline_sha is journaled too', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'bogus anchor', 'do nothing new')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run, // never commits
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)!
+    expect(record.baseline_sha).toBeDefined()
+
+    // Shape-valid, resolves to nothing: the contract only checks
+    // /^[0-9a-f]{7,64}$/ (sanitizeBaselineSha), never that the object still
+    // exists in THIS repo — reachable via a git filter-repo, a re-clone into
+    // the same directory, a .codesema/ restored from another clone's backup,
+    // a shallow fetch, or a hand-edited record.
+    saveTask(repo, { ...record, baseline_sha: 'deadbeefcafe' })
+
+    const result = await runner.abandon(task.id)
+    const events = readTaskEvents(repo, task.id)
+    const unresolved = events.find((e) => e.data.name === 'baseline_sha_unresolved')
+    expect(unresolved).toBeDefined()
+    expect(unresolved?.type).toBe('branch')
+    expect(unresolved?.reason_code).toBeUndefined()
+    // Cannot be measured against a bogus anchor: treated as carrying a commit
+    // of its own (the safe reading), so it is kept and signalled — the
+    // branch never actually moved, but nothing here can prove that any more.
+    expect(result).toEqual({ ok: true, preserved_branch: record.branch })
+    expect(branchExists(repo, record.branch)).toBe(true)
+  })
+
+  test('T1.6 REVIEW ROUND 3, MINEUR: an untouched work-on branch with no commits still gets a line', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature/mine'], { cwd: repo, stdio: 'ignore' })
+    const task = createTask(repo, {
+      title: 'on my branch, nothing new',
+      prompt: 'work',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/mine',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+    expect(branchExists(repo, 'feature/mine')).toBe(true)
+    const untouched = readTaskEvents(repo, task.id).find((e) => e.data.name === 'branch_untouched')
+    expect(untouched).toBeDefined()
+    expect(untouched?.type).toBe('branch')
+    expect(untouched?.reason_code).toBeUndefined()
+  })
+
+  test('T1.6: the destroyed-work scenario the review reproduced no longer loses the commit', async () => {
+    const repo = makeRepo()
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim()
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/feature/theirs', sha], { cwd: repo })
+    const task = createTask(repo, {
+      title: 'their branch, about to lose origin',
+      prompt: 'work',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/theirs',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        writeFileSync(join(options.cwd, 'work.txt'), 'done\n')
+        const raw = claudeStream('shipped it')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const commitSha = tryGit(['rev-parse', 'refs/heads/feature/theirs'], repo)
+
+    // Between turns, a colleague merges/renames/cleans up the branch on the
+    // forge: origin/feature/theirs is gone. The local head is now the ONLY
+    // copy of `commitSha`.
+    execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/feature/theirs'], { cwd: repo })
+
+    expect(await runner.abandon(task.id)).toEqual({ ok: true, preserved_branch: 'feature/theirs' })
+    expect(branchExists(repo, 'feature/theirs')).toBe(true)
+    // The commit is still reachable from SOME ref — nothing dangling, nothing
+    // for `git gc` to reap.
+    const containing = execFileSync(
+      'git',
+      ['for-each-ref', '--format=%(refname)', '--contains', commitSha ?? ''],
+      { cwd: repo, encoding: 'utf8' },
+    ).trim()
+    expect(containing).toContain('refs/heads/feature/theirs')
+  })
+
+  test('T1.6: abandon keeps a branch that carries a commit of its own, and says so', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'real work', 'do the thing')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      // A 'done' turn with a real change: commitTurn actually commits it.
+      runAgentFn: (options) => {
+        writeFileSync(join(options.cwd, 'work.txt'), 'done\n')
+        const raw = claudeStream('shipped it')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const { worktree, branch, baseline_sha: baseline } = loadTask(repo, task.id)!
+    // Sanity: the branch really did move past its baseline before abandoning it.
+    expect(tryGit(['rev-parse', `refs/heads/${branch}`], repo)).not.toBe(baseline ?? null)
+
+    const result = await runner.abandon(task.id)
+    expect(result).toEqual({ ok: true, preserved_branch: branch })
+    // The worktree — a disposable checkout — is still gone.
+    expect(existsSync(worktree)).toBe(false)
+    // The branch — the deliverable — survives.
+    expect(branchExists(repo, branch)).toBe(true)
+
+    const events = readTaskEvents(repo, task.id)
+    // The fact travels on its OWN 'branch' event (T1.6 review round): the
+    // existing 'worktree removed, task abandoned' line is never touched, not
+    // even with extra fields.
+    const preserved = events.find((e) => e.data.name === 'branch_preserved')
+    expect(preserved).toMatchObject({
+      type: 'branch',
+      data: { preserved_branch: branch, preserved_branch_commits: 1 },
+    })
+    // No D2 code: a preserved branch is the doctrine working, not a
+    // degradation (DP14) — the cause is `data.name`, not `reason_code`.
+    expect(preserved?.reason_code).toBeUndefined()
+
+    const last = events.at(-1)
+    expect(last?.type).toBe('error')
+    expect(last?.data).toEqual({ message: 'worktree removed, task abandoned' })
+    expect(last?.reason_code).toBeUndefined()
+  })
+
+  test('T1.6: a work-on head this conversation created is kept when it carries a commit', async () => {
+    const repo = makeRepo()
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim()
+    // Branch exists on origin only: materializing the conversation creates the
+    // LOCAL head (created_branch: true), exactly like the 'cleans it up' test
+    // above — except this one leaves a commit of its own on it.
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/feature/theirs', sha], { cwd: repo })
+    const task = createTask(repo, {
+      title: 'their branch, real work',
+      prompt: 'work',
+      autoShip: false,
+      base: 'main',
+      branch: 'feature/theirs',
+      worktree: '',
+      workOn: true,
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        writeFileSync(join(options.cwd, 'work.txt'), 'done\n')
+        const raw = claudeStream('shipped it')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(loadTask(repo, task.id)?.created_branch).toBe(true)
+
+    const result = await runner.abandon(task.id)
+    // Carrying a commit overrides the created-local-head rule: it is no
+    // longer "empty enough" for cleaning up the local head to be a no-op.
+    expect(result).toEqual({ ok: true, preserved_branch: 'feature/theirs' })
+    expect(branchExists(repo, 'feature/theirs')).toBe(true)
+  })
+
+  test('T1.6: a pre-baseline record falls back to base, journals the fallback, and still decides correctly', async () => {
+    const repo = makeRepo()
+
+    // A: no commit of its own -> still deletable without a baseline_sha.
+    const idle = makeTask(repo, 'idle legacy', 'do nothing new')
+    const idleRunner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run,
+    })
+    idleRunner.start(idle)
+    await until(() => status(repo, idle.id) === 'waiting_for_you')
+    const idleRecord = loadTask(repo, idle.id)!
+    const idleLegacy: Partial<TaskRecord> = { ...idleRecord }
+    delete idleLegacy.baseline_sha
+    saveTask(repo, idleLegacy as TaskRecord)
+
+    expect(await idleRunner.abandon(idle.id)).toEqual({ ok: true })
+    expect(branchExists(repo, idleRecord.branch)).toBe(false)
+    const fallbackEvent = readTaskEvents(repo, idle.id).find(
+      (e) => e.data.name === 'baseline_sha_fallback',
+    )
+    expect(fallbackEvent).toBeDefined()
+    // No D2 code: a precision loss, not a stop (DP14).
+    expect(fallbackEvent?.reason_code).toBeUndefined()
+
+    // B: a commit of its own -> preserved even without a baseline_sha.
+    const busy = makeTask(repo, 'busy legacy', 'do the thing')
+    const busyRunner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        writeFileSync(join(options.cwd, 'work.txt'), 'done\n')
+        const raw = claudeStream('shipped it')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+    busyRunner.start(busy)
+    await until(() => status(repo, busy.id) === 'waiting_for_you')
+    const busyRecord = loadTask(repo, busy.id)!
+    const busyLegacy: Partial<TaskRecord> = { ...busyRecord }
+    delete busyLegacy.baseline_sha
+    saveTask(repo, busyLegacy as TaskRecord)
+
+    const result = await busyRunner.abandon(busy.id)
+    expect(result).toEqual({ ok: true, preserved_branch: busyRecord.branch })
+    expect(branchExists(repo, busyRecord.branch)).toBe(true)
+  })
+
+  test('T1.6: a record WITH baseline_sha is decided from it, not from a (possibly moved) base', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'quiet with baseline', 'do nothing new')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: questionAgent().run, // never commits
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)!
+    const baseline = record.baseline_sha
+    expect(typeof baseline).toBe('string')
+
+    // main moves AFTER the baseline was captured — a foreign commit unrelated
+    // to this task. If the anchor were re-resolved from `record.base` instead
+    // of read from `baseline_sha`, it would now disagree with the branch's own
+    // (unmoved) tip and wrongly read as "carries a commit of its own".
+    writeFileSync(join(repo, 'unrelated.txt'), 'x\n')
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-m', 'unrelated work on main'], { cwd: repo, stdio: 'ignore' })
+    expect(tryGit(['rev-parse', `refs/heads/${record.branch}`], repo)).toBe(baseline ?? null)
+    expect(tryGit(['rev-parse', 'refs/heads/main'], repo)).not.toBe(baseline ?? null)
+
+    const result = await runner.abandon(task.id)
+    // Decided from the UNMOVED baseline_sha: still nothing of its own, so
+    // still deletable — base having drifted since must not change that.
+    expect(result).toEqual({ ok: true })
+    expect(branchExists(repo, record.branch)).toBe(false)
   })
 
   test('guard rails: unknown id, reviewing task, and a never-started task', async () => {

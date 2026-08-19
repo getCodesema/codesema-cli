@@ -281,6 +281,14 @@ export type TaskEventType =
    * not a failure of the work. The distinct cause is named in `data.name`.
    */
   | 'cost'
+  /**
+   * A fact about a task's BRANCH that stops nothing and qualifies no D2 code
+   * (T1.6, DP14): a declined rename, a branch kept because it carries a
+   * commit of its own, or the anchor fallen back to. NEUTRAL, never
+   * 'message' (routed as a chat bubble, backed by the turn's full text) nor
+   * 'error'. The cause is named in `data.name`, same doctrine as `cost`.
+   */
+  | 'branch'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
