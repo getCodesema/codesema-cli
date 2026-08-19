@@ -25,7 +25,7 @@ import {
 } from './review.js'
 import { createSession } from './serve.js'
 import type { TaskTurnIo, TaskTurnReviewFn } from './task-runner.js'
-import { loadTask } from './tasks-store.js'
+import { loadTask, taskReason } from './tasks-store.js'
 import { progressLabel } from './ui.js'
 
 export type TaskReviewMode = 'simple' | 'dual'
@@ -125,8 +125,24 @@ export function findingSeverityCounts(findings: readonly Finding[]): Record<stri
   return counts
 }
 
-const settle = (record: TaskRecord, io: TaskTurnIo, status: 'review_ok' | 'review_ko'): void => {
+/**
+ * Final transition of the automatic review. A KO states WHY in the record —
+ * the code plus the producer's own message in `detail` — while an OK clears
+ * any reason a previous turn left behind: a record that passed its review must
+ * not keep claiming the one that blocked it.
+ */
+const settle = (
+  record: TaskRecord,
+  io: TaskTurnIo,
+  status: 'review_ok' | 'review_ko',
+  reason?: string,
+): void => {
   record.status = status
+  if (status === 'review_ko') {
+    record.reason = taskReason('review_blocked', reason)
+  } else {
+    delete record.reason
+  }
   io.persist()
 }
 
@@ -235,8 +251,11 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       const outcome = await runReviewFlow(opts, input, io)
 
       if (!outcome.ok) {
-        io.emit({ type: 'error', data: { message: `review failed: ${outcome.message}` } })
-        settle(record, io, 'review_ko')
+        // The event keeps its message untouched and gains the code beside it;
+        // the record repeats that same message in reason.detail.
+        const message = `review failed: ${outcome.message}`
+        io.emit({ type: 'error', data: { message }, reason_code: 'review_blocked' })
+        settle(record, io, 'review_ko', message)
         return
       }
 
@@ -262,8 +281,9 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       })
       settle(record, io, taskReviewVerdict(outcome.record))
     } catch (err) {
-      io.emit({ type: 'error', data: { message: `review failed: ${errorMessage(err)}` } })
-      settle(record, io, 'review_ko')
+      const message = `review failed: ${errorMessage(err)}`
+      io.emit({ type: 'error', data: { message }, reason_code: 'review_blocked' })
+      settle(record, io, 'review_ko', message)
     }
   }
 }

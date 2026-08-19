@@ -180,6 +180,70 @@ describe('sanitizeTaskRecord', () => {
     expect(sanitizeTaskRecord({ ...validRecord, isolation: null })?.isolation).toBe('policy')
   })
 
+  test('reason: a 0.12 record has none, and gets none invented for it', () => {
+    // FROZEN fixture of a record as codesema 0.12 wrote it: no `reason` key
+    // anywhere, because reason codes did not exist yet.
+    const record012 = {
+      version: 1,
+      id: 'b7c8d9e0f1a2',
+      title: 'Cache the preview diff',
+      status: 'waiting_for_you',
+      base: 'main',
+      branch: 'codesema/task-cache-the-preview-diff',
+      worktree: '/repo/.codesema/worktrees/b7c8d9e0f1a2',
+      agent_session_id: null,
+      turns: [
+        {
+          prompt: 'Cache the preview diff',
+          response: 'Done.',
+          question: null,
+          started_at: '2026-08-14T09:00:00.000Z',
+          ended_at: '2026-08-14T09:04:00.000Z',
+        },
+      ],
+      review_ref: null,
+      work_ms: 240_000,
+      wait_ms: 0,
+      auto_ship: false,
+      work_on: false,
+      isolation: 'policy',
+      created_at: '2026-08-14T09:00:00.000Z',
+      updated_at: '2026-08-14T09:04:00.000Z',
+    }
+    const r = sanitizeTaskRecord(structuredClone(record012))
+    expect(r).toEqual(record012 as TaskRecord)
+    expect(r && 'reason' in r).toBe(false)
+    expect(r?.version).toBe(1)
+  })
+
+  test('reason: a known code round-trips with its detail', () => {
+    const reason = { code: 'review_blocked' as const, detail: 'review failed: agent timed out' }
+    expect(sanitizeTaskRecord({ ...validRecord, reason })?.reason).toEqual(reason)
+  })
+
+  test('reason: an unknown code is dropped, never surfaced as a reason', () => {
+    for (const reason of [
+      { code: 'flaky_vibes', detail: 'x' },
+      { code: 42 },
+      { detail: 'no code' },
+      'review_blocked',
+      null,
+    ]) {
+      const r = sanitizeTaskRecord({ ...validRecord, reason })
+      expect(r).not.toBeNull()
+      expect(r && 'reason' in r).toBe(false)
+    }
+  })
+
+  test('reason: an over-long detail is truncated, the record stays valid', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      reason: { code: 'forge_unreachable', detail: 'y'.repeat(TASK_EVENT_DATA_STRING_MAX + 100) },
+    })
+    expect(r?.reason?.code).toBe('forge_unreachable')
+    expect(r?.reason?.detail).toHaveLength(TASK_EVENT_DATA_STRING_MAX)
+  })
+
   test('turns: invalid entries skipped, texts truncated, empty response null', () => {
     const r = sanitizeTaskRecord({
       ...validRecord,
@@ -337,6 +401,38 @@ describe('sanitizeTaskEvent', () => {
     expect(sanitizeTaskEvent({ ...validEvent, data: 'junk' })?.data).toEqual({})
     expect(sanitizeTaskEvent({ ...validEvent, data: [1, 2] })?.data).toEqual({})
     expect(sanitizeTaskEvent({ ...validEvent, data: undefined })?.data).toEqual({})
+  })
+
+  test('reason_code: a known code rides in its own field, data untouched', () => {
+    const raw = {
+      seq: 7,
+      at: '2026-08-14T10:09:00.000Z',
+      type: 'interrupted',
+      data: { reason: 'shutdown' },
+      reason_code: 'interrupted_by_user',
+    }
+    const event = sanitizeTaskEvent(raw)
+    expect(event?.reason_code).toBe('interrupted_by_user')
+    // The payload the producer already wrote is preserved BYTE FOR BYTE: the
+    // code is added next to the message, it never edits it.
+    expect(event?.data).toEqual({ reason: 'shutdown' })
+  })
+
+  test('reason_code: a 0.12 journal line carries none and stays readable', () => {
+    const event = sanitizeTaskEvent(structuredClone(validEvent))
+    expect(event).toEqual(validEvent)
+    expect(event && 'reason_code' in event).toBe(false)
+  })
+
+  test('reason_code: an unknown or malformed code drops the key, never throws', () => {
+    for (const reason_code of ['not_a_code', '', 42, null, {}, ['review_blocked']]) {
+      const event = sanitizeTaskEvent({ ...validEvent, reason_code })
+      expect(event).not.toBeNull()
+      expect(event && 'reason_code' in event).toBe(false)
+      // The line itself survives intact: an unnamed degradation is still a
+      // degradation, and its message is still in data.
+      expect(event?.data).toEqual(validEvent.data)
+    }
   })
 })
 

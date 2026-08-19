@@ -3,6 +3,13 @@
 // whitelist and truncate, never throw. Everything read back from disk goes
 // through here before being trusted.
 
+import {
+  sanitizeReasonCode,
+  sanitizeTaskReason,
+  type ReasonCode,
+  type TaskReason,
+} from './reasons.js'
+
 export type TaskStatus =
   | 'queued'
   | 'running'
@@ -62,6 +69,17 @@ export type TaskEvent = {
   at: string
   type: TaskEventType
   data: TaskEventData
+  /**
+   * Machine-readable name of the degradation this event reports, when it
+   * reports one. A DEDICATED field, never a key inside `data`: the code is
+   * ADDED to the payload, so the readable message every producer already puts
+   * in `data` stays exactly where — and what — it was.
+   *
+   * OPTIONAL, and its honest default is absence: a journal line written before
+   * this field existed claims no code, and so does any event that is not a
+   * degradation.
+   */
+  reason_code?: ReasonCode
 }
 
 /**
@@ -106,6 +124,15 @@ export type TaskRecord = {
    * runner reads it, never writes it.
    */
   isolation: TaskIsolation
+  /**
+   * Why the task is where it is, when where it is is a degradation: the code
+   * plus, in `detail`, the producer's own readable message verbatim. OPTIONAL,
+   * and absence is the honest default — a record written by 0.12 has no reason
+   * to state, and neither has a task nothing went wrong with. Cleared as soon
+   * as the task moves on (a turn restarting, a review coming back OK), because
+   * a stale reason is a lie about the present.
+   */
+  reason?: TaskReason
   created_at: string
   updated_at: string
 }
@@ -225,6 +252,7 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     }
   }
   const created_at = isoOrNow(r.created_at)
+  const reason = sanitizeTaskReason(r.reason)
   return {
     version: 1,
     id,
@@ -249,6 +277,11 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     isolation: TASK_ISOLATIONS.has(r.isolation as TaskIsolation)
       ? (r.isolation as TaskIsolation)
       : 'policy',
+    // Optional and whitelisted, exactly like `source` on TaskChecks: a record
+    // without a reason keeps none, and one whose code is unknown (older or
+    // newer vocabulary, tampered file) drops the key entirely rather than
+    // claiming a reason no reader can name. Never throws.
+    ...(reason ? { reason } : {}),
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }
@@ -440,10 +473,15 @@ export function sanitizeTaskEvent(raw: unknown): TaskEvent | null {
   if (!TASK_EVENT_TYPES.has(e.type as TaskEventType)) {
     return null
   }
+  // Optional field, whitelisted on its own: an unknown code drops the key and
+  // leaves the event otherwise intact — the readable message in `data` is what
+  // the line was always about, the code only names it.
+  const reasonCode = sanitizeReasonCode(e.reason_code)
   return {
     seq: e.seq as number,
     at: isoOrNow(e.at),
     type: e.type as TaskEventType,
     data: sanitizeTaskEventData(e.data),
+    ...(reasonCode ? { reason_code: reasonCode } : {}),
   }
 }

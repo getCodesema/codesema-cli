@@ -7,7 +7,7 @@
 // is one manual step away, and the note says so explicitly.
 
 import { execFile } from 'node:child_process'
-import { sanitizeRecord, type ReviewRecord, type TaskRecord } from './contract.js'
+import { sanitizeRecord, type ReasonCode, type ReviewRecord, type TaskRecord } from './contract.js'
 import { detectForgeHint, subprocessEnv } from './git.js'
 import { t } from './i18n.js'
 import { readJson } from './record.js'
@@ -143,7 +143,18 @@ export type ShipTaskOptions = {
 }
 
 export type ShipOutcome =
-  { pushed: true; mrUrl: string | null; note: string | null } | { pushed: false; error: string }
+  | {
+      pushed: true
+      mrUrl: string | null
+      note: string | null
+      /**
+       * Names the degradation when the ship landed short of an MR. OPTIONAL:
+       * a ship that opened its merge request has nothing to name, and the
+       * `note` stays the readable half of the story either way.
+       */
+      reasonCode?: ReasonCode
+    }
+  | { pushed: false; error: string }
 
 type ForgeCandidate = { cli: 'gh' | 'glab'; args: string[] }
 
@@ -211,12 +222,20 @@ async function createMr(opts: ShipTaskOptions, execForge: ShipForgeExecFn): Prom
       note: mrUrl ? null : `${candidate.cli} created the merge request but printed no URL`,
     }
   }
+  if (note !== null) {
+    // A forge CLI DID run and failed: its own message is the honest note.
+    // Deliberately left uncoded here — the forge answered, so
+    // 'forge_unreachable' would misname it, and no other D2 code fits a
+    // per-CLI failure. T1.1 codes the reachability degradation only.
+    return { pushed: true, mrUrl: null, note }
+  }
   return {
     pushed: true,
     mrUrl: null,
-    note:
-      note ??
-      'no forge CLI (gh or glab) available — branch pushed, open the merge request manually',
+    note: 'no forge CLI (gh or glab) available — branch pushed, open the merge request manually',
+    // The push DID land: the work is safe on origin and the MR is one manual
+    // (or one retried) step away — a retryable degradation, not a failure.
+    reasonCode: 'forge_unreachable',
   }
 }
 
