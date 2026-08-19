@@ -2,16 +2,19 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import type { ForgeMr, ForgeMrsResult } from './forge-mrs.js'
 import {
   buildFileDiff,
   buildPreview,
+  clearPreviewTargetCache,
   parsePreviewPath,
   parsePreviewSource,
   pickDiffSection,
   PREVIEW_DIFF_MAX_CHARS,
+  PREVIEW_TARGET_TTL_MS,
   resolvePreviewRefs,
+  type PreviewDeps,
 } from './preview.js'
 
 describe('parsePreviewSource', () => {
@@ -114,9 +117,40 @@ afterAll(() => {
   rmSync(repo, { recursive: true, force: true })
 })
 
+/**
+ * Records every forge probe: no gh/glab is ever launched by this file.
+ *
+ * It ANSWERS by default (as glab would, `main` being the fixture's target),
+ * because only a forge answer is memoised — a silent probe is deliberately
+ * never cached. `silent: true` gets the empty forge back; `realClock: true`
+ * leaves the memo on `Date.now`, the domain a caller without `now` presents.
+ */
+function forgeSeam(opts: { silent?: boolean; realClock?: boolean; startedAt?: number } = {}) {
+  const launches: { cmd: string; args: string[] }[] = []
+  const clock = { now: opts.startedAt ?? 1_000_000 }
+  const answer = opts.silent ? null : JSON.stringify({ target_branch: 'main' })
+  const deps: PreviewDeps = {
+    execFn: (cmd, args) => {
+      launches.push({ cmd, args })
+      return Promise.resolve(cmd === 'glab' ? answer : null)
+    },
+    ...(opts.realClock ? {} : { now: () => clock.now }),
+  }
+  return { launches, clock, deps }
+}
+
+/** The seam alone, when a test only needs the preview to stay hermetic. */
+const noForge: PreviewDeps = { execFn: () => Promise.resolve(null) }
+
+// The memo of detectPreviewTarget survives between tests otherwise, and a test
+// that counts probes has to start from a cold one.
+beforeEach(() => {
+  clearPreviewTargetCache()
+})
+
 describe('resolvePreviewRefs (branch source)', () => {
   test('resolves the currently checked-out branch via HEAD', async () => {
-    const refs = await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' })
+    const refs = await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, noForge)
     expect(refs).toEqual({
       sourceRef: 'HEAD',
       targetRef: 'main',
@@ -128,7 +162,7 @@ describe('resolvePreviewRefs (branch source)', () => {
   test('resolves a non-checked-out branch by name', async () => {
     run(['checkout', 'main'])
     try {
-      const refs = await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' })
+      const refs = await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, noForge)
       expect(refs).toEqual({
         sourceRef: 'feature/x',
         targetRef: 'main',
@@ -141,15 +175,83 @@ describe('resolvePreviewRefs (branch source)', () => {
   })
 
   test('throws for a branch that does not exist locally', async () => {
-    await expect(resolvePreviewRefs(repo, { kind: 'branch', name: 'nope' })).rejects.toThrow(
-      /branch not found/,
-    )
+    await expect(
+      resolvePreviewRefs(repo, { kind: 'branch', name: 'nope' }, noForge),
+    ).rejects.toThrow(/branch not found/)
+  })
+
+  test('the forge probe goes through the injected seam, never a real gh/glab', async () => {
+    const { launches, deps } = forgeSeam({ silent: true })
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    // No origin remote in the fixture, so both candidates are probed — and the
+    // argv is the assertion, exactly as in prep.test.ts.
+    expect(launches.map((l) => l.cmd)).toEqual(['glab', 'gh'])
+  })
+
+  test('a forge that did not answer is asked again, never remembered as absent', async () => {
+    const { launches, deps } = forgeSeam({ silent: true })
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    const afterFirst = launches.length
+    expect(afterFirst).toBeGreaterThan(0)
+    // Caching the miss would keep "this branch has no merge request" for 30s
+    // after the forge came back — a wrong target, to save a failed spawn.
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    expect(launches.length).toBe(afterFirst * 2)
+  })
+
+  test('an entry stamped by one clock is never read against another', async () => {
+    const real = forgeSeam({ realClock: true })
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, real.deps)
+    const perProbe = real.launches.length
+    expect(perProbe).toBeGreaterThan(0)
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, real.deps)
+    expect(real.launches.length).toBe(perProbe)
+
+    // A second clock shows up: its 1 000 000 cannot be compared with Date.now's
+    // ~1.7e12, so the memo is emptied rather than read across domains.
+    const injected = forgeSeam()
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, injected.deps)
+    expect(injected.launches.length).toBe(perProbe)
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, injected.deps)
+    expect(injected.launches.length).toBe(perProbe)
+
+    // …and back: the real clock finds the memo emptied again, not a stale hit.
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, real.deps)
+    expect(real.launches.length).toBe(perProbe * 2)
+  })
+
+  test('the memo expires: fresh at 29s, asked again at 31s', async () => {
+    const { launches, clock, deps } = forgeSeam()
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    const afterFirst = launches.length
+    expect(afterFirst).toBeGreaterThan(0)
+
+    clock.now += PREVIEW_TARGET_TTL_MS - 1_000
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    expect(launches.length).toBe(afterFirst)
+
+    clock.now += 2_000
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    expect(launches.length).toBe(afterFirst * 2)
+  })
+
+  test('a burst of previews on one branch costs ONE forge probe, not one per request', async () => {
+    const { launches, deps } = forgeSeam()
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    const afterFirst = launches.length
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    await buildFileDiff(repo, { kind: 'branch', name: 'feature/x' }, 'a.txt', deps)
+    expect(launches.length).toBe(afterFirst)
+    // …until the memo is dropped, and then the forge is asked again.
+    clearPreviewTargetCache()
+    await resolvePreviewRefs(repo, { kind: 'branch', name: 'feature/x' }, deps)
+    expect(launches.length).toBe(afterFirst * 2)
   })
 })
 
 describe('buildPreview', () => {
   test('reports branch, target, commits, files and diff stats without the diff itself', async () => {
-    const preview = await buildPreview(repo, { kind: 'branch', name: 'feature/x' })
+    const preview = await buildPreview(repo, { kind: 'branch', name: 'feature/x' }, noForge)
     expect(preview.branch).toBe('feature/x')
     expect(preview.target).toBe('main')
     expect(preview.commits).toEqual(['feat: change'])
@@ -173,7 +275,7 @@ describe('buildPreview', () => {
     const listMrs = async (): Promise<ForgeMrsResult> => ({ available: true, mrs: [mr] })
     // fetchBranch (git fetch origin ...) is skipped here: there is no origin remote, so it would throw;
     // instead we exercise resolvePreviewRefs directly against a source branch reachable without a remote.
-    await expect(buildPreview(repo, { kind: 'mr', number: 999 }, listMrs)).rejects.toThrow(
+    await expect(buildPreview(repo, { kind: 'mr', number: 999 }, { listMrs })).rejects.toThrow(
       /no open MR/,
     )
   })
@@ -183,7 +285,7 @@ describe('buildPreview', () => {
     run(['mv', 'a.txt', 'renamed.txt'])
     run(['commit', '-m', 'feat: rename file'])
     try {
-      const preview = await buildPreview(repo, { kind: 'branch', name: 'feature/rename' })
+      const preview = await buildPreview(repo, { kind: 'branch', name: 'feature/rename' }, noForge)
       expect(preview.files).toEqual([
         {
           path: 'renamed.txt',
@@ -197,6 +299,7 @@ describe('buildPreview', () => {
         repo,
         { kind: 'branch', name: 'feature/rename' },
         'renamed.txt',
+        noForge,
       )
       expect(result.truncated).toBe(false)
       expect(result.diff).toContain('rename from a.txt')
@@ -209,7 +312,12 @@ describe('buildPreview', () => {
 
 describe('buildFileDiff', () => {
   test('returns the diff of a single file', async () => {
-    const result = await buildFileDiff(repo, { kind: 'branch', name: 'feature/x' }, 'a.txt')
+    const result = await buildFileDiff(
+      repo,
+      { kind: 'branch', name: 'feature/x' },
+      'a.txt',
+      noForge,
+    )
     expect(result.truncated).toBe(false)
     expect(result.diff).toContain('-base')
     expect(result.diff).toContain('+changed')
@@ -217,7 +325,7 @@ describe('buildFileDiff', () => {
 
   test('rejects a path that is not part of the diff', async () => {
     await expect(
-      buildFileDiff(repo, { kind: 'branch', name: 'feature/x' }, 'nope.txt'),
+      buildFileDiff(repo, { kind: 'branch', name: 'feature/x' }, 'nope.txt', noForge),
     ).rejects.toThrow(/not part of this diff/)
   })
 
@@ -232,7 +340,12 @@ describe('buildFileDiff', () => {
     run(['add', '-A'])
     run(['commit', '-m', 'feat: huge file'])
     try {
-      const result = await buildFileDiff(repo, { kind: 'branch', name: 'feature/huge' }, 'huge.txt')
+      const result = await buildFileDiff(
+        repo,
+        { kind: 'branch', name: 'feature/huge' },
+        'huge.txt',
+        noForge,
+      )
       expect(result.truncated).toBe(true)
       expect(result.diff.length).toBe(PREVIEW_DIFF_MAX_CHARS)
     } finally {

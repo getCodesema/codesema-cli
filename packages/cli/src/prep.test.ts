@@ -289,4 +289,127 @@ describe('boot probes', () => {
     expect(await forge).toBeNull()
     expect(await agents).toEqual([])
   })
+
+  test('a named head ref asks the forge about THAT branch, through the list form', async () => {
+    const rig = heldExec()
+    const pending = targetFromForge(repo, rig.execFn, 'feature/other')
+    // Never `mr view <branch>` / `pr view <branch>`: see the numeric-branch test below.
+    expect(rig.launches[0]?.args).toEqual([
+      'mr',
+      'list',
+      '--source-branch=feature/other',
+      '--per-page',
+      '1',
+      '--output',
+      'json',
+    ])
+    expect(rig.launches[1]?.args).toEqual([
+      'pr',
+      'list',
+      '--head=feature/other',
+      '--limit',
+      '1',
+      '--json',
+      'baseRefName',
+      '--jq',
+      '.[0].baseRefName // empty',
+    ])
+    rig.release([null, null])
+    expect(await pending).toBeNull()
+  })
+
+  test('a branch named like a number is asked about as a BRANCH, never as a PR number', async () => {
+    const rig = heldExec()
+    // `gh pr view 1234` / `glab mr view 1234` would read this name as pull
+    // request #1234 and adopt the target of a completely unrelated MR.
+    const pending = targetFromForge(repo, rig.execFn, '1234')
+    for (const launch of rig.launches) {
+      expect(launch.args).not.toContain('view')
+      expect(launch.args).not.toContain('1234')
+      expect(launch.args).toContain('list')
+    }
+    expect(rig.launches[0]?.args).toContain('--source-branch=1234')
+    expect(rig.launches[1]?.args).toContain('--head=1234')
+    rig.release([null, null])
+    expect(await pending).toBeNull()
+  })
+
+  test('the list form still resolves a real branch, on either forge', async () => {
+    const onGitlab = heldExec()
+    const viaGlab = targetFromForge(repo, onGitlab.execFn, 'feature/other')
+    // `mr list` answers an ARRAY where `mr view` answers one object.
+    onGitlab.release([JSON.stringify([{ target_branch: 'develop' }]), null])
+    expect(await viaGlab).toEqual({ target: 'develop', source: 'gitlab (glab mr list)' })
+
+    const onGithub = heldExec()
+    const viaGh = targetFromForge(repo, onGithub.execFn, 'feature/other')
+    onGithub.release([null, 'develop'])
+    expect(await viaGh).toEqual({ target: 'develop', source: 'github (gh pr list)' })
+  })
+
+  test('an empty list prints nothing, and nothing is not a branch called null', async () => {
+    const rig = heldExec()
+    const pending = targetFromForge(repo, rig.execFn, 'feature/other')
+    rig.release(['[]', 'null'])
+    expect(await pending).toBeNull()
+  })
+
+  test('a ref that could be read as a flag never reaches a forge CLI', async () => {
+    const rig = heldExec()
+    expect(await targetFromForge(repo, rig.execFn, '--upload-pack=evil')).toBeNull()
+    expect(rig.launches).toEqual([])
+  })
+
+  test('detectTarget probes the forge with --branch other-branch, not only on HEAD', async () => {
+    const rig = heldExec()
+    const pending = detectTarget('feature/x', undefined, repo, {
+      headRef: 'main',
+      execFn: rig.execFn,
+    })
+    // Before the fix this argv did not exist: the guard skipped straight to
+    // origin/HEAD as soon as headRef was anything but 'HEAD'.
+    expect(rig.launches.map((l) => l.cmd)).toEqual(['glab', 'gh'])
+    expect(rig.launches[0]?.args).toEqual([
+      'mr',
+      'list',
+      '--source-branch=main',
+      '--per-page',
+      '1',
+      '--output',
+      'json',
+    ])
+    rig.release([JSON.stringify([{ target_branch: 'develop' }]), null])
+    expect(await pending).toEqual({ target: 'develop', source: 'gitlab (glab mr list)' })
+  })
+
+  test('non-regression: headRef HEAD keeps its argv and its detected target', async () => {
+    const rig = heldExec()
+    const pending = detectTarget('feature/x', undefined, repo, { execFn: rig.execFn })
+    expect(rig.launches[0]?.args).toEqual(['mr', 'view', '--output', 'json'])
+    expect(rig.launches[1]?.args).toEqual([
+      'pr',
+      'view',
+      '--json',
+      'baseRefName',
+      '--jq',
+      '.baseRefName',
+    ])
+    rig.release([JSON.stringify({ target_branch: 'develop' }), null])
+    expect(await pending).toEqual({ target: 'develop', source: 'gitlab (glab mr view)' })
+  })
+
+  test('the forge staying silent still falls back to the heuristic, on HEAD and on a branch', async () => {
+    const silent = heldExec()
+    const onHead = detectTarget('feature/x', undefined, repo, { execFn: silent.execFn })
+    silent.release([null, null])
+    expect(await onHead).toEqual({ target: 'develop', source: 'heuristic (nearest merge-base)' })
+
+    const other = heldExec()
+    const onBranch = detectTarget('feature/x', undefined, repo, {
+      headRef: 'feature/x',
+      execFn: other.execFn,
+    })
+    other.release([null, null])
+    expect(await onBranch).toEqual({ target: 'develop', source: 'heuristic (nearest merge-base)' })
+  })
 })

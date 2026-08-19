@@ -1,6 +1,12 @@
 import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
-import { currentBranch, git, refExists, repoRoot, tryGit } from './git.js'
-import { computeDiffSummary, detectTarget, excludePathspecs, resolveRef } from './prep.js'
+import { currentBranch, git, refExists, repoRoot, tryGit, type ProbeExecFn } from './git.js'
+import {
+  computeDiffSummary,
+  detectTarget,
+  excludePathspecs,
+  isForgeTargetSource,
+  resolveRef,
+} from './prep.js'
 
 export type PreviewSource = { kind: 'branch'; name: string } | { kind: 'mr'; number: number }
 
@@ -80,18 +86,110 @@ export type ResolvedPreviewRefs = {
   target: string
 }
 
+/** Injection seams of the preview: no test ever runs a forge binary, it asserts on the argv. */
+export type PreviewDeps = {
+  /** Merge-request listing behind a `mr` source. */
+  listMrs?: ((cwd: string) => Promise<ForgeMrsResult>) | undefined
+  /** Forge probe behind the target detection of a `branch` source (see detectTarget). */
+  execFn?: ProbeExecFn | undefined
+  /** Clock behind the memo below: a test can age it without sleeping 30s. */
+  now?: (() => number) | undefined
+}
+
+/**
+ * How long a target ANSWERED BY THE FORGE is reused before asking again.
+ *
+ * The preview endpoints are the chattiest read path of the local server: one
+ * `/api/preview` then one `/api/preview/diff` per file clicked, all on the
+ * same branch. Since detectTarget asks the forge whatever the head ref is,
+ * each of those requests would otherwise spawn `gh` AND `glab` (up to 8s each)
+ * to re-learn the same answer. A target branch changes when someone retargets
+ * a merge request — a 30s window is far shorter than that.
+ */
+export const PREVIEW_TARGET_TTL_MS = 30_000
+/** Bound on the memo: one entry per branch previewed, dropped wholesale past this. */
+const PREVIEW_TARGET_MAX_ENTRIES = 64
+
+const targetCache = new Map<string, { target: string; at: number }>()
+
+/**
+ * The clock the entries currently in the memo were stamped by.
+ *
+ * The memo is module-global while the clock comes from the caller, so two
+ * callers can hold two different clocks — the real one, and a counter a test
+ * injects. Timestamps from two clocks cannot be compared: an entry stamped by
+ * `Date.now()` and read against a counter starting at 0 looks infinitely old,
+ * the reverse looks eternally fresh, and the expiry becomes a function of test
+ * ordering. So the memo belongs to ONE clock at a time: presenting another
+ * empties it. In production there is only ever `Date.now`, so this never
+ * triggers; in tests it is what makes each seam start cold.
+ */
+let cacheClock: () => number = Date.now
+
+/** Drops the memo; the next preview asks the forge again. Used by tests and by nothing else. */
+export function clearPreviewTargetCache(): void {
+  targetCache.clear()
+}
+
+function readClock(deps: PreviewDeps): number {
+  const clock = deps.now ?? Date.now
+  if (clock !== cacheClock) {
+    targetCache.clear()
+    cacheClock = clock
+  }
+  return clock()
+}
+
+/**
+ * Only a target the FORGE answered is memoised.
+ *
+ * A probe that came back empty is not knowledge worth keeping: caching it
+ * would hold "this branch has no merge request" for 30s after the forge came
+ * back, which is a wrong review target — where re-probing only costs a failed
+ * spawn. The fallbacks under it (origin/HEAD, the merge-base heuristic) are
+ * pure git and cheap to redo anyway, so nothing is lost by recomputing them.
+ */
+async function detectPreviewTarget(
+  root: string,
+  branch: string,
+  headRef: string,
+  deps: PreviewDeps,
+): Promise<string> {
+  const key = `${root}\0${branch}\0${headRef}`
+  const now = readClock(deps)
+  const hit = targetCache.get(key)
+  if (hit && now - hit.at < PREVIEW_TARGET_TTL_MS) {
+    return hit.target
+  }
+  const { target, source } = await detectTarget(branch, undefined, root, {
+    headRef,
+    execFn: deps.execFn,
+  })
+  if (!isForgeTargetSource(source)) {
+    targetCache.delete(key)
+    return target
+  }
+  if (targetCache.size >= PREVIEW_TARGET_MAX_ENTRIES) {
+    targetCache.clear()
+  }
+  targetCache.set(key, { target, at: now })
+  return target
+}
+
 /**
  * Resolves the two refs to diff, without ever checking out a worktree:
- * - branch: the local branch itself vs. the same target-detection logic as
- *   prep/review (forge CLI when it is the checked-out branch, else the nearest
- *   merge-base heuristic).
+ * - branch: the local branch itself vs. the same target detection as
+ *   prep/review — the forge is asked which branch this one targets whatever is
+ *   checked out (D7), then `origin/HEAD`, then the nearest merge-base
+ *   heuristic. The answer is memoised for PREVIEW_TARGET_TTL_MS so a burst of
+ *   preview requests costs one forge probe, not one per request.
  * - mr: fetches the source branch into a remote-tracking ref and diffs it
  *   against the MR's target branch, both resolved as refs (local or remote).
  */
 export async function resolvePreviewRefs(
   cwd: string,
   source: PreviewSource,
-  listMrs: (cwd: string) => Promise<ForgeMrsResult> = listOpenMrs,
+  deps: PreviewDeps = {},
 ): Promise<ResolvedPreviewRefs> {
   const root = repoRoot(cwd)
 
@@ -101,14 +199,14 @@ export async function resolvePreviewRefs(
     }
     const checkedOut = currentBranch(root)
     const headRef = source.name === checkedOut ? 'HEAD' : source.name
-    const { target } = await detectTarget(source.name, undefined, root, headRef)
+    const target = await detectPreviewTarget(root, source.name, headRef, deps)
     if (target.replace(/^origin\//, '') === source.name) {
       throw new Error(`branch ${source.name} cannot be its own target`)
     }
     return { sourceRef: headRef, targetRef: target, branch: source.name, target }
   }
 
-  const mrsResult = await listMrs(root)
+  const mrsResult = await (deps.listMrs ?? listOpenMrs)(root)
   if (!mrsResult.available) {
     throw new Error('forge merge requests unavailable')
   }
@@ -183,10 +281,10 @@ function fileStatuses(range: string, cwd: string): Map<string, PreviewFileStatus
 export async function buildPreview(
   cwd: string,
   source: PreviewSource,
-  listMrs?: (cwd: string) => Promise<ForgeMrsResult>,
+  deps?: PreviewDeps,
 ): Promise<PreviewResult> {
   const root = repoRoot(cwd)
-  const refs = await resolvePreviewRefs(root, source, listMrs)
+  const refs = await resolvePreviewRefs(root, source, deps)
   const summary = computeDiffSummary(refs.sourceRef, refs.targetRef, root)
   const statuses = fileStatuses(`${refs.targetRef}...${refs.sourceRef}`, root)
   const files: PreviewFile[] = summary.files.map((f) => ({
@@ -205,10 +303,10 @@ export async function buildFileDiff(
   cwd: string,
   source: PreviewSource,
   path: string,
-  listMrs?: (cwd: string) => Promise<ForgeMrsResult>,
+  deps?: PreviewDeps,
 ): Promise<{ diff: string; truncated: boolean }> {
   const root = repoRoot(cwd)
-  const refs = await resolvePreviewRefs(root, source, listMrs)
+  const refs = await resolvePreviewRefs(root, source, deps)
   const summary = computeDiffSummary(refs.sourceRef, refs.targetRef, root)
   const file = summary.files.find((f) => f.path === path)
   if (!file) {

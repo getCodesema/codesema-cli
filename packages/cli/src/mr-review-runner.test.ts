@@ -4,11 +4,20 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'bun:test'
 import type { ForgeMr, ForgeMrsResult } from './forge-mrs.js'
-import { tryGit } from './git.js'
+import { tryGit, type ProbeExecFn } from './git.js'
 import { createMrReviewRunner } from './mr-review-runner.js'
 import { createSession } from './serve.js'
 
 const REVIEW = '{"verdict":"approve","summary":"ok","findings":[]}'
+
+/**
+ * The branch path resolves its review target through the forge (D7), so
+ * without this seam every branch review in this file would launch the real
+ * `gh` AND `glab` — slow, and broken on a machine that has neither. Answering
+ * nothing is what those binaries did here anyway: the fixture repo has no
+ * remote.
+ */
+const noForge: ProbeExecFn = () => Promise.resolve(null)
 
 function git(args: string[], cwd: string): void {
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
@@ -247,6 +256,7 @@ describe('createMrReviewRunner (branch source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
+      execFn: noForge,
     })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
@@ -267,6 +277,7 @@ describe('createMrReviewRunner (branch source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
+      execFn: noForge,
     })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
@@ -289,6 +300,7 @@ describe('createMrReviewRunner (branch source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
+      execFn: noForge,
     })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
