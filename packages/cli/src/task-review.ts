@@ -24,7 +24,7 @@ import {
   type SimpleOutcome,
 } from './review.js'
 import { createSession } from './serve.js'
-import type { TaskTurnIo, TaskTurnReviewFn } from './task-runner.js'
+import { REVIEW_CUT_DETAIL, type TaskTurnIo, type TaskTurnReviewFn } from './task-runner.js'
 import { loadTask, taskReason } from './tasks-store.js'
 import { progressLabel } from './ui.js'
 
@@ -172,6 +172,25 @@ export function baselineFallbackReason(record: TaskRecord): string | null {
   return null
 }
 
+/**
+ * The workspace is going down mid-review. That is NOT a blocked review — the
+ * reviewer never got to say anything — so it must not settle on 'review_ko',
+ * which claims a verdict and carries the terminal-ish `review_blocked` code.
+ * The task lands exactly where every other turn a Ctrl-C cut short lands:
+ * 'interrupted', with the human-interruption code, its work committed and its
+ * worktree kept. A reply (or a later turn) picks it back up.
+ */
+const settleInterrupted = (record: TaskRecord, io: TaskTurnIo): void => {
+  io.emit({
+    type: 'interrupted',
+    data: { reason: 'shutdown' },
+    reason_code: 'interrupted_by_user',
+  })
+  record.status = 'interrupted'
+  record.reason = taskReason('interrupted_by_user', REVIEW_CUT_DETAIL)
+  io.persist()
+}
+
 export type CreateTaskReviewerOptions = {
   /** MAIN repo root: review archives land here, never in the disposable worktree. */
   cwd: string
@@ -219,6 +238,9 @@ const runReviewFlow: FlowRunner = async (opts, input, io) => {
     }
   })
   try {
+    // `signal` reaches the agent subprocess itself (runAgent SIGTERMs its
+    // process group): that is what makes a Ctrl-C during a review immediate
+    // instead of a wait on the reviewer's own timeout.
     return mode === 'dual'
       ? await runDual({
           agentCommand: opts.command,
@@ -227,6 +249,7 @@ const runReviewFlow: FlowRunner = async (opts, input, io) => {
           timeoutMs: opts.timeoutMs,
           session,
           spinner: { update: (status) => io.text(status) },
+          signal: io.signal,
         })
       : await runSimple({
           agentCommand: opts.command,
@@ -236,6 +259,7 @@ const runReviewFlow: FlowRunner = async (opts, input, io) => {
           session,
           prompt: buildFullReviewPrompt(input),
           incremental: false,
+          signal: io.signal,
         })
   } finally {
     unsubscribe()
@@ -262,6 +286,12 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
     // 'reviewing' throughout, and every action refuses that status (start,
     // reply, resume and interrupt through `active`, abandon and ship on the
     // status itself). Nothing else writes this record meanwhile.
+    if (io.signal.aborted) {
+      // The shutdown beat us to the start line: never spawn an agent this
+      // process is about to abandon.
+      settleInterrupted(record, io)
+      return
+    }
     try {
       // Everything the agent did in this conversation and nothing else: the
       // baseline commit holds whatever the repo was carrying when the worktree
@@ -303,8 +333,22 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         cwd: record.worktree,
         quiet: true,
       })
+      if (io.signal.aborted) {
+        // The shutdown landed during the prep. Starting the flow now would
+        // spawn a review agent (two, in dual mode) only to kill it on the next
+        // tick: "no review is ever launched for nothing" is the promise, and
+        // this is the gap where it was not kept.
+        settleInterrupted(record, io)
+        return
+      }
       const outcome = await runReviewFlow(opts, input, io)
 
+      if (io.signal.aborted) {
+        // The agent was killed by the shutdown: whatever came back is a
+        // half-run, not a verdict.
+        settleInterrupted(record, io)
+        return
+      }
       if (!outcome.ok) {
         // The event keeps its message untouched and gains the code beside it;
         // the record repeats that same message in reason.detail.
@@ -336,6 +380,13 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       })
       settle(record, io, taskReviewVerdict(outcome.record))
     } catch (err) {
+      if (io.signal.aborted) {
+        // The rejection IS the abort (a killed agent, an interrupted prep):
+        // reporting it as a blocked review would blame the reviewer for the
+        // shutdown.
+        settleInterrupted(record, io)
+        return
+      }
       const message = `review failed: ${errorMessage(err)}`
       io.emit({ type: 'error', data: { message }, reason_code: 'review_blocked' })
       settle(record, io, 'review_ko', message)

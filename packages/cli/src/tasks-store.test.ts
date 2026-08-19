@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -22,15 +23,27 @@ import {
   createTask,
   listTasks,
   loadTask,
+  onStoreUnreadable,
   readTaskChecks,
   readTaskEvents,
   resetJournalCursors,
+  resetStoreReports,
   saveTask,
   setJournalReader,
   taskDir,
+  taskIdsOnDisk,
+  taskRecordExists,
   tasksDir,
   writeTaskChecks,
 } from './tasks-store.js'
+
+/**
+ * chmod does not bind root, so a suite run as root cannot exercise a
+ * permission failure at all. The skip is gated on the UID and NOTHING else:
+ * conditioning it on the failure being observed makes the test silently
+ * assert nothing the day the failure stops happening.
+ */
+const RUNNING_AS_ROOT = process.getuid?.() === 0
 
 let cwd: string
 
@@ -43,6 +56,7 @@ afterEach(() => {
   // counting reader (or a warm cursor) into the next test.
   setJournalReader(null)
   resetJournalCursors()
+  resetStoreReports()
   rmSync(cwd, { recursive: true, force: true })
 })
 
@@ -506,5 +520,188 @@ describe('readTaskChecks / writeTaskChecks', () => {
       writeTaskChecks(cwd, record.id, { status: 'nope' } as unknown as TaskChecks),
     ).toThrow()
     expect(existsSync(join(taskDir(cwd, record.id), 'checks.json'))).toBe(false)
+  })
+})
+
+// T1.2: the queue sweep DELETES entries on a null loadTask, so it needs the
+// difference between "no such task" and "I could not find out". Collapsing the
+// second into the first costs a perfectly valid task its place in the line.
+describe('taskRecordExists', () => {
+  test('true for a record that is there, even when it is illegible', () => {
+    const record = createTask(cwd, { ...input, title: 'legible' })
+    expect(taskRecordExists(cwd, record.id)).toBe(true)
+
+    writeFileSync(join(taskDir(cwd, record.id), 'task.json'), '{ truncated')
+    // Unreadable is NOT gone: loadTask says nothing, this still says it exists.
+    expect(loadTask(cwd, record.id)).toBeNull()
+    expect(taskRecordExists(cwd, record.id)).toBe(true)
+  })
+
+  test('false only when it is genuinely not there', () => {
+    const record = createTask(cwd, { ...input, title: 'doomed' })
+    rmSync(taskDir(cwd, record.id), { recursive: true, force: true })
+    expect(taskRecordExists(cwd, record.id)).toBe(false)
+    expect(taskRecordExists(cwd, 'aaaaaaaaaaaa')).toBe(false)
+    // An id the store could never resolve is not a task at all.
+    expect(taskRecordExists(cwd, '../escape')).toBe(false)
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'a task DIRECTORY we cannot even look into is not reported as gone',
+    () => {
+      const record = createTask(cwd, { ...input, title: 'locked away' })
+      chmodSync(taskDir(cwd, record.id), 0o000)
+      try {
+        // EACCES on the directory: we could not find out, and "could not find
+        // out" must never be read as "gone" by a caller that evicts on false.
+        expect(taskRecordExists(cwd, record.id)).toBe(true)
+      } finally {
+        chmodSync(taskDir(cwd, record.id), 0o700)
+      }
+    },
+  )
+})
+
+// T1.2 re-review round 7, BLOQUANT 2: the queue's "a record we could not place
+// is at least NAMED" rests entirely on this function, and every test of that
+// behaviour injected a hand-written `idsOnDisk`. The filters and the catch
+// below were exercised by nothing at all — a version returning [] left the
+// whole suite green while the feature silently disappeared. Real filesystem,
+// no seam.
+describe('taskIdsOnDisk', () => {
+  test('every task DIRECTORY, readable or not — and nothing else', () => {
+    const readable = createTask(cwd, { ...input, title: 'readable' })
+    const illegible = createTask(cwd, { ...input, title: 'illegible' })
+    writeFileSync(join(taskDir(cwd, illegible.id), 'task.json'), '{ truncated')
+
+    // Things that are NOT tasks, next door: a file where a directory would be,
+    // a directory whose name is not a task id, and one in the wrong charset.
+    writeFileSync(join(tasksDir(cwd), 'aaaaaaaaaaab'), 'a file, not a directory')
+    mkdirSync(join(tasksDir(cwd), 'not-an-id'), { recursive: true })
+    mkdirSync(join(tasksDir(cwd), 'ZZZZZZZZZZZZ'), { recursive: true })
+
+    const ids = taskIdsOnDisk(cwd)
+    expect(new Set(ids)).toEqual(new Set([readable.id, illegible.id]))
+    // The illegible one is the whole point: listTasks drops it, this keeps it.
+    expect(listTasks(cwd).map((r) => r.id)).toEqual([readable.id])
+  })
+
+  test('no tasks directory at all is simply no tasks', () => {
+    expect(taskIdsOnDisk(cwd)).toEqual([])
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'a tasks directory it cannot LIST yields nothing, never a throw — and SAYS so',
+    () => {
+      createTask(cwd, { ...input, title: 'hidden' })
+      const said: { cwd: string; reason: string }[] = []
+      onStoreUnreadable((where, reason) => said.push({ cwd: where, reason }))
+      chmodSync(tasksDir(cwd), 0o000)
+      try {
+        expect(taskIdsOnDisk(cwd)).toEqual([])
+        // Same guard on the neighbour that rebuilds from it: the queue's list()
+        // is documented as never throwing and reads through here.
+        expect(listTasks(cwd)).toEqual([])
+      } finally {
+        chmodSync(tasksDir(cwd), 0o700)
+      }
+      // T1.2 re-review round 8, BLOQUANT 2: the guard above bought invariant 1
+      // (tolerant reads) by spending invariant 2 (no silent degradation). An
+      // empty answer from a store full of tasks is the single most misleading
+      // value this module can return, and both readers used to return it
+      // without a word. Literal anchor, not `toContain(storeUnlistable(...))`:
+      // asserting a message against the very function that built it proves
+      // nothing about its content.
+      expect(said).toHaveLength(1)
+      expect(said[0]?.cwd).toBe(cwd)
+      expect(said[0]?.reason).toContain('the task store of this project could not be listed')
+      expect(said[0]?.reason).toContain('EACCES')
+      expect(said[0]?.reason).toContain('no task is treated as gone')
+    },
+  )
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'one dark store is one notice, and it re-arms once it clears',
+    () => {
+      createTask(cwd, { ...input, title: 'hidden' })
+      const said: string[] = []
+      onStoreUnreadable((_where, reason) => said.push(reason))
+      chmodSync(tasksDir(cwd), 0o000)
+      try {
+        // Both readers, several times over: a store read on every listing must
+        // not turn one broken directory into a stream of identical notices.
+        taskIdsOnDisk(cwd)
+        listTasks(cwd)
+        taskIdsOnDisk(cwd)
+        expect(said).toHaveLength(1)
+      } finally {
+        chmodSync(tasksDir(cwd), 0o700)
+      }
+      // Readable again: the incident is forgotten, so a RELAPSE is said afresh
+      // rather than swallowed by a memory of the previous one.
+      expect(listTasks(cwd)).toHaveLength(1)
+      chmodSync(tasksDir(cwd), 0o000)
+      try {
+        expect(listTasks(cwd)).toEqual([])
+      } finally {
+        chmodSync(tasksDir(cwd), 0o700)
+      }
+      expect(said).toHaveLength(2)
+    },
+  )
+
+  test('a store that was never created is not a store that broke', () => {
+    const said: string[] = []
+    onStoreUnreadable((_where, reason) => said.push(reason))
+    expect(listTasks(cwd)).toEqual([])
+    expect(taskIdsOnDisk(cwd)).toEqual([])
+    expect(said).toEqual([])
+  })
+
+  // T1.2 re-review round 9: the sink path above is well covered — and the sink
+  // is what the TASK SERVER registers. Every CLI path that never starts the
+  // task server (a review, a prep, a ship) has none, and there the console is
+  // the only voice invariant 2 has left. Nothing held either of its two
+  // branches, which is how a last resort quietly stops being one.
+  test.skipIf(RUNNING_AS_ROOT)('with NO sink registered, the console is the voice', () => {
+    createTask(cwd, { ...input, title: 'hidden' })
+    const warnings: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    }
+    chmodSync(tasksDir(cwd), 0o000)
+    try {
+      expect(listTasks(cwd)).toEqual([])
+    } finally {
+      chmodSync(tasksDir(cwd), 0o700)
+      console.warn = realWarn
+    }
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('the task store of this project could not be listed')
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)('a sink that THROWS does not take the degradation with it', () => {
+    createTask(cwd, { ...input, title: 'hidden' })
+    onStoreUnreadable(() => {
+      throw new Error('listener blew up')
+    })
+    const warnings: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    }
+    chmodSync(tasksDir(cwd), 0o000)
+    try {
+      // Contained: a broken listener must not turn a tolerated read into a
+      // crash for every caller of the store.
+      expect(listTasks(cwd)).toEqual([])
+    } finally {
+      chmodSync(tasksDir(cwd), 0o700)
+      console.warn = realWarn
+    }
+    // …and not hidden either: the reason still reached a human.
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('the task store of this project could not be listed')
   })
 })

@@ -400,6 +400,14 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
     'no project registered yet — launch codesema from a git repository, or add one from the web UI',
   'workspace.resumable':
     '{n} interrupted task can be resumed — click Resume in the web UI: | {n} interrupted tasks can be resumed — click Resume in the web UI:',
+  'workspace.queueResumed':
+    '{n} queued task resumes on {project}: | {n} queued tasks resume on {project}:',
+  'workspace.maxParallelInert':
+    'note: maxParallelTasks={n} is inert — superseded by the per-project queue (one active task per repo); a machine-load cap arrives with maxConcurrentAgents',
+  'workspace.shutdownWaiting':
+    'waiting for {n} task to settle (its agent was stopped)… | waiting for {n} tasks to settle (their agents were stopped)…',
+  'workspace.shutdownGaveUp':
+    'stopped waiting for {n} task that would not settle; it was left as it stands on disk | stopped waiting for {n} tasks that would not settle; they were left as they stand on disk',
   'workspace.customAgentWarning':
     '⚠ custom agent command ({command}): no hardening applies — full environment, no read-only harness, repo-provided settings honored. Only use a command you fully trust.',
 
@@ -837,6 +845,14 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
     "aucun projet enregistré — lancez codesema depuis un dépôt git, ou ajoutez-en un depuis l'UI web",
   'workspace.resumable':
     "{n} tâche interrompue peut reprendre — cliquez Reprendre dans l'UI web : | {n} tâches interrompues peuvent reprendre — cliquez Reprendre dans l'UI web :",
+  'workspace.queueResumed':
+    '{n} tâche en file reprend sur {project} : | {n} tâches en file reprennent sur {project} :',
+  'workspace.maxParallelInert':
+    'note : maxParallelTasks={n} est inerte — remplacé par la file par projet (une tâche active par dépôt) ; un plafond de charge machine arrivera avec maxConcurrentAgents',
+  'workspace.shutdownWaiting':
+    "attente de {n} tâche le temps qu'elle se règle (son agent a été arrêté)… | attente de {n} tâches le temps qu'elles se règlent (leurs agents ont été arrêtés)…",
+  'workspace.shutdownGaveUp':
+    "arrêt de l'attente de {n} tâche qui ne se réglait pas ; elle est laissée en l'état sur le disque | arrêt de l'attente de {n} tâches qui ne se réglaient pas ; elles sont laissées en l'état sur le disque",
   'workspace.customAgentWarning':
     "⚠ commande d'agent custom ({command}) : aucun durcissement ne s'applique — environnement complet, pas de harnais lecture seule, réglages du repo honorés. À n'utiliser qu'avec une commande de confiance totale.",
 

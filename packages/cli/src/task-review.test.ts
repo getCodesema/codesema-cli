@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { Finding, ReviewRecord, TaskRecord, TaskStatus, Verdict } from './contract.js'
+import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview } from './record.js'
 import type { runSimpleFlow, SimpleOutcome } from './review.js'
 import {
@@ -81,14 +82,23 @@ type IoRig = {
   /** Status snapshot at each persist call: the last one is the final state. */
   persisted: TaskStatus[]
   texts: string[]
+  /** The shutdown's cut-off, so a test can fire it mid-review. */
+  abort: AbortController
 }
 
 function fakeIo(record: TaskRecord): IoRig {
-  const rig: IoRig = { events: [], persisted: [], texts: [], io: null as unknown as TaskTurnIo }
+  const rig: IoRig = {
+    events: [],
+    persisted: [],
+    texts: [],
+    abort: new AbortController(),
+    io: null as unknown as TaskTurnIo,
+  }
   rig.io = {
     emit: (input) => rig.events.push(input),
     persist: () => rig.persisted.push(record.status),
     text: (text) => rig.texts.push(text),
+    signal: rig.abort.signal,
   }
   return rig
 }
@@ -170,6 +180,125 @@ describe('createTaskReviewer', () => {
     expect(rig.events).toEqual([{ type: 'message', data: { text: 'no changes' } }])
   })
 
+  // T1.2 re-review round 4, MINOR 7: the signal was read before prep and after
+  // the flow, but not BETWEEN them — so a Ctrl-C landing during prep still let
+  // the flow start and spawn a review agent (two, in dual mode) purely to kill
+  // it on the next tick.
+  test('an abort during the prep stops BEFORE any review agent is spawned', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'aborted mid-prep')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'must not be called' })
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      // The shutdown lands while prep is still working.
+      prepFn: async (options) => {
+        const input = await prep(options)
+        rig.abort.abort()
+        return input
+      },
+    })(record, rig.io)
+
+    // No agent was ever spawned…
+    expect(flow.calls).toHaveLength(0)
+    // …and the task settles as interrupted, never on a verdict.
+    expect(record.status).toBe('interrupted')
+    expect(record.reason?.code).toBe('interrupted_by_user')
+    expect(rig.events.at(-1)).toEqual({
+      type: 'interrupted',
+      data: { reason: 'shutdown' },
+      reason_code: 'interrupted_by_user',
+    })
+  })
+
+  // T1.2 re-review round 9: this test USED to pass with the entry guard
+  // deleted — the post-prep checkpoint settled the task the same way, so the
+  // assertions below could not tell the two apart. What separates them is how
+  // far the reviewer got: the entry guard means prep never ran and no
+  // 'review_started' was ever emitted. Four checkpoints read the same signal
+  // for four different reasons; a test that cannot say WHICH one fired is not
+  // holding any of them.
+  test('an abort BEFORE the review even starts spawns nothing at all', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'aborted at the gate')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'must not be called' })
+    let prepCalls = 0
+    rig.abort.abort()
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      prepFn: (options) => {
+        prepCalls += 1
+        return prep(options)
+      },
+    })(record, rig.io)
+
+    expect(flow.calls).toHaveLength(0)
+    expect(record.status).toBe('interrupted')
+    // The discriminator: the gate turned it away before ANY work — no prep on
+    // a worktree, and not one event announcing a review that will not happen.
+    expect(prepCalls).toBe(0)
+    expect(rig.events.map((event) => event.type)).toEqual(['interrupted'])
+  })
+
+  // T1.2 re-review round 9: the third checkpoint. The flow came back with a
+  // perfectly formed verdict, but the agent that produced it was killed
+  // mid-run by the shutdown — a half-run is not an opinion.
+  test('an abort DURING the flow never lets its verdict through', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'aborted mid-flow')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    // Aborts while "running", then answers anyway — exactly what a killed
+    // agent whose partial output still parses looks like from here.
+    const flow = fakeSimpleFlow(() => {
+      rig.abort.abort()
+      return { ok: true, record: fakeReview('approve'), reportLines: [] }
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls).toHaveLength(1)
+    // NOT review_ok: the verdict is discarded, the shutdown is named.
+    expect(record.status).toBe('interrupted')
+    expect(record.reason?.code).toBe('interrupted_by_user')
+    expect(rig.events.map((event) => event.type)).not.toContain('review_done')
+    expect(rig.events.at(-1)?.type).toBe('interrupted')
+  })
+
+  // T1.2 re-review round 9: the fourth checkpoint, and the one whose loss is
+  // worst. A killed agent surfaces as a REJECTION here; without this guard the
+  // task lands on review_ko with reason_code 'review_blocked' — blaming the
+  // reviewer for a Ctrl-C, on a terminal status the runner's own net does not
+  // walk back.
+  test('an abort that surfaces as a THROW is the shutdown, never a blocked review', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'aborted by rejection')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = {
+      calls: 0,
+      fn: (): Promise<never> => {
+        flow.calls += 1
+        rig.abort.abort()
+        return Promise.reject(new Error('agent killed'))
+      },
+    }
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls).toBe(1)
+    expect(record.status).toBe('interrupted')
+    expect(record.reason?.code).toBe('interrupted_by_user')
+    // Not one word accusing the review: no error event, no review_blocked.
+    expect(rig.events.map((event) => event.type)).not.toContain('error')
+    expect(rig.events.some((event) => event.reason_code === 'review_blocked')).toBe(false)
+  })
+
   test('approve verdict: review_ok, archive in the MAIN repo, review_done event', async () => {
     const repo = makeRepo()
     const record = await makeTaskWithWorktree(repo, 'green task')
@@ -184,6 +313,11 @@ describe('createTaskReviewer', () => {
     expect(flow.calls[0]?.input.repo_root).toBe(record.worktree)
     expect(flow.calls[0]?.input.diff).toContain('feature.txt')
     expect(flow.calls[0]?.input.branch).toBe(record.branch)
+    // And the shutdown's cut-off travelled INTO the flow — that forwarding is
+    // what makes a Ctrl-C during a review immediate instead of a wait on the
+    // reviewer's own 15-minute budget. Asserting it on the runner's seam only
+    // proved the signal reached this module, never that it left it.
+    expect(flow.calls[0]?.signal).toBe(rig.abort.signal)
     // Archived under <main repo>/.codesema/reviews, never in the worktree.
     expect(record.review_ref).toStartWith(join(repo, '.codesema', 'reviews'))
     expect(record.review_ref?.startsWith(record.worktree)).toBe(false)
@@ -372,18 +506,23 @@ describe('createTaskReviewer', () => {
     const rig = fakeIo(record)
     const simple = fakeSimpleFlow({ ok: false, failure: 'run', message: 'wrong flow' })
     let dualCalls = 0
+    let dualSignal: AbortSignal | undefined
 
     await reviewer(repo, {
       mode: 'dual',
       runSimpleFlowFn: simple.fn,
-      runDualFlowFn: () => {
+      runDualFlowFn: (options) => {
         dualCalls++
+        dualSignal = options.signal
         return Promise.resolve({ ok: true, record: fakeReview('approve'), reportLines: [] })
       },
     })(record, rig.io)
 
     expect(simple.calls).toHaveLength(0)
     expect(dualCalls).toBe(1)
+    // The cut-off reaches THIS flow too: the two branches forward the signal
+    // separately, so proving one says nothing about the other.
+    expect(dualSignal).toBe(rig.abort.signal)
     expect(record.status).toBe('review_ok')
     expect(rig.events[0]).toMatchObject({ type: 'review_started', data: { mode: 'dual' } })
   })

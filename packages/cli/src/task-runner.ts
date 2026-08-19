@@ -1,5 +1,6 @@
-// Task runner: drives agent turns inside each task's git worktree, caps
-// concurrency (FIFO queue past the limit) and owns every status transition.
+// Task runner: drives agent turns inside each task's git worktree, admits ONE
+// task at a time per project (everything else waits in that project's
+// persisted FIFO queue, task-queue.ts) and owns every status transition.
 // The agent never commits — the runner commits the whole worktree at the end
 // of a successful turn, so the result is deterministic across providers.
 // A turn ends either in a result or in a question (no realtime channel into a
@@ -28,6 +29,7 @@ import {
 import {
   isTerminalReason,
   reasonCodeOf,
+  type ReasonCode,
   type TaskEvent,
   type TaskRecord,
   type TaskStatus,
@@ -43,6 +45,7 @@ import {
 import { fixCommandFor } from './fix.js'
 import { git, refExists, tryGit } from './git.js'
 import { reviewLanguage, t } from './i18n.js'
+import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
 import {
   CAGE_FORWARDED_ENV,
@@ -50,6 +53,7 @@ import {
   runContainerTurn,
   type RunContainerTurnOptions,
 } from './task-isolation.js'
+import { createTaskQueue, type EnqueueResult, type TaskQueueIo } from './task-queue.js'
 import {
   BranchInUseError,
   createTaskWorktree,
@@ -64,10 +68,18 @@ import {
   loadTask,
   saveTask,
   taskReason,
+  taskRecordExists,
   type AppendTaskEventInput,
 } from './tasks-store.js'
 
-/** Concurrent 'running' tasks by default; overridable via the maxParallelTasks config. */
+/**
+ * Historical default of the `maxParallelTasks` config key.
+ *
+ * INERT since T1.2: admission is decided by the project's persisted queue and
+ * its one-active-task-per-project guard (task-queue.ts), never by a slot
+ * budget. Kept — with the pool below — so the configuration key keeps a value
+ * to read while T1.3 settles the machine-load cap it is meant to become.
+ */
 export const DEFAULT_MAX_PARALLEL_TASKS = 3
 
 /** Bound for prompt/response previews embedded in journal events. */
@@ -598,7 +610,28 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   return { kind: 'done', response, sessionId, tokens, cost, ...branch }
 }
 
-export type TaskActionResult = { ok: true } | { ok: false; code: number; error: string }
+export type TaskActionResult =
+  | {
+      ok: true
+      /**
+       * Set when the gesture left the task WAITING: its 1-based place in its
+       * project's queue, so the caller renders the right thing without a
+       * round-trip. Absent means it started (or that there is no queue to be
+       * in) — same doctrine as the field on TaskRecord.
+       */
+      queue_position?: number
+    }
+  | {
+      ok: false
+      code: number
+      error: string
+      /**
+       * Names the refusal for a machine, next to (never instead of) the
+       * readable `error`. Optional: a refusal the D2 vocabulary has no word
+       * for carries its message alone.
+       */
+      reason_code?: ReasonCode
+    }
 
 /**
  * The turn a RESUME would re-run (T8), or null when there is none. A task is
@@ -636,6 +669,16 @@ export type TaskTurnIo = {
    * the previous one, not a message added to a conversation.
    */
   text: (text: string) => void
+  /**
+   * Aborted when the workspace is shutting down. The review holds the
+   * project's admission claim for its whole run, and `shutdown()` waits for
+   * that claim: without a way to CUT the review, a Ctrl-C during one waited
+   * for the review agent's own timeout (up to 15 minutes by default) with
+   * nothing on screen explaining why. The hook must pass this down to
+   * whatever it runs (the agent subprocess takes an AbortSignal) and settle
+   * the task quickly once it fires.
+   */
+  signal: AbortSignal
 }
 
 /**
@@ -648,11 +691,15 @@ export type TaskTurnIo = {
 export type TaskTurnReviewFn = (record: TaskRecord, io: TaskTurnIo) => Promise<void>
 
 /**
- * Shared concurrency budget. One pool can back several runners (the
- * multi-project workspace: one runner per repo, ONE global cap): `running`
- * holds the task ids currently occupying a slot across all of them, and
- * freeing a slot wakes every registered pump so any runner's queue may win
- * the slot.
+ * Shared concurrency budget of the pre-T1.2 workspace: one pool backed every
+ * runner and `max` capped the number of 'running' tasks across every repo.
+ *
+ * INERT since T1.2: the number of active tasks now follows from "one active
+ * task per project" (task-queue.ts), so a pool neither caps two projects
+ * against each other nor lets two tasks of the SAME project run. The type and
+ * its factory survive only as the shape the `maxParallelTasks` config key
+ * still parses into; T1.3 turns that key into the machine-load cap of D4 (or
+ * retires it), and this goes with it.
  */
 export type TaskSlotPool = {
   max: number
@@ -665,8 +712,15 @@ export function createTaskSlotPool(max: number): TaskSlotPool {
 }
 
 export type TaskRunnerOptions = {
-  /** Main repo root: the store and the worktrees live under its .codesema/. */
+  /** Main repo root: the store, the queue and the worktrees live under its .codesema/. */
   cwd: string
+  /**
+   * Identity of the project this runner drives, for the one-active-task
+   * guard. Defaults to the id `projects.ts` derives from `cwd`, which is the
+   * same thing — the option exists so the manager passes the id it already
+   * holds instead of re-hashing the path.
+   */
+  projectId?: string
   /** Raw configured agent command. */
   command: string
   /** Last-resort absolute ceiling of a turn; the watchdog is what detects a dead one. */
@@ -679,9 +733,9 @@ export type TaskRunnerOptions = {
    * project — per-project config resolution is T1.4's job.
    */
   watchdog?: WatchdogBudgets | undefined
-  /** Cap of this runner's own pool; ignored when `slots` is provided. */
+  /** INERT since T1.2 (see DEFAULT_MAX_PARALLEL_TASKS): admission is per project. */
   maxParallel?: number
-  /** Shared slot pool (global cap across runners); defaults to a private pool of maxParallel. */
+  /** INERT since T1.2 (see TaskSlotPool): a pool no longer governs admission. */
   slots?: TaskSlotPool
   /** Broadcast hooks, called AFTER the corresponding store write. */
   onTask?: (record: TaskRecord) => void
@@ -705,16 +759,47 @@ export type TaskRunnerOptions = {
   /** Test seam for the repo's worktree lock; the default takes the real one. */
   worktreeLockFn?: WorktreeLockFn | undefined
   /**
+   * The project's queue changed shape (a task joined it, left it, or started).
+   * Everyone still waiting may have moved up a rank, and nothing else would
+   * tell them: the manager re-broadcasts their records with a fresh
+   * queue_position. Called AFTER the queue file was written.
+   */
+  onQueueChanged?: () => void
+  /**
    * Automatic end-of-turn review (T4). When set, a successful 'done' turn
    * parks the task on 'reviewing' (post-commit) and hands it to this hook,
    * which owns the 'review_ok'/'review_ko' transition; when absent, the turn
    * lands directly on 'waiting_for_you'. Question turns never trigger it.
    */
   onTurnDone?: TaskTurnReviewFn
+  /**
+   * The drain is taking a moment: called ONCE, with the ids still settling, so
+   * the terminal can say what a Ctrl-C is waiting for instead of looking
+   * frozen. Never called when everything settles inside the grace.
+   */
+  onDrainWait?: (taskIds: readonly string[]) => void
+  /** Test seam for that grace; production uses DRAIN_NOTICE_MS. */
+  drainNoticeMs?: number
+  /**
+   * The drain gave up waiting, with the ids still unsettled. The process is
+   * about to exit regardless: this exists so it never does so in silence.
+   */
+  onDrainTimeout?: (taskIds: readonly string[]) => void
+  /** Test seam for the hard ceiling; production uses DRAIN_TIMEOUT_MS. */
+  drainTimeoutMs?: number
+  /**
+   * queue.json went unusable while the workspace was RUNNING (not at boot),
+   * with the ids the REBUILT queue holds. Reporting only: the queue rebuilds
+   * itself on the read and the next write persists it, so a handler that
+   * wrote here would be undone by the very operation that called it.
+   */
+  onQueueDegraded?: (reason: string, ids: readonly string[]) => void
+  /** Filesystem seam of the persisted queue (§ 0.4); the default drives node:fs. */
+  queueIo?: TaskQueueIo
 }
 
 export type TaskRunner = {
-  /** Enqueues a 'queued' task; runs it now if a slot is free. */
+  /** Enqueues a 'queued' task; runs it now when the project has no active task. */
   start: (task: TaskRecord) => TaskActionResult
   /** Answers a 'waiting_for_you' task: appends a turn and schedules it. */
   reply: (taskId: string, message: string) => TaskActionResult
@@ -746,10 +831,14 @@ export type TaskRunner = {
   isAbandoning: (taskId: string) => boolean
   /**
    * Graceful process exit: aborts every running agent, persists 'interrupted'
-   * with an event {reason:'shutdown'} (queued tasks included — a 'queued'
-   * record with no live process would be unstartable at next boot), keeps the
-   * worktrees, and resolves once every in-flight turn AND every in-flight
+   * with an event {reason:'shutdown'} for the turns that were IN FLIGHT, keeps
+   * the worktrees, and resolves once every one of them AND every in-flight
    * abandon has settled on disk.
+   *
+   * Queued tasks stay 'queued' (T1.2): the queue is persisted in
+   * <repo>/.codesema/queue.json, so the next boot re-hydrates it and starts
+   * the head. Sacrificing them to 'interrupted' was only ever right while the
+   * queue died with the process.
    */
   shutdown: () => Promise<void>
   runningCount: () => number
@@ -854,15 +943,82 @@ function composeTurnPrompt(record: TaskRecord, command: string): string {
   )
 }
 
+/**
+ * Reason a task carries while it waits behind another one of the same
+ * project. The state is normal, not a failure — but a record that just sits on
+ * 'queued' says nothing about WHY, so the D2 vocabulary names it: the resource
+ * it waits for (its project's single active slot) is busy, and waiting is
+ * exactly what fixes that. Dropped the moment the task launches.
+ */
+const QUEUED_BEHIND_DETAIL = 'another task of this project is already active'
+
+/**
+ * Detail carried by a task whose end-of-turn review a shutdown cut short.
+ * The SINGLE source: the reviewer settles that case itself and the runner
+ * covers the reviewer that does not, so the same sentence lands in the same
+ * field from two files — it must not be written twice.
+ */
+export const REVIEW_CUT_DETAIL = 'the end-of-turn review was stopped by the shutdown'
+
+/**
+ * How long a drain stays silent before it says what it is waiting for. Short
+ * enough that a Ctrl-C never looks frozen, long enough that the ordinary case
+ * — everything settles at once — says nothing at all.
+ */
+export const DRAIN_NOTICE_MS = 1_000
+
+/**
+ * Hard ceiling on a graceful shutdown. Generous enough for an agent to die on
+ * its SIGTERM and its turn to be persisted (well under a second in practice),
+ * and short enough that a Ctrl-C is always over before a human reaches for the
+ * second one. What it protects against is the part of the chain that takes no
+ * signal — an auto-ship pushing to a remote that is not answering.
+ */
+export const DRAIN_TIMEOUT_MS = 30_000
+
+/**
+ * Broadcast hooks are OBSERVERS: they are given what happened, they never get
+ * to decide what happens. A subscriber that throws (an SSE listener, a bug
+ * downstream) used to travel back up into persist() — and therefore into the
+ * window where the runner holds the project's admission claim, which it would
+ * then leak for good. Every hook call goes through here instead.
+ */
+function notify(fn: (() => void) | undefined): void {
+  try {
+    fn?.()
+  } catch (err) {
+    // Contained, never hidden. The runner's own state must not depend on who
+    // is listening — but a subscriber crashing means frames are being lost,
+    // and a lost frame that nobody ever hears about is exactly the silent
+    // degradation invariant 2 forbids.
+    console.warn(`codesema: a task listener threw and was skipped: ${preview(errorMessage(err))}`)
+  }
+}
+
 export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
-  const pool = opts.slots ?? createTaskSlotPool(opts.maxParallel ?? DEFAULT_MAX_PARALLEL_TASKS)
   const active = new Map<string, AbortController>()
+  /**
+   * End-of-turn reviews in flight. Separate from `active` on purpose: the
+   * task is no longer interruptible as a running TURN (interrupt() must keep
+   * 409-ing on 'reviewing'), but a shutdown still has to be able to cut the
+   * review agent short — it holds the project's claim, and shutdown() waits.
+   */
+  const reviews = new Map<string, AbortController>()
   /** Turn promises of active tasks: shutdown() awaits them so every abort is persisted. */
   const inflight = new Map<string, Promise<void>>()
   /** Once shutting down: aborts get the {reason:'shutdown'} event, pump() stops launching. */
   let draining = false
-  /** Task ids waiting for a slot, FIFO. Their records stay 'queued' on disk. */
-  const queue: string[] = []
+  /**
+   * The project's queue, PERSISTED in <cwd>/.codesema/queue.json, and the
+   * guard that admits one task at a time for it. What waits here survives the
+   * process (T1.2/D1); the in-memory `string[]` it replaces did not.
+   */
+  const queue = createTaskQueue({
+    cwd: opts.cwd,
+    projectId: opts.projectId ?? projectIdFor(opts.cwd),
+    ...(opts.onQueueDegraded ? { onDegraded: opts.onQueueDegraded } : {}),
+    ...(opts.queueIo ? { io: opts.queueIo } : {}),
+  })
   /** Entry time into waiting_for_you; updated_at is the cross-restart fallback. */
   const waitingSince = new Map<string, number>()
 
@@ -871,7 +1027,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // activity sort honest on every transition.
     record.updated_at = new Date().toISOString()
     saveTask(opts.cwd, record)
-    opts.onTask?.(record)
+    // A queued record is broadcast WITH its rank: queue_position is derived at
+    // read time and never persisted (saveTask above never sees it), so this is
+    // the only place a live subscriber can learn it.
+    const position = record.status === 'queued' ? queue.position(record.id) : null
+    const shown = position === null ? record : { ...record, queue_position: position }
+    notify(() => opts.onTask?.(shown))
   }
 
   /**
@@ -891,7 +1052,16 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 
   const emit = (id: string, input: AppendTaskEventInput): void => {
     const event = appendTaskEvent(opts.cwd, id, input)
-    opts.onEvent?.(id, event)
+    notify(() => opts.onEvent?.(id, event))
+  }
+
+  /**
+   * The queue changed shape: everyone still waiting may have moved up. The
+   * manager re-broadcasts their records with a fresh rank — nothing else would
+   * ever tell a card in second place that it is now first.
+   */
+  const queueChanged = (): void => {
+    notify(() => opts.onQueueChanged?.())
   }
 
   const accrueWait = (record: TaskRecord): void => {
@@ -976,12 +1146,25 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     accrueCost(record, turn, attempt?.cost ?? null, (d) => emit(record.id, costEvent(d)))
   }
 
-  const finishTurn = (
+  /**
+   * Settles a finished turn. ASYNC on purpose: when an end-of-turn review
+   * follows, this only resolves once that review (and the auto-ship it may
+   * chain) has settled — the project's admission claim is released on THIS
+   * promise, so "one active task per project" covers the whole active window
+   * (isActiveTaskStatus counts 'reviewing' as active too) and not just the
+   * agent turn. Without it the next task of the same repo started while the
+   * previous one still had a review agent in its worktree.
+   *
+   * The containerized checks stay fire-and-forget on purpose: they run beside
+   * the review, touch no task state, and their share of the machine budget is
+   * T3.1's subject, not this claim's.
+   */
+  const finishTurn = async (
     record: TaskRecord,
     outcome: TaskTurnOutcome,
     startedAt: number,
     attempt?: TurnAttempt,
-  ): void => {
+  ): Promise<void> => {
     record.work_ms += Date.now() - startedAt
     adoptBranchProposal(record, outcome)
     record.agent_session_id = outcome.sessionId ?? record.agent_session_id
@@ -1001,23 +1184,55 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     if (outcome.kind === 'done') {
       commitTurn(record)
       if (opts.onTurnDone) {
-        // T4: the automatic review owns the final transition. The runner slot
-        // frees when this function returns (the review agent runs outside the
-        // maxParallel cap — only 'running' tasks count against it).
+        // T4: the automatic review owns the final transition.
         record.status = 'reviewing'
         persist(record)
+        // The review is abortable like the agent turn was. It holds the
+        // project's claim, and shutdown() waits on that claim: a review with
+        // no cut-off turns a Ctrl-C into a 15-minute silence.
+        const controller = new AbortController()
+        if (draining) {
+          // The shutdown's abort loop has already run: a controller created
+          // after it would never be aborted by anyone, and the task would sit
+          // on 'reviewing' — a status with no way out inside this session.
+          controller.abort()
+        }
+        reviews.set(record.id, controller)
         const io: TaskTurnIo = {
           emit: (input) => emit(record.id, input),
           persist: () => persist(record),
-          text: (text) => opts.onText?.(record.id, text),
+          text: (text) => notify(() => opts.onText?.(record.id, text)),
+          signal: controller.signal,
         }
-        void opts.onTurnDone(record, io).catch((err: unknown) => {
+        try {
+          await opts.onTurnDone(record, io)
+        } catch (err) {
           // The reviewer never rejects by contract; a bug there must not
           // strand the task on 'reviewing' (unreplyable, uninterruptible).
           emit(record.id, { type: 'error', data: { message: preview(errorMessage(err)) } })
           record.status = 'review_ko'
           persist(record)
-        })
+        } finally {
+          reviews.delete(record.id)
+        }
+        // A review the shutdown cut short leaves the task where the shutdown
+        // leaves every interrupted turn: 'interrupted', replyable, its work
+        // committed and its worktree kept. Belt and braces — the reviewer
+        // settles this itself — for the case where it returned on some other
+        // path while the signal was already up.
+        if (controller.signal.aborted && record.status === 'reviewing') {
+          // Journaled like every other interruption: a status that changes
+          // without a line in events.jsonl is exactly the silence invariant 2
+          // forbids, and this was the only transition missing one.
+          emit(record.id, {
+            type: 'interrupted',
+            data: { reason: 'shutdown' },
+            reason_code: 'interrupted_by_user',
+          })
+          record.status = 'interrupted'
+          record.reason = taskReason('interrupted_by_user', REVIEW_CUT_DETAIL)
+          persist(record)
+        }
         return
       }
     }
@@ -1358,21 +1573,175 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     anchorConversation(record, wt, { first, fresh: stranded })
   }
 
+  /**
+   * What one admission attempt did.
+   * - 'started': the turn is in flight and owns the claim.
+   * - 'busy': the project already has an active task; nothing moved.
+   * - 'blocked': the turn could NOT be started (a worktree that will not
+   *   materialize). The task keeps its place in the queue and its 'queued'
+   *   status — a turn that never started is not a failed turn — and the reason
+   *   is in its journal. It stops being a CANDIDATE for this session (see
+   *   `blocked`) so it never holds the line up, and a human gesture or the
+   *   next boot puts it back in the running.
+   */
+  type LaunchOutcome = 'started' | 'busy' | 'blocked'
+
+  /**
+   * Ids whose worktree refused to materialize in THIS session, mapped to the
+   * readable failure. They keep their place in queue.json — the human may
+   * still fix the branch and retry — but `pump` STEPS OVER them: a head that
+   * cannot start must never starve the tasks behind it. Nothing in this
+   * process retries a blocked id on its own (no timer, and every pump is a
+   * gesture), so retrying it on every pump would only re-journal the same
+   * error forever.
+   *
+   * An id leaves this set on exactly three things, and it is worth being
+   * precise because the human-facing gestures are NOT interchangeable here:
+   *  - `start()` on it again — the one retry gesture that reaches a task still
+   *    sitting in the queue, and the reason `start` lets a blocked id through
+   *    its "already started" guard;
+   *  - it leaving the line at all (Stop, Abandon — dropFromQueue), after which
+   *    Resume goes through schedule() like any other fresh scheduling;
+   *  - the process restarting.
+   * `reply()` and `resume()` do NOT reach it: both refuse a task that is still
+   * queued, which is the pre-existing rule and stays one.
+   */
+  const blocked = new Map<string, string>()
+
+  /** A human gesture (or a departure) puts an id back in the running. */
+  const unblock = (taskId: string): void => {
+    blocked.delete(taskId)
+  }
+
+  /**
+   * Re-entrance guard. `releaseSlot` pumps, and a launch that fails releases
+   * the claim, so a naive pump would re-enter itself through its own error
+   * path. One pump at a time; the nested call is a no-op and the outer loop
+   * stays in charge.
+   */
+  let pumping = false
+
+  /**
+   * A queue write that is allowed to fail without taking the gesture down with
+   * it. The queue refuses to write in one specific case on purpose — an
+   * unusable file whose bytes it could not copy aside — and `remove` is called
+   * from Stop, Abandon and the sweep, none of which should turn a degraded
+   * queue file into a 500. The refusal is reported, not swallowed.
+   */
+  const tryQueueWrite = <T>(what: () => T, fallback: T): T => {
+    try {
+      return what()
+    } catch (err) {
+      notify(() => opts.onQueueDegraded?.(preview(errorMessage(err)), []))
+      return fallback
+    }
+  }
+
+  /**
+   * The first entry of the line this session can actually try: stale entries
+   * are swept out on the way, and ids already known not to materialize are
+   * STEPPED OVER rather than retried — they keep their rank, they just stop
+   * being the reason nobody else runs.
+   */
+  const nextRunnable = (): TaskRecord | null => {
+    // Swept in ONE batch at the end: dropping ids one by one re-read and
+    // rewrote the whole file per id, synchronously, on the loop that also
+    // serves HTTP — and fired a queue-changed broadcast each time, so the
+    // server re-read records and re-sent frames per removal.
+    const stale: string[] = []
+    let runnable: TaskRecord | null = null
+    for (const entry of queue.list()) {
+      if (blocked.has(entry.id)) {
+        continue
+      }
+      const record = loadTask(opts.cwd, entry.id)
+      if (!record) {
+        // null means BOTH "no such task" and "could not read it just now"
+        // (a burst of open descriptors, an EACCES, a half-written file). Only
+        // the first justifies taking an id out of the line; the second is
+        // transient, and evicting on it silently costs a valid task its rank.
+        if (!taskRecordExists(opts.cwd, entry.id)) {
+          stale.push(entry.id)
+        }
+        continue
+      }
+      if (record.status !== 'queued') {
+        // No longer waiting: it has no business making anyone queue behind it
+        // (boot reconciliation does the same on a cold start).
+        stale.push(entry.id)
+        continue
+      }
+      runnable = record
+      break
+    }
+    if (tryQueueWrite(() => queue.removeMany(stale), 0) > 0) {
+      queueChanged()
+    }
+    return runnable
+  }
+
+  /**
+   * Starts the best candidate of the queue while the project has no active
+   * task. Ends on the first of: a drain, a queue with nothing runnable left,
+   * or a claim already taken. A candidate that cannot start is recorded as
+   * blocked and the loop moves on to the next one, so one unmaterializable
+   * task costs the project one attempt — never its whole line.
+   */
   const pump = (): void => {
     // Nothing new launches during a drain (draining cannot flip mid-loop:
     // the whole pump is synchronous).
-    if (draining) {
+    if (draining || pumping) {
       return
     }
-    while (pool.running.size < pool.max && queue.length > 0) {
-      const id = queue.shift()
-      const record = id ? loadTask(opts.cwd, id) : null
-      if (record && record.status === 'queued') {
-        launch(record)
+    pumping = true
+    try {
+      while (queue.activeTask() === null) {
+        const record = nextRunnable()
+        if (!record) {
+          return
+        }
+        // 'busy' means somebody else took the claim in between: stop. 'blocked'
+        // put this id in `blocked`, so the next lap picks a different one and
+        // the loop always makes progress.
+        if (launch(record) === 'busy') {
+          return
+        }
       }
+    } finally {
+      pumping = false
     }
   }
-  pool.pumps.add(pump)
+
+  /** The project's single active slot frees: the head of the queue may start. */
+  const releaseSlot = (id: string): void => {
+    queue.releaseActive(id)
+    pump()
+  }
+
+  /**
+   * A human gesture takes a task out of the line for good (Stop, Abandon). It
+   * leaves the queue AND, if it happened to be the one holding the project's
+   * admission claim, it gives that back: a claim outliving the task it was
+   * taken for would freeze the project until the next boot. Frees whoever is
+   * next, in the same breath.
+   */
+  const dropFromQueue = (taskId: string): void => {
+    // It is leaving the line: nothing left to step over, and a task id created
+    // again later must not inherit this session's verdict.
+    unblock(taskId)
+    const wasQueued = tryQueueWrite(() => queue.remove(taskId), false)
+    const wasActive = queue.activeTask() === taskId
+    if (wasActive) {
+      queue.releaseActive(taskId)
+    }
+    if (wasQueued || wasActive) {
+      queueChanged()
+      // Either the slot just came back, or the head of the line did: both mean
+      // somebody behind may go now. (A no-op when the project is still busy —
+      // pump checks the claim first.)
+      pump()
+    }
+  }
 
   /**
    * Tasks whose abandon is in flight. It has to exist because abandon() now
@@ -1392,14 +1761,6 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
    */
   const abandonsInFlight = new Set<Promise<void>>()
 
-  /** Slot released: wake every runner sharing the pool, any queue may win it. */
-  const releaseSlot = (id: string): void => {
-    pool.running.delete(id)
-    for (const wake of pool.pumps) {
-      wake()
-    }
-  }
-
   /** The turn itself, on a worktree that already exists. Settles its own outcome. */
   const runTurn = (record: TaskRecord, controller: AbortController): Promise<void> => {
     record.status = 'running'
@@ -1415,101 +1776,278 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // had already spent if it dies — and the marker that keeps that figure
     // from being folded twice when both exit paths run.
     const attempt: TurnAttempt = { cost: null, folded: false }
-    return runTaskTurn({
-      cwd: record.worktree,
-      task: record,
-      prompt: composeTurnPrompt(record, opts.command),
-      command: opts.command,
-      timeoutMs: opts.timeoutMs,
-      ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
-      onHeartbeat: () => beat(record),
-      signal: controller.signal,
-      onEvent: (event) => emit(record.id, event),
-      onText: (text, seq) => opts.onText?.(record.id, text, seq),
-      onTokens: (total) => opts.onTokens?.(record.id, total),
-      onCost: (cost) => {
-        attempt.cost = cost
-      },
-      ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
-      ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
-      ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
-      ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
-    })
-      .then((outcome) => finishTurn(record, outcome, startedAt, attempt))
-      .catch((err: unknown) =>
-        failTurn(record, err, startedAt, { aborted: controller.signal.aborted, attempt }),
-      )
+    return (
+      runTaskTurn({
+        cwd: record.worktree,
+        task: record,
+        prompt: composeTurnPrompt(record, opts.command),
+        command: opts.command,
+        timeoutMs: opts.timeoutMs,
+        ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
+        onHeartbeat: () => beat(record),
+        signal: controller.signal,
+        onEvent: (event) => emit(record.id, event),
+        onText: (text, seq) => notify(() => opts.onText?.(record.id, text, seq)),
+        onTokens: (total) => notify(() => opts.onTokens?.(record.id, total)),
+        onCost: (cost) => {
+          attempt.cost = cost
+        },
+        ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
+        ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
+        ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
+        ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
+      })
+        .then((outcome) => {
+          // The agent process is done: the task stops being interruptible as a
+          // running turn here, even though the review that follows still holds
+          // the project's claim.
+          active.delete(record.id)
+          return finishTurn(record, outcome, startedAt, attempt)
+        })
+        // CHAINED, not the two-argument form: the turn's own rejection lands
+        // here AND so does a finishTurn that folded the attempt's cost and then
+        // threw on its way out (a commit, an emit, a persist). That second case
+        // is exactly why the fold carries a marker — the same attempt would
+        // otherwise be counted twice.
+        .catch((err: unknown) => {
+          const aborted = controller.signal.aborted
+          active.delete(record.id)
+          failTurn(record, err, startedAt, { aborted, attempt })
+        })
+        .catch((err: unknown) => {
+          // failTurn never rejects by contract; a bug in it must not strand the
+          // claim, so it lands here and the finally of the launch chain frees it
+          // anyway.
+          emit(record.id, { type: 'error', data: { message: preview(errorMessage(err)) } })
+        })
+    )
   }
 
-  const launch = (record: TaskRecord): void => {
+  const launch = (record: TaskRecord): LaunchOutcome => {
+    // Claimed BEFORE any await — the very property the slot reservation
+    // carried: two concurrent admissions on this project must not interleave.
+    // A refusal means another task of the project is already active; the head
+    // stays where it is and waits for that one to release.
+    //
+    // T1.3 INSERTION POINT: the machine-load cap (D4) belongs on the next line,
+    // between this claim and the dequeue below. The entry stays in queue.json
+    // until the turn has really started, so a task held back by the machine cap
+    // is still visibly IN its project's queue — 'waiting for the project' and
+    // 'waiting for the machine' stay tellable apart, which they would not be if
+    // the dequeue happened at claim time.
+    if (!queue.claimActive(record.id)) {
+      return 'busy'
+    }
+    // Set only once the turn actually owns the claim through its promise chain;
+    // until then the finally below frees it, whatever went wrong in between.
+    let handedOver = false
     const controller = new AbortController()
-    // Reserved before any await: a concurrent start()/pump() — on this runner
-    // or on another one sharing the pool — must see the slot taken.
-    active.set(record.id, controller)
-    pool.running.add(record.id)
-    // Materialization waits for the repo's worktree lock, so it is async; the
-    // whole launch is therefore a promise, tracked in `inflight` from its first
-    // tick so shutdown() cannot resolve while a task is still being set up.
-    //
-    // FOUR places in this codebase hold a task record across an await before
-    // writing it back. Each needs an argument, and here is the whole list so
-    // the next one added can be checked against it:
-    //
-    // 1. abandon() — re-READS after the await. It is the only one that must,
-    //    because a ship can legitimately settle inside its window.
-    // 2. launch(), this chain — valid by EXCLUSION: `active` holds this id
-    //    from before the first await (set above, deleted only after the turn
-    //    has settled on disk), so start/reply/resume/interrupt/abandon all
-    //    409, and ship one layer up only accepts 'review_ok'/'review_ko' —
-    //    statuses a task in `active` cannot be in.
-    // 3. ship() in task-server.ts — valid by exclusion too: `ctx.shipping`
-    //    holds the id across the push, and reply/resume/abandon consult it.
-    // 4. The reviewer's captured record (task-review.ts) — valid by exclusion:
-    //    the task sits on 'reviewing' for the whole flow, a status every
-    //    action refuses.
-    //
-    // Exclusion is a real argument, but only while the guard that provides it
-    // exists: whoever weakens one of those guards owns this comment too.
-    const turn = ensureWorktree(record, controller.signal)
-      .then(() => {
-        if (controller.signal.aborted) {
-          // Interrupted while the worktree was still materializing: the turn
-          // never starts, and the task settles exactly as an aborted one.
-          failTurn(record, new Error(t('agent.interrupted')), Date.now(), { aborted: true })
-          return
-        }
-        return runTurn(record, controller)
-      })
-      // Only reachable from ensureWorktree — runTurn settles its own failures.
-      // The signal matters as much here as it does inside a turn: a human who
-      // interrupts while the worktree is still queueing for the repo lock has
-      // interrupted the task, not broken it — and 'failed' has no resume path.
-      .catch((err: unknown) =>
-        failTurn(record, err, Date.now(), { aborted: controller.signal.aborted }),
-      )
-      .finally(() => {
+    try {
+      active.set(record.id, controller)
+      // Materialization waits for the repo's worktree lock, so it is async; the
+      // whole launch is therefore a promise, tracked in `inflight` from its
+      // first tick so shutdown() cannot resolve while a task is still being set
+      // up. It is also why this function answers 'started' as soon as the chain
+      // owns the claim: whether the worktree can be had is no longer knowable
+      // synchronously, so a materialization that fails releases the claim and
+      // re-pumps instead of reporting 'blocked' to the caller.
+      //
+      // FOUR places in this codebase hold a task record across an await before
+      // writing it back. Each needs an argument, and here is the whole list so
+      // the next one added can be checked against it:
+      //
+      // 1. abandon() — re-READS after the await. It is the only one that must,
+      //    because a ship can legitimately settle inside its window.
+      // 2. launch(), this chain — valid by EXCLUSION: `active` holds this id
+      //    from before the first await (set above, deleted only after the turn
+      //    has settled on disk), so start/reply/resume/interrupt/abandon all
+      //    409, and ship one layer up only accepts 'review_ok'/'review_ko' —
+      //    statuses a task in `active` cannot be in.
+      // 3. ship() in task-server.ts — valid by exclusion too: `ctx.shipping`
+      //    holds the id across the push, and reply/resume/abandon consult it.
+      // 4. The reviewer's captured record (task-review.ts) — valid by exclusion:
+      //    the task sits on 'reviewing' for the whole flow, a status every
+      //    action refuses.
+      //
+      // Exclusion is a real argument, but only while the guard that provides it
+      // exists: whoever weakens one of those guards owns this comment too.
+      const promise = ensureWorktree(record, controller.signal)
+        .then(() => {
+          // Out of the line BEFORE the record says 'running'. The other order
+          // left a window where a failing queue write (read-only .codesema,
+          // ENOSPC) stranded a record on 'running' with no turn in flight:
+          // neither interruptible nor resumable, and a lie on the board.
+          // Failing here costs nothing — the record is untouched, the entry is
+          // still in the file, and the catch below is honest when it says the
+          // turn never started.
+          //
+          // T1.3 INSERTION POINT: the machine-load cap (D4) goes between the
+          // claim above and this dequeue, so a task held back by the machine is
+          // still visibly IN its project's queue — 'waiting for the project'
+          // and 'waiting for the machine' stay tellable apart.
+          queue.remove(record.id)
+          if (controller.signal.aborted) {
+            // Interrupted while the worktree was still materializing: the turn
+            // never starts, and the task settles exactly as an aborted one.
+            queueChanged()
+            failTurn(record, new Error(t('agent.interrupted')), Date.now(), { aborted: true })
+            return
+          }
+          const turn = record.turns.at(-1)
+          if (turn) {
+            // The turn STARTS now, not when the record was created or the reply
+            // typed: a task that waited two days in the queue must not render
+            // as "running for two days" the second it gets its slot.
+            turn.started_at = new Date().toISOString()
+          }
+          // It started: whatever went wrong last time is not a fact about it
+          // any more (this also covers the id a human retried through
+          // schedule()).
+          unblock(record.id)
+          const running = runTurn(record, controller)
+          queueChanged()
+          return running
+        })
+        .catch((err: unknown) => {
+          // Only reachable from the materialization — runTurn settles its own
+          // failures. Two outcomes, and what tells them apart is whether the
+          // failure NAMES itself:
+          //  - an abort, or a degradation carrying a D2 code (the repo's
+          //    worktree lock giving up says `resource_busy`), settles the turn
+          //    through failTurn, which puts the task on the status that code's
+          //    terminality calls for — that is what makes a lock timeout
+          //    'interrupted' and resumable instead of a dead end;
+          //  - anything else (a base branch that no longer exists) means the
+          //    turn NEVER started: the task keeps its place in the line and its
+          //    'queued' status, stops being a candidate for this session so it
+          //    never starves the tasks behind it, and a human gesture (reply,
+          //    resume, Stop, Abandon) or the next boot revives it.
+          const aborted = controller.signal.aborted
+          if (aborted || reasonCodeOf(err) !== null) {
+            failTurn(record, err, Date.now(), { aborted })
+            return
+          }
+          const message = preview(errorMessage(err))
+          // Journaled ONCE per id: every pump used to re-append the same line,
+          // so a permanently blocked task grew events.jsonl without bound.
+          if (!blocked.has(record.id)) {
+            emit(record.id, { type: 'error', data: { message }, reason_code: 'agent_error' })
+          }
+          blocked.set(record.id, message)
+          // The verdict has to reach the RECORD, not just the journal and a Map
+          // in memory. The boot pump comes through here WITHOUT going through
+          // schedule(), so a task blocked at boot used to keep whatever reason
+          // it was carrying from the previous session — typically "another task
+          // of this project is already active", said while nothing at all was
+          // running, which then also armed the UI's "N conversations ahead"
+          // hint.
+          record.reason = taskReason('agent_error', message)
+          persist(record)
+        })
+        .finally(() => {
+          active.delete(record.id)
+          inflight.delete(record.id)
+          releaseSlot(record.id)
+        })
+      // Tracked so shutdown() awaits the persistence of every aborted turn AND
+      // of the review that follows a finished one.
+      inflight.set(record.id, promise)
+      handedOver = true
+      return 'started'
+    } finally {
+      if (!handedOver) {
+        // Hermetic: the claim is released on EVERY path that did not hand it
+        // to a turn promise. Leaking it would freeze the project for good —
+        // nothing else in the process would ever free it again.
         active.delete(record.id)
-        inflight.delete(record.id)
-        releaseSlot(record.id)
-      })
-    // Tracked so shutdown() can await the persistence of every aborted turn.
-    inflight.set(record.id, turn)
-  }
-
-  const schedule = (record: TaskRecord): void => {
-    if (!draining && pool.running.size < pool.max) {
-      launch(record)
-    } else {
-      queue.push(record.id)
+        queue.releaseActive(record.id)
+      }
     }
   }
+
+  /**
+   * Everything that wants a turn goes through the persisted queue — start,
+   * reply and resume alike. The pump right after either launches it (the
+   * project was idle) or leaves it waiting, in which case the record says
+   * WHY it waits rather than sitting on a mute 'queued'.
+   *
+   * Refuses, named, when the queue will not take the task: a queue that cannot
+   * remember it is a task nothing would ever start.
+   */
+  const schedule = (record: TaskRecord): TaskActionResult => {
+    // A human asked for this turn: whatever this id failed at earlier in the
+    // session, it gets a fresh attempt (and its journal a fresh line).
+    unblock(record.id)
+    let enqueued: EnqueueResult
+    try {
+      enqueued = queue.enqueue(record.id)
+    } catch (err) {
+      enqueued = { ok: false, reason: errorMessage(err) }
+    }
+    if (!enqueued.ok) {
+      emit(record.id, {
+        type: 'error',
+        data: { message: preview(enqueued.reason) },
+        reason_code: 'resource_busy',
+      })
+      record.reason = taskReason('resource_busy', enqueued.reason)
+      persist(record)
+      return { ok: false, code: 503, error: enqueued.reason, reason_code: 'resource_busy' }
+    }
+    queueChanged()
+    pump()
+    // Admission is read off the CLAIM, never off the queue file. Materializing
+    // a worktree waits for the repo's worktree lock, so it is async and the
+    // entry only leaves queue.json once that worktree is there: a task holding
+    // the claim HAS started, whatever its entry still says for another tick.
+    if (queue.activeTask() === record.id) {
+      return { ok: true }
+    }
+    const position = queue.position(record.id)
+    if (position === null) {
+      return { ok: true }
+    }
+    // Still waiting — but `reason` is the machine-readable surface T1.1 built,
+    // and it must say the TRUE cause. Writing "another task is already active"
+    // whenever the position was 1 was a lie precisely in the case that hurts:
+    // nothing running, the task simply could not materialize.
+    if (queue.activeTask() !== null) {
+      record.reason = taskReason('resource_busy', QUEUED_BEHIND_DETAIL)
+      persist(record)
+    } else if (!blocked.has(record.id)) {
+      // Waiting for something this runner has no name for (a drain in
+      // progress, a task ahead of it that a gesture will revive). Saying
+      // nothing beats guessing. When it IS blocked, launch() has already
+      // settled the record with the real failure — on every path, boot
+      // included — so there is nothing to add here.
+      delete record.reason
+      persist(record)
+    }
+    return { ok: true, queue_position: position }
+  }
+
+  // A queue this project's previous session left behind starts as soon as a
+  // runner exists for that project — nothing else would ever pick it up, and
+  // its tasks never got a turn to begin with. WHEN that runner is built is the
+  // manager's call, and deliberately not at boot: `TaskManager.startPending()`
+  // is an explicit step the workspace triggers only once the HTTP server
+  // listens and the shutdown handlers are installed. An 'interrupted' task is
+  // a different story and still never restarts on its own (T8) — it is not in
+  // this file.
+  pump()
 
   return {
     start(task) {
       if (draining) {
         return { ok: false, code: 409, error: 'shutting down' }
       }
-      if (active.has(task.id) || queue.includes(task.id)) {
+      // A task this session set ASIDE (its worktree would not materialize) is
+      // still in the line and still 'queued', so the plain "already started"
+      // refusal would have been the only answer a human ever got — and there
+      // would be no gesture at all to try it again. Starting it once more IS
+      // that gesture: the enqueue is idempotent (same rank), schedule() clears
+      // the session's verdict, and the pump gives it a real second chance.
+      if (active.has(task.id) || (queue.position(task.id) !== null && !blocked.has(task.id))) {
         return { ok: false, code: 409, error: 'task already started' }
       }
       // Fresh copy from disk: never run on a possibly stale caller record.
@@ -1523,8 +2061,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       if (abandoning.has(task.id)) {
         return { ok: false, code: 409, error: 'task is being abandoned' }
       }
-      schedule(record)
-      return { ok: true }
+      return schedule(record)
     },
 
     reply(taskId, message) {
@@ -1535,7 +2072,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       if (!text) {
         return { ok: false, code: 400, error: 'empty message' }
       }
-      if (active.has(taskId) || queue.includes(taskId)) {
+      if (active.has(taskId)) {
         return { ok: false, code: 409, error: 'task is running' }
       }
       // Its worktree is being deleted right now: starting a turn on it would
@@ -1543,6 +2080,11 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       // would then overwrite whatever that turn recorded.
       if (abandoning.has(taskId)) {
         return { ok: false, code: 409, error: 'task is being abandoned' }
+      }
+      if (queue.position(taskId) !== null) {
+        // Waiting its turn is not running: a task that never started must not
+        // be refused with a sentence claiming it did.
+        return { ok: false, code: 409, error: 'task is queued' }
       }
       const record = loadTask(opts.cwd, taskId)
       if (!record) {
@@ -1580,19 +2122,23 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       // shows up as queued; launch() flips it to 'running' when its turn comes.
       record.status = 'queued'
       persist(record)
-      schedule(record)
-      return { ok: true }
+      return schedule(record)
     },
 
     resume(taskId) {
       if (draining) {
         return { ok: false, code: 409, error: 'shutting down' }
       }
-      if (active.has(taskId) || queue.includes(taskId)) {
+      if (active.has(taskId)) {
         return { ok: false, code: 409, error: 'task is running' }
       }
       if (abandoning.has(taskId)) {
         return { ok: false, code: 409, error: 'task is being abandoned' }
+      }
+      if (queue.position(taskId) !== null) {
+        // Waiting its turn is not running: a task that never started must not
+        // be refused with a sentence claiming it did.
+        return { ok: false, code: 409, error: 'task is queued' }
       }
       const record = loadTask(opts.cwd, taskId)
       if (!record) {
@@ -1617,8 +2163,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       turn.ended_at = null
       record.status = 'queued'
       persist(record)
-      schedule(record)
-      return { ok: true }
+      return schedule(record)
     },
 
     interrupt(taskId) {
@@ -1638,10 +2183,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       if (record.status !== 'queued' && record.status !== 'waiting_for_you') {
         return { ok: false, code: 409, error: `task is ${record.status}` }
       }
-      const queued = queue.indexOf(taskId)
-      if (queued >= 0) {
-        queue.splice(queued, 1)
-      }
+      dropFromQueue(taskId)
       if (record.status === 'waiting_for_you') {
         accrueWait(record)
       }
@@ -1675,13 +2217,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       if (record.status === 'running' || record.status === 'reviewing') {
         return { ok: false, code: 409, error: `task is ${record.status}` }
       }
-      const queued = queue.indexOf(taskId)
-      if (queued >= 0) {
-        // Out of the queue before the await: pump() launches straight from the
-        // queue and does not consult the guards, so a slot freeing up mid-removal
-        // would start a turn on the worktree being deleted.
-        queue.splice(queued, 1)
-      }
+      // Out of the queue before the await: pump() launches straight from the
+      // queue and does not consult the guards, so a slot freeing up mid-removal
+      // would start a turn on the worktree being deleted. dropFromQueue hands the
+      // project's admission claim back too, if this task happened to hold it.
+      const queued = queue.position(taskId) !== null
+      dropFromQueue(taskId)
       // Claimed BEFORE the first await, released only once the record has been
       // written: everything the guards above just established stays true for
       // the whole removal, which now waits for the repo's worktree lock.
@@ -1712,12 +2253,18 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
           // HTTP handler that does not catch, and an unhandled rejection kills
           // the server. A cleanup that could not happen is REPORTED — the task
           // keeps its worktree and its status, both still true.
-          if (queued >= 0) {
+          if (queued) {
             // Nothing was removed, so nothing about this task changed — except
-            // that it is no longer in any queue. A 'queued' record outside every
-            // queue is unstartable (start() 409s on the status, pump() never
-            // sees it): put it back where it was and wake the pool.
-            queue.splice(Math.min(queued, queue.length), 0, taskId)
+            // that it is no longer in the line. A 'queued' record outside the queue
+            // is unstartable (start() 409s on the status, pump() never sees it):
+            // put it back and wake the pump. It goes to the TAIL — the persisted
+            // queue has no insert-at-rank — and a startable task at the back beats
+            // an unstartable one at its old place.
+            tryQueueWrite<EnqueueResult>(() => queue.enqueue(taskId), {
+              ok: false,
+              reason: 'requeue refused',
+            })
+            queueChanged()
             pump()
           }
           return { ok: false, code: 500, error: preview(errorMessage(err)) }
@@ -1776,35 +2323,61 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 
     async shutdown() {
       draining = true
-      // A 'queued' record with no live process would be unstartable at the
-      // next boot (nothing re-enqueues it): 'interrupted' is the honest state
-      // and reply() is its documented resume path.
-      for (const id of queue.splice(0)) {
-        const record = loadTask(opts.cwd, id)
-        if (!record || record.status !== 'queued') {
-          continue
-        }
-        const turn = record.turns.at(-1)
-        if (turn && !turn.ended_at) {
-          turn.ended_at = new Date().toISOString()
-        }
-        record.status = 'interrupted'
-        emit(id, {
-          type: 'interrupted',
-          data: { reason: 'shutdown' },
-          reason_code: 'interrupted_by_user',
-        })
-        record.reason = taskReason('interrupted_by_user', 'shutdown')
-        persist(record)
-      }
+      // The queued tasks are LEFT ALONE, on purpose (T1.2). They stay 'queued'
+      // in queue.json, which outlives this process: the next boot re-hydrates
+      // the file, reconciles it with the records and starts the head. Marking
+      // them 'interrupted' was the honest answer only while nothing
+      // re-enqueued them — it cost a human gesture per task for a turn that
+      // had never even started.
       for (const controller of active.values()) {
         // SIGTERM to the agent's process group; failTurn persists 'interrupted'
         // with {reason:'shutdown'} because draining is set.
         controller.abort()
       }
-      // Abandons alongside the turns: both end in a record write that must land
-      // before the process is allowed to go.
-      await Promise.allSettled([...inflight.values(), ...abandonsInFlight])
+      // The reviews too: they hold the claim this shutdown waits on, and the
+      // review agent is just another subprocess with a signal.
+      for (const controller of reviews.values()) {
+        controller.abort()
+      }
+      // A wait is never mute. Aborting is not instantaneous (a SIGTERM'd agent
+      // still has to die and its turn still has to be persisted), and a
+      // terminal that says nothing for several seconds after a Ctrl-C reads as
+      // a hang. Past a short grace, say what is still settling.
+      const pending = [...inflight.keys()]
+      const timer = setTimeout(() => {
+        notify(() => opts.onDrainWait?.(pending))
+      }, opts.drainNoticeMs ?? DRAIN_NOTICE_MS)
+      // Never the reason a process lingers: this timer only ever talks.
+      timer.unref?.()
+      // And a HARD ceiling on the whole wait. What the drain awaits grew with
+      // T1.2: the turn promise now carries the end-of-turn review AND the
+      // auto-ship chained behind it, and ship() takes no signal — a push to a
+      // slow remote could hold a Ctrl-C for minutes. Past this, the shutdown
+      // stops waiting and SAYS it stopped, rather than looking wedged.
+      // (The containerized checks are fire-and-forget and were never awaited;
+      // the container runtime's own cleanup budget is T3.1's subject, not
+      // this one's.)
+      let capTimer: ReturnType<typeof setTimeout> | undefined
+      const cap = new Promise<'timeout'>((resolve) => {
+        capTimer = setTimeout(() => resolve('timeout'), opts.drainTimeoutMs ?? DRAIN_TIMEOUT_MS)
+        capTimer.unref?.()
+      })
+      try {
+        const outcome = await Promise.race([
+          // Abandons alongside the turns: both end in a record write that must
+          // land before the process is allowed to go.
+          Promise.allSettled([...inflight.values(), ...abandonsInFlight]).then(
+            () => 'settled' as const,
+          ),
+          cap,
+        ])
+        if (outcome === 'timeout') {
+          notify(() => opts.onDrainTimeout?.([...inflight.keys()]))
+        }
+      } finally {
+        clearTimeout(timer)
+        clearTimeout(capTimer)
+      }
     },
 
     runningCount: () => active.size,

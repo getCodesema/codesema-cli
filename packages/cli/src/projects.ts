@@ -7,17 +7,9 @@
 // are atomic (tmp + rename).
 
 import { createHash } from 'node:crypto'
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  writeFileSync,
-  type Dirent,
-} from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, type Dirent } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { writeJsonAtomic } from './atomic-write.js'
 import { globalConfigDir } from './config.js'
 import { tryGit } from './git.js'
 import { t } from './i18n.js'
@@ -105,13 +97,9 @@ export function getProject(id: string): Project | null {
   return listProjects().find((project) => project.id === id) ?? null
 }
 
-/** Atomic rewrite: a crash mid-write leaves the previous registry intact. */
+/** Atomic rewrite (shared tmp + rename): a crash mid-write leaves the previous registry intact. */
 function saveProjects(projects: Project[]): void {
-  const dir = globalConfigDir()
-  mkdirSync(dir, { recursive: true })
-  const tmp = join(dir, 'projects.json.tmp')
-  writeFileSync(tmp, `${JSON.stringify({ projects }, null, 2)}\n`)
-  renameSync(tmp, projectsPath())
+  writeJsonAtomic(projectsPath(), { projects })
 }
 
 export type AddProjectResult = { ok: true; project: Project } | { ok: false; error: string }

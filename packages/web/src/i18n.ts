@@ -295,6 +295,11 @@ const en = {
   'workspace.queueActive': 'In progress',
   'workspace.queueReady': 'Ready to ship',
   'workspace.queueDone': 'Done',
+  'workspace.queuePosition': '#{n}',
+  'workspace.queuePositionHint':
+    'Waiting for its turn: {n} conversation ahead in this project | Waiting for its turn: {n} conversations ahead in this project',
+  'workspace.queuePositionHintIdle':
+    "In this project's line, at #{n} — but nothing is running on it right now",
   'workspace.pausedFor': 'paused for {t}',
   'workspace.shipAction': 'Ship',
   'workspace.diffAction': 'Diff',
@@ -721,6 +726,11 @@ const fr: Record<MessageKey, string> = {
   'workspace.queueActive': 'En cours',
   'workspace.queueReady': 'Prêt à shipper',
   'workspace.queueDone': 'Terminé',
+  'workspace.queuePosition': '#{n}',
+  'workspace.queuePositionHint':
+    'En attente de son tour : {n} conversation devant elle dans ce projet | En attente de son tour : {n} conversations devant elle dans ce projet',
+  'workspace.queuePositionHintIdle':
+    'Dans la file de ce projet, en #{n} — mais rien ne tourne dessus en ce moment',
   'workspace.pausedFor': 'en pause depuis {t}',
   'workspace.shipAction': 'Shipper',
   'workspace.diffAction': 'Diff',

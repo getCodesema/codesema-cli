@@ -384,6 +384,12 @@ export type TaskRecord = {
    * is.
    */
   cost_basis?: CostBasis
+  /** 1-based place in its project's queue while the task waits its turn (one
+   * active task per project). Derived server-side at read time and never
+   * persisted, so it rides the listings (GET /api/tasks, the SSE replay) and
+   * not every 'task' frame — absent means "not waiting", or "this frame does
+   * not restate it". */
+  queue_position?: number
   created_at: string
   updated_at: string
 }

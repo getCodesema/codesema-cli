@@ -593,6 +593,22 @@ const BODYLESS_TASK_ACTIONS: Record<
   resume: (manager, projectId, id) => manager.resume(projectId, id),
 }
 
+/**
+ * Body of a task action. Success carries `queue_position` when the gesture left
+ * the task WAITING (a reply or a resume behind another task of the same repo):
+ * the caller renders the right thing without a round-trip, exactly like the
+ * creation response. A refusal carries its `reason_code` next to — never
+ * instead of — the readable message, the way POST /api/tasks already does.
+ */
+function taskActionBody(result: TaskActionResult): Record<string, unknown> {
+  return result.ok
+    ? {
+        ok: true,
+        ...(result.queue_position === undefined ? {} : { queue_position: result.queue_position }),
+      }
+    : { error: result.error, ...(result.reason_code ? { reason_code: result.reason_code } : {}) }
+}
+
 /** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume)?project=, all under the tasks CSRF token. */
 async function handleTaskAction(
   req: IncomingMessage,
@@ -631,9 +647,7 @@ async function handleTaskAction(
   }
   if (action.kind !== 'reply') {
     const result = await BODYLESS_TASK_ACTIONS[action.kind](tasks.manager, projectId, action.id)
-    return result.ok
-      ? sendJson(res, 200, { ok: true })
-      : sendJson(res, result.code, { error: result.error })
+    return sendJson(res, result.ok ? 200 : result.code, taskActionBody(result))
   }
   let body: unknown
   try {
@@ -646,9 +660,7 @@ async function handleTaskAction(
     return sendText(res, 400, 'bad request')
   }
   const result = tasks.manager.reply(projectId, action.id, message)
-  return result.ok
-    ? sendJson(res, 200, { ok: true })
-    : sendJson(res, result.code, { error: result.error })
+  return sendJson(res, result.ok ? 200 : result.code, taskActionBody(result))
 }
 
 const MAX_PROJECT_BODY_BYTES = 4 * 1024

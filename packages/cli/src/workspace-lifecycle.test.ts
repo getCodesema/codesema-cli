@@ -1,5 +1,7 @@
-// T8 process-lifecycle coverage: graceful shutdown drains the runner and
-// persists 'interrupted' {reason:'shutdown'} while KEEPING worktrees, an
+// T8 process-lifecycle coverage: graceful shutdown drains the turns IN FLIGHT
+// and persists 'interrupted' {reason:'shutdown'} while KEEPING worktrees —
+// the QUEUED tasks are left queued (T1.2: their place lives in
+// <repo>/.codesema/queue.json and a rebuilt runner picks them back up) —, an
 // interrupted task is replyable AND resumable (resume() re-runs the turn that
 // died, in place, with no new instruction), and abandon is the one
 // destructive exit (worktree + branch deleted) — refused while an agent still
@@ -13,9 +15,19 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import type { TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
-import { createTaskRunner } from './task-runner.js'
-import { createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
-import { logIsolation } from './workspace.js'
+import { projectIdFor } from './projects.js'
+import {
+  activeTask,
+  nodeTaskQueueIo,
+  queuePath,
+  readQueue,
+  resetActiveClaims,
+  resetQueueDegradedReports,
+  type TaskQueueIo,
+} from './task-queue.js'
+import { createTaskRunner, DRAIN_NOTICE_MS, DRAIN_TIMEOUT_MS } from './task-runner.js'
+import { createTask, loadTask, readTaskEvents, resetStoreReports, saveTask } from './tasks-store.js'
+import { logIsolation, maxParallelNotice } from './workspace.js'
 
 const cleanups: string[] = []
 
@@ -23,6 +35,13 @@ afterEach(() => {
   for (const dir of cleanups.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
+  // Belt and braces between FILES, never inside a test: the admission guard
+  // and the degradation memory are process-wide, so a leak must be caught by
+  // an assertion rather than papered over here. All four suites that can touch
+  // them reset both — an asymmetry here is a flake waiting for a bad ordering.
+  resetActiveClaims()
+  resetQueueDegradedReports()
+  resetStoreReports()
 })
 
 function makeRepo(): string {
@@ -96,7 +115,7 @@ const hangingAgent = (options: AgentRunOptions): Promise<string> =>
 // --- shutdown --------------------------------------------------------------
 
 describe('runner shutdown', () => {
-  test('aborts running agents, interrupts queued tasks, keeps worktrees and branches', async () => {
+  test('aborts running agents, LEAVES queued tasks queued, keeps worktrees and branches', async () => {
     const repo = makeRepo()
     const running = makeTask(repo, 'in flight', 'long work')
     const queued = makeTask(repo, 'still queued', 'later work')
@@ -109,7 +128,8 @@ describe('runner shutdown', () => {
     })
     expect(runner.start(running)).toEqual({ ok: true })
     await until(() => status(repo, running.id) === 'running')
-    expect(runner.start(queued)).toEqual({ ok: true })
+    // The gesture answers with the place it got in the line, no round-trip.
+    expect(runner.start(queued)).toEqual({ ok: true, queue_position: 1 })
     expect(status(repo, queued.id)).toBe('queued')
 
     await runner.shutdown()
@@ -124,16 +144,16 @@ describe('runner shutdown', () => {
     expect(existsSync(interrupted?.worktree ?? '')).toBe(true)
     expect(branchExists(repo, interrupted?.branch ?? '')).toBe(true)
 
-    // The queued task never ran, but 'queued' with no live process would be
-    // unstartable at next boot: it is interrupted too, with the same reason.
-    expect(status(repo, queued.id)).toBe('interrupted')
-    expect(readTaskEvents(repo, queued.id).map((e) => ({ type: e.type, data: e.data }))).toEqual([
-      { type: 'interrupted', data: { reason: 'shutdown' } },
-    ])
+    // T1.2: the queued task never ran and is NOT sacrificed — its place is on
+    // disk, so the next boot re-hydrates the queue and starts it. Nothing is
+    // written on it at all: no status change, no journal line.
+    expect(status(repo, queued.id)).toBe('queued')
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([queued.id])
+    expect(readTaskEvents(repo, queued.id).filter((e) => e.type === 'interrupted')).toHaveLength(0)
     expect(runner.runningCount()).toBe(0)
   })
 
-  test('shutdown names the degradation: interrupted_by_user beside an untouched payload', async () => {
+  test('shutdown names the degradation of the turn IN FLIGHT: interrupted_by_user beside an untouched payload', async () => {
     const repo = makeRepo()
     const running = makeTask(repo, 'in flight', 'long work')
     const queued = makeTask(repo, 'still queued', 'later work')
@@ -150,18 +170,65 @@ describe('runner shutdown', () => {
 
     await runner.shutdown()
 
-    for (const id of [running.id, queued.id]) {
-      const event = readTaskEvents(repo, id).find((e) => e.type === 'interrupted')
-      // The code is ADDED: it rides in its own field, and the readable payload
-      // the journal has always carried is byte-for-byte what it was.
-      expect(event?.reason_code).toBe('interrupted_by_user')
-      expect(event?.data).toEqual({ reason: 'shutdown' })
-      // The record restates it, with that same message in detail.
-      expect(loadTask(repo, id)?.reason).toEqual({
-        code: 'interrupted_by_user',
-        detail: 'shutdown',
-      })
-    }
+    const event = readTaskEvents(repo, running.id).find((e) => e.type === 'interrupted')
+    // The code is ADDED: it rides in its own field, and the readable payload
+    // the journal has always carried is byte-for-byte what it was.
+    expect(event?.reason_code).toBe('interrupted_by_user')
+    expect(event?.data).toEqual({ reason: 'shutdown' })
+    // The record restates it, with that same message in detail.
+    expect(loadTask(repo, running.id)?.reason).toEqual({
+      code: 'interrupted_by_user',
+      detail: 'shutdown',
+    })
+    // The queued one is untouched by the drain, so it keeps the ONLY reason it
+    // ever had: it is waiting for its project's active slot.
+    expect(loadTask(repo, queued.id)?.reason).toEqual({
+      code: 'resource_busy',
+      detail: 'another task of this project is already active',
+    })
+  })
+
+  test('the queued tasks survive a rebuild, in order, and start on their own', async () => {
+    const repo = makeRepo()
+    const running = makeTask(repo, 'in flight', 'long work')
+    const firstWaiting = makeTask(repo, 'waiting one', 'later work')
+    const secondWaiting = makeTask(repo, 'waiting two', 'even later work')
+    const dying = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: hangingAgent,
+    })
+    dying.start(running)
+    await until(() => status(repo, running.id) === 'running')
+    dying.start(firstWaiting)
+    dying.start(secondWaiting)
+
+    await dying.shutdown()
+    // shutdown() frees the project's admission claim by itself — no test
+    // crutch: the aborted turn's promise chain releases it before shutdown
+    // resolves, which is exactly what lets a rebuilt runner admit anything.
+    expect(activeTask(projectIdFor(repo))).toBeNull()
+
+    expect(status(repo, firstWaiting.id)).toBe('queued')
+    expect(status(repo, secondWaiting.id)).toBe('queued')
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([firstWaiting.id, secondWaiting.id])
+
+    // "Reconstruction du manager": a new runner on the same repo, nothing else.
+    const reborn = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: questionAgent().run,
+    })
+    // Head first, then the second — FIFO across the restart, no human gesture.
+    await until(() => status(repo, firstWaiting.id) === 'waiting_for_you')
+    await until(() => status(repo, secondWaiting.id) === 'waiting_for_you')
+    expect(readQueue(repo).entries).toEqual([])
+    expect(reborn.runningCount()).toBe(0)
+    // The interrupted turn is NOT restarted by the queue: only a human gesture
+    // moves it (T8), and it was never in the file.
+    expect(status(repo, running.id)).toBe('interrupted')
   })
 
   test('a restarted turn drops the reason it stopped for: no stale claim', async () => {
@@ -198,6 +265,845 @@ describe('runner shutdown', () => {
     await runner.shutdown()
     expect(runner.start(task)).toEqual({ ok: false, code: 409, error: 'shutting down' })
     expect(runner.reply(task.id, 'hello')).toEqual({ ok: false, code: 409, error: 'shutting down' })
+  })
+})
+
+// --- the admission claim: held for the whole active window, never leaked ---
+
+describe('the admission claim', () => {
+  test('a listener that throws never leaks the claim: the project keeps admitting tasks', async () => {
+    const repo = makeRepo()
+    const first = makeTask(repo, 'first', 'task one')
+    const second = makeTask(repo, 'second', 'task two')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      // Exactly what a broken SSE subscriber looks like from in here. It used
+      // to travel back up through persist() and out of launch(), leaving the
+      // claim taken FOREVER — the project never started anything again.
+      onTask: () => {
+        throw new Error('subscriber blew up')
+      },
+      onEvent: () => {
+        throw new Error('subscriber blew up')
+      },
+      runAgentFn: questionAgent().run,
+    })
+    // Contained is not hidden: the frames those listeners dropped are a
+    // degradation, and invariant 2 forbids the silent kind.
+    const warnings: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    }
+    try {
+      expect(runner.start(first)).toEqual({ ok: true })
+      await until(() => status(repo, first.id) === 'waiting_for_you')
+      expect(activeTask(projectIdFor(repo))).toBeNull()
+
+      // The proof: a second task still gets in.
+      expect(runner.start(second)).toEqual({ ok: true })
+      await until(() => status(repo, second.id) === 'waiting_for_you')
+    } finally {
+      console.warn = realWarn
+    }
+    expect(warnings.some((line) => line.includes('subscriber blew up'))).toBe(true)
+    expect(warnings.some((line) => line.includes('listener'))).toBe(true)
+  })
+
+  test('a turn that cannot even materialize its worktree does NOT fail the task: it stays queued', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'no such base', 'work')
+    // A base that does not exist anywhere: createTaskWorktree throws, and the
+    // turn never starts. A turn that never started is not a failed turn.
+    const seeded = loadTask(repo, task.id)!
+    seeded.base = 'branch-that-never-existed'
+    saveTask(repo, seeded)
+
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: questionAgent().run,
+    })
+    // Admitted: the claim is taken and a turn is being set up. Whether the
+    // worktree can be had is only known once the repo's worktree lock has been
+    // waited for, so the verdict lands a tick later — not in this answer.
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => activeTask(projectIdFor(repo)) === null)
+
+    // Still queued, still IN the line, and the claim is back — a boot that
+    // turned this into 'failed' would have destroyed the queue in cascade.
+    expect(status(repo, task.id)).toBe('queued')
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([task.id])
+    expect(activeTask(projectIdFor(repo))).toBeNull()
+    // The reason is on the record's journal, retryable rather than terminal.
+    const error = readTaskEvents(repo, task.id).find((e) => e.type === 'error')
+    expect(error?.data.message).toContain('branch-that-never-existed')
+    expect(runner.runningCount()).toBe(0)
+  })
+
+  test('a task that cannot materialize steps ASIDE: it never starves the line behind it', async () => {
+    const repo = makeRepo()
+    const stuck = makeTask(repo, 'stuck', 'work')
+    const behind = makeTask(repo, 'behind', 'work later')
+    const seeded = loadTask(repo, stuck.id)!
+    seeded.base = 'branch-that-never-existed'
+    saveTask(repo, seeded)
+
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: questionAgent().run,
+    })
+    runner.start(stuck)
+    // Named once, and named as a machine can read it. (The materialization
+    // waits for the repo's worktree lock, so the verdict lands a tick later.)
+    const failures = () => readTaskEvents(repo, stuck.id).filter((e) => e.type === 'error')
+    await until(() => failures().length === 1)
+    expect(failures()[0]?.reason_code).toBe('agent_error')
+    // NOT failed: a turn that never started is not a failed turn.
+    expect(status(repo, stuck.id)).toBe('queued')
+
+    // The whole point: the healthy task behind it runs. On develop the stuck
+    // one would have held the project hostage until the process restarted —
+    // and a restart would not have helped either.
+    runner.start(behind)
+    await until(() => status(repo, behind.id) === 'waiting_for_you')
+    // The stuck one keeps its place in the file, and its journal did NOT grow
+    // a second copy of the same error: one line per session, not one per pump.
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([stuck.id])
+    expect(failures()).toHaveLength(1)
+
+    // Its record says WHY it waits, and it does not claim to be behind an
+    // active task — there is none.
+    const waiting = loadTask(repo, stuck.id)!
+    expect(waiting.reason?.code).toBe('agent_error')
+    expect(waiting.reason?.detail).toContain('branch-that-never-existed')
+
+    // Nothing retries it on its own — that is the point of stepping aside.
+    // But a human CAN: starting it again is the retry gesture, and it is
+    // accepted rather than refused with "already started" (the refusal that
+    // used to leave no way back in at all). It is attempted, and journaled,
+    // again — because a human asked for it.
+    expect(runner.start(loadTask(repo, stuck.id)!).ok).toBe(true)
+    await until(() => failures().length === 2)
+    expect(status(repo, stuck.id)).toBe('queued')
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([stuck.id])
+
+    // The other way out: a human takes it off the line for good.
+    expect(runner.interrupt(stuck.id)).toEqual({ ok: true })
+    expect(readQueue(repo).entries).toEqual([])
+    expect(status(repo, stuck.id)).toBe('interrupted')
+
+    // And once off the line, Resume goes through the ordinary door.
+    const resumed = runner.resume(stuck.id)
+    expect(resumed.ok).toBe(true)
+    await until(() => failures().length === 3)
+  })
+
+  test('Stop on the ACTIVE task gives its claim back, and the next one starts', async () => {
+    const repo = makeRepo()
+    const running = makeTask(repo, 'running', 'work')
+    const next = makeTask(repo, 'next', 'work later')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: hangingAgent,
+    })
+    runner.start(running)
+    await until(() => status(repo, running.id) === 'running')
+    runner.start(next)
+    expect(activeTask(projectIdFor(repo))).toBe(running.id)
+
+    expect(runner.interrupt(running.id)).toEqual({ ok: true })
+    // The claim moves on with the line: the next task takes it over.
+    await until(() => status(repo, next.id) === 'running')
+    expect(activeTask(projectIdFor(repo))).toBe(next.id)
+    expect(readQueue(repo).entries).toEqual([])
+  })
+
+  test('the claim covers the REVIEW too: the next task waits for the verdict, not for the turn', async () => {
+    const repo = makeRepo()
+    const first = makeTask(repo, 'first', 'task one')
+    const second = makeTask(repo, 'second', 'task two')
+    let releaseReview: () => void = () => {}
+    const reviewGate = new Promise<void>((resolve) => {
+      releaseReview = resolve
+    })
+    const reviewsInFlight: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options) => {
+        // 'done' (no QUESTION): this is the path that goes through the review.
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      onTurnDone: async (record, io) => {
+        reviewsInFlight.push(record.id)
+        await reviewGate
+        record.status = 'review_ok'
+        io.persist()
+      },
+    })
+    runner.start(first)
+    runner.start(second)
+    await until(() => status(repo, first.id) === 'reviewing')
+
+    // The review of the first is in flight, and 'reviewing' IS an active
+    // status (isActiveTaskStatus): the second must not have started.
+    expect(reviewsInFlight).toEqual([first.id])
+    expect(status(repo, second.id)).toBe('queued')
+    expect(activeTask(projectIdFor(repo))).toBe(first.id)
+
+    releaseReview()
+    await until(() => status(repo, second.id) !== 'queued')
+    expect(reviewsInFlight).toEqual([first.id, second.id])
+  })
+
+  test('Ctrl-C during a review waits for it instead of orphaning the review agent', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'under review', 'work')
+    let releaseReview: () => void = () => {}
+    const reviewGate = new Promise<void>((resolve) => {
+      releaseReview = resolve
+    })
+    let reviewSettled = false
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      onTurnDone: async (record, io) => {
+        await reviewGate
+        reviewSettled = true
+        record.status = 'review_ok'
+        io.persist()
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'reviewing')
+
+    const draining = runner.shutdown()
+    // Not settled yet: shutdown is genuinely waiting on the review.
+    expect(reviewSettled).toBe(false)
+    releaseReview()
+    await draining
+
+    // Once shutdown resolves the review has landed on disk — no agent left
+    // running under a process that is about to exit.
+    expect(reviewSettled).toBe(true)
+    expect(status(repo, task.id)).toBe('review_ok')
+    expect(activeTask(projectIdFor(repo))).toBeNull()
+  })
+
+  // T1.2 re-review, MAJOR 2: `reason` is the machine-readable surface T1.1
+  // built. It must never claim a cause that is not the real one.
+  test('a waiting task names the TRUE cause: busy when busy, the failure when nothing runs', async () => {
+    const repo = makeRepo()
+    const running = makeTask(repo, 'running', 'work')
+    const behind = makeTask(repo, 'behind', 'work later')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: hangingAgent,
+    })
+    runner.start(running)
+    await until(() => status(repo, running.id) === 'running')
+    runner.start(behind)
+
+    // Something IS active: "another task of this project is already active"
+    // is exactly true, and waiting is what fixes it.
+    const waiting = loadTask(repo, behind.id)!
+    expect(waiting.reason?.code).toBe('resource_busy')
+    expect(waiting.reason?.detail).toBe('another task of this project is already active')
+    // And the two gestures a human can aim at it refuse it for what it IS.
+    // 'task is running' was the old answer to both, on a task whose turn had
+    // never started — a refusal that describes the wrong state sends the
+    // reader looking for a Stop button that would do nothing.
+    expect(runner.reply(behind.id, 'anything')).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task is queued',
+    })
+    expect(runner.resume(behind.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task is queued',
+    })
+
+    // Nothing active, the task simply cannot materialize: the SAME sentence
+    // would have been a lie (it was, before this fix) — and the API answered
+    // {ok:true} on top of it.
+    const alone = makeRepo()
+    const stuck = makeTask(alone, 'stuck', 'work')
+    const seeded = loadTask(alone, stuck.id)!
+    seeded.base = 'branch-that-never-existed'
+    saveTask(alone, seeded)
+    const lonely = createTaskRunner({
+      cwd: alone,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: questionAgent().run,
+    })
+    lonely.start(stuck)
+    await until(() => activeTask(projectIdFor(alone)) === null)
+    const blockedRecord = loadTask(alone, stuck.id)!
+    expect(blockedRecord.reason?.code).toBe('agent_error')
+    expect(blockedRecord.reason?.detail).toContain('branch-that-never-existed')
+    await lonely.shutdown()
+  })
+
+  // T1.2 re-review, MAJOR 3: the claim covering the review is only safe if the
+  // review can be CUT. Without a signal, shutdown() waited on the reviewer's
+  // own timeout — up to 15 minutes of a terminal that looks hung.
+  test('Ctrl-C CUTS a review instead of waiting out its timeout, and says what it waits for', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'under review', 'work')
+    let sawSignal: AbortSignal | null = null
+    const notices: string[][] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      // A reviewer's real budget. Without a cut-off this is what a Ctrl-C
+      // would have waited for.
+      timeoutMs: 900_000,
+      drainNoticeMs: 5,
+      onDrainWait: (ids) => notices.push([...ids]),
+      runAgentFn: (options) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      // A reviewer that only ever ends when it is cut — which is exactly what
+      // a real review agent looks like from here. The small delay after the
+      // abort is the agent dying: enough for the drain to have to say so.
+      onTurnDone: (record, io) =>
+        new Promise<void>((resolve) => {
+          sawSignal = io.signal
+          io.signal.addEventListener('abort', () => {
+            setTimeout(() => {
+              record.status = 'interrupted'
+              io.persist()
+              resolve()
+            }, 40)
+          })
+        }),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'reviewing')
+
+    const started = Date.now()
+    await runner.shutdown()
+    // Immediate, not "after the review's 15-minute timeout".
+    expect(Date.now() - started).toBeLessThan(3000)
+    expect(sawSignal).not.toBeNull()
+    expect(status(repo, task.id)).toBe('interrupted')
+    expect(activeTask(projectIdFor(repo))).toBeNull()
+    // And the wait was never mute: past the grace, it named what it waited on.
+    expect(notices).toEqual([[task.id]])
+  })
+
+  test('a review that ignores the signal still leaves an INTERRUPTED task, never a false verdict', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'under review', 'work')
+    let releaseReview: () => void = () => {}
+    const reviewGate = new Promise<void>((resolve) => {
+      releaseReview = resolve
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      // Deaf to the signal, and it returns without settling the task: the
+      // runner still refuses to leave it stranded on 'reviewing', which is
+      // neither replyable nor interruptible.
+      onTurnDone: async () => {
+        await reviewGate
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'reviewing')
+
+    const draining = runner.shutdown()
+    releaseReview()
+    await draining
+
+    const settled = loadTask(repo, task.id)!
+    expect(settled.status).toBe('interrupted')
+    expect(settled.reason?.code).toBe('interrupted_by_user')
+    // Literal, not `toBe(REVIEW_CUT_DETAIL)`: a detail compared to the very
+    // constant that produced it proves the plumbing and nothing about the
+    // sentence, and this one is what a human reads on the card.
+    expect(settled.reason?.detail).toBe('the end-of-turn review was stopped by the shutdown')
+    // And it is JOURNALED, like every other interruption: a status that moves
+    // without a line in events.jsonl is the silence invariant 2 forbids, and
+    // this belt-and-braces path was the only transition still missing one.
+    const last = readTaskEvents(repo, task.id).at(-1)
+    expect(last?.type).toBe('interrupted')
+    expect(last?.reason_code).toBe('interrupted_by_user')
+    expect(last?.data.reason).toBe('shutdown')
+  })
+
+  // T1.2 re-review round 9: every drain test above injects drainNoticeMs and
+  // drainTimeoutMs, so the seams are proven and the PRODUCTION numbers were
+  // held by nothing at all — 30 s could become an hour and the suite would
+  // stay green while a Ctrl-C hung for that hour. Same treatment as
+  // QUEUE_ENTRIES_MAX and QUEUE_BROADCAST_MAX: the value a user actually gets
+  // is pinned to a literal, and the ORDER between the two is an invariant in
+  // its own right — announcing the wait after giving up on it would be
+  // useless.
+  test('the drain budgets a user actually gets are the ones documented', () => {
+    expect(DRAIN_NOTICE_MS).toBe(1_000)
+    expect(DRAIN_TIMEOUT_MS).toBe(30_000)
+    // Say what you are waiting for well before you stop waiting for it.
+    expect(DRAIN_NOTICE_MS).toBeLessThan(DRAIN_TIMEOUT_MS)
+  })
+
+  // T1.2 re-review round 4, MINOR 8: this pass made the drain await the whole
+  // end-of-turn chain — review AND the auto-ship behind it, which takes no
+  // signal. A Ctrl-C must still end.
+  test('the drain has a hard ceiling: it stops waiting, and says that it stopped', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'never settles', 'work')
+    const gaveUp: string[][] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 900_000,
+      drainNoticeMs: 5,
+      drainTimeoutMs: 40,
+      onDrainTimeout: (ids) => gaveUp.push([...ids]),
+      runAgentFn: (options) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      // Deaf to the signal AND never returning: the shape of an auto-ship
+      // pushing to a remote that does not answer.
+      onTurnDone: () => new Promise<void>(() => {}),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'reviewing')
+
+    const started = Date.now()
+    await runner.shutdown()
+    expect(Date.now() - started).toBeLessThan(3000)
+    // Never silently: it named what it walked away from.
+    expect(gaveUp).toEqual([[task.id]])
+  })
+
+  // T1.2 re-review, MINOR 3: 'blocked' promises "the turn NEVER started". The
+  // dequeue therefore happens BEFORE the record says 'running' — the other
+  // order could leave a record on 'running' with no turn in flight, which is
+  // neither interruptible nor resumable and a lie on the board.
+  test('a queue it cannot dequeue from leaves the task QUEUED, never a phantom running one', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'stuck', 'work')
+    let writes = 0
+    const io: TaskQueueIo = {
+      ...nodeTaskQueueIo,
+      write: (path, value) => {
+        writes += 1
+        // The enqueue lands; the dequeue that follows the claim does not.
+        if (writes > 1) {
+          throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+        }
+        nodeTaskQueueIo.write(path, value)
+      },
+    }
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      queueIo: io,
+      runAgentFn: questionAgent().run,
+    })
+    expect(runner.start(task).ok).toBe(true)
+    await until(() => activeTask(projectIdFor(repo)) === null)
+
+    // Untouched by the failed launch: still queued, still in the file, and
+    // the claim was handed back.
+    expect(status(repo, task.id)).toBe('queued')
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([task.id])
+    expect(activeTask(projectIdFor(repo))).toBeNull()
+    const failures = readTaskEvents(repo, task.id).filter((e) => e.type === 'error')
+    expect(failures).toHaveLength(1)
+    // What it SAYS, not merely that it exists: the write refusal has to reach
+    // the journal in words, with its D2 code beside it.
+    expect(failures[0]?.reason_code).toBe('agent_error')
+    expect(String(failures[0]?.data.message)).toContain('read-only file system')
+    expect(loadTask(repo, task.id)?.reason?.detail).toContain('read-only file system')
+    await runner.shutdown()
+  })
+
+  // T1.2 re-review round 4, MAJOR 1: the pump's queue read is the hottest
+  // read-only path there is. It used to rename queue.json away on a single
+  // unusable entry, so one bad line silently emptied the project's whole line.
+  test('one unusable entry never costs the project its line: the rest still runs', async () => {
+    const repo = makeRepo()
+    const a = makeTask(repo, 'a', 'task a')
+    const b = makeTask(repo, 'b', 'task b')
+    const c = makeTask(repo, 'c', 'task c')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: async (options) => {
+        if (options.prompt.includes('task a')) {
+          await gate
+        }
+        const raw = claudeStream('done.\nQUESTION: next?')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    runner.start(a)
+    runner.start(b)
+    runner.start(c)
+    await until(() => status(repo, a.id) === 'running')
+
+    // A line no reader can make sense of, slipped in among three good ones.
+    writeFileSync(
+      queuePath(repo),
+      JSON.stringify({
+        version: 1,
+        entries: [
+          { id: 'NOT-AN-ID!!', enqueued_at: '2026-01-01T00:00:00.000Z' },
+          { id: b.id, enqueued_at: '2026-01-01T00:00:00.000Z' },
+          { id: c.id, enqueued_at: '2026-01-01T00:00:00.000Z' },
+        ],
+      }),
+    )
+
+    // The head finishes: the pump reads the degraded file.
+    release()
+    await until(() => status(repo, b.id) === 'waiting_for_you')
+    // …and C still runs after B. It used to stay 'queued' forever, out of a
+    // file that no longer existed, while the only reason reported spoke of a
+    // single lost entry.
+    await until(() => status(repo, c.id) === 'waiting_for_you')
+    expect(existsSync(queuePath(repo))).toBe(true)
+  })
+
+  // T1.2 re-review round 4, MAJOR 2: the fix of round 3 lived only in
+  // schedule(). The boot pump goes through launch() and never through it.
+  test('a task blocked AT BOOT stops claiming it is waiting behind an active one', async () => {
+    const repo = makeRepo()
+    const first = makeTask(repo, 'first', 'task one')
+    const second = makeTask(repo, 'second', 'task two')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: hangingAgent,
+    })
+    runner.start(first)
+    await until(() => status(repo, first.id) === 'running')
+    runner.start(second)
+    // While something IS active, that is exactly what the record says.
+    expect(loadTask(repo, second.id)?.reason?.code).toBe('resource_busy')
+
+    // The session ends, and the branch the second one needs is gone.
+    expect(runner.interrupt(first.id)).toEqual({ ok: true })
+    await runner.shutdown()
+    const seeded = loadTask(repo, second.id)!
+    seeded.base = 'branch-that-never-existed'
+    saveTask(repo, seeded)
+    expect(seeded.reason?.code).toBe('resource_busy')
+
+    // A fresh boot: the constructor's pump tries it, and cannot start it.
+    const reborn = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: questionAgent().run,
+    })
+    // Nothing runs on this project at all… (the boot pump takes the claim, then
+    // hands it straight back when the worktree will not materialize).
+    await until(() => activeTask(projectIdFor(repo)) === null)
+    // …so the record must not still be saying it waits behind an active task:
+    // that stale sentence also armed the UI's "N conversations ahead" hint.
+    const after = loadTask(repo, second.id)!
+    expect(after.status).toBe('queued')
+    expect(after.reason?.code).toBe('agent_error')
+    expect(after.reason?.detail).toContain('branch-that-never-existed')
+    await reborn.shutdown()
+  })
+
+  // T1.2 re-review round 4, MINOR 3: the sweep dropped stale ids ONE BY ONE,
+  // each removal re-reading and rewriting the whole file synchronously on the
+  // loop that serves HTTP — and firing a queue-changed broadcast each time,
+  // which had the server re-read records and re-send frames per removal.
+  test('a line full of dead ids is swept in ONE write and ONE broadcast', async () => {
+    const repo = makeRepo()
+    const alive = makeTask(repo, 'alive', 'real work')
+    // Twenty ids nothing will ever resolve, ahead of the only live one.
+    const dead = Array.from({ length: 20 }, (_, n) => (n + 1).toString(16).padStart(12, '0'))
+    writeFileSync(
+      queuePath(repo),
+      JSON.stringify({
+        version: 1,
+        entries: [...dead, alive.id].map((entryId) => ({
+          id: entryId,
+          enqueued_at: '2026-01-01T00:00:00.000Z',
+        })),
+      }),
+    )
+
+    let writes = 0
+    let broadcasts = 0
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      onQueueChanged: () => {
+        broadcasts += 1
+      },
+      queueIo: {
+        ...nodeTaskQueueIo,
+        write: (path, value) => {
+          writes += 1
+          nodeTaskQueueIo.write(path, value)
+        },
+      },
+      runAgentFn: questionAgent().run,
+    })
+    await until(() => status(repo, alive.id) === 'waiting_for_you')
+
+    // Exactly two writes for the whole sweep: one for the batch, one for the
+    // dequeue of the task that then started. It used to be twenty-one — and a
+    // `toBeLessThanOrEqual` here would have passed just as happily on one,
+    // which would mean the task never started at all.
+    expect(writes).toBe(2)
+    expect(broadcasts).toBe(2)
+    expect(readQueue(repo).entries).toEqual([])
+    await runner.shutdown()
+  })
+
+  // T1.2 re-review round 7: three branches of the queue's error handling that
+  // nothing exercised — the two catches that keep a failing queue write from
+  // becoming a crashed gesture, and the sweep's "no longer waiting" arm.
+  test('a Stop on a queue that will not write degrades loudly instead of throwing', async () => {
+    const repo = makeRepo()
+    const head = makeTask(repo, 'head', 'work')
+    const behind = makeTask(repo, 'behind', 'work later')
+    let allowWrites = true
+    const degradations: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      onQueueDegraded: (reason) => degradations.push(reason),
+      queueIo: {
+        ...nodeTaskQueueIo,
+        write: (path, value) => {
+          if (!allowWrites) {
+            throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+          }
+          nodeTaskQueueIo.write(path, value)
+        },
+      },
+      runAgentFn: hangingAgent,
+    })
+    runner.start(head)
+    await until(() => status(repo, head.id) === 'running')
+    runner.start(behind)
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([behind.id])
+
+    // The disk turns read-only, then a human presses Stop on the waiting one.
+    allowWrites = false
+    expect(runner.interrupt(behind.id)).toEqual({ ok: true })
+    // The gesture succeeded, the task is settled, and the queue's refusal to
+    // write was NAMED rather than thrown at the caller or swallowed.
+    expect(status(repo, behind.id)).toBe('interrupted')
+    expect(degradations.some((line) => line.includes('read-only file system'))).toBe(true)
+
+    allowWrites = true
+    await runner.shutdown()
+  })
+
+  test('a queue that will not take the task at all refuses the creation, named', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'never enqueued', 'work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      queueIo: {
+        ...nodeTaskQueueIo,
+        write: () => {
+          throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' })
+        },
+      },
+      runAgentFn: questionAgent().run,
+    })
+
+    // enqueue throws; schedule turns it into a refusal instead of a 500.
+    const refused = runner.start(task)
+    expect(refused).toEqual({
+      ok: false,
+      code: 503,
+      error: 'no space left on device',
+      reason_code: 'resource_busy',
+    })
+    // And the record says the same thing the caller was told.
+    expect(loadTask(repo, task.id)?.reason?.code).toBe('resource_busy')
+    expect(loadTask(repo, task.id)?.reason?.detail).toContain('no space left on device')
+    await runner.shutdown()
+  })
+
+  test('an entry whose task is no longer WAITING is swept out of the line', async () => {
+    const repo = makeRepo()
+    const head = makeTask(repo, 'head', 'task one')
+    const moved = makeTask(repo, 'moved on', 'task two')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: async (options) => {
+        if (options.prompt.includes('task one')) {
+          await gate
+        }
+        const raw = claudeStream('done.\nQUESTION: next?')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    runner.start(head)
+    runner.start(moved)
+    await until(() => status(repo, head.id) === 'running')
+
+    // Its record leaves 'queued' behind the runner's back — the shape a crash
+    // at the wrong moment leaves. It is neither gone nor unreadable: it simply
+    // has no business making anyone wait behind it.
+    const settled = loadTask(repo, moved.id)!
+    settled.status = 'shipped'
+    saveTask(repo, settled)
+
+    release()
+    await until(() => readQueue(repo).entries.length === 0)
+    // Swept, and NOT rewritten: sweeping is not a status change.
+    expect(loadTask(repo, moved.id)?.status).toBe('shipped')
+    await runner.shutdown()
+  })
+
+  // T1.2 re-review round 4, MINOR 2: loadTask returns null for "no such task"
+  // AND for "could not read it just now". Only the first may cost a rank.
+  test('a task.json that cannot be READ keeps its place; only a task that is GONE loses it', async () => {
+    const repo = makeRepo()
+    const head = makeTask(repo, 'head', 'task one')
+    const unreadable = makeTask(repo, 'unreadable', 'task two')
+    const vanished = makeTask(repo, 'vanished', 'task three')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: async (options) => {
+        if (options.prompt.includes('task one')) {
+          await gate
+        }
+        const raw = claudeStream('done.\nQUESTION: next?')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    runner.start(head)
+    runner.start(unreadable)
+    runner.start(vanished)
+    await until(() => status(repo, head.id) === 'running')
+
+    // One record is there but illegible (a truncated write, an EIO); the
+    // other is genuinely gone.
+    writeFileSync(join(repo, '.codesema', 'tasks', unreadable.id, 'task.json'), '{ truncated')
+    rmSync(join(repo, '.codesema', 'tasks', vanished.id), { recursive: true, force: true })
+
+    release()
+    await until(() => readQueue(repo).entries.length === 1)
+    // The vanished one is out. The illegible one KEEPS its place — evicting
+    // it would silently cost a valid task its rank over a transient failure.
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([unreadable.id])
+    await runner.shutdown()
+  })
+
+  test('a turn that waited in the queue starts its clock when it STARTS, not when it was created', async () => {
+    const repo = makeRepo()
+    const first = makeTask(repo, 'first', 'task one')
+    const second = makeTask(repo, 'second', 'task two')
+    // A creation timestamp from another era: the record carries it on turn 1.
+    const stale = loadTask(repo, second.id)!
+    stale.turns[0]!.started_at = '2020-01-01T00:00:00.000Z'
+    saveTask(repo, stale)
+
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: async (options) => {
+        if (options.prompt.includes('task one')) {
+          await gate
+        }
+        const raw = claudeStream('done.\nQUESTION: next?')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    runner.start(first)
+    runner.start(second)
+    expect(loadTask(repo, second.id)?.turns[0]?.started_at).toBe('2020-01-01T00:00:00.000Z')
+
+    release()
+    await until(() => status(repo, second.id) === 'waiting_for_you')
+    // Rewritten at launch: the UI would otherwise show "running for years".
+    const startedAt = Date.parse(loadTask(repo, second.id)!.turns[0]!.started_at)
+    expect(Date.now() - startedAt).toBeLessThan(60_000)
+  })
+})
+
+// --- the inert maxParallelTasks key, said out loud -------------------------
+
+describe('maxParallelNotice', () => {
+  test('a configured key is announced inert, and names what replaces it', () => {
+    const line = maxParallelNotice(5)
+    expect(line).toContain('maxParallelTasks=5')
+    expect(line).toContain('inert')
+    expect(line).toContain('maxConcurrentAgents')
+  })
+
+  test('an unset key says nothing at all', () => {
+    expect(maxParallelNotice(undefined)).toBeNull()
   })
 })
 

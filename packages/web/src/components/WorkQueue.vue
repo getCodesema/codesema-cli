@@ -27,6 +27,7 @@ import {
   formatDuration,
   groupQueue,
   lastQuestion,
+  queueRankHintKey,
   resumeStateOf,
   waitingSince,
   type QueueSection,
@@ -121,6 +122,10 @@ const resumeOf = (state: TaskState) => resumeStateOf(state.record)
 const doneOpen = ref(true)
 
 const isEmpty = computed(() => props.states.length === 0)
+
+/** The #N pill's tooltip; queueRankHintKey decides which promise it may make. */
+const rankHint = (state: TaskState, rank: number): string =>
+  t(queueRankHintKey(state.record), { n: rank })
 
 // ── Isolation: per-card dot + the one-time upgrade banner ─────────────────
 const isoOf = (state: TaskState) => isolationBadge(state.record)
@@ -261,6 +266,16 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
               aria-hidden="true"
             />
             <span class="wq-title">{{ state.record.title }}</span>
+            <!-- One task at a time per repo: a conversation waiting its turn
+                 shows WHERE it is in its project's line, so "queued" never
+                 reads as "stuck". Absent on the one that is actually running. -->
+            <span
+              v-if="state.record.queue_position !== undefined"
+              class="wq-rank"
+              :title="rankHint(state, state.record.queue_position)"
+            >
+              {{ t('workspace.queuePosition', { n: state.record.queue_position }) }}
+            </span>
             <span
               v-if="showIso(state)"
               class="wq-iso"
@@ -618,6 +633,20 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 500;
+  color: var(--cs-ghost);
+}
+
+/* Rank in the project's queue: a quiet monospace pill, never louder than the
+   title it sits next to — it is a fact about waiting, not a warning. */
+.wq-rank {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--cs-line);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--cs-ghost);
 }
 

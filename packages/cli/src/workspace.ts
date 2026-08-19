@@ -6,10 +6,14 @@
 // repo, the workspace opens on the existing registry (possibly empty — add
 // projects from the UI). The process stays in the foreground: tasks live as
 // long as it runs (no detached daemon, decision n°4 of the plan). The first
-// Ctrl-C shuts down gracefully (agents SIGTERMed, tasks persisted
-// 'interrupted', worktrees kept — the next boot offers them back, and one
-// click on Resume in the UI restarts the turn that died; nothing ever
-// restarts on its own); a second Ctrl-C during that drain force-quits. A GLOBAL
+// Ctrl-C shuts down gracefully (agents SIGTERMed, the turns IN FLIGHT
+// persisted 'interrupted', worktrees kept — the next boot offers them back,
+// and one click on Resume in the UI restarts the turn that died; a turn that
+// started never restarts on its own). Tasks that were only WAITING are left
+// 'queued' in their repo's .codesema/queue.json, and the next boot picks the
+// line back up — as an EXPLICIT last step (manager.startPending()), once the
+// server listens and the shutdown handlers are installed, announced on the
+// terminal. A second Ctrl-C during that drain force-quits. A GLOBAL
 // <globalConfigDir()>/workspace.lock prevents a second workspace process from
 // racing this one's registry and task stores.
 
@@ -29,7 +33,7 @@ import {
   type IsolationProbe,
 } from './task-isolation.js'
 import { pendingResumeTurn } from './task-runner.js'
-import { createTaskManager, type TaskManager } from './task-server.js'
+import { createTaskManager, type PendingQueue, type TaskManager } from './task-server.js'
 import { AGENT_DEFS, defaultCommand, detectAgents } from './wizard.js'
 import { acquireWorkspaceLock, type WorkspaceLockHandle } from './workspace-lock.js'
 
@@ -46,13 +50,18 @@ function logProjects(projects: Project[], currentId: string | null): void {
 }
 
 /**
- * Tasks a previous shutdown/crash left mid-turn: surface them at boot, all
+ * Tasks a previous shutdown/crash left MID-TURN: surface them at boot, all
  * projects. NOTHING re-enqueues them — restarting agents that write code and
  * commit, unattended, on a plain `codesema workspace` boot would be intrusive
  * and would burn tokens on work nobody asked for. The offer is explicit
  * instead: this line, and the "needs you" section of the web UI where one
  * click on Resume restarts the very turn that died (the resumed provider
  * session when the record kept one, the transcript replay otherwise).
+ *
+ * A task that was only WAITING is a different story and is NOT listed here:
+ * its turn never started, nothing of it can be repeated, and its place in the
+ * repo's queue.json is exactly the instruction "run me when it is my turn" —
+ * startPending() honors it, and logResumedQueues says so.
  */
 function logResumableTasks(manager: TaskManager): void {
   const resumable = manager
@@ -73,11 +82,30 @@ function logResumableTasks(manager: TaskManager): void {
 }
 
 /**
- * Graceful shutdown: the first signal drains (agents SIGTERMed, 'interrupted'
- * persisted with {reason:'shutdown'}, worktrees KEPT for resume), a second
- * signal force-quits — the classic double Ctrl-C escape hatch when an agent
- * ignores its SIGTERM. 130 = 128 + SIGINT, the conventional exit code.
+ * Says which projects picked their persisted queue back up, and how many tasks
+ * that meant. A boot that silently starts agents is a boot the user cannot
+ * audit: whatever startPending() resumed is on screen, project by project.
  */
+export function logResumedQueues(resumed: readonly PendingQueue[]): void {
+  if (resumed.length === 0) {
+    return
+  }
+  console.log('')
+  for (const { project, queued } of resumed) {
+    console.log(t('workspace.queueResumed', { n: queued, project: project.name }))
+  }
+}
+
+/**
+ * The `maxParallelTasks` line a user still has in their config does nothing
+ * since T1.2: admission is per project now. A setting silently ignored is a
+ * setting that lies, so the boot says it out loud — once, and only when the
+ * key is actually set. Null when there is nothing to say.
+ */
+export function maxParallelNotice(configured: number | undefined): string | null {
+  return configured === undefined ? null : t('workspace.maxParallelInert', { n: configured })
+}
+
 /**
  * One line, every boot: either the cage is on (and what it lets out), or it is
  * off and WHY. The fallback to the host policy hardening is a downgrade of the
@@ -94,6 +122,13 @@ export function logIsolation(probe: IsolationProbe, domains: readonly string[]):
   )
 }
 
+/**
+ * Graceful shutdown: the first signal drains (agents SIGTERMed, the turn in
+ * flight persisted 'interrupted' with {reason:'shutdown'}, worktrees KEPT for
+ * resume, and the end-of-turn review awaited rather than orphaned), a second
+ * signal force-quits — the classic double Ctrl-C escape hatch when an agent
+ * ignores its SIGTERM. 130 = 128 + SIGINT, the conventional exit code.
+ */
 function installShutdownHandlers(deps: {
   manager: TaskManager
   stop: () => Promise<void>
@@ -258,6 +293,10 @@ export async function workspace(opts: {
   console.log(`  ${t('review.ctrlc')}`)
   console.log('')
   logIsolation(probe, allowedDomains)
+  const inert = maxParallelNotice(config.maxParallelTasks)
+  if (inert) {
+    console.log(inert)
+  }
   console.log('')
   console.log(t('workspace.projects'))
   logProjects(listProjects(), currentProjectId)
@@ -266,5 +305,11 @@ export async function workspace(opts: {
     openBrowser(started.url)
   }
   installShutdownHandlers({ manager: taskManager, stop: started.stop, lock, probe, draining })
+  // ONLY NOW do the persisted queues restart. Everything above had to be true
+  // first: the server listens (a task that starts has somewhere to report),
+  // the shutdown handlers are installed (a Ctrl-C drains it instead of killing
+  // it mid-turn), and the boot has already said what it found. A turn that
+  // started before any of that could neither be watched nor stopped.
+  logResumedQueues(taskManager.startPending())
   // The listening server keeps the event loop (and therefore the tasks) alive.
 }

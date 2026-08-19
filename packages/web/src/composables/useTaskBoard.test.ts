@@ -20,6 +20,7 @@ import {
   mergeEvent,
   mergeLiveMessage,
   oldestWaiting,
+  queueRankHintKey,
   queueSectionOf,
   replyModeOf,
   resumeStateOf,
@@ -60,6 +61,26 @@ function record(partial: Partial<TaskRecord>): TaskRecord {
 function event(partial: Partial<TaskEvent>): TaskEvent {
   return { seq: 0, at: '2026-08-13T10:00:00.000Z', type: 'message', data: {}, ...partial }
 }
+
+// T1.2 re-review, MINOR 9: the badge's tooltip is a claim about the project,
+// and it must not make it when nothing is running there.
+describe('queueRankHintKey', () => {
+  test('"N conversations ahead" only when the project really IS busy', () => {
+    expect(
+      queueRankHintKey(record({ reason: { code: 'resource_busy', detail: 'another task' } })),
+    ).toBe('workspace.queuePositionHint')
+  })
+
+  test('a line that is stopped rather than busy gets the honest hint instead', () => {
+    // A conversation whose worktree would not materialize: it holds a rank,
+    // but there is no agent ahead of it to wait for.
+    expect(
+      queueRankHintKey(record({ reason: { code: 'agent_error', detail: 'no such branch' } })),
+    ).toBe('workspace.queuePositionHintIdle')
+    // And a record that says nothing claims nothing.
+    expect(queueRankHintKey(record({}))).toBe('workspace.queuePositionHintIdle')
+  })
+})
 
 describe('sectionOf', () => {
   test('waiting_for_you and review_ko demand the human', () => {

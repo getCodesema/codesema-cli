@@ -93,12 +93,17 @@ export type CreateTaskResult =
       existingTaskId: string | null
     }
 
-type TaskStore = Map<string, TaskState>
+export type TaskStore = Map<string, TaskState>
 
 /** Composite store key: task ids are only unique within one repo's store. */
 export const taskKey = (projectId: string, taskId: string): string => `${projectId}/${taskId}`
 
-function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): void {
+/**
+ * Applies one 'task' frame to the store. Exported for its test: it owns the
+ * rules a record crosses when it lands (live bubbles dropped, progress line
+ * dropped, rank taken from the frame).
+ */
+export function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): void {
   const current = store.get(taskKey(projectId, record.id))
   if (!current) {
     store.set(taskKey(projectId, record.id), {
@@ -113,6 +118,11 @@ function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): 
     return
   }
   const previous = current.record.status
+  // `queue_position` is never persisted: the server decorates the frames it
+  // sends (every 'task' frame of a queued record, plus a fresh round for
+  // everyone still waiting whenever the line moves). So the frame is taken at
+  // its word — inventing or freezing a rank client-side is exactly how a card
+  // ends up showing a place it no longer holds.
   current.record = record
   // The agent's bubbles die with its turn: any other status means the journal
   // (turn.response) is now the one telling what was said.
