@@ -17,6 +17,15 @@ export type CodesemaConfig = {
   /** Cap of concurrently running workspace tasks (default in task-runner.ts). */
   maxParallelTasks?: number | undefined
   /**
+   * How many of the most-recently-updated TERMINATED (shipped/failed) tasks
+   * PER PROJECT survive the retention pass untouched (T1.9); everything past
+   * that has its worktree, HOME volume and .codesema/tasks/<id>/ directory
+   * removed. Absent means DEFAULT_TASK_RETENTION (task-retention.ts).
+   * Active tasks and 'interrupted' (reprenable) ones are NEVER candidates,
+   * whatever this is set to.
+   */
+  taskRetentionCount?: number | undefined
+  /**
    * Semantic watchdog budgets (D3), in SECONDS like `timeout`. Absent means the
    * D3 defaults apply (30 min of silence, 2 h of one tool in flight, a 30 s
    * heartbeat) — see AGENT_WATCHDOG_DEFAULTS and resolveWatchdogBudgets.
@@ -134,6 +143,13 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       ...(secs(raw.timeout) !== undefined ? { timeout: secs(raw.timeout) } : {}),
       ...(Number.isInteger(raw.maxParallelTasks) && (raw.maxParallelTasks as number) >= 1
         ? { maxParallelTasks: raw.maxParallelTasks as number }
+        : {}),
+      // 0 is a legitimate choice (purge every terminated task at the next
+      // boot, keep none); a negative or non-integer value is not, and the
+      // DEFAULT_TASK_RETENTION default applies instead of a value that would
+      // mean nothing sliced against an array.
+      ...(Number.isInteger(raw.taskRetentionCount) && (raw.taskRetentionCount as number) >= 0
+        ? { taskRetentionCount: raw.taskRetentionCount as number }
         : {}),
       // Read from either scope, but resolved ONCE at boot for the whole
       // workspace: see the TODO(T1.4) on CodesemaConfig. Whichever file holds

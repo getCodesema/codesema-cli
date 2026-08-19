@@ -289,6 +289,13 @@ export type TaskEventType =
    * 'error'. The cause is named in `data.name`, same doctrine as `cost`.
    */
   | 'branch'
+  /**
+   * A local resource of the task (its HOME volume) was released, or could
+   * not be. A NEUTRAL domain line, never an error — see `cost` above for the
+   * same doctrine. The precise incident lives in `data.name`, never in the
+   * type itself (mirrors packages/contract/src/tasks.ts).
+   */
+  | 'resource'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,

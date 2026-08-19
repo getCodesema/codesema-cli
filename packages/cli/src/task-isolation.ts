@@ -46,7 +46,7 @@ import {
 } from './agent.js'
 import type { IsolationMode } from './config.js'
 import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
-import type { TaskIsolation } from './contract.js'
+import { isTaskId, type TaskIsolation } from './contract.js'
 import { t } from './i18n.js'
 import type { ChecksConfig } from './repo-config.js'
 import { detectContainerRuntime, resolveChecksPlan, type ExecResult } from './task-checks.js'
@@ -222,6 +222,21 @@ export function agentContainerName(taskId: string): string {
 /** Per-task HOME volume: credentials bootstrapped once, sessions kept across turns. */
 export function agentHomeVolume(taskId: string): string {
   return `codesema-home-${taskId}`
+}
+
+/**
+ * Docker/podman label key stamped on every HOME volume THIS process creates,
+ * with the OS user's numeric id as its value (Décision, T1.9 review round 1):
+ * a machine with several `docker`-group users sharing one daemon has no
+ * other way to tell "idle, ours" from "idle, a colleague's" — a name alone
+ * (`codesema-home-<id>`) says nothing about who made it. The boot sweep
+ * reads it back to refuse ever touching a volume owned by a DIFFERENT uid.
+ */
+export const HOME_VOLUME_OWNER_LABEL = 'codesema.workspace'
+
+/** Stable per-OS-user id for the label above; 0 on a platform with no uid (never Linux/macOS with docker). */
+export function workspaceOwnerId(): string {
+  return String(process.getuid?.() ?? 0)
 }
 
 // --- exec seam -------------------------------------------------------------
@@ -907,7 +922,7 @@ export function isPodman(runtime: string): boolean {
 }
 
 /** runtime name → what the binary actually reported. */
-const podmanProbes = new Map<string, Promise<boolean>>()
+const podmanProbes = new Map<string, Promise<boolean | null>>()
 
 /**
  * Is this runtime really podman? The binary NAME cannot answer it: a very
@@ -917,14 +932,26 @@ const podmanProbes = new Map<string, Promise<boolean>>()
  * Without it the agent's uid maps to a foreign host uid and every write into
  * /work fails with EACCES. So ask the binary what it is.
  */
-export async function runtimeIsPodman(runtime: string, execFn?: IsolationExecFn): Promise<boolean> {
+export async function runtimeIsPodman(
+  runtime: string,
+  execFn?: IsolationExecFn,
+): Promise<boolean | null> {
   if (isPodman(runtime)) {
     return true
   }
-  const probe = async (): Promise<boolean> => {
+  const probe = async (): Promise<boolean | null> => {
     const exec = execFn ?? defaultExec
     const result = await exec(runtime, ['--version'], { timeoutMs: 20_000 })
-    return result.code === 0 && /podman/i.test(`${result.stdout}${result.stderr}`)
+    // T1.9 review round 4, MAJEUR 3: a probe that did not RUN answers null,
+    // never `false`. `false` reads as "this is docker", a positive fact, and
+    // the orphaned-volume sweep spends it on choosing which label format to
+    // ask for — under podman the wrong choice makes every foreign owner label
+    // unreadable, and an unreadable label is what now lets a volume through.
+    // A binary that could not answer must abstain instead.
+    if (result.code !== 0) {
+      return null
+    }
+    return /podman/i.test(`${result.stdout}${result.stderr}`)
   }
   if (execFn) {
     return probe()
@@ -935,6 +962,18 @@ export async function runtimeIsPodman(runtime: string, execFn?: IsolationExecFn)
   }
   const started = probe()
   podmanProbes.set(runtime, started)
+  // A memo that is only ever written and never cleared would freeze a single
+  // transient failure (a daemon still starting at boot, an EMFILE burst) for
+  // the entire life of the workspace process. Only an ANSWER is worth
+  // remembering; ignorance is re-asked.
+  void started.then(
+    (value) => {
+      if (value === null) {
+        podmanProbes.delete(runtime)
+      }
+    },
+    () => podmanProbes.delete(runtime),
+  )
   return started
 }
 
@@ -963,7 +1002,11 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
     if (await inspectOk(exec, opts.runtime, 'volume', volume)) {
       return { volume, credentials: 'already-bootstrapped' }
     }
-    const created = await exec(opts.runtime, ['volume', 'create', volume], { timeoutMs: 60_000 })
+    const created = await exec(
+      opts.runtime,
+      ['volume', 'create', '--label', `${HOME_VOLUME_OWNER_LABEL}=${workspaceOwnerId()}`, volume],
+      { timeoutMs: 60_000 },
+    )
     if (created.code !== 0) {
       throw new Error(t('isolation.homeFailed', { error: buildFailure(created) }))
     }
@@ -991,7 +1034,11 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
         'none',
         '--security-opt',
         'no-new-privileges',
-        ...usernsArgs(opts.podman ?? (await runtimeIsPodman(opts.runtime, opts.execFn))),
+        // `?? false` on purpose, and ONLY here: an unanswered probe on the RUN
+        // path means no --userns=keep-id, the long-standing behavior, and the
+        // worst case is an EACCES the turn reports. Nothing is destroyed. The
+        // sweep, which destroys, abstains instead.
+        ...usernsArgs(opts.podman ?? (await runtimeIsPodman(opts.runtime, opts.execFn)) ?? false),
         opts.image,
         'sh',
         '-lc',
@@ -1007,6 +1054,332 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
   homes.set(opts.taskId, run)
   run.catch(() => homes.delete(opts.taskId))
   return run
+}
+
+/**
+ * Named, never thrown: the whole point of this result is that a caller at
+ * termination (ship, abandon) can report the outcome and move on — never
+ * retry, never fail the task over it (D-rule of T1.9: a `volume rm` that
+ * fails takes nothing and refuses nothing, so it carries no D2 code, only a
+ * readable name).
+ */
+export type ReleaseAgentHomeResult =
+  | { released: true }
+  | { released: false; reason: 'no-runtime' }
+  | { released: false; reason: 'rm-failed'; detail: string }
+
+export type ReleaseAgentHomeOptions = {
+  taskId: string
+  /** Resolved runtime; probed via isolationRuntime(execFn) when absent. */
+  runtime?: string
+  execFn?: IsolationExecFn
+}
+
+/**
+ * Releases the task's HOME volume at termination (ship, abandon), through the
+ * SAME seam as the rest of isolation — `execFile` argv, never a runtime
+ * binary named by the caller. Best-effort by contract: a volume that could
+ * not be removed here is exactly what the boot sweep (sweepOrphanedHomeVolumes)
+ * rattraps on the next start, so this NEVER throws — every outcome, runtime
+ * absent included, comes back as data.
+ */
+export async function releaseAgentHome(
+  opts: ReleaseAgentHomeOptions,
+): Promise<ReleaseAgentHomeResult> {
+  const exec = opts.execFn ?? defaultExec
+  const runtime = opts.runtime ?? (await isolationRuntime(opts.execFn))
+  if (!runtime) {
+    return { released: false, reason: 'no-runtime' }
+  }
+  const volume = agentHomeVolume(opts.taskId)
+  const removed = await exec(runtime, ['volume', 'rm', volume], { timeoutMs: 30_000 })
+  if (removed.code !== 0) {
+    // A task can reach ship/abandon having never run a single caged turn (a
+    // question turn, an interrupt before the first one, `isolation:'container'`
+    // decided but never exercised): bootstrapAgentHome was then never called,
+    // and NOTHING was ever created for `volume rm` to fail on. Reported as
+    // 'released' rather than as a failure — a "no such volume" from the
+    // runtime is not a degradation here, it is the honest reading of "there
+    // was nothing to release" (false negative fixed, T1.9 review round 1,
+    // Mineur 6).
+    //
+    // Matched on the `rm` attempt's own message rather than a separate
+    // `inspect` beforehand (the first fix here did exactly that, and it
+    // traded the false negative for a false POSITIVE: an `inspect` failing
+    // for an unrelated reason — the daemon momentarily busy, a permission
+    // hiccup — is not proof the volume never existed, yet was read as
+    // 'released: true' all the same, masking a real removal failure). Docker
+    // and podman both say so, in slightly different words, in the SAME `rm`
+    // response, so no second round trip — and no second TOCTOU window — is
+    // needed to tell the two apart.
+    if (/no such volume/i.test(removed.stderr) || /no such volume/i.test(removed.stdout)) {
+      return { released: true }
+    }
+    return { released: false, reason: 'rm-failed', detail: buildFailure(removed) }
+  }
+  // The bootstrap memo would otherwise answer 'already-bootstrapped' for a
+  // volume this process just deleted — harmless in practice (ship/abandon are
+  // terminal, no turn runs again on this taskId) but wrong to leave standing.
+  homes.delete(opts.taskId)
+  return { released: true }
+}
+
+/** Prefix every task's HOME volume carries — the sweep's only identification (Décision 1). */
+const HOME_VOLUME_PREFIX = 'codesema-home-'
+
+/**
+ * One HOME volume as the sweep sees it: the task id its name encodes, and who
+ * (if anyone) labeled it as theirs. `ownerLabel === null` means the runtime's
+ * own label filter did not return this volume — a positive statement that it
+ * carries no `codesema.workspace` label, NEVER the result of a label we
+ * failed to read (see listHomeVolumeEntries).
+ */
+type HomeVolumeEntry = { id: string; ownerLabel: string | null }
+
+/** First `value` of `key=value` in a comma-joined DOCKER `--format '{{.Labels}}'` string. */
+function labelValue(labels: string, key: string): string | null {
+  for (const pair of labels.split(',')) {
+    const eq = pair.indexOf('=')
+    if (eq !== -1 && pair.slice(0, eq) === key) {
+      return pair.slice(eq + 1)
+    }
+  }
+  return null
+}
+
+/**
+ * Label-value template for the FILTERED listing below.
+ *
+ * T1.9 review round 3, MAJEUR 2: docker's `{{.Labels}}` renders the
+ * `k=v,k2=v2` form `labelValue` parses — podman's renders a Go map's default
+ * `map[k:v k2:v2]` string instead (verified live, podman 5.7.0), which
+ * contains no `=` before any comma and made `labelValue` return null for
+ * EVERY volume under podman, including ones this very build just labeled.
+ * `{{index .Labels "key"}}` extracts the value directly regardless of how the
+ * whole map would print, and is verified portable on podman (renders the bare
+ * value) — so podman gets that format, docker keeps the comma-joined one
+ * `labelValue` already handles correctly.
+ */
+const ownerLabelFormat = (podman: boolean): string =>
+  podman ? `{{.Name}}\t{{index .Labels "${HOME_VOLUME_OWNER_LABEL}"}}` : '{{.Name}}\t{{.Labels}}'
+
+/**
+ * HOME volumes on the runtime, with who (if anyone) labeled each as theirs.
+ * Null when the inventory could not be read — no runtime, a listing that
+ * failed, or one whose output does not have the shape it was asked for. The
+ * caller must NOT read null as "no volumes": deleting on the strength of a
+ * list it never actually saw would wipe volumes it merely failed to
+ * enumerate.
+ *
+ * A name whose suffix is not a valid 12-hex task id — `codesema-home-`,
+ * `codesema-home-not-an-id`, a path-traversal attempt, a `-backup` suffix
+ * tacked onto a real one — is DROPPED rather than coerced: this sweep only
+ * ever acts on ids it can trust round-trip through `agentHomeVolume`.
+ *
+ * T1.9 review round 4, MAJEUR 3 — why TWO listings and not one. The owner
+ * label is no longer a gate (round 3 made it an exclusion: a volume labeled
+ * for a DIFFERENT uid is spared, an unlabeled one is swept, which is the
+ * whole point of Décision 1). That inversion turned every way of FAILING to
+ * read a label into a licence to delete: a line the runtime truncated, or a
+ * template that rendered nothing, both came back as `ownerLabel === null` —
+ * indistinguishable from "carries no label" — and another uid's volume went.
+ * So absence of a label is now established POSITIVELY, by asking the runtime
+ * itself which volumes carry it (`--filter label=…`, supported by docker and
+ * verified on podman 5.7.0): a volume the filtered listing did not return
+ * carries no such label, full stop. Nothing about that conclusion depends on
+ * parsing a string.
+ *
+ * And a line of the FILTERED listing that does not have the arity it was
+ * asked for (no tab) cannot be attributed to a volume at all — it names one
+ * the runtime just told us IS labeled, and reading it as anything else would
+ * be exactly the bug above. That is an inventory read that failed: null, and
+ * the sweep does not run.
+ */
+async function listHomeVolumeEntries(
+  runtime: string,
+  exec: IsolationExecFn,
+  podman: boolean,
+): Promise<HomeVolumeEntry[] | null> {
+  const all = await exec(runtime, ['volume', 'ls', '--format', '{{.Name}}'], { timeoutMs: 30_000 })
+  if (all.code !== 0) {
+    return null
+  }
+  const labeled = await exec(
+    runtime,
+    [
+      'volume',
+      'ls',
+      '--filter',
+      `label=${HOME_VOLUME_OWNER_LABEL}`,
+      '--format',
+      ownerLabelFormat(podman),
+    ],
+    { timeoutMs: 30_000 },
+  )
+  // A failure HERE is never "nobody labeled anything": it is the same
+  // unreadable inventory as above, and it must cancel the sweep rather than
+  // let every foreign volume read as unlabeled.
+  if (labeled.code !== 0) {
+    return null
+  }
+  const owners = new Map<string, string>()
+  for (const line of labeled.stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) {
+      continue
+    }
+    const tab = trimmed.indexOf('\t')
+    if (tab === -1) {
+      return null
+    }
+    const rest = trimmed.slice(tab + 1).trim()
+    // `?? rest` and not `?? null`: this volume IS labeled (the runtime's own
+    // filter returned it), so a value this parser cannot make sense of must
+    // stay a value — one that will not match our owner id, hence excluded —
+    // and must never collapse into "unlabeled", which would sweep it.
+    const value = podman ? rest : (labelValue(rest, HOME_VOLUME_OWNER_LABEL) ?? rest)
+    owners.set(trimmed.slice(0, tab), value)
+  }
+  const entries: HomeVolumeEntry[] = []
+  for (const line of all.stdout.split('\n')) {
+    const name = line.trim()
+    if (!name.startsWith(HOME_VOLUME_PREFIX)) {
+      continue
+    }
+    const id = name.slice(HOME_VOLUME_PREFIX.length)
+    if (!isTaskId(id)) {
+      continue
+    }
+    entries.push({ id, ownerLabel: owners.get(name) ?? null })
+  }
+  return entries
+}
+
+export type HomeVolumeSweepOutcome = {
+  /** Task ids whose orphaned volume was removed. */
+  removed: string[]
+  /**
+   * One readable line per action or failure, for the boot's notice channel —
+   * NEVER the task journal (DP9): a volume this sweep names has no live task
+   * directory left to write into, `appendTaskEvent`'s `mkdirSync` would
+   * either resurrect one or race the very deletion this sweep is reporting.
+   */
+  notices: string[]
+}
+
+export type HomeVolumeSweepOptions = {
+  /** Every task id any KNOWN project record still claims (all registered projects, not just one), taken as a SNAPSHOT before the (slow) runtime round trips below. */
+  claimedIds: ReadonlySet<string>
+  /**
+   * Re-verified immediately before EACH removal — closes the race between the
+   * `claimedIds` snapshot above and the runtime round trips (`volume ls` then
+   * one `volume rm` per candidate), which can together take long enough for a
+   * brand-new task (or a brand-new registered project) to exist without ever
+   * having been in the snapshot. `null` means the inventory could not be
+   * rebuilt just now (same Risk-1 reasoning as the initial snapshot): every
+   * remaining candidate is left in place rather than trusted on a stale read.
+   * Absent entirely (unit tests, callers with no live registry to re-read):
+   * the initial snapshot is the only check.
+   */
+  recheckClaimedIds?: () => ReadonlySet<string> | null
+  runtime?: string
+  execFn?: IsolationExecFn
+}
+
+/**
+ * Boot sweep of orphaned HOME volumes (Décision 1, design.md: identified by
+ * NAME, never by label — 0.12 volumes carry none, and recovering exactly
+ * those is the point of the sweep). A volume is removed when its id is
+ * claimed by NO record of NO known project (Risk 1), whether or not it
+ * carries this workspace user's ownership label — an UNLABELED volume is the
+ * common, expected, pre-T1.9 case, not a reason to hold back.
+ *
+ * T1.9 review round 3, MAJEUR 3: an earlier round gated unlabeled volumes
+ * behind an opt-in `sweepUnlabeled` flag that was never wired to any config
+ * key or CLI flag anywhere in the codebase — under the shipped default, this
+ * sweep could not recover a SINGLE 0.12 volume, which is the one thing
+ * Décision 1 exists to do, and the notice it emitted advertised an opt-in
+ * that did not exist. Removed rather than wired: design.md never asked for
+ * label-gated recovery, and the one label-based protection design.md's own
+ * Risk 1 discussion never anticipated but is still worth keeping — a volume
+ * labeled for a DIFFERENT known uid is never touched, claimed or not, since
+ * this daemon may be shared by several `docker`-group users with no shared
+ * registry to tell their tasks apart — survives untouched below: it only
+ * ever excludes a volume that CARRIES a foreign label, never one with none.
+ *
+ * Never throws (Risk 2's sibling rule for the boot path): a runtime that
+ * cannot be reached, or a listing/removal that fails, comes back as a named
+ * notice, and the boot proceeds either way.
+ */
+export async function sweepOrphanedHomeVolumes(
+  opts: HomeVolumeSweepOptions,
+): Promise<HomeVolumeSweepOutcome> {
+  const exec = opts.execFn ?? defaultExec
+  const runtime = opts.runtime ?? (await isolationRuntime(opts.execFn))
+  if (!runtime) {
+    return {
+      removed: [],
+      notices: ['no container runtime detected — the orphaned HOME volume sweep did not run'],
+    }
+  }
+  // T1.9 review round 4, MAJEUR 3: podman-ness decides WHICH label template
+  // the listing below asks for, and asking for the wrong one is how a foreign
+  // owner label becomes unreadable. A probe that could not answer therefore
+  // stops the sweep instead of guessing 'docker' — an orphaned volume
+  // surviving until the next boot costs disk; another uid's volume deleted on
+  // a guess costs their agent's home.
+  const podman = await runtimeIsPodman(runtime, opts.execFn)
+  if (podman === null) {
+    return {
+      removed: [],
+      notices: [
+        `could not determine whether ${runtime} is podman (its --version probe failed) — the orphaned HOME volume sweep did not run`,
+      ],
+    }
+  }
+  const entries = await listHomeVolumeEntries(runtime, exec, podman)
+  if (entries === null) {
+    return {
+      removed: [],
+      notices: ['could not list HOME volumes — the orphaned volume sweep did not run'],
+    }
+  }
+  const owner = workspaceOwnerId()
+  const removed: string[] = []
+  const notices: string[] = []
+  for (const { id, ownerLabel } of entries) {
+    if (ownerLabel !== null && ownerLabel !== owner) {
+      // Someone else's volume on the same daemon: never ours to judge.
+      // Unlabeled (ownerLabel === null) is the common pre-T1.9 case and
+      // falls straight through to the orphan check below — see this
+      // function's own doc comment (MAJEUR 3).
+      continue
+    }
+    if (opts.claimedIds.has(id)) {
+      continue
+    }
+    if (opts.recheckClaimedIds) {
+      const fresh = opts.recheckClaimedIds()
+      if (fresh === null) {
+        notices.push(
+          `orphaned HOME volume ${agentHomeVolume(id)} left in place: the claimed-id inventory could not be re-verified right before removing it`,
+        )
+        continue
+      }
+      if (fresh.has(id)) {
+        continue
+      }
+    }
+    const volume = agentHomeVolume(id)
+    const result = await exec(runtime, ['volume', 'rm', volume], { timeoutMs: 30_000 })
+    if (result.code === 0) {
+      removed.push(id)
+      notices.push(`orphaned HOME volume ${volume} removed at boot: no task record claims it`)
+    } else {
+      notices.push(`orphaned HOME volume ${volume} could not be removed: ${buildFailure(result)}`)
+    }
+  }
+  return { removed, notices }
 }
 
 // --- the caged turn --------------------------------------------------------
@@ -1403,7 +1776,10 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
   if (!runtime) {
     throw new Error(t('isolation.noRuntime'))
   }
-  const podman = await runtimeIsPodman(runtime, opts.execFn)
+  // Run path: an unanswered probe degrades to "not podman" (no keep-id) as it
+  // always has — see the bootstrap's own note. Only the destructive sweep
+  // treats null as a reason to stop.
+  const podman = (await runtimeIsPodman(runtime, opts.execFn)) ?? false
   const base = resolveBaseImage(readBaseImageInputs(opts.worktree, opts.checksConfig ?? undefined))
   const image = await buildAgentImage({
     worktree: opts.worktree,

@@ -26,6 +26,7 @@ import {
   onStoreUnreadable,
   readTaskChecks,
   readTaskEvents,
+  removeTaskDir,
   resetJournalCursors,
   resetStoreReports,
   saveTask,
@@ -620,6 +621,39 @@ describe('taskIdsOnDisk', () => {
     },
   )
 
+  // T1.9 review round 3, Mineur 10: every test of the store guard denied
+  // access on `tasks/` itself — the READDIR failure path, which existed even
+  // BEFORE the CRITIQUE fix (`statSync` was added ON TOP of it, guarding the
+  // STAT of `tasks/` itself). None of them exercised the branch the fix
+  // actually added: a `statSync(tasksDir(cwd))` that fails for a reason OTHER
+  // than "never created" — the exact case `existsSync` used to collapse into
+  // `false` (a store this process genuinely has, just cannot currently see).
+  // Reproduced by denying traversal on tasks/'s PARENT (`.codesema/`): the
+  // directory has never been listed, only `statSync`'d, so this can only be
+  // caught by the code this round's CRITIQUE fix touched.
+  test.skipIf(RUNNING_AS_ROOT)(
+    'tasks/ unreachable through its PARENT (EACCES on statSync, not on readdir) is reported, never read as "never created"',
+    () => {
+      createTask(cwd, { ...input, title: 'hidden' })
+      const said: { cwd: string; reason: string }[] = []
+      onStoreUnreadable((where, reason) => said.push({ cwd: where, reason }))
+      const workDir = join(cwd, '.codesema')
+      chmodSync(workDir, 0o000)
+      try {
+        expect(taskIdsOnDisk(cwd)).toEqual([])
+        expect(listTasks(cwd)).toEqual([])
+      } finally {
+        chmodSync(workDir, 0o700)
+      }
+      // The whole point: this is NOT "a store that was never created" (that
+      // case reports NOTHING, see the test below) — it is a store this
+      // process could not reach, and invariant 2 forbids conflating the two.
+      expect(said.length).toBeGreaterThan(0)
+      expect(said[0]?.cwd).toBe(cwd)
+      expect(said[0]?.reason).toContain('EACCES')
+    },
+  )
+
   test.skipIf(RUNNING_AS_ROOT)(
     'one dark store is one notice, and it re-arms once it clears',
     () => {
@@ -703,5 +737,45 @@ describe('taskIdsOnDisk', () => {
     // …and not hidden either: the reason still reached a human.
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain('the task store of this project could not be listed')
+  })
+})
+
+describe('removeTaskDir', () => {
+  test('removes the whole task directory: task.json, events.jsonl, checks.json, everything', () => {
+    const task = createTask(cwd, { ...input, title: 'to purge' })
+    appendTaskEvent(cwd, task.id, { type: 'error', data: { message: 'x' } })
+    expect(existsSync(taskDir(cwd, task.id))).toBe(true)
+
+    expect(removeTaskDir(cwd, task.id)).toBe(true)
+
+    expect(existsSync(taskDir(cwd, task.id))).toBe(false)
+  })
+
+  test('a directory that was already gone is still a success, not a failure', () => {
+    expect(removeTaskDir(cwd, 'aaaaaaaaaaaa')).toBe(true)
+  })
+
+  // T1.9 review round 1, Mineur 5: `isTaskId` is the ONLY thing standing
+  // between this function's `id` argument and `taskDir(cwd, id)` — join()
+  // resolves `..` segments exactly like any other path component, so an id
+  // that is not a valid 12-hex task id must be refused before it ever
+  // reaches rmSync, or a path-traversal-shaped "id" would let this recursive
+  // delete escape .codesema/tasks/ entirely. Proven directly: a sibling
+  // directory outside tasks/ survives a call built to reach it.
+  test('an id shaped like a path-traversal attempt is refused before anything is touched', () => {
+    const outside = join(cwd, 'not-a-task-dir')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'canary.txt'), 'must survive')
+
+    const traversal = `../../../../../../..${outside}`
+    expect(removeTaskDir(cwd, traversal)).toBe(false)
+
+    expect(existsSync(join(outside, 'canary.txt'))).toBe(true)
+  })
+
+  test('a garden-variety invalid id (too short, uppercase, non-hex) is refused the same way', () => {
+    expect(removeTaskDir(cwd, 'not-hex')).toBe(false)
+    expect(removeTaskDir(cwd, 'AAAAAAAAAAAA')).toBe(false)
+    expect(removeTaskDir(cwd, '')).toBe(false)
   })
 })

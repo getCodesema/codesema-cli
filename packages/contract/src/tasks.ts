@@ -118,6 +118,17 @@ export type TaskEventType =
    * same doctrine as `cost`.
    */
   | 'branch'
+  /**
+   * A local resource of the task — its HOME volume, its worktree — was
+   * released, or could not be. A NEUTRAL domain line, never `error`: a
+   * `volume rm` that fails on a task that just shipped takes nothing and
+   * refuses nothing, and the boot sweep is the backstop, so painting it red
+   * would be the exact cry-wolf DP8(b) already refused for `cost`. The
+   * precise incident is named in `data.name` (e.g. `home_volume_released`,
+   * `home_volume_not_released`, `container_runtime_absent`), never in the
+   * type itself — `resource` names the DOMAIN, not the incident.
+   */
+  | 'resource'
 
 /**
  * How a task's agent turns are contained.
@@ -344,6 +355,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'isolation',
   'cost',
   'branch',
+  'resource',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])

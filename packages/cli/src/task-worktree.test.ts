@@ -317,11 +317,34 @@ describe('removeTaskWorktree', () => {
     expect(refExists(`refs/heads/${wt.branch}`, repo)).toBe(false)
   })
 
-  test('best-effort: removing a task that never had a worktree does not throw', async () => {
+  test('best-effort: removing a task that never had a worktree does not throw, and reports it as gone', async () => {
     const repo = makeRepo('main')
+    // `git worktree remove` fails on a path that was never a worktree — but
+    // "there is nothing there" IS the outcome the caller acts on, so this
+    // still reports the worktree as removed (T1.9 review round 4, MAJEUR 2).
     await expect(
       removeTaskWorktree(repo, 'ffffffffffff', 'codesema/task-none', { deleteBranch: true }),
-    ).resolves.toEqual({ serialized: true })
+    ).resolves.toEqual({ serialized: true, worktree_removed: true })
+  })
+
+  // T1.9 review round 4, MAJEUR 2: the `tryGit` running
+  // `git worktree remove --force` had its answer discarded, so this function
+  // reported success on a worktree still standing. A caller that then drops
+  // the task record — retention does — orphans that worktree permanently.
+  // `git worktree lock` produces the refusal without needing root.
+  test('a worktree git refuses to remove is reported as NOT removed', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'locked')
+    execFileSync('git', ['worktree', 'lock', wt.worktree], { cwd: repo, stdio: 'ignore' })
+    try {
+      const removal = await removeTaskWorktree(repo, 'aaaabbbbcccc', wt.branch, {
+        deleteBranch: false,
+      })
+      expect(removal.worktree_removed).toBe(false)
+      expect(existsSync(wt.worktree)).toBe(true)
+    } finally {
+      execFileSync('git', ['worktree', 'unlock', wt.worktree], { cwd: repo, stdio: 'ignore' })
+    }
   })
 })
 

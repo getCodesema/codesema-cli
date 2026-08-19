@@ -41,15 +41,19 @@ import {
   ensureEgressProxy,
   generateAgentDockerfile,
   GIT_INSTALL_COMMAND,
+  HOME_VOLUME_OWNER_LABEL,
   parseJsonc,
   probeIsolation,
+  releaseAgentHome,
   resetIsolationCaches,
   resolveBaseImage,
   resolveTaskIsolation,
   runContainerTurn,
   runtimeIsPodman,
   spawnContainer,
+  sweepOrphanedHomeVolumes,
   teardownEgressProxy,
+  workspaceOwnerId,
   type BaseImage,
   type ContainerSpawnOptions,
   type IsolationExecFn,
@@ -863,6 +867,8 @@ describe('bootstrapAgentHome', () => {
     expect(argsOf(calls, 'volume', 'create')[0]).toEqual([
       'volume',
       'create',
+      '--label',
+      `${HOME_VOLUME_OWNER_LABEL}=${workspaceOwnerId()}`,
       agentHomeVolume(taskId),
     ])
     const seed = calls.find((call) => call.args[0] === 'run')
@@ -931,6 +937,458 @@ describe('bootstrapAgentHome', () => {
     const before = calls.length
     await bootstrapAgentHome(opts)
     expect(calls.length).toBe(before)
+  })
+})
+
+// --- T1.9: HOME volume release + orphan sweep ------------------------------
+
+describe('releaseAgentHome', () => {
+  const taskId = 'a1b2c3d4e5f6'
+
+  test('removes the volume by argv, never a shell string', async () => {
+    const { calls, exec } = fakeExec(() => ok())
+    const outcome = await releaseAgentHome({ taskId, runtime: 'docker', execFn: exec })
+    expect(outcome).toEqual({ released: true })
+    // A single `volume rm` round trip — no separate `inspect` first (T1.9
+    // review round 1: an inspect that fails for a reason OTHER than "does
+    // not exist" is not proof of that, so existence is read off the rm
+    // attempt's own message instead — see below).
+    expect(calls).toEqual([{ file: 'docker', args: ['volume', 'rm', agentHomeVolume(taskId)] }])
+  })
+
+  test('a failing volume rm on an EXISTING volume is reported, never thrown', async () => {
+    const { exec } = fakeExec(() => ok({ code: 1, stderr: 'volume in use' }))
+    const outcome = await releaseAgentHome({ taskId, runtime: 'docker', execFn: exec })
+    expect(outcome.released).toBe(false)
+    expect(outcome).toMatchObject({ reason: 'rm-failed' })
+    expect((outcome as { detail: string }).detail).toContain('volume in use')
+  })
+
+  test('a volume that was never created (turn never ran caged) is reported as released, not as a failure', async () => {
+    const { exec } = fakeExec(() => ok({ code: 1, stderr: 'Error: No such volume: whatever' }))
+    const outcome = await releaseAgentHome({ taskId, runtime: 'docker', execFn: exec })
+    expect(outcome).toEqual({ released: true })
+  })
+
+  test('podman phrasing of the same "does not exist" case is recognized too', async () => {
+    const { exec } = fakeExec(() =>
+      ok({ code: 1, stderr: 'Error: no volume with name "x" found: no such volume' }),
+    )
+    const outcome = await releaseAgentHome({ taskId, runtime: 'podman', execFn: exec })
+    expect(outcome).toEqual({ released: true })
+  })
+
+  // T1.9 review round 1, Mineur 6 fixed a false NEGATIVE (a never-created
+  // volume misreported as a failure) by adding a separate `inspect` before
+  // `rm` — which then traded it for a false POSITIVE: an `inspect` failing
+  // for an unrelated reason (daemon momentarily busy, a permission hiccup)
+  // is not proof the volume never existed, yet was read as `released: true`
+  // regardless, MASKING a real removal failure underneath it. Proven here:
+  // an rm failure whose message says nothing about "no such volume" must
+  // stay a reported failure, whatever an inspect on the same volume might
+  // separately say.
+  test('an rm failure that does NOT say "no such volume" is never misread as "never existed"', async () => {
+    const { exec } = fakeExec(() => ok({ code: 1, stderr: 'permission denied' }))
+    const outcome = await releaseAgentHome({ taskId, runtime: 'docker', execFn: exec })
+    expect(outcome).toEqual({ released: false, reason: 'rm-failed', detail: expect.any(String) })
+  })
+
+  test('no container runtime detected: named, distinct from a failed rm', async () => {
+    const noRuntime: IsolationExecFn = () => Promise.resolve(ok({ code: 127, failure: 'ENOENT' }))
+    const outcome = await releaseAgentHome({ taskId, execFn: noRuntime })
+    expect(outcome).toEqual({ released: false, reason: 'no-runtime' })
+  })
+
+  test('a released volume is dropped from the bootstrap memo (a fresh bootstrap would not falsely say "already-bootstrapped")', async () => {
+    const { exec } = fakeExec()
+    await bootstrapAgentHome({
+      runtime: 'docker',
+      taskId,
+      image: 'codesema-agent:deadbeefcafe',
+      execFn: exec,
+      env: {},
+    })
+    const outcome = await releaseAgentHome({ taskId, runtime: 'docker', execFn: exec })
+    expect(outcome.released).toBe(true)
+    // A second bootstrap after the release re-probes rather than trusting the
+    // stale in-memory promise: if the memo entry survived (homes.delete not
+    // called), this second call would resolve the OLD promise WITHOUT ever
+    // touching exec2 at all, and 'already-bootstrapped' would be a lie about
+    // an in-memory cache rather than a fact this call actually checked.
+    const { calls: calls2, exec: exec2 } = fakeExec()
+    const before = (
+      await bootstrapAgentHome({
+        runtime: 'docker',
+        taskId,
+        image: 'codesema-agent:deadbeefcafe',
+        execFn: exec2,
+        env: {},
+      })
+    ).credentials
+    expect(before).toBe('already-bootstrapped')
+    expect(calls2.length).toBeGreaterThan(0)
+  })
+})
+
+describe('sweepOrphanedHomeVolumes', () => {
+  const owner = workspaceOwnerId()
+
+  /**
+   * Scripted answer to the TWO listings the sweep now makes (T1.9 review
+   * round 4, MAJEUR 3): `volume ls --format '{{.Name}}'` for every volume on
+   * the runtime, then `volume ls --filter label=codesema.workspace …` for the
+   * ones the RUNTIME ITSELF says carry the ownership label. Absence from the
+   * second listing is what now means "unlabeled" — never a label this parser
+   * failed to read.
+   */
+  function volumeRig(opts: {
+    /** Task ids whose `codesema-home-<id>` volume exists, plus any raw names. */
+    names: string[]
+    /** Volume name → owner id, for the volumes the filtered listing returns. */
+    labeled?: Record<string, string>
+    podman?: boolean
+    /** Overrides for the degradation cases. */
+    allCode?: number
+    labeledCode?: number
+    labeledStdout?: string
+    rm?: (volume: string) => ExecResult
+  }) {
+    const labeled = opts.labeled ?? {}
+    return fakeExec((call) => {
+      if (call.args[0] === 'volume' && call.args[1] === 'ls') {
+        if (call.args.includes('--filter')) {
+          if (opts.labeledCode !== undefined && opts.labeledCode !== 0) {
+            return ok({ code: opts.labeledCode })
+          }
+          if (opts.labeledStdout !== undefined) {
+            return ok({ stdout: opts.labeledStdout })
+          }
+          // Rendered from the format the code ACTUALLY asked for, not from
+          // what it should have asked for: that is what makes the round-3
+          // divergence observable end to end. `{{index .Labels "k"}}` prints
+          // the bare value on both runtimes; `{{.Labels}}` prints docker's
+          // comma-joined `k=v` pairs but podman's Go map (`map[k:v]`, verified
+          // live on podman 5.7.0), which carries no `=` to split on.
+          const format = call.args[call.args.indexOf('--format') + 1] ?? ''
+          const rendered = Object.entries(labeled).map(([name, value]) => {
+            if (format.includes('index .Labels')) {
+              return `${name}\t${value}`
+            }
+            return opts.podman
+              ? `${name}\tmap[${HOME_VOLUME_OWNER_LABEL}:${value}]`
+              : `${name}\t${HOME_VOLUME_OWNER_LABEL}=${value},other=x`
+          })
+          return ok({ stdout: rendered.join('\n') })
+        }
+        if (opts.allCode !== undefined && opts.allCode !== 0) {
+          return ok({ code: opts.allCode })
+        }
+        return ok({ stdout: opts.names.join('\n') })
+      }
+      if (call.args[0] === 'volume' && call.args[1] === 'rm' && opts.rm) {
+        return opts.rm(call.args[2] ?? '')
+      }
+      return ok()
+    })
+  }
+
+  const home = (id: string): string => `codesema-home-${id}`
+
+  test('removes a volume whose id no record claims, keeps one still claimed', async () => {
+    const { calls, exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa'), home('bbbbbbbbbbbb'), 'some-other-volume'],
+      labeled: { [home('aaaaaaaaaaaa')]: owner, [home('bbbbbbbbbbbb')]: owner },
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(['bbbbbbbbbbbb']),
+    })
+    expect(outcome.removed).toEqual(['aaaaaaaaaaaa'])
+    expect(outcome.notices).toEqual([
+      'orphaned HOME volume codesema-home-aaaaaaaaaaaa removed at boot: no task record claims it',
+    ])
+    expect(argsOf(calls, 'volume', 'rm')).toEqual([['volume', 'rm', 'codesema-home-aaaaaaaaaaaa']])
+  })
+
+  test('an id that is not valid 12-hex (garbage, traversal, a -backup suffix) is dropped before anything else runs', async () => {
+    const { exec } = volumeRig({
+      names: [
+        home('not-an-id'),
+        'codesema-home-',
+        home('../../../etc/passwd'),
+        home('aaaaaaaaaaaa-backup'),
+      ],
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual([])
+    expect(outcome.notices).toEqual([])
+  })
+
+  test('a volume labeled for a DIFFERENT workspace user is never touched, claimed or not', async () => {
+    const { exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: `not-${owner}` },
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(), // orphaned by OUR inventory — still never ours to judge.
+    })
+    expect(outcome.removed).toEqual([])
+    expect(outcome.notices).toEqual([])
+  })
+
+  // T1.9 review round 3, MAJEUR 2: docker's `{{.Labels}}` renders the
+  // `k=v,k2=v2` form `labelValue` parses — podman's renders a Go map's
+  // default `map[k:v k2:v2]` string instead, which contains no `=` before any
+  // comma and made `labelValue` return null for EVERY volume under podman,
+  // including ones this very build just labeled. The fix requests
+  // `{{index .Labels "key"}}` for podman specifically, extracting the bare
+  // value regardless of how the whole map would print. Proven with the
+  // FORMAT ARGUMENT ITSELF (never asserted anywhere before that round).
+  test('podman: the labeled listing is requested with the index-template format, never the docker comma-joined one', async () => {
+    const { calls, exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: owner },
+      podman: true,
+    })
+    await sweepOrphanedHomeVolumes({ runtime: 'podman', execFn: exec, claimedIds: new Set() })
+    const filtered = argsOf(calls, 'volume', 'ls').filter((args) => args.includes('--filter'))
+    expect(filtered).toHaveLength(1)
+    const args = filtered[0] ?? []
+    const format = args[args.indexOf('--format') + 1] ?? ''
+    expect(format).toContain('index .Labels')
+    expect(format).not.toBe('{{.Name}}\t{{.Labels}}') // the docker format, wrong here
+  })
+
+  test('podman: an own-labeled orphan is removed — the index-template value is actually read back, not dropped', async () => {
+    const { calls, exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: owner },
+      podman: true,
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'podman',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual(['aaaaaaaaaaaa'])
+    expect(argsOf(calls, 'volume', 'rm')).toEqual([['volume', 'rm', 'codesema-home-aaaaaaaaaaaa']])
+  })
+
+  test('podman: a volume labeled for a DIFFERENT workspace user is excluded — proves the label was actually parsed, not just ignored as garbage', async () => {
+    const { exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: `not-${owner}` },
+      podman: true,
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'podman',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual([])
+  })
+
+  test('podman: an unlabeled orphan (pre-T1.9) is swept by default, same as under docker', async () => {
+    const { exec } = volumeRig({ names: [home('aaaaaaaaaaaa')], podman: true })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'podman',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual(['aaaaaaaaaaaa'])
+  })
+
+  // T1.9 review round 3, MAJEUR 3: an unlabeled volume is the COMMON,
+  // EXPECTED pre-T1.9 shape — every volume 0.12 ever created — and recovering
+  // exactly those is the one thing Décision 1 (design.md) exists to do. An
+  // earlier round gated them behind an opt-in `sweepUnlabeled` flag that was
+  // never wired to any config key anywhere in the codebase, so under the
+  // shipped default this sweep could not recover a single 0.12 volume. Proven
+  // directly: no options flag at all, still removed.
+  test('an unlabeled volume (pre-T1.9) is swept like any other orphan by default — recovering it is the whole point', async () => {
+    const { calls, exec } = volumeRig({ names: [home('aaaaaaaaaaaa')] })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual(['aaaaaaaaaaaa'])
+    expect(argsOf(calls, 'volume', 'rm')).toEqual([['volume', 'rm', 'codesema-home-aaaaaaaaaaaa']])
+  })
+
+  // T1.9 review round 4, MAJEUR 3 (first half): `runtimeIsPodman` probes
+  // `<runtime> --version` and used to answer `false` — "this is docker", a
+  // positive fact — when the probe did not run at all. That answer picks the
+  // docker label template, which under a real podman renders nothing usable,
+  // so a volume belonging to ANOTHER uid read as unlabeled and was deleted.
+  // The probe now abstains, and abstention stops the sweep.
+  test("a runtime whose --version probe fails stops the sweep: another uid's volume is not deleted on a guess", async () => {
+    const rig = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: '4242' },
+      podman: true,
+    })
+    const exec: IsolationExecFn = (file, args, execOpts) =>
+      args[0] === '--version'
+        ? Promise.resolve(ok({ code: 125, stderr: 'daemon not ready' }))
+        : rig.exec(file, args, execOpts)
+
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+
+    expect(outcome.removed).toEqual([])
+    expect(argsOf(rig.calls, 'volume', 'rm')).toEqual([])
+    expect(outcome.notices).toHaveLength(1)
+    expect(outcome.notices[0]).toContain('did not run')
+  })
+
+  // Same probe, the control: when it ANSWERS, the sweep runs and the foreign
+  // label is read — so the test above pins the abstention, not a sweep that
+  // never worked.
+  test('the same volume is spared (never deleted) once the probe answers: the foreign label is read', async () => {
+    const rig = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: '4242' },
+      podman: true,
+    })
+    const exec: IsolationExecFn = (file, args, execOpts) =>
+      args[0] === '--version'
+        ? Promise.resolve(ok({ stdout: 'podman version 5.7.0\n' }))
+        : rig.exec(file, args, execOpts)
+
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+
+    expect(outcome.removed).toEqual([])
+    expect(argsOf(rig.calls, 'volume', 'rm')).toEqual([])
+    expect(outcome.notices).toEqual([])
+  })
+
+  // T1.9 review round 4, MAJEUR 3 (second half): a truncated line — one that
+  // does not carry the tab the format asked for — used to leave `rest` empty,
+  // hence `ownerLabel = null`, hence "unlabeled", hence SWEPT. A partial read
+  // deleted. The listing is now rejected as unreadable instead.
+  test('a truncated line in the labeled listing cancels the sweep — a partial read never deletes', async () => {
+    const { calls, exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeledStdout: `${home('aaaaaaaaaaaa')}`, // the tab and the value never arrived
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual([])
+    expect(argsOf(calls, 'volume', 'rm')).toEqual([])
+    expect(outcome.notices).toEqual([
+      'could not list HOME volumes — the orphaned volume sweep did not run',
+    ])
+  })
+
+  // A labeled volume whose VALUE this parser cannot make sense of is still a
+  // labeled volume — the runtime's own filter returned it — so it is excluded,
+  // never folded back into "unlabeled".
+  test('a label value the parser cannot read excludes the volume, it never reads as unlabeled', async () => {
+    const { exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      // docker format expected, a Go map printed instead: no `=` to split on.
+      labeledStdout: `${home('aaaaaaaaaaaa')}\tmap[codesema.workspace:${owner}]`,
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual([])
+  })
+
+  test('no runtime detected: named, nothing removed', async () => {
+    const noRuntime: IsolationExecFn = () => Promise.resolve(ok({ code: 127, failure: 'ENOENT' }))
+    const outcome = await sweepOrphanedHomeVolumes({ execFn: noRuntime, claimedIds: new Set() })
+    expect(outcome.removed).toEqual([])
+    expect(outcome.notices).toHaveLength(1)
+  })
+
+  test('listing fails: never treated as an empty list (nothing removed on the strength of it)', async () => {
+    const { exec } = volumeRig({ names: [], allCode: 1 })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual([])
+    expect(outcome.notices).toHaveLength(1)
+  })
+
+  // The label listing is an inventory read like any other: failing it is not
+  // "nobody labeled anything", which would sweep every foreign volume.
+  test('the labeled listing failing cancels the sweep, it never reads as "no volume is labeled"', async () => {
+    const { calls, exec } = volumeRig({ names: [home('aaaaaaaaaaaa')], labeledCode: 1 })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual([])
+    expect(argsOf(calls, 'volume', 'rm')).toEqual([])
+    expect(outcome.notices).toHaveLength(1)
+  })
+
+  test('a removal failure is named per volume and does not stop the rest', async () => {
+    const { exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa'), home('cccccccccccc')],
+      labeled: { [home('aaaaaaaaaaaa')]: owner, [home('cccccccccccc')]: owner },
+      rm: (volume) => (volume.endsWith('aaaaaaaaaaaa') ? ok({ code: 1, stderr: 'busy' }) : ok()),
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+    })
+    expect(outcome.removed).toEqual(['cccccccccccc'])
+    expect(outcome.notices).toHaveLength(2)
+  })
+
+  test('the recheck runs right before each removal: an id claimed only in the FRESH read survives', async () => {
+    const { exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: owner },
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(), // absent from the STALE snapshot…
+      recheckClaimedIds: () => new Set(['aaaaaaaaaaaa']), // …but present in the fresh one.
+    })
+    expect(outcome.removed).toEqual([])
+  })
+
+  test('a recheck that cannot rebuild its inventory (null) forbids the removal rather than trusting the stale snapshot', async () => {
+    const { exec } = volumeRig({
+      names: [home('aaaaaaaaaaaa')],
+      labeled: { [home('aaaaaaaaaaaa')]: owner },
+    })
+    const outcome = await sweepOrphanedHomeVolumes({
+      runtime: 'docker',
+      execFn: exec,
+      claimedIds: new Set(),
+      recheckClaimedIds: () => null,
+    })
+    expect(outcome.removed).toEqual([])
+    expect(outcome.notices[0]).toContain('could not be re-verified')
   })
 })
 
@@ -1135,9 +1593,14 @@ describe('runtimeIsPodman', () => {
     expect(await runtimeIsPodman('docker', exec)).toBe(false)
   })
 
-  test('a runtime that cannot answer is not assumed to be podman', async () => {
+  // T1.9 review round 4, MAJEUR 3: `false` here is a POSITIVE fact ("this is
+  // docker") that the orphaned-volume sweep spends on choosing a label
+  // template — and the wrong template makes a foreign owner label unreadable,
+  // which is now what lets a volume be deleted. A probe that did not run
+  // abstains instead of answering.
+  test('a runtime that cannot answer abstains (null), it is never called docker', async () => {
     const { exec } = fakeExec(() => ok({ code: 127, stderr: 'not found' }))
-    expect(await runtimeIsPodman('docker', exec)).toBe(false)
+    expect(await runtimeIsPodman('docker', exec)).toBeNull()
   })
 })
 
