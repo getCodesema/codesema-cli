@@ -25,7 +25,14 @@ import {
   type AgentRunOptions,
   type WatchdogBudgets,
 } from './agent.js'
-import type { TaskEvent, TaskRecord, TaskStatus, TaskTurn } from './contract.js'
+import {
+  isTerminalReason,
+  reasonCodeOf,
+  type TaskEvent,
+  type TaskRecord,
+  type TaskStatus,
+  type TaskTurn,
+} from './contract.js'
 import {
   foldTurnCost,
   totalCost,
@@ -34,8 +41,8 @@ import {
   type SettledCost,
 } from './cost.js'
 import { fixCommandFor } from './fix.js'
-import { git, tryGit } from './git.js'
-import { reviewLanguage } from './i18n.js'
+import { git, refExists, tryGit } from './git.js'
+import { reviewLanguage, t } from './i18n.js'
 import type { ChecksConfig } from './repo-config.js'
 import {
   CAGE_FORWARDED_ENV,
@@ -43,7 +50,15 @@ import {
   runContainerTurn,
   type RunContainerTurnOptions,
 } from './task-isolation.js'
-import { createTaskWorktree, removeTaskWorktree, renameTaskBranch } from './task-worktree.js'
+import {
+  BranchInUseError,
+  createTaskWorktree,
+  removeTaskWorktree,
+  renameTaskBranch,
+  type TaskWorktree,
+  type WorktreeLockFn,
+  type WorktreeRemoval,
+} from './task-worktree.js'
 import {
   appendTaskEvent,
   loadTask,
@@ -446,6 +461,8 @@ export type RunTaskTurnOptions = {
   checksConfig?: ChecksConfig | null | undefined
   /** Test seam for the caged path; the default drives real containers. */
   runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
+  /** Test seam for the repo's worktree lock; the default takes the real one. */
+  worktreeLockFn?: WorktreeLockFn | undefined
 }
 
 /**
@@ -685,6 +702,8 @@ export type TaskRunnerOptions = {
   checksConfig?: ChecksConfig | null | undefined
   /** Test seam for the caged path; the default drives real containers. */
   runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
+  /** Test seam for the repo's worktree lock; the default takes the real one. */
+  worktreeLockFn?: WorktreeLockFn | undefined
   /**
    * Automatic end-of-turn review (T4). When set, a successful 'done' turn
    * parks the task on 'reviewing' (post-commit) and hands it to this hook,
@@ -703,20 +722,34 @@ export type TaskRunner = {
    * T8. Picks an 'interrupted' task back up WITHOUT a new instruction: the
    * turn that never finished is re-scheduled as it stands (same prompt, same
    * turn index), so the conversation continues instead of branching. Refused
-   * (409) on any other status, on a task with no unfinished turn to re-run,
-   * and on a task whose materialized worktree has vanished — the work it
-   * carried is not there to continue.
+   * (409) on any other status and on a task with no unfinished turn to re-run.
+   * A worktree that vanished is rebuilt, not refused: reply() rebuilds it too,
+   * and an affordance the UI offers must not be one that can only 409.
    */
   resume: (taskId: string) => TaskActionResult
   /** SIGTERM to the agent's process group (running) or drops the task from the queue. */
   interrupt: (taskId: string) => TaskActionResult
-  /** Deletes the worktree AND the branch, marks the task 'failed'. Refused while running. */
-  abandon: (taskId: string) => TaskActionResult
+  /**
+   * Deletes the worktree AND the branch, marks the task 'failed'. Refused
+   * while running, and while another abandon of the same task is in flight.
+   * NEVER rejects: a cleanup that could not happen comes back as a result,
+   * because the HTTP layer that dispatches it does not catch.
+   */
+  abandon: (taskId: string) => Promise<TaskActionResult>
+  /**
+   * True while an abandon of this task is between its worktree removal and its
+   * record write. Published because that window belongs to the layer above too:
+   * ship() must refuse during it exactly as abandon() refuses during a ship
+   * (task-server.ts) — otherwise the two settle in either order and the loser
+   * writes the record last.
+   */
+  isAbandoning: (taskId: string) => boolean
   /**
    * Graceful process exit: aborts every running agent, persists 'interrupted'
    * with an event {reason:'shutdown'} (queued tasks included — a 'queued'
    * record with no live process would be unstartable at next boot), keeps the
-   * worktrees, and resolves once every in-flight turn has settled on disk.
+   * worktrees, and resolves once every in-flight turn AND every in-flight
+   * abandon has settled on disk.
    */
   shutdown: () => Promise<void>
   runningCount: () => number
@@ -780,6 +813,14 @@ function accrueCost(
     onDegraded?.({ cause: 'total_unrepresentable', turns: total.turns })
   }
 }
+
+/**
+ * The branch a rebuild had to leave behind, and why. Only ever set when the
+ * conversation could NOT go back to its own branch: `in_use` means git refused
+ * (checked out elsewhere) and `commits` counts what stays there, `gone` means
+ * the branch was deleted and there is nothing left to point at.
+ */
+type StrandedBranch = { branch: string; reason: 'in_use' | 'gone'; commits: number }
 
 /** Transcript replay for providers without session resume (one-shot turns). */
 function transcript(record: TaskRecord): string {
@@ -881,6 +922,14 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       return
     }
     const sha = tryGit(['rev-parse', 'HEAD'], record.worktree)
+    if (sha) {
+      // Where the conversation leaves its branch. A rebuild compares the tip it
+      // finds against this one: equal means "as I left it", different means
+      // somebody else wrote on the branch while the worktree was gone — the
+      // anchor cannot tell those apart, since foreign commits land AFTER it and
+      // leave it a perfectly valid ancestor.
+      record.head_sha = sha
+    }
     emit(record.id, {
       type: 'commit',
       data: { sha: sha ?? '', files_changed: filesChanged, turn: record.turns.length },
@@ -1028,8 +1077,30 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       })
       record.reason = taskReason('interrupted_by_user', message)
     } else {
-      record.status = 'failed'
-      emit(record.id, { type: 'error', data: { message: preview(errorMessage(err)) } })
+      const message = preview(errorMessage(err))
+      // Some failures name their own degradation (the repo's worktree lock
+      // giving up says `resource_busy`). The code rides in its own field, the
+      // payload stays exactly what it always was, and the record restates the
+      // pair — an unnamed failure still lands as a plain error, as before.
+      const code = reasonCodeOf(err)
+      // A RETRYABLE degradation must never land on a status nothing can pick
+      // back up: 'failed' is terminal and offers no resume, while the whole
+      // point of `terminal: false` is that the same operation, attempted
+      // later, can genuinely succeed. Same argument as the abort path above.
+      const retryable = code !== null && !isTerminalReason(code)
+      record.status = retryable ? 'interrupted' : 'failed'
+      emit(record.id, {
+        // The event names the same outcome as the status. A task parked on
+        // 'interrupted' — with a resume affordance — announced by an 'error'
+        // event would make the timeline and the badge disagree, and the web
+        // mirror renders the two from the same stream.
+        type: retryable ? 'interrupted' : 'error',
+        data: { message },
+        ...(code ? { reason_code: code } : {}),
+      })
+      if (code) {
+        record.reason = taskReason(code, message)
+      }
     }
     // The worktree is deliberately left alone on every one of these paths
     // (T1.6): the branch and whatever the agent had written before it stopped
@@ -1037,10 +1108,158 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     persist(record)
   }
 
-  const ensureWorktree = (record: TaskRecord): void => {
+  /**
+   * Where this conversation's work is measured FROM, decided at materialization
+   * and stated whenever it moves.
+   *
+   * The discriminant for "first materialization" is `record.worktree === ''`,
+   * and it is the only honest one available: an empty worktree PROVES no work
+   * can be on the branch, because the branch does not exist yet. The turn list
+   * cannot answer that question — `ended_at` is stamped on the open turn of a
+   * task that never ran at all (a graceful shutdown while it was still
+   * `queued`, an interrupt during materialization), and `reply()` is the
+   * documented way to pick exactly those back up.
+   *
+   * The anchor is write-once PER LINEAGE. Within one lineage — the same branch,
+   * rebuilt — it never moves: the tip already carries the turns that ran, and a
+   * fresh anchor would quietly drop them out of every diff measured from it.
+   * A rebuild NORMALLY stays in its lineage, because ensureWorktree takes the
+   * conversation's own branch back. Only when that is impossible (the branch is
+   * checked out elsewhere, or was deleted) does a fresh branch get forged: that
+   * one IS a new lineage — keeping the old anchor would attribute to the agent
+   * every commit the base gained meanwhile — so the anchor moves with it, and
+   * the change of branch is announced whether or not the anchor moved.
+   *
+   * A record that arrives with NO anchor and a worktree it already had (a 0.12
+   * conversation resumed) gets none: anchoring on a branch that already carries
+   * work would put that work behind the baseline and out of the review. It
+   * keeps falling back on `base...HEAD`, out loud.
+   *
+   * The uncommitted files of the MAIN repo never travel into the worktree —
+   * a task must not publish the human's private work in progress — and that is
+   * said ONCE, on the turn that materializes, not on every turn.
+   */
+  const anchorConversation = (
+    record: TaskRecord,
+    wt: TaskWorktree,
+    lineage: { first: boolean; fresh: StrandedBranch | null },
+  ): void => {
+    if (wt.created_branch) {
+      // Once true, always true: the conversation created this head, whatever a
+      // later re-materialization happens to find.
+      record.created_branch = true
+    }
+    // Where this materialization leaves the branch. Written on every path, so
+    // the NEXT rebuild can compare instead of guessing (see head_sha).
+    record.head_sha = wt.baseline
+    if (lineage.fresh) {
+      // UNCONDITIONAL: a conversation that changes branch has to say so even
+      // when the base has not moved an inch — the branch under it changed,
+      // which is the part the human cannot see and cannot guess. Saying it only
+      // when the baseline moved was silence on the common case.
+      const moved =
+        record.baseline_sha !== undefined && record.baseline_sha !== wt.baseline
+          ? ` the baseline moved with it (${record.baseline_sha.slice(0, 12)} → ${wt.baseline.slice(0, 12)});`
+          : ''
+      const left =
+        lineage.fresh.reason === 'gone'
+          ? `the branch ${lineage.fresh.branch} that carried the earlier turns no longer exists, so their commits are not in this worktree`
+          : `the branch ${lineage.fresh.branch} that carried the earlier turns is checked out elsewhere and could not be taken back, so ${lineage.fresh.commits} commit(s) stay there — nothing deletes that branch, but this worktree does not carry them`
+      emit(record.id, {
+        type: 'message',
+        data: {
+          text: `worktree rebuilt on a FRESH fork of ${record.base} (branch ${wt.branch}):${moved} ${left}`,
+          ...(lineage.fresh.reason === 'in_use'
+            ? { stranded_branch: lineage.fresh.branch, stranded_commits: lineage.fresh.commits }
+            : {}),
+        },
+      })
+    }
+    if (record.baseline_sha !== undefined) {
+      if (lineage.fresh && record.baseline_sha !== wt.baseline) {
+        record.baseline_sha = wt.baseline
+      }
+      return
+    }
+    if (!lineage.first) {
+      emit(record.id, {
+        type: 'message',
+        data: {
+          // Deliberately does NOT name a branch: on a rebuilt fork the record
+          // already carries the FRESHLY forged name, not the one that carried
+          // the earlier turns. What is true in every case is that this
+          // conversation had materialized before.
+          text: `no baseline was recorded for this conversation and it had already materialized before: anchoring one now could hide the work its earlier turns left behind, so the review keeps measuring ${record.base}...HEAD`,
+        },
+      })
+      return
+    }
+    record.baseline_sha = wt.baseline
+    if (wt.uncommitted_files > 0) {
+      // In work-on mode `base` is the MR target, NOT what the sha belongs to:
+      // labelling the branch tip with the target's name would name the wrong
+      // thing entirely.
+      const startedFrom = record.work_on ? record.branch : record.base
+      emit(record.id, {
+        type: 'message',
+        data: {
+          text: `${wt.uncommitted_files} uncommitted file(s) in the main repository are NOT carried into the task worktree: the agent starts from ${startedFrom}@${wt.baseline.slice(0, 12)}`,
+          uncommitted_files: wt.uncommitted_files,
+        },
+      })
+    }
+  }
+
+  /**
+   * The repo lock was taken from a holder whose pid was still alive (the
+   * pid-recycling valve of worktree-lock.ts). Rare, and never inferred later
+   * from a mangled index: it is named where the human reads the task, with the
+   * retryable code that says another process was involved.
+   */
+  const reportLockSteal = (taskId: string, stolen: { pid: number; age_ms: number }): void => {
+    emit(taskId, {
+      type: 'error',
+      data: {
+        message: `repo worktree lock taken from pid ${stolen.pid}, which had held it for ${Math.round(stolen.age_ms / 1000)}s (assumed a recycled pid, not a live holder)`,
+      },
+      reason_code: 'resource_busy',
+    })
+  }
+
+  /**
+   * The branch came back with commits this conversation never made. Silence
+   * here is the exact mirror of the silence that losing them would be: the
+   * anchor cannot catch it (a third party's commits land AFTER the baseline and
+   * leave it a valid ancestor), so `baseline..HEAD` would present someone
+   * else's work as the agent's — measured by the review, published by the ship.
+   * The conversation keeps the branch, because that is where its own work is,
+   * and says what it found.
+   */
+  const reportForeignCommits = (record: TaskRecord, wt: TaskWorktree): void => {
+    const left = record.head_sha
+    if (!left || left === wt.baseline) {
+      return
+    }
+    const ahead = Number.parseInt(
+      tryGit(['rev-list', '--count', `${left}..${wt.baseline}`], opts.cwd) ?? '',
+      10,
+    )
+    const text =
+      ahead > 0
+        ? `${ahead} commit(s) landed on ${record.branch} from outside this conversation while its worktree was gone (${left.slice(0, 12)} → ${wt.baseline.slice(0, 12)}): they sit after the baseline, so the review measures them as part of this task`
+        : `${record.branch} was rewritten while this conversation's worktree was gone (${left.slice(0, 12)} → ${wt.baseline.slice(0, 12)}): the commits its earlier turns made may no longer be on it`
+    emit(record.id, {
+      type: 'message',
+      data: { text, foreign_head: wt.baseline, foreign_commits: ahead > 0 ? ahead : 0 },
+    })
+  }
+
+  const ensureWorktree = async (record: TaskRecord, signal: AbortSignal): Promise<void> => {
     if (record.worktree && existsSync(record.worktree)) {
       return
     }
+    // No worktree ever named on this record = nothing can be on its branch yet.
+    const first = record.worktree === ''
     if (record.work_on) {
       // Work-on task (POST /api/tasks branch=…): the conversation identifies
       // with its pre-existing branch — check the branch itself out, first
@@ -1048,8 +1267,20 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       // holds the MR target (set by the server at creation): never overwrite
       // it, and a branch deleted or checked out elsewhere in the meantime
       // fails the turn with a readable error instead of forking a substitute.
-      const wt = createTaskWorktree(opts.cwd, record.id, record.title, { branch: record.branch })
+      const wt = await createTaskWorktree(opts.cwd, record.id, record.title, {
+        branch: record.branch,
+        signal,
+        ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
+      })
       record.worktree = wt.worktree
+      if (wt.lock_stolen) {
+        reportLockSteal(record.id, wt.lock_stolen)
+      }
+      // A work-on branch is the USER's: teammates pushing to it between two
+      // turns is ordinary, and all the more reason to name what came back.
+      reportForeignCommits(record, wt)
+      // Same branch, same history: the lineage is never fresh here.
+      anchorConversation(record, wt, { first, fresh: null })
       return
     }
     // A base set BEFORE the first materialization (worktree still empty) is an
@@ -1057,11 +1288,74 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // fails the turn rather than silently branching from somewhere else. Once
     // a worktree existed, base may hold a DETECTED ref (possibly remote, e.g.
     // 'origin/main'), so re-materialization keeps the auto-detection path.
+    // REBUILD of a fork: the conversation goes back to its OWN branch, exactly
+    // the way a work-on conversation does. That branch is where every commit
+    // its earlier turns made still lives; forking a fresh one beside it would
+    // leave that work referenced by nothing — out of `baseline..HEAD`, out of
+    // the review, out of the ship, and not even deleted by an abandon (which
+    // only knows the record's current branch). Adopting keeps the lineage, the
+    // anchor and the work in one piece.
+    let stranded: StrandedBranch | null = null
+    if (!first && record.branch) {
+      // `^{commit}` is not decoration: `rev-parse --verify` answers for a REF,
+      // not for the object it points at, so a ref left dangling by a partial
+      // clone or an interrupted fetch would pass this gate, fail the
+      // `worktree add` underneath it with a raw (and locale-dependent) git
+      // error, and drop the whole conversation into terminal 'failed'. Peeling
+      // to a commit is what actually asks "is the work there?" — and when it is
+      // not, this falls into the 'gone' branch below, which survives out loud.
+      if (refExists(`refs/heads/${record.branch}^{commit}`, opts.cwd)) {
+        try {
+          const kept = await createTaskWorktree(opts.cwd, record.id, record.title, {
+            branch: record.branch,
+            signal,
+            ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
+          })
+          record.worktree = kept.worktree
+          if (kept.lock_stolen) {
+            reportLockSteal(record.id, kept.lock_stolen)
+          }
+          // Taking the branch back is not the same as taking back what we left
+          // on it: anything a third party pushed meanwhile is now inside the
+          // measured range, and says so.
+          reportForeignCommits(record, kept)
+          // Same branch, same history, same anchor: not a new lineage. `base`
+          // is NOT overwritten — the work-on path leaves it empty, and this
+          // conversation's base is a fork base it must keep.
+          anchorConversation(record, kept, { first, fresh: null })
+          return
+        } catch (err) {
+          if (!(err instanceof BranchInUseError)) {
+            throw err
+          }
+          // Someone checked the branch out elsewhere: git will not hand it over,
+          // so a fresh fork is the only way to keep the conversation alive —
+          // and the work left behind is named below, always.
+          stranded = { branch: record.branch, reason: 'in_use', commits: 0 }
+        }
+      } else {
+        stranded = { branch: record.branch, reason: 'gone', commits: 0 }
+      }
+    }
     const explicitBase = !record.worktree && record.base ? { base: record.base } : {}
-    const wt = createTaskWorktree(opts.cwd, record.id, record.title, explicitBase)
+    const wt = await createTaskWorktree(opts.cwd, record.id, record.title, {
+      ...explicitBase,
+      signal,
+      ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
+    })
     record.base = wt.base
     record.branch = wt.branch
     record.worktree = wt.worktree
+    if (wt.lock_stolen) {
+      reportLockSteal(record.id, wt.lock_stolen)
+    }
+    if (stranded?.reason === 'in_use') {
+      // What the human loses sight of, counted rather than hinted at.
+      const behind = tryGit(['rev-list', '--count', `${wt.branch}..${stranded.branch}`], opts.cwd)
+      stranded.commits = Number.parseInt(behind ?? '', 10) || 0
+    }
+    // A re-forged fork IS a new branch off the base's current tip: fresh lineage.
+    anchorConversation(record, wt, { first, fresh: stranded })
   }
 
   const pump = (): void => {
@@ -1080,6 +1374,24 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
   }
   pool.pumps.add(pump)
 
+  /**
+   * Tasks whose abandon is in flight. It has to exist because abandon() now
+   * AWAITS the repo's worktree lock: its guards (`active.has`, the queue, the
+   * status) and its `loadTask` run before that await, and its `persist` after.
+   * Without a token, a reply() landing in that window sees nothing holding the
+   * task, starts a real agent turn on a worktree that is about to be deleted,
+   * and has its record overwritten by the abandon's stale snapshot. Same
+   * idiom as the `shipping` guard one layer up (task-server.ts).
+   */
+  const abandoning = new Set<string>()
+  /**
+   * The same abandons, as promises, so shutdown() can wait for them. An abandon
+   * is a git worktree removal followed by a record write: draining while one is
+   * mid-flight would leave the process to exit between the two, with the
+   * worktree gone and the record still claiming it.
+   */
+  const abandonsInFlight = new Set<Promise<void>>()
+
   /** Slot released: wake every runner sharing the pool, any queue may win it. */
   const releaseSlot = (id: string): void => {
     pool.running.delete(id)
@@ -1088,20 +1400,8 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     }
   }
 
-  const launch = (record: TaskRecord): void => {
-    const controller = new AbortController()
-    // Reserved before any await: a concurrent start()/pump() — on this runner
-    // or on another one sharing the pool — must see the slot taken.
-    active.set(record.id, controller)
-    pool.running.add(record.id)
-    try {
-      ensureWorktree(record)
-    } catch (err) {
-      active.delete(record.id)
-      failTurn(record, err, Date.now(), { aborted: false })
-      releaseSlot(record.id)
-      return
-    }
+  /** The turn itself, on a worktree that already exists. Settles its own outcome. */
+  const runTurn = (record: TaskRecord, controller: AbortController): Promise<void> => {
     record.status = 'running'
     // The task is moving again: whatever reason it last stopped for is history,
     // and a record that kept claiming it would be lying about the present. The
@@ -1115,7 +1415,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // had already spent if it dies — and the marker that keeps that figure
     // from being folded twice when both exit paths run.
     const attempt: TurnAttempt = { cost: null, folded: false }
-    const turn = runTaskTurn({
+    return runTaskTurn({
       cwd: record.worktree,
       task: record,
       prompt: composeTurnPrompt(record, opts.command),
@@ -1138,6 +1438,54 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       .then((outcome) => finishTurn(record, outcome, startedAt, attempt))
       .catch((err: unknown) =>
         failTurn(record, err, startedAt, { aborted: controller.signal.aborted, attempt }),
+      )
+  }
+
+  const launch = (record: TaskRecord): void => {
+    const controller = new AbortController()
+    // Reserved before any await: a concurrent start()/pump() — on this runner
+    // or on another one sharing the pool — must see the slot taken.
+    active.set(record.id, controller)
+    pool.running.add(record.id)
+    // Materialization waits for the repo's worktree lock, so it is async; the
+    // whole launch is therefore a promise, tracked in `inflight` from its first
+    // tick so shutdown() cannot resolve while a task is still being set up.
+    //
+    // FOUR places in this codebase hold a task record across an await before
+    // writing it back. Each needs an argument, and here is the whole list so
+    // the next one added can be checked against it:
+    //
+    // 1. abandon() — re-READS after the await. It is the only one that must,
+    //    because a ship can legitimately settle inside its window.
+    // 2. launch(), this chain — valid by EXCLUSION: `active` holds this id
+    //    from before the first await (set above, deleted only after the turn
+    //    has settled on disk), so start/reply/resume/interrupt/abandon all
+    //    409, and ship one layer up only accepts 'review_ok'/'review_ko' —
+    //    statuses a task in `active` cannot be in.
+    // 3. ship() in task-server.ts — valid by exclusion too: `ctx.shipping`
+    //    holds the id across the push, and reply/resume/abandon consult it.
+    // 4. The reviewer's captured record (task-review.ts) — valid by exclusion:
+    //    the task sits on 'reviewing' for the whole flow, a status every
+    //    action refuses.
+    //
+    // Exclusion is a real argument, but only while the guard that provides it
+    // exists: whoever weakens one of those guards owns this comment too.
+    const turn = ensureWorktree(record, controller.signal)
+      .then(() => {
+        if (controller.signal.aborted) {
+          // Interrupted while the worktree was still materializing: the turn
+          // never starts, and the task settles exactly as an aborted one.
+          failTurn(record, new Error(t('agent.interrupted')), Date.now(), { aborted: true })
+          return
+        }
+        return runTurn(record, controller)
+      })
+      // Only reachable from ensureWorktree — runTurn settles its own failures.
+      // The signal matters as much here as it does inside a turn: a human who
+      // interrupts while the worktree is still queueing for the repo lock has
+      // interrupted the task, not broken it — and 'failed' has no resume path.
+      .catch((err: unknown) =>
+        failTurn(record, err, Date.now(), { aborted: controller.signal.aborted }),
       )
       .finally(() => {
         active.delete(record.id)
@@ -1172,6 +1520,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       if (record.status !== 'queued') {
         return { ok: false, code: 409, error: `task is ${record.status}` }
       }
+      if (abandoning.has(task.id)) {
+        return { ok: false, code: 409, error: 'task is being abandoned' }
+      }
       schedule(record)
       return { ok: true }
     },
@@ -1186,6 +1537,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       }
       if (active.has(taskId) || queue.includes(taskId)) {
         return { ok: false, code: 409, error: 'task is running' }
+      }
+      // Its worktree is being deleted right now: starting a turn on it would
+      // run a real agent against a directory about to vanish, and the abandon
+      // would then overwrite whatever that turn recorded.
+      if (abandoning.has(taskId)) {
+        return { ok: false, code: 409, error: 'task is being abandoned' }
       }
       const record = loadTask(opts.cwd, taskId)
       if (!record) {
@@ -1234,6 +1591,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       if (active.has(taskId) || queue.includes(taskId)) {
         return { ok: false, code: 409, error: 'task is running' }
       }
+      if (abandoning.has(taskId)) {
+        return { ok: false, code: 409, error: 'task is being abandoned' }
+      }
       const record = loadTask(opts.cwd, taskId)
       if (!record) {
         return { ok: false, code: 404, error: 'task not found' }
@@ -1246,12 +1606,11 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // The last turn answered: only a new instruction moves this on.
         return { ok: false, code: 409, error: 'task has no interrupted turn to resume' }
       }
-      // A worktree that was materialized and then vanished takes the task's
-      // work with it: ensureWorktree would fork a FRESH branch from the base
-      // and the commits made so far would be stranded. Refuse instead.
-      if (record.worktree && !existsSync(record.worktree)) {
-        return { ok: false, code: 409, error: 'task worktree is gone' }
-      }
+      // A worktree that vanished is NOT refused here any more: reply() — the
+      // button sitting next to Resume, on the same 'interrupted' task — already
+      // rebuilds it, so the refusal protected nothing and left the UI with a
+      // Resume that could only ever 409. ensureWorktree rebuilds, and says out
+      // loud that the baseline moved with the fresh fork.
       // The very same turn runs again, in place: no new turn is appended, so
       // the conversation keeps one instruction per turn and the transcript
       // replay (or the resumed provider session) stays exact.
@@ -1268,6 +1627,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // The abort rejects the agent promise; failTurn persists 'interrupted'.
         controller.abort()
         return { ok: true }
+      }
+      if (abandoning.has(taskId)) {
+        return { ok: false, code: 409, error: 'task is being abandoned' }
       }
       const record = loadTask(opts.cwd, taskId)
       if (!record) {
@@ -1297,9 +1659,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       return { ok: true }
     },
 
-    abandon(taskId) {
+    async abandon(taskId) {
       if (active.has(taskId)) {
         return { ok: false, code: 409, error: 'task is running' }
+      }
+      if (abandoning.has(taskId)) {
+        return { ok: false, code: 409, error: 'task is being abandoned' }
       }
       const record = loadTask(opts.cwd, taskId)
       if (!record) {
@@ -1312,29 +1677,101 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       }
       const queued = queue.indexOf(taskId)
       if (queued >= 0) {
+        // Out of the queue before the await: pump() launches straight from the
+        // queue and does not consult the guards, so a slot freeing up mid-removal
+        // would start a turn on the worktree being deleted.
         queue.splice(queued, 1)
       }
-      if (record.status === 'waiting_for_you') {
-        accrueWait(record)
+      // Claimed BEFORE the first await, released only once the record has been
+      // written: everything the guards above just established stays true for
+      // the whole removal, which now waits for the repo's worktree lock.
+      abandoning.add(taskId)
+      let settle = (): void => {}
+      const inFlight = new Promise<void>((resolve) => {
+        settle = resolve
+      })
+      abandonsInFlight.add(inFlight)
+      try {
+        // Abandon is the one place the branch dies with the worktree: the task's
+        // work is explicitly discarded, unlike interrupt/shutdown which keep both.
+        // EXCEPT for a branch the conversation did not bring into existence —
+        // it pre-existed and belongs to the user, so only the checkout goes.
+        // `created_branch` is the precise answer to that question (a work-on
+        // conversation on a branch that only existed on origin DID create the
+        // local head, and cleaning it up leaves origin untouched); a record
+        // written before that field existed falls back on the coarse rule it
+        // was decided under, which is the honest default for a missing field.
+        let removal: WorktreeRemoval
+        try {
+          removal = await removeTaskWorktree(opts.cwd, taskId, record.branch, {
+            deleteBranch: record.created_branch ?? !record.work_on,
+            ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
+          })
+        } catch (err) {
+          // TOTAL, like ship one layer up: this result is dispatched by an
+          // HTTP handler that does not catch, and an unhandled rejection kills
+          // the server. A cleanup that could not happen is REPORTED — the task
+          // keeps its worktree and its status, both still true.
+          if (queued >= 0) {
+            // Nothing was removed, so nothing about this task changed — except
+            // that it is no longer in any queue. A 'queued' record outside every
+            // queue is unstartable (start() 409s on the status, pump() never
+            // sees it): put it back where it was and wake the pool.
+            queue.splice(Math.min(queued, queue.length), 0, taskId)
+            pump()
+          }
+          return { ok: false, code: 500, error: preview(errorMessage(err)) }
+        }
+        if (removal.lock_stolen) {
+          reportLockSteal(taskId, removal.lock_stolen)
+        }
+        if (!removal.serialized) {
+          // The cleanup went ahead without the repo lock rather than strand a
+          // worktree forever. That is a degradation, so it is named and readable
+          // — never inferred later from a corrupted index.
+          emit(taskId, {
+            type: 'error',
+            data: {
+              message: `worktree removal proceeded WITHOUT the repo lock (held by pid ${removal.holder_pid ?? 0} for ${Math.round((removal.holder_age_ms ?? 0) / 1000)}s)`,
+            },
+            reason_code: 'resource_busy',
+          })
+        }
+        // NEVER persist a snapshot that crossed an await. `record` was read
+        // before a wait on the repo lock that can last a minute; a ship settling
+        // in that window has already written the record, and writing the old
+        // copy back would erase the mr_url and resurrect the pre-ship status.
+        // The removal is done either way — the worktree is gone — so a record
+        // that disappeared meanwhile is a success with nothing left to write.
+        const current = loadTask(opts.cwd, taskId)
+        if (!current) {
+          return { ok: true }
+        }
+        if (current.status === 'waiting_for_you') {
+          accrueWait(current)
+        }
+        const turn = current.turns.at(-1)
+        if (turn && !turn.ended_at) {
+          turn.ended_at = new Date().toISOString()
+        }
+        // Cleaning up a SHIPPED task is housekeeping, not a discard: its work
+        // lives on in the pushed branch/MR, the status must keep saying so.
+        // Everything else abandoned mid-cycle is discarded work: failed.
+        if (current.status !== 'shipped') {
+          current.status = 'failed'
+        }
+        emit(taskId, { type: 'error', data: { message: 'worktree removed, task abandoned' } })
+        persist(current)
+        return { ok: true }
+      } finally {
+        abandoning.delete(taskId)
+        abandonsInFlight.delete(inFlight)
+        settle()
       }
-      // Abandon is the one place the branch dies with the worktree: the task's
-      // work is explicitly discarded, unlike interrupt/shutdown which keep both.
-      // EXCEPT for work-on tasks — their branch pre-existed the conversation
-      // and belongs to the user, so only the worktree checkout is discarded.
-      removeTaskWorktree(opts.cwd, taskId, record.branch, { deleteBranch: !record.work_on })
-      const turn = record.turns.at(-1)
-      if (turn && !turn.ended_at) {
-        turn.ended_at = new Date().toISOString()
-      }
-      // Cleaning up a SHIPPED task is housekeeping, not a discard: its work
-      // lives on in the pushed branch/MR, the status must keep saying so.
-      // Everything else abandoned mid-cycle is discarded work: failed.
-      if (record.status !== 'shipped') {
-        record.status = 'failed'
-      }
-      emit(taskId, { type: 'error', data: { message: 'worktree removed, task abandoned' } })
-      persist(record)
-      return { ok: true }
+    },
+
+    isAbandoning(taskId) {
+      return abandoning.has(taskId)
     },
 
     async shutdown() {
@@ -1365,7 +1802,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // with {reason:'shutdown'} because draining is set.
         controller.abort()
       }
-      await Promise.allSettled(inflight.values())
+      // Abandons alongside the turns: both end in a record write that must land
+      // before the process is allowed to go.
+      await Promise.allSettled([...inflight.values(), ...abandonsInFlight])
     },
 
     runningCount: () => active.size,

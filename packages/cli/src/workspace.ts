@@ -94,18 +94,23 @@ export function logIsolation(probe: IsolationProbe, domains: readonly string[]):
   )
 }
 
-function installShutdownHandlers(
-  manager: TaskManager,
-  stop: () => Promise<void>,
-  lock: WorkspaceLockHandle,
-  probe: IsolationProbe,
-): void {
+function installShutdownHandlers(deps: {
+  manager: TaskManager
+  stop: () => Promise<void>
+  lock: WorkspaceLockHandle
+  probe: IsolationProbe
+  draining: AbortController
+}): void {
+  const { manager, stop, lock, probe, draining } = deps
   let shuttingDown = false
   const shutdown = (): void => {
     if (shuttingDown) {
       process.exit(130)
     }
     shuttingDown = true
+    // Announced before anything else is awaited: whoever is queueing for a repo
+    // lock on a cleanup path must stop queueing and let the exit through.
+    draining.abort()
     console.log('')
     console.log(t('workspace.shuttingDown'))
     void (async () => {
@@ -184,6 +189,9 @@ export async function workspace(opts: {
   // recovery would mark another live workspace's running tasks as orphans.
   const lock = acquireWorkspaceLock()
   const timeoutMs = (config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
+  // Aborted by the first SIGINT/SIGTERM, handed to the runners that wait on the
+  // repo lock while cleaning up, so the exit never sits behind one.
+  const draining = new AbortController()
   let currentProjectId: string | null = null
   let taskManager
   let started
@@ -229,6 +237,7 @@ export async function workspace(opts: {
               session,
               agentCommand,
               timeoutMs,
+              shutdownSignal: draining.signal,
             }),
           }
         : {}),
@@ -256,6 +265,6 @@ export async function workspace(opts: {
   if (opts.open) {
     openBrowser(started.url)
   }
-  installShutdownHandlers(taskManager, started.stop, lock, probe)
+  installShutdownHandlers({ manager: taskManager, stop: started.stop, lock, probe, draining })
   // The listening server keeps the event loop (and therefore the tasks) alive.
 }

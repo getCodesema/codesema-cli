@@ -374,6 +374,11 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'task.unknownBase': "base branch '{base}' does not exist in this repository",
   'task.unknownBranch': "branch '{branch}' does not exist in this repository",
   'task.branchInUse': "branch '{branch}' is already checked out in another worktree ({path})",
+  'task.worktreeLocked':
+    'another codesema process is still working on this repository’s worktrees (lock held by pid {pid} for {seconds}s at {path}); try again in a moment',
+  'task.worktreeLockAborted': 'interrupted while waiting for this repository’s worktree lock',
+  'task.worktreeLockUnusable':
+    'the worktree lock {path} cannot be claimed ({detail}) — no wait will fix that',
 
   // --- task ship ---
   'ship.mrReviewLine':
@@ -806,6 +811,11 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'task.unknownBase': "la branche de base '{base}' n'existe pas dans ce dépôt",
   'task.unknownBranch': "la branche '{branch}' n'existe pas dans ce dépôt",
   'task.branchInUse': "la branche '{branch}' est déjà extraite dans un autre worktree ({path})",
+  'task.worktreeLocked':
+    'un autre processus codesema travaille encore sur les worktrees de ce dépôt (verrou tenu par le pid {pid} depuis {seconds}s dans {path}) ; réessayez dans un instant',
+  'task.worktreeLockAborted': 'interrompu pendant l’attente du verrou de worktree de ce dépôt',
+  'task.worktreeLockUnusable':
+    'le verrou de worktree {path} ne peut pas être réclamé ({detail}) — aucune attente n’y changera rien',
 
   // --- task ship ---
   'ship.mrReviewLine':

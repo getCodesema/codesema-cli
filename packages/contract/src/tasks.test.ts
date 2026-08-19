@@ -494,6 +494,95 @@ describe('sanitizeTaskRecord', () => {
     expect(long?.heartbeat_at).toHaveLength(TASK_TIMESTAMP_MAX)
   })
 
+  test('baseline_sha: a 0.12 record has none, and the reader falls back on base...HEAD', () => {
+    // FROZEN fixture of a record as codesema 0.12 wrote it: no `baseline_sha`
+    // and no `created_branch` key anywhere, because neither existed yet.
+    const record012 = {
+      version: 1,
+      id: 'c3d4e5f6a7b8',
+      title: 'Paginate the journal',
+      status: 'review_ok',
+      base: 'develop',
+      branch: 'codesema/task-paginate-the-journal',
+      worktree: '/repo/.codesema/worktrees/c3d4e5f6a7b8',
+      agent_session_id: null,
+      turns: [],
+      review_ref: null,
+      work_ms: 0,
+      wait_ms: 0,
+      auto_ship: false,
+      work_on: false,
+      isolation: 'policy',
+      created_at: '2026-08-14T09:00:00.000Z',
+      updated_at: '2026-08-14T09:04:00.000Z',
+    }
+    const r = sanitizeTaskRecord(structuredClone(record012))
+    expect(r).toEqual(record012 as TaskRecord)
+    expect(r && 'baseline_sha' in r).toBe(false)
+    expect(r && 'created_branch' in r).toBe(false)
+    expect(r && 'head_sha' in r).toBe(false)
+    expect(r?.version).toBe(1)
+  })
+
+  test('baseline_sha: a git object name round-trips, normalized', () => {
+    const sha = '0123456789abcdef0123456789abcdef01234567'
+    expect(sanitizeTaskRecord({ ...validRecord, baseline_sha: sha })?.baseline_sha).toBe(sha)
+    expect(
+      sanitizeTaskRecord({ ...validRecord, baseline_sha: `  ${sha.toUpperCase()}  ` })
+        ?.baseline_sha,
+    ).toBe(sha)
+    // A sha256 repo's 64 chars are a valid object name too.
+    const sha256 = 'a'.repeat(64)
+    expect(sanitizeTaskRecord({ ...validRecord, baseline_sha: sha256 })?.baseline_sha).toBe(sha256)
+  })
+
+  test('baseline_sha: anything that is not an object name drops the key, never throws', () => {
+    for (const baseline_sha of [
+      '',
+      '   ',
+      'HEAD',
+      'main',
+      'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz',
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0', // 65 chars
+      'abc123', // 6 chars: too short to name anything
+      '0123456789abcdef; rm -rf /',
+      42,
+      null,
+      { sha: '0123456789abcdef0123456789abcdef01234567' },
+    ]) {
+      const r = sanitizeTaskRecord({ ...validRecord, baseline_sha })
+      expect(r).not.toBeNull()
+      expect(r && 'baseline_sha' in r).toBe(false)
+    }
+  })
+
+  test('head_sha: same whitelist as the baseline, and absent when it cannot be trusted', () => {
+    const sha = '89abcdef0123456789abcdef0123456789abcdef'
+    expect(
+      sanitizeTaskRecord({ ...validRecord, head_sha: `  ${sha.toUpperCase()} ` })?.head_sha,
+    ).toBe(sha)
+    // A record that never knew where it left its branch says nothing — and a
+    // rebuild then makes no claim about what it finds there, rather than
+    // comparing against a value it made up.
+    expect(sanitizeTaskRecord(validRecord)?.head_sha).toBeUndefined()
+    for (const head_sha of ['', 'HEAD', 'main', 'abc123', 42, null, { sha }]) {
+      const r = sanitizeTaskRecord({ ...validRecord, head_sha })
+      expect(r).not.toBeNull()
+      expect(r && 'head_sha' in r).toBe(false)
+    }
+  })
+
+  test('created_branch: absent unless TRUE, because absent is what is safe to act on', () => {
+    // A reader deciding whether a branch may be deleted must never infer "ours"
+    // from a missing or unusable value.
+    expect(sanitizeTaskRecord({ ...validRecord, created_branch: true })?.created_branch).toBe(true)
+    for (const created_branch of [false, 'true', 1, null, undefined, {}]) {
+      const r = sanitizeTaskRecord({ ...validRecord, created_branch })
+      expect(r).not.toBeNull()
+      expect(r && 'created_branch' in r).toBe(false)
+    }
+  })
+
   test('reason: an over-long detail is truncated, the record stays valid', () => {
     const r = sanitizeTaskRecord({
       ...validRecord,

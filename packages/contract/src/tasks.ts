@@ -162,6 +162,49 @@ export type TaskRecord = {
   branch: string
   /** Absolute path of the task's git worktree. */
   worktree: string
+  /**
+   * Commit the agent's work is measured FROM: the resolved sha of the point
+   * the conversation started at — the base it forked, or the tip of the branch
+   * it works on — so `baseline_sha..HEAD` is exactly what the agent produced.
+   * NOTHING is captured or committed to obtain it: the main repository's
+   * uncommitted work never travels into the task's worktree, and no synthetic
+   * commit is created anywhere. The baseline is a fact about where the work
+   * began, not an artifact.
+   *
+   * OPTIONAL, and absence is the honest default: a record written before the
+   * baseline existed (0.12) has no anchor to name, so its consumers fall back
+   * on `base...HEAD` — the range they always used — and SAY SO rather than
+   * pretending to a precision they don't have.
+   *
+   * WRITE-ONCE PER LINEAGE: it belongs to the conversation, not to one
+   * materialization. A worktree rebuilt on the same branch keeps it; a fork
+   * rebuilt as a NEW branch off a base that moved on re-anchors, because the
+   * old anchor would otherwise credit the agent with the base's own commits.
+   */
+  baseline_sha?: string
+  /**
+   * True when this conversation brought its branch head into existence (every
+   * fork, and a work-on conversation on a branch that only existed on origin).
+   *
+   * OPTIONAL, and absence is the honest default: a record written before this
+   * field existed cannot say, and neither can one whose branch was already
+   * there. Absence therefore means "not ours to delete" — the safe reading,
+   * since the alternative is deleting someone's branch on a guess.
+   */
+  created_branch?: boolean
+  /**
+   * The tip this conversation last left on its branch: written at every
+   * materialization and after every turn that commits. Its ONLY job is to make
+   * a rebuild able to tell "the branch is where I left it" from "somebody else
+   * wrote on it while my worktree was gone" — the anchor cannot answer that,
+   * since a third party's commits sit AFTER the baseline and keep it a
+   * perfectly valid ancestor.
+   *
+   * OPTIONAL, and absence is the honest default: a record written before this
+   * field existed never knew where it left its branch, so a rebuild says
+   * nothing rather than inventing a comparison it cannot make.
+   */
+  head_sha?: string
   /** Provider session id (claude --resume), null before the first turn ran. */
   agent_session_id: string | null
   turns: TaskTurn[]
@@ -278,6 +321,24 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
+
+/**
+ * A baseline (and the remembered branch tip beside it) is a git object name and
+ * nothing else: hex only, from an abbreviated 7 up to a sha256 repo's 64.
+ * Whitelisted rather than truncated — half a sha is not a shorter sha, it is a
+ * different (or missing) commit, and the whole point of these fields is that
+ * the range they anchor, and the comparison they allow, can be trusted.
+ */
+const BASELINE_SHA_RE = /^[0-9a-f]{7,64}$/
+
+/** Hex sha or nothing: an unusable value drops the key, never throws, never invents one. */
+function sanitizeBaselineSha(raw: unknown): string | null {
+  if (typeof raw !== 'string') {
+    return null
+  }
+  const sha = raw.trim().toLowerCase()
+  return BASELINE_SHA_RE.test(sha) ? sha : null
+}
 
 /** The id names a directory under .codesema/tasks/: nothing else is usable. */
 const TASK_ID_RE = /^[0-9a-f]{12}$/
@@ -429,6 +490,8 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
   const costTurns = optionalCostTurns(r.cost_turns, turns.length)
   const total =
     totalPair === null || costTurns === null ? null : { ...totalPair, cost_turns: costTurns }
+  const baselineSha = sanitizeBaselineSha(r.baseline_sha)
+  const headSha = sanitizeBaselineSha(r.head_sha)
   return {
     version: 1,
     id,
@@ -437,6 +500,19 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     base: str(r.base, TASK_PATH_MAX),
     branch: str(r.branch, TASK_PATH_MAX),
     worktree: str(r.worktree, TASK_PATH_MAX),
+    // Optional and whitelisted, same doctrine as `reason` below: a record
+    // written before the baseline existed keeps none, and one whose value is
+    // not a git object name drops the key rather than anchoring a range on a
+    // sha nobody can resolve.
+    ...(baselineSha ? { baseline_sha: baselineSha } : {}),
+    // Present only when TRUE: absence is the honest "we did not create this
+    // branch, or we cannot say", which is also the only safe answer for a
+    // reader deciding whether the branch may be deleted.
+    ...(r.created_branch === true ? { created_branch: true } : {}),
+    // Same whitelist as the baseline: a tip that is not a git object name is
+    // worse than no tip at all, since the comparison it feeds decides whether
+    // the conversation announces a stranger's commits or stays silent.
+    ...(headSha ? { head_sha: headSha } : {}),
     agent_session_id: nullableStr(r.agent_session_id, TASK_SESSION_ID_MAX),
     turns,
     review_ref: nullableStr(r.review_ref, TASK_PATH_MAX),

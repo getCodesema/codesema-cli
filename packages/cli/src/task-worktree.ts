@@ -3,13 +3,18 @@
 // review worktrees) so an interrupted task survives a reboot and can be
 // resumed. The parent .codesema/ directory auto-gitignores itself.
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { listWorktrees } from './branches.js'
 import { ensureWorkDir } from './config.js'
 import { git, refExists, tryGit } from './git.js'
 import { t } from './i18n.js'
 import { resolveRef, targetFromOriginHead } from './prep.js'
+import {
+  acquireWorktreeLock,
+  WorktreeLockBusyError,
+  type WorktreeLockHandle,
+} from './worktree-lock.js'
 
 /** Same candidates and order as prep's target detection heuristic. */
 const BASE_CANDIDATES = ['develop', 'main', 'master'] as const
@@ -143,7 +148,42 @@ export function renameTaskBranch(
   return tryGit(['branch', '-m', current, next], cwd) === null ? null : next
 }
 
-export type TaskWorktree = { branch: string; worktree: string; base: string }
+export type TaskWorktree = {
+  branch: string
+  worktree: string
+  base: string
+  /**
+   * Commit the agent's work is measured FROM: the sha of the point the
+   * worktree starts at, resolved BEFORE it is materialized. No commit is ever
+   * created for it — the baseline is a fact about where the conversation
+   * began, not an artifact — so `baseline..HEAD` is empty the instant the
+   * worktree is handed out and holds exactly the agent's work afterwards.
+   */
+  baseline: string
+  /**
+   * True when THIS materialization brought the local branch head into
+   * existence (every fork, and a work-on conversation on a branch that only
+   * existed on origin). False when it adopted a branch that was already there:
+   * deleting that one is never ours to decide.
+   */
+  created_branch: boolean
+  /**
+   * Uncommitted files in the MAIN repo when the worktree was materialized.
+   * They are NOT carried over — the agent starts from `baseline` — and the
+   * caller must say so once rather than let the human assume otherwise.
+   */
+  uncommitted_files: number
+  /**
+   * Set only when the repo lock had to be taken from a holder whose pid was
+   * still alive, past the pid-recycling grace (worktree-lock.ts). A degradation
+   * the caller states out loud — the alternative was a repository wedged until
+   * a human deleted the lock file by hand.
+   */
+  lock_stolen?: { pid: number; age_ms: number }
+}
+
+/** What a worktree materialization knows on its own, before the repo-wide facts are added. */
+type MaterializedWorktree = Omit<TaskWorktree, 'uncommitted_files' | 'lock_stolen'>
 
 /**
  * Thrown when a work-on branch is already checked out in another worktree
@@ -176,8 +216,9 @@ export function branchCheckoutPath(cwd: string, branch: string): string | null {
  * is cleaned before the in-use check — pruning it may be exactly what frees
  * the branch — and nothing else is created before both checks pass.
  */
-function createWorkOnWorktree(cwd: string, taskId: string, branch: string): TaskWorktree {
+function createWorkOnWorktree(cwd: string, taskId: string, branch: string): MaterializedWorktree {
   // The refs/heads/ qualification neutralizes option-lookalike names ('-evil').
+  let created = false
   if (!refExists(`refs/heads/${branch}`, cwd)) {
     // Same branch, remote-only so far (a teammate's MR never pulled): create
     // the local tracking head — that IS the branch, origin/ was transport.
@@ -187,6 +228,10 @@ function createWorkOnWorktree(cwd: string, taskId: string, branch: string): Task
       if (tryGit(['branch', '--track', branch, `origin/${branch}`], cwd) === null) {
         git(['branch', branch, `refs/remotes/origin/${branch}`], cwd)
       }
+      // The conversation brought this head into existence: whoever decides
+      // later whether it may be deleted needs to know that, and cannot infer
+      // it from the branch itself.
+      created = true
     } else {
       throw new Error(t('task.unknownBranch', { branch }))
     }
@@ -204,74 +249,202 @@ function createWorkOnWorktree(cwd: string, taskId: string, branch: string): Task
   // .codesema/ must exist self-gitignored before git materializes anything in it.
   ensureWorkDir(cwd)
   mkdirSync(join(cwd, '.codesema', 'worktrees'), { recursive: true })
+  // Resolved BEFORE the checkout exists: the conversation's anchor is where
+  // the branch stood when it took it over, and nothing that happens next can
+  // move that fact.
+  const baseline = git(['rev-parse', `refs/heads/${branch}`], cwd)
   git(['worktree', 'add', worktree, branch], cwd)
   // base is the caller's concern in work-on mode (the MR target, kept on the
   // record by the server): this layer only knows the branch.
-  return { branch, worktree, base: '' }
+  return { branch, worktree, base: '', baseline, created_branch: created }
 }
 
 /**
- * Creates the task's branch from the base and checks it out in a fresh
- * worktree. The base is either the caller's explicit LOCAL branch (opts.base,
- * validated to exist before anything is created on disk) or the detected
- * default (detectTaskBase). -b always creates a NEW branch (collisions get a
- * numeric suffix), so this never steals a branch checked out elsewhere.
- *
- * opts.branch instead (exclusive with opts.base) is work-on mode: the
- * conversation works DIRECTLY on that existing branch — see
- * createWorkOnWorktree. A branch checked out anywhere else throws
- * BranchInUseError before anything is created.
+ * Fork mode: creates the task's branch from the base and checks it out in a
+ * fresh worktree. The base is either the caller's explicit LOCAL branch
+ * (opts.base, validated to exist before anything is created on disk) or the
+ * detected default (detectTaskBase). -b always creates a NEW branch
+ * (collisions get a numeric suffix), so this never steals a branch checked out
+ * elsewhere.
  */
-export function createTaskWorktree(
+function createForkWorktree(
   cwd: string,
   taskId: string,
   title: string,
-  opts: { base?: string; branch?: string } = {},
-): TaskWorktree {
-  if (opts.branch !== undefined) {
-    return createWorkOnWorktree(cwd, taskId, shortBranchName(opts.branch))
-  }
+  base?: string,
+): MaterializedWorktree {
   // An explicit base must name an existing branch (local OR origin — same
   // identity) BEFORE any directory or ref is created: a typo must leave the
   // repo untouched. The full-ref qualification also neutralizes
   // option-lookalike names ('-evil').
-  const explicitBase = opts.base !== undefined ? shortBranchName(opts.base) : undefined
+  const explicitBase = base !== undefined ? shortBranchName(base) : undefined
   if (explicitBase !== undefined && resolveBranchRef(cwd, explicitBase) === null) {
     throw new Error(t('task.unknownBase', { base: explicitBase }))
   }
   // .codesema/ must exist self-gitignored before git materializes anything in it.
   ensureWorkDir(cwd)
   mkdirSync(join(cwd, '.codesema', 'worktrees'), { recursive: true })
-  const base = explicitBase ?? detectTaskBase(cwd)
-  const startPoint = resolveBranchRef(cwd, base)
+  const resolvedBase = explicitBase ?? detectTaskBase(cwd)
+  const startPoint = resolveBranchRef(cwd, resolvedBase)
   if (startPoint === null) {
-    throw new Error(t('task.unknownBase', { base }))
+    throw new Error(t('task.unknownBase', { base: resolvedBase }))
   }
   const branch = freeBranchName(cwd, taskId, title)
   const worktree = taskWorktreePath(cwd, taskId)
-  if (existsSync(worktree)) {
-    // A stale directory (crashed run, aborted creation) would fail the add.
-    tryGit(['worktree', 'remove', '--force', worktree], cwd)
-    tryGit(['worktree', 'prune'], cwd)
-  }
+  // Unconditional, for the same reason as the work-on path: a crashed run may
+  // have left the DIRECTORY (remove drops it) or only a dangling git
+  // registration of a directory that is already gone (prune drops that).
+  // Guarding this on existsSync only handles the first, and the second fails
+  // the add just as hard — a task whose worktree vanished could never be
+  // rebuilt.
+  tryGit(['worktree', 'remove', '--force', worktree], cwd)
+  tryGit(['worktree', 'prune'], cwd)
+  // Resolved BEFORE the worktree exists: the anchor is the start point itself,
+  // a commit that already exists and that nothing downstream can move.
+  const baseline = git(['rev-parse', startPoint], cwd)
   git(['worktree', 'add', '-b', branch, worktree, startPoint], cwd)
-  return { branch, worktree, base }
+  // A fork always brings its branch into existence, by construction (-b).
+  return { branch, worktree, base: resolvedBase, baseline, created_branch: true }
+}
+
+/**
+ * Files the MAIN repo is carrying uncommitted (modified, staged or untracked)
+ * right now. They do NOT travel into the task worktree — the agent starts from
+ * a committed point — and the caller states that once, out loud, rather than
+ * leaving the human to discover it from a diff that lacks their work.
+ */
+function countUncommitted(cwd: string): number {
+  const status = tryGit(['status', '--porcelain'], cwd)
+  return status?.trim() ? status.trim().split('\n').length : 0
+}
+
+/**
+ * How the repo's worktree lock is taken. The signal is not decoration: a human
+ * interrupting a task queued behind another repo operation must be obeyed at
+ * once, not after the whole waiting budget.
+ */
+export type WorktreeLockFn = (
+  cwd: string,
+  signal?: AbortSignal | undefined,
+) => Promise<WorktreeLockHandle>
+
+const defaultLockFn: WorktreeLockFn = (cwd, signal) => acquireWorktreeLock(cwd, { signal })
+
+export type CreateTaskWorktreeOptions = {
+  base?: string
+  branch?: string
+  /** Gives up the wait for the repo lock as soon as the caller is interrupted. */
+  signal?: AbortSignal | undefined
+  /** Test seam: the repo lock the whole creation runs under. */
+  lockFn?: WorktreeLockFn | undefined
+}
+
+/**
+ * Materializes the task's worktree and hands it out with its BASELINE: the sha
+ * of the point it starts from, resolved before the worktree exists. Nothing is
+ * committed, nothing is written on any branch — the baseline is a fact, not an
+ * artifact — so `baseline..HEAD` starts empty and afterwards holds exactly what
+ * the agent did, on a work-on conversation as much as on a fork.
+ *
+ * The main repo's UNCOMMITTED work is deliberately not carried over: it stays
+ * private, in the checkout where the human left it. What travels instead is the
+ * count, so the caller can say so once — an agent silently starting from a
+ * different state than the one on screen is the kind of surprise this tool
+ * exists to remove.
+ *
+ * opts.branch (exclusive with opts.base) is work-on mode: the conversation
+ * works DIRECTLY on that existing branch — see createWorkOnWorktree. A branch
+ * checked out anywhere else throws BranchInUseError before anything is created.
+ *
+ * The whole creation runs under the repo's worktree lock: `worktree add` writes
+ * the repo's git index, and a concurrent creation or abandon from another
+ * codesema process would race it. Waiting for that lock never blocks the event
+ * loop, which is why this is async.
+ */
+export async function createTaskWorktree(
+  cwd: string,
+  taskId: string,
+  title: string,
+  opts: CreateTaskWorktreeOptions = {},
+): Promise<TaskWorktree> {
+  const lock = await (opts.lockFn ?? defaultLockFn)(cwd, opts.signal)
+  try {
+    const uncommitted = countUncommitted(cwd)
+    const made =
+      opts.branch !== undefined
+        ? createWorkOnWorktree(cwd, taskId, shortBranchName(opts.branch))
+        : createForkWorktree(cwd, taskId, title, opts.base)
+    return {
+      ...made,
+      uncommitted_files: uncommitted,
+      ...(lock.stolen ? { lock_stolen: { pid: lock.stolen.pid, age_ms: lock.stolen.ageMs } } : {}),
+    }
+  } finally {
+    lock.release()
+  }
 }
 
 /**
  * Best-effort cleanup (pattern of the MR review runner): a failed removal must
  * never turn the caller's outcome into an error. The branch is only deleted on
  * explicit abandon — a shipped task keeps its branch.
+ *
+ * Serialized behind the same repo lock as the creation: `worktree remove`
+ * writes the same git index. A lock that cannot be taken WITHIN ITS BUDGET
+ * does not cancel the cleanup — waiting that long means the holder is stuck,
+ * and a worktree stranded forever is worse than an unserialized removal, which
+ * git's own index lock still guards. That fallback is REPORTED, never silent:
+ * the caller gets `serialized: false` with the holder it lost to, and says so
+ * where it can be read. Any other lock failure is a real fault and propagates.
  */
-export function removeTaskWorktree(
+export type WorktreeRemoval = {
+  /** False when the cleanup ran without the repo lock (its wait ran out). */
+  serialized: boolean
+  /** Pid that was holding the lock, when the wait ran out. */
+  holder_pid?: number
+  /** How long that holder had been holding, in ms. */
+  holder_age_ms?: number
+  /** Same degradation as TaskWorktree.lock_stolen, on the removal side. */
+  lock_stolen?: { pid: number; age_ms: number }
+}
+
+export async function removeTaskWorktree(
   cwd: string,
   taskId: string,
   branch: string,
-  opts: { deleteBranch: boolean },
-): void {
-  tryGit(['worktree', 'remove', '--force', taskWorktreePath(cwd, taskId)], cwd)
-  tryGit(['worktree', 'prune'], cwd)
-  if (opts.deleteBranch && branch) {
-    tryGit(['branch', '-D', branch], cwd)
+  // No signal here on purpose: an abandon has no controller to be cancelled
+  // by, and a half-removed worktree is not a state worth offering. Only the
+  // CREATION is abortable, because a human interrupting a task that is still
+  // queueing for the lock must be obeyed at once.
+  opts: { deleteBranch: boolean; lockFn?: WorktreeLockFn | undefined },
+): Promise<WorktreeRemoval> {
+  let lock: WorktreeLockHandle | null = null
+  let removal: WorktreeRemoval = { serialized: true }
+  try {
+    lock = await (opts.lockFn ?? defaultLockFn)(cwd)
+    if (lock.stolen) {
+      removal = {
+        serialized: true,
+        lock_stolen: { pid: lock.stolen.pid, age_ms: lock.stolen.ageMs },
+      }
+    }
+  } catch (err) {
+    // ONLY a wait that ran out is survivable here. Anything else (an
+    // unwritable .codesema, a bug) is a real fault and must reach the caller
+    // rather than be swallowed into an unserialized removal.
+    if (!(err instanceof WorktreeLockBusyError)) {
+      throw err
+    }
+    removal = { serialized: false, holder_pid: err.pid, holder_age_ms: err.ageMs }
   }
+  try {
+    tryGit(['worktree', 'remove', '--force', taskWorktreePath(cwd, taskId)], cwd)
+    tryGit(['worktree', 'prune'], cwd)
+    if (opts.deleteBranch && branch) {
+      tryGit(['branch', '-D', branch], cwd)
+    }
+  } finally {
+    lock?.release()
+  }
+  return removal
 }

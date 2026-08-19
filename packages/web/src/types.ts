@@ -335,6 +335,17 @@ export type TaskRecord = {
   base: string
   branch: string
   worktree: string
+  /** Commit the agent's work is measured FROM (`baseline_sha..HEAD`): the start
+   * point of the conversation, write-once. Absent on records written before it
+   * existed — consumers fall back on `base...HEAD` and say so. */
+  baseline_sha?: string
+  /** True when this conversation created its branch head. Absent = it was already
+   * there (or unknown), which is the only safe reading before deleting a branch. */
+  created_branch?: boolean
+  /** Tip this conversation last left on its branch, so a rebuild can tell its own
+   * work from commits a third party pushed while the worktree was gone. Absent on
+   * records that never knew it. */
+  head_sha?: string
   agent_session_id: string | null
   turns: TaskTurn[]
   review_ref: string | null

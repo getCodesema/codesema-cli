@@ -207,6 +207,26 @@ describe('computePrepInput', () => {
       input.branch,
     )
   })
+
+  test('a baseline is carried on the input, and only the range moves with it', async () => {
+    const developTip = execFileSync('git', ['rev-parse', 'develop'], { cwd: repo })
+      .toString()
+      .trim()
+    const plain = await computePrepInput({ target: 'main', cwd: repo })
+    // Absent is the honest default: an ordinary MR review pins nothing.
+    expect(plain.baseline).toBeUndefined()
+    expect(plain.files.map((f) => f.path)).toContain('dev.txt')
+
+    const anchored = await computePrepInput({ target: 'main', baseline: developTip, cwd: repo })
+    // The IDENTITY of the comparison is untouched: same branch, same target,
+    // which is what the header shows and what keys the review archive.
+    expect(anchored.branch).toBe('feature/x')
+    expect(anchored.target).toBe('main')
+    expect(anchored.baseline).toBe(developTip)
+    // Only the SCOPE moved.
+    expect(anchored.files.map((f) => f.path)).toContain('café.txt')
+    expect(anchored.files.map((f) => f.path)).not.toContain('dev.txt')
+  })
 })
 
 describe('computeDiffSummary', () => {
@@ -221,6 +241,25 @@ describe('computeDiffSummary', () => {
 
   test('throws when there is no merge base between the two refs', () => {
     expect(() => computeDiffSummary('feature/x', 'does-not-exist', repo)).toThrow(/no merge-base/)
+  })
+
+  test('a baseline narrows the SCOPE without touching the target', () => {
+    // 'main' as target would measure develop's commit too; anchoring on the
+    // develop tip measures only what came after it.
+    const developTip = execFileSync('git', ['rev-parse', 'develop'], { cwd: repo })
+      .toString()
+      .trim()
+    const wide = computeDiffSummary('feature/x', 'main', repo)
+    expect(wide.files.map((f) => f.path)).toContain('dev.txt')
+    expect(wide.commits).toContain('feat: develop work')
+
+    const anchored = computeDiffSummary('feature/x', 'main', repo, developTip)
+    expect(anchored.files.map((f) => f.path)).toContain('café.txt')
+    expect(anchored.files.map((f) => f.path)).not.toContain('dev.txt')
+    expect(anchored.commits).not.toContain('feat: develop work')
+    expect(anchored.diff).not.toContain('dev.txt')
+    // The baseline IS the base of the range it opens: no merge-base to look up.
+    expect(anchored.merge_base).toBe(developTip)
   })
 })
 

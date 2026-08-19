@@ -582,7 +582,11 @@ type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'r
  */
 const BODYLESS_TASK_ACTIONS: Record<
   'interrupt' | 'abandon' | 'resume',
-  (manager: TaskManager, projectId: string, id: string) => TaskActionResult
+  (
+    manager: TaskManager,
+    projectId: string,
+    id: string,
+  ) => TaskActionResult | Promise<TaskActionResult>
 > = {
   interrupt: (manager, projectId, id) => manager.interrupt(projectId, id),
   abandon: (manager, projectId, id) => manager.abandon(projectId, id),
@@ -626,7 +630,7 @@ async function handleTaskAction(
       : sendJson(res, result.code, { error: result.error })
   }
   if (action.kind !== 'reply') {
-    const result = BODYLESS_TASK_ACTIONS[action.kind](tasks.manager, projectId, action.id)
+    const result = await BODYLESS_TASK_ACTIONS[action.kind](tasks.manager, projectId, action.id)
     return result.ok
       ? sendJson(res, 200, { ok: true })
       : sendJson(res, result.code, { error: result.error })
