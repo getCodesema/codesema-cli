@@ -160,6 +160,14 @@ Sync is opt-in and free; your review record (including the diff) is only sent wh
 
 `codesema --help` lists every flag.
 
+### The `--fail-on` gate
+
+`codesema review --fail-on <level>` runs the review once and exits `2` as soon as a finding sits at or above `<level>` (`critical`, `major`, `minor`, `info`) or when the reviewer requests changes — see [Exit codes](#exit-codes).
+
+Because that gate is meant to run unattended, `--fail-on` **never opens the browser**, even from an interactive terminal and even without `--no-open`: the local web UI is served while the review runs and its URL is printed, but codesema does not open it for you, and the server shuts down as soon as the review ends instead of staying up. A run without `--fail-on` keeps its historical behaviour (browser opened unless `--no-open`, server left up).
+
+`--fail-on` is also a review flag: `codesema --fail-on major` in a terminal runs the gated review, it does not open the workspace.
+
 ## Agent skill (optional)
 
 To drive the flow from inside your agent instead of the CLI, install the bundled skill (plain agent-agnostic markdown):

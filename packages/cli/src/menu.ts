@@ -84,7 +84,19 @@ export function buildCloudMenuItems(context: MenuContext): MenuItem<CloudItemId>
   return items
 }
 
-const REVIEW_FLAGS = [
+// Every flag `review` actually consumes. `fail-on` belongs here: without it,
+// `codesema --fail-on major` in a terminal opened the workspace instead of
+// running the gated review, so a CI gate run by hand exited 0 in silence.
+//
+// The three remaining flags of the CLI are deliberately NOT here, because none
+// of them is read by `review`:
+//   - `review` (which agent output to display) belongs to `show`/`export`;
+//   - `out`    (export destination)           belongs to `export`;
+//   - `force`  (upload past the secret scan)  belongs to `sync`.
+// Routing them here would start a full agent review that ignores the flag —
+// strictly worse than today's workspace, and a behaviour change for 0.12.0
+// users. They stay out; `codesema show --review x` keeps working as before.
+export const REVIEW_FLAGS = [
   'branch',
   'target',
   'agent',
@@ -93,6 +105,7 @@ const REVIEW_FLAGS = [
   'no-open',
   'port',
   'timeout',
+  'fail-on',
 ] as const
 
 // Bare `codesema` opens the menu, but `codesema --branch x` has always meant
