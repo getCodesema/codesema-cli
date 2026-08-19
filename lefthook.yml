@@ -15,4 +15,10 @@ pre-push:
     typecheck:
       run: bun run typecheck
     test:
-      run: bun run test
+      # git exports its repo-location vars (GIT_DIR, GIT_WORK_TREE, ...) to the
+      # hooks it runs; the test suite spawns git inside throwaway tmpdirs, and
+      # those inherited vars would silently redirect every one of these git
+      # calls to the real repository (test branches, commits and config land in
+      # the repo you are pushing from). Strip them before running the tests —
+      # same doctrine as subprocessEnv in packages/cli/src/git.ts.
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_PREFIX -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH bun run test
