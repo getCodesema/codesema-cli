@@ -35,7 +35,7 @@ Re-running on the same branch reviews **incrementally**: the agent gets the prev
 
 **Fork, or work on.** A conversation either **forks** a fresh branch (`codesema/task-<slug>`) from a base — the default — or **works on** an existing branch directly, keeping its name and its history. A forked branch starts from your prompt's slug, then the agent renames it on its first turn with a short descriptive name of its own (`codesema/task-update-workspace-docs`) — that name is what the merge request will show. `origin/x` and `x` are the same branch (a remote-only branch gets a local tracking head), and a branch can only be owned by one active conversation at a time: starting a second one on it opens the existing conversation instead. Abandoning a conversation removes its worktree and deletes the branch only when it forked it — a branch you asked it to work on is never deleted.
 
-**One workspace drives several repos.** Launched from inside a git repository, that repo is auto-registered as a project and becomes the current one; launched from anywhere else, the workspace opens on the projects you already registered (add more from the UI, by path, or pick one of the repos it finds next to your launch directory). The registry is a small global file (`~/.config/codesema/projects.json`) mapping stable ids to repo roots — each repo keeps its own tasks and worktrees under its own `.codesema/`, so removing a project only unregisters it and never touches the repo. The concurrency cap is **global**: 3 running tasks at a time by default across all projects (`maxParallelTasks` in the config), extra ones queue FIFO.
+**One workspace drives several repos.** Launched from inside a git repository, that repo is auto-registered as a project and becomes the current one; launched from anywhere else, the workspace opens on the projects you already registered (add more from the UI, by path, or pick one of the repos it finds next to your launch directory). The registry is a small global file (`~/.config/codesema/projects.json`) mapping stable ids to repo roots — each repo keeps its own tasks and worktrees under its own `.codesema/`, so removing a project only unregisters it and never touches the repo. The concurrency cap is **global**: 3 running tasks at a time by default across all projects (`maxParallelTasks` in the config), extra ones queue FIFO. That cap counts **tasks, not machine load**: a task frees its slot the moment its turn ends, while the automatic review agent and the checks container of that same turn keep running outside the cap. With 3 tasks, your machine can be carrying 3 agents, 3 reviewers and N containers at once.
 
 **The UI is a work queue, not a dashboard.** The sidebar is a tree, per project, of the open merge requests (via `gh`/`glab`) and the active branches, with the conversations working on them nested underneath — derived `codesema/task-*` branches stay out of it, since the conversation already carries them. The middle column groups every conversation into **Needs you** (a question to answer, a blocked review, a conversation stopped mid-turn), **In progress**, **Ready to ship** and a **Done** pile; the right side is a focus deck of up to **3** conversations side by side, pinnable (📌) so opening a new one replaces the loose column instead of the ones you kept. Each conversation has **Conversation**, **Diff** and **Checks** tabs, quick-reply buttons extracted from the agent's own question, and a reply field that parks your message while the agent runs and sends it the moment the turn ends.
 
@@ -68,9 +68,9 @@ The live UI shows both phases: the two reviewers face to face with a per-file co
 2. **Your agent** reviews the diff like a senior reviewer and writes a structured review: prologue, ordered steps with risk/take/check, typed findings (security/perf/convention/design/praise/why), and what to review first.
 3. **The local web UI** shows the review in progress, then switches to the full experience: guided step-by-step reading, split/unified diff with inline notes, file tree, read/checked progress.
 
-## In the web UI
+## In the review UI
 
-Beyond the review itself, the local page drives the whole loop:
+Beyond the review itself, the page opened by `codesema review` drives the whole loop:
 
 - **Focus mode**: a problems-first view — actionable findings with checkboxes on the left, the selected note and its code excerpt on the right, previous/next stepping, and "Copy selection for agent" scoped to what you checked.
 - **Run fixes**: asks the configured agent to apply the selected findings to your working tree (headless run with edit tools, warning when the branch moved since the review).
@@ -117,12 +117,12 @@ CLI flags always win over both. `target`, `port`, `timeout` and `language` can a
 
 ### Workspace keys
 
-| Key                       | File           | Effect                                                                                                                |
-| ------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `maxParallelTasks`        | global or repo | Tasks running at once, **across all projects** (default `3`); the rest queue FIFO.                                    |
-| `isolation`               | global or repo | `auto` (default), `container` (required, a task refuses to start without it) or `policy` (always run on the host).    |
-| `isolationAllowedDomains` | global or repo | Domains the caged agent may reach (default `api.anthropic.com`, `platform.claude.com`); max 32, plain hostnames only. |
-| `checks`                  | repo only      | `{ image, install, commands, network, timeoutSeconds }` — replaces the automatic detection of the sandboxed checks.   |
+| Key                       | File           | Effect                                                                                                                                                                             |
+| ------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxParallelTasks`        | global or repo | Tasks running at once, **across all projects** (default `3`); the rest queue FIFO. Bounds tasks, not machine load: end-of-turn review agents and checks containers run outside it. |
+| `isolation`               | global or repo | `auto` (default), `container` (required, a task refuses to start without it) or `policy` (always run on the host).                                                                 |
+| `isolationAllowedDomains` | global or repo | Domains the caged agent may reach (default `api.anthropic.com`, `platform.claude.com`); max 32, plain hostnames only.                                                              |
+| `checks`                  | repo only      | `{ image, install, commands, network, timeoutSeconds }` — replaces the automatic detection of the sandboxed checks.                                                                |
 
 `isolation` and `checks` are repo-settable on purpose: the container and the checks are properties of the project, and a repo can only narrow what the agent reaches, never widen its rights on your machine. Sync fields stay global-only.
 
@@ -153,7 +153,7 @@ codesema show                  # only display .codesema/review.json (or the last
 codesema export --out review.md   # Markdown export (--out - for stdout)
 codesema sync                  # push the latest review to a free anonymous codesema.com workspace
 codesema sync delete           # erase all synced data and local credentials
-codesema link <code>           # attach the workspace to a codesema.com account via a pairing code
+codesema link [code]           # attach to a codesema.com account (no code: confirm in the browser)
 ```
 
 Sync is opt-in and free; your review record (including the diff) is only sent when you run `codesema sync`, or automatically after a review if you enabled auto-sync (offered after the first sync, toggleable in `codesema config`). Workspace credentials are stored in the global config file (`~/.config/codesema/config.json`), written with owner-only permissions (`0600`); sync settings in a repo's `.codesema/config.json` are ignored.
@@ -188,31 +188,79 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 
 ## Environment variables
 
-| Variable                   | Effect                                                                          |
-| -------------------------- | ------------------------------------------------------------------------------- |
-| `CODESEMA_CONFIG_DIR`      | Override the global config directory (default `~/.config/codesema`).            |
-| `CODESEMA_NO_UPDATE_CHECK` | Set to `1` to skip the startup npm version check (also skipped when not a TTY). |
-| `CODESEMA_SYNC_URL`        | Point `sync`/`link` at a different codesema.com host (self-hosted or staging).  |
+Nine variables change how the CLI behaves. Each row names the file that reads
+it, under `packages/cli/src/`.
+
+| Variable                   | Read in      | Effect                                                                                                                      |
+| -------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `CODESEMA_CONFIG_DIR`      | `config.ts`  | Override the global config directory (default `~/.config/codesema`).                                                        |
+| `XDG_CONFIG_HOME`          | `config.ts`  | Base of that default directory when `CODESEMA_CONFIG_DIR` is unset: `$XDG_CONFIG_HOME/codesema`, else `~/.config/codesema`. |
+| `CODESEMA_NO_UPDATE_CHECK` | `version.ts` | Any non-empty value skips the startup npm version check (also skipped when stdout is not a TTY).                            |
+| `CODESEMA_SYNC_URL`        | `sync.ts`    | Point `sync`/`link` at a different codesema.com host (self-hosted or staging); wins over the stored `syncUrl`.              |
+| `NO_COLOR`                 | `ui.ts`      | Any non-empty value turns the coloured terminal output off.                                                                 |
+| `TERM`                     | `ui.ts`      | `dumb` turns the coloured terminal output off.                                                                              |
+| `LC_ALL`                   | `wizard.ts`  | Preselects the onboarding language: a locale starting with `fr` preselects French, anything else English.                   |
+| `LC_MESSAGES`              | `wizard.ts`  | Same, consulted when `LC_ALL` is unset.                                                                                     |
+| `LANG`                     | `wizard.ts`  | Same, consulted when `LC_ALL` and `LC_MESSAGES` are unset.                                                                  |
+
+The three locale variables only preselect an answer in the wizard: the choice
+you confirm is stored as `language` in the config and wins from then on.
+
+### What the subprocesses inherit
+
+These are not knobs to turn: they are what codesema keeps in — and strips from —
+the environment of the processes it spawns.
+
+- **A known review agent gets a minimal environment.** `agentEnv` (`agent.ts`)
+  keeps the 27 names of `BASE_ENV_VARS` — `PATH`, `HOME`, `USER`, `LOGNAME`,
+  `SHELL`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `TZ`, the 8 proxy
+  variables, the 4 `XDG_*` ones and the 4 CA-bundle ones — plus the provider's
+  own prefixes (`ANTHROPIC_`/`CLAUDE_`, `OPENAI_`/`CODEX_`,
+  `GEMINI_`/`GOOGLE_`), widened to `AWS_` or `GOOGLE_`/`GCP_` only when
+  `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` is set. Everything else
+  in your environment — cloud keys, tokens, database URLs — never reaches the
+  subprocess. A custom agent command inherits the full environment (its needs
+  are unknowable, and you chose it explicitly), and so does Windows, where
+  narrowing the environment can break the spawn itself.
+- **A caged task agent gets 6 provider variables, by name.**
+  `CAGE_FORWARDED_ENV` (`task-isolation.ts`) forwards
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`, and
+  only those. They are passed as `-e NAME`, never as `-e NAME=value`: a value in
+  argv would be readable in `ps` on the whole host. `CLAUDE_CODE_OAUTH_TOKEN`
+  also decides how the cage bootstraps its credentials — when it is set, nothing
+  is copied out of `~/.claude`.
+- **Git subprocesses lose the repo-location variables.** `subprocessEnv`
+  (`git.ts`) strips the 8 variables git sets on the hooks it invokes —
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
+  `GIT_COMMON_DIR`, `GIT_PREFIX`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and
+  `GIT_QUARANTINE_PATH` — so codesema invoked from inside a hook still reads the
+  repo it was pointed at, not the one that set them. This is deliberately not a
+  blanket `GIT_*`: `GIT_SSH_COMMAND`, `GIT_AUTHOR_*`/`GIT_COMMITTER_*` and
+  `GIT_CONFIG_GLOBAL` are legitimate settings and reach git unchanged.
 
 ## Files
 
-| Path                                | Contents                                                                       |
-| ----------------------------------- | ------------------------------------------------------------------------------ |
-| `~/.config/codesema/config.json`    | Global config (language, agent, model, effort, sync credentials), mode `0600`. |
-| `~/.config/codesema/projects.json`  | Global registry of workspace projects (id → git repo root).                    |
-| `~/.config/codesema/workspace.lock` | Guards against two workspace processes on the same machine.                    |
-| `.codesema/config.json`             | Repo config, overrides the global one (also holds `checks`).                   |
-| `.codesema/input.json`              | The prepared MR diff handed to the agent (`prep`).                             |
-| `.codesema/review.json`             | The latest review written by the agent.                                        |
-| `.codesema/reviews/`                | Archived reviews (5 kept per branch, used for incremental re-review).          |
-| `.codesema/agent-output.txt`        | Raw agent output, written only when it held no parseable JSON review.          |
-| `.codesema/PROMPT.md`               | Your team's extra review instructions, merged into the prompt.                 |
-| `.codesema/RULES.md`                | Your team's review rules (one `[Cn]` grid line each), hunted first.            |
-| `.codesema/tasks/<id>/task.json`    | One workspace task record (status, branch, turns, isolation mode).             |
-| `.codesema/tasks/<id>/events.jsonl` | That task's append-only event journal (one JSON line per event).               |
-| `.codesema/tasks/<id>/checks.json`  | That task's latest sandboxed checks run (per-command status and output tail).  |
-| `.codesema/worktrees/<id>/`         | One isolated git worktree per workspace task.                                  |
-| `.codesema-ignore`                  | Glob patterns excluded from the diff.                                          |
+| Path                                     | Contents                                                                                     |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `~/.config/codesema/config.json`         | Global config (language, agent, model, effort, sync credentials), mode `0600`.               |
+| `~/.config/codesema/projects.json`       | Global registry of workspace projects (id → git repo root).                                  |
+| `~/.config/codesema/trusted-agents.json` | Repo-provided `agent` commands you approved, one entry per repo root.                        |
+| `~/.config/codesema/workspace.lock`      | Guards against two workspace processes on the same machine.                                  |
+| `.codesema/config.json`                  | Repo config, overrides the global one (also holds `checks`).                                 |
+| `.codesema/.gitignore`                   | Written on first use, contains `*`: everything codesema writes stays out of your repo's git. |
+| `.codesema/input.json`                   | The prepared MR diff handed to the agent (`prep`).                                           |
+| `.codesema/review.json`                  | The latest review written by the agent.                                                      |
+| `.codesema/review.md`                    | Default output of `codesema export` (`--out <path>` to change, `--out -` for stdout).        |
+| `.codesema/reviews/`                     | Archived reviews (20 kept per branch, used for incremental re-review).                       |
+| `.codesema/agent-output.txt`             | Raw agent output, written only when it held no parseable JSON review.                        |
+| `.codesema/PROMPT.md`                    | Your team's extra review instructions, merged into the prompt.                               |
+| `.codesema/RULES.md`                     | Your team's review rules (one `[Cn]` grid line each), hunted first.                          |
+| `.codesema/tasks/<id>/task.json`         | One workspace task record (status, branch, turns, isolation mode).                           |
+| `.codesema/tasks/<id>/events.jsonl`      | That task's append-only event journal (one JSON line per event).                             |
+| `.codesema/tasks/<id>/checks.json`       | That task's latest sandboxed checks run (per-command status and output tail).                |
+| `.codesema/worktrees/<id>/`              | One isolated git worktree per workspace task.                                                |
+| `.codesema-ignore`                       | Glob patterns excluded from the diff.                                                        |
 
 ## Exit codes
 
