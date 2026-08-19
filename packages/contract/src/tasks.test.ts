@@ -592,6 +592,17 @@ describe('sanitizeTaskRecord', () => {
     expect(r?.reason?.detail).toHaveLength(TASK_EVENT_DATA_STRING_MAX)
   })
 
+  test('queue_position is derived, never persisted: a value found on disk is dropped', () => {
+    // The field exists on the type (the server sets it when it SERVES a
+    // listing) but the store never writes it, so anything sitting in a
+    // task.json is stale by construction — or hand-written.
+    const r = sanitizeTaskRecord({ ...validRecord, queue_position: 7 })
+    expect(r).not.toBeNull()
+    expect(r && 'queue_position' in r).toBe(false)
+    // And its absence is the honest default of a record nobody decorated.
+    expect(sanitizeTaskRecord(validRecord)?.queue_position).toBeUndefined()
+  })
+
   test('turns: invalid entries skipped, texts truncated, empty response null', () => {
     const r = sanitizeTaskRecord({
       ...validRecord,

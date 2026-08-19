@@ -431,6 +431,8 @@ export async function runSimpleFlow(opts: {
   prompt: string
   incremental: boolean
   onProgress?: (status: string) => void
+  /** Aborting SIGTERMs the review agent's process group (workspace shutdown). */
+  signal?: AbortSignal | undefined
 }): Promise<SimpleOutcome> {
   const forwardPartial = createPartialForwarder(opts.session)
   let out: string
@@ -442,6 +444,7 @@ export async function runSimpleFlow(opts: {
         prompt: opts.prompt,
         cwd: opts.input.repo_root,
         absoluteCapMs: opts.timeoutMs,
+        ...(opts.signal ? { signal: opts.signal } : {}),
         onText: (text) => {
           const partial = forwardPartial(text)
           if (!partial) {
@@ -503,8 +506,10 @@ export async function runDualFlow(opts: {
   timeoutMs: number
   session: LiveSession
   spinner: { update: (status: string) => void }
+  /** Aborting SIGTERMs both lanes' agent process groups (workspace shutdown). */
+  signal?: AbortSignal | undefined
 }): Promise<DualOutcome> {
-  const { agentCommand, input, dir, timeoutMs, session, spinner } = opts
+  const { agentCommand, input, dir, timeoutMs, session, spinner, signal } = opts
   const inputBlock = `<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>`
   const closing = 'Output ONLY the JSON object now.'
   const command = hardenedReviewCommand(agentCommand)
@@ -524,6 +529,7 @@ export async function runDualFlow(opts: {
         prompt,
         cwd: input.repo_root,
         absoluteCapMs: timeoutMs,
+        ...(signal ? { signal } : {}),
         onText: (text) => {
           const partial = forward(text)
           if (!partial) {
@@ -614,6 +620,7 @@ export async function runDualFlow(opts: {
           ].join('\n\n'),
           cwd: input.repo_root,
           absoluteCapMs: timeoutMs,
+          ...(signal ? { signal } : {}),
           onText: (text) => {
             const now = Date.now()
             if (now - lastJudgeParse < PARTIAL_PARSE_INTERVAL_MS) {

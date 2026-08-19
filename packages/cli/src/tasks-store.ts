@@ -10,11 +10,11 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   statSync,
-  writeFileSync,
+  type Dirent,
 } from 'node:fs'
 import { join } from 'node:path'
+import { writeJsonAtomic } from './atomic-write.js'
 import { ensureWorkDir } from './config.js'
 import {
   isTaskId,
@@ -90,20 +90,59 @@ export function createTask(cwd: string, input: CreateTaskInput): TaskRecord {
 }
 
 /**
- * Atomic rewrite (tmp + rename on the same filesystem): a crash mid-write
- * leaves either the previous task.json or the new one, never a partial file.
- * Writes the record verbatim — timestamps (updated_at) are the caller's job,
- * so an in-memory record never silently diverges from the disk copy.
+ * Atomic rewrite (writeJsonAtomic, the shared tmp + rename recipe): a crash
+ * mid-write leaves either the previous task.json or the new one, never a
+ * partial file. Writes the record verbatim — timestamps (updated_at) are the
+ * caller's job, so an in-memory record never silently diverges from the disk
+ * copy.
  */
 export function saveTask(cwd: string, record: TaskRecord): void {
-  const dir = taskDir(cwd, record.id)
-  mkdirSync(dir, { recursive: true })
-  const tmp = join(dir, 'task.json.tmp')
-  writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`)
-  renameSync(tmp, join(dir, 'task.json'))
+  writeJsonAtomic(join(taskDir(cwd, record.id), 'task.json'), record)
 }
 
 /** Null on unknown id, unreadable file, invalid JSON or unusable record. */
+/**
+ * Whether a task's record file EXISTS, whatever state it is in.
+ *
+ * `loadTask` returns null for two very different facts — "there is no such
+ * task" and "I could not read it right now" (EMFILE under a burst of open
+ * descriptors, an EACCES, a half-written file). Callers that DELETE things on
+ * a null — the queue sweep did — need the difference: evicting a perfectly
+ * valid id from its project's line because the process momentarily ran out of
+ * file descriptors is a silent loss of its place.
+ */
+export function taskRecordExists(cwd: string, id: string): boolean {
+  if (!isTaskId(id)) {
+    return false
+  }
+  try {
+    statSync(join(taskDir(cwd, id), 'task.json'))
+    return true
+  } catch (err) {
+    // ENOENT (nothing there, dangling symlink included) and ENOTDIR (the path
+    // is not even a directory any more) are the two ways to be sure it is
+    // gone. Every other errno — EACCES on the task's own directory, EIO,
+    // ELOOP — means we could not find out, and "could not find out" must
+    // never be read as "gone": `existsSync` collapsed all of them into false,
+    // so a directory turned unreadable evicted a perfectly valid id.
+    const code = (err as NodeJS.ErrnoException).code
+    return code !== 'ENOENT' && code !== 'ENOTDIR'
+  }
+}
+
+/**
+ * Known three-voice inconsistency, harmless today, written down so the next
+ * reader does not rediscover it as a surprise: a task directory that is a
+ * SYMLINK to a real one is hidden by `listTasks` and by `taskIdsOnDisk` (both
+ * filter on `isDirectory()`, which is false for a link and is not followed),
+ * while `taskRecordExists` above says `true` for it — `statSync` does follow.
+ * So such an id would keep its rank in the queue while being invisible in
+ * every listing. A symlinked task directory is not a supported shape, nothing
+ * codesema writes creates one, and the current behaviour (hiding it) is the
+ * one we want; the note exists only so that a future change to any of the
+ * three remembers there are three.
+ */
+
 export function loadTask(cwd: string, id: string): TaskRecord | null {
   // The id is joined into a path: reject anything that is not one of ours
   // (also blocks traversal from user-supplied ids in HTTP routes).
@@ -123,14 +162,113 @@ export function loadTask(cwd: string, id: string): TaskRecord | null {
   return record && record.id === id ? record : null
 }
 
-/** All readable tasks, most recently updated first. Corrupt ones are skipped. */
-export function listTasks(cwd: string): TaskRecord[] {
+/**
+ * Said when the tasks/ directory itself will not list. Exported so the caller
+ * that surfaces it and the test that asserts it name the same string.
+ *
+ * The fragment before the parenthesis is the load-bearing half: it is what an
+ * operator greps for, and what the tests anchor on literally.
+ */
+export const STORE_UNLISTABLE = 'the task store of this project could not be listed'
+
+export function storeUnlistable(detail: string): string {
+  return `${STORE_UNLISTABLE} (${detail}): it reads as EMPTY until that clears — no task is treated as gone, and nothing is written on the strength of it`
+}
+
+/**
+ * Where the failure above is SAID. Registered by whoever owns a user-facing
+ * channel (the task server turns it into a workspace notice); the console is
+ * the last resort so that "returns [] instead of throwing" can never become
+ * "returns [] and says nothing" — that trade was invariant 1 bought at
+ * invariant 2's expense, and it made a whole store go dark in silence.
+ */
+export type StoreUnreadableSink = (cwd: string, reason: string) => void
+
+let storeSink: StoreUnreadableSink | null = null
+/** Dedup, per directory: one unlistable store must not become a stream. */
+const storeReports = new Map<string, string>()
+
+export function onStoreUnreadable(sink: StoreUnreadableSink | null): void {
+  storeSink = sink
+}
+
+/** Test hygiene: the dedup memory and the sink are process-wide. */
+export function resetStoreReports(): void {
+  storeReports.clear()
+  storeSink = null
+}
+
+/**
+ * The ONE place tasks/ is listed. Both readers went through their own
+ * `readdirSync` + `catch {}`, which is how one of them ended up reporting and
+ * the other staying mute; keeping a single door means the tolerance AND the
+ * notice are the same for every caller, now and later.
+ */
+function taskDirEntries(cwd: string): Dirent[] {
   const dir = tasksDir(cwd)
   if (!existsSync(dir)) {
+    // A store that was never created is not a store that broke.
+    storeReports.delete(dir)
     return []
   }
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true })
+    // Readable again: forget the incident, so a later relapse is said afresh.
+    storeReports.delete(dir)
+    return entries
+  } catch (err) {
+    // Tolerant like every other read of this store (invariant 1): a tasks/
+    // directory that will not list right now (EACCES, EMFILE under a burst of
+    // descriptors) yields no records rather than throwing — the queue's
+    // `list()` is documented as never throwing and rebuilds itself from here.
+    // But tolerance is not silence (invariant 2): an empty answer from a
+    // directory full of tasks is the single most misleading value this module
+    // can return, and `taskIdsOnDisk` returning [] is precisely the moment the
+    // queue loses its ability to NAME what it could not place.
+    const detail = (err as NodeJS.ErrnoException).code ?? (err as Error).message
+    report(cwd, dir, storeUnlistable(detail))
+    return []
+  }
+}
+
+function report(cwd: string, dir: string, reason: string): void {
+  if (storeReports.get(dir) === reason) {
+    return
+  }
+  storeReports.set(dir, reason)
+  const sink = storeSink
+  if (!sink) {
+    console.warn(reason)
+    return
+  }
+  try {
+    sink(cwd, reason)
+  } catch {
+    // A listener that throws must not turn a degradation into a crash, and
+    // must not swallow the degradation either.
+    console.warn(reason)
+  }
+}
+
+/** All readable tasks, most recently updated first. Corrupt ones are skipped. */
+/**
+ * Ids of every task DIRECTORY on disk, readable or not.
+ *
+ * `listTasks` silently drops anything it could not parse, so on its own it
+ * cannot answer "did this task disappear, or did I merely fail to read it?".
+ * Subtracting its ids from these gives exactly the records that exist and are
+ * currently illegible — the set the queue must not treat as gone.
+ * Directory names only: no JSON is parsed here.
+ */
+export function taskIdsOnDisk(cwd: string): string[] {
+  return taskDirEntries(cwd)
+    .filter((entry) => entry.isDirectory() && isTaskId(entry.name))
+    .map((entry) => entry.name)
+}
+
+export function listTasks(cwd: string): TaskRecord[] {
   const records: TaskRecord[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of taskDirEntries(cwd)) {
     if (!entry.isDirectory()) {
       continue
     }
@@ -345,11 +483,11 @@ export function readTaskChecks(cwd: string, id: string): TaskChecks | null {
 }
 
 /**
- * Atomic rewrite of checks.json (tmp + rename, same recipe as saveTask):
- * every snapshot of a run overwrites the previous one, a crash mid-write
- * never leaves a partial file. The payload is sanitized before writing so
- * the file on disk is always bounded; the sanitized copy is returned so the
- * caller broadcasts exactly what was persisted.
+ * Atomic rewrite of checks.json (the same shared recipe as saveTask): every
+ * snapshot of a run overwrites the previous one, a crash mid-write never
+ * leaves a partial file. The payload is sanitized before writing so the file
+ * on disk is always bounded; the sanitized copy is returned so the caller
+ * broadcasts exactly what was persisted.
  */
 export function writeTaskChecks(cwd: string, id: string, checks: TaskChecks): TaskChecks {
   if (!isTaskId(id)) {
@@ -360,11 +498,7 @@ export function writeTaskChecks(cwd: string, id: string, checks: TaskChecks): Ta
     // Unreachable through the typed input; a hard invariant like appendTaskEvent's.
     throw new Error('invalid task checks')
   }
-  const dir = taskDir(cwd, id)
-  mkdirSync(dir, { recursive: true })
-  const tmp = join(dir, 'checks.json.tmp')
-  writeFileSync(tmp, `${JSON.stringify(clean, null, 2)}\n`)
-  renameSync(tmp, join(dir, 'checks.json'))
+  writeJsonAtomic(join(taskDir(cwd, id), 'checks.json'), clean)
   return clean
 }
 

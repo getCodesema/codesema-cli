@@ -1,11 +1,12 @@
 // Task manager: the one object the HTTP server drives for the agentic
-// workspace. Multi-project: it aggregates one tasks store + one task runner
-// per REGISTERED project (global registry, projects.ts), instantiated lazily
-// at first access, all sharing ONE global concurrency budget (a TaskSlotPool:
-// maxParallel counts running tasks across every repo). Each repo keeps its
-// own .codesema/ as the source of truth for its tasks; the manager only
-// routes by project id. Everything that happens is multiplexed into a single
-// pub/sub bus of {project_id, task_id, event} envelopes — the shape the
+// workspace. Multi-project: it aggregates one tasks store + one task runner +
+// one persisted queue per REGISTERED project (global registry, projects.ts),
+// instantiated lazily at first access. Concurrency follows from ONE active
+// task per project (T1.2): projects advance side by side, and a second task
+// of the same repo waits in that repo's <repo>/.codesema/queue.json. Each repo
+// keeps its own .codesema/ as the source of truth for its tasks; the manager
+// only routes by project id. Everything that happens is multiplexed into a
+// single pub/sub bus of {project_id, task_id, event} envelopes — the shape the
 // global SSE stream (/api/tasks/events) forwards verbatim, so N conversations
 // across N projects ride one EventSource.
 
@@ -27,7 +28,9 @@ import {
   type TaskChecks,
   type TaskEvent,
   type TaskIsolation,
+  type TaskReason,
   type TaskRecord,
+  type TaskStatus,
 } from './contract.js'
 import { refExists, tryGit } from './git.js'
 import { t } from './i18n.js'
@@ -40,11 +43,10 @@ import {
   UNPROBED_ISOLATION,
   type IsolationProbe,
 } from './task-isolation.js'
+import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import { createTaskReviewer, readTaskReview } from './task-review.js'
 import {
   createTaskRunner,
-  createTaskSlotPool,
-  DEFAULT_MAX_PARALLEL_TASKS,
   type TaskActionResult,
   type TaskRunner,
   type TaskRunnerOptions,
@@ -62,11 +64,13 @@ import {
   createTask,
   listTasks,
   loadTask,
+  onStoreUnreadable,
   readTaskChecks,
   readTaskEvents,
   saveTask,
   taskReason,
   writeTaskChecks,
+  type AppendTaskEventInput,
 } from './tasks-store.js'
 
 /**
@@ -219,6 +223,16 @@ export type TaskManager = {
    * ONLY path from a proposal to disk. 409 when nothing is proposed.
    */
   checksApply: (projectId: string) => TaskActionResult
+  /**
+   * Picks the persisted queues back up — the ONE thing the boot recovery
+   * deliberately does not do by itself. Building the manager only reconciles
+   * records and queue files on disk; agents start here, and the caller is
+   * expected to call this only once the HTTP server listens and the shutdown
+   * handlers are installed, so a turn can never start in a process that cannot
+   * yet be talked to nor stopped. Returns what it resumed, for the boot line.
+   * Idempotent: a project already running is not restarted.
+   */
+  startPending: () => PendingQueue[]
   /** Graceful exit: interrupts every active agent (all projects) and resolves once all turns persisted. */
   shutdown: () => Promise<void>
   subscribe: (listener: (envelope: TaskEnvelope) => void) => () => void
@@ -231,7 +245,12 @@ export type CreateTaskManagerOptions = {
   timeoutMs: number
   /** Watchdog budgets (D3), read from the config by resolveWatchdogBudgets. */
   watchdog?: WatchdogBudgets | undefined
-  /** GLOBAL cap of concurrently running tasks, all projects confounded. */
+  /**
+   * INERT since T1.2: the number of active tasks follows from "one active
+   * task per project", not from a global budget. Still accepted (and still
+   * fed by the `maxParallelTasks` config key) so nothing breaks while T1.3
+   * turns that key into the machine-load cap of D4, or retires it.
+   */
   maxParallel?: number
   /**
    * Result of the boot probe (workspace.ts): decides the isolation every new
@@ -264,6 +283,20 @@ export type CreateTaskManagerOptions = {
    * task runner's working agent.
    */
   runSetupAgentFn?: (options: AgentRunOptions) => Promise<string>
+  /**
+   * Where the manager says out loud what it had to degrade — a queue file it
+   * could not use, a project whose boot recovery blew up. Defaults to a
+   * console line: a degradation whose only trace is a journal nobody has a
+   * reason to open is a silent one (invariant 2). Tests collect instead.
+   */
+  onNotice?: (message: string) => void
+}
+
+/** One project whose persisted queue was resumed, for the boot announcement. */
+export type PendingQueue = {
+  project: Project
+  /** Tasks in that project's line when the runner picked it back up. */
+  queued: number
 }
 
 /**
@@ -309,35 +342,186 @@ function reconciledStatus(cwd: string, record: TaskRecord): 'interrupted' | 'fai
 }
 
 /**
- * Applies reconciledStatus across a repo, journaling the WHY on each rewrite.
- * Called at boot for every registered project (and again when a project's
- * context is built — by then nothing of that project runs here yet), before
- * anything subscribes: no broadcast needed.
+ * What boot says to a `queued` record found in a repo that has NO queue.json.
+ * There is no line for it to be in: the file this system writes on every
+ * enqueue is simply not there, so the record is left over from a session that
+ * died before queues existed (0.12) or was wiped by hand. It is an orphan, not
+ * a task waiting its turn, and starting an agent on it unattended is not
+ * something a boot gets to decide.
  */
-function reconcileTasks(cwd: string): void {
-  for (const record of listTasks(cwd)) {
-    const status = reconciledStatus(cwd, record)
-    if (status === null) {
-      continue
-    }
+const ORPHANED_QUEUED = 'orphaned by an earlier session: nothing was queued to start it'
+
+export type ReconcileOutcome = {
+  /** How many tasks the reconciled queue holds — i.e. would start on their own. */
+  queued: number
+  /** Readable reason when the queue file could not be used; null otherwise. */
+  degraded: string | null
+  /** Things the boot did that are worth saying without being failures. */
+  notices: string[]
+}
+
+/** What the boot took out of a project's line, named so it is never silent. */
+export function queueEntriesRetired(ids: readonly string[]): string {
+  return `${ids.length} queued task${ids.length === 1 ? '' : 's'} left the queue at boot (finished, abandoned, or no longer on disk): ${ids.join(', ')}`
+}
+
+/**
+ * Applies reconciledStatus across a repo, journaling the WHY on each rewrite,
+ * then re-hydrates that repo's persisted queue and reconciles it with the
+ * records it just settled. Called at boot for every registered project (and
+ * again when a project's context is built — by then nothing of that project
+ * runs here yet), before anything subscribes: no broadcast needed.
+ */
+function reconcileTasks(cwd: string, projectId: string): ReconcileOutcome {
+  const records = listTasks(cwd)
+  /** Facts worth a line on the terminal that are not, in themselves, failures. */
+  const notices: string[] = []
+  /**
+   * `reason` travels WITH the status, always. A boot rewrite is a degradation
+   * like any other (invariant 2) and the D2 vocabulary is the machine-readable
+   * half of it: leaving `record.reason` empty here would make these the only
+   * degradations of the store a client cannot read without parsing English.
+   */
+  const rewrite = (
+    record: TaskRecord,
+    status: TaskStatus,
+    event: AppendTaskEventInput,
+    reason: TaskReason,
+  ): void => {
     const turn = record.turns.at(-1)
     if (turn && !turn.ended_at) {
       turn.ended_at = new Date().toISOString()
     }
     record.status = status
+    record.reason = reason
     record.updated_at = new Date().toISOString()
     saveTask(cwd, record)
-    appendTaskEvent(
-      cwd,
-      record.id,
-      status === 'failed'
-        ? {
-            type: 'error',
-            data: { message: 'worktree and branch are both gone, the task cannot be resumed' },
-          }
-        : { type: 'interrupted', data: { message: 'process exited while the task was active' } },
-    )
+    appendTaskEvent(cwd, record.id, { ...event, reason_code: reason.code })
   }
+  for (const record of records) {
+    const status = reconciledStatus(cwd, record)
+    if (status === null) {
+      continue
+    }
+    if (status === 'failed') {
+      const message = 'worktree and branch are both gone, the task cannot be resumed'
+      // TERMINAL, and the code has to say so. `agent_error` claimed the exact
+      // opposite of the message sitting next to it — that the agent had
+      // failed, that the committed work was intact, and that running the turn
+      // again was the recovery — so a consumer reading
+      // `isTerminalReason(...) === false` would offer a retry the API then
+      // refuses. Of the ten codes, `branch_diverged` is the one whose doctrine
+      // fits: what carried the work cannot be used as it stands, and only an
+      // action on the work changes that — never a delay.
+      rewrite(
+        record,
+        status,
+        { type: 'error', data: { message } },
+        taskReason('branch_diverged', message),
+      )
+    } else {
+      const message = 'process exited while the task was active'
+      rewrite(
+        record,
+        status,
+        { type: 'interrupted', data: { message } },
+        taskReason('interrupted_by_user', message),
+      )
+    }
+  }
+  // The queue comes SECOND, on the statuses this pass just settled: an id it
+  // moved off 'queued' must not survive in the file.
+  const reconciled = createTaskQueue({ cwd, projectId }).reconcile(records)
+  if (!reconciled.present) {
+    // No queue.json at all: only a line THIS system wrote is ever resumed on
+    // its own. Whatever sits on 'queued' here was orphaned by a session that
+    // never got to run it — it becomes 'interrupted', which is exactly the
+    // state a human Resume knows how to pick up, and no agent starts by
+    // surprise on a boot the user did not ask anything of.
+    for (const record of records) {
+      if (record.status === 'queued') {
+        rewrite(
+          record,
+          'interrupted',
+          { type: 'interrupted', data: { message: ORPHANED_QUEUED } },
+          // Nobody pressed anything, but this IS the human-gesture branch of
+          // the vocabulary: the task stops and only a human restarts it. The
+          // detail says which human absence caused it.
+          taskReason('interrupted_by_user', ORPHANED_QUEUED),
+        )
+      }
+    }
+    return { queued: 0, degraded: null, notices }
+  }
+  if (reconciled.removed.length > 0) {
+    // Dropping ids from the line is a real change to what this project was
+    // going to run, and it used to happen without a word anywhere. It is rare
+    // by construction — `launch` takes an id out of the file the moment it
+    // starts, so a queued entry only goes terminal or vanishes when a process
+    // died at exactly the wrong moment — which is precisely why it deserves a
+    // line when it does happen. (Entries whose record merely could not be READ
+    // are no longer part of this: they keep their place.)
+    notices.push(queueEntriesRetired(reconciled.removed))
+  }
+  if (reconciled.degraded !== null) {
+    // Never silent (invariant 2): the readable reason lands in the journal of
+    // every task the rebuilt queue holds — the tasks the lost order actually
+    // concerned — where GET /api/tasks/:id serves it back to the UI. The
+    // caller ALSO surfaces it as a server notice, because a degradation whose
+    // only trace is a journal nobody has a reason to open is a silent one.
+    for (const id of reconciled.ids) {
+      appendTaskEvent(cwd, id, { type: 'error', data: { message: reconciled.degraded } })
+    }
+  }
+  return { queued: reconciled.ids.length, degraded: reconciled.degraded, notices }
+}
+
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/**
+ * Ceiling on the number of rank-refresh frames one queue mutation may produce.
+ * The badge is a courtesy on a card the human is looking at; the exact ranking
+ * always comes back with GET /api/tasks. Fifty is far past any queue a person
+ * reads and keeps a mutation's cost flat instead of proportional to the line.
+ */
+export const QUEUE_BROADCAST_MAX = 50
+
+/**
+ * The project's queue, for the read-time position view (no runner needed).
+ *
+ * `onDegraded` is not optional in practice: this builds a fresh queue on every
+ * listing, and a read that finds the file unusable has to be able to say so
+ * AND to repair it. Without a handler the listing route was the one place
+ * where a broken queue.json produced nothing at all — no reason, no journal
+ * line, no notice.
+ */
+const queueOf = (
+  project: Project,
+  onDegraded?: (reason: string, ids: readonly string[]) => void,
+): TaskQueue =>
+  createTaskQueue({
+    cwd: project.path,
+    projectId: project.id,
+    ...(onDegraded ? { onDegraded } : {}),
+  })
+
+/**
+ * Read-time view of a project's queue: every waiting record is handed back
+ * with its 1-based `queue_position`. DERIVED, never persisted — the position
+ * of a task is a fact about the queue at the moment it is read, so it is
+ * computed on the listing routes rather than written into task.json where it
+ * would go stale the instant the head starts.
+ */
+function withQueuePositions(queue: TaskQueue, records: TaskRecord[]): TaskRecord[] {
+  const entries = queue.list()
+  if (entries.length === 0) {
+    return records
+  }
+  const positions = new Map(entries.map((entry, index) => [entry.id, index + 1]))
+  return records.map((record) => {
+    const position = positions.get(record.id)
+    return position === undefined ? record : { ...record, queue_position: position }
+  })
 }
 
 /**
@@ -371,22 +555,114 @@ type ProjectContext = {
 
 export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const registered = opts.listProjectsFn ?? listProjects
+  const notice = opts.onNotice ?? ((message: string) => console.warn(message))
+  /**
+   * Boot recovery of ONE repo, fenced. A repo whose queue file is read-only,
+   * whose disk is full, or whose store is unreadable degrades ON ITS OWN: the
+   * workspace still starts, the other projects are untouched, and the reason
+   * is said out loud. Losing every project because one of them is broken is
+   * the failure mode this exists to prevent.
+   */
+  const recover = (project: Project): number => {
+    try {
+      const outcome = reconcileTasks(project.path, project.id)
+      if (outcome.degraded !== null) {
+        notice(`${project.name}: ${outcome.degraded}`)
+      }
+      for (const line of outcome.notices) {
+        notice(`${project.name}: ${line}`)
+      }
+      return outcome.queued
+    } catch (err) {
+      notice(
+        `${project.name}: boot recovery failed (${err instanceof Error ? err.message : String(err)}); its tasks are left exactly as they are on disk`,
+      )
+      return 0
+    }
+  }
+
+  /**
+   * A queue.json found UNUSABLE outside the boot — a listing, a pump, any read
+   * at all. This is a REPORTING sink and deliberately nothing more.
+   *
+   * It used to repair here, and that was wrong in a way worth writing down: it
+   * is called from inside `read()`, so a mutation that provoked it (an
+   * enqueue, a remove) rewrote the file with its own pre-repair list the
+   * instant this returned — undoing a perfect repair and silently dropping
+   * every task the bad bytes had hidden, under a notice claiming the opposite.
+   * The reconstruction now happens in the queue's own read, in memory, and is
+   * persisted by the next write; all that is left to do here is to make the
+   * degradation impossible to miss:
+   *
+   *  - the reason lands in the JOURNAL of every task the REBUILT queue holds
+   *    (the ids this sink is handed), where GET /api/tasks/:id serves it back;
+   *  - and it is said out loud as a server notice.
+   *
+   * Both happen once per distinct reason, process-wide.
+   */
+  const reportQueueDegradation = (
+    project: Project,
+    reason: string,
+    ids: readonly string[],
+  ): void => {
+    notice(`${project.name}: ${reason}`)
+    for (const id of ids) {
+      try {
+        appendTaskEvent(project.path, id, { type: 'error', data: { message: reason } })
+      } catch {
+        // A journal that cannot be written must not take a listing down with
+        // it; the notice above already carries the fact.
+      }
+    }
+  }
+
+  /** The read-time queue view of a project, wired to the report above. */
+  const queueFor = (project: Project): TaskQueue =>
+    queueOf(project, (reason, ids) => reportQueueDegradation(project, reason, ids))
+
+  // A tasks/ directory that will not LIST is tolerated (it yields no records
+  // rather than throwing) — and until this line it was tolerated in total
+  // silence, which is the half of the bargain invariant 2 forbids: the whole
+  // store of a project reads as empty, the board shows nothing, and nobody is
+  // told. It is also the exact moment the queue loses its ability to name what
+  // it could not place. No journal here on purpose: the ids are precisely what
+  // the failure denied us.
+  onStoreUnreadable((cwd, reason) => {
+    const project = registered().find((candidate) => candidate.path === cwd)
+    notice(project ? `${project.name}: ${reason}` : reason)
+  })
+
   // Boot recovery across EVERY registered repo: the SSE replay (listAll) must
   // already show a dead process's tasks as 'interrupted', context or not.
+  // Projects that still have a queue at the end of it are noted here — but
+  // NOTHING starts yet: startPending() is the explicit step for that, and the
+  // workspace calls it only once it can be talked to and stopped.
+  const pendingAtBoot: { projectId: string; queued: number }[] = []
   for (const project of registered()) {
-    reconcileTasks(project.path)
+    const queued = recover(project)
+    if (queued > 0) {
+      pendingAtBoot.push({ projectId: project.id, queued })
+    }
   }
 
   const listeners = new Set<(envelope: TaskEnvelope) => void>()
   const emit = (envelope: TaskEnvelope): void => {
     for (const listener of listeners) {
-      listener(envelope)
+      try {
+        listener(envelope)
+      } catch (err) {
+        // Subscribers are observers: one that throws (a broken SSE client, a
+        // bug downstream) must not silence the others, and must never travel
+        // back up into the runner that produced the frame. Contained is not
+        // hidden, though — a listener dropping frames is a degradation, and
+        // invariant 2 forbids the silent kind.
+        notice(
+          `a workspace subscriber threw on a ${envelope.event.name} frame and was skipped: ${errorMessage(err)}`,
+        )
+      }
     }
   }
 
-  // ONE pool for every runner: maxParallel is a global budget, a slot freed by
-  // any project's task wakes every project's queue.
-  const pool = createTaskSlotPool(opts.maxParallel ?? DEFAULT_MAX_PARALLEL_TASKS)
   const probe = opts.isolation ?? UNPROBED_ISOLATION
   const createRunner = opts.createRunnerFn ?? createTaskRunner
   const contexts = new Map<string, ProjectContext>()
@@ -599,8 +875,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     if (!project) {
       return null
     }
-    // A project registered after boot may carry orphans from an older run.
-    reconcileTasks(project.path)
+    // A project registered after boot may carry orphans from an older run —
+    // and a queue.json a previous process left behind, which this rebuilds
+    // BEFORE the runner exists, so the runner's first pump sees it. Fenced
+    // like the boot pass: a broken repo degrades, it does not 404 itself out
+    // of the workspace.
+    recover(project)
     const cwd = project.path
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict; the reviewer shares the task agent command and timeout.
@@ -622,6 +902,8 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         await ship(ctx, record.id)
       }
     }
+    /** Rank last broadcast per waiting id, so only real changes go on the wire. */
+    const lastRanks = new Map<string, number>()
     // The runner writes to the store first, then calls these hooks: a
     // subscriber reacting to an envelope always finds the disk state at least
     // as fresh.
@@ -630,8 +912,17 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       command: opts.command,
       timeoutMs: opts.timeoutMs,
       ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
-      slots: pool,
+      projectId,
       onTurnDone,
+      // A degradation of queue.json met OUTSIDE the boot pass: journaled on
+      // the tasks the rebuilt queue holds, and said out loud. The rebuild
+      // itself is the queue's own doing, and persisting it is the next
+      // write's — never this hook's.
+      onQueueDegraded: (reason, ids) => reportQueueDegradation(project, reason, ids),
+      // A Ctrl-C that waits is a Ctrl-C that says what it waits for.
+      onDrainWait: (ids) => notice(t('workspace.shutdownWaiting', { n: ids.length })),
+      // It gave up waiting: the process exits either way, but never quietly.
+      onDrainTimeout: (ids) => notice(t('workspace.shutdownGaveUp', { n: ids.length })),
       // Cage inputs, read from the project's own config: its checks image is
       // the base-image fallback, its allowlist bounds the egress proxy.
       checksConfig: readChecksConfig(cwd),
@@ -659,6 +950,49 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           task_id: taskId,
           event: { name: 'task_meta', data: { tokens } },
         }),
+      // The head of the line left (or someone joined it): everyone still
+      // waiting moved a rank, and no other frame would ever say so. Their
+      // records go back out decorated with a FRESH position, which is the only
+      // way a card in third place learns it is now second.
+      onQueueChanged: () => {
+        // Bounded on both axes, because this fires on EVERY queue mutation:
+        //  - only the ranks that actually MOVED are re-sent (joining the tail
+        //    of a line of fifty used to re-broadcast all fifty and re-read
+        //    fifty task.json files, for fifty unchanged numbers);
+        //  - and never more than QUEUE_BROADCAST_MAX of them, so one mutation
+        //    costs a bounded number of frames and disk reads whatever the
+        //    queue's length. Past that depth the badge simply waits for the
+        //    next GET /api/tasks, which decorates the whole listing exactly.
+        const seen = new Set<string>()
+        let sent = 0
+        for (const [index, entry] of queueFor(project).list().entries()) {
+          const rank = index + 1
+          seen.add(entry.id)
+          if (lastRanks.get(entry.id) === rank) {
+            continue
+          }
+          lastRanks.set(entry.id, rank)
+          if (sent >= QUEUE_BROADCAST_MAX) {
+            continue
+          }
+          const record = loadTask(cwd, entry.id)
+          if (record) {
+            sent += 1
+            emit({
+              project_id: projectId,
+              task_id: record.id,
+              event: { name: 'task', data: { ...record, queue_position: rank } },
+            })
+          }
+        }
+        // Whoever left the line keeps no memory of a rank: the frame that says
+        // it started (or stopped) already carries no queue_position.
+        for (const id of lastRanks.keys()) {
+          if (!seen.has(id)) {
+            lastRanks.delete(id)
+          }
+        }
+      },
     })
     const ctx: ProjectContext = { project, runner, shipping: new Set(), checking: new Set() }
     contexts.set(projectId, ctx)
@@ -666,12 +1000,38 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   return {
-    list(projectId) {
-      const project = registered().find((candidate) => candidate.id === projectId)
-      return project ? listTasks(project.path) : null
+    startPending() {
+      const resumed: PendingQueue[] = []
+      for (const pending of pendingAtBoot.splice(0)) {
+        // Fenced per project, like the boot pass: one repo that cannot build
+        // its runner must not stop the others from resuming theirs.
+        try {
+          // Building the context builds the runner, whose first pump starts
+          // the head of the line. Everything downstream of that point is the
+          // ordinary lifecycle — and the server is already listening.
+          const ctx = context(pending.projectId)
+          if (ctx) {
+            resumed.push({ project: ctx.project, queued: pending.queued })
+          }
+        } catch (err) {
+          notice(
+            `${pending.projectId}: its queued tasks could not be resumed (${err instanceof Error ? err.message : String(err)})`,
+          )
+        }
+      }
+      return resumed
     },
 
-    listAll: () => registered().map((project) => ({ project, records: listTasks(project.path) })),
+    list(projectId) {
+      const project = registered().find((candidate) => candidate.id === projectId)
+      return project ? withQueuePositions(queueFor(project), listTasks(project.path)) : null
+    },
+
+    listAll: () =>
+      registered().map((project) => ({
+        project,
+        records: withQueuePositions(queueFor(project), listTasks(project.path)),
+      })),
 
     get(projectId, id) {
       const project = registered().find((candidate) => candidate.id === projectId)
@@ -682,7 +1042,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (!record) {
         return null
       }
-      return { record, events: readTaskEvents(project.path, id) }
+      const position = queueFor(project).position(id)
+      return {
+        record: position === null ? record : { ...record, queue_position: position },
+        events: readTaskEvents(project.path, id),
+      }
     },
 
     create(projectId, input) {
@@ -840,9 +1204,40 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // swallowed: the caller would wait forever on a task that never runs.
       const started = ctx.runner.start(record)
       if (!started.ok) {
+        // The refusal (a full queue, 503) left a record on disk sitting on
+        // 'queued' that NOTHING will ever start: it is not in queue.json, no
+        // pump will ever see it, and neither reply nor resume accepts a
+        // 'queued' task. A card promising an agent that is not coming is worse
+        // than no card, so the task is settled here and now — 'failed', with
+        // the refusal's own words and code — where the human can read it and
+        // Abandon it like any other dead task.
+        const failure = loadTask(ctx.project.path, record.id) ?? record
+        failure.status = 'failed'
+        failure.reason = taskReason(started.reason_code ?? 'agent_error', started.error)
+        failure.updated_at = new Date().toISOString()
+        saveTask(ctx.project.path, failure)
+        const event = appendTaskEvent(ctx.project.path, failure.id, {
+          type: 'error',
+          data: { message: started.error },
+          ...(started.reason_code ? { reason_code: started.reason_code } : {}),
+        })
+        emit({ project_id: projectId, task_id: failure.id, event: { name: 'task', data: failure } })
+        emit({
+          project_id: projectId,
+          task_id: failure.id,
+          event: { name: 'task_event', data: event },
+        })
         return started
       }
-      return { ok: true, record }
+      // The caller learns right away whether it got the repo (no position) or
+      // a place in the line, without waiting for a listing: the UI renders the
+      // new card from this very body. Null once it is running — as everywhere,
+      // absence means "not waiting".
+      const position = queueFor(ctx.project).position(record.id)
+      return {
+        ok: true,
+        record: position === null ? record : { ...record, queue_position: position },
+      }
     },
 
     // While a ship pushes, a reply would start a new turn (and a new commit)

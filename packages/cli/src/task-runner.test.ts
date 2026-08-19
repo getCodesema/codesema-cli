@@ -24,7 +24,15 @@ import type { CostDegradation } from './cost.js'
 import { DEFAULT_TIMEOUT_S } from './fix.js'
 import { refExists, tryGit } from './git.js'
 import { setLanguage } from './i18n.js'
+import { projectIdFor } from './projects.js'
 import { CAGE_FORWARDED_ENV, type RunContainerTurnOptions } from './task-isolation.js'
+import {
+  activeTask,
+  createTaskQueue,
+  readQueue,
+  resetActiveClaims,
+  resetQueueDegradedReports,
+} from './task-queue.js'
 import {
   buildTaskPrompt,
   costEvent,
@@ -202,6 +210,12 @@ afterEach(() => {
   for (const dir of cleanups.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
+  // Belt and braces between FILES, never inside a test: the admission guard
+  // and the degradation memory are process-wide, so a leak must be caught by
+  // an assertion rather than papered over here. All four suites that can touch
+  // them reset both — an asymmetry here is a flake waiting for a bad ordering.
+  resetActiveClaims()
+  resetQueueDegradedReports()
 })
 
 function makeTask(
@@ -779,7 +793,7 @@ describe('createTaskRunner', () => {
     expect(seen[0]).toEqual({ inactivityMs: 60_000, toolBudgetMs: 120_000, heartbeatMs: 5_000 })
   })
 
-  test('maxParallel caps concurrency: extra tasks queue FIFO and run later', async () => {
+  test('ONE active task per project: the extra tasks queue FIFO and run later', async () => {
     const repo = makeRepo()
     const first = makeTask(repo, 'first', 'task one')
     const second = makeTask(repo, 'second', 'task two')
@@ -791,7 +805,9 @@ describe('createTaskRunner', () => {
       cwd: repo,
       command: 'claude -p',
       timeoutMs: 5000,
-      maxParallel: 1,
+      // Deliberately generous: what caps this repo is the per-project rule,
+      // not a slot budget (which is inert since T1.2).
+      maxParallel: 8,
       runAgentFn: async (options) => {
         if (options.prompt.includes('task one')) {
           await gate
@@ -808,6 +824,13 @@ describe('createTaskRunner', () => {
     expect(runner.runningCount()).toBe(1)
     await until(() => status(repo, first.id) === 'running')
     expect(status(repo, second.id)).toBe('queued')
+    // The wait is named, not mute: the resource it waits for is busy (D2).
+    expect(loadTask(repo, second.id)?.reason).toEqual({
+      code: 'resource_busy',
+      detail: 'another task of this project is already active',
+    })
+    // And its place in the line is on disk, not in a closure.
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([second.id])
 
     release()
     await until(
@@ -816,6 +839,9 @@ describe('createTaskRunner', () => {
         status(repo, second.id) === 'waiting_for_you',
     )
     expect(runner.runningCount()).toBe(0)
+    // A task that got its turn drops the reason it was waiting for.
+    expect('reason' in (loadTask(repo, second.id) ?? {})).toBe(false)
+    expect(readQueue(repo).entries).toEqual([])
   })
 
   test('start/reply/interrupt guard rails: wrong state and unknown ids', async () => {
@@ -842,7 +868,10 @@ describe('createTaskRunner', () => {
     expect(runner.interrupt(task.id)).toEqual({ ok: true })
   })
 
-  test('a shared slot pool caps concurrency ACROSS runners and hands freed slots over', async () => {
+  // Replaces 'a shared slot pool caps concurrency ACROSS runners': that is
+  // exactly what T1.2 stops doing. The slot pool no longer governs anything —
+  // a project is capped against ITSELF, never against another project.
+  test('two distinct projects advance SIMULTANEOUSLY, one running task each', async () => {
     const repoA = makeRepo()
     const repoB = makeRepo()
     const first = makeTask(repoA, 'first', 'task one')
@@ -852,13 +881,14 @@ describe('createTaskRunner', () => {
       release = resolve
     })
     const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
-      if (options.prompt.includes('task one')) {
-        await gate
-      }
+      // BOTH agents hang until the gate opens: nothing can finish early and
+      // hand a slot over, so 'running' on both sides means truly at once.
+      await gate
       const raw = claudeStream('done')
       options.onText?.(raw)
       return raw
     }
+    // A pool of ONE, shared, still configured: it must not cap anything.
     const pool = createTaskSlotPool(1)
     const runnerA = createTaskRunner({
       cwd: repoA,
@@ -876,19 +906,86 @@ describe('createTaskRunner', () => {
     })
     runnerA.start(first)
     runnerB.start(second)
-    // ONE global slot: repo B's task queues even though its own runner is idle.
+    // Admission is per project now, so the inert pool caps nothing: both
+    // repos run. A status flips once its worktree has materialized, which
+    // waits for that repo's worktree lock.
     await until(() => status(repoA, first.id) === 'running')
-    expect(status(repoB, second.id)).toBe('queued')
-    expect(runnerB.runningCount()).toBe(0)
+    await until(() => status(repoB, second.id) === 'running')
+    expect(runnerA.runningCount()).toBe(1)
+    expect(runnerB.runningCount()).toBe(1)
+    // Neither repo has anyone waiting: both tasks were admitted.
+    expect(readQueue(repoA).entries).toEqual([])
+    expect(readQueue(repoB).entries).toEqual([])
 
     release()
-    // The slot freed by runner A wakes runner B's queue.
     await until(
       () =>
         status(repoA, first.id) === 'waiting_for_you' &&
         status(repoB, second.id) === 'waiting_for_you',
     )
+    // Exit assertions, not just a wait: both runners let go, and — even
+    // though the pool no longer governs admission — the slots it was handed
+    // come back. An inert component that leaked would still be a leak.
+    expect(runnerA.runningCount()).toBe(0)
+    expect(runnerB.runningCount()).toBe(0)
     expect(pool.running.size).toBe(0)
+    expect(activeTask(projectIdFor(repoA))).toBeNull()
+    expect(activeTask(projectIdFor(repoB))).toBeNull()
+  })
+
+  test('the slot pool no longer lets two tasks of the SAME project run, whatever its capacity', async () => {
+    const repo = makeRepo()
+    const first = makeTask(repo, 'first', 'task one')
+    const second = makeTask(repo, 'second', 'task two')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      // Room for ten: the per-project rule still admits exactly one.
+      slots: createTaskSlotPool(10),
+      runAgentFn: async (options) => {
+        if (options.prompt.includes('task one')) {
+          await gate
+        }
+        const raw = claudeStream('done')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    runner.start(first)
+    runner.start(second)
+    // The first flips to 'running' once its worktree has materialized (which
+    // waits for the repo's worktree lock); the second must never move.
+    await until(() => status(repo, first.id) === 'running')
+    expect(status(repo, second.id)).toBe('queued')
+    expect(runner.runningCount()).toBe(1)
+
+    release()
+    await until(() => status(repo, second.id) === 'waiting_for_you')
+  })
+
+  test('a queue persisted by a previous run starts on its own when a runner is rebuilt', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'left waiting', 'work')
+    // Exactly what a shutdown leaves behind now: the record still 'queued',
+    // the id still in queue.json, and no process holding anything.
+    createTaskQueue({ cwd: repo, projectId: 'aaaaaaaa' }).enqueue(task.id)
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual([task.id])
+
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: fakeClaude(() => 'done\nQUESTION: next?').run,
+    })
+    // No start(), no reply(), no human gesture: the file was the instruction.
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(readQueue(repo).entries).toEqual([])
+    expect(runner.runningCount()).toBe(0)
   })
 })
 
@@ -1566,7 +1663,8 @@ describe('baseline recorded by the runner', () => {
     })
     runner.start(running)
     await until(() => status(repo, running.id) === 'running')
-    expect(runner.start(waiting)).toEqual({ ok: true })
+    // Behind the active one, so the gesture answers with its rank (T1.2).
+    expect(runner.start(waiting)).toEqual({ ok: true, queue_position: 1 })
     expect(status(repo, waiting.id)).toBe('queued')
 
     // The cleanup cannot happen: the task changes in no way — so it must not
@@ -3163,25 +3261,38 @@ describe('turn cost', () => {
   test("an attempt's cost is folded AT MOST ONCE, whichever way the turn exits", async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'both exits', 'work')
-    // finishTurn folds the cost and THEN goes on to persist; a host callback
-    // that throws there sends the very same attempt into failTurn through the
-    // promise chain's .catch. Without the marker on the attempt, the same
-    // figure is folded twice — and since the fold is additive, the turn (and
-    // the record total derived from it) doubles.
-    let thrown = false
+    // finishTurn folds the cost and THEN goes on to commit, review and
+    // persist; anything throwing there sends the very same attempt into
+    // failTurn through the promise chain's .catch. Without the marker on the
+    // attempt, the same figure is folded twice — and since the fold is
+    // additive, the turn (and the record total derived from it) doubles.
+    //
+    // The lever is a reviewer that blows up in a way finishTurn's own error
+    // handler cannot even render, so the throw escapes it. (A throwing
+    // broadcast listener no longer works as one: T1.2 contains those on
+    // purpose — see 'a listener that throws never leaks the claim'.)
+    class Unrenderable extends Error {
+      override get message(): string {
+        throw new Error('reviewer blew up beyond repair')
+      }
+    }
+    let reviewed = false
     let broadcasts = 0
     const runner = createTaskRunner({
       cwd: repo,
       command: 'claude -p',
       timeoutMs: 1000,
       runAgentFn: runWithUsage('claude-opus-5', { input_tokens: 1_000 }).run,
+      onTurnDone: () => {
+        reviewed = true
+        throw new Unrenderable()
+      },
       onTask: (broadcast) => {
         broadcasts++
-        // Blow up on the FIRST broadcast that already carries the folded cost:
-        // that is finishTurn's own persist, after accrueCost has run.
-        if (!thrown && broadcast.cost_ticks !== undefined) {
-          thrown = true
-          throw new Error('broadcast blew up after the fold')
+        // The 'reviewing' frame is finishTurn's own persist, after accrueCost
+        // has run: the cost is already on the record when the throw happens.
+        if (broadcast.status === 'reviewing') {
+          expect(broadcast.cost_ticks).toBe(OPUS5_BOUND(1_000))
         }
       },
     })
@@ -3194,7 +3305,7 @@ describe('turn cost', () => {
     expect(record?.cost_ticks).toBe(OPUS5_BOUND(1_000))
     expect(record?.cost_turns).toBe(1)
     // Both exit paths really did run for this one attempt.
-    expect(thrown).toBe(true)
+    expect(reviewed).toBe(true)
     expect(broadcasts).toBeGreaterThan(2)
   })
 

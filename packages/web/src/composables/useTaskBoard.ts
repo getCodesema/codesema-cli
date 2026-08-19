@@ -56,6 +56,23 @@ export function queueSectionOf(status: TaskStatus): QueueSection {
   return QUEUE_SECTION_BY_STATUS[status]
 }
 
+/**
+ * Which promise the #N pill's tooltip may make. "N conversations ahead in this
+ * project" is only true while the project HAS something running, and the
+ * record says so itself: `resource_busy` is exactly the code the server writes
+ * on a task waiting behind an active one. Any other reason — a conversation
+ * whose worktree would not materialize, say — means the line is STOPPED, not
+ * busy, and pointing at conversations ahead of it would send the human looking
+ * for agents that are not there.
+ */
+export function queueRankHintKey(
+  record: Pick<TaskRecord, 'reason'>,
+): 'workspace.queuePositionHint' | 'workspace.queuePositionHintIdle' {
+  return record.reason?.code === 'resource_busy'
+    ? 'workspace.queuePositionHint'
+    : 'workspace.queuePositionHintIdle'
+}
+
 export type QueueGroups<T> = Record<QueueSection, T[]>
 
 /** Groups conversations into the queue's four sections, most recently touched

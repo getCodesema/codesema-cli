@@ -370,6 +370,65 @@ describe('runDualFlow', () => {
     expect(outcome.record.review.findings[0]?.consensus).toBe(true)
     expect(outcome.record.meta.dual).toEqual({ merged: 1, rejected: 0, added_by_b: 0 })
   }, 20000)
+
+  // T1.2 re-review round 9: the abort has THREE propagation sites in this
+  // module — the simple flow, each dual LANE, and the judge — and only the
+  // first was held by a test. With the lane's signal dropped, a Ctrl-C during
+  // a dual review measured 120 s instead of 202 ms, whole suite green. Dual
+  // mode is opt-in, so this is a latent hole rather than a live bug; it is
+  // also, word for word, the defect just fixed on the sibling path.
+  test('an aborted signal cuts the dual LANES, not just the simple flow', async () => {
+    const fixture = setupDualRepo(REVIEW)
+    // Lanes that would hold the review for a full minute if left alone.
+    writeFileSync(fixture.agentScript, `#!/bin/sh\ncat > /dev/null\nsleep 60\n`)
+    const controller = new AbortController()
+    const started = Date.now()
+    setTimeout(() => controller.abort(), 50)
+
+    // The agents' OWN budget is far out of reach on purpose: ending within
+    // the bound below must be the abort's doing, never a timeout's.
+    const outcome = await runDualFlow({
+      ...flowOpts(fixture),
+      timeoutMs: 120_000,
+      signal: controller.signal,
+    })
+
+    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(outcome.ok).toBe(false)
+  }, 30000)
+
+  test('an aborted signal cuts the JUDGE too, once the lanes have answered', async () => {
+    const finding =
+      '{"file":"a.ts","line":1,"severity":"major","kind":"design","title":"t","message":"broken"}'
+    const payload = `{"verdict":"comment","summary":"ok","findings":[${finding}],"decisions":[{"id":"A0","action":"keep"}]}`
+    const fixture = setupDualRepo(payload)
+    // Both lanes answer normally; the THIRD spawn — the judge — is the one
+    // that hangs. Its signal is a separate forwarding site from the lanes'.
+    writeFileSync(
+      fixture.agentScript,
+      `#!/bin/sh\ncat > /dev/null\nprintf 'run\\n' >> "${fixture.callsPath}"\n` +
+        `if [ "$(wc -l < "${fixture.callsPath}")" -ge 3 ]; then sleep 60; fi\n` +
+        `printf '%s' '${payload}'\n`,
+    )
+    const controller = new AbortController()
+    const started = Date.now()
+    // Late enough that the two lanes have finished and the judge is running.
+    setTimeout(() => controller.abort(), 700)
+
+    const outcome = await runDualFlow({
+      ...flowOpts(fixture),
+      timeoutMs: 120_000,
+      signal: controller.signal,
+    })
+
+    // The judge really was reached — otherwise this test would prove nothing
+    // about the judge's own forwarding site.
+    expect(
+      readFileSync(fixture.callsPath, 'utf8').trim().split('\n').length,
+    ).toBeGreaterThanOrEqual(3)
+    expect(Date.now() - started).toBeLessThan(20_000)
+    void outcome
+  }, 40000)
 })
 
 describe('buildFullReviewPrompt', () => {
@@ -514,4 +573,31 @@ describe('runSimpleFlow', () => {
     expect(outcome.failure).toBe('output')
     expect(outcome.rawOutput).toContain('not json at all')
   }, 20000)
+
+  // T1.2: the shutdown's cut-off has to reach the review agent's SUBPROCESS,
+  // not merely be accepted as an option. That forwarding is what turns a
+  // Ctrl-C during an end-of-turn review from a 15-minute wait into an
+  // immediate stop — and until this test it was only ever asserted on the
+  // seams above it, never on the process that actually has to die.
+  test('an aborted signal cuts the agent subprocess instead of waiting out its budget', async () => {
+    // An agent that would hold the review for a full minute if left alone.
+    const fixture = setupSimpleRepo(REVIEW)
+    writeFileSync(fixture.agentScript, `#!/bin/sh\ncat > /dev/null\nsleep 60\n`)
+    const controller = new AbortController()
+    const started = Date.now()
+    setTimeout(() => controller.abort(), 50)
+
+    // The agent's OWN budget is set far out of reach on purpose: if the flow
+    // ended within the bound below because of the timeout rather than the
+    // abort, this test would pass with the signal thrown away — which is
+    // exactly how a first version of it proved nothing.
+    const outcome = await runSimpleFlow({
+      ...flowOpts(fixture),
+      timeoutMs: 120_000,
+      signal: controller.signal,
+    })
+
+    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(outcome.ok).toBe(false)
+  }, 30000)
 })

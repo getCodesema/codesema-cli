@@ -273,6 +273,18 @@ export type TaskRecord = {
    * is never more authoritative than its weakest term.
    */
   cost_basis?: CostBasis
+  /**
+   * 1-based place of the task in its project's queue, when it is waiting for
+   * its turn (one active task per project). DERIVED and TRANSIENT: the server
+   * computes it from `<repo>/.codesema/queue.json` when it serves a listing,
+   * and it is never written to task.json — a position stored on disk would be
+   * a lie the moment the head of the queue starts.
+   *
+   * OPTIONAL, and absence is the honest default: a task that is not queued has
+   * no position, and neither has a record read straight off disk (which is why
+   * sanitizeTaskRecord deliberately drops any value found there).
+   */
+  queue_position?: number
   created_at: string
   updated_at: string
 }
@@ -544,6 +556,10 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // has no total to state, and one whose value is unusable states none
     // either — a `0` here would claim the task was free.
     ...total,
+    // queue_position is deliberately ABSENT here: it is derived from the
+    // project's queue at read time, never persisted, so a value sitting in a
+    // task.json can only be stale (or hand-written) and is dropped rather
+    // than trusted.
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

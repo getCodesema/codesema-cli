@@ -1,19 +1,52 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import type { ReviewRecord, TaskChecks, TaskEvent, TaskRecord, Verdict } from './contract.js'
+import { writeJsonAtomic } from './atomic-write.js'
+import {
+  isTerminalReason,
+  type ReviewRecord,
+  type TaskChecks,
+  type TaskEvent,
+  type TaskRecord,
+  type Verdict,
+} from './contract.js'
 import { addProject, listProjects, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
 import type { RunChecksOptions } from './task-checks.js'
+import {
+  activeTask,
+  corruptQueuePath,
+  QUEUE_ENTRIES_MAX,
+  QUEUE_UNREADABLE,
+  queuePath,
+  readQueue,
+  resetActiveClaims,
+  resetQueueDegradedReports,
+} from './task-queue.js'
 import { readTaskReview } from './task-review.js'
-import type { TaskRunner, TaskRunnerOptions } from './task-runner.js'
-import { createTaskManager, type TaskEnvelope, type TaskManager } from './task-server.js'
+import { pendingResumeTurn, type TaskRunner, type TaskRunnerOptions } from './task-runner.js'
+import {
+  createTaskManager,
+  QUEUE_BROADCAST_MAX,
+  queueEntriesRetired,
+  type TaskEnvelope,
+  type TaskManager,
+} from './task-server.js'
 import type { ShipOutcome, ShipTaskOptions } from './task-ship.js'
 import {
   appendTaskEvent,
@@ -22,7 +55,9 @@ import {
   loadTask,
   readTaskChecks,
   readTaskEvents,
+  resetStoreReports,
   saveTask,
+  STORE_UNLISTABLE,
   writeTaskChecks,
 } from './tasks-store.js'
 
@@ -32,6 +67,15 @@ import {
 // via CODESEMA_CONFIG_DIR so tests never touch the real ~/.config/codesema.
 let configDir: string
 const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+/**
+ * chmod does not bind root, so a suite run as root cannot exercise a
+ * permission failure at all. The skip is gated on the UID and NOTHING else:
+ * conditioning it on the failure being observed makes the test silently
+ * assert nothing the day the failure stops happening — which is exactly the
+ * day it should have gone red.
+ */
+const RUNNING_AS_ROOT = process.getuid?.() === 0
+
 const cleanups: string[] = []
 
 beforeEach(() => {
@@ -44,6 +88,13 @@ afterEach(() => {
   for (const dir of cleanups.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
+  // Belt and braces between FILES, never inside a test: the admission guard
+  // and the degradation memory are process-wide, so a leak must be caught by
+  // an assertion rather than papered over here. All four suites that can touch
+  // them reset both — an asymmetry here is a flake waiting for a bad ordering.
+  resetActiveClaims()
+  resetQueueDegradedReports()
+  resetStoreReports()
   if (previousConfigDir === undefined) {
     delete process.env.CODESEMA_CONFIG_DIR
   } else {
@@ -216,8 +267,20 @@ describe('createTaskManager', () => {
     }
     // Untouched states stay untouched: only dead-process states are rewritten.
     expect(loadTask(repoA, waiting.id)?.status).toBe('waiting_for_you')
-    expect(loadTask(repoB, queued.id)?.status).toBe('queued')
-    expect(readTaskEvents(repoB, queued.id)).toHaveLength(0)
+    // A 'queued' record in a repo that has NO queue.json was orphaned by a
+    // session that died before it could run: it is not a task waiting its
+    // turn, and no boot gets to start an agent on it by surprise. It becomes
+    // 'interrupted' — the state a human Resume knows how to pick up — and the
+    // WHY is in its journal.
+    expect(loadTask(repoB, queued.id)?.status).toBe('interrupted')
+    expect(readTaskEvents(repoB, queued.id).map((e) => ({ type: e.type, data: e.data }))).toEqual([
+      {
+        type: 'interrupted',
+        data: { message: 'orphaned by an earlier session: nothing was queued to start it' },
+      },
+    ])
+    // Nothing was enqueued, and no queue file was conjured for it either.
+    expect(existsSync(queuePath(repoB))).toBe(false)
   })
 
   // T8. A worktree is a VIEW; the branch is where the commits live. Boot
@@ -254,6 +317,14 @@ describe('createTaskManager', () => {
     })
     expect(loadTask(repo, recoverable.id)?.status).toBe('interrupted')
     expect(readTaskEvents(repo, recoverable.id)).toHaveLength(0)
+    // The code must agree with the status AND with the message beside it: the
+    // work is unreachable, waiting changes nothing, so it is TERMINAL. A
+    // retryable code here (it used to be `agent_error`) makes a consumer offer
+    // a new attempt that the API then refuses.
+    const lostReason = loadTask(repo, lost.id)?.reason
+    expect(lostReason?.detail).toBe('worktree and branch are both gone, the task cannot be resumed')
+    expect(lostReason && isTerminalReason(lostReason.code)).toBe(true)
+    expect(readTaskEvents(repo, lost.id).at(-1)?.reason_code).toBe(lostReason?.code)
     expect(loadTask(repo, neverMaterialized.id)?.status).toBe('interrupted')
     expect(readTaskEvents(repo, neverMaterialized.id)).toHaveLength(0)
   })
@@ -1158,7 +1229,6 @@ describe('manager.checks', () => {
   test('a rejecting engine degrades to status error and NEVER touches the task record', async () => {
     const project = register(makeRepo())
     const { record } = seedCommittedTask(project.path)
-    const statusBefore = loadTask(project.path, record.id)?.status
     const rig = fakeRunner()
     const manager = createTaskManager({
       ...managerOpts,
@@ -1166,6 +1236,9 @@ describe('manager.checks', () => {
       reviewTurnFn: async () => {},
       runChecksFn: () => Promise.reject(new Error('engine exploded')),
     })
+    // Read AFTER the boot recovery settled the record: what this asserts is
+    // that the CHECKS never move it, not what boot did with an orphan.
+    const statusBefore = loadTask(project.path, record.id)?.status
     expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
     await until(() => readTaskChecks(project.path, record.id)?.status === 'error')
     expect(readTaskChecks(project.path, record.id)?.error).toBe('engine exploded')
@@ -1199,7 +1272,12 @@ describe('manager.checks', () => {
     // Force the lazy context (and thus the runner + its onTurnDone) to exist.
     manager.checks(project.id, 'aaaaaaaaaaaa')
     const { record } = seedCommittedTask(project.path)
-    const io = { emit: () => {}, persist: () => {}, text: () => {} }
+    const io = {
+      emit: () => {},
+      persist: () => {},
+      text: () => {},
+      signal: new AbortController().signal,
+    }
 
     // onTurnDone resolves while the checks promise is still pending: the
     // review was never gated on the container run.
@@ -1397,6 +1475,7 @@ describe('task routes with a stub manager', () => {
         isolation_reason: 'stub',
         isolation_configured: 'policy',
       }),
+      startPending: () => [],
       checksApply: (projectId) => {
         if (!known(projectId)) {
           return { ok: false, code: 404, error: 'unknown project' }
@@ -1646,6 +1725,60 @@ describe('task routes with a stub manager', () => {
           })
         ).status,
       ).toBe(404)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  // T1.2: a gesture that lands the task BEHIND another one is a success, not a
+  // refusal — and the caller must be able to render the right thing without a
+  // second round-trip, exactly like POST /api/tasks does on creation. The
+  // mirror case matters just as much: a refusal carries its machine-readable
+  // reason_code NEXT TO the readable message, never instead of it.
+  test('reply and resume carry the queue position on success, the reason code on refusal', async () => {
+    const project = register(makeRepo())
+    const base = stubManager(project)
+    const manager: TaskManager = {
+      ...base.manager,
+      reply: () => ({ ok: true, queue_position: 3 }),
+      resume: () => ({ ok: true, queue_position: 1 }),
+      abandon: () =>
+        Promise.resolve({
+          ok: false as const,
+          code: 503,
+          error: 'the queue of this project is full',
+          reason_code: 'resource_busy' as const,
+        }),
+    }
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5151,
+      taskManager: manager,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const headers = { 'x-codesema-tasks-token': token }
+      const scoped = (action: string) =>
+        `/api/tasks/${base.record.id}/${action}?project=${project.id}`
+
+      const replied = await rawRequest(started.port, scoped('reply'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ message: 'hello' }),
+      })
+      expect(replied.status).toBe(200)
+      expect(JSON.parse(replied.body)).toEqual({ ok: true, queue_position: 3 })
+
+      const resumed = await rawRequest(started.port, scoped('resume'), { method: 'POST', headers })
+      expect(resumed.status).toBe(200)
+      expect(JSON.parse(resumed.body)).toEqual({ ok: true, queue_position: 1 })
+
+      const refused = await rawRequest(started.port, scoped('abandon'), { method: 'POST', headers })
+      expect(refused.status).toBe(503)
+      expect(JSON.parse(refused.body)).toEqual({
+        error: 'the queue of this project is full',
+        reason_code: 'resource_busy',
+      })
     } finally {
       await started.stop()
     }
@@ -2154,6 +2287,66 @@ describe('workspace server end to end', () => {
     }
   })
 
+  test('GET /api/tasks carries queue_position: the waiting conversations, in order', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      if (options.prompt.includes('first work')) {
+        await gate
+      }
+      const raw = claudeStream('done.\nQUESTION: next?')
+      options.onText?.(raw)
+      return raw
+    }
+    const manager = createTaskManager({ command: 'claude -p', timeoutMs: 5000, runAgentFn })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5173,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const create = async (title: string, prompt: string): Promise<string> => {
+        const res = await rawRequest(started.port, '/api/tasks', {
+          method: 'POST',
+          headers: { 'x-codesema-tasks-token': token },
+          body: JSON.stringify({ project_id: project.id, title, prompt }),
+        })
+        expect(res.status).toBe(201)
+        return (JSON.parse(res.body) as TaskRecord).id
+      }
+      const running = await create('running one', 'first work')
+      await until(() => loadTask(repo, running)?.status === 'running')
+      const second = await create('waiting one', 'second work')
+      const third = await create('waiting two', 'third work')
+
+      const list = await rawRequest(started.port, `/api/tasks?project=${project.id}`)
+      expect(list.status).toBe(200)
+      const byId = new Map(
+        (JSON.parse(list.body) as TaskRecord[]).map((r) => [r.id, r.queue_position]),
+      )
+      // The one at work carries no rank; the two waiting carry theirs, in order.
+      expect(byId.get(running)).toBeUndefined()
+      expect(byId.get(second)).toBe(1)
+      expect(byId.get(third)).toBe(2)
+
+      release()
+      await until(() => loadTask(repo, third)?.status === 'waiting_for_you')
+      // The line emptied: nobody claims a position any more.
+      const after = await rawRequest(started.port, `/api/tasks?project=${project.id}`)
+      for (const r of JSON.parse(after.body) as TaskRecord[]) {
+        expect(r.queue_position).toBeUndefined()
+      }
+    } finally {
+      await started.stop()
+    }
+  })
+
   test('base=… over HTTP: worktree branches from that commit, unknown base is a 400', async () => {
     const project = register(makeRepo())
     const repo = project.path
@@ -2339,17 +2532,19 @@ describe('workspace server end to end', () => {
     }
   })
 
-  test('maxParallel is GLOBAL: one slot serves two projects, FIFO across repos', async () => {
+  // Replaces 'maxParallel is GLOBAL: one slot serves two projects': T1.2
+  // inverts it. Two projects are two independent lanes; only a project caps
+  // itself.
+  test('two projects run SIMULTANEOUSLY even under a one-slot maxParallel', async () => {
     const projectA = register(makeRepo())
     const projectB = register(makeRepo())
     let release: () => void = () => {}
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
+    // BOTH hang: neither can finish early and hand a slot to the other.
     const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
-      if (options.prompt.includes('task one')) {
-        await gate
-      }
+      await gate
       const raw = claudeStream('done')
       options.onText?.(raw)
       return raw
@@ -2357,6 +2552,7 @@ describe('workspace server end to end', () => {
     const manager = createTaskManager({
       command: 'claude -p',
       timeoutMs: 5000,
+      // Inert since T1.2, and deliberately set to the most restrictive value.
       maxParallel: 1,
       runAgentFn,
       // Land on review_ok without spawning a review agent (empty diffs would
@@ -2374,19 +2570,840 @@ describe('workspace server end to end', () => {
     if (!first.ok || !second.ok) {
       return
     }
-    // ONE global slot: project B's task queues even though its repo is idle.
-    // A's status flips once its worktree has materialized (which now waits for
-    // the repo's worktree lock); B's must not move at all meanwhile.
+    // Admission is per project now: the inert global cap queues nobody, and
+    // each status flips once its own worktree has materialized (which waits
+    // for that repo's worktree lock).
     await until(() => loadTask(projectA.path, first.record.id)?.status === 'running')
-    expect(loadTask(projectB.path, second.record.id)?.status).toBe('queued')
+    await until(() => loadTask(projectB.path, second.record.id)?.status === 'running')
 
     release()
-    // The slot freed in project A is handed to project B's queue.
     await until(
       () =>
         loadTask(projectA.path, first.record.id)?.status === 'review_ok' &&
         loadTask(projectB.path, second.record.id)?.status === 'review_ok',
     )
+  })
+
+  test('a second task on the SAME project stays queued with its position and starts at the end of the first', async () => {
+    const project = register(makeRepo())
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      if (options.prompt.includes('task one')) {
+        await gate
+      }
+      const raw = claudeStream('done')
+      options.onText?.(raw)
+      return raw
+    }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      // Room for three tasks, and still exactly one runs: the rule is the
+      // project's queue, not the (inert) slot budget.
+      maxParallel: 3,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+    })
+
+    const first = manager.create(project.id, { title: 'A', prompt: 'task one', autoShip: false })
+    const second = manager.create(project.id, { title: 'B', prompt: 'task two', autoShip: false })
+    const third = manager.create(project.id, { title: 'C', prompt: 'task three', autoShip: false })
+    expect(first.ok && second.ok && third.ok).toBe(true)
+    if (!first.ok || !second.ok || !third.ok) {
+      return
+    }
+    // The head flips to 'running' once its worktree has materialized (which
+    // waits for the repo's worktree lock); the two behind never move.
+    await until(() => loadTask(project.path, first.record.id)?.status === 'running')
+    expect(loadTask(project.path, second.record.id)?.status).toBe('queued')
+    expect(loadTask(project.path, third.record.id)?.status).toBe('queued')
+    // GET /api/tasks: each waiting conversation carries its rank in the line,
+    // and the running one carries none.
+    const listed = new Map((manager.list(project.id) ?? []).map((r) => [r.id, r.queue_position]))
+    expect(listed.get(first.record.id)).toBeUndefined()
+    expect(listed.get(second.record.id)).toBe(1)
+    expect(listed.get(third.record.id)).toBe(2)
+    // And the wait is named on the record itself (D2).
+    expect(loadTask(project.path, second.record.id)?.reason).toEqual({
+      code: 'resource_busy',
+      detail: 'another task of this project is already active',
+    })
+
+    release()
+    await until(
+      () =>
+        loadTask(project.path, second.record.id)?.status === 'review_ok' &&
+        loadTask(project.path, third.record.id)?.status === 'review_ok',
+    )
+    // The queue emptied itself, in order, without a single human gesture.
+    expect(readQueue(project.path).entries).toEqual([])
+  })
+
+  test('boot re-hydrates the queue: the queued tasks survive a shutdown and start on their own', async () => {
+    const project = register(makeRepo())
+    const runAgentFn = (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('done\nQUESTION: next?')
+      options.onText?.(raw)
+      return Promise.resolve(raw)
+    }
+    // First process: three tasks, one running (its agent hangs until the
+    // shutdown SIGTERMs it), two waiting behind it.
+    const dying = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      runAgentFn: (options) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('agent interrupted')))
+        }),
+    })
+    const first = dying.create(project.id, { title: 'A', prompt: 'task one', autoShip: false })
+    const second = dying.create(project.id, { title: 'B', prompt: 'task two', autoShip: false })
+    const third = dying.create(project.id, { title: 'C', prompt: 'task three', autoShip: false })
+    expect(first.ok && second.ok && third.ok).toBe(true)
+    if (!first.ok || !second.ok || !third.ok) {
+      return
+    }
+    await until(() => loadTask(project.path, first.record.id)?.status === 'running')
+    await dying.shutdown()
+
+    // shutdown() gives the claim back itself — no test crutch here: if it
+    // leaked one, the rebuilt manager below would never start anything.
+    expect(activeTask(project.id)).toBeNull()
+
+    // The two that never ran are STILL queued, in the order they arrived.
+    expect(loadTask(project.path, second.record.id)?.status).toBe('queued')
+    expect(loadTask(project.path, third.record.id)?.status).toBe('queued')
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([
+      second.record.id,
+      third.record.id,
+    ])
+
+    // Second process. Building the manager only reconciles disk — NOTHING
+    // starts yet, which is the whole point: at that instant the real workspace
+    // has no HTTP server and no Ctrl-C handler.
+    const reborn = createTaskManager({ command: 'claude -p', timeoutMs: 5000, runAgentFn })
+    expect(loadTask(project.path, second.record.id)?.status).toBe('queued')
+
+    // The explicit step the workspace takes AFTER the server listens, and it
+    // says what it resumed.
+    const resumed = reborn.startPending()
+    expect(resumed.map((entry) => ({ id: entry.project.id, queued: entry.queued }))).toEqual([
+      { id: project.id, queued: 2 },
+    ])
+    await until(() => loadTask(project.path, second.record.id)?.status === 'waiting_for_you')
+    await until(() => loadTask(project.path, third.record.id)?.status === 'waiting_for_you')
+    // The turn that was in flight is 'interrupted' and stays put: only a human
+    // gesture restarts it (T8), the queue never does.
+    expect(loadTask(project.path, first.record.id)?.status).toBe('interrupted')
+  })
+
+  test('a corrupt queue.json never fails the boot: the queue is rebuilt from the records, out loud', () => {
+    const project = register(makeRepo())
+    const older = seedTask(project.path, 'older')
+    const newer = seedTask(project.path, 'newer')
+    // Make the creation order unambiguous for the created_at rebuild.
+    older.created_at = '2020-01-01T00:00:00.000Z'
+    saveTask(project.path, older)
+    newer.created_at = '2021-01-01T00:00:00.000Z'
+    saveTask(project.path, newer)
+    // What a crash mid-write would leave IF the write were not atomic.
+    mkdirSync(join(project.path, '.codesema'), { recursive: true })
+    writeFileSync(queuePath(project.path), '{"version":1,"entries":[{"id":"aaaa')
+
+    // No throw, and the boot completes.
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message) => notices.push(message),
+    })
+
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([older.id, newer.id])
+    expect(manager.list(project.id)?.find((r) => r.id === older.id)?.queue_position).toBe(1)
+    // The degradation is never silent: readable reason, journal event, and the
+    // journal is what GET /api/tasks/:id serves back.
+    for (const id of [older.id, newer.id]) {
+      const events = manager.get(project.id, id)?.events ?? []
+      expect(events.map((e) => ({ type: e.type, data: e.data }))).toEqual([
+        { type: 'error', data: { message: QUEUE_UNREADABLE } },
+      ])
+    }
+    // AND on the server's own output, named per project.
+    expect(notices).toEqual([`${project.name}: ${QUEUE_UNREADABLE}`])
+    // The bytes that caused it are kept for the post-mortem.
+    expect(readFileSync(corruptQueuePath(project.path), 'utf8')).toBe(
+      '{"version":1,"entries":[{"id":"aaaa',
+    )
+  })
+
+  test('a corrupt queue.json with NO task to journal is still reported, and still preserved', () => {
+    const project = register(makeRepo())
+    // Nothing queued: the rebuilt queue is empty, so there is no task journal
+    // for the degradation to land in. It must NOT disappear because of that.
+    const done = seedTask(project.path, 'already shipped')
+    done.status = 'shipped'
+    saveTask(project.path, done)
+    mkdirSync(join(project.path, '.codesema'), { recursive: true })
+    writeFileSync(queuePath(project.path), 'not json at all')
+
+    const notices: string[] = []
+    createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message) => notices.push(message),
+    })
+
+    expect(notices).toEqual([`${project.name}: ${QUEUE_UNREADABLE}`])
+    expect(readFileSync(corruptQueuePath(project.path), 'utf8')).toBe('not json at all')
+    expect(readTaskEvents(project.path, done.id)).toEqual([])
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'an unreadable queue.json is not mistaken for an absent one: the tasks are not orphaned',
+    () => {
+      const project = register(makeRepo())
+      const queued = seedTask(project.path, 'waiting')
+      writeJsonAtomic(queuePath(project.path), {
+        version: 1,
+        entries: [{ id: queued.id, enqueued_at: '2026-01-01T00:00:00.000Z' }],
+      })
+      chmodSync(queuePath(project.path), 0o000)
+      const notices: string[] = []
+      try {
+        createTaskManager({
+          ...managerOpts,
+          ...fakeRunner(),
+          onNotice: (message) => notices.push(message),
+        })
+      } finally {
+        chmodSync(queuePath(project.path), 0o600)
+      }
+      expect(notices[0]).toContain('could not be opened')
+      // The record kept its place instead of being demoted to an orphan of a
+      // session that never existed.
+      expect(loadTask(project.path, queued.id)?.status).toBe('queued')
+    },
+  )
+
+  test.skipIf(RUNNING_AS_ROOT)('ONE broken project never takes the workspace down with it', () => {
+    const healthy = register(makeRepo())
+    const broken = register(makeRepo())
+    const healthyTask = seedTask(healthy.path, 'fine')
+    writeJsonAtomic(queuePath(healthy.path), {
+      version: 1,
+      entries: [{ id: healthyTask.id, enqueued_at: '2026-01-01T00:00:00.000Z' }],
+    })
+    // A .codesema that cannot be written into: reconcile must degrade, never
+    // throw the whole boot away.
+    mkdirSync(join(broken.path, '.codesema'), { recursive: true })
+    writeFileSync(queuePath(broken.path), 'not json at all')
+    chmodSync(join(broken.path, '.codesema'), 0o500)
+
+    const notices: string[] = []
+    let manager: TaskManager | null = null
+    try {
+      manager = createTaskManager({
+        ...managerOpts,
+        ...fakeRunner(),
+        onNotice: (message) => notices.push(message),
+      })
+    } finally {
+      chmodSync(join(broken.path, '.codesema'), 0o700)
+    }
+
+    // The workspace is up, and the healthy project is untouched.
+    expect(manager).not.toBeNull()
+    expect(manager?.list(healthy.id)?.find((r) => r.id === healthyTask.id)?.queue_position).toBe(1)
+    expect(manager?.list(broken.id)).toEqual([])
+    // Named AND readable: which project, and what actually went wrong with it.
+    const named = notices.filter((line) => line.startsWith(`${broken.name}:`))
+    expect(named).not.toEqual([])
+    expect(named.some((line) => line.includes('queue.json'))).toBe(true)
+  })
+
+  test('the queue frames refresh: when the head leaves, everyone behind is re-broadcast with a fresh rank', async () => {
+    const project = register(makeRepo())
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: async (options) => {
+        if (options.prompt.includes('task one')) {
+          await gate
+        }
+        const raw = claudeStream('done.\nQUESTION: next?')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    const frames: { id: string; position: number | undefined; status: string }[] = []
+    manager.subscribe((envelope) => {
+      if (envelope.event.name === 'task') {
+        frames.push({
+          id: envelope.event.data.id,
+          position: envelope.event.data.queue_position,
+          status: envelope.event.data.status,
+        })
+      }
+    })
+
+    const first = manager.create(project.id, { title: 'A', prompt: 'task one', autoShip: false })
+    const second = manager.create(project.id, { title: 'B', prompt: 'task two', autoShip: false })
+    const third = manager.create(project.id, { title: 'C', prompt: 'task three', autoShip: false })
+    expect(first.ok && second.ok && third.ok).toBe(true)
+    if (!first.ok || !second.ok || !third.ok) {
+      return
+    }
+    // While the first runs, the two behind are broadcast with their real rank.
+    const ranks = (id: string): (number | undefined)[] =>
+      frames.filter((f) => f.id === id && f.status === 'queued').map((f) => f.position)
+    // The head leaves the line when its worktree is there, and that mutation is
+    // what re-broadcasts the two behind with their real rank.
+    await until(() => ranks(second.record.id).at(-1) === 1)
+    expect(ranks(third.record.id).at(-1)).toBe(2)
+
+    release()
+    await until(() => loadTask(project.path, second.record.id)?.status !== 'queued')
+    // The head left: the third one MOVED UP, and a frame said so — nothing
+    // else would ever have told that card it is now first in line.
+    await until(() => ranks(third.record.id).at(-1) === 1)
+    await until(() => loadTask(project.path, third.record.id)?.status === 'waiting_for_you')
+    // And a task that left the queue never claims a rank again.
+    expect(frames.filter((f) => f.status !== 'queued').every((f) => f.position === undefined)).toBe(
+      true,
+    )
+  })
+
+  // T1.2 re-review, MINOR 7: this fires on EVERY queue mutation. Re-reading
+  // and re-broadcasting the whole line each time made N tasks cost ~N²/2
+  // frames and as many task.json reads, for numbers that mostly did not move.
+  test('joining the TAIL of the line refreshes nobody: only the ranks that moved go out', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      // Never finishes on its own: the head holds the claim for the whole
+      // test, and lets go only when the shutdown aborts it.
+      runAgentFn: (options) =>
+        new Promise<string>((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        }),
+    })
+    const queuedFrames: string[] = []
+    manager.subscribe((envelope) => {
+      if (envelope.event.name === 'task' && envelope.event.data.status === 'queued') {
+        queuedFrames.push(`${envelope.event.data.id}#${envelope.event.data.queue_position ?? '-'}`)
+      }
+    })
+    const head = manager.create(project.id, { title: 'A', prompt: 'one', autoShip: false })
+    expect(head.ok).toBe(true)
+    await until(() => manager.list(project.id)?.some((r) => r.status === 'running') === true)
+
+    const second = manager.create(project.id, { title: 'B', prompt: 'two', autoShip: false })
+    expect(second.ok).toBe(true)
+    if (!second.ok) {
+      return
+    }
+    const afterSecond = queuedFrames.length
+    const third = manager.create(project.id, { title: 'C', prompt: 'three', autoShip: false })
+    expect(third.ok).toBe(true)
+    if (!third.ok) {
+      return
+    }
+
+    // C joined BEHIND B: B's rank did not move, so no refresh frame carries
+    // its number a second time. Only C's own frames appeared.
+    const refreshed = queuedFrames.slice(afterSecond)
+    expect(refreshed.some((f) => f.startsWith(third.record.id))).toBe(true)
+    expect(refreshed.filter((f) => f === `${second.record.id}#1`)).toEqual([])
+
+    // The OTHER half of the bound, and the one nothing exercised: past
+    // QUEUE_BROADCAST_MAX, a single mutation stops sending frames at all
+    // rather than costing one per waiting task. A long line is exactly where
+    // an uncapped broadcast hurts, so the line has to be longer than the cap.
+    const many = QUEUE_BROADCAST_MAX + 12
+    for (let n = 0; n < many; n += 1) {
+      expect(manager.create(project.id, { title: `f${n}`, prompt: 'x', autoShip: false }).ok).toBe(
+        true,
+      )
+    }
+    const before = queuedFrames.length
+    // Stopping the SECOND one moves every rank behind it: uncapped this is
+    // one frame (and one task.json read) per waiting task.
+    expect(manager.interrupt(project.id, second.record.id)).toEqual({ ok: true })
+    const emitted = queuedFrames.length - before
+    expect(emitted).toBeLessThanOrEqual(QUEUE_BROADCAST_MAX)
+    // And it really did have that many ranks to move — otherwise the bound
+    // above would pass on an empty line and prove nothing.
+    expect(
+      manager.list(project.id)?.filter((r) => r.status === 'queued').length ?? 0,
+    ).toBeGreaterThan(QUEUE_BROADCAST_MAX)
+    await manager.shutdown()
+  })
+
+  // T1.2 re-review, MINOR 4: a refused creation used to leave a 'queued'
+  // record on disk that NOTHING could ever start — not in queue.json, not
+  // replyable, not resumable. A card promising an agent that is not coming.
+  test('a creation the queue refuses leaves no zombie: the record is settled, named and abandonable', () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: async (options) => {
+        const raw = claudeStream('done.\nQUESTION: next?')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    // One real task first, so the project's context (and its boot
+    // reconciliation) is behind us before the queue is stuffed.
+    expect(manager.create(project.id, { title: 'seed', prompt: 'seed', autoShip: false }).ok).toBe(
+      true,
+    )
+    // A queue already at its cap: the next enqueue refuses, honestly.
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: Array.from({ length: QUEUE_ENTRIES_MAX }, (_, n) => ({
+        id: (n + 1).toString(16).padStart(12, '0'),
+        enqueued_at: '2026-01-01T00:00:00.000Z',
+      })),
+    })
+    const frames: TaskRecord[] = []
+    manager.subscribe((envelope) => {
+      if (envelope.event.name === 'task') {
+        frames.push(envelope.event.data)
+      }
+    })
+
+    const refused = manager.create(project.id, { title: 'A', prompt: 'work', autoShip: false })
+    expect(refused.ok).toBe(false)
+    if (refused.ok) {
+      return
+    }
+    expect(refused.code).toBe(503)
+    expect(refused.reason_code).toBe('resource_busy')
+
+    // Whatever record was written is now settled, not left waiting: the last
+    // frame the UI got says 'failed', with the refusal's own words.
+    const last = frames.at(-1)
+    expect(last?.status).toBe('failed')
+    expect(last?.reason?.code).toBe('resource_busy')
+    expect(last?.reason?.detail).toBe(refused.error)
+    expect(loadTask(project.path, last!.id)?.status).toBe('failed')
+    // And it never entered the line it was refused from.
+    expect(readQueue(project.path).entries.some((e) => e.id === last?.id)).toBe(false)
+  })
+
+  // T1.2 re-review, MINOR 5: containing a listener's exception is right;
+  // hiding it is the silent degradation invariant 2 forbids.
+  test('a subscriber that throws is contained AND reported, never swallowed', () => {
+    const project = register(makeRepo())
+    const notices: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      onNotice: (message) => notices.push(message),
+    })
+    const seen: string[] = []
+    manager.subscribe(() => {
+      throw new Error('this listener is broken')
+    })
+    manager.subscribe((envelope) => seen.push(envelope.event.name))
+
+    const created = manager.create(project.id, { title: 'A', prompt: 'work', autoShip: false })
+    expect(created.ok).toBe(true)
+
+    // The other subscribers still got their frames…
+    expect(seen).toContain('task')
+    // …and the failure was named rather than dropped on the floor.
+    expect(notices.some((line) => line.includes('this listener is broken'))).toBe(true)
+    expect(notices.some((line) => line.includes('subscriber'))).toBe(true)
+  })
+
+  // T1.2 re-review round 4, MAJOR 1: GET /api/tasks decorates its listing from
+  // the queue. That read used to rename queue.json away on a single unusable
+  // entry — silently, with no notice, no journal line and no repair — so one
+  // listing wiped the project's line for the rest of the session.
+  // T1.2 re-review round 4/5, MAJOR 1. Two halves, and they must both hold.
+  //
+  // Half one: a READ never touches the file. It hands back the queue rebuilt
+  // from the records, reports the reason on the tasks it holds and out loud —
+  // and leaves the bad bytes exactly where they are, which is what keeps
+  // "corrupt" tellable from "absent" for the next boot.
+  test('a listing rebuilds the queue in memory, reports it, and touches no file', () => {
+    const project = register(makeRepo())
+    const first = seedTask(project.path, 'first')
+    const second = seedTask(project.path, 'second')
+    // A queue this system wrote, so the boot keeps both records 'queued'.
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [first, second].map((task) => ({
+        id: task.id,
+        enqueued_at: '2026-01-01T00:00:00.000Z',
+      })),
+    })
+    const notices: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      onNotice: (message) => notices.push(message),
+      listProjectsFn: () => [project],
+      // Nothing must start: startPending() is never called here, and this
+      // test is about the READ anyway.
+      runAgentFn: () => new Promise<string>(() => {}),
+    })
+
+    // The file goes bad WHILE the workspace runs — after the boot pass, which
+    // has its own repair. This is the path that had none. The entry of the
+    // SECOND task is the one the bad bytes hide.
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [
+        { id: first.id, enqueued_at: '2026-01-01T00:00:00.000Z' },
+        { id: 'NOT-AN-ID!!', enqueued_at: '2026-01-01T00:00:00.000Z' },
+      ],
+    })
+    const onDisk = readFileSync(queuePath(project.path), 'utf8')
+    const eventsBefore = readTaskEvents(project.path, first.id).length
+
+    // The listing ranks BOTH tasks: the second is rebuilt from its record,
+    // not lost with the entry that named it.
+    const listed = manager.list(project.id) ?? []
+    const ranks = new Map(listed.map((r) => [r.id, r.queue_position]))
+    expect(ranks.get(first.id)).toBe(1)
+    expect(ranks.get(second.id)).toBe(2)
+
+    // Nothing was moved, written or renamed by a read…
+    expect(readFileSync(queuePath(project.path), 'utf8')).toBe(onDisk)
+    expect(existsSync(corruptQueuePath(project.path))).toBe(false)
+    // …the reason reached the journal of the tasks the rebuilt queue holds…
+    const added = readTaskEvents(project.path, first.id).slice(eventsBefore)
+    expect(
+      added.some((e) => typeof e.data.message === 'string' && e.data.message.includes('unusable')),
+    ).toBe(true)
+    expect(readTaskEvents(project.path, second.id).some((e) => e.type === 'error')).toBe(true)
+    // …and it was said out loud, once.
+    expect(notices.filter((line) => line.includes('unusable'))).toHaveLength(1)
+  })
+
+  // Half two, and the one that was missing: the repair has to survive the
+  // MUTATION that triggers it. A Stop on a waiting task goes read → remove →
+  // write; when the repair ran inside the read, that write put the pre-repair
+  // list back and the tasks the bad bytes had hidden left the queue for good,
+  // still 'queued' on disk, with nothing said.
+  test('a mutation on a degraded queue keeps everyone the bad bytes hid', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 60_000,
+      listProjectsFn: () => [project],
+      runAgentFn: (options) =>
+        new Promise<string>((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        }),
+    })
+    const made = ['a', 'b', 'c', 'd'].map((title) => {
+      const created = manager.create(project.id, { title, prompt: title, autoShip: false })
+      expect(created.ok).toBe(true)
+      if (!created.ok) {
+        throw new Error('creation refused')
+      }
+      return created.record
+    })
+    const [a, b, c, d] = made as [TaskRecord, TaskRecord, TaskRecord, TaskRecord]
+    await until(() => loadTask(project.path, a.id)?.status === 'running')
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([b.id, c.id, d.id])
+
+    // The entry that names D is corrupted; B and C survive in the file.
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [
+        { id: b.id, enqueued_at: '2026-01-01T00:00:00.000Z' },
+        { id: c.id, enqueued_at: '2026-01-01T00:00:00.000Z' },
+        { id: 'NOT-AN-ID!!', enqueued_at: '2026-01-01T00:00:00.000Z' },
+      ],
+    })
+
+    // A human presses Stop on B: remove → write, straight through the repair.
+    expect(manager.interrupt(project.id, b.id)).toEqual({ ok: true })
+
+    // D is STILL in the line. It used to be gone from the file while its
+    // record still said 'queued' — never to run again, and never mentioned.
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([c.id, d.id])
+    expect(loadTask(project.path, d.id)?.status).toBe('queued')
+    // The repaired file is a good one now, and the bad bytes were kept.
+    expect(readQueue(project.path).degraded).toBeNull()
+    expect(existsSync(corruptQueuePath(project.path))).toBe(true)
+    await manager.shutdown()
+  })
+
+  // T1.2 re-review round 6, MAJEUR 1: the boot's own eviction site. A single
+  // transient read failure took a valid task out of the line, rewrote the file
+  // without it, and said nothing — the task came back at the END of the queue
+  // on some later boot, rank lost.
+  test.skipIf(RUNNING_AS_ROOT)(
+    'boot: a record it could not READ keeps its place, and what it DOES retire is said',
+    () => {
+      const project = register(makeRepo())
+      const first = seedTask(project.path, 'first')
+      const unreadable = seedTask(project.path, 'unreadable')
+      const third = seedTask(project.path, 'third')
+      const gone = seedTask(project.path, 'gone')
+      writeJsonAtomic(queuePath(project.path), {
+        version: 1,
+        entries: [first, unreadable, third, gone].map((task) => ({
+          id: task.id,
+          enqueued_at: '2026-01-01T00:00:00.000Z',
+        })),
+      })
+      // One record the boot cannot read (EACCES on its directory), and one
+      // that is genuinely no longer there.
+      chmodSync(join(project.path, '.codesema', 'tasks', unreadable.id), 0o000)
+      rmSync(join(project.path, '.codesema', 'tasks', gone.id), { recursive: true, force: true })
+
+      const notices: string[] = []
+      try {
+        createTaskManager({
+          command: 'claude -p',
+          timeoutMs: 5000,
+          listProjectsFn: () => [project],
+          onNotice: (message) => notices.push(message),
+          ...fakeRunner(),
+        })
+      } finally {
+        chmodSync(join(project.path, '.codesema', 'tasks', unreadable.id), 0o700)
+      }
+
+      // The unreadable one KEPT its rank — second, exactly where it was.
+      expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([
+        first.id,
+        unreadable.id,
+        third.id,
+      ])
+      // And the one it really did retire was named out loud — the id AND the
+      // sentence around it, literally: the phrasing is what tells an operator
+      // whether to go looking, and comparing it to the builder that produced
+      // it would prove nothing about what it says.
+      expect(notices).toContainEqual(
+        expect.stringContaining(
+          `1 queued task left the queue at boot (finished, abandoned, or no longer on disk): ${gone.id}`,
+        ),
+      )
+      expect(notices.some((line) => line.includes(unreadable.id))).toBe(false)
+      expect(queueEntriesRetired(['aaaaaaaaaaaa', 'bbbbbbbbbbbb'])).toBe(
+        '2 queued tasks left the queue at boot (finished, abandoned, or no longer on disk): aaaaaaaaaaaa, bbbbbbbbbbbb',
+      )
+    },
+  )
+
+  // T1.2 re-review round 8, BLOQUANT 1. `unplaceable` answers "what lost its
+  // RANK", so it is only meaningful when the file that held the ranks went
+  // bad. The boot computed it unconditionally while the read guarded it, and
+  // that asymmetry turned an illegible record which had NEVER been in the line
+  // into a permanent, false, non-converging alarm on a perfectly healthy
+  // queue: a notice every boot, a rewrite of a good file every boot, and an
+  // `error` event stamped in the journal of every innocent task in the line.
+  test.skipIf(RUNNING_AS_ROOT)(
+    'boot: an unrelated illegible record does not fabricate a degradation on a HEALTHY queue',
+    () => {
+      const project = register(makeRepo())
+      const innocent = seedTask(project.path, 'innocent')
+      // Never enqueued, never related to the line — just a record on disk that
+      // this pass cannot parse.
+      const stranger = seedTask(project.path, 'stranger')
+      writeJsonAtomic(queuePath(project.path), {
+        version: 1,
+        entries: [{ id: innocent.id, enqueued_at: '2026-01-01T00:00:00.000Z' }],
+      })
+      const strangerDir = join(project.path, '.codesema', 'tasks', stranger.id)
+      chmodSync(strangerDir, 0o000)
+
+      // The file is HEALTHY: that is the whole premise.
+      expect(readQueue(project.path).degraded).toBeNull()
+      // Two consecutive boots, because the bug did not converge: it re-fired
+      // identically forever, and one boot alone could look like a one-off.
+      const notices: string[] = []
+      const boot = (): void => {
+        createTaskManager({
+          command: 'claude -p',
+          timeoutMs: 5000,
+          listProjectsFn: () => [project],
+          onNotice: (message) => notices.push(message),
+          ...fakeRunner(),
+        })
+      }
+      const inodeBefore = statSync(queuePath(project.path)).ino
+      const observed: { notices: string[]; rewritten: boolean; events: number }[] = []
+      try {
+        for (const _ of [1, 2]) {
+          notices.length = 0
+          boot()
+          observed.push({
+            notices: [...notices],
+            // tmp + rename publishes a NEW inode, so an unchanged one is
+            // proof the good file was left exactly as it was.
+            rewritten: statSync(queuePath(project.path)).ino !== inodeBefore,
+            // An `error` line in an innocent task's journal is what a human
+            // would act on — and it accumulated, one per boot, forever.
+            events: readTaskEvents(project.path, innocent.id).length,
+          })
+        }
+      } finally {
+        chmodSync(strangerDir, 0o700)
+      }
+      // The three consequences asserted TOGETHER, so a regression shows all of
+      // them at once rather than hiding two behind the first failure.
+      expect(observed).toEqual([
+        { notices: [], rewritten: false, events: 0 },
+        { notices: [], rewritten: false, events: 0 },
+      ])
+      // The line itself is intact.
+      expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([innocent.id])
+    },
+  )
+
+  // T1.2 re-review round 8, BLOQUANT 2. Making `listTasks` tolerant of a
+  // tasks/ directory that will not list traded a loud failure ("boot recovery
+  // failed (EACCES ... scandir ...)") for total silence: the whole store of a
+  // project read as EMPTY, the board showed nothing, and the workspace said
+  // nothing at all. Tolerance is invariant 1; saying so is invariant 2, and
+  // one is not payment for the other.
+  test.skipIf(RUNNING_AS_ROOT)('a task store that will not LIST is said out loud, by name', () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'invisible')
+    const notices: string[] = []
+    chmodSync(join(project.path, '.codesema', 'tasks'), 0o000)
+    try {
+      const manager = createTaskManager({
+        command: 'claude -p',
+        timeoutMs: 5000,
+        listProjectsFn: () => [project],
+        onNotice: (message) => notices.push(message),
+        ...fakeRunner(),
+      })
+      // Tolerant: the workspace still booted, and listing still answers.
+      expect(manager.list(project.id)).toEqual([])
+    } finally {
+      chmodSync(join(project.path, '.codesema', 'tasks'), 0o700)
+    }
+    // Not mute: the project is named, and so is the failure. The literal is
+    // deliberate — anchoring on the builder that produced the string would
+    // prove nothing about what it says.
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toContain(project.name)
+    expect(notices[0]).toContain('the task store of this project could not be listed')
+    expect(STORE_UNLISTABLE).toBe('the task store of this project could not be listed')
+  })
+
+  test('boot reconciles the queue with the records: terminal and vanished ids out, orphan queued in', () => {
+    const project = register(makeRepo())
+    const stillQueued = seedTask(project.path, 'still queued')
+    const shipped = seedTask(project.path, 'already shipped')
+    shipped.status = 'shipped'
+    saveTask(project.path, shipped)
+    const orphan = seedTask(project.path, 'queued but never enqueued')
+    orphan.created_at = '2030-01-01T00:00:00.000Z'
+    saveTask(project.path, orphan)
+    // A file naming a terminal task, a task that no longer exists, and a
+    // legitimately queued one.
+    writeJsonAtomic(queuePath(project.path), {
+      version: 1,
+      entries: [
+        { id: shipped.id, enqueued_at: '2020-01-01T00:00:00.000Z' },
+        { id: 'ffffffffffff', enqueued_at: '2020-01-01T00:00:00.000Z' },
+        { id: stillQueued.id, enqueued_at: '2020-01-01T00:00:00.000Z' },
+      ],
+    })
+
+    createTaskManager({ ...managerOpts, ...fakeRunner() })
+
+    // The valid one keeps its place; the orphan joins the END.
+    expect(readQueue(project.path).entries.map((e) => e.id)).toEqual([stillQueued.id, orphan.id])
+    // A readable file is not a degradation: nothing is journaled.
+    expect(readTaskEvents(project.path, stillQueued.id)).toHaveLength(0)
+  })
+
+  test('0.12 migration: an inherited queued record becomes interrupted — never an agent started by surprise', async () => {
+    const project = register(makeRepo())
+    // A .codesema/tasks/ tree exactly as 0.12 wrote it: no queue.json, two
+    // 'queued' records, and one 'interrupted {reason:shutdown}' whose last
+    // turn never answered — the shape 0.12's shutdown produced.
+    const secondQueued = seedTask(project.path, 'queued second', 'later work')
+    secondQueued.created_at = '2026-01-02T00:00:00.000Z'
+    saveTask(project.path, secondQueued)
+    const firstQueued = seedTask(project.path, 'queued first', 'earlier work')
+    firstQueued.created_at = '2026-01-01T00:00:00.000Z'
+    saveTask(project.path, firstQueued)
+    const stopped = seedTask(project.path, 'stopped by 0.12', 'unfinished work')
+    stopped.status = 'interrupted'
+    saveTask(project.path, stopped)
+    appendTaskEvent(project.path, stopped.id, {
+      type: 'interrupted',
+      data: { reason: 'shutdown' },
+    })
+    expect(existsSync(queuePath(project.path))).toBe(false)
+
+    const prompts: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        const raw = claudeStream('picked it up\nQUESTION: keep going?')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+    })
+
+    // The boot succeeded and every task is listed.
+    const listed = manager.list(project.id) ?? []
+    expect(new Set(listed.map((r) => r.id))).toEqual(
+      new Set([firstQueued.id, secondQueued.id, stopped.id]),
+    )
+    // The two inherited 'queued' records are ORPHANS of a session that died,
+    // not a line waiting its turn: no queue.json ever named them. They become
+    // 'interrupted' — offered under "needs you" — and nothing starts.
+    for (const id of [firstQueued.id, secondQueued.id]) {
+      const orphan = loadTask(project.path, id)
+      expect(orphan?.status).toBe('interrupted')
+      // Named for a machine as well as for a human: this was the ONE
+      // degradation of the store that carried no D2 code, while the CHANGELOG
+      // and README both promised one.
+      expect(orphan?.reason?.code).toBe('interrupted_by_user')
+      expect(orphan?.reason?.detail).toBe(
+        'orphaned by an earlier session: nothing was queued to start it',
+      )
+      const last = readTaskEvents(project.path, id).at(-1)
+      expect(last?.data.message).toBe(
+        'orphaned by an earlier session: nothing was queued to start it',
+      )
+      expect(last?.reason_code).toBe('interrupted_by_user')
+    }
+    expect(manager.startPending()).toEqual([])
+    expect(prompts).toEqual([])
+    expect(existsSync(queuePath(project.path))).toBe(false)
+
+    // And the 0.12 'interrupted' record is still resumable, unchanged: same
+    // schema, version still 1, no field removed — on a HUMAN gesture.
+    const before = loadTask(project.path, stopped.id)
+    expect(before?.version).toBe(1)
+    expect(pendingResumeTurn(before!)).not.toBeNull()
+    expect(manager.resume(project.id, stopped.id)).toEqual({ ok: true })
+    await until(() => loadTask(project.path, stopped.id)?.status === 'waiting_for_you')
+    expect(loadTask(project.path, stopped.id)?.version).toBe(1)
+    // The orphans are resumable the same way, one human click each.
+    expect(manager.resume(project.id, firstQueued.id)).toEqual({ ok: true })
+    await until(() => loadTask(project.path, firstQueued.id)?.status === 'waiting_for_you')
   })
 
   test('auto_ship chains ship right after a review_ok, without any click', async () => {
