@@ -418,6 +418,65 @@ export type TaskChecks = {
   source?: TaskChecksSource | string
 }
 
+// Mirrors the ticket contract (packages/contract/src/ticket.ts, decision D6):
+// a ticket is a title — the task's — plus a body of five sections whose
+// acceptance criteria are a structured list.
+
+/**
+ * One acceptance criterion. `id` is derived from `text` and never from the
+ * position in the list: reordering or inserting a criterion renames nothing, so
+ * a verdict already emitted keeps pointing at what it actually judged.
+ */
+export type AcceptanceCriterion = {
+  /** `ac-` plus 12 lowercase hex chars, derived from `text`. */
+  id: string
+  text: string
+}
+
+/** The five sections of a ticket body (mirrors the contract). */
+export type TicketBody = {
+  version: 1
+  context: string
+  goal: string
+  scope: string
+  acceptance_criteria: AcceptanceCriterion[]
+  out_of_scope: string
+}
+
+/**
+ * What the deterministic lint found wrong with a body it refused. Widened with
+ * `string` on purpose, like ReasonCode: a code minted by a NEWER server must
+ * arrive as an unknown token the UI ignores, never as a label it invents.
+ */
+export type TicketProblemCode =
+  | 'body_not_text'
+  | 'section_missing'
+  | 'section_duplicated'
+  | 'section_empty'
+  | 'section_too_long'
+  | 'criteria_not_a_list'
+  | 'criteria_too_few'
+  | 'criteria_too_many'
+  | 'criteria_duplicated'
+  | 'criterion_not_ears'
+  | 'criterion_too_long'
+
+/** One reason a launch was refused: the readable message, plus the code that names it. */
+export type TicketProblem = {
+  code: TicketProblemCode | string
+  /** The readable message; the code is added to it, never a stand-in for it. */
+  message: string
+  /**
+   * The section at fault, when the problem is about one. Plain `string` rather
+   * than the five headings, for the same reason `code` is widened: a section a
+   * NEWER server names must arrive as a token the UI shows verbatim, never as a
+   * type error nor as a heading it invents.
+   */
+  section?: string
+  /** The offending criterion's text, when the problem is about one. */
+  criterion?: string
+}
+
 /**
  * One frame of the global /api/tasks/events SSE stream. Every frame is
  * project-enveloped: the workspace drives N repos over one stream.
