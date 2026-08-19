@@ -17,6 +17,21 @@ describe('fixCommandFor', () => {
     )
   })
 
+  test('grok gets the auto permission mode, the only one that writes headlessly', () => {
+    expect(fixCommandFor('grok --prompt-file {promptFile}')).toBe(
+      'grok --prompt-file {promptFile} --permission-mode auto',
+    )
+  })
+
+  test('grok: a permission mode already chosen is kept', () => {
+    expect(fixCommandFor('grok --prompt-file {promptFile} --always-approve')).toBe(
+      'grok --prompt-file {promptFile} --always-approve',
+    )
+    expect(
+      fixCommandFor('grok --prompt-file {promptFile} --permission-mode bypassPermissions'),
+    ).toBe('grok --prompt-file {promptFile} --permission-mode bypassPermissions')
+  })
+
   test('gemini gets auto_edit approval mode', () => {
     expect(fixCommandFor('gemini')).toBe('gemini --approval-mode auto_edit')
     expect(fixCommandFor('gemini -m gemini-2.5-pro')).toBe(

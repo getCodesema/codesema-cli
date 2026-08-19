@@ -34,6 +34,9 @@ export type AgentDef = {
 
 // Headless invocations verified against each CLI's official docs (2026-07):
 // claude -p / codex exec - / gemini read the prompt on stdin and write to stdout.
+// grok is the exception (verified against grok 1.0.5, 2026-08): its -p/--single
+// takes the prompt as an ARGUMENT and its --prompt-file wants a real path, so it
+// is fed through {promptFile} (see PROMPT_FILE_PLACEHOLDER) rather than stdin.
 // opencode has no documented stdin mode, so it is only usable via a custom command.
 export const AGENT_DEFS: AgentDef[] = [
   {
@@ -69,13 +72,24 @@ export const AGENT_DEFS: AgentDef[] = [
     judgeModel: 'gemini-2.5-pro',
     // no CLI effort flag: gemini only supports it via settings.json
   },
+  {
+    id: 'grok',
+    label: 'Grok CLI (xAI)',
+    bin: 'grok',
+    base: 'grok --prompt-file {promptFile}',
+    modelFlag: '-m',
+    models: ['grok-4.6', 'grok-4.5'],
+    judgeModel: 'grok-4.5',
+    effortFlag: (v) => `--reasoning-effort ${v}`,
+    efforts: ['low', 'medium', 'high', 'xhigh'],
+  },
 ]
 
 /**
  * Agents available on PATH, in AGENT_DEFS order. Every `<bin> --version` probe
  * is launched before the first one answers (runProbes), so detection costs one
  * shared 8s window instead of one per agent — the old sequential filter chained
- * up to three timeouts before the workspace could even boot.
+ * one timeout per agent before the workspace could even boot.
  */
 export async function detectAgents(
   cwd: string,
