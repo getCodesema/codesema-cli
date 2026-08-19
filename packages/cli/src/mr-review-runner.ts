@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { listWorktrees } from './branches.js'
 import { ensureWorkDir } from './config.js'
 import { listOpenMrs, type ForgeMr, type ForgeMrsResult } from './forge-mrs.js'
-import { git, refExists, tryGit } from './git.js'
+import { git, refExists, tryGit, type ProbeExecFn } from './git.js'
 import { prep } from './prep.js'
 import { resolvePreviewRefs } from './preview.js'
 import { archiveRecord } from './record.js'
@@ -85,6 +85,12 @@ export function createMrReviewRunner(opts: {
   agentCommand: string
   timeoutMs: number
   listMrs?: (cwd: string) => Promise<ForgeMrsResult>
+  /**
+   * Forge probe behind the branch target detection (see preview.ts). The same
+   * seam as everywhere else in the repo: no test runs a real gh/glab, and a
+   * caller that omits it gets the real probe.
+   */
+  execFn?: ProbeExecFn
 }): MrReviewRunner {
   const listMrs = opts.listMrs ?? listOpenMrs
 
@@ -110,7 +116,11 @@ export function createMrReviewRunner(opts: {
       branchForPrep = resolved.mr.sourceBranch
       targetForPrep = resolved.mr.targetBranch
     } else {
-      const refs = await resolvePreviewRefs(opts.cwd, { kind: 'branch', name: resolved.name })
+      const refs = await resolvePreviewRefs(
+        opts.cwd,
+        { kind: 'branch', name: resolved.name },
+        { execFn: opts.execFn },
+      )
       const alreadyCheckedOut = listWorktrees(opts.cwd).some((wt) => wt.branch === resolved.name)
       if (alreadyCheckedOut) {
         const sha = git(['rev-parse', `refs/heads/${resolved.name}`], opts.cwd)
