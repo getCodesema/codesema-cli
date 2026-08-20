@@ -98,7 +98,7 @@ Workspace tasks are the opposite case — they exist to edit code — so they ar
 ## Requirements
 
 - Node.js ≥ 20 and `git`
-- An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI), `gemini` (Google) and `grok` (xAI) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'` (e.g. `--agent 'opencode run "$(cat)"'`). A CLI that cannot read its prompt from stdin at all takes it as a **file**: put `{promptFile}` where the path goes and codesema writes the prompt to a private temp file, substitutes its quoted path and deletes it when the run ends — that is how `grok` is run (`grok --prompt-file {promptFile}`)
+- An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI), `gemini` (Google), `grok` (xAI) and `opencode` (OpenCode) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'`. A CLI that cannot read its prompt from stdin at all takes it as a **file**: put `{promptFile}` where the path goes and codesema writes the prompt to a private temp file, substitutes its quoted path and deletes it when the run ends — that is how `grok` is run (`grok --prompt-file {promptFile}`)
 - Optional: `glab` or `gh` on the PATH, to auto-detect the target branch from the open MR/PR (and to list MRs and ship from the workspace)
 - Optional: `docker` or `podman`, for the workspace's sandboxed checks and per-task container isolation (without one, checks report they cannot run and tasks fall back to the host hardening)
 

@@ -33,11 +33,12 @@ export type AgentDef = {
 }
 
 // Headless invocations verified against each CLI's official docs (2026-07):
-// claude -p / codex exec - / gemini read the prompt on stdin and write to stdout.
-// grok is the exception (verified against grok 1.0.5, 2026-08): its -p/--single
-// takes the prompt as an ARGUMENT and its --prompt-file wants a real path, so it
-// is fed through {promptFile} (see PROMPT_FILE_PLACEHOLDER) rather than stdin.
-// opencode has no documented stdin mode, so it is only usable via a custom command.
+// claude -p / codex exec - / gemini / opencode run read the prompt on stdin and
+// write to stdout. opencode run reads stdin via Bun.stdin.text() when not a TTY
+// (verified 1.18.19, present since v1.0.0). grok is the exception (verified
+// against grok 1.0.5, 2026-08): its -p/--single takes the prompt as an ARGUMENT
+// and its --prompt-file wants a real path, so it is fed through {promptFile}
+// (see PROMPT_FILE_PLACEHOLDER) rather than stdin.
 export const AGENT_DEFS: AgentDef[] = [
   {
     id: 'claude',
@@ -83,7 +84,59 @@ export const AGENT_DEFS: AgentDef[] = [
     effortFlag: (v) => `--reasoning-effort ${v}`,
     efforts: ['low', 'medium', 'high', 'xhigh'],
   },
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    bin: 'opencode',
+    base: 'opencode run',
+    modelFlag: '-m',
+    models: [],
+    judgeModel: '',
+    effortFlag: (v) => `--variant ${v}`,
+    efforts: ['minimal', 'low', 'medium', 'high', 'max'],
+  },
 ]
+
+/** One `provider/model` id per line; headers, blanks and other junk are dropped. */
+export function parseOpencodeModels(stdout: string): string[] {
+  const models: string[] = []
+  const seen = new Set<string>()
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!/^\S+\/\S+$/.test(line) || seen.has(line)) {
+      continue
+    }
+    seen.add(line)
+    models.push(line)
+  }
+  return models
+}
+
+const OPENCODE_JUDGE_RE = /mini|flash|air|haiku|nano/i
+
+/** Prefer a cheap mid-tier id; else the first listed model; else ''. */
+export function pickOpencodeJudge(models: readonly string[]): string {
+  return models.find((id) => OPENCODE_JUDGE_RE.test(id)) ?? models[0] ?? ''
+}
+
+/**
+ * Map a user-supplied agent string onto a known command: an AGENT_DEFS id or
+ * bin becomes that provider's defaultCommand; a command whose first-token bin
+ * is known is kept; anything else is null (a true custom command).
+ */
+export function resolveKnownAgentCommand(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return null
+  }
+  const def = AGENT_DEFS.find((d) => d.id === trimmed || d.bin === trimmed)
+  if (def) {
+    return defaultCommand(def)
+  }
+  const first = trimmed.split(/\s+/)[0] ?? ''
+  const bin = first.split('/').pop() ?? ''
+  return AGENT_DEFS.some((d) => d.bin === bin) ? trimmed : null
+}
 
 /**
  * Agents available on PATH, in AGENT_DEFS order. Every `<bin> --version` probe
@@ -219,7 +272,14 @@ export async function runAgentWizard(
     return command ? { command, agentId: 'custom' } : null
   }
 
-  const def = picked
+  let def = picked
+  if (def.id === 'opencode' && def.models.length === 0) {
+    const stdout = await tryExecAsync(def.bin, ['models'], cwd)
+    if (stdout) {
+      const models = parseOpencodeModels(stdout)
+      def = { ...def, models, judgeModel: pickOpencodeJudge(models) }
+    }
+  }
 
   const modelOptions = [
     ...def.models.map((m) => ({

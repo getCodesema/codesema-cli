@@ -17,10 +17,12 @@ import {
   agentEnv,
   agentReasonCode,
   claudeStreamCommand,
-  createClaudeTaskParser,
+  createAgentStreamParser,
   effectiveAbsoluteCapMs,
   emitsClaudeStreamJson,
+  emitsOpencodeJson,
   flagPresent,
+  knownAgent,
   runAgent,
   type AgentHeartbeat,
   type AgentRunOptions,
@@ -109,8 +111,11 @@ function preview(text: string): string {
     : text
 }
 
-/** Claude in print mode can pin and resume a session; other providers run one-shot turns. */
+/** Claude in print mode, and OpenCode, can pin and resume a session; other providers run one-shot turns. */
 export function supportsSessionResume(command: string): boolean {
+  if (knownAgent(command) === 'opencode') {
+    return true
+  }
   return /^claude(\s|$)/.test(command) && /(^|\s)(-p|--print)(\s|$)/.test(command)
 }
 
@@ -122,10 +127,21 @@ export type TaskSession = { kind: 'new' | 'resume'; id: string }
  * its own worktree). Claude additionally gets the stream-json flags (tool
  * events + text deltas feed the live conversation) and a stable session:
  * --session-id on the first turn, --resume afterwards (flags verified against
- * claude 2.1.231 with -p).
+ * claude 2.1.231 with -p). OpenCode gets `--format json` and `-s` on resume;
+ * the first turn carries no session flag (the stream's sessionID is captured
+ * instead).
  */
 export function taskCommandFor(command: string, opts: { session: TaskSession | null }): string {
   let cmd = fixCommandFor(command)
+  if (knownAgent(command) === 'opencode') {
+    if (!flagPresent(cmd, '--format')) {
+      cmd += ' --format json'
+    }
+    if (opts.session?.kind === 'resume') {
+      cmd += ` -s ${opts.session.id}`
+    }
+    return cmd
+  }
   if (!/^claude(\s|$)/.test(command)) {
     return cmd
   }
@@ -542,30 +558,32 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // nothing and says so, never a clock reading that would quietly bill the
   // turn at today's rate.
   const startedAt = opts.task.turns.at(-1)?.started_at ?? ''
-  const parser = emitsClaudeStreamJson(command)
-    ? createClaudeTaskParser(
-        {
-          onInit: (id) => {
-            sessionId = id
+  const parser =
+    emitsClaudeStreamJson(command) || emitsOpencodeJson(command)
+      ? createAgentStreamParser(
+          command,
+          {
+            onInit: (id) => {
+              sessionId = id
+            },
+            onToolUse: (name, input) => opts.onEvent({ type: 'tool_use', data: { name, input } }),
+            onToolResult: (summary) => opts.onEvent({ type: 'tool_result', data: { summary } }),
+            ...(opts.onText ? { onText: opts.onText } : {}),
+            onTokens: (total) => {
+              tokens = total
+              opts.onTokens?.(total)
+            },
+            // The meter republishes at every change, `null` included: the last
+            // thing it said is what this turn can honestly claim.
+            onCost: (settled) => {
+              cost = settled
+              opts.onCost?.(settled)
+            },
+            onCostDegraded: (degradation) => opts.onEvent(costEvent(degradation)),
           },
-          onToolUse: (name, input) => opts.onEvent({ type: 'tool_use', data: { name, input } }),
-          onToolResult: (summary) => opts.onEvent({ type: 'tool_result', data: { summary } }),
-          ...(opts.onText ? { onText: opts.onText } : {}),
-          onTokens: (total) => {
-            tokens = total
-            opts.onTokens?.(total)
-          },
-          // The meter republishes at every change, `null` included: the last
-          // thing it said is what this turn can honestly claim.
-          onCost: (settled) => {
-            cost = settled
-            opts.onCost?.(settled)
-          },
-          onCostDegraded: (degradation) => opts.onEvent(costEvent(degradation)),
-        },
-        { at: startedAt, env: costRunEnv(caged, command) },
-      )
-    : null
+          { at: startedAt, env: costRunEnv(caged, command) },
+        )
+      : null
   let fed = 0
   // Both paths deliver the SAME cumulative stdout, so the stream-json parser
   // is fed identically whether the agent ran on the host or in its box.

@@ -32,7 +32,7 @@ export function judgeCommandFor(command: string): string {
   const first = command.trim().split(/\s+/)[0] ?? ''
   const bin = first.split('/').pop() ?? ''
   const def = AGENT_DEFS.find((d) => d.bin === bin)
-  if (!def) {
+  if (!def || !def.judgeModel) {
     return command
   }
   const flagPattern = new RegExp(`(^|\\s)${escapeRegExp(def.modelFlag)}(?:=|\\s+)\\S+`)

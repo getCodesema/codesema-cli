@@ -39,6 +39,10 @@ export function fixCommandFor(command: string): string {
       '--permission-mode auto',
     )
   }
+  if (/^opencode(\s|$)/.test(command)) {
+    // Default build agent already allows every tool.
+    return command
+  }
   return command
 }
 

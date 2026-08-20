@@ -82,13 +82,30 @@ describe('taskCommandFor', () => {
     expect(cmd).not.toContain('stream-json')
     expect(cmd).toContain('--session-id uuid-1')
   })
+
+  test('opencode gets --format json; resume uses -s; first turn has no session flag', () => {
+    expect(taskCommandFor('opencode run', { session: { kind: 'new', id: 'uuid-1' } })).toBe(
+      'opencode run --format json',
+    )
+    expect(taskCommandFor('opencode run', { session: { kind: 'resume', id: 'sess-9' } })).toBe(
+      'opencode run --format json -s sess-9',
+    )
+    expect(taskCommandFor('opencode run --format json', { session: null })).toBe(
+      'opencode run --format json',
+    )
+    expect(taskCommandFor('opencode run', { session: null })).not.toContain(
+      '--dangerously-skip-permissions',
+    )
+  })
 })
 
 describe('supportsSessionResume', () => {
-  test('claude in print mode only', () => {
+  test('claude in print mode, and opencode', () => {
     expect(supportsSessionResume('claude -p')).toBe(true)
     expect(supportsSessionResume('claude -p --model opus')).toBe(true)
     expect(supportsSessionResume('claude --model opus')).toBe(false)
+    expect(supportsSessionResume('opencode run')).toBe(true)
+    expect(supportsSessionResume('opencode run -m anthropic/claude-sonnet-4-5')).toBe(true)
     expect(supportsSessionResume('codex exec -')).toBe(false)
     expect(supportsSessionResume('gemini')).toBe(false)
   })
@@ -335,6 +352,80 @@ describe('runTaskTurn', () => {
     expect(events[1]?.data).toEqual({ name: 'Write', input: '{"file_path":"a.txt"}' })
     expect(events[2]?.data).toEqual({ summary: 'wrote a.txt' })
     expect(fake.commands[0]).toContain('--session-id')
+  })
+
+  test('opencode json feeds onText, tools, session, tokens and a real zero cost', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const texts: [string, number][] = []
+    const raw = jsonl([
+      { type: 'step_start', sessionID: 'oc-sess' },
+      {
+        type: 'tool_use',
+        name: 'Write',
+        part: { name: 'Write', input: { file_path: 'a.txt' } },
+        sessionID: 'oc-sess',
+      },
+      { type: 'tool_result', part: { output: 'wrote a.txt' }, sessionID: 'oc-sess' },
+      { type: 'text', part: { text: 'all done' }, sessionID: 'oc-sess' },
+      {
+        type: 'step_finish',
+        part: { tokens: { total: 8946, input: 33, output: 17 }, cost: 0 },
+        sessionID: 'oc-sess',
+      },
+    ])
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'opencode run',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      onText: (text, seq) => texts.push([text, seq]),
+      runAgentFn: async (options) => {
+        expect(options.command).toContain('--format json')
+        expect(options.command).not.toContain('-s ')
+        expect(options.command).not.toContain('--dangerously-skip-permissions')
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    expect(outcome).toEqual({
+      kind: 'done',
+      response: 'all done',
+      sessionId: 'oc-sess',
+      tokens: 8946,
+      cost: { ticks: 0, basis: 'harness' },
+    })
+    expect(events.map((e) => e.type)).toEqual([
+      'turn_started',
+      'tool_use',
+      'tool_result',
+      'message',
+    ])
+    expect(events[1]?.data).toEqual({ name: 'Write', input: '{"file_path":"a.txt"}' })
+    expect(events[2]?.data).toEqual({ summary: 'wrote a.txt' })
+    expect(texts).toEqual([['all done', 0]])
+  })
+
+  test('opencode resume turns pass -s with the stored session', async () => {
+    const repo = makeRepo()
+    const task = { ...makeTask(repo, 'demo', 'again'), agent_session_id: 'oc-sess' }
+    let seen = ''
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'again',
+      command: 'opencode run',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: async (options) => {
+        seen = options.command
+        return 'ok'
+      },
+    })
+    expect(seen).toBe('opencode run --format json -s oc-sess')
   })
 
   test('streamed text is reported per agent message, each under its own index', async () => {

@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { ProbeExecFn } from './git.js'
 import { setLanguage, t } from './i18n.js'
-import { AGENT_DEFS, describeConfigEntries, detectAgents } from './wizard.js'
+import {
+  AGENT_DEFS,
+  defaultCommand,
+  describeConfigEntries,
+  detectAgents,
+  parseOpencodeModels,
+  pickOpencodeJudge,
+  resolveKnownAgentCommand,
+} from './wizard.js'
 
 afterEach(() => setLanguage(null))
 
@@ -88,7 +96,71 @@ describe('detectAgents', () => {
       'claude',
       'gemini',
       'grok',
+      'opencode',
     ])
     expect(calls).toEqual(AGENT_DEFS.map((d) => d.bin))
+  })
+})
+
+describe('parseOpencodeModels', () => {
+  test('keeps one provider/model id per line and skips junk', () => {
+    expect(
+      parseOpencodeModels(
+        [
+          'Available models:',
+          '',
+          'anthropic/claude-sonnet-4-5',
+          'openai/gpt-4.1',
+          'openrouter/google/gemini-2.5-flash',
+          '  opencode/kimi-k2  ',
+          'not a model',
+          'spaces in / this',
+          'anthropic/claude-sonnet-4-5',
+        ].join('\n'),
+      ),
+    ).toEqual([
+      'anthropic/claude-sonnet-4-5',
+      'openai/gpt-4.1',
+      'openrouter/google/gemini-2.5-flash',
+      'opencode/kimi-k2',
+    ])
+  })
+})
+
+describe('pickOpencodeJudge', () => {
+  test('prefers mini/flash/air/haiku/nano, else first, else empty', () => {
+    expect(
+      pickOpencodeJudge([
+        'anthropic/claude-sonnet-4-5',
+        'google/gemini-2.5-flash',
+        'anthropic/claude-haiku-4',
+      ]),
+    ).toBe('google/gemini-2.5-flash')
+    expect(pickOpencodeJudge(['anthropic/claude-sonnet-4-5', 'openai/gpt-4.1'])).toBe(
+      'anthropic/claude-sonnet-4-5',
+    )
+    expect(pickOpencodeJudge([])).toBe('')
+  })
+})
+
+describe('resolveKnownAgentCommand', () => {
+  test('an AGENT_DEFS id or bin becomes that provider default', () => {
+    expect(resolveKnownAgentCommand('opencode')).toBe('opencode run')
+    expect(resolveKnownAgentCommand('claude')).toBe(defaultCommand(AGENT_DEFS[0]!))
+    expect(resolveKnownAgentCommand('codex')).toBe('codex exec -')
+  })
+
+  test('a command whose first-token bin is known is kept', () => {
+    expect(resolveKnownAgentCommand('opencode run -m anthropic/claude-sonnet-4-5')).toBe(
+      'opencode run -m anthropic/claude-sonnet-4-5',
+    )
+    expect(resolveKnownAgentCommand('/usr/local/bin/claude -p --model opus')).toBe(
+      '/usr/local/bin/claude -p --model opus',
+    )
+  })
+
+  test('an unknown command is null', () => {
+    expect(resolveKnownAgentCommand('my-agent run')).toBeNull()
+    expect(resolveKnownAgentCommand('')).toBeNull()
   })
 })

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { ReasonCode } from './contract.js'
 import {
   createCostMeter,
+  usdToTicks,
   type CostCounters,
   type CostDegradation,
   type PriceRow,
@@ -16,13 +17,24 @@ import { t } from './i18n.js'
 const CLAUDE_STREAM_JSON_FLAG = '--output-format stream-json'
 const CLAUDE_STREAM_FLAGS = `${CLAUDE_STREAM_JSON_FLAG} --include-partial-messages --verbose`
 
-const AGENT_BINS = ['claude', 'codex', 'gemini', 'grok'] as const
-type KnownAgent = (typeof AGENT_BINS)[number]
+const AGENT_BINS = ['claude', 'codex', 'gemini', 'grok', 'opencode'] as const
+export type KnownAgent = (typeof AGENT_BINS)[number]
 
 export function knownAgent(command: string): KnownAgent | null {
   const first = command.trim().split(/\s+/)[0] ?? ''
   const bin = first.split('/').pop() ?? ''
   return (AGENT_BINS as readonly string[]).includes(bin) ? (bin as KnownAgent) : null
+}
+
+/** Claude and OpenCode can run inside the task container cage. */
+export function cageableAgent(command: string): boolean {
+  const agent = knownAgent(command)
+  return agent === 'claude' || agent === 'opencode'
+}
+
+/** OpenCode on the host is unsafe: its tools stay open without a cage. */
+export function hostPolicyUnsafe(command: string): boolean {
+  return knownAgent(command) === 'opencode'
 }
 
 function escapeRegExp(s: string): string {
@@ -135,6 +147,8 @@ export function hardenedReviewCommand(command: string): string {
     }
     return `${command} --deny '*'`
   }
+  // opencode: command unchanged. Review hardening is OPENCODE_CONFIG_CONTENT
+  // (permission deny); tools toggles lose to a repo opencode.json, permission wins.
   return command
 }
 
@@ -173,7 +187,24 @@ const AGENT_ENV_PREFIXES: Record<KnownAgent, string[]> = {
   codex: ['OPENAI_', 'CODEX_'],
   gemini: ['GEMINI_', 'GOOGLE_'],
   grok: ['XAI_', 'GROK_'],
+  opencode: [
+    'OPENCODE_',
+    'OPENROUTER_',
+    'ANTHROPIC_',
+    'CLAUDE_',
+    'OPENAI_',
+    'CODEX_',
+    'GEMINI_',
+    'GOOGLE_',
+    'XAI_',
+    'GROK_',
+  ],
 }
+
+/** Inline opencode.json: permission wins over a repo file; tools toggles do not. */
+export const OPENCODE_REVIEW_CONFIG = JSON.stringify({
+  permission: { bash: 'deny', edit: 'deny', write: 'deny' },
+})
 
 /**
  * Known agents get a minimal environment: base shell vars, proxy settings and
@@ -182,15 +213,32 @@ const AGENT_ENV_PREFIXES: Record<KnownAgent, string[]> = {
  * Custom commands inherit the full environment: their needs are unknowable
  * and the user chose them explicitly.
  */
+function applyInject(
+  env: NodeJS.ProcessEnv,
+  inject: Readonly<Record<string, string>> | undefined,
+): NodeJS.ProcessEnv {
+  if (!inject) {
+    return env
+  }
+  const next = { ...env }
+  for (const [key, value] of Object.entries(inject)) {
+    if (next[key] === undefined) {
+      next[key] = value
+    }
+  }
+  return next
+}
+
 export function agentEnv(
   command: string,
   source: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  inject?: Readonly<Record<string, string>>,
 ): NodeJS.ProcessEnv | undefined {
   // cmd.exe needs SystemRoot/ComSpec and Windows env names are case-insensitive:
   // narrowing there can break the spawn itself, so Windows inherits the full env.
   if (platform === 'win32') {
-    return undefined
+    return inject ? applyInject({ ...source }, inject) : undefined
   }
   const agent = knownAgent(command)
   if (!agent) {
@@ -218,7 +266,19 @@ export function agentEnv(
       env[key] = value
     }
   }
-  return env
+  return applyInject(env, inject)
+}
+
+export function reviewAgentEnv(
+  command: string,
+  source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv | undefined {
+  const inject =
+    knownAgent(command) === 'opencode' && source.OPENCODE_CONFIG_CONTENT === undefined
+      ? { OPENCODE_CONFIG_CONTENT: OPENCODE_REVIEW_CONFIG }
+      : undefined
+  return agentEnv(command, source, platform, inject)
 }
 
 export function claudeStreamCommand(command: string): string | null {
@@ -247,6 +307,28 @@ export function claudeStreamCommand(command: string): string | null {
 export function emitsClaudeStreamJson(command: string): boolean {
   const unquoted = command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, ' ')
   return /(^|\s)--output-format[\s=]+stream-json(\s|$)/.test(unquoted)
+}
+
+export function opencodeJsonCommand(command: string): string | null {
+  if (knownAgent(command) !== 'opencode') {
+    return null
+  }
+  if (flagPresent(command, '--format')) {
+    return null
+  }
+  return `${command} --format json`
+}
+
+export function emitsOpencodeJson(command: string): boolean {
+  if (knownAgent(command) !== 'opencode') {
+    return false
+  }
+  const unquoted = command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, ' ')
+  return /(^|\s)--format[\s=]+json(\s|$)/.test(unquoted)
+}
+
+export function streamFlagsCommand(command: string): string | null {
+  return claudeStreamCommand(command) ?? opencodeJsonCommand(command)
 }
 
 export type ClaudeStreamParser = {
@@ -648,6 +730,157 @@ export function createClaudeStreamParser(
   return createClaudeTaskParser({ ...handlers, ...(onText ? { onText } : {}) })
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value) {
+      return value
+    }
+  }
+  return null
+}
+
+function opencodeSessionId(event: Record<string, unknown>): string | null {
+  const part = asRecord(event.part)
+  for (const obj of [event, part]) {
+    const id = firstString(obj.sessionID, obj.sessionId, obj.session_id)
+    if (id) {
+      return id
+    }
+  }
+  return null
+}
+
+/**
+ * OpenCode `--format json` NDJSON (verified 1.18.19): step_start / text /
+ * tool_use / tool_result / step_finish. sessionID is camelCase on events.
+ */
+export function createOpencodeTaskParser(
+  handlers: ClaudeTaskParserHandlers,
+  _options: ClaudeTaskParserOptions = {},
+): ClaudeStreamParser {
+  const { onText } = handlers
+  const summarize = (value: unknown): string => (handlers.countOnly ? '' : summarizePayload(value))
+  let lineBuffer = ''
+  let messageSeq = 0
+  let messageText = ''
+  let lastText = ''
+  let tokensSettled = 0
+  let costTicks = 0
+  let initSent = false
+
+  const handleLine = (line: string) => {
+    if (!line.trim()) {
+      return
+    }
+    let event: Record<string, unknown>
+    try {
+      event = JSON.parse(line) as Record<string, unknown>
+    } catch {
+      return
+    }
+    handlers.onActivity?.()
+    if (!initSent) {
+      const sessionId = opencodeSessionId(event)
+      if (sessionId) {
+        initSent = true
+        handlers.onInit?.(sessionId)
+      }
+    }
+    const part = asRecord(event.part)
+    if (event.type === 'step_start') {
+      if (messageText) {
+        messageSeq++
+        messageText = ''
+      }
+      return
+    }
+    if (event.type === 'text') {
+      const piece = typeof part.text === 'string' ? part.text : ''
+      if (piece) {
+        messageText += piece
+        lastText = messageText
+        onText?.(messageText, messageSeq)
+      }
+      return
+    }
+    if (event.type === 'tool_use') {
+      const name = firstString(event.name, part.name, part.tool)
+      if (name) {
+        const state = asRecord(part.state)
+        handlers.onToolUse?.(name, summarize(part.input ?? state.input ?? event.input ?? {}))
+      }
+      return
+    }
+    if (event.type === 'tool_result') {
+      const payload = part.output ?? part.content ?? event.output ?? event.content ?? part
+      handlers.onToolResult?.(handlers.countOnly ? '' : summarizePayload(payload))
+      return
+    }
+    if (event.type === 'step_finish') {
+      const tokens = asRecord(part.tokens)
+      const input = num(tokens.input)
+      const output = num(tokens.output)
+      const total = num(tokens.total)
+      if (input > 0 || output > 0 || total > 0) {
+        tokensSettled += input + output
+        if (total > tokensSettled) {
+          tokensSettled = total
+        }
+        handlers.onTokens?.(tokensSettled)
+      }
+      const ticks = usdToTicks(part.cost)
+      if (ticks !== null) {
+        costTicks += ticks
+        handlers.onCost?.({ ticks: costTicks, basis: 'harness' })
+      }
+    }
+  }
+
+  return {
+    push(chunk: string) {
+      lineBuffer += chunk
+      for (;;) {
+        const nl = lineBuffer.indexOf('\n')
+        if (nl < 0) {
+          break
+        }
+        handleLine(lineBuffer.slice(0, nl))
+        lineBuffer = lineBuffer.slice(nl + 1)
+      }
+    },
+    finalText() {
+      if (lineBuffer.trim()) {
+        handleLine(lineBuffer)
+        lineBuffer = ''
+      }
+      return lastText || null
+    },
+  }
+}
+
+export function createOpencodeStreamParser(
+  onText?: (text: string) => void,
+  handlers?: Omit<ClaudeTaskParserHandlers, 'onText'>,
+): ClaudeStreamParser {
+  return createOpencodeTaskParser({ ...handlers, ...(onText ? { onText } : {}) })
+}
+
+export function createAgentStreamParser(
+  command: string,
+  handlers: ClaudeTaskParserHandlers,
+  options: ClaudeTaskParserOptions = {},
+): ClaudeStreamParser {
+  return emitsOpencodeJson(command)
+    ? createOpencodeTaskParser(handlers, options)
+    : createClaudeTaskParser(handlers, options)
+}
+
 // --- semantic watchdog (D3) -------------------------------------------------
 
 /**
@@ -975,8 +1208,9 @@ export function armStreamWatchdog(opts: {
     },
     countOnly: true,
   }
-  const decodable = emitsClaudeStreamJson(opts.command)
-  const ownParser = !opts.callerDecodes && decodable ? createClaudeTaskParser(handlers) : null
+  const decodable = emitsClaudeStreamJson(opts.command) || emitsOpencodeJson(opts.command)
+  const ownParser =
+    !opts.callerDecodes && decodable ? createAgentStreamParser(opts.command, handlers) : null
 
   let tickCancel: (() => void) | null = null
   let stopped = false
@@ -1054,7 +1288,7 @@ export type AgentRunOptions = {
 }
 
 export function runAgent(opts: AgentRunOptions): Promise<string> {
-  const streamCommand = claudeStreamCommand(opts.command)
+  const streamCommand = streamFlagsCommand(opts.command)
   const baseCommand = streamCommand ?? opts.command
   // 0o700 on the directory: the prompt carries the whole diff, so it is never
   // readable by another user of the machine while the agent works on it.
@@ -1252,7 +1486,11 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     // watchdog then keeps its own reader — otherwise a task turn's forty-minute
     // test run would look like forty silent minutes and get killed for being
     // alive.
-    const parser = streamCommand ? createClaudeStreamParser(opts.onText, armed.handlers) : null
+    const parser = streamCommand
+      ? emitsOpencodeJson(streamCommand)
+        ? createOpencodeStreamParser(opts.onText, armed.handlers)
+        : createClaudeStreamParser(opts.onText, armed.handlers)
+      : null
 
     stdout?.on('data', (d: Buffer) => {
       const chunk = d.toString()

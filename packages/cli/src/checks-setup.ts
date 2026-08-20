@@ -5,7 +5,7 @@
 //
 // Three properties make this safe to expose in the UI:
 //  1. The agent runs READ-ONLY — hardenedReviewCommand cuts its tools, MCP
-//     servers and repo-provided settings, agentEnv strips the environment. It
+//     servers and repo-provided settings, reviewAgentEnv strips the environment. It
 //     is a pure text transformer here, exactly like the review agent.
 //  2. The agent reads NOTHING itself: codesema collects the relevant files,
 //     truncates them and puts them IN the prompt. What it cannot see, it
@@ -18,7 +18,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { agentEnv, hardenedReviewCommand, runAgent, type AgentRunOptions } from './agent.js'
+import { hardenedReviewCommand, reviewAgentEnv, runAgent, type AgentRunOptions } from './agent.js'
 import { writeChecksConfig, type ChecksConfig } from './repo-config.js'
 import { DEFAULT_CHECK_TIMEOUT_SECONDS, readDeclarationFiles } from './task-checks.js'
 
@@ -505,7 +505,7 @@ export function createChecksSetupRunner(opts: CreateChecksSetupRunnerOptions): C
         try {
           const files = collect(project.path)
           const prompt = buildChecksSetupPrompt({ entries: rootEntries(project.path), files })
-          const env = agentEnv(command)
+          const env = reviewAgentEnv(command)
           // Read-only by construction: hardened command (no tools, no MCP, no
           // repo settings) and a minimal environment, exactly like a review.
           const raw = await run({

@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { agentEnv, hardenedReviewCommand, runAgent, type AgentRunOptions } from './agent.js'
+import { hardenedReviewCommand, reviewAgentEnv, runAgent, type AgentRunOptions } from './agent.js'
 import { pickBranch } from './branches.js'
 import {
   ensureWorkDir,
@@ -440,7 +440,7 @@ export async function runSimpleFlow(opts: {
     out = await runAgentJsonWithRetry(
       {
         command: hardenedReviewCommand(opts.agentCommand),
-        env: agentEnv(opts.agentCommand),
+        env: reviewAgentEnv(opts.agentCommand),
         prompt: opts.prompt,
         cwd: opts.input.repo_root,
         absoluteCapMs: opts.timeoutMs,
@@ -513,7 +513,7 @@ export async function runDualFlow(opts: {
   const inputBlock = `<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>`
   const closing = 'Output ONLY the JSON object now.'
   const command = hardenedReviewCommand(agentCommand)
-  const env = agentEnv(agentCommand)
+  const env = reviewAgentEnv(agentCommand)
 
   const lanes: { a: string | null; b: string | null } = { a: null, b: null }
   const updateLanes = () =>
@@ -611,7 +611,7 @@ export async function runDualFlow(opts: {
       judgeOutput = await runAgentJsonWithRetry(
         {
           command: hardenedReviewCommand(judgeCommand),
-          env: agentEnv(judgeCommand),
+          env: reviewAgentEnv(judgeCommand),
           prompt: [
             judgeInstructions(languageRule()),
             inputBlock,
