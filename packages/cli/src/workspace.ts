@@ -353,8 +353,16 @@ function installShutdownHandlers(deps: {
  * launch-repo agent no longer aborts boot; the project notices and falls back
  * instead (T1.4 review nit).
  */
-async function resolveAgentCommand(cwd: string, configured: string | undefined): Promise<string> {
-  const [detected] = await detectAgents(cwd)
+async function resolveAgentCommand(
+  cwd: string,
+  configured: string | undefined,
+  detectFn: typeof detectAgents = detectAgents,
+): Promise<string> {
+  // Detection only ever feeds the FALLBACK. Probing every agent binary to
+  // then discard the answer is pure boot latency, and it is the reason the
+  // boot touched the filesystem on a machine that has already been told which
+  // agent to drive.
+  const [detected] = configured ? [undefined] : await detectFn(cwd)
   const agentCommand = configured ?? (detected ? defaultCommand(detected) : undefined)
   if (!agentCommand) {
     throw new Error(t('agent.noneFound', { bins: AGENT_DEFS.map((d) => d.bin).join(', ') }))
@@ -374,6 +382,21 @@ async function resolveAgentCommand(cwd: string, configured: string | undefined):
 export type WorkspaceSeams = {
   createTaskManagerFn?: typeof createTaskManager
   startServerFn?: typeof startServer
+  /**
+   * The container-runtime probe. Injected so a boot test can be genuinely
+   * hermetic: the boot probes with `configured: 'auto'` REGARDLESS of the
+   * configured isolation (that is deliberate — the boot line must be able to
+   * say a cage is available even when this repo declines it), so a configured
+   * `isolation: 'policy'` does NOT keep the boot away from docker/podman.
+   * On a machine with no runtime the probe is the slowest thing in the boot.
+   */
+  probeIsolationFn?: typeof probeIsolation
+  /**
+   * The agent-binary probe. Injected for the same reason: `detectAgents` runs
+   * `<bin> --version` for EVERY known agent under one shared 8s window, and
+   * the boot used to pay for it even when the answer was thrown away.
+   */
+  detectAgentsFn?: typeof detectAgents
 }
 
 export async function workspace(
@@ -397,7 +420,11 @@ export async function workspace(
   // Fallback agent: CLI flag / global file / detected in cwd. The launch
   // repo's `.codesema/config.json` is NOT baked in — that would leak A's
   // TOFU-approved command onto every sibling (T1.4 review).
-  const agentCommand = await resolveAgentCommand(opts.cwd, opts.agent ?? global.agent)
+  const agentCommand = await resolveAgentCommand(
+    opts.cwd,
+    opts.agent ?? global.agent,
+    opts.detectAgentsFn ?? detectAgents,
+  )
   const launchAgent = resolveProjectAgentCommand(repoRoot, flags, agentCommand)
   // A custom (non claude/codex/gemini) agent command gets NO hardening flags:
   // full env, no read-only harness, no strict-mcp. The user chose it, but the
@@ -422,7 +449,7 @@ export async function workspace(
   // must therefore name the allowlist THAT repo's caged tasks would get.
   const launchDomains =
     launchConfig.isolationAllowedDomains ?? isolationDomainsFor(launchAgent.command)
-  const probe = await probeIsolation({
+  const probe = await (opts.probeIsolationFn ?? probeIsolation)({
     configured: 'auto',
     command: agentCommand,
     ignoreAgent: true,

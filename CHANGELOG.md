@@ -71,6 +71,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
   **Nothing is asked of a 0.12 workspace, and nothing starts behind your back.** A 0.12 store has no `queue.json` at all, and an absent file is read as exactly that — no queue — never as "rebuild one from whatever looks queued". So a `queued` record inherited from 0.12 is **not** started on the first 0.13 boot: it is marked `interrupted` (`interrupted_by_user`, "orphaned by an earlier session: nothing was queued to start it") and lands in the "Needs you" zone, where one click on Resume runs it. That is the same rule the rest of the workspace already follows — an agent that writes code and commits never starts unattended on a boot — applied to a status whose only proof of intent, the queue file, does not exist. From then on the file is the truth: 0.13 shutdowns leave their queued tasks `queued`, and the next boot resumes them. Records written by 0.12 — including `interrupted {reason:'shutdown'}` ones with an unanswered turn — stay resumable through `POST /api/tasks/:id/resume` with no schema change: no field is removed from `TaskRecord` and `version` stays `1`.
 
+### Fixed
+
+- **The workspace boot no longer probes what it was already told.** `codesema workspace` awaited `detectAgents` on every boot — `<bin> --version` for every known agent, under one shared 8s window — and then discarded the answer whenever an agent was already configured (`agent` in the config, or `--agent`). Detection now runs only when it is the actual source of the command, so a configured workspace boots without spawning a single agent binary. The container-runtime probe is unchanged in behaviour (the boot still probes with `configured: 'auto'`, deliberately: the boot line has to be able to say a cage is available even when this repo declines it) but is now injectable, which is what lets the boot test cover the two housekeeping passes without reaching docker or podman. On a machine with neither a runtime nor an agent binary — a CI runner, typically — the two probes together cost about a second per boot.
+
 ## [0.12.1] - unreleased
 
 ### Changed
