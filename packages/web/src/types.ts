@@ -305,6 +305,20 @@ export type TaskEventType =
    * member here — a rebase conflict that resolves itself).
    */
   | 'queue'
+  /**
+   * D7/DP9: the DOMAIN, not an incident — a fact about the forge issue a task
+   * is bound to, named like `checks`/`isolation`/`cost` name theirs. The
+   * specific cause travels in `data.name` (`bound`, `coverage_gap`, `edited`,
+   * `cosmetic`, `not_ticket`, `snapshot_unreadable`, `unreachable`). `edited`
+   * and `not_ticket` move the task to `waiting_for_you` in the SAME
+   * transition — never mid-turn, never a silent restart; `cosmetic` changes
+   * nothing. A forge that cannot be reached is `unreachable` on THIS type,
+   * carrying `reason_code: 'forge_unreachable'` (a field of its own): the
+   * task carries on unmodified on its frozen snapshot, so `error` would paint
+   * a non-event red — and would serve its English `data.message` verbatim
+   * into a French journal (DP9/DP15).
+   */
+  | 'issue'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
@@ -333,6 +347,48 @@ export type TaskReason = {
 
 /** How a task's agent turns are contained (mirrors the contract). */
 export type TaskIsolation = 'container' | 'policy'
+
+/** The two forges the CLI's client speaks (mirrors the contract). */
+export type IssueForge = 'github' | 'gitlab'
+
+/** Where a task's ticket lives, when it was created from a forge issue (D7). */
+export type TaskIssueRef = {
+  forge: IssueForge
+  /** The forge project the issue belongs to (`owner/repo`, or a GitLab path). */
+  project: string
+  iid: number
+  url: string
+}
+
+/**
+ * What the issue's body and criteria were worth at admission (D7), frozen.
+ * DP13: every hash is over the ticket contract's CANONICAL form, never the
+ * forge's raw markdown — a line-ending or CLI-formatting difference must not
+ * read as an edit.
+ */
+export type TaskIssueSnapshot = {
+  /** Primary divergence gate: canonical whole-body hash, tagged `sha256:t2:<hex>`. */
+  body_hash: string
+  /**
+   * Per-section canonical hash, so a divergence can name which section moved.
+   * OPTIONAL, exactly as in the contract (`packages/contract/src/tasks.ts`):
+   * `body_hash` alone is the real gate and this is a breakdown of it, so a
+   * snapshot without it is still usable — reconciliation simply cannot NAME
+   * the section that moved. The mirror carried it as REQUIRED after the
+   * contract made it optional, which is the silent drift the manual-mirror
+   * convention exists to prevent (round-4 review, mineur 3).
+   */
+  section_hashes?: {
+    context: string
+    goal: string
+    scope: string
+    out_of_scope: string
+  }
+  criteria: AcceptanceCriterion[]
+  /** Forensic only (`sha256:raw:<hex>`): never used to decide a status change. */
+  raw_body_hash?: string
+  taken_at: string
+}
 
 /** What the workspace config ASKED for (mirrors the CLI's IsolationMode). */
 export type IsolationMode = 'auto' | 'container' | 'policy'
@@ -414,6 +470,10 @@ export type TaskRecord = {
    * not every 'task' frame — absent means "not waiting", or "this frame does
    * not restate it". */
   queue_position?: number
+  /** The forge issue this task was created from, when it was (T2.4, D7). */
+  issue?: TaskIssueRef
+  /** What the issue's body and criteria were worth at launch (T2.4, D7). */
+  issue_snapshot?: TaskIssueSnapshot
   created_at: string
   updated_at: string
 }

@@ -3,6 +3,7 @@ import { TASK_REASON_DETAIL_MAX } from './reasons.js'
 import {
   ACCEPTANCE_CRITERIA_HEADING,
   acceptanceCriterionId,
+  canonicalTicketBody,
   CRITERION_VERDICT_EVIDENCE_MAX,
   EARS_RESPONSE,
   EARS_TRIGGER,
@@ -18,6 +19,7 @@ import {
   sanitizeCriterionVerdict,
   sanitizeCriterionVerdicts,
   sanitizeTicketBody,
+  TICKET_BODY_HASH_TAG,
   TICKET_CRITERIA_MAX,
   TICKET_CRITERIA_MIN,
   TICKET_CRITERION_TEXT_MAX,
@@ -1630,6 +1632,28 @@ describe('lintTicketBody — the bounds, on both sides of the line', () => {
     expect(lintKo(markdown({ context: over })).map((p) => p.code)).toEqual(['section_too_long'])
   })
 
+  // T2.4, round-2 adversarial review, mineur: `canonicalizeSection` (used to
+  // hash and diff a section) normalizes to NFC, but `problemsForSection` used
+  // to measure the bound on the RAW, pre-normalization text. A section merely
+  // re-served decomposed (NFD) by a forge or editor — nobody edited a single
+  // character of it — could grow past TICKET_SECTION_MAX purely from that
+  // composition and trip a false `section_too_long`. The bound must agree
+  // with the same NFC form the hash agrees on.
+  test('a section within the bound composed (NFC) is accepted even served decomposed (NFD), whose raw code points alone would exceed the bound', () => {
+    const nfd = 'é' // 'é' decomposed: 2 raw code points, 1 in NFC
+    const exact = nfd.repeat(TICKET_SECTION_MAX)
+    expect([...exact]).toHaveLength(TICKET_SECTION_MAX * 2)
+    expect([...exact.normalize('NFC')]).toHaveLength(TICKET_SECTION_MAX)
+    expect(lintOk(markdown({ context: exact }))).toBeTruthy()
+  })
+
+  test('a section still over the bound after NFC composition is refused, not merely inflated by decomposition', () => {
+    const nfd = 'é'
+    const over = nfd.repeat(TICKET_SECTION_MAX + 1)
+    expect([...over.normalize('NFC')]).toHaveLength(TICKET_SECTION_MAX + 1)
+    expect(lintKo(markdown({ context: over })).map((p) => p.code)).toEqual(['section_too_long'])
+  })
+
   test('a criterion exactly at the bound is accepted, one code point over is refused', () => {
     const head = `${EARS_TRIGGER} it is exactly at the bound ${EARS_RESPONSE} `
     const exact = head + 'y'.repeat(TICKET_CRITERION_TEXT_MAX - head.length)
@@ -2683,5 +2707,184 @@ describe('ticketBodySchema', () => {
       expect(new Set(criteria.map((c) => c.id)).size).toBe(criteria.length)
       expect(schemaErrors(sanitizeTicketBody(raw))).toEqual([])
     }
+  })
+})
+
+// --- canonicalTicketBody (T2.4/DP13) ----------------------------------------
+
+describe('canonicalTicketBody', () => {
+  test('the tag is frozen: a hash consumer pins this exact string', () => {
+    // Bumped t1 -> t2 for T2.4 round 2 (criteria sorting + section
+    // normalization changed the serialization itself) — still unpublished,
+    // per the tag's own doctrine of bumping only when the wire format moves.
+    expect(TICKET_BODY_HASH_TAG).toBe('sha256:t2')
+  })
+
+  test('is deterministic: the same body serializes identically every time', () => {
+    const body = lintOk(markdown())
+    expect(canonicalTicketBody(body)).toBe(canonicalTicketBody(structuredClone(body)))
+  })
+
+  test('a golden fixture pins the exact wire format', () => {
+    const body: TicketBody = {
+      version: 1,
+      context: 'ab',
+      goal: 'c',
+      scope: 's',
+      acceptance_criteria: [{ id: 'ac-000000000001', text: 't' }],
+      out_of_scope: 'oos',
+    }
+    // netstring(version)='1:1', netstring(context)='2:ab', netstring(goal)='1:c',
+    // netstring(scope)='1:s', netstring(count)='1:1', netstring(id)='15:ac-000000000001'
+    // ("ac-" + 12 hex chars = 15 bytes), netstring(text)='1:t', netstring(out_of_scope)='3:oos'.
+    expect(canonicalTicketBody(body)).toBe('1:12:ab1:c1:s1:115:ac-0000000000011:t3:oos')
+  })
+
+  test('every field changes the serialization: no field is silently ignored', () => {
+    const base = lintOk(markdown())
+    const baseline = canonicalTicketBody(base)
+    const variants: TicketBody[] = [
+      { ...base, context: `${base.context} more` },
+      { ...base, goal: `${base.goal} more` },
+      { ...base, scope: `${base.scope} more` },
+      { ...base, out_of_scope: `${base.out_of_scope} more` },
+      {
+        ...base,
+        acceptance_criteria: [
+          ...base.acceptance_criteria,
+          { id: acceptanceCriterionId('a brand new criterion'), text: 'a brand new criterion' },
+        ],
+      },
+      {
+        ...base,
+        acceptance_criteria: base.acceptance_criteria.map((c, i) =>
+          i === 0 ? { id: acceptanceCriterionId('reworded'), text: 'reworded' } : c,
+        ),
+      },
+    ]
+    for (const variant of variants) {
+      expect(canonicalTicketBody(variant)).not.toBe(baseline)
+    }
+  })
+
+  test('length-prefixing prevents a field-boundary collision a bare join would allow', () => {
+    // A naive `context + goal` concatenation would make "ab"+"c" collide with
+    // "a"+"bc" — exactly the failure netstring-style prefixing rules out.
+    const left: TicketBody = {
+      version: 1,
+      context: 'ab',
+      goal: 'c',
+      scope: 's',
+      acceptance_criteria: [],
+      out_of_scope: 'x',
+    }
+    const right: TicketBody = { ...left, context: 'a', goal: 'bc' }
+    expect(canonicalTicketBody(left)).not.toBe(canonicalTicketBody(right))
+  })
+
+  test('length-prefixing prevents a criterion-boundary collision the same way', () => {
+    // Two criteria ["ab","c"] must not serialize the same as one criterion
+    // ["a"] followed by a differently-split remainder — the per-criterion
+    // netstring pair (id, text) rules that out too.
+    const withTwo: TicketBody = {
+      version: 1,
+      context: 'x',
+      goal: 'x',
+      scope: 'x',
+      acceptance_criteria: [
+        { id: 'ac-000000000001', text: 'ab' },
+        { id: 'ac-000000000002', text: 'c' },
+      ],
+      out_of_scope: 'x',
+    }
+    const withOneLonger: TicketBody = {
+      ...withTwo,
+      acceptance_criteria: [{ id: 'ac-000000000001', text: 'abc' }],
+    }
+    expect(canonicalTicketBody(withTwo)).not.toBe(canonicalTicketBody(withOneLonger))
+  })
+
+  // Adversarial review, majeur 1: an earlier revision serialized criteria in
+  // LIST order, which silently reimported the positional dependency this
+  // module's own `acceptanceCriterionId` freezes out ("reordering the list
+  // renames nothing"). Sorted-by-id fixes it — ids are unique post-dedup, so
+  // the sort is total and stable.
+  test('reordering the criteria list changes nothing: an id is derived from text, never from position', () => {
+    const ordered: TicketBody = {
+      version: 1,
+      context: 'x',
+      goal: 'x',
+      scope: 'x',
+      acceptance_criteria: [
+        { id: acceptanceCriterionId('first'), text: 'first' },
+        { id: acceptanceCriterionId('second'), text: 'second' },
+        { id: acceptanceCriterionId('third'), text: 'third' },
+      ],
+      out_of_scope: 'x',
+    }
+    const shuffled: TicketBody = {
+      ...ordered,
+      acceptance_criteria: [
+        ordered.acceptance_criteria[2]!,
+        ordered.acceptance_criteria[0]!,
+        ordered.acceptance_criteria[1]!,
+      ],
+    }
+    expect(canonicalTicketBody(shuffled)).toBe(canonicalTicketBody(ordered))
+  })
+
+  // Adversarial review, majeur 2: without `canonicalizeSection`, a section
+  // typed decomposed (NFD, common out of macOS input methods) and re-served
+  // by the forge composed (NFC) — or vice-versa — moved the hash on no real
+  // edit. `.normalize('NFC')` is applied to every prose section before it is
+  // hashed, so both forms of "the same word" serialize identically.
+  test('NFC and NFD forms of the same prose section produce the identical canonical string', () => {
+    const nfc: TicketBody = {
+      version: 1,
+      context: 'Café résumé',
+      goal: 'x',
+      scope: 'x',
+      acceptance_criteria: [],
+      out_of_scope: 'x',
+    }
+    const nfd: TicketBody = { ...nfc, context: nfc.context.normalize('NFD') }
+    // Sanity: the two raw strings really do differ byte for byte.
+    expect(nfc.context).not.toBe(nfd.context)
+    expect(canonicalTicketBody(nfc)).toBe(canonicalTicketBody(nfd))
+  })
+
+  // Adversarial review, majeur 2: two trailing spaces are markdown's hard
+  // line break — gh/glab do not render them identically, and a forge editor
+  // silently trimming them is a real, observed false-positive source. Only
+  // trailing whitespace is stripped (per line): the sentence itself is
+  // untouched, so this is not a general whitespace-collapse.
+  test('trailing spaces/tabs on a section line do not move the canonical hash', () => {
+    const clean: TicketBody = {
+      version: 1,
+      context: 'first line\nsecond line',
+      goal: 'x',
+      scope: 'x',
+      acceptance_criteria: [],
+      out_of_scope: 'x',
+    }
+    const withTrailingWhitespace: TicketBody = {
+      ...clean,
+      context: 'first line  \nsecond line\t',
+    }
+    expect(clean.context).not.toBe(withTrailingWhitespace.context)
+    expect(canonicalTicketBody(clean)).toBe(canonicalTicketBody(withTrailingWhitespace))
+  })
+
+  test('leading whitespace and interior whitespace are NOT touched: only line-trailing runs are', () => {
+    const a: TicketBody = {
+      version: 1,
+      context: '  indented line\nword  word',
+      goal: 'x',
+      scope: 'x',
+      acceptance_criteria: [],
+      out_of_scope: 'x',
+    }
+    const b: TicketBody = { ...a, context: 'indented line\nword word' }
+    expect(canonicalTicketBody(a)).not.toBe(canonicalTicketBody(b))
   })
 })

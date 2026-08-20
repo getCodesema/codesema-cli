@@ -9,6 +9,11 @@ import {
   type ReasonCode,
   type TaskReason,
 } from './reasons.js'
+import {
+  sanitizeAcceptanceCriteria,
+  TICKET_BODY_HASH_TAG,
+  type AcceptanceCriterion,
+} from './ticket.js'
 
 export type TaskStatus =
   | 'queued'
@@ -143,6 +148,27 @@ export type TaskEventType =
    * else touches is a rebase conflict that resolves itself.
    */
   | 'queue'
+  /**
+   * D7/DP9: the DOMAIN, not an incident — a fact about the forge issue this
+   * task is bound to, named the same way `checks`/`isolation`/`cost` name
+   * theirs. The specific cause travels in `data.name` (`bound` and
+   * `coverage_gap` at admission; `edited`, `cosmetic`, `not_ticket`,
+   * `snapshot_unreadable` or `unreachable` at reconciliation — see
+   * task-issue.ts), exactly like `cost`'s `data.name` distinguishes its nine
+   * causes. `edited` and `not_ticket` move the task to `waiting_for_you` in
+   * the SAME transition — never mid-turn, never a silent restart; `cosmetic`
+   * changes nothing.
+   *
+   * Most of these carry no `reason_code`: none of D2's ten codes names "the
+   * ticket moved under the agent", and news about the WORK's source of truth
+   * is not itself a degradation of codesema's machinery. `unreachable` is the
+   * one that IS, and it carries `forge_unreachable` — on THIS type, because
+   * `reason_code` is a field of its own and the type still has to name the
+   * domain honestly (DP15). Routing it to `error` instead would paint red a
+   * task that carries on unmodified on its frozen snapshot, which is exactly
+   * the cry-wolf DP9 refuses.
+   */
+  | 'issue'
 
 /**
  * How a task's agent turns are contained.
@@ -157,6 +183,89 @@ export type TaskEventType =
  * its turns did not actually run under.
  */
 export type TaskIsolation = 'container' | 'policy'
+
+/** The two forges T2.1's client speaks. */
+export type IssueForge = 'github' | 'gitlab'
+
+/**
+ * WHERE a task's ticket lives, when it was created from a forge issue (D7:
+ * "the forge is the source of truth"). Distinct from `issue_snapshot`
+ * deliberately: this says WHERE the truth is, the snapshot says what it was
+ * WORTH at launch. `iid` is the forge's own issue number (an integer, never a
+ * string) and `url` is carried verbatim so a client never has to reconstruct
+ * one from `forge`/`project`/`iid`.
+ */
+export type TaskIssueRef = {
+  forge: IssueForge
+  /** The forge project the issue belongs to (`owner/repo`, or a GitLab path). */
+  project: string
+  iid: number
+  url: string
+}
+
+/**
+ * What the issue's body was worth AT ADMISSION: its hash (so a later read can
+ * tell whether it moved) and the acceptance criteria extracted from it by
+ * T2.3's lint, FROZEN at that moment. Per D7/design decision 1, this snapshot
+ * — not the live issue — is what the rest of the task's cycle is judged
+ * against; a later edit is an EVENT (`issue` with `data.name: 'edited'`),
+ * never a silent swap of what the criteria say.
+ *
+ * DP13 (panel arbitrage on this ticket's own open question): every hash here
+ * is over the ticket contract's CANONICAL form (T2.3's `TicketBody`, via
+ * `canonicalTicketBody`, ticket.ts) — never the forge's raw markdown. A forge
+ * that re-serves the very same meaning with different line endings, or a CLI
+ * version bump that reformats whitespace, must not read as an edit; an actual
+ * change to a section or a criterion still does, because the canonical form
+ * captures exactly what the lint itself reads and nothing about its markup.
+ */
+export type TaskIssueSnapshot = {
+  /**
+   * The PRIMARY divergence gate: `<TICKET_BODY_HASH_TAG>:<sha256 hex>` of
+   * `canonicalTicketBody(body)` (ticket.ts) taken over the WHOLE linted body —
+   * one string compare answers "did anything canonical move". The tag is
+   * always `TICKET_BODY_HASH_TAG` ('sha256:t2' today): it names the hashing
+   * SCHEME, so a future change to the serialization changes the tag instead
+   * of quietly making every bound task look edited on the same boot.
+   */
+  body_hash: string
+  /**
+   * Per-section canonical hash (same tag as `body_hash`), so a divergence can
+   * say WHICH of the four prose sections moved without storing their text a
+   * second time on the record. Consulted only when `body_hash` differs —
+   * cheap in the common (unchanged) case.
+   *
+   * OPTIONAL (adversarial review, mineur): `body_hash` alone is the whole
+   * spec's real requirement — this is a breakdown of it, not a second gate —
+   * so a producer that writes only `body_hash` still yields a usable
+   * snapshot; reconciliation just cannot NAME which section moved and says
+   * so rather than pretending nothing did. Its absence must never drop the
+   * WHOLE snapshot (an earlier revision of this field did exactly that,
+   * silently retiring reconciliation for good on any hand-written or
+   * future producer that followed the spec delta to the letter, which never
+   * documented this field as required).
+   */
+  section_hashes?: {
+    context: string
+    goal: string
+    scope: string
+    out_of_scope: string
+  }
+  criteria: AcceptanceCriterion[]
+  /**
+   * FORENSIC ONLY, never compared to decide anything a human sees as an
+   * alert: `sha256:raw:<hex>` of the exact, un-normalized body the forge
+   * returned at admission. Its one job is to let reconciliation tell "the raw
+   * markdown moved but the canonical meaning did not" (a neutral, no-status-
+   * change journal line) from "nothing moved at all" (silence) — the
+   * difference `body_hash` alone cannot make, since it never saw the raw
+   * bytes to begin with. OPTIONAL: absent on a record whose snapshot predates
+   * this field, which simply loses the cosmetic-vs-real distinction, never
+   * the primary one.
+   */
+  raw_body_hash?: string
+  taken_at: string
+}
 
 /** Flat, bounded payload: summaries only, never a full file body. */
 export type TaskEventData = Record<string, string | number | boolean | null>
@@ -331,6 +440,25 @@ export type TaskRecord = {
    * sanitizeTaskRecord deliberately drops any value found there).
    */
   queue_position?: number
+  /**
+   * The forge issue this task was created from, when it was (T2.4, D7).
+   *
+   * OPTIONAL, and absence is the honest default: a record written by 0.12 (or
+   * any task created from a bare `title`+`prompt`, the path T2.5 leaves
+   * available) names no ticket, which is exactly what "no `issue`" already
+   * meant before this field existed — nothing about that reading changes.
+   * WRITE-ONCE: fixed at creation like `isolation`, never re-decided by a
+   * later turn.
+   */
+  issue?: TaskIssueRef
+  /**
+   * What the issue's body and criteria were worth when this task launched.
+   * OPTIONAL for the same reason as `issue` — always present together, never
+   * one without the other, though the sanitizer tolerates a record that
+   * violates that pairing (see `sanitizeTaskRecord`) rather than discarding
+   * the whole task over one malformed field.
+   */
+  issue_snapshot?: TaskIssueSnapshot
   created_at: string
   updated_at: string
 }
@@ -348,6 +476,10 @@ export const TASK_TURNS_MAX = 500
 export const TASK_EVENT_DATA_KEYS_MAX = 16
 export const TASK_EVENT_DATA_KEY_MAX = 64
 export const TASK_EVENT_DATA_STRING_MAX = 2_000
+/** Bound of `TaskIssueRef.project` (`owner/repo`, or a GitLab namespaced path). */
+export const TASK_ISSUE_PROJECT_MAX = 200
+/** Bound of `TaskIssueRef.url`: a forge issue URL, never long in practice. */
+export const TASK_ISSUE_URL_MAX = 500
 
 const TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'queued',
@@ -379,9 +511,11 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'branch',
   'resource',
   'queue',
+  'issue',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
+const ISSUE_FORGES: ReadonlySet<IssueForge> = new Set(['github', 'gitlab'])
 
 /**
  * A baseline (and the remembered branch tip beside it) is a git object name and
@@ -399,6 +533,126 @@ function sanitizeBaselineSha(raw: unknown): string | null {
   }
   const sha = raw.trim().toLowerCase()
   return BASELINE_SHA_RE.test(sha) ? sha : null
+}
+
+/**
+ * `<TICKET_BODY_HASH_TAG>:<64 lowercase hex chars>` and nothing else, for
+ * `body_hash` and each of `section_hashes`'s four fields. Built from the
+ * SAME exported tag `canonicalTicketBody`'s producers use — never a second
+ * copy of the literal `'sha256:t1'` — so the sanitizer can never silently
+ * accept a hash tagged for a serialization scheme this build does not (or no
+ * longer) produce. Whitelist, not truncate, like `BASELINE_SHA_RE`: half a
+ * hash is not a shorter hash.
+ */
+const ISSUE_BODY_HASH_RE = new RegExp(`^${TICKET_BODY_HASH_TAG}:[0-9a-f]{64}$`)
+
+/**
+ * Forensic-only digest of the RAW forge body (see `TaskIssueSnapshot.raw_body_hash`):
+ * `sha256:raw:<64 lowercase hex chars>`. A distinct tag from `ISSUE_BODY_HASH_RE`
+ * on purpose — the two are never comparable to each other, only a raw hash to
+ * an earlier raw hash, and mixing the two tags up would silently compare
+ * apples to a canonical orange.
+ */
+const RAW_BODY_HASH_RE = /^sha256:raw:[0-9a-f]{64}$/
+
+/**
+ * An issue URL is whatever `new URL()` accepts as http(s) — both forges hand
+ * back a plain web URL, never anything else. Rejecting a scheme here rather
+ * than in the caller's regex keeps one definition of "a URL" for the whole
+ * module (the `nullableStr`-shaped fields below have no such notion).
+ */
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whitelist and truncate, never throw: an `issue` of the wrong shape, an
+ * unknown `forge`, a non-integer or non-positive `iid`, or an unusable `url`
+ * all drop the WHOLE field — a partially trusted issue reference (e.g. an
+ * `iid` nobody can resolve) is worse than none, since every consumer of
+ * `TaskRecord.issue` treats its mere presence as "this task has a ticket".
+ */
+function sanitizeIssueRef(raw: unknown): TaskIssueRef | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  const forge = ISSUE_FORGES.has(r.forge as IssueForge) ? (r.forge as IssueForge) : null
+  const project = str(r.project, TASK_ISSUE_PROJECT_MAX)
+  // A decimal integer, and ONLY a number: a numeric-looking string ("12",
+  // "0x1f") is exactly the shape decision D7's validation refuses at
+  // admission (see task-issue.ts), so the sanitizer must not tolerate on
+  // read-back what creation never would have accepted.
+  const iid = Number.isInteger(r.iid) && (r.iid as number) > 0 ? (r.iid as number) : null
+  const url = str(r.url, TASK_ISSUE_URL_MAX)
+  if (!forge || !project || iid === null || !url || !isHttpUrl(url)) {
+    return null
+  }
+  return { forge, project, iid, url }
+}
+
+const SECTION_HASH_KEYS = ['context', 'goal', 'scope', 'out_of_scope'] as const
+
+/**
+ * `section_hashes`'s own field-by-field validation: usable only if the shape
+ * is an object AND all four values are correctly tagged (a partial breakdown
+ * would misname a section for the three it lacks, worse than naming none).
+ * Returns `undefined` — never drops the surrounding snapshot — on anything
+ * else: `section_hashes` is a breakdown of `body_hash`, not a second gate
+ * (adversarial review, mineur; see `TaskIssueSnapshot.section_hashes`'s doc).
+ */
+function sanitizeSectionHashes(raw: unknown): TaskIssueSnapshot['section_hashes'] | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
+  const sh = raw as Record<string, unknown>
+  const section_hashes: Record<string, string> = {}
+  for (const key of SECTION_HASH_KEYS) {
+    const value = typeof sh[key] === 'string' ? sh[key].trim().toLowerCase() : ''
+    if (!ISSUE_BODY_HASH_RE.test(value)) {
+      return undefined
+    }
+    section_hashes[key] = value
+  }
+  return section_hashes as TaskIssueSnapshot['section_hashes']
+}
+
+/**
+ * Whitelist and truncate, never throw: a non-object or a `body_hash` that is
+ * not a correctly-tagged sha256 digest drops the WHOLE field — `body_hash`
+ * is the one gate this snapshot cannot function without. Every other field —
+ * `section_hashes`, `criteria`, `raw_body_hash`, `taken_at` — degrades FIELD
+ * BY FIELD once the object shape itself is usable, same doctrine as
+ * `TaskChecks.started_at` (`isoOrNow`) and `AcceptanceCriterion`'s own
+ * sanitizer (`sanitizeAcceptanceCriteria`, which already truncates to
+ * `TICKET_CRITERIA_MAX` and drops unreadable entries): a snapshot whose
+ * section breakdown is absent, whose criteria list is oversized or partly
+ * unreadable, or whose forensic raw digest is missing or malformed, is still
+ * a usable snapshot — `body_hash` alone keeps the primary edit gate working.
+ */
+function sanitizeIssueSnapshot(raw: unknown): TaskIssueSnapshot | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  const bodyHash = typeof r.body_hash === 'string' ? r.body_hash.trim().toLowerCase() : ''
+  if (!ISSUE_BODY_HASH_RE.test(bodyHash)) {
+    return null
+  }
+  const section_hashes = sanitizeSectionHashes(r.section_hashes)
+  const rawHash = typeof r.raw_body_hash === 'string' ? r.raw_body_hash.trim().toLowerCase() : ''
+  return {
+    body_hash: bodyHash,
+    ...(section_hashes ? { section_hashes } : {}),
+    criteria: sanitizeAcceptanceCriteria(r.criteria),
+    ...(RAW_BODY_HASH_RE.test(rawHash) ? { raw_body_hash: rawHash } : {}),
+    taken_at: isoOrNow(r.taken_at),
+  }
 }
 
 /** The id names a directory under .codesema/tasks/: nothing else is usable. */
@@ -553,6 +807,8 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     totalPair === null || costTurns === null ? null : { ...totalPair, cost_turns: costTurns }
   const baselineSha = sanitizeBaselineSha(r.baseline_sha)
   const headSha = sanitizeBaselineSha(r.head_sha)
+  const issue = sanitizeIssueRef(r.issue)
+  const issueSnapshot = sanitizeIssueSnapshot(r.issue_snapshot)
   return {
     version: 1,
     id,
@@ -609,6 +865,8 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // project's queue at read time, never persisted, so a value sitting in a
     // task.json can only be stale (or hand-written) and is dropped rather
     // than trusted.
+    ...(issue ? { issue } : {}),
+    ...(issueSnapshot ? { issue_snapshot: issueSnapshot } : {}),
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

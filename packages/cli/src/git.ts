@@ -110,6 +110,42 @@ export function tryExecAsync(cmd: string, args: string[], cwd: string): Promise<
   })
 }
 
+/**
+ * Non-blocking sibling of `tryGit` (T2.4, round-2 adversarial review, majeur
+ * 5): a plain git read (`remote get-url origin`, say) has no timeout at all
+ * on the synchronous path and, worse, `execFileSync` blocks the WHOLE
+ * process for its duration — fine for a single call, but fatal to a
+ * concurrency-limited pool that means to run several of these at once (each
+ * sync call would serialize the others back into a straight line, and a repo
+ * whose working tree sits on a dead network mount would freeze the process
+ * outright, event loop included). Bounded by the same `PROBE_TIMEOUT_MS`
+ * `tryExecAsync` already uses, and same semantics as `tryGit`: `null` on
+ * anything that is not a clean, timely read — missing binary, non-zero exit,
+ * or the bound exceeded. argv only, never a shell string.
+ */
+export function tryGitAsync(
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      args,
+      {
+        cwd,
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+        env: subprocessEnv(),
+        ...(signal ? { signal } : {}),
+      },
+      (err, stdout) => {
+        resolve(err ? null : stdout.trimEnd())
+      },
+    )
+  })
+}
+
 export function repoRoot(cwd: string): string {
   return git(['rev-parse', '--show-toplevel'], cwd)
 }

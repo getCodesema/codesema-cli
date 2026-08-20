@@ -386,30 +386,156 @@ describe('eventSummary', () => {
     // No data.name at all (an older journal line): same honest fallback.
     expect(eventSummary(event({ type: 'queue', data: {} }))).toBe('Waiting')
   })
+
+  // Round-4 adversarial review, MAJEUR 1 ("the announce half is untested, and
+  // the translated label is structurally unreachable"): ALL SIX 'issue'
+  // constructors in task-issue.ts pose `data.message`, an English sentence
+  // built server-side. While SUMMARY_KEYS.issue probed ['message','summary'],
+  // that sentence won every time, the `?? label` fallback was dead code, and
+  // the French journal showed six English sentences. The summary must come
+  // from `data.name`, and NEVER from the wire's raw message.
+  describe("'issue' (T2.4)", () => {
+    const serverMessage =
+      'task created from a forge issue: its ticket body and acceptance criteria are frozen in issue_snapshot'
+
+    test('bound renders its own translated text, never the raw server message', () => {
+      const summary = eventSummary(
+        event({ type: 'issue', data: { name: 'bound', message: serverMessage } }),
+      )
+      expect(summary).toBe('Conversation created from a forge ticket')
+      expect(summary).not.toContain(serverMessage)
+      expect(summary).not.toContain('issue_snapshot')
+    })
+
+    test('each of the seven data.names gets its OWN text, never the shared label', () => {
+      const summaries = (
+        [
+          'bound',
+          'coverage_gap',
+          'cosmetic',
+          'edited',
+          'not_ticket',
+          'snapshot_unreadable',
+          // Round-5 review, MAJEUR 1: this one used to travel on
+          // `type: 'error'`, whose SUMMARY_KEYS probe `data.message` — so the
+          // French journal read the server's English sentence, on every
+          // ticketed task, at every boot without gh/glab.
+          'unreachable',
+        ] as const
+      ).map((name) => eventSummary(event({ type: 'issue', data: { name, message: 'ENGLISH' } })))
+      // Seven distinct lines: routing them all to the same key (or to the
+      // plain 'Ticket' label) collapses this set — and pointing any ONE of
+      // them at a sibling's key collapses it by one.
+      expect(new Set(summaries).size).toBe(7)
+      for (const summary of summaries) {
+        expect(summary).not.toBe('Ticket')
+        expect(summary).not.toContain('ENGLISH')
+      }
+    })
+
+    // DP13 requires the edited line to carry "the criteria diff by stable id".
+    // Swapping the two fields — in reconcileIssueSnapshot or here — must not
+    // be able to pass: the ADDED ids and the REMOVED ids are a non-empty,
+    // DISJOINT pair, and each has to land on its own side of the sentence.
+    test('edited names which sections moved and which criteria were added vs removed', () => {
+      const summary = eventSummary(
+        event({
+          type: 'issue',
+          data: {
+            name: 'edited',
+            sections: 'goal,out_of_scope',
+            criteria_added: 'AC-4,AC-5',
+            criteria_removed: 'AC-1',
+            message: 'ENGLISH',
+          },
+        }),
+      )
+      expect(summary).toBe(
+        'Ticket edited on the forge — sections: goal, out of scope; criteria added: AC-4, AC-5; removed: AC-1',
+      )
+      // Belt and braces on the swap specifically: the added ids come BEFORE
+      // the removed one, and neither list leaks into the other's slot.
+      expect(summary.indexOf('AC-4')).toBeLessThan(summary.indexOf('AC-1'))
+      expect(summary).not.toContain('added: AC-1')
+      expect(summary).not.toContain('removed: AC-4')
+    })
+
+    test('edited says "none" per empty axis, and never "none" for an unknown breakdown', () => {
+      expect(
+        eventSummary(
+          event({
+            type: 'issue',
+            data: { name: 'edited', sections: 'context', criteria_added: '', criteria_removed: '' },
+          }),
+        ),
+      ).toBe('Ticket edited on the forge — sections: context; criteria added: none; removed: none')
+      // A snapshot with no per-section breakdown: the body hash PROVED
+      // something moved, so "none" here would state the opposite of the truth.
+      const unknown = eventSummary(
+        event({
+          type: 'issue',
+          data: {
+            name: 'edited',
+            sections: '',
+            sections_unknown: true,
+            criteria_added: '',
+            criteria_removed: '',
+          },
+        }),
+      )
+      expect(unknown).toContain('unknown (this snapshot has no per-section breakdown)')
+      expect(unknown).not.toContain('sections: none')
+    })
+
+    test('an unrecognized data.name degrades to the plain label, not a raw token', () => {
+      expect(
+        eventSummary(event({ type: 'issue', data: { name: 'something_future', message: 'x' } })),
+      ).toBe('Ticket')
+      expect(eventSummary(event({ type: 'issue', data: {} }))).toBe('Ticket')
+    })
+  })
 })
 
 describe('eventTone', () => {
   test('semaphore: commits and ships go green, errors go red', () => {
-    expect(eventTone('commit')).toBe('go')
-    expect(eventTone('shipped')).toBe('go')
-    expect(eventTone('error')).toBe('stop')
+    expect(eventTone(event({ type: 'commit' }))).toBe('go')
+    expect(eventTone(event({ type: 'shipped' }))).toBe('go')
+    expect(eventTone(event({ type: 'error' }))).toBe('stop')
   })
 
   test('turns and reviews in flight are amber, tools neutral', () => {
-    expect(eventTone('turn_started')).toBe('check')
-    expect(eventTone('review_started')).toBe('check')
-    expect(eventTone('tool_use')).toBe('idle')
+    expect(eventTone(event({ type: 'turn_started' }))).toBe('check')
+    expect(eventTone(event({ type: 'review_started' }))).toBe('check')
+    expect(eventTone(event({ type: 'tool_use' }))).toBe('idle')
+  })
+
+  test("'issue' events read their tone from data.name (DP9): edited/not_ticket are amber, the rest neutral", () => {
+    expect(eventTone(event({ type: 'issue', data: { name: 'edited' } }))).toBe('check')
+    expect(eventTone(event({ type: 'issue', data: { name: 'not_ticket' } }))).toBe('check')
+    // A snapshot that cannot be read back retires edit detection for this
+    // task until a human re-binds it: amber, like the other two.
+    expect(eventTone(event({ type: 'issue', data: { name: 'snapshot_unreadable' } }))).toBe('check')
+    // A forge this session could not read: amber, because the comparison did
+    // not conclude — and above all NEVER 'stop', which is where it used to
+    // land by travelling on `type: 'error'` while the task carried on
+    // unmodified on its snapshot (DP9's cry-wolf).
+    expect(eventTone(event({ type: 'issue', data: { name: 'unreachable' } }))).toBe('check')
+    expect(eventTone(event({ type: 'issue', data: { name: 'unreachable' } }))).not.toBe('stop')
+    expect(eventTone(event({ type: 'issue', data: { name: 'cosmetic' } }))).toBe('idle')
+    expect(eventTone(event({ type: 'issue', data: { name: 'bound' } }))).toBe('idle')
+    // An unknown name (a newer server) defaults to the routine tone, never amber.
+    expect(eventTone(event({ type: 'issue', data: { name: 'something_future' } }))).toBe('idle')
   })
 
   test('branch facts are neutral: none of them is a failure of the work', () => {
-    expect(eventTone('branch')).toBe('idle')
+    expect(eventTone(event({ type: 'branch' }))).toBe('idle')
   })
 
   // T1.9 review round 3, MAJEUR 5: a released/leaked HOME volume never paints
   // the journal red (DP9) — the boot sweep is the backstop, not a task
   // failure. Round 3's audit mutated this to 'error' and found 0 red tests.
   test('resource stays neutral even on a release failure (DP9: the boot sweep is the backstop, not a task failure)', () => {
-    expect(eventTone('resource')).toBe('idle')
+    expect(eventTone(event({ type: 'resource' }))).toBe('idle')
   })
 
   // Adversarial review round 3, MAJEUR 4 mutation table: an ordinary wait for
@@ -418,7 +544,7 @@ describe('eventTone', () => {
   // one. Explicit so the mutation `EVENT_TONE.queue: 'idle' -> 'stop'` (which
   // 2065 tests previously let through unnoticed) turns this test red.
   test('queue is a neutral wait, never a degradation', () => {
-    expect(eventTone('queue')).toBe('idle')
+    expect(eventTone(event({ type: 'queue' }))).toBe('idle')
   })
 })
 

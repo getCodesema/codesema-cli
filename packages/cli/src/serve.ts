@@ -532,12 +532,22 @@ async function handleTaskCreate(
     base?: unknown
     branch?: unknown
     target?: unknown
+    issue?: unknown
   } | null
+  // T2.4: `issue` replaces `title`+`prompt` (which then become optional) — an
+  // object is enough to route the request to the manager, which owns the
+  // real validation (forge, project, iid, url) and its refusals.
+  const issue =
+    b?.issue && typeof b.issue === 'object' && !Array.isArray(b.issue)
+      ? (b.issue as Record<string, unknown>)
+      : null
   if (
     typeof b?.project_id !== 'string' ||
     !b.project_id.trim() ||
-    typeof b.title !== 'string' ||
-    typeof b.prompt !== 'string' ||
+    (issue === null && (typeof b.title !== 'string' || typeof b.prompt !== 'string')) ||
+    (b.title !== undefined && typeof b.title !== 'string') ||
+    (b.prompt !== undefined && typeof b.prompt !== 'string') ||
+    (b.issue !== undefined && issue === null) ||
     (b.autoShip !== undefined && typeof b.autoShip !== 'boolean') ||
     (b.base !== undefined && typeof b.base !== 'string') ||
     (b.branch !== undefined && typeof b.branch !== 'string') ||
@@ -548,14 +558,25 @@ async function handleTaskCreate(
   // base/branch/target are only type-checked here: the manager owns the real
   // validation (trim, length bound, option-lookalike refusal, branch
   // existence → 400, base/branch exclusivity → 400, active-conversation and
-  // checked-out-elsewhere guards → 409).
-  const created = tasks.manager.create(b.project_id.trim(), {
-    title: b.title,
-    prompt: b.prompt,
+  // checked-out-elsewhere guards → 409). Same for `issue`: forge/project/iid/url
+  // are handed through as `unknown` and validated by task-issue.ts.
+  const created = await tasks.manager.create(b.project_id.trim(), {
+    ...(typeof b.title === 'string' ? { title: b.title } : {}),
+    ...(typeof b.prompt === 'string' ? { prompt: b.prompt } : {}),
     autoShip: b.autoShip ?? false,
     ...(typeof b.base === 'string' ? { base: b.base } : {}),
     ...(typeof b.branch === 'string' ? { branch: b.branch } : {}),
     ...(typeof b.target === 'string' ? { target: b.target } : {}),
+    ...(issue
+      ? {
+          issue: {
+            forge: issue.forge,
+            project: issue.project,
+            iid: issue.iid,
+            url: issue.url,
+          },
+        }
+      : {}),
   })
   if (!created.ok) {
     // existing_task_id rides along on the uniqueness 409: the web client

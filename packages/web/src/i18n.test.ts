@@ -32,6 +32,65 @@ describe('the machine-cap keys are actually translated, not copied', () => {
   })
 })
 
+// A translation that silently drops (or invents) a placeholder renders an
+// incomplete sentence at runtime and nothing else catches it: the `fr`
+// annotation only enforces that the KEYS match, never that the two strings
+// interpolate the same things. Duplicates are ignored on purpose — a plural
+// form ("{n} commit | {n} commits") legitimately repeats its placeholder in
+// one language and not the other.
+describe('placeholder parity', () => {
+  const placeholders = (value: string): string[] =>
+    [...new Set([...value.matchAll(/\{(\w+)\}/g)].map((match) => match[1] ?? ''))].toSorted()
+
+  test('every catalog interpolates exactly what the English one does', () => {
+    const en: Record<string, string> = catalogs.en ?? {}
+    for (const [locale, catalog] of Object.entries(catalogs)) {
+      for (const [key, value] of Object.entries(en)) {
+        const translated = (catalog as Record<string, string>)[key] ?? ''
+        expect({ locale, key, of: placeholders(translated) }).toEqual({
+          locale,
+          key,
+          of: placeholders(value),
+        })
+      }
+    }
+  })
+})
+
+// Round-4 adversarial review, MAJEUR 1: the 'issue' journal lines (T2.4) are
+// the ones a French workspace used to read in English, because the server's
+// own `data.message` shadowed them (round 5 added `unreachable`, which was
+// shadowed the same way while it travelled on `type: 'error'`). Their French values being real
+// translations — not copies of the English, not empty — is the whole point of
+// that fix, and nothing else in this repo asserts it.
+describe('T2.4 issue journal labels', () => {
+  const issueKeys = [
+    'workspace.evIssueBound',
+    'workspace.evIssueCoverageGap',
+    'workspace.evIssueCosmetic',
+    'workspace.evIssueEdited',
+    'workspace.evIssueNotTicket',
+    'workspace.evIssueSnapshotUnreadable',
+    'workspace.evIssueUnreachable',
+    'workspace.evIssueNone',
+    'workspace.evIssueSectionsUnknown',
+    'workspace.evIssueSectionContext',
+    'workspace.evIssueSectionGoal',
+    'workspace.evIssueSectionScope',
+    'workspace.evIssueSectionOutOfScope',
+  ] as const
+
+  test('each one is actually translated in French, never left on its English text', () => {
+    const en = (catalogs.en ?? {}) as Record<string, string>
+    const fr = (catalogs.fr ?? {}) as Record<string, string>
+    for (const key of issueKeys) {
+      expect(en[key]?.trim()).toBeTruthy()
+      expect(fr[key]?.trim()).toBeTruthy()
+      expect(fr[key]).not.toBe(en[key])
+    }
+  })
+})
+
 describe('t', () => {
   test('interpolates params and picks plural forms (no window: English)', () => {
     expect(t('header.copyPrompt', { n: 3 })).toBe('Copy for agent (3)')

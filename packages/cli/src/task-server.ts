@@ -28,11 +28,14 @@ import {
   type TaskChecks,
   type TaskEvent,
   type TaskIsolation,
+  type TaskIssueRef,
+  type TaskIssueSnapshot,
   type TaskReason,
   type TaskRecord,
   type TaskStatus,
 } from './contract.js'
-import { refExists, tryGit } from './git.js'
+import type { ForgeIssuesExecFn } from './forge-issues.js'
+import { refExists, tryGit, tryGitAsync } from './git.js'
 import { t } from './i18n.js'
 import { createLoadCap, type LoadCap, type LoadCapSnapshot } from './load-cap.js'
 import { listProjects, listProjectsDetailed, type Project } from './projects.js'
@@ -49,6 +52,16 @@ import {
   type IsolationProbe,
   type ReleaseAgentHomeResult,
 } from './task-isolation.js'
+import {
+  admitIssue,
+  issueBoundEvent,
+  issueCoverageGapEvent,
+  issueReconcileEvent,
+  issueSnapshotUnreadableEvent,
+  reconcileIssueSnapshot,
+  validateIssueRef,
+  type IssueReconcile,
+} from './task-issue.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import {
   applyTaskRetention,
@@ -62,6 +75,7 @@ import {
 } from './task-review.js'
 import {
   createTaskRunner,
+  pendingResumeTurn,
   type TaskActionResult,
   type TaskRunner,
   type TaskRunnerOptions,
@@ -152,9 +166,27 @@ export type TaskEnvelope =
   // configuration for the whole repo, not for one conversation.
   | { project_id: string; event: { name: 'checks_proposal'; data: ChecksSetupState } }
 
+/**
+ * T2.4: the raw issue reference as it arrives from the wire — everything
+ * `unknown` on purpose, since `validateIssueRef` (task-issue.ts) is the one
+ * place that decides whether it names anything usable.
+ */
+export type CreateTaskManagerIssueInput = {
+  forge: unknown
+  project: unknown
+  iid: unknown
+  url: unknown
+}
+
 export type CreateTaskManagerInput = {
-  title: string
-  prompt: string
+  /**
+   * Required UNLESS `issue` is given: the ordinary path takes the title
+   * verbatim from the caller. With `issue`, the issue's own title is used
+   * instead and this is ignored — see D7/T2.4.
+   */
+  title?: string
+  /** Required unless `issue` is given — see `title`. */
+  prompt?: string
   autoShip: boolean
   /**
    * Optional LOCAL branch the task branches from (draft columns pick one from
@@ -175,6 +207,15 @@ export type CreateTaskManagerInput = {
    * unresolvable target is never a 400. Ignored without `branch`.
    */
   target?: string
+  /**
+   * T2.4/D7: creates the task FROM this forge issue instead of a bare
+   * title+prompt. When given, `title`/`prompt` above are ignored: the issue's
+   * own title and (linted) body take their place, and the task's record
+   * carries `issue` + `issue_snapshot`. Mutually exclusive in effect with the
+   * title+prompt path, though nothing refuses both being present — `issue`
+   * simply wins.
+   */
+  issue?: CreateTaskManagerIssueInput
 }
 
 export type TaskCreateResult =
@@ -203,8 +244,14 @@ export type TaskManager = {
   listAll: () => { project: Project; records: TaskRecord[] }[]
   /** One task with its full journal; null on unknown project/task. */
   get: (projectId: string, id: string) => { record: TaskRecord; events: TaskEvent[] } | null
-  /** Validates, persists and starts a new task in the project's repo. */
-  create: (projectId: string, input: CreateTaskManagerInput) => TaskCreateResult
+  /**
+   * Validates, persists and starts a new task in the project's repo. ASYNC
+   * since T2.4: creating a task FROM an issue reads the issue off the forge
+   * (T2.1) before anything is written — the ordinary title+prompt path never
+   * awaits anything and settles on the very tick it is called, so its
+   * observable ordering relative to sibling calls is unchanged.
+   */
+  create: (projectId: string, input: CreateTaskManagerInput) => Promise<TaskCreateResult>
   reply: (projectId: string, id: string, message: string) => TaskActionResult
   /**
    * T8 (POST /api/tasks/:id/resume). Restarts the turn an 'interrupted' task
@@ -282,9 +329,12 @@ export type TaskManager = {
    * expected to call this only once the HTTP server listens and the shutdown
    * handlers are installed, so a turn can never start in a process that cannot
    * yet be talked to nor stopped. Returns what it resumed, for the boot line.
-   * Idempotent: a project already running is not restarted.
+   * Idempotent: a project already running is not restarted. Async (T2.4,
+   * adversarial review): awaits the boot ticket-reconciliation pass first, so
+   * a queued task's stale ticket is never pumped into a live agent turn
+   * before anyone compared it to the forge.
    */
-  startPending: () => PendingQueue[]
+  startPending: () => Promise<PendingQueue[]>
   /**
    * T1.9. Removes every HOME volume (`codesema-home-<id>`) whose id no
    * record of NO registered project claims — the backstop for whatever a
@@ -348,6 +398,13 @@ export type CreateTaskManagerOptions = {
    * that never wires it up keeps today's behavior (an unattended checks run
    * outlives the process either way; only the WAIT becomes interruptible
    * when this is given).
+   *
+   * T2.4 wires the SAME controller for a second, disjoint consumer: the boot
+   * issue-reconciliation pass cancels its outstanding remote probes on it and
+   * refuses to write a record once it has fired — a pass that finished
+   * computing an outcome mid-shutdown must not persist it after the fact. One
+   * field, one cable, two readers: an AbortSignal with N listeners is the
+   * nominal case, and the two never overlap in time.
    */
   shutdownSignal?: AbortSignal
   /**
@@ -417,6 +474,20 @@ export type CreateTaskManagerOptions = {
    * reason to open is a silent one (invariant 2). Tests collect instead.
    */
   onNotice?: (message: string) => void
+  /**
+   * T2.4 test seam: the forge issue client's own `execFn` (forge-issues.ts),
+   * threaded through both issue admission and issue reconciliation. No test
+   * of this module ever spawns gh/glab or touches the network — the default
+   * drives the real CLI.
+   */
+  issueExecFn?: ForgeIssuesExecFn
+  /**
+   * Test seam: overrides the boot issue-reconciliation pass's wall-clock
+   * deadline (default 45s, see `BOOT_ISSUE_RECONCILE_DEADLINE_MS`'s own
+   * doc). Never meant for production config — the default is chosen once,
+   * generously, for every workspace.
+   */
+  bootIssueReconcileDeadlineMs?: number
 }
 
 /** One project whose persisted queue was resumed, for the boot announcement. */
@@ -680,6 +751,226 @@ type ProjectContext = {
   checking: Set<string>
 }
 
+/**
+ * What `create` derives its title, prompt and (optional) ticket from, before
+ * any of its OTHER guards (base/branch, isolation) run. Factored out of
+ * `create` itself so the two origins — a bare title+prompt, or a forge issue
+ * (T2.4) — read as two independent, individually testable decisions instead
+ * of inflating one function's branching.
+ */
+type TaskOrigin =
+  | {
+      ok: true
+      title: string
+      prompt: string
+      issue: TaskIssueRef | null
+      issueSnapshot: TaskIssueSnapshot | null
+      /** T2.4/DP13: true when the issue's raw body carries content the edit-detector cannot see. Always false off the title+prompt path. */
+      coverageGap: boolean
+    }
+  | { ok: false; refusal: Extract<TaskCreateResult, { ok: false }> }
+
+/** The ordinary path: title+prompt verbatim, no ticket. Synchronous — never touches the forge. */
+function resolveTitlePromptOrigin(input: CreateTaskManagerInput): TaskOrigin {
+  // Reject rather than truncate: a silently shortened title or prompt would
+  // diverge from what the user thinks the agent was told.
+  const title = (input.title ?? '').trim()
+  if (!title) {
+    return { ok: false, refusal: { ok: false, code: 400, error: 'empty title' } }
+  }
+  if (title.length > TASK_TITLE_MAX) {
+    return {
+      ok: false,
+      refusal: { ok: false, code: 400, error: `title too long (max ${TASK_TITLE_MAX})` },
+    }
+  }
+  const prompt = (input.prompt ?? '').trim()
+  if (!prompt) {
+    return { ok: false, refusal: { ok: false, code: 400, error: 'empty prompt' } }
+  }
+  if (prompt.length > TASK_TURN_TEXT_MAX) {
+    return {
+      ok: false,
+      refusal: { ok: false, code: 400, error: `prompt too long (max ${TASK_TURN_TEXT_MAX})` },
+    }
+  }
+  return { ok: true, title, prompt, issue: null, issueSnapshot: null, coverageGap: false }
+}
+
+/**
+ * T2.4/D7: creates from a forge issue. Decision 5 of design.md's order — the
+ * ONE network round trip admission makes, before any effect: validate the
+ * reference's shape first (a malformed iid never reaches the forge), then
+ * read the issue, then lint its body. A refusal at any step leaves nothing
+ * behind, exactly like every guard in `create` that runs after this one.
+ */
+async function resolveIssueOrigin(
+  cwd: string,
+  raw: CreateTaskManagerIssueInput,
+  execFn: ForgeIssuesExecFn | undefined,
+): Promise<TaskOrigin> {
+  const validated = validateIssueRef(raw)
+  if (!validated.ok) {
+    return { ok: false, refusal: { ok: false, code: 400, error: validated.error } }
+  }
+  const admitted = await admitIssue({ cwd, ref: validated.ref, ...(execFn ? { execFn } : {}) })
+  if (!admitted.ok) {
+    return {
+      ok: false,
+      refusal: {
+        ok: false,
+        code: admitted.code,
+        error: admitted.error,
+        ...(admitted.reason_code ? { reason_code: admitted.reason_code } : {}),
+      },
+    }
+  }
+  return {
+    ok: true,
+    title: admitted.title,
+    prompt: admitted.prompt,
+    issue: validated.ref,
+    issueSnapshot: admitted.snapshot,
+    coverageGap: admitted.coverage_gap,
+  }
+}
+
+/**
+ * Applies one `IssueReconcile` outcome to a record IN PLACE (status and/or
+ * reason) and returns the journal event to append — `event: null` when
+ * nothing is worth SAYING (`'unchanged'`'s own silence), independent of
+ * `mutated`, which tells the caller whether the record itself changed and is
+ * worth a `saveTask`/`persist`. Shared by both recomparison points (boot,
+ * pre-review) so the status/journal doctrine can never diverge between them.
+ * `'cosmetic'` journals a line but by itself touches nothing on the record
+ * (DP13: no status change, no reason_code).
+ *
+ * DP14 (adversarial review, "a reason code must be erasable the moment the
+ * task moves on, or it becomes a lie about the present"): a `forge_unreachable`
+ * left by an EARLIER reconciliation is a claim about that past attempt, not
+ * about now. The moment the forge answers again — any outcome but another
+ * 'unreachable' proves exactly that — the stale reason is cleared, even on
+ * 'unchanged', which otherwise stays silent: the silence is about the
+ * JOURNAL, not about whether the record needed fixing.
+ *
+ * Round-2 adversarial review, majeur 1 (the POSE side of DP14, not just the
+ * erasure side): `'unreachable'` used to overwrite `record.reason`
+ * unconditionally, so a genuine, unrelated reason another mechanism had
+ * already posed (an orphan `interrupted_by_user`, a queue's `resource_busy`,
+ * a review's `checks_failed`…) was silently replaced by `forge_unreachable`
+ * on the FIRST boot the forge happened to be unreachable — and then, on the
+ * NEXT boot once the forge answered again, the erasure logic above cleared
+ * what was BY THEN a `forge_unreachable` it had itself posed, destroying the
+ * real reason for good. The fix: only ever POSE `forge_unreachable` onto an
+ * ABSENT reason or one that already IS `forge_unreachable` (this attempt
+ * refreshing the previous one's detail). Every other reason is left alone —
+ * the event still carries `reason_code: 'forge_unreachable'` for THIS
+ * attempt regardless, since that is a true statement about what just
+ * happened; only the record's own persisted `reason` is protected.
+ *
+ * `midFlight` (round-2, majeur 4): a record that is `'interrupted'` with an
+ * unfinished turn (`pendingResumeTurn(record) !== null`) is NOT a boundary —
+ * its turn is still, in the only sense that matters to a human, "in
+ * progress": Resume exists specifically to pick it back up. Moving such a
+ * record to `'waiting_for_you'` on 'edited'/'not_ticket' would silently
+ * destroy that affordance (`pendingResumeTurn` requires `status ===
+ * 'interrupted'`) — the divergence is still journaled, but the status is
+ * left exactly where Resume can still find it.
+ */
+function applyIssueReconcile(
+  record: TaskRecord,
+  outcome: IssueReconcile,
+  opts: { midFlight?: boolean } = {},
+): { event: AppendTaskEventInput | null; mutated: boolean } | null {
+  const clearsStaleForgeReason =
+    record.reason?.code === 'forge_unreachable' && outcome.kind !== 'unreachable'
+  if (clearsStaleForgeReason) {
+    delete record.reason
+  }
+  switch (outcome.kind) {
+    case 'unchanged':
+      return clearsStaleForgeReason ? { event: null, mutated: true } : null
+    case 'cosmetic':
+      return { event: issueReconcileEvent(outcome), mutated: clearsStaleForgeReason }
+    case 'edited':
+    case 'not_ticket': {
+      const midFlight = opts.midFlight ?? false
+      if (!midFlight) {
+        record.status = 'waiting_for_you'
+      }
+      return { event: issueReconcileEvent(outcome), mutated: !midFlight || clearsStaleForgeReason }
+    }
+    case 'unreachable': {
+      // Majeur 1: never overwrite a reason this attempt did not cause.
+      const canPoseReason = !record.reason || record.reason.code === 'forge_unreachable'
+      if (canPoseReason) {
+        record.reason = outcome.reason
+      }
+      // DP15/DP9: 'issue', like every other outcome here — a forge this
+      // session could not read is a fact about the bound TICKET, and the task
+      // carries on unmodified. `error` would paint it red (the cry-wolf DP9
+      // refuses) and, worse, would serve its English sentence verbatim into a
+      // French journal. The `reason_code` below is unchanged: it rides the
+      // event whatever its type.
+      return { event: issueReconcileEvent(outcome), mutated: canPoseReason }
+    }
+  }
+}
+
+/**
+ * At most this many forge round trips run at once across the WHOLE boot
+ * pass (every project, every ticketed task combined) — a workspace with ten
+ * registered repos and a dozen ticketed tasks each must not open a hundred
+ * subprocesses on the same tick (adversarial review, majeur 3). Bounded
+ * concurrency also bounds the wait `startPending` blocks on below: worst
+ * case is `ceil(tasks / BOOT_ISSUE_RECONCILE_CONCURRENCY)` batches of
+ * `FORGE_ISSUE_TIMEOUT_MS`, never one unbounded fan-out. Exported so a test
+ * can assert the observed peak against the real cap rather than a copy of
+ * the literal.
+ */
+export const BOOT_ISSUE_RECONCILE_CONCURRENCY = 6
+
+/**
+ * The hard wall-clock ceiling on the WHOLE boot reconciliation pass, in ms —
+ * the published "45 s" of the CHANGELOG. See its use site below for WHY it is
+ * a deadline rather than a budget derived from the ladder's cost. Exported so
+ * a test can pin the shipped value: every other test overrides it through the
+ * `bootIssueReconcileDeadlineMs` seam, so without this pin the wall could be
+ * moved to infinity with every test still green.
+ */
+export const DEFAULT_BOOT_ISSUE_RECONCILE_DEADLINE_MS = 45_000
+
+/**
+ * Runs `worker` over `items`, at most `limit` of them in flight at once.
+ * `Promise.allSettled`, not `Promise.all` (round-2 adversarial review,
+ * mineur): `worker` is expected to swallow its own errors, but this
+ * function's OWN guarantee — every item gets a chance to run — must not
+ * depend on that discipline holding forever. `Promise.all` rejects on the
+ * FIRST lane to throw while the others keep running unobserved: the
+ * "reconciliation lands before the first pump" property this function backs
+ * would then silently stop holding for whichever items were still in
+ * flight, and an unhandled rejection would surface outside `workspace()`'s
+ * own try/catch. `allSettled` never rejects: this function still resolves
+ * once every lane is done, whatever any one of them did.
+ */
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0
+  async function lane(): Promise<void> {
+    while (cursor < items.length) {
+      const item = items[cursor]
+      cursor += 1
+      if (item !== undefined) {
+        await worker(item)
+      }
+    }
+  }
+  await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, () => lane()))
+}
+
 export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const registered = opts.listProjectsFn ?? listProjects
   const notice = opts.onNotice ?? ((message: string) => console.warn(message))
@@ -862,6 +1153,38 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
 
   const probe = opts.isolation ?? UNPROBED_ISOLATION
   const createRunner = opts.createRunnerFn ?? createTaskRunner
+  /**
+   * T2.4 round-4 adversarial review, majeur 3 — "never start a turn on a
+   * ticketed task THIS SESSION has never compared to its forge".
+   *
+   * The boot pass below closes that door for every project registered when the
+   * manager was built, because `startPending()` awaits it before its first
+   * `context()` call. It leaves a SECOND door wide open: a project registered
+   * mid-session (POST /api/projects, or a workspace that discovers a repo
+   * later) reaches `context()` without ever having been reconciled, and
+   * `context()` rebuilds its queue from `queue.json` BEFORE the runner exists,
+   * whose very first `pump()` is synchronous — so a task queued by a previous
+   * session, whose issue was edited since, starts a full agent turn on a stale
+   * ticket, deterministically. That turn's work is then thrown away without a
+   * review ('edited' skips it), which is worse than the delay it saves.
+   *
+   * The rule these three collections enforce: a project's QUEUED TICKETED
+   * tasks are lifted out of `queue.json` until this session's reconciliation
+   * pass for that project has run once, then put back AT THEIR ORIGINAL
+   * RANKS. Non-ticketed tasks of the same project are never held — nothing
+   * about them is stale.
+   */
+  /** Project paths whose reconciliation pass has completed in this session. */
+  const issueReconciled = new Set<string>()
+  /** Project paths a pass is already running (or about to run) for: never two. */
+  const issueReconcileClaimed = new Set<string>()
+  /**
+   * Project path → the queue's FULL id order as it stood when its ticketed
+   * tasks were lifted out. Full, not just the held ids: putting them back at
+   * their rank needs to know what they were interleaved with.
+   */
+  const heldTicketedOrder = new Map<string, string[]>()
+
   const contexts = new Map<string, ProjectContext>()
 
   // Project-scoped, context-free: proposing a checks configuration needs no
@@ -1195,6 +1518,14 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // like the boot pass: a broken repo degrades, it does not 404 itself out
     // of the workspace.
     recover(project)
+    // ...and THAT is exactly why the hold below sits here, between the queue's
+    // rebuild and the runner's construction (whose first pump is synchronous):
+    // majeur 3 of the round-4 review. A project this session has never
+    // reconciled hands its runner a queue with no ticketed task in it.
+    const gated = !issueReconciled.has(project.path)
+    if (gated) {
+      holdTicketedTasks(project)
+    }
     const cwd = project.path
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict; the reviewer shares the task agent command and timeout.
@@ -1221,6 +1552,38 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // delay the review nor the turn, and their failure (even a missing
       // container runtime) never blocks anything.
       startChecksAfterCommit(ctx, record)
+      // T2.4/D7, second of the two recomparison points: BEFORE the turn's
+      // review, never mid-turn. An edit moves the task straight to
+      // 'waiting_for_you' and skips the review outright — the turn that just
+      // finished is not re-judged against criteria that may no longer be
+      // current, and no turn is ever restarted from here. A forge that cannot
+      // be reached is the opposite: the task keeps going on its snapshot, so
+      // the review below still runs.
+      if (record.issue && record.issue_snapshot) {
+        const reconciled = await reconcileIssueSnapshot({
+          cwd,
+          issue: record.issue,
+          snapshot: record.issue_snapshot,
+          ...(opts.issueExecFn ? { execFn: opts.issueExecFn } : {}),
+        })
+        const applied = applyIssueReconcile(record, reconciled)
+        if (applied) {
+          if (applied.event) {
+            io.emit(applied.event)
+          }
+          if (applied.mutated) {
+            io.persist()
+          }
+        }
+        // 'edited' and 'not_ticket' both need a human, and the turn that just
+        // finished is not re-judged by a review that may compare it against
+        // criteria that are no longer current: skip the review outright,
+        // never restart it. 'cosmetic' and 'unreachable' fall through — the
+        // task continues on its snapshot exactly as before.
+        if (reconciled.kind === 'edited' || reconciled.kind === 'not_ticket') {
+          return
+        }
+      }
       await reviewTurn(record, io)
       if (record.auto_ship && record.status === 'review_ok') {
         await ship(ctx, record.id)
@@ -1339,11 +1702,486 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     })
     const ctx: ProjectContext = { project, runner, shipping: new Set(), checking: new Set() }
     contexts.set(projectId, ctx)
+    // A project the boot pass never enumerated gets its OWN pass now, on the
+    // same code path, and its held tasks back when it lands. `claimed` (set
+    // synchronously for every boot project before the boot pass's first
+    // `await`) is what keeps this from running a second, concurrent pass over
+    // a project the boot is already handling — that one's own `finally`
+    // releases the hold.
+    if (gated && !issueReconcileClaimed.has(project.path)) {
+      issueReconcileClaimed.add(project.path)
+      void reconcileIssuesFor([project])
+        .catch((err) => {
+          notice(`${project.name}: issue reconciliation failed unexpectedly (${errorMessage(err)})`)
+        })
+        .finally(() => releaseTicketedTasks(project))
+    }
     return ctx
   }
 
+  /**
+   * Lifts this project's QUEUED TICKETED tasks out of `queue.json` and
+   * remembers the order they were lifted from, so `releaseTicketedTasks` can
+   * put them back where they were. Says it out loud (invariant 2): a queue
+   * that visibly stops advancing without a word reads as broken.
+   *
+   * Deliberately NOT a status change: the tasks stay `queued`, which is what
+   * they are — they are waiting, and this is one more thing they wait for.
+   * Their record is untouched, so nothing here can be persisted wrong or
+   * survive the process.
+   */
+  function holdTicketedTasks(project: Project): void {
+    let order: string[]
+    try {
+      order = queueFor(project)
+        .list()
+        .map((entry) => entry.id)
+    } catch {
+      // A queue that will not even list is already degraded and already
+      // reported by its own sink; there is nothing to hold.
+      return
+    }
+    const ticketed = order.filter((id) => {
+      const record = loadTask(project.path, id)
+      return record?.status === 'queued' && record.issue !== undefined
+    })
+    if (ticketed.length === 0) {
+      return
+    }
+    try {
+      queueFor(project).removeMany(ticketed)
+    } catch (err) {
+      // Refusing to hold is the honest degradation: better a stale-ticket turn
+      // that is NAMED than a queue this could not rewrite and pretended it had.
+      notice(
+        `${project.name}: its queued ticketed tasks could not be held out of the queue while this session compares them to the forge (${errorMessage(err)}); they may start on a snapshot nobody re-read`,
+      )
+      return
+    }
+    heldTicketedOrder.set(project.path, order)
+    notice(
+      `${project.name}: ${ticketed.length} queued ticketed task${ticketed.length === 1 ? '' : 's'} held out of the queue until this session has compared ${ticketed.length === 1 ? 'it' : 'them'} to its forge — no agent turn starts on a ticket this session never re-read`,
+    )
+  }
+
+  /**
+   * Marks the project reconciled for this session and puts back whatever
+   * `holdTicketedTasks` lifted — AT ITS ORIGINAL RANK, which is why the whole
+   * pre-hold order is what gets remembered: re-enqueueing only the held ids
+   * would append them behind tasks they were ahead of.
+   *
+   * The rebuild is a remove-all + enqueue-in-order, with the LAST id handed to
+   * `runner.start()` instead of the queue. That is not a flourish: `start()`
+   * is the only public gesture that both enqueues (at the tail — exactly the
+   * place this rebuild left free) AND pumps, and without a pump the tasks just
+   * put back would sit there until some unrelated human gesture happened by.
+   */
+  function releaseTicketedTasks(project: Project): void {
+    issueReconciled.add(project.path)
+    const order = heldTicketedOrder.get(project.path)
+    if (!order) {
+      return
+    }
+    heldTicketedOrder.delete(project.path)
+    const queue = queueFor(project)
+    let current: string[]
+    try {
+      current = queue.list().map((entry) => entry.id)
+    } catch {
+      return
+    }
+    const merged = [...order, ...current.filter((id) => !order.includes(id))]
+    const wanted = merged.filter(
+      (id, index) =>
+        merged.indexOf(id) === index && loadTask(project.path, id)?.status === 'queued',
+    )
+    try {
+      queue.removeMany(current)
+      for (const id of wanted.slice(0, -1)) {
+        queue.enqueue(id)
+      }
+    } catch (err) {
+      notice(
+        `${project.name}: its held ticketed tasks could not be put back in the queue (${errorMessage(err)}); a Start on them still works`,
+      )
+      return
+    }
+    const last = wanted.at(-1)
+    if (last === undefined) {
+      return
+    }
+    const record = loadTask(project.path, last)
+    const runner = contexts.get(project.id)?.runner
+    if (record && runner) {
+      runner.start(record)
+      return
+    }
+    try {
+      queue.enqueue(last)
+    } catch (err) {
+      notice(
+        `${project.name}: task ${last} could not be put back in the queue (${errorMessage(err)}); a Start on it still works`,
+      )
+    }
+  }
+
+  /**
+   * Applies a synthesized 'unreachable' outcome to one target — the shared
+   * exit for every degradation path below (no remote, deadline exceeded, an
+   * aborted shutdown), so all three read the record the SAME way as a real
+   * `reconcileIssueSnapshot` timeout would: `applyIssueReconcile`, the reload
+   * guard, the queue removal rule, the two broadcasts. Returns quietly if the
+   * shutdown signal has fired since — nothing is written after the process
+   * has started draining.
+   */
+  function applyUnreachableAt(project: Project, record: TaskRecord, reason: TaskReason): void {
+    if (opts.shutdownSignal?.aborted) {
+      return
+    }
+    const fresh = loadTask(project.path, record.id)
+    if (
+      !fresh ||
+      !isActiveTaskStatus(fresh.status) ||
+      fresh.status === 'running' ||
+      fresh.status === 'reviewing'
+    ) {
+      return
+    }
+    const midFlight = fresh.status === 'interrupted' && pendingResumeTurn(fresh) !== null
+    const applied = applyIssueReconcile(fresh, { kind: 'unreachable', reason }, { midFlight })
+    if (!applied) {
+      return
+    }
+    if (applied.mutated) {
+      fresh.updated_at = new Date().toISOString()
+      saveTask(project.path, fresh)
+    }
+    if (applied.event) {
+      const appended = appendTaskEvent(project.path, fresh.id, applied.event)
+      emit({
+        project_id: project.id,
+        task_id: fresh.id,
+        event: { name: 'task_event', data: appended },
+      })
+    }
+    if (applied.mutated) {
+      emit({ project_id: project.id, task_id: fresh.id, event: { name: 'task', data: fresh } })
+    }
+  }
+
+  /**
+   * Hard wall-clock ceiling on the WHOLE boot reconciliation pass (round-2
+   * adversarial review, majeur 5). The doc this replaced claimed
+   * `ceil(tasks / BOOT_ISSUE_RECONCILE_CONCURRENCY)` batches of
+   * `FORGE_ISSUE_TIMEOUT_MS` — wrong on a self-hosted remote, where the read
+   * ladder tries `gh` THEN `glab` on any error, doubling the per-task cost to
+   * up to `2 × FORGE_ISSUE_TIMEOUT_MS`. Rather than chase that number through
+   * every future change to the ladder, this is a DEADLINE, not a budget
+   * derived from one: every task's own reconciliation races it individually
+   * and degrades to `forge_unreachable` — never blocking the pump longer
+   * than this, whatever the ladder costs on any one call.
+   *
+   * The DEFAULT lives at module scope, exported, for the same reason
+   * `BOOT_ISSUE_RECONCILE_CONCURRENCY` does: every test overrides it through
+   * the `bootIssueReconcileDeadlineMs` seam, so nothing else would notice a
+   * refactor pushing the wall to infinity while the CHANGELOG keeps
+   * publishing "45 s".
+   */
+  const BOOT_ISSUE_RECONCILE_DEADLINE_MS =
+    opts.bootIssueReconcileDeadlineMs ?? DEFAULT_BOOT_ISSUE_RECONCILE_DEADLINE_MS
+
+  /**
+   * Says, once per boot pass, that a task naming a forge issue has no readable
+   * frozen snapshot to compare against — a journal line on the task itself and
+   * a workspace notice (invariant 2's two reachable legs; the third, the API,
+   * is the journal the task detail route already serves back).
+   *
+   * No `reason_code` and no status change, on purpose: DP10 keeps the D2 table
+   * at ten codes until T3.6, and DP14's first condition fails outright —
+   * nothing is stopped or refused here. The task runs exactly as it would have;
+   * what retired is the EDIT DETECTOR, and that is what the line says.
+   */
+  function reportSnapshotUnreadable(project: Project, record: TaskRecord): void {
+    if (opts.shutdownSignal?.aborted) {
+      return
+    }
+    notice(
+      `${project.name}: task ${record.id} names a forge issue but its frozen ticket snapshot could not be read back — it is excluded from edit detection until it is re-bound`,
+    )
+    try {
+      const appended = appendTaskEvent(project.path, record.id, issueSnapshotUnreadableEvent())
+      emit({
+        project_id: project.id,
+        task_id: record.id,
+        event: { name: 'task_event', data: appended },
+      })
+    } catch {
+      // A journal that will not take the line must not take the boot pass down
+      // with it: the notice above already carries the fact.
+    }
+  }
+
+  /**
+   * T2.4/D7, first of the two recomparison points: for every non-terminal task
+   * carrying an `issue` in the GIVEN projects. Called with every registered
+   * project at boot, and with a single project by `context()` when that
+   * project was registered after the boot pass had already enumerated its
+   * targets (round-4 review, majeur 3).
+   *
+   * Deliberately NOT folded into the synchronous `recover`/`reconcileTasks`
+   * pass above: that pass runs for EVERY registered project before this
+   * function even returns, and folding a network round trip into IT would
+   * make every other kind of boot recovery (worktree checks, queue repair)
+   * wait on the forge too. This pass is its own, concurrency-bounded fan-out
+   * instead, and — CRITICAL, per adversarial review — the caller MUST await
+   * the returned promise before anything is allowed to start: `startPending`
+   * below does exactly that, before its first `context()` call, because that
+   * call's first `pump()` is synchronous and would otherwise always win the
+   * race against this async pass's very first `await` (a queued task's
+   * stale-ticket edit would then start a full agent turn before anyone ever
+   * compared hashes — not a narrow race, a deterministic one). The workspace
+   * still answers SSE/GET before this resolves; only the PUMP is gated.
+   *
+   * Round-2 adversarial review, majeur 5, three more fixes:
+   *
+   * 1. `git remote get-url origin` used to be resolved SYNCHRONOUSLY, once
+   *    per TASK, twice over (`forge-issues.ts`'s own ladder calls it, and so
+   *    does `detectForgeHint` inside it) — a sync `execFileSync` blocks the
+   *    WHOLE process, so `BOOT_ISSUE_RECONCILE_CONCURRENCY` "lanes" were
+   *    largely serializing back into a straight line through that call
+   *    alone, and a repo whose working tree sits on a dead network mount
+   *    could freeze the process outright. It is now resolved ONCE per
+   *    PROJECT, asynchronously (`tryGitAsync`, itself bounded by
+   *    `PROBE_TIMEOUT_MS` and never blocking the event loop) — a project
+   *    with no readable remote skips the forge entirely for every one of its
+   *    ticketed tasks, at once, rather than paying for that discovery once
+   *    per task. This does not reach INTO `forge-issues.ts`'s own per-task
+   *    calls for a project that DOES have a remote (out of scope: that
+   *    module is merged and this pass does not touch its internals) — a
+   *    documented residual, now individually bounded by the deadline above
+   *    rather than by nothing.
+   * 2. A console notice is printed before the wait, and again if the
+   *    deadline was hit: a workspace that stays silent while queued tasks
+   *    visibly do not start reads as broken, not busy.
+   * 3. `opts.shutdownSignal` (the SAME controller `workspace.ts` aborts on
+   *    the first Ctrl-C) cancels the async remote probes and gates every
+   *    write: a boot pass that only finishes computing after the process
+   *    has started draining must not persist anything.
+   */
+  async function reconcileIssuesFor(projects: readonly Project[]): Promise<void> {
+    const targets: { project: Project; record: TaskRecord }[] = []
+    const projectsSeen = new Map<string, Project>()
+    const unreadable: { project: Project; record: TaskRecord }[] = []
+    for (const project of projects) {
+      for (const record of listTasks(project.path)) {
+        if (!record.issue || !isActiveTaskStatus(record.status)) {
+          continue
+        }
+        if (!record.issue_snapshot) {
+          // Round-4 adversarial review, majeur 2: `issue` WITHOUT
+          // `issue_snapshot` is not "no ticket" — it is a ticket whose frozen
+          // snapshot the sanitizer threw away (a `body_hash` tagged for a
+          // scheme this build no longer produces, a malformed record). Both
+          // recomparison points guard on `!record.issue_snapshot`, so such a
+          // task is excluded from edit detection FOREVER, and the first
+          // rewrite of its record erases the snapshot from disk — silently,
+          // while `TaskRecord.issue` keeps claiming the task carries a ticket.
+          // Invariant 2 forbids exactly that silence.
+          unreadable.push({ project, record })
+          continue
+        }
+        targets.push({ project, record })
+        projectsSeen.set(project.path, project)
+      }
+    }
+    for (const target of unreadable) {
+      reportSnapshotUnreadable(target.project, target.record)
+    }
+    if (targets.length === 0) {
+      return
+    }
+    notice(
+      `reconciling ${targets.length} ticketed task${targets.length === 1 ? '' : 's'} against their forge issue${targets.length === 1 ? '' : 's'} before resuming the queue…`,
+    )
+
+    // Once per PROJECT, asynchronously, never blocking the event loop.
+    const remoteByProject = new Map<string, boolean>()
+    await Promise.allSettled(
+      [...projectsSeen.values()].map(async (project) => {
+        const remote = await tryGitAsync(
+          ['remote', 'get-url', 'origin'],
+          project.path,
+          opts.shutdownSignal,
+        )
+        remoteByProject.set(project.path, remote !== null)
+      }),
+    )
+
+    const deadlineAt = Date.now() + BOOT_ISSUE_RECONCILE_DEADLINE_MS
+    let deadlineHit = false
+    const runnable: typeof targets = []
+    for (const target of targets) {
+      if (remoteByProject.get(target.project.path) === false) {
+        applyUnreachableAt(
+          target.project,
+          target.record,
+          taskReason('forge_unreachable', 'no-remote'),
+        )
+        continue
+      }
+      runnable.push(target)
+    }
+
+    await runWithConcurrency(
+      runnable,
+      BOOT_ISSUE_RECONCILE_CONCURRENCY,
+      async ({ project, record }) => {
+        const issue = record.issue
+        const snapshot = record.issue_snapshot
+        if (!issue || !snapshot) {
+          return
+        }
+        if (opts.shutdownSignal?.aborted) {
+          return
+        }
+        try {
+          const remaining = deadlineAt - Date.now()
+          if (remaining <= 0) {
+            deadlineHit = true
+            applyUnreachableAt(
+              project,
+              record,
+              taskReason(
+                'forge_unreachable',
+                `boot reconciliation deadline (${BOOT_ISSUE_RECONCILE_DEADLINE_MS / 1000}s) exceeded`,
+              ),
+            )
+            return
+          }
+          const outcome = await Promise.race([
+            reconcileIssueSnapshot({
+              cwd: project.path,
+              issue,
+              snapshot,
+              ...(opts.issueExecFn ? { execFn: opts.issueExecFn } : {}),
+            }),
+            new Promise<IssueReconcile>((resolve) => {
+              const timer = setTimeout(() => {
+                deadlineHit = true
+                resolve({
+                  kind: 'unreachable',
+                  reason: taskReason(
+                    'forge_unreachable',
+                    `boot reconciliation deadline (${BOOT_ISSUE_RECONCILE_DEADLINE_MS / 1000}s) exceeded`,
+                  ),
+                })
+              }, remaining)
+              timer.unref?.()
+            }),
+          ])
+          if (opts.shutdownSignal?.aborted) {
+            return
+          }
+          // Reload: the closed-over record can be stale by the time the forge
+          // answers (many ticketed tasks, a slow forge) — a task that shipped
+          // or failed in the meantime must not be reopened, and one a human (or
+          // this very boot's own pump, once it is allowed to run) started in
+          // the meantime must not have its mid-turn status overwritten: this
+          // pass only ever applies at a BOUNDARY, never mid-flight.
+          const fresh = loadTask(project.path, record.id)
+          if (
+            !fresh ||
+            !isActiveTaskStatus(fresh.status) ||
+            fresh.status === 'running' ||
+            fresh.status === 'reviewing'
+          ) {
+            return
+          }
+          const wasQueued = fresh.status === 'queued'
+          // Majeur 4: an 'interrupted' record with an unfinished turn is a
+          // Resume affordance, not a boundary — moving it to
+          // 'waiting_for_you' would make that turn unreachable forever
+          // (pendingResumeTurn requires status === 'interrupted').
+          const midFlight = fresh.status === 'interrupted' && pendingResumeTurn(fresh) !== null
+          const applied = applyIssueReconcile(fresh, outcome, { midFlight })
+          if (!applied) {
+            return
+          }
+          if (applied.mutated) {
+            // A divergence that moved the task off 'queued' must leave the
+            // queue file agreeing with it — the same rule `reconcileTasks`'s
+            // own `rewrite` follows for every other boot status change.
+            if (wasQueued && fresh.status !== 'queued') {
+              queueFor(project).remove(fresh.id)
+            }
+            fresh.updated_at = new Date().toISOString()
+            saveTask(project.path, fresh)
+          }
+          if (applied.event) {
+            const appended = appendTaskEvent(project.path, fresh.id, applied.event)
+            emit({
+              project_id: project.id,
+              task_id: fresh.id,
+              event: { name: 'task_event', data: appended },
+            })
+          }
+          if (applied.mutated) {
+            emit({
+              project_id: project.id,
+              task_id: fresh.id,
+              event: { name: 'task', data: fresh },
+            })
+          }
+        } catch (err) {
+          // Best-effort, like every other background pass in this module: a
+          // bug here must not crash a boot that has already returned.
+          notice(
+            `${project.name}: issue reconciliation of task ${record.id} failed unexpectedly (${errorMessage(err)})`,
+          )
+        }
+      },
+    )
+    if (deadlineHit) {
+      notice(
+        `issue reconciliation deadline exceeded for some tasks — they continue on their existing snapshot, marked forge_unreachable, and will be re-checked before their next review`,
+      )
+    }
+  }
+  /**
+   * Claimed SYNCHRONOUSLY, before the pass's first `await`: a `context()` that
+   * lands during the boot window must know these projects already have a pass
+   * in flight and not open a second one — it still HOLDS their ticketed tasks
+   * (the boot pass has not landed yet), and the `finally` below is what puts
+   * them back.
+   */
+  const bootIssueProjects = registered()
+  for (const project of bootIssueProjects) {
+    issueReconcileClaimed.add(project.path)
+  }
+  const bootIssueReconciliation = reconcileIssuesFor(bootIssueProjects)
+    .catch((err) => {
+      // Inert net: `runWithConcurrency`'s own `allSettled` and every worker's
+      // try/catch mean this should never fire, but this promise otherwise has
+      // no handler at all until `startPending`'s `await` — which may run long
+      // after `startServer`, per the boot sequence in workspace.ts.
+      notice(`boot issue reconciliation failed unexpectedly (${errorMessage(err)})`)
+    })
+    .finally(() => {
+      // Whatever the pass did, these projects have now been compared once in
+      // this session: mark them, and put back anything a mid-boot `context()`
+      // held out of their queues.
+      for (const project of bootIssueProjects) {
+        releaseTicketedTasks(project)
+      }
+    })
+
   return {
-    startPending() {
+    async startPending() {
+      // CRITICAL (adversarial review): must land before the first pump, not
+      // race it. Bounded above by BOOT_ISSUE_RECONCILE_CONCURRENCY batches of
+      // FORGE_ISSUE_TIMEOUT_MS — the same "bounded wait beats an unbounded
+      // head start" argument as the semantic watchdog (decision D3).
+      await bootIssueReconciliation
       const resumed: PendingQueue[] = []
       for (const pending of pendingAtBoot.splice(0)) {
         // Fenced per project, like the boot pass: one repo that cannot build
@@ -1464,27 +2302,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
     },
 
-    create(projectId, input) {
+    async create(projectId, input) {
       const ctx = context(projectId)
       if (!ctx) {
         return unknownProject
       }
-      // Reject rather than truncate: a silently shortened title or prompt
-      // would diverge from what the user thinks the agent was told.
-      const title = input.title.trim()
-      if (!title) {
-        return { ok: false, code: 400, error: 'empty title' }
+      // Both given together or neither: `issue` is what freezes the ticket,
+      // and a task's record must never carry one without the other (T2.4).
+      const origin = input.issue
+        ? await resolveIssueOrigin(ctx.project.path, input.issue, opts.issueExecFn)
+        : resolveTitlePromptOrigin(input)
+      if (!origin.ok) {
+        return origin.refusal
       }
-      if (title.length > TASK_TITLE_MAX) {
-        return { ok: false, code: 400, error: `title too long (max ${TASK_TITLE_MAX})` }
-      }
-      const prompt = input.prompt.trim()
-      if (!prompt) {
-        return { ok: false, code: 400, error: 'empty prompt' }
-      }
-      if (prompt.length > TASK_TURN_TEXT_MAX) {
-        return { ok: false, code: 400, error: `prompt too long (max ${TASK_TURN_TEXT_MAX})` }
-      }
+      const { title, prompt, issue: issueRef, issueSnapshot, coverageGap } = origin
       // Optional explicit base: must be an existing LOCAL branch, checked now
       // so the caller gets a synchronous 400 instead of a task that fails at
       // launch. Blank means absent (auto-detection at launch, as before).
@@ -1601,6 +2432,10 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         worktree: '',
         workOn: branch !== '',
         isolation: resolved.isolation,
+        // Always given together (TaskOrigin pairs them by construction, see
+        // resolveIssueOrigin/resolveTitlePromptOrigin) — one guard, not two,
+        // so a future drift here cannot silently split the pair.
+        ...(issueRef && issueSnapshot ? { issue: issueRef, issueSnapshot } : {}),
       })
       // The WHY is journaled on the task itself: an 'auto' workspace that fell
       // back to policy must be able to say so, months later, from the record.
@@ -1614,6 +2449,30 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         task_id: record.id,
         event: { name: 'task_event', data: isolationEvent },
       })
+      // T2.4/DP13: the admission-time half of the 'issue' domain journal — the
+      // frozen hashes (forensic raw digest included), and, only when the
+      // heuristic actually trips, the one-time disclosure that some of the raw
+      // body sits outside what the edit-detector reads.
+      if (issueSnapshot) {
+        const boundEvent = appendTaskEvent(
+          ctx.project.path,
+          record.id,
+          issueBoundEvent(issueSnapshot),
+        )
+        emit({
+          project_id: projectId,
+          task_id: record.id,
+          event: { name: 'task_event', data: boundEvent },
+        })
+        if (coverageGap) {
+          const gapEvent = appendTaskEvent(ctx.project.path, record.id, issueCoverageGapEvent())
+          emit({
+            project_id: projectId,
+            task_id: record.id,
+            event: { name: 'task_event', data: gapEvent },
+          })
+        }
+      }
       // start() rereads the task.json written just above; on a fresh 'queued'
       // record it cannot legitimately refuse, but a refusal must not be
       // swallowed: the caller would wait forever on a task that never runs.

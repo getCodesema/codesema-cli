@@ -470,6 +470,99 @@ export function sanitizeTicketBody(raw: unknown): TicketBody | null {
   return bodyFrom(raw as Record<string, unknown>)
 }
 
+// --- Canonical serialization (T2.4/DP13) ------------------------------------
+
+/**
+ * Schema tag prefixing every hash `canonicalTicketBody` feeds (T2.4/DP13):
+ * bumped only when the serialization below itself changes, so a rule change
+ * never masquerades as every bound task's ticket having been edited on the
+ * forge in the same boot. The hashing itself (sha256) is not this module's
+ * job — it stays in the CLI (`task-issue.ts`), which imports this tag rather
+ * than inventing its own, so the two can never drift apart.
+ */
+export const TICKET_BODY_HASH_TAG = 'sha256:t2'
+
+/**
+ * Encodes one field as `<utf8-byte-length>:<content>` (netstring-style): the
+ * length prefix marks exactly where the field ends, so concatenating several
+ * of these can NEVER collide the way joining with a delimiter character can
+ * — `"ab"+"c"` and `"a"+"bc"` produce different encodings, because the
+ * decoder never has to search for a boundary inside content it does not
+ * control. Deliberately not `JSON.stringify`: that would additionally depend
+ * on which characters happen to need escaping, an extra axis of "what if a
+ * criterion contains a backslash" this scheme has no need to worry about.
+ */
+function netstring(s: string): string {
+  return `${new TextEncoder().encode(s).length}:${s}`
+}
+
+/**
+ * Normalizes one prose section before it enters a canonical hash (T2.4/DP13,
+ * adversarial review majeur 2): Unicode **NFC**, and trailing spaces/tabs
+ * stripped from every line. Without this, re-serving the SAME meaning moves
+ * the hash on no real edit — an accented word typed decomposed on one
+ * platform and composed on another, or a forge editor trimming a markdown
+ * hard line break's two trailing spaces — which is exactly the false alarm
+ * DP13 exists to rule out. Applied to the four prose sections only:
+ * criterion text already goes through `collapse()`'s own NFC and whitespace
+ * collapse on the way to its id (see `acceptanceCriterionId`), so this would
+ * be redundant there, not wrong — id derivation owns that job, this owns the
+ * prose's. Exported so `hashSection` (packages/cli/src/task-issue.ts) applies
+ * the IDENTICAL normalization to a single section's own hash: the aggregate
+ * hash and the per-section breakdown must never disagree about what counts
+ * as "the same text", or a genuine edit could move one without the other.
+ */
+export function canonicalizeSection(s: string): string {
+  return s.normalize('NFC').replace(/[ \t]+$/gm, '')
+}
+
+/**
+ * The injective, FIELD-ORDER-FIXED serialization of a `TicketBody`, for
+ * hashing (T2.4/DP13: `issue_snapshot.body_hash` is a hash of THIS, never of
+ * the forge's raw markdown) and for any other consumer that needs a
+ * byte-stable form of "what this ticket body said". Two producers of the same
+ * body — issue admission and reconciliation — call this SAME function, so
+ * they can never observe two different notions of "changed".
+ *
+ * Field order is fixed and PUBLISHED, never the insertion order of an object
+ * (`JSON.stringify` would silently depend on it): `version`, the four prose
+ * sections in `TICKET_SECTIONS` order (each normalized by `canonicalizeSection`)
+ * with `acceptance_criteria` skipped in place (it is not prose), the criteria
+ * count, then each criterion's `id` and `text`, and finally `out_of_scope`.
+ * The count between the prose sections and the criteria is what keeps a
+ * truncated criteria list from being read as a shorter one that simply had
+ * fewer entries — every field's own netstring length prefix already does
+ * that for itself, but the count pins the field COUNT of the list too.
+ *
+ * Criteria are serialized **sorted by `id`**, never in list order (adversarial
+ * review majeur 1): an `id` is derived from a criterion's TEXT and nothing
+ * else (T2.3), so reordering the very same criteria is, by that module's own
+ * doctrine, not an edit — `ticket.test.ts`'s `reordering the list renames
+ * nothing` pins exactly this. Hashing in list order would silently reimport
+ * the positional dependency T2.3 froze out, and would do so invisibly: the
+ * hash would move while the section/criteria-id diff this module's caller
+ * reports has nothing to name, producing the bare "the issue changed" DP13
+ * explicitly forbids. Sorting by id is a total, stable order because ids are
+ * unique post-dedup (`sanitizeAcceptanceCriteria`).
+ */
+export function canonicalTicketBody(body: TicketBody): string {
+  const parts: string[] = [
+    netstring(String(body.version)),
+    netstring(canonicalizeSection(body.context)),
+    netstring(canonicalizeSection(body.goal)),
+    netstring(canonicalizeSection(body.scope)),
+    netstring(String(body.acceptance_criteria.length)),
+  ]
+  const criteria = body.acceptance_criteria.toSorted((a, b) =>
+    a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  )
+  for (const criterion of criteria) {
+    parts.push(netstring(criterion.id), netstring(criterion.text))
+  }
+  parts.push(netstring(canonicalizeSection(body.out_of_scope)))
+  return parts.join('')
+}
+
 /**
  * How much of a body's criteria list could be read.
  *
@@ -1062,7 +1155,12 @@ function problemsForSection(scan: SectionScan, heading: TicketSectionHeading): T
     )
   }
   const text = sectionTextOf(block, scan.residue)
-  const length = codePointLength(text)
+  // Bound measured on the NFC form (T2.4, round-2 adversarial review, mineur):
+  // `canonicalizeSection` normalizes to NFC before hashing/comparing, so an
+  // UNEDITED section merely re-served in a decomposed (NFD) form must not
+  // grow past TICKET_SECTION_MAX purely from the composition it happened to
+  // arrive in — that would trip section_too_long on content nobody touched.
+  const length = codePointLength(text.normalize('NFC'))
   if (!text) {
     out.push(problem('section_empty', `section ${heading} is empty`, { section: heading }))
   } else if (heading !== ACCEPTANCE_CRITERIA_HEADING && length > TICKET_SECTION_MAX) {

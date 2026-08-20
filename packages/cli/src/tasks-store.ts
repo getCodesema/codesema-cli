@@ -28,6 +28,8 @@ import {
   type TaskEventData,
   type TaskEventType,
   type TaskIsolation,
+  type TaskIssueRef,
+  type TaskIssueSnapshot,
   type TaskReason,
   type TaskRecord,
 } from './contract.js'
@@ -80,6 +82,13 @@ export type CreateTaskInput = {
   workOn?: boolean
   /** Containment of the task's turns, resolved by the manager. Defaults to 'policy'. */
   isolation?: TaskIsolation
+  /**
+   * T2.4/D7: the forge issue this task was created from, and what its body was
+   * worth at that moment. Always given TOGETHER by the manager (never one
+   * without the other) — absent for the ordinary title+prompt path.
+   */
+  issue?: TaskIssueRef
+  issueSnapshot?: TaskIssueSnapshot
 }
 
 /**
@@ -90,6 +99,15 @@ export type CreateTaskInput = {
  */
 export function createTask(cwd: string, input: CreateTaskInput): TaskRecord {
   ensureWorkDir(cwd)
+  // T2.4/D7 (round-2 adversarial review, mineur): `issue`/`issueSnapshot` are
+  // documented as ALWAYS given together — but two INDEPENDENT conditional
+  // spreads below could previously drift apart under a future edit without
+  // either a type error or a test noticing, silently writing a record that
+  // names a ticket with no snapshot (or the reverse). Fail loudly here
+  // instead, and let a single guard — not two — decide whether either lands.
+  if ((input.issue == null) !== (input.issueSnapshot == null)) {
+    throw new Error('createTask: issue and issueSnapshot must be given together, or not at all')
+  }
   const id = randomBytes(6).toString('hex')
   const now = new Date().toISOString()
   const record: TaskRecord = {
@@ -111,6 +129,9 @@ export function createTask(cwd: string, input: CreateTaskInput): TaskRecord {
     work_on: input.workOn === true,
     // Fixed here, once: nothing downstream may change how a task is contained.
     isolation: input.isolation ?? 'policy',
+    ...(input.issue && input.issueSnapshot
+      ? { issue: input.issue, issue_snapshot: input.issueSnapshot }
+      : {}),
     created_at: now,
     updated_at: now,
   }
