@@ -537,7 +537,7 @@ describe('createTaskManager', () => {
     expect(options.getChecksConfig?.()?.image).toBe('oven/bun:1')
   })
 
-  test('checks-apply is picked up on the next turn without rebuilding the runner (T1.4)', () => {
+  test('checks-apply is picked up on the next turn without rebuilding the runner (T1.4)', async () => {
     const project = register(makeRepo())
     mkdirSync(join(project.path, '.codesema'), { recursive: true })
     writeFileSync(
@@ -546,7 +546,7 @@ describe('createTaskManager', () => {
     )
     const rig = fakeRunner()
     const manager = createTaskManager({ ...managerOpts, ...rig })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     const getter = rig.runnerOptions().getChecksConfig
     expect(getter?.()?.image).toBe('oven/bun:1')
     writeFileSync(
@@ -612,7 +612,7 @@ describe('createTaskManager', () => {
     })
   })
 
-  test("a sibling without agent inherits the global command, not the launch repo's (T1.4)", () => {
+  test("a sibling without agent inherits the global command, not the launch repo's (T1.4)", async () => {
     saveGlobalConfig({ agent: 'codex exec -' })
     const repoA = makeRepo()
     const repoB = makeRepo()
@@ -628,15 +628,15 @@ describe('createTaskManager', () => {
       command: 'codex exec -',
       onNotice: (message) => notices.push(message),
     })
-    manager.create(projectA.id, { title: 'a', prompt: 'p', autoShip: false })
-    manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
+    await manager.create(projectA.id, { title: 'a', prompt: 'p', autoShip: false })
+    await manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
     const optsByCwd = new Map(rig.allRunnerOptions.map((options) => [options.cwd, options]))
     expect(optsByCwd.get(repoA)?.command).toBe('claude -p --model opus')
     expect(optsByCwd.get(repoB)?.command).toBe('codex exec -')
     expect(notices.some((line) => line.includes('not approved'))).toBe(false)
   })
 
-  test('a global agent is not TOFU-warned as repo-provided (T1.4)', () => {
+  test('a global agent is not TOFU-warned as repo-provided (T1.4)', async () => {
     saveGlobalConfig({ agent: 'codex exec -' })
     const project = register(makeRepo())
     const notices: string[] = []
@@ -646,11 +646,11 @@ describe('createTaskManager', () => {
       command: 'codex exec -',
       onNotice: (message) => notices.push(message),
     })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(notices.some((line) => line.includes('not approved'))).toBe(false)
   })
 
-  test('--agent bypasses TOFU for an untrusted repo command (T1.4)', () => {
+  test('--agent bypasses TOFU for an untrusted repo command (T1.4)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { agent: 'claude -p --model opus' })
     const project = register(repo)
@@ -661,11 +661,11 @@ describe('createTaskManager', () => {
       command: 'claude -p',
       flags: { agent: 'codex exec -' },
     })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(rig.runnerOptions().command).toBe('codex exec -')
   })
 
-  test('container isolation with a non-claude agent is a 400, not a retryable 409 (T1.4)', () => {
+  test('container isolation with a non-claude agent is a 400, not a retryable 409 (T1.4)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'container' })
     const project = register(repo)
@@ -681,7 +681,7 @@ describe('createTaskManager', () => {
         runtime: 'podman',
       },
     })
-    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(created).toMatchObject({ ok: false, code: 400 })
     expect(created.ok ? '' : created.error).toContain('codex')
     expect(created.ok ? true : 'reason_code' in created).toBe(false)
@@ -707,7 +707,7 @@ describe('createTaskManager', () => {
     })
   })
 
-  test('create isolation follows the FROZEN runner command, not a later disk agent (T1.4 A)', () => {
+  test('create isolation follows the FROZEN runner command, not a later disk agent (T1.4 A)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'policy', agent: 'codex exec -' })
     const project = register(repo)
@@ -724,7 +724,7 @@ describe('createTaskManager', () => {
         runtime: 'podman',
       },
     })
-    const first = manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
+    const first = await manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
     expect(first.ok && first.record.isolation).toBe('policy')
     saveRepoConfig(repo, { isolation: 'container', agent: 'claude -p' })
     trustRepoAgent(repo, 'claude -p')
@@ -732,7 +732,7 @@ describe('createTaskManager', () => {
       isolation_configured: 'container',
       isolation_available: false,
     })
-    const second = manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
+    const second = await manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
     // The runner still executes the command it was built with. Recording
     // container here would send that command into a claude-only cage.
     expect(second).toMatchObject({ ok: false, code: 400 })
@@ -746,7 +746,7 @@ describe('createTaskManager', () => {
     expect(rig.runnerOptions().command).toBe('codex exec -')
   })
 
-  test('a frozen non-claude 400 does not ask to restart when the file still agrees (T1.4)', () => {
+  test('a frozen non-claude 400 does not ask to restart when the file still agrees (T1.4)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'container', agent: 'codex exec -' })
     trustRepoAgent(repo, 'codex exec -')
@@ -763,7 +763,7 @@ describe('createTaskManager', () => {
         runtime: 'podman',
       },
     })
-    const created = manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
+    const created = await manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
     expect(created).toMatchObject({ ok: false, code: 400 })
     expect(created.ok).toBe(false)
     if (!created.ok) {
@@ -772,7 +772,7 @@ describe('createTaskManager', () => {
     }
   })
 
-  test('isolation-mode edits still apply when the frozen command can be caged (T1.4 A)', () => {
+  test('isolation-mode edits still apply when the frozen command can be caged (T1.4 A)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'policy' })
     const project = register(repo)
@@ -788,16 +788,16 @@ describe('createTaskManager', () => {
         runtime: 'podman',
       },
     })
-    const first = manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
+    const first = await manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
     expect(first.ok && first.record.isolation).toBe('policy')
     saveRepoConfig(repo, { isolation: 'container' })
-    const second = manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
+    const second = await manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
     expect(second.ok && second.record.isolation).toBe('container')
     expect(rig.allRunnerOptions).toHaveLength(1)
     expect(rig.runnerOptions().command).toBe('claude -p')
   })
 
-  test('a launch-repo TOFU warning is not repeated at context() (T1.4 C)', () => {
+  test('a launch-repo TOFU warning is not repeated at context() (T1.4 C)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { agent: 'claude -p --model opus' })
     const project = register(repo)
@@ -808,11 +808,11 @@ describe('createTaskManager', () => {
       onNotice: (message) => notices.push(message),
       launchRepoPath: repo,
     })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(notices.some((line) => line.includes('not approved'))).toBe(false)
   })
 
-  test('a sibling custom agent is named at context construction (T1.4 D)', () => {
+  test('a sibling custom agent is named at context construction (T1.4 D)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { agent: 'mytool run' })
     trustRepoAgent(repo, 'mytool run')
@@ -824,11 +824,11 @@ describe('createTaskManager', () => {
       command: 'claude -p',
       onNotice: (message) => notices.push(message),
     })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(notices.some((line) => line.includes('mytool run'))).toBe(true)
   })
 
-  test('a repo load-cap warning is not repeated on the second context of the same path (T1.4)', () => {
+  test('a repo load-cap warning is not repeated on the second context of the same path (T1.4)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { maxConcurrentAgents: 1 })
     const project = register(repo)
@@ -839,7 +839,7 @@ describe('createTaskManager', () => {
       onNotice: (message) => notices.push(message),
       loadCapNoticeShown: [repo],
     })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(notices.some((line) => line.includes('maxConcurrentAgents'))).toBe(false)
   })
 
@@ -872,7 +872,7 @@ describe('createTaskManager', () => {
     expect(loadTask(repo, seeded.id)?.isolation).toBe('policy')
   })
 
-  test('a repo maxConcurrentAgents is named and does not size the project (T1.4)', () => {
+  test('a repo maxConcurrentAgents is named and does not size the project (T1.4)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { maxConcurrentAgents: 1 })
     const project = register(repo)
@@ -882,7 +882,7 @@ describe('createTaskManager', () => {
       ...fakeRunner(),
       onNotice: (message) => notices.push(message),
     })
-    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(notices.some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
   })
 
