@@ -1,5 +1,9 @@
-import { describe, expect, test } from 'bun:test'
-import { PROBE_TIMEOUT_MS, subprocessEnv, tryExecAsync } from './git.js'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { PROBE_TIMEOUT_MS, subprocessEnv, tryExecAsync, tryGit } from './git.js'
 
 describe('subprocessEnv', () => {
   test('purges variables that redirect git to a different repo', () => {
@@ -79,5 +83,50 @@ describe('tryExecAsync', () => {
 
   test('the per-probe budget is unchanged (8s), only the waiting is shared', () => {
     expect(PROBE_TIMEOUT_MS).toBe(8000)
+  })
+})
+
+// `GitCallOptions` arrived with T1.9 as the seat belt of the retention pass:
+// its `git status` runs UNATTENDED, at boot, against a path this process does
+// not control, and a worktree on a suspended network mount makes git block
+// forever. The whole value of that budget is the shape of the answer it
+// produces — `tryGit` returns `null`, "could not determine", which the caller
+// reads as "do not destroy anything". Ignored, the same call comes back an
+// EMPTY STRING once the hang eventually clears, and an empty porcelain status
+// reads as CLEAN: the protective `null` becomes a permissive `''` and
+// `git worktree remove --force` proceeds (DP16). Proven on a real hang, with a
+// budget short enough to cost the suite nothing.
+describe('GitCallOptions', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'codesema-git-budget-'))
+  const run = (args: string[]): void => {
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      cwd: repo,
+      stdio: 'ignore',
+    })
+  }
+  run(['init', '-b', 'main'])
+  writeFileSync(join(repo, 'base.txt'), 'a\n')
+  run(['add', '-A'])
+  run(['commit', '-m', 'init'])
+
+  afterAll(() => {
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  test('a git call that outlives its budget is cut short and answers null, never an empty string', () => {
+    const started = Date.now()
+    // A shell alias that simply sleeps: a real git process that really hangs,
+    // no fake, no injected clock.
+    const result = tryGit(['-c', 'alias.hang=!sleep 4', 'hang'], repo, { timeoutMs: 500 })
+    const elapsed = Date.now() - started
+
+    // `''` here would be the disaster: it is exactly what a clean worktree
+    // looks like to the retention guard.
+    expect(result).toBeNull()
+    expect(elapsed).toBeLessThan(2500)
+  })
+
+  test('a budget large enough is simply not in the way: the command still answers', () => {
+    expect(tryGit(['rev-parse', '--abbrev-ref', 'HEAD'], repo, { timeoutMs: 30_000 })).toBe('main')
   })
 })

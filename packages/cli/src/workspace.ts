@@ -180,10 +180,7 @@ async function resolveAgentCommand(
   repoRoot: string | null,
   configured: string | undefined,
 ): Promise<string> {
-  // Probing every known agent binary is only worth a subprocess each when
-  // nothing is configured: a configured command IS the answer, and the
-  // detection result was never read in that case.
-  const detected = configured === undefined ? (await detectAgents(cwd))[0] : undefined
+  const [detected] = await detectAgents(cwd)
   const agentCommand = configured ?? (detected ? defaultCommand(detected) : undefined)
   if (!agentCommand) {
     throw new Error(t('agent.noneFound', { bins: AGENT_DEFS.map((d) => d.bin).join(', ') }))

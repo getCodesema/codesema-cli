@@ -10,8 +10,9 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import type { TaskRecord } from './contract.js'
+import * as gitModule from './git.js'
 import type { IsolationExecFn } from './task-isolation.js'
 import { applyTaskRetention } from './task-retention.js'
 import { createTaskWorktree, type WorktreeLockFn } from './task-worktree.js'
@@ -22,19 +23,20 @@ const RUNNING_AS_ROOT = process.getuid?.() === 0
 
 const cleanups: string[] = []
 
+function gitIn(cwd: string, args: string[]): void {
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+    cwd,
+    stdio: 'ignore',
+  })
+}
+
 function makeRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), 'codesema-task-retention-'))
   cleanups.push(repo)
-  const run = (args: string[]): void => {
-    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
-      cwd: repo,
-      stdio: 'ignore',
-    })
-  }
-  run(['init', '-b', 'main'])
+  gitIn(repo, ['init', '-b', 'main'])
   writeFileSync(join(repo, 'base.txt'), 'a\n')
-  run(['add', '-A'])
-  run(['commit', '-m', 'init'])
+  gitIn(repo, ['add', '-A'])
+  gitIn(repo, ['commit', '-m', 'init'])
   return repo
 }
 
@@ -327,12 +329,12 @@ describe('applyTaskRetention', () => {
     ])
   })
 
-  // The same class, the other documented config: `diff.ignoreSubmodules=all`
-  // hides a submodule's uncommitted content from `git status` the same way.
-  // Proven here on the simpler carrier the flag also fixes — an untracked
+  // The other half of what `-uall` buys, on its own carrier: an untracked
   // DIRECTORY, which plain porcelain folds into ONE entry regardless of how
   // many files it holds, so the count the notice reports is the number of
-  // files actually at stake and not the number of directories.
+  // files actually at stake and not the number of directories. (The submodule
+  // half of the guard — `--ignore-submodules=none` — is NOT covered here; it
+  // has its own test below, on a real submodule.)
   test('-uall counts untracked files one by one: the reported count is the number of files at stake', async () => {
     const repo = makeRepo()
     const record = await seedTerminatedTask(repo, 'aaaaaaaaaaaa', '2026-01-01T00:00:00.000Z')
@@ -352,6 +354,92 @@ describe('applyTaskRetention', () => {
     expect(outcome.notices).toEqual([
       `task ${record.id}: worktree kept, it carries 3 uncommitted change(s)`,
     ])
+  })
+
+  // The OTHER override the DP16 guard carries, and the one nothing tested:
+  // `--ignore-submodules=none`. Its danger is worse than a user preference —
+  // `submodule.<name>.ignore = all` lives in `.gitmodules`, which is COMMITTED,
+  // so every clone of such a repository inherits it and no human on this
+  // machine ever configured anything. A turn that failed to commit leaves its
+  // only copy inside the submodule's working tree; without the override
+  // `git status --porcelain -uall` in the superproject is completely SILENT
+  // about it, retention reads "clean", `git worktree remove --force` runs, and
+  // the notice says "worktree removed". Reproduced against a REAL submodule
+  // carrying that REAL committed config.
+  test('a worktree dirty ONLY inside a submodule survives even under a committed submodule.<name>.ignore=all', async () => {
+    const repo = makeRepo()
+    // The submodule's upstream: a second real repository on disk. Local-path
+    // submodules have needed protocol.file.allow since CVE-2022-39253.
+    const upstream = mkdtempSync(join(tmpdir(), 'codesema-task-retention-sub-'))
+    cleanups.push(upstream)
+    gitIn(upstream, ['init', '-b', 'main'])
+    writeFileSync(join(upstream, 'lib.txt'), 'lib\n')
+    gitIn(upstream, ['add', '-A'])
+    gitIn(upstream, ['commit', '-m', 'init'])
+    gitIn(repo, ['-c', 'protocol.file.allow=always', 'submodule', 'add', upstream, 'vendor'])
+    gitIn(repo, ['config', '-f', '.gitmodules', 'submodule.vendor.ignore', 'all'])
+    gitIn(repo, ['add', '-A'])
+    gitIn(repo, ['commit', '-m', 'vendor'])
+
+    const record = await seedTerminatedTask(repo, 'aaaaaaaaaaaa', '2026-01-01T00:00:00.000Z')
+    // A linked worktree starts with an EMPTY submodule directory; check it out
+    // so the task's worktree has the shape a real caged turn would have had.
+    gitIn(record.worktree, ['-c', 'protocol.file.allow=always', 'submodule', 'update', '--init'])
+    writeFileSync(join(record.worktree, 'vendor', 'only-copy.txt'), 'work no commit ever took\n')
+    // The premise, proven rather than assumed: even WITH -uall, this repo's
+    // porcelain status says nothing at all about that file.
+    expect(
+      execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+        cwd: record.worktree,
+        encoding: 'utf8',
+      }).trim(),
+    ).toBe('')
+
+    const outcome = await applyTaskRetention({ cwd: repo, keep: 0 })
+
+    expect(outcome.purged).toEqual([])
+    expect(existsSync(join(record.worktree, 'vendor', 'only-copy.txt'))).toBe(true)
+    expect(existsSync(taskDir(repo, record.id))).toBe(true)
+    expect(outcome.notices).toEqual([
+      `task ${record.id}: worktree kept, it carries 1 uncommitted change(s)`,
+    ])
+  })
+
+  // The status call is the LAST thing that stands between an unattended boot
+  // pass and `git worktree remove --force`, and it runs against a path this
+  // process does not control: a worktree sitting on a suspended network mount
+  // makes `git status` block forever, and a boot pass nobody is watching would
+  // hang there with nothing said. The budget is what turns that into a `null`
+  // — "could not determine" — which keeps the worktree (the test above proves
+  // that half against a real unreadable status). What CANNOT be proven by a
+  // real hang is that the call carries the budget at all: the budget is 60s by
+  // design, and no test suite may spend a minute sleeping to observe it. So it
+  // is proven on the argv, the way this repo proves every other unobservable
+  // subprocess argument — and paired with the ordering that gives it its
+  // meaning: the budgeted read happens BEFORE the destructive removal (DP16),
+  // never after.
+  test('the status read carries a finite budget and runs before the destructive removal', async () => {
+    const repo = makeRepo()
+    const record = await seedTerminatedTask(repo, 'aaaaaaaaaaaa', '2026-01-01T00:00:00.000Z')
+    const spy = spyOn(gitModule, 'tryGit')
+    try {
+      await applyTaskRetention({ cwd: repo, keep: 0 })
+
+      const calls = spy.mock.calls as unknown as [string[], string, { timeoutMs?: number }?][]
+      const statusAt = calls.findIndex((call) => call[0][0] === 'status')
+      const removeAt = calls.findIndex(
+        (call) => call[0][0] === 'worktree' && call[0][1] === 'remove',
+      )
+      expect(statusAt).toBeGreaterThanOrEqual(0)
+      expect(calls[statusAt]?.[1]).toBe(record.worktree)
+      expect(removeAt).toBeGreaterThan(statusAt)
+      const budget = calls[statusAt]?.[2]?.timeoutMs
+      expect(typeof budget).toBe('number')
+      expect(budget).toBeGreaterThan(0)
+      expect(budget).toBeLessThanOrEqual(120_000)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   // T1.9 review round 4, MAJEUR 2: `git worktree remove --force` CAN be

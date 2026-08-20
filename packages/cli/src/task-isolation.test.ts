@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -1601,6 +1601,49 @@ describe('runtimeIsPodman', () => {
   test('a runtime that cannot answer abstains (null), it is never called docker', async () => {
     const { exec } = fakeExec(() => ok({ code: 127, stderr: 'not found' }))
     expect(await runtimeIsPodman('docker', exec)).toBeNull()
+  })
+
+  // The memo is the PRODUCTION path and the one no test above reaches: an
+  // injected `execFn` short-circuits it outright (`if (execFn) return
+  // probe()`), so every assertion in this describe exercises the probe and
+  // none of them exercises what is REMEMBERED of it. What is remembered
+  // matters: `null` means "the binary could not answer", the exact shape a
+  // container daemon still starting at boot produces, and remembering it for
+  // the life of the workspace process would cost every later turn its
+  // `--userns=keep-id` and every later boot its orphaned-volume sweep — for
+  // one bad second. So this one drives the real seam, with a real subprocess
+  // that is neither docker nor podman: a shell script that fails ONCE and
+  // answers properly afterwards, counting its own invocations on disk.
+  test('a transient probe failure is re-asked, never frozen for the life of the process', async () => {
+    const dir = makeDir('codesema-isolation-probe-')
+    const counter = join(dir, 'invocations')
+    const runtime = join(dir, 'flaky-runtime')
+    writeFileSync(
+      runtime,
+      [
+        '#!/bin/sh',
+        `n=$(cat '${counter}' 2>/dev/null || echo 0)`,
+        'n=$((n+1))',
+        `printf %s "$n" > '${counter}'`,
+        'if [ "$n" = 1 ]; then exit 1; fi',
+        'echo "podman version 5.7.0"',
+        '',
+      ].join('\n'),
+    )
+    chmodSync(runtime, 0o755)
+
+    const first = await runtimeIsPodman(runtime)
+    const second = await runtimeIsPodman(runtime)
+    const third = await runtimeIsPodman(runtime)
+
+    expect(first).toBeNull()
+    // The whole point: the second question is actually ASKED, and it is the
+    // binary's real answer that comes back — not the first second's failure.
+    expect(second).toBe(true)
+    expect(third).toBe(true)
+    // Two real invocations, not three and not one: an ANSWER is worth
+    // remembering, ignorance is re-asked.
+    expect(readFileSync(counter, 'utf8')).toBe('2')
   })
 })
 
