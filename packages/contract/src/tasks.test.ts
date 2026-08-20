@@ -698,6 +698,12 @@ describe('sanitizeTaskEvent', () => {
       'cost',
       'branch',
       'resource',
+      // T1.3 (D4): adversarial review round 3, MINEUR — this list is the
+      // explicit guard-rail on the exhaustiveness of TASK_EVENT_TYPES that TS
+      // itself cannot check (a Set, not a Record); 'queue' was missing, so
+      // this test passed green while never covering the member this ticket
+      // actually added.
+      'queue',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

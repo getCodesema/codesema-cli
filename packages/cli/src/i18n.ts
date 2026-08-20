@@ -403,8 +403,10 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
     '{n} interrupted task can be resumed — click Resume in the web UI: | {n} interrupted tasks can be resumed — click Resume in the web UI:',
   'workspace.queueResumed':
     '{n} queued task resumes on {project}: | {n} queued tasks resume on {project}:',
-  'workspace.maxParallelInert':
-    'note: maxParallelTasks={n} is inert — superseded by the per-project queue (one active task per repo); a machine-load cap arrives with maxConcurrentAgents',
+  'workspace.maxParallelDeprecated':
+    'note: maxParallelTasks={n} is deprecated — honored as an alias of maxConcurrentAgents (the machine-wide load cap, default 4); set maxConcurrentAgents instead to silence this notice',
+  'workspace.invalidLoadCapKey':
+    'note: {key} is set but not usable (must be a whole number, 1 or more) — the machine-wide load cap default applies instead',
   'workspace.shutdownWaiting':
     'waiting for {n} task to settle (its agent was stopped)… | waiting for {n} tasks to settle (their agents were stopped)…',
   'workspace.shutdownGaveUp':
@@ -848,8 +850,10 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
     "{n} tâche interrompue peut reprendre — cliquez Reprendre dans l'UI web : | {n} tâches interrompues peuvent reprendre — cliquez Reprendre dans l'UI web :",
   'workspace.queueResumed':
     '{n} tâche en file reprend sur {project} : | {n} tâches en file reprennent sur {project} :',
-  'workspace.maxParallelInert':
-    'note : maxParallelTasks={n} est inerte — remplacé par la file par projet (une tâche active par dépôt) ; un plafond de charge machine arrivera avec maxConcurrentAgents',
+  'workspace.maxParallelDeprecated':
+    'note : maxParallelTasks={n} est déprécié — honoré comme alias de maxConcurrentAgents (le plafond de charge machine, défaut 4) ; réglez maxConcurrentAgents pour faire taire cet avis',
+  'workspace.invalidLoadCapKey':
+    'note : {key} est défini mais inutilisable (doit être un entier ≥ 1) — le plafond de charge machine par défaut s’applique à la place',
   'workspace.shutdownWaiting':
     "attente de {n} tâche le temps qu'elle se règle (son agent a été arrêté)… | attente de {n} tâches le temps qu'elles se règlent (leurs agents ont été arrêtés)…",
   'workspace.shutdownGaveUp':

@@ -8,11 +8,12 @@
 // works in the worktree. Real git repos in tmpdirs, injected agents.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
+import { saveRepoConfig } from './config.js'
 import type { TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
 import { projectIdFor } from './projects.js'
@@ -27,7 +28,14 @@ import {
 } from './task-queue.js'
 import { createTaskRunner, DRAIN_NOTICE_MS, DRAIN_TIMEOUT_MS } from './task-runner.js'
 import { createTask, loadTask, readTaskEvents, resetStoreReports, saveTask } from './tasks-store.js'
-import { logIsolation, maxParallelNotice } from './workspace.js'
+import {
+  bootNotices,
+  invalidLoadCapKeyNotice,
+  logIsolation,
+  maxParallelNotice,
+  resolveMaxConcurrentAgents,
+  workspaceTaskManagerOptions,
+} from './workspace.js'
 
 const cleanups: string[] = []
 
@@ -1092,18 +1100,284 @@ describe('the admission claim', () => {
   })
 })
 
-// --- the inert maxParallelTasks key, said out loud -------------------------
+// --- the deprecated maxParallelTasks key, said out loud (T1.3) -------------
 
 describe('maxParallelNotice', () => {
-  test('a configured key is announced inert, and names what replaces it', () => {
+  test('a configured key is announced deprecated, and names what replaces it', () => {
     const line = maxParallelNotice(5)
     expect(line).toContain('maxParallelTasks=5')
-    expect(line).toContain('inert')
+    expect(line).toContain('deprecated')
     expect(line).toContain('maxConcurrentAgents')
   })
 
   test('an unset key says nothing at all', () => {
     expect(maxParallelNotice(undefined)).toBeNull()
+  })
+})
+
+describe('resolveMaxConcurrentAgents (design.md Decision 5)', () => {
+  test('neither key set: undefined, so the caller applies its own default', () => {
+    expect(resolveMaxConcurrentAgents({})).toBeUndefined()
+  })
+
+  test('only the deprecated key set: its value is honored', () => {
+    expect(resolveMaxConcurrentAgents({ maxParallelTasks: 2 })).toBe(2)
+  })
+
+  test('only the explicit key set: its value is honored', () => {
+    expect(resolveMaxConcurrentAgents({ maxConcurrentAgents: 7 })).toBe(7)
+  })
+
+  test('both set: the explicit maxConcurrentAgents wins the value', () => {
+    expect(resolveMaxConcurrentAgents({ maxConcurrentAgents: 7, maxParallelTasks: 2 })).toBe(7)
+  })
+})
+
+// Adversarial review round 3, MAJEUR 1: the previous round's coverage of
+// `shutdownSignal` and `maxConcurrentAgents` injected them straight into
+// `createTaskManager`, which proves that function honors them but nothing
+// about workspace.ts's OWN wiring — deleting `shutdownSignal: draining.signal`
+// from workspace.ts left the whole suite (2065 tests) green. These tests call
+// the exact function `workspace()` spreads into its `createTaskManager` call,
+// so a regression at THAT call site (not just inside createTaskManager) is
+// what turns them red.
+// The ONE argument `workspace()` builds its task manager with. Round 3 tested
+// three fields of it; round 4 (MAJEUR 2) made it the WHOLE argument, because
+// the five the call site still spelled out inline were what let a merge
+// resolution drop the spread — and with it `shutdownSignal` and
+// `maxConcurrentAgents` — without a single red test.
+describe('workspaceTaskManagerOptions (the whole createTaskManager argument)', () => {
+  /** The boot facts the caller resolves (agent command, ceilings, cage). */
+  const boot = () => ({
+    command: 'claude -p',
+    timeoutMs: 90_000,
+    watchdog: { inactivityMs: 1000, toolBudgetMs: 2000, heartbeatMs: 500 },
+    isolation: {
+      available: true,
+      mode: 'container' as const,
+      reason: 'podman is available',
+      configured: 'auto' as const,
+      runtime: 'podman' as const,
+    },
+    allowedDomains: ['registry.npmjs.org'],
+  })
+
+  test('shutdownSignal is the signal draining.abort() actually fires', () => {
+    const draining = new AbortController()
+    const opts = workspaceTaskManagerOptions({}, draining, boot())
+    expect(opts.shutdownSignal).toBe(draining.signal)
+    expect(opts.shutdownSignal?.aborted).toBe(false)
+    draining.abort()
+    expect(opts.shutdownSignal?.aborted).toBe(true)
+  })
+
+  // The mutant this kills: dropping `...boot` from the returned literal. The
+  // typecheck already refuses a call site that stops using this function at
+  // all (command/timeoutMs are required); this covers the other half — the
+  // function being called but throwing half its input away.
+  test('every boot fact reaches the manager options verbatim', () => {
+    const input = boot()
+    const opts = workspaceTaskManagerOptions({}, new AbortController(), input)
+    expect(opts.command).toBe(input.command)
+    expect(opts.timeoutMs).toBe(input.timeoutMs)
+    expect(opts.watchdog).toEqual(input.watchdog)
+    expect(opts.isolation).toEqual(input.isolation)
+    expect(opts.allowedDomains).toEqual(input.allowedDomains)
+  })
+
+  test('neither key configured: maxParallel and maxConcurrentAgents are both absent', () => {
+    const opts = workspaceTaskManagerOptions({}, new AbortController(), boot())
+    expect(opts.maxParallel).toBeUndefined()
+    expect(opts.maxConcurrentAgents).toBeUndefined()
+  })
+
+  test('only the explicit key: maxConcurrentAgents carries it, maxParallel stays absent', () => {
+    const opts = workspaceTaskManagerOptions(
+      { maxConcurrentAgents: 3 },
+      new AbortController(),
+      boot(),
+    )
+    expect(opts.maxConcurrentAgents).toBe(3)
+    expect(opts.maxParallel).toBeUndefined()
+  })
+
+  test('only the deprecated alias: it feeds BOTH maxParallel (round-trip) and maxConcurrentAgents (D5)', () => {
+    // The mutant this kills: `resolveMaxConcurrentAgents(config) ->
+    // config.maxConcurrentAgents` at the call site — it would ignore the
+    // alias entirely and leave maxConcurrentAgents undefined here, breaking
+    // AC-10 ("an effective cap of 2" via the deprecated key alone).
+    const opts = workspaceTaskManagerOptions({ maxParallelTasks: 2 }, new AbortController(), boot())
+    expect(opts.maxParallel).toBe(2)
+    expect(opts.maxConcurrentAgents).toBe(2)
+  })
+
+  test('both keys: the explicit maxConcurrentAgents wins the value, maxParallel still round-trips', () => {
+    const opts = workspaceTaskManagerOptions(
+      { maxConcurrentAgents: 7, maxParallelTasks: 2 },
+      new AbortController(),
+      boot(),
+    )
+    expect(opts.maxConcurrentAgents).toBe(7)
+    expect(opts.maxParallel).toBe(2)
+  })
+
+  // A SOURCE-SHAPE assertion, deliberately, and the only kind available for
+  // this one fact. `workspace()` cannot be called from a test (it listens on
+  // a port, takes the global workspace lock, probes container runtimes and
+  // installs real SIGINT handlers), so nothing runtime-level can observe how
+  // it builds its manager. Moving every option into
+  // `workspaceTaskManagerOptions` makes DELETING the call a typecheck error
+  // (`command`/`timeoutMs` are required) — but it does NOT stop a merge
+  // resolution from replacing the call with an inline literal that supplies
+  // those two and quietly drops `shutdownSignal` and `maxConcurrentAgents`.
+  // That is not hypothetical: the T2.4 rebase conflicts on exactly this call,
+  // and taking its side does exactly that.
+  //
+  // Not tautological: it compares nothing to the constant that produces it —
+  // it pins an architectural invariant ("this call site delegates, it does
+  // not decide") that neither the type system nor any runtime assertion can
+  // express here.
+  test('workspace() builds its manager THROUGH this function and nothing else', () => {
+    const code = readFileSync(join(import.meta.dir, 'workspace.ts'), 'utf8')
+      .split('\n')
+      // Comment lines mention the call by name on purpose; only code counts.
+      .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+      .join('\n')
+    // T1.9 put an injection seam on the call TARGET
+    // (`opts.createTaskManagerFn ?? createTaskManager`) — that seam is how the
+    // boot wiring gets tested at all, and it is why the literal
+    // `createTaskManager(` no longer appears. The invariant pinned here is
+    // unchanged and lives on the ARGUMENT: whatever builds the manager is
+    // handed the whole object this function returns, with nothing decided
+    // inline beside it.
+    expect(code.match(/createTaskManager[)\s]*\(/g) ?? []).toHaveLength(1)
+    expect(/createTaskManager\)\(\s*workspaceTaskManagerOptions\(/.test(code)).toBe(true)
+  })
+})
+
+// MINEUR (adversarial review): an invalid machine-cap value used to disappear
+// in total silence — the boot line that says so, for both keys, both scopes.
+describe('invalidLoadCapKeyNotice', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    if (configDir) {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+    if (repoDir) {
+      rmSync(repoDir, { recursive: true, force: true })
+    }
+  })
+
+  function withConfigDir(): void {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-invalid-cap-cfg-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  }
+
+  test('nothing configured: silence', () => {
+    withConfigDir()
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-invalid-cap-repo-'))
+    expect(invalidLoadCapKeyNotice(repoDir)).toBeNull()
+    expect(invalidLoadCapKeyNotice(null)).toBeNull()
+  })
+
+  test('a usable value: silence', () => {
+    withConfigDir()
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-invalid-cap-repo-'))
+    saveRepoConfig(repoDir, { maxConcurrentAgents: 3 })
+    expect(invalidLoadCapKeyNotice(repoDir)).toBeNull()
+  })
+
+  test('an invalid maxConcurrentAgents in the REPO config is named', () => {
+    withConfigDir()
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-invalid-cap-repo-'))
+    saveRepoConfig(repoDir, { maxConcurrentAgents: 0 })
+    const line = invalidLoadCapKeyNotice(repoDir)
+    expect(line).toContain('maxConcurrentAgents')
+  })
+
+  test('the deprecated alias, invalid, is also named', () => {
+    withConfigDir()
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-invalid-cap-repo-'))
+    saveRepoConfig(repoDir, { maxParallelTasks: -1 })
+    const line = invalidLoadCapKeyNotice(repoDir)
+    expect(line).toContain('maxParallelTasks')
+  })
+
+  test('outside any repo (repoRoot null), only the global config is consulted', () => {
+    withConfigDir()
+    // No repo config exists at all here; a null repoRoot must not throw
+    // trying to read one.
+    expect(invalidLoadCapKeyNotice(null)).toBeNull()
+  })
+
+  // Round 4 (mineur): each notice was proven on its own; that the BOOT prints
+  // them — both of them, in this order — rested on reading `workspace()`,
+  // which no test can call. `bootNotices` is that assembly, extracted.
+  describe('bootNotices (what the boot actually prints)', () => {
+    test('nothing to say: no lines at all', () => {
+      withConfigDir()
+      repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
+      expect(bootNotices({}, repoDir)).toEqual([])
+    })
+
+    test('an invalid value AND a deprecated key: both lines, deprecation first', () => {
+      withConfigDir()
+      repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
+      saveRepoConfig(repoDir, { maxConcurrentAgents: 0 })
+      const lines = bootNotices({ maxParallelTasks: 2 }, repoDir)
+      // The mutant this kills: dropping either entry from the array. A silent
+      // deprecation, or a value silently ignored, is invariant 2's exact
+      // failure mode — and the whole reason this ticket added the two lines.
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toContain('maxParallelTasks')
+      expect(lines[1]).toContain('maxConcurrentAgents')
+    })
+
+    test('only the deprecated key set: one line, the deprecation', () => {
+      withConfigDir()
+      repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
+      expect(bootNotices({ maxParallelTasks: 4 }, repoDir)).toEqual([maxParallelNotice(4)!])
+    })
+
+    // A SOURCE-SHAPE assertion, same kind and for the same reason as
+    // 'workspace() builds its manager THROUGH this function and nothing else'
+    // 190 lines above: `workspace()` listens on a port, takes the global
+    // workspace lock, probes container runtimes and installs real SIGINT
+    // handlers, so no runtime assertion can observe what it prints at boot.
+    //
+    // The gap this closes was measured, not imagined (adversarial round 5,
+    // MAJEUR A): replacing the loop with `for (const line of [] as string[])`
+    // kept `tsc --noEmit` green and the whole suite at 0 fail, while BOTH
+    // normative boot lines vanished in silence — the `maxParallelTasks`
+    // deprecation warning and the `workspace.invalidLoadCapKey` notice. The
+    // three tests above prove the array's CONTENT; this one proves the boot
+    // still reads it, which is the half invariant 2 (no silent degradation)
+    // actually depends on.
+    //
+    // Not tautological: it compares nothing to the constant that produces it.
+    test('workspace() prints EVERY bootNotices line, and gets them from nowhere else', () => {
+      const code = readFileSync(join(import.meta.dir, 'workspace.ts'), 'utf8')
+        .split('\n')
+        // Comment lines name the call on purpose; only code counts.
+        .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+        .join('\n')
+      // Exactly two mentions: the declaration and the one call site.
+      expect(code.match(/\bbootNotices\(/g) ?? []).toHaveLength(2)
+      // And that call site iterates the result, printing each line as-is.
+      expect(
+        /for\s*\(\s*const\s+line\s+of\s+bootNotices\([^)]*\)\s*\)\s*\{\s*console\.log\(line\)\s*\}/.test(
+          code,
+        ),
+      ).toBe(true)
+    })
   })
 })
 

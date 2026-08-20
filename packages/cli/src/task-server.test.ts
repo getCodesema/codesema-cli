@@ -24,6 +24,7 @@ import {
   type TaskRecord,
   type Verdict,
 } from './contract.js'
+import { createLoadCap } from './load-cap.js'
 import { addProject, listProjects, projectsPath, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
@@ -41,7 +42,7 @@ import {
   resetQueueDegradedReports,
 } from './task-queue.js'
 import type { TaskRetentionOutcome } from './task-retention.js'
-import { readTaskReview } from './task-review.js'
+import { readTaskReview, type CreateTaskReviewerOptions } from './task-review.js'
 import { pendingResumeTurn, type TaskRunner, type TaskRunnerOptions } from './task-runner.js'
 import {
   createTaskManager,
@@ -1281,6 +1282,11 @@ describe('manager.checks', () => {
     expect(checksFrames()).toMatchObject([
       { project_id: project.id, task_id: record.id, event: { data: { status: 'running' } } },
     ])
+    // T1.3 (D4): the checks call now sits behind an `await loadCap.acquire`,
+    // which yields at least one microtask even when a slot is free — 'running'
+    // above is still synchronous, but seeing the engine actually get called
+    // now needs one tick.
+    await Promise.resolve()
     // The engine got the worktree, its HEAD, and no config (none in this repo).
     expect(seen[0]?.worktree).toBe(worktree)
     expect(seen[0]?.headSha).toBe(headSha)
@@ -2683,6 +2689,333 @@ describe('workspace server end to end', () => {
         loadTask(projectA.path, first.record.id)?.status === 'review_ok' &&
         loadTask(projectB.path, second.record.id)?.status === 'review_ok',
     )
+  })
+
+  // AC2 (T1.3, D4): checks are a heavy consumer of the SAME machine cap as a
+  // turn. runChecksFn injected, no real container spawned (§ 0.4).
+  test('a checks run on project A blocks a turn on project B under a shared cap of 1, and it starts once checks finish', async () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const { record: checksRecord } = seedCommittedTask(projectA.path)
+
+    let releaseChecks: (checks: TaskChecks) => void = () => {}
+    const checksGate = new Promise<TaskChecks>((resolve) => {
+      releaseChecks = resolve
+    })
+    const cap = createLoadCap(1)
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: async (options: AgentRunOptions): Promise<string> => {
+        const raw = claudeStream('done')
+        options.onText?.(raw)
+        return raw
+      },
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+      },
+      runChecksFn: () => checksGate,
+    })
+
+    expect(manager.checks(projectA.id, checksRecord.id)).toEqual({ ok: true })
+    await until(() => cap.snapshot().occupied === 1)
+
+    const created = manager.create(projectB.id, { title: 'B', prompt: 'task b', autoShip: false })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // Held back by the MACHINE cap — project B has nothing else running.
+    await until(() => loadTask(projectB.path, created.record.id)?.reason?.code === 'resource_busy')
+    expect(loadTask(projectB.path, created.record.id)?.status).toBe('queued')
+
+    releaseChecks(finishedChecks())
+    await until(() => loadTask(projectB.path, created.record.id)?.status === 'review_ok')
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  // CRITIQUE (adversarial review): a checks run parked on a saturated cap has
+  // no project queue of its own to make it visible or retryable — without
+  // `shutdownSignal`, nothing could ever wake it, and the repro showed
+  // exactly this holding the slot a review needed. `opts.shutdownSignal`
+  // fixes the WAIT; this proves it wires end to end through startChecks.
+  test('a checks run queued on a saturated cap is released by the shutdown signal instead of waiting forever', async () => {
+    const projectA = register(makeRepo())
+    const { record: checksRecord } = seedCommittedTask(projectA.path)
+    const cap = createLoadCap(1)
+    const holderRelease = cap.tryAcquire('turn')
+    const shutdown = new AbortController()
+    const runChecksFn = () => new Promise<TaskChecks>(() => {}) // must never be called
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      shutdownSignal: shutdown.signal,
+      runChecksFn,
+    })
+
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+    expect(manager.checks(projectA.id, checksRecord.id)).toEqual({ ok: true })
+    await until(() => cap.snapshot().queued === 1)
+
+    // Baselined BEFORE abort: boot reconciliation already appended its OWN
+    // unrelated 'interrupted' line for this seeded task ("orphaned by an
+    // earlier session"), so asserting on "some interrupted event exists"
+    // would pass vacuously whether or not the checks fix actually fired.
+    const beforeAbort = readTaskEvents(projectA.path, checksRecord.id).length
+    shutdown.abort()
+    // Adversarial review round 3, MAJEUR 2: a shutdown that cuts a checks run
+    // off BEFORE it ever started is not a checks failure — no container ran,
+    // nothing broke. The journal gets the same 'interrupted' line a turn or a
+    // review cut short by the same signal gets, never 'checks'/'error'.
+    await until(() => readTaskEvents(projectA.path, checksRecord.id).length > beforeAbort)
+    const added = readTaskEvents(projectA.path, checksRecord.id).slice(beforeAbort)
+    expect(added).toHaveLength(1)
+    expect(added[0]?.type).toBe('interrupted')
+    expect(added[0]?.reason_code).toBe('interrupted_by_user')
+    // Round 4, MAJEUR 1: the 'running' this call broadcast BEFORE the wait is
+    // taken back, not left behind. No fabricated verdict replaces it either —
+    // the task had no checks result before, so it has none after, and the file
+    // is gone. Leaving 'running' is what disabled the UI's "Re-run checks"
+    // button forever (canRunChecks derives from it), restart included, since
+    // nothing reconciles checks.json at boot.
+    expect(manager.getChecks(projectA.id, checksRecord.id)).toBeNull()
+    expect(readTaskChecks(projectA.path, checksRecord.id)).toBeNull()
+    // And the stream said so: the last checks frame carries the null, so a
+    // client already showing 'running' does not have to reload to recover.
+    const lastChecksFrame = envelopes.findLast((e) => e.event.name === 'task_checks')
+    expect(lastChecksFrame?.event.data).toBeNull()
+    expect(readTaskEvents(projectA.path, checksRecord.id).some((e) => e.type === 'checks')).toBe(
+      false,
+    )
+
+    // The wait was abandoned, not granted: the FIFO is empty (no leaked
+    // waiter) and the unrelated holder's slot is untouched.
+    expect(cap.snapshot()).toEqual({ occupied: 1, max: 1, queued: 0 })
+    holderRelease?.()
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  // Round 4, MAJEUR 1, the other half: the task DID have a checks result
+  // before the abandoned re-run. Deleting the file would lose a real verdict;
+  // leaving 'running' would hide it behind a status that never finishes. The
+  // snapshot captured one line above the 'running' broadcast is put back
+  // verbatim, and re-broadcast.
+  test('an abandoned re-run restores the checks result the task already had', async () => {
+    const project = register(makeRepo())
+    const { record } = seedCommittedTask(project.path)
+    const previous = writeTaskChecks(project.path, record.id, finishedChecks({ status: 'passed' }))
+    const cap = createLoadCap(1)
+    const holderRelease = cap.tryAcquire('turn')
+    const shutdown = new AbortController()
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      shutdownSignal: shutdown.signal,
+      runChecksFn: () => new Promise<TaskChecks>(() => {}),
+    })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+    // The re-run overwrote the verdict with 'running' before parking.
+    expect(readTaskChecks(project.path, record.id)?.status).toBe('running')
+    await until(() => cap.snapshot().queued === 1)
+
+    shutdown.abort()
+    await until(() => readTaskChecks(project.path, record.id)?.status === 'passed')
+    expect(readTaskChecks(project.path, record.id)).toEqual(previous)
+    expect(envelopes.findLast((e) => e.event.name === 'task_checks')?.event.data).toEqual(previous)
+    holderRelease?.()
+  })
+
+  // Adversarial review round 3, MAJEUR 2 (entry guard): a shutdown already in
+  // progress BEFORE a checks run is even requested must never write 'running'
+  // at all — the common case behind the reviewer's repro ("Ctrl-C on a run
+  // never started"), where the previous round still painted a red line.
+  test('a checks run requested AFTER the shutdown signal already fired never touches checks.json', async () => {
+    const project = register(makeRepo())
+    const { record } = seedCommittedTask(project.path)
+    const shutdown = new AbortController()
+    shutdown.abort()
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      shutdownSignal: shutdown.signal,
+      runChecksFn: () => {
+        throw new Error('must never be called: the run must not even start')
+      },
+    })
+
+    // Baselined for the same reason as the previous test: boot reconciliation
+    // already appended its own unrelated 'interrupted' line for this seeded
+    // task, so only a NEW event past that baseline proves the entry guard.
+    const beforeChecks = readTaskEvents(project.path, record.id).length
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+    await until(() => readTaskEvents(project.path, record.id).length > beforeChecks)
+    const added = readTaskEvents(project.path, record.id).slice(beforeChecks)
+    expect(added).toHaveLength(1)
+    expect(added[0]?.type).toBe('interrupted')
+    expect(added[0]?.reason_code).toBe('interrupted_by_user')
+    // No checks.json was EVER written: 'running' never got broadcast either.
+    expect(manager.getChecks(project.id, record.id)).toBeNull()
+  })
+
+  // Round 4, MAJEUR 3: the ticket's CENTRAL requirement is that the
+  // end-of-turn review is a citizen of the machine-wide budget. Until this
+  // test, deleting `loadCap` from the manager's `createTaskReviewer({…})`
+  // call left the entire suite green — the review would quietly go back to
+  // running OUTSIDE the cap, the exact state T1.3 exists to remove. Every
+  // other test either injects `reviewTurnFn` (which replaces the reviewer
+  // wholesale, so it can say nothing about how the default one is built) or
+  // exercises the runner's own turn slot, which is a different call site.
+  test('the default reviewer is built WITH the manager-wide load cap instance', () => {
+    const project = register(makeRepo())
+    const cap = createLoadCap(3)
+    const seen: CreateTaskReviewerOptions[] = []
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      loadCap: cap,
+      createRunnerFn: rig.createRunnerFn,
+      createReviewerFn: (options) => {
+        seen.push(options)
+        return async () => {}
+      },
+    })
+    // Forces the lazy per-project assembly (store recovery, reviewer, runner):
+    // `checks` on an unknown task id builds the context, then 404s.
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+
+    expect(seen).toHaveLength(1)
+    // Identity, not shape: a reviewer handed a DIFFERENT cap would gate on a
+    // budget nothing else shares, which is indistinguishable from no cap.
+    expect(seen[0]?.loadCap).toBe(cap)
+    expect(seen[0]?.cwd).toBe(project.path)
+    expect(seen[0]?.command).toBe(managerOpts.command)
+    expect(seen[0]?.timeoutMs).toBe(managerOpts.timeoutMs)
+  })
+
+  // MAJEUR 3 (adversarial review): `maxConcurrentAgents` reaching the REAL
+  // machine cap was only ever proven on the pure function
+  // `resolveMaxConcurrentAgents` — never on the effective cap `createTaskManager`
+  // actually builds. Two surviving mutants this catches: `createLoadCap(opts.
+  // maxConcurrentAgents)` degraded to `createLoadCap()`, and the config value
+  // never reaching `createTaskManager` at all (workspace.ts's own wiring,
+  // exercised here at the manager's own boundary since that is what the
+  // config value must reach).
+  test('maxConcurrentAgents actually sizes the manager-wide cap: at most one turn runs at a time across three projects', async () => {
+    const projects = [register(makeRepo()), register(makeRepo()), register(makeRepo())]
+    let releaseGate: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      await gate
+      const raw = claudeStream('done')
+      options.onText?.(raw)
+      return raw
+    }
+    // No `loadCap` injected: the manager must build its OWN, sized from this
+    // option — the exact wiring the two mutants above erase.
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      maxConcurrentAgents: 1,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+      },
+    })
+
+    const created = projects.map((project, i) =>
+      manager.create(project.id, { title: `p${i}`, prompt: `work ${i}`, autoShip: false }),
+    )
+    expect(created.every((c) => c.ok)).toBe(true)
+    const ids = created.map((c) => (c.ok ? c.record.id : ''))
+
+    const runningCount = () =>
+      projects.filter((p, i) => loadTask(p.path, ids[i]!)?.status === 'running').length
+    await until(() => runningCount() >= 1)
+    // Give the other two every chance to (wrongly) start too.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(runningCount()).toBe(1)
+    const stillQueued = projects.filter(
+      (p, i) => loadTask(p.path, ids[i]!)?.reason?.code === 'resource_busy',
+    )
+    expect(stillQueued.length).toBe(2)
+
+    releaseGate()
+    await until(() => ids.every((id, i) => loadTask(projects[i]!.path, id)?.status === 'review_ok'))
+  })
+
+  // machine-load-cap spec, "l'UI sait pourquoi la tâche attend".
+  test('a task_meta frame carries the load-cap occupation when a turn enters — and leaves — a machine-cap wait', async () => {
+    const projectB = register(makeRepo())
+    const cap = createLoadCap(1)
+    // An unrelated heavy consumer holds the only slot.
+    const holderRelease = cap.tryAcquire('checks')
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: async (options: AgentRunOptions): Promise<string> => {
+        const raw = claudeStream('done')
+        options.onText?.(raw)
+        return raw
+      },
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+      },
+    })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    const created = manager.create(projectB.id, { title: 'B', prompt: 'work', autoShip: false })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // MINEUR (adversarial review round 3): filtered on `load_cap` being
+    // present, not just on the frame name — an ordinary onTokens tick shares
+    // the same 'task_meta' name and could otherwise land between the two
+    // load-cap frames and shift `[1]` onto it, failing the test for a reason
+    // that has nothing to do with a real regression.
+    const loadCapFrames = () =>
+      envelopes.filter(
+        (e): e is TaskEnvelope & { task_id: string; event: { name: 'task_meta' } } =>
+          'task_id' in e &&
+          e.task_id === created.record.id &&
+          e.event.name === 'task_meta' &&
+          e.event.data.load_cap !== undefined,
+      )
+    await until(() => loadCapFrames().length >= 1)
+    const waiting = loadCapFrames()[0]
+    expect(waiting?.event.data).toMatchObject({
+      tokens: 0,
+      load_cap: { occupied: 1, max: 1, queued: 0 },
+      // MAJEUR 2 (adversarial review): the snapshot alone is identical on
+      // entry and on grant — `waiting_for_slot` is the ONLY thing that lets
+      // the UI tell them apart.
+      waiting_for_slot: true,
+    })
+
+    // Freeing the OTHER holder wakes this project's pump (onSlotFreed): the
+    // task obtains the slot on its very next attempt — a SECOND frame, this
+    // time saying it is no longer waiting (occupied: 1, the slot it just took).
+    holderRelease?.()
+    await until(() => loadCapFrames().length >= 2)
+    expect(loadCapFrames()[1]?.event.data).toMatchObject({
+      tokens: 0,
+      load_cap: { occupied: 1, max: 1, queued: 0 },
+      waiting_for_slot: false,
+    })
   })
 
   test('a second task on the SAME project stays queued with its position and starts at the end of the first', async () => {

@@ -270,6 +270,9 @@ const en = {
   'workspace.evResourceHomeReleased': 'HOME volume released',
   'workspace.evResourceHomeNotReleased': 'HOME volume could not be released',
   'workspace.evResourceNoRuntime': 'No container runtime — HOME volume could not be released',
+  'workspace.evQueue': 'Waiting',
+  'workspace.evQueueMachine': 'Waiting for a machine slot',
+  'workspace.evQueueProject': 'Waiting: another task of this project is already active',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -308,6 +311,8 @@ const en = {
     'Waiting for its turn: {n} conversation ahead in this project | Waiting for its turn: {n} conversations ahead in this project',
   'workspace.queuePositionHintIdle':
     "In this project's line, at #{n} — but nothing is running on it right now",
+  'workspace.queuePositionHintMachine':
+    'At #{n} — waiting for a machine-wide slot to free up, not for another conversation of this project',
   'workspace.pausedFor': 'paused for {t}',
   'workspace.shipAction': 'Ship',
   'workspace.diffAction': 'Diff',
@@ -325,6 +330,7 @@ const en = {
   'workspace.pin': 'Pin this conversation (side by side)',
   'workspace.unpin': 'Unpin this conversation',
   'workspace.phaseQueued': 'queued — waiting for a slot',
+  'workspace.phaseQueuedMachine': 'queued — waiting for a machine-wide slot',
   'workspace.phaseRunning': 'working',
   'workspace.phaseWaiting': 'paused — waiting for your answer',
   'workspace.phaseReviewing': 'review in progress',
@@ -704,6 +710,9 @@ const fr: Record<MessageKey, string> = {
   'workspace.evResourceHomeReleased': 'Volume HOME libéré',
   'workspace.evResourceHomeNotReleased': 'Volume HOME non libéré',
   'workspace.evResourceNoRuntime': 'Aucun runtime de conteneur — volume HOME non libéré',
+  'workspace.evQueue': 'En attente',
+  'workspace.evQueueMachine': "En attente d'un slot machine",
+  'workspace.evQueueProject': 'En attente : une autre tâche de ce projet est déjà active',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',
@@ -744,6 +753,8 @@ const fr: Record<MessageKey, string> = {
     'En attente de son tour : {n} conversation devant elle dans ce projet | En attente de son tour : {n} conversations devant elle dans ce projet',
   'workspace.queuePositionHintIdle':
     'Dans la file de ce projet, en #{n} — mais rien ne tourne dessus en ce moment',
+  'workspace.queuePositionHintMachine':
+    "En #{n} — en attente d'un slot machine libre, pas d'une autre conversation de ce projet",
   'workspace.pausedFor': 'en pause depuis {t}',
   'workspace.shipAction': 'Shipper',
   'workspace.diffAction': 'Diff',
@@ -761,6 +772,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.pin': 'Épingler cette conversation (côte à côte)',
   'workspace.unpin': 'Désépingler cette conversation',
   'workspace.phaseQueued': 'en file — attend un créneau',
+  'workspace.phaseQueuedMachine': 'en file — attend un slot machine',
   'workspace.phaseRunning': 'en cours',
   'workspace.phaseWaiting': 'en pause — attend votre réponse',
   'workspace.phaseReviewing': 'review en cours',

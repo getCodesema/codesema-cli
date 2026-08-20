@@ -14,4 +14,14 @@ describe('TASK_EVENT_COMPONENTS', () => {
   test("'branch' (T1.6) routes to the generic neutral line, not a bespoke renderer", () => {
     expect(TASK_EVENT_COMPONENTS.branch).toBe(TaskEventLine)
   })
+
+  // Same claim, same shape, for the type T1.3 adds. Deleting the entry is a
+  // typecheck error (TS2741, the exhaustive Record), but REROUTING it is not:
+  // `queue: TaskEventChecks` compiles and leaves every test green, and the
+  // "waiting for a slot" journal line then renders as an empty checks card.
+  // The CHANGELOG's claim is that 'queue' is a plain neutral line, like
+  // 'cost' and 'isolation' — never an error card; this is that claim's test.
+  test("'queue' (T1.3) routes to the generic neutral line, not a checks card", () => {
+    expect(TASK_EVENT_COMPONENTS.queue).toBe(TaskEventLine)
+  })
 })

@@ -24,6 +24,7 @@ import {
   CHECK_GLYPH,
   CHECK_STATUS_KEY,
   CHECKS_STATUS_KEY,
+  checksHeadVerified,
   checksSetupCard,
   checksSetupErrorText,
   checksSourceLabel,
@@ -42,6 +43,7 @@ import {
   formatTokens,
   groupThreadEvents,
   lastQuestion,
+  queuePhraseKey,
   replyModeOf,
   resumeStateOf,
   reviewRefOf,
@@ -89,6 +91,15 @@ const emit = defineEmits<{ 'open-review': [record: ReviewRecord]; 'toggle-pin': 
 
 const record = computed(() => props.state.record)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
+// T1.3 (D4), adversarial review round 3 MAJEUR 4/AC-12: a 'queued' task
+// waiting for the MACHINE-wide cap gets its own header phrase instead of the
+// generic "queued — waiting for a slot" — the only consumer of
+// `state.liveLoadCap`/`waitingForSlot` outside the store itself.
+const phraseKey = computed(
+  () =>
+    queuePhraseKey(record.value.status, props.state.liveLoadCap?.waitingForSlot ?? false) ??
+    visual.value.phraseKey,
+)
 // Containment of this conversation's turns, fixed at its creation: the chip
 // states it, the tooltip says what it actually guarantees.
 const isolation = computed(() => isolationBadge(record.value))
@@ -794,7 +805,7 @@ const wait = computed(() =>
         >
           <span aria-hidden="true">{{ isolation.glyph }}</span> {{ t(isolation.labelKey) }}
         </span>
-        <span class="cv-phrase" :style="{ color: visual.text }">{{ t(visual.phraseKey) }}</span>
+        <span class="cv-phrase" :style="{ color: visual.text }">{{ t(phraseKey) }}</span>
         <span class="cv-chrono">
           <span>{{ t('workspace.workTime', { t: work }) }}</span>
           <span v-if="wait" class="cv-wait">{{ t('workspace.waitTime', { t: wait }) }}</span>
@@ -996,7 +1007,7 @@ const wait = computed(() =>
             <span v-if="checksRunning" class="cv-checks-dot" aria-hidden="true" />
             {{ t(CHECKS_STATUS_KEY[checks.status]) }}
           </span>
-          <span v-if="checks.head_sha" class="cv-checks-head">
+          <span v-if="checksHeadVerified(checks)" class="cv-checks-head">
             {{ t('workspace.checksHeadVerified', { sha: shortSha(checks.head_sha) })
             }}<template v-if="checksStamp"> · {{ checksStamp }}</template>
           </span>

@@ -296,6 +296,15 @@ export type TaskEventType =
    * type itself (mirrors packages/contract/src/tasks.ts).
    */
   | 'resource'
+  /**
+   * A task just started waiting on a resource it does not hold yet (T1.3):
+   * `data.name` is 'machine_busy' or 'project_busy'. A NEUTRAL line like
+   * 'cost', never 'error' — an ordinary wait is not a degradation.
+   *
+   * Kept on its own single line (concurrent tickets each append their own
+   * member here — a rebase conflict that resolves itself).
+   */
+  | 'queue'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
@@ -543,8 +552,35 @@ export type TaskEnvelope =
       task_id: string
       event: { name: 'task_text'; data: { text: string; seq?: number } }
     }
-  | { project_id: string; task_id: string; event: { name: 'task_meta'; data: { tokens: number } } }
-  | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks } }
+  | {
+      project_id: string
+      task_id: string
+      event: {
+        name: 'task_meta'
+        data: {
+          tokens: number
+          // Machine-wide load cap (T1.3, D4) occupation at the instant this
+          // frame was emitted, so the UI can render "waiting for a machine
+          // slot". OPTIONAL: absent on a frame this field predates (an
+          // ordinary token-meter tick) — a client that does not know it
+          // simply ignores it, never throws. `queued` counts requests parked
+          // in the cap's OWN FIFO (a review, a checks run) — not a turn
+          // refused by tryAcquire, which never joins it (see load-cap.ts).
+          load_cap?: { occupied: number; max: number; queued: number }
+          // Which of the two `load_cap`-carrying transitions this frame is:
+          // true entering the wait, false on obtaining the slot. Present only
+          // alongside `load_cap` — the two frames are otherwise identical.
+          waiting_for_slot?: boolean
+        }
+      }
+    }
+  /**
+   * The task's whole checks.json after a transition — or `null`, the wire's
+   * only way to say "there is no checks result any more" (T1.3: a 'running'
+   * snapshot broadcast for a run that never started is TAKEN BACK; no
+   * TaskChecks value can express "never ran"). Mirror of task-server.ts.
+   */
+  | { project_id: string; task_id: string; event: { name: 'task_checks'; data: TaskChecks | null } }
   // Agent-assisted checks setup: PROJECT-scoped, no task_id — the proposal
   // belongs to the repo, not to a conversation.
   | { project_id: string; event: { name: 'checks_proposal'; data: unknown } }

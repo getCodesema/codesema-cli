@@ -20,6 +20,7 @@ import {
   mergeEvent,
   mergeLiveMessage,
   oldestWaiting,
+  queuePhraseKey,
   queueRankHintKey,
   queueSectionOf,
   replyModeOf,
@@ -79,6 +80,38 @@ describe('queueRankHintKey', () => {
     ).toBe('workspace.queuePositionHintIdle')
     // And a record that says nothing claims nothing.
     expect(queueRankHintKey(record({}))).toBe('workspace.queuePositionHintIdle')
+  })
+
+  // Adversarial review round 3, MAJEUR 3: T1.3 made `resource_busy` cover a
+  // task alone in an idle project (held back by the MACHINE cap), which this
+  // pill used to tell as "N conversations ahead in this project" — a promise
+  // about agents that do not exist.
+  test('a machine-cap wait gets its own hint, distinct from a project wait', () => {
+    expect(
+      queueRankHintKey(
+        record({
+          reason: {
+            code: 'resource_busy',
+            detail:
+              'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run',
+          },
+        }),
+      ),
+    ).toBe('workspace.queuePositionHintMachine')
+  })
+})
+
+describe('queuePhraseKey', () => {
+  test('a queued task waiting on the machine cap gets the machine-specific phrase', () => {
+    expect(queuePhraseKey('queued', true)).toBe('workspace.phaseQueuedMachine')
+  })
+
+  test('a queued task NOT waiting on the machine cap falls back to the generic phrase', () => {
+    expect(queuePhraseKey('queued', false)).toBeNull()
+  })
+
+  test('any other status never gets the machine phrase, even if waitingForSlot lingers true', () => {
+    expect(queuePhraseKey('running', true)).toBeNull()
   })
 })
 
@@ -317,6 +350,42 @@ describe('eventSummary', () => {
       eventSummary(event({ type: 'resource', data: { message: 'raw english, no name at all' } })),
     ).toBe('Resource')
   })
+
+  // Adversarial review round 3, MAJEUR 4 ("workspace.evQueue est mort-né"):
+  // `data.message` the server writes is a raw ENGLISH sentence
+  // (MACHINE_LOAD_DETAIL/QUEUED_BEHIND_DETAIL) and was ALWAYS present, so the
+  // `?? label` fallback that would have shown the translated label was
+  // structurally unreachable. The summary must come from `data.name`, not
+  // from the wire's raw message — and each of the two motifs gets its OWN
+  // translated text, never the server's English sentence verbatim.
+  test('queue renders a translated detail from data.name, never the raw server message', () => {
+    const raw = 'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn'
+    const summary = eventSummary(
+      event({ type: 'queue', data: { name: 'machine_busy', message: raw } }),
+    )
+    expect(summary).toBe('Waiting for a machine slot')
+    expect(summary).not.toContain(raw)
+    expect(summary).not.toContain('maxConcurrentAgents')
+  })
+
+  test('queue distinguishes project_busy from machine_busy', () => {
+    expect(
+      eventSummary(
+        event({
+          type: 'queue',
+          data: { name: 'project_busy', message: 'another task of this project is already active' },
+        }),
+      ),
+    ).toBe('Waiting: another task of this project is already active')
+  })
+
+  test('queue with an unrecognized data.name degrades to the plain label, not a raw token', () => {
+    expect(
+      eventSummary(event({ type: 'queue', data: { name: 'something_future', message: 'x' } })),
+    ).toBe('Waiting')
+    // No data.name at all (an older journal line): same honest fallback.
+    expect(eventSummary(event({ type: 'queue', data: {} }))).toBe('Waiting')
+  })
 })
 
 describe('eventTone', () => {
@@ -341,6 +410,15 @@ describe('eventTone', () => {
   // failure. Round 3's audit mutated this to 'error' and found 0 red tests.
   test('resource stays neutral even on a release failure (DP9: the boot sweep is the backstop, not a task failure)', () => {
     expect(eventTone('resource')).toBe('idle')
+  })
+
+  // Adversarial review round 3, MAJEUR 4 mutation table: an ordinary wait for
+  // a resource is NOT a degradation (DP8(b)/DP9) — 'queue' must never paint
+  // red like 'error' does, on the machine-cap wait as much as on the project
+  // one. Explicit so the mutation `EVENT_TONE.queue: 'idle' -> 'stop'` (which
+  // 2065 tests previously let through unnoticed) turns this test red.
+  test('queue is a neutral wait, never a degradation', () => {
+    expect(eventTone('queue')).toBe('idle')
   })
 })
 

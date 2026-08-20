@@ -12,6 +12,17 @@ describe('catalog parity', () => {
   })
 })
 
+// T1.3 round 4 (mineur): the two boot notices this ticket adds are the only
+// thing a user ever reads about the machine-wide cap on the terminal. Key
+// parity above cannot tell a translation from a copy of the English line.
+describe('the machine-cap boot notices are actually translated', () => {
+  for (const key of ['workspace.maxParallelDeprecated', 'workspace.invalidLoadCapKey'] as const) {
+    test(`${key} has its own French wording`, () => {
+      expect(CATALOGS.fr[key]).not.toBe(CATALOGS.en[key])
+    })
+  }
+})
+
 describe('t', () => {
   test('interpolates params', () => {
     expect(t('cli.unknownCommand', { command: 'foo' })).toBe('unknown command: foo')

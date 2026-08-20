@@ -4,6 +4,7 @@ import {
   checksBadge,
   checksCounts,
   checksEventLine,
+  checksHeadVerified,
   checksSetupCard,
   checksSetupErrorText,
   checksSourceLabel,
@@ -99,6 +100,35 @@ describe('shortSha', () => {
   test('displays the 7-char short form', () => {
     expect(shortSha('0123456789abcdef')).toBe('0123456')
     expect(shortSha('abc')).toBe('abc')
+  })
+})
+
+// Adversarial review round 3, MAJEUR 2: "head verified {sha}" used to show
+// whenever head_sha was non-empty, REGARDLESS of status — including 'running'
+// (nothing verified yet) and a stale entry left by a run interrupted before
+// it ever started. Only 'passed'/'failed' mean a container actually ran
+// checks against that head.
+describe('checksHeadVerified', () => {
+  test('true once a run actually finished, pass or fail', () => {
+    expect(checksHeadVerified({ status: 'passed', head_sha: 'abc123' })).toBe(true)
+    expect(checksHeadVerified({ status: 'failed', head_sha: 'abc123' })).toBe(true)
+  })
+
+  test('false while running: nothing has been verified YET', () => {
+    expect(checksHeadVerified({ status: 'running', head_sha: 'abc123' })).toBe(false)
+  })
+
+  test('false on a runner error: the run never produced a verdict', () => {
+    expect(checksHeadVerified({ status: 'error', head_sha: 'abc123' })).toBe(false)
+  })
+
+  test('false when unconfigured or when there is no checks entry at all', () => {
+    expect(checksHeadVerified({ status: 'unconfigured', head_sha: '' })).toBe(false)
+    expect(checksHeadVerified(null)).toBe(false)
+  })
+
+  test('false when head_sha is empty, whatever the status', () => {
+    expect(checksHeadVerified({ status: 'passed', head_sha: '' })).toBe(false)
   })
 })
 

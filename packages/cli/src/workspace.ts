@@ -18,7 +18,15 @@
 // racing this one's registry and task stores.
 
 import { knownAgent } from './agent.js'
-import { isRepoAgentTrusted, loadConfig, loadRepoConfig, resolveWatchdogBudgets } from './config.js'
+import {
+  globalConfigPath,
+  hasInvalidPositiveIntKey,
+  isRepoAgentTrusted,
+  loadConfig,
+  loadRepoConfig,
+  repoConfigPath,
+  resolveWatchdogBudgets,
+} from './config.js'
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
 import { tryGit } from './git.js'
 import { t, uiLocale } from './i18n.js'
@@ -97,13 +105,135 @@ export function logResumedQueues(resumed: readonly PendingQueue[]): void {
 }
 
 /**
- * The `maxParallelTasks` line a user still has in their config does nothing
- * since T1.2: admission is per project now. A setting silently ignored is a
- * setting that lies, so the boot says it out loud — once, and only when the
- * key is actually set. Null when there is nothing to say.
+ * The `maxParallelTasks` line a user still has in their config is DEPRECATED
+ * since T1.3: `resolveMaxConcurrentAgents` still reads and honors it (as an
+ * alias of `maxConcurrentAgents`, the machine-wide load cap, D4) — it is
+ * never dropped in silence — but a key quietly renamed under a user's feet is
+ * still a key that could confuse them, so the boot says so out loud once,
+ * and only when it is actually set. Null when there is nothing to say. Fires
+ * even when `maxConcurrentAgents` is ALSO set (design.md Decision 5): the
+ * explicit key wins the VALUE, but the deprecated one is still named.
  */
 export function maxParallelNotice(configured: number | undefined): string | null {
-  return configured === undefined ? null : t('workspace.maxParallelInert', { n: configured })
+  return configured === undefined ? null : t('workspace.maxParallelDeprecated', { n: configured })
+}
+
+/**
+ * A boot line for a machine-cap key (`maxConcurrentAgents` or its deprecated
+ * alias `maxParallelTasks`) that is PRESENT in the config but not usable —
+ * `0`, a negative number, a string — as opposed to simply unset. `parseConfig`
+ * drops such a value in silence (whitelist and truncate, the doctrine every
+ * other numeric config key gets too); this is the one case that also WARNS,
+ * because the value it ignores directly controls how many heavy processes
+ * this machine runs at once, and a user who typed one meant to size that
+ * (adversarial review, MINEUR — invariant § 0.3 n°2's non-silence, applied to
+ * the ticket's own new key). Null when both keys, across both config files,
+ * are either absent or usable.
+ */
+export function invalidLoadCapKeyNotice(repoRoot: string | null): string | null {
+  const keys = ['maxConcurrentAgents', 'maxParallelTasks'] as const
+  const paths = [globalConfigPath(), ...(repoRoot !== null ? [repoConfigPath(repoRoot)] : [])]
+  const bad = keys.find((key) => paths.some((path) => hasInvalidPositiveIntKey(path, key)))
+  return bad ? t('workspace.invalidLoadCapKey', { key: bad }) : null
+}
+
+/**
+ * Every boot line this ticket's config surface produces, in the order the
+ * terminal shows them: the deprecation of `maxParallelTasks`, then the
+ * unusable-value warning. Empty when there is nothing to say.
+ *
+ * Pure and exported (round 4, mineur) so the ANNOUNCEMENT is proven where the
+ * two notices are actually assembled, not only inside each notice function:
+ * `workspace()` cannot be called from a test (it listens on a port, takes the
+ * global lock, installs real signal handlers), so nothing runtime-level can
+ * observe what the boot prints. Dropping either entry from this array turns a
+ * test red — and, since round 5 (MAJEUR A), so does severing the call below:
+ * extracting the array left its CALL SITE unproven, and replacing the loop
+ * with an empty one kept the suite at 0 fail while both notices disappeared.
+ * `workspace-lifecycle.test.ts` now pins that loop by source shape too.
+ */
+export function bootNotices(
+  config: { maxParallelTasks?: number | undefined },
+  repoRoot: string | null,
+): string[] {
+  return [maxParallelNotice(config.maxParallelTasks), invalidLoadCapKeyNotice(repoRoot)].filter(
+    (line): line is string => line !== null,
+  )
+}
+
+/**
+ * The machine-wide load cap in force (T1.3, D4): the explicit
+ * `maxConcurrentAgents` wins when both keys are set (design.md Decision 5);
+ * `maxParallelTasks` is the deprecated fallback; undefined when neither is
+ * configured, which lets `createLoadCap`/`createTaskManager` apply
+ * DEFAULT_MAX_CONCURRENT_AGENTS rather than baking that default in twice.
+ */
+export function resolveMaxConcurrentAgents(config: {
+  maxConcurrentAgents?: number | undefined
+  maxParallelTasks?: number | undefined
+}): number | undefined {
+  return config.maxConcurrentAgents ?? config.maxParallelTasks
+}
+
+/**
+ * EVERY option `workspace()` builds its `createTaskManager` with — not a
+ * subset spread over an inline literal (T1.3 round 4, MAJEUR 2). The previous
+ * round pulled out only the three the ticket touched; the call site kept
+ * `command`, `timeoutMs`, `watchdog`, `isolation` and `allowedDomains`
+ * inline, so a merge resolution that dropped the spread (the T2.4 rebase
+ * conflict lands EXACTLY on that line) silently removed both `shutdownSignal`
+ * and `maxConcurrentAgents` from production with 2 089 tests still green. The
+ * proof stopped at the door.
+ *
+ * Now the door is inside: `createTaskManager(workspaceTaskManagerOptions(…))`
+ * has nothing of its own left, and `command`/`timeoutMs` are REQUIRED members
+ * of `CreateTaskManagerOptions` — so deleting the call, or replacing it with
+ * the old inline literal, no longer compiles. The typecheck gate becomes the
+ * net the test suite could not be.
+ *
+ * What this decides, beyond passing `boot` through: the deprecated
+ * `maxParallelTasks` value kept so it round-trips, the effective
+ * `maxConcurrentAgents` (explicit key or its alias, `resolveMaxConcurrentAgents`,
+ * design.md Decision 5), and `shutdownSignal` wired to `draining` — the same
+ * AbortController `installShutdownHandlers` aborts on the first
+ * SIGINT/SIGTERM, so a checks run parked on a saturated machine cap can be
+ * woken by a shutdown.
+ *
+ * Pure and exported so a test can call it without booting a real server or
+ * installing real signal handlers: `workspace()` itself starts a listening
+ * server and registers `process.on`, which makes it unsafe to invoke
+ * end-to-end from a test (see workspace-lifecycle for why).
+ */
+export function workspaceTaskManagerOptions(
+  config: {
+    maxParallelTasks?: number | undefined
+    maxConcurrentAgents?: number | undefined
+    taskRetentionCount?: number | undefined
+  },
+  draining: AbortController,
+  /**
+   * The boot facts this function does not compute: the resolved agent
+   * command, the turn ceiling, the watchdog budgets, the isolation probe and
+   * the egress allowlist. Passed in rather than re-derived so the function
+   * stays pure (no config file reads, no container probe) while still being
+   * the WHOLE argument of `createTaskManager`.
+   */
+  boot: Pick<
+    Parameters<typeof createTaskManager>[0],
+    'command' | 'timeoutMs' | 'watchdog' | 'isolation' | 'allowedDomains'
+  >,
+): Parameters<typeof createTaskManager>[0] {
+  return {
+    ...boot,
+    ...(config.maxParallelTasks !== undefined ? { maxParallel: config.maxParallelTasks } : {}),
+    ...(resolveMaxConcurrentAgents(config) !== undefined
+      ? { maxConcurrentAgents: resolveMaxConcurrentAgents(config) }
+      : {}),
+    ...(config.taskRetentionCount !== undefined
+      ? { taskRetention: config.taskRetentionCount }
+      : {}),
+    shutdownSignal: draining.signal,
+  }
 }
 
 /**
@@ -255,20 +385,25 @@ export async function workspace(
       currentProjectId = added.project.id
     }
 
-    taskManager = (opts.createTaskManagerFn ?? createTaskManager)({
-      command: agentCommand,
-      timeoutMs,
-      // What actually decides a task is dead (D3): silence with no tool out,
-      // or one tool that never comes back. `timeoutMs` above is only the last
-      // resort under it.
-      watchdog: resolveWatchdogBudgets(config),
-      isolation: probe,
-      allowedDomains,
-      ...(config.maxParallelTasks !== undefined ? { maxParallel: config.maxParallelTasks } : {}),
-      ...(config.taskRetentionCount !== undefined
-        ? { taskRetention: config.taskRetentionCount }
-        : {}),
-    })
+    // NOTHING inline here, on purpose (T1.3 round 4, MAJEUR 2): every option
+    // this manager gets comes from the tested `workspaceTaskManagerOptions`,
+    // so a merge that loses the call cannot silently lose `shutdownSignal`,
+    // `maxConcurrentAgents` or `taskRetention` — it stops compiling instead.
+    // The call TARGET is T1.9's injection seam, which is how the boot wiring
+    // is itself tested; the ARGUMENT is what carries every option. Both halves
+    // are pinned by workspace-lifecycle.test.ts.
+    taskManager = (opts.createTaskManagerFn ?? createTaskManager)(
+      workspaceTaskManagerOptions(config, draining, {
+        command: agentCommand,
+        timeoutMs,
+        // What actually decides a task is dead (D3): silence with no tool
+        // out, or one tool that never comes back. `timeoutMs` above is only
+        // the last resort under it.
+        watchdog: resolveWatchdogBudgets(config),
+        isolation: probe,
+        allowedDomains,
+      }),
+    )
 
     // The review surface (fix, MR review) stays available from the same server
     // when launched inside a repo: the workspace extends the product, it does
@@ -312,9 +447,8 @@ export async function workspace(
   console.log(`  ${t('review.ctrlc')}`)
   console.log('')
   logIsolation(probe, allowedDomains)
-  const inert = maxParallelNotice(config.maxParallelTasks)
-  if (inert) {
-    console.log(inert)
+  for (const line of bootNotices(config, repoRoot)) {
+    console.log(line)
   }
   console.log('')
   console.log(t('workspace.projects'))

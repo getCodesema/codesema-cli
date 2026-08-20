@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { Finding, ReviewRecord, TaskRecord, TaskStatus, Verdict } from './contract.js'
+import { createLoadCap } from './load-cap.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview } from './record.js'
 import type { runSimpleFlow, SimpleOutcome } from './review.js'
@@ -101,6 +102,16 @@ function fakeIo(record: TaskRecord): IoRig {
     signal: rig.abort.signal,
   }
   return rig
+}
+
+async function until(cond: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('timeout waiting for condition')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
 }
 
 function fakeReview(verdict: Verdict, findings: Finding[] = []): ReviewRecord {
@@ -243,6 +254,107 @@ describe('createTaskReviewer', () => {
     // a worktree, and not one event announcing a review that will not happen.
     expect(prepCalls).toBe(0)
     expect(rig.events.map((event) => event.type)).toEqual(['interrupted'])
+  })
+
+  // T1.3 (D4): the review agent is a heavy consumer of the machine load cap.
+  test('the review agent holds a load-cap slot only around the actual flow call, EXCLUSIVELY', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'load-capped review')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const cap = createLoadCap(1)
+    let sawItHeldExclusively = false
+    const flow = fakeSimpleFlow(() => {
+      // At the moment the agent would actually run, the slot must already be
+      // held — and held EXCLUSIVELY: a fresh tryAcquire on the same cap fails.
+      sawItHeldExclusively = cap.tryAcquire('turn') === null
+      return { ok: true, record: fakeReview('approve'), reportLines: [] }
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn, loadCap: cap })(record, rig.io)
+
+    expect(sawItHeldExclusively).toBe(true)
+    expect(record.status).toBe('review_ok')
+    // Released once the flow (and the settle that follows it) is done.
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  test('the load-cap slot is released even when the review flow throws', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'failing review')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const cap = createLoadCap(1)
+    const flow = fakeSimpleFlow(() => {
+      throw new Error('agent crashed')
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn, loadCap: cap })(record, rig.io)
+
+    expect(record.status).toBe('review_ko')
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  // CRITIQUE (adversarial review, T1.3): a review parked on a saturated cap
+  // must react to Ctrl-C immediately, not sit until DRAIN_TIMEOUT_MS gives up
+  // — the reproduction was exactly this: cap=1, review queued behind an
+  // unrelated holder, io.signal fires, and nothing ever woke the wait.
+  test('a review queued on a saturated cap is interrupted the instant io.signal fires, never spawning', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'parked on the cap')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const cap = createLoadCap(1)
+    // An unrelated consumer holds the only slot: the review's acquire() must
+    // join the FIFO instead of running immediately.
+    const holderRelease = cap.tryAcquire('turn')
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    const done = reviewer(repo, { runSimpleFlowFn: flow.fn, loadCap: cap })(record, rig.io)
+    // A real prep() runs first (actual git/filesystem work) before the hook
+    // ever reaches its acquire() call — a fixed microtask count is not
+    // enough to reach it, so poll instead.
+    await until(() => cap.snapshot().queued === 1)
+    // Still parked: the flow was never called, and the slot is still held by
+    // the unrelated holder.
+    expect(flow.calls).toHaveLength(0)
+
+    rig.abort.abort()
+    await done
+
+    expect(flow.calls).toHaveLength(0)
+    expect(record.status).toBe('interrupted')
+    // The wait was abandoned, not granted: the FIFO must be empty (no waiter
+    // left to leak a slot to later) and the unrelated holder's slot is
+    // exactly what it was before — never taken, never double-freed.
+    expect(cap.snapshot().queued).toBe(0)
+    holderRelease?.()
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  // Same fix, the other order: the signal is ALREADY up before the review
+  // even reaches its acquire() call (a shutdown that landed during prep).
+  test('a review with io.signal already aborted before acquiring never joins the FIFO, never spawns', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'already aborted')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const cap = createLoadCap(1)
+    const holderRelease = cap.tryAcquire('turn')
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    // Aborted mid-prep, i.e. after the earlier gate but before this hook's
+    // own acquire() call — the existing prep-time check in task-review.ts is
+    // the one that would normally catch this; here we confirm the acquire
+    // path is ALSO safe (belt and braces) should that ordering ever change.
+    rig.abort.abort()
+    await reviewer(repo, { runSimpleFlowFn: flow.fn, loadCap: cap })(record, rig.io)
+
+    expect(flow.calls).toHaveLength(0)
+    expect(record.status).toBe('interrupted')
+    expect(cap.snapshot().queued).toBe(0)
+    holderRelease?.()
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
   })
 
   // T1.2 re-review round 9: the third checkpoint. The flow came back with a
@@ -812,16 +924,6 @@ describe('task runner with the reviewer hooked on onTurnDone', () => {
       options.onText?.(raw)
       return Promise.resolve(raw)
     }
-
-  async function until(cond: () => boolean, timeoutMs = 3000): Promise<void> {
-    const start = Date.now()
-    while (!cond()) {
-      if (Date.now() - start > timeoutMs) {
-        throw new Error('timeout waiting for condition')
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10))
-    }
-  }
 
   test('done turn flows queued -> running -> reviewing -> review_ok, then reply is accepted', async () => {
     const repo = makeRepo()

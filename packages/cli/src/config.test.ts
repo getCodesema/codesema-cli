@@ -4,10 +4,12 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   globalConfigPath,
+  hasInvalidPositiveIntKey,
   isRepoAgentTrusted,
   loadConfig,
   loadGlobalConfig,
   loadRepoConfig,
+  repoConfigPath,
   resolveWatchdogBudgets,
   saveGlobalConfig,
   saveRepoConfig,
@@ -343,5 +345,84 @@ describe('watchdog budgets (D3)', () => {
   test('a budget that is not a number at all is simply absent', () => {
     saveRepoConfig(repoDir, { watchdogInactivitySeconds: '600' as never })
     expect(loadRepoConfig(repoDir).watchdogInactivitySeconds).toBeUndefined()
+  })
+})
+
+describe('machine load cap keys (T1.3, D4)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-cap-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-cap-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('maxConcurrentAgents survives a round-trip, integer >= 1 only', () => {
+    saveRepoConfig(repoDir, { maxConcurrentAgents: 6 })
+    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBe(6)
+    saveRepoConfig(repoDir, { maxConcurrentAgents: 0 })
+    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBeUndefined()
+    saveRepoConfig(repoDir, { maxConcurrentAgents: -1 })
+    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBeUndefined()
+    saveRepoConfig(repoDir, { maxConcurrentAgents: 1.5 })
+    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBeUndefined()
+  })
+
+  test('the deprecated maxParallelTasks still round-trips (read and honored, never dropped)', () => {
+    saveRepoConfig(repoDir, { maxParallelTasks: 2 })
+    expect(loadRepoConfig(repoDir).maxParallelTasks).toBe(2)
+  })
+
+  test('both keys can coexist on disk: loadConfig hands both back, the caller picks', () => {
+    saveRepoConfig(repoDir, { maxParallelTasks: 2, maxConcurrentAgents: 5 })
+    const config = loadConfig(repoDir)
+    expect(config.maxParallelTasks).toBe(2)
+    expect(config.maxConcurrentAgents).toBe(5)
+  })
+
+  // MINEUR (adversarial review): parseConfig drops an unusable value in
+  // silence — same doctrine as every other numeric key — but the machine cap
+  // is the one place a CALLER (workspace.ts) wants to know it happened, so
+  // this is the seam that tells "present and wrong" from "absent".
+  describe('hasInvalidPositiveIntKey', () => {
+    test('absent is not invalid: nothing to warn about', () => {
+      saveRepoConfig(repoDir, {})
+      expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxConcurrentAgents')).toBe(false)
+    })
+
+    test('a usable value is not invalid', () => {
+      saveRepoConfig(repoDir, { maxConcurrentAgents: 3 })
+      expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxConcurrentAgents')).toBe(false)
+    })
+
+    test('0, negative, fractional and non-numeric are all invalid', () => {
+      for (const bad of [0, -1, 1.5, 'quatre' as unknown as number]) {
+        saveRepoConfig(repoDir, { maxConcurrentAgents: bad })
+        expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxConcurrentAgents')).toBe(true)
+      }
+    })
+
+    test('the deprecated alias gets the same treatment', () => {
+      saveRepoConfig(repoDir, { maxParallelTasks: -2 })
+      expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxParallelTasks')).toBe(true)
+    })
+
+    test('a path with no file at all is not invalid — nothing was ever typed', () => {
+      expect(
+        hasInvalidPositiveIntKey(join(repoDir, 'nope', 'config.json'), 'maxConcurrentAgents'),
+      ).toBe(false)
+    })
   })
 })
