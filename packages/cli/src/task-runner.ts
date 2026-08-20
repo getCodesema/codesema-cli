@@ -544,7 +544,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   })
 
   let sessionId: string | null = null
-  if (session) {
+  // Seed only an id that actually went on the command line. OpenCode's first
+  // turn never sends -s; a generated UUID would be persisted and resume a
+  // session that does not exist.
+  if (session && (session.kind === 'resume' || knownAgent(opts.command) !== 'opencode')) {
     sessionId = session.id
   }
   let tokens = 0

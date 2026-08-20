@@ -91,6 +91,8 @@ export const AGENT_DEFS: AgentDef[] = [
     base: 'opencode run',
     modelFlag: '-m',
     models: [],
+    // Empty on purpose: a wizard run must not write into this module-level
+    // list. judgeCommandFor then leaves the command unchanged (primary model).
     judgeModel: '',
     effortFlag: (v) => `--variant ${v}`,
     efforts: ['minimal', 'low', 'medium', 'high', 'max'],
@@ -123,6 +125,7 @@ export function pickOpencodeJudge(models: readonly string[]): string {
  * Map a user-supplied agent string onto a known command: an AGENT_DEFS id or
  * bin becomes that provider's defaultCommand; a command whose first-token bin
  * is known is kept; anything else is null (a true custom command).
+ * Exported for callers that resolve `--agent` / config onto a known bin.
  */
 export function resolveKnownAgentCommand(raw: string): string | null {
   const trimmed = raw.trim()

@@ -364,10 +364,16 @@ describe('runTaskTurn', () => {
       {
         type: 'tool_use',
         name: 'Write',
-        part: { name: 'Write', input: { file_path: 'a.txt' } },
+        part: {
+          name: 'Write',
+          state: {
+            status: 'completed',
+            input: { file_path: 'a.txt' },
+            output: 'wrote a.txt',
+          },
+        },
         sessionID: 'oc-sess',
       },
-      { type: 'tool_result', part: { output: 'wrote a.txt' }, sessionID: 'oc-sess' },
       { type: 'text', part: { text: 'all done' }, sessionID: 'oc-sess' },
       {
         type: 'step_finish',
@@ -407,6 +413,25 @@ describe('runTaskTurn', () => {
     expect(events[1]?.data).toEqual({ name: 'Write', input: '{"file_path":"a.txt"}' })
     expect(events[2]?.data).toEqual({ summary: 'wrote a.txt' })
     expect(texts).toEqual([['all done', 0]])
+  })
+
+  test('opencode first turn without a stream session id does not seed a uuid', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const raw = jsonl([{ type: 'text', part: { text: 'ok' } }])
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'opencode run',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: async (options) => {
+        options.onText?.(raw)
+        return raw
+      },
+    })
+    expect(outcome.sessionId).toBeNull()
   })
 
   test('opencode resume turns pass -s with the stored session', async () => {

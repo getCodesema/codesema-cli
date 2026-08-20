@@ -59,6 +59,7 @@ describe('judgeCommandFor', () => {
   })
 
   test('opencode with an empty judge model is left alone', () => {
+    // AGENT_DEFS.judgeModel stays '': dual uses the primary model.
     expect(judgeCommandFor('opencode run')).toBe('opencode run')
     expect(judgeCommandFor('opencode run -m anthropic/claude-sonnet-4-5')).toBe(
       'opencode run -m anthropic/claude-sonnet-4-5',

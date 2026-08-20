@@ -148,7 +148,8 @@ export function hardenedReviewCommand(command: string): string {
     return `${command} --deny '*'`
   }
   // opencode: command unchanged. Review hardening is OPENCODE_CONFIG_CONTENT
-  // (permission deny); tools toggles lose to a repo opencode.json, permission wins.
+  // (wildcard deny, including agent.build/plan so a repo opencode.json cannot
+  // re-enable tools via agent rules).
   return command
 }
 
@@ -201,9 +202,14 @@ const AGENT_ENV_PREFIXES: Record<KnownAgent, string[]> = {
   ],
 }
 
-/** Inline opencode.json: permission wins over a repo file; tools toggles do not. */
+/** Inline opencode.json: wildcard deny, including default agent rules so a
+ *  repo `agent.build.permission` cannot re-enable tools. */
 export const OPENCODE_REVIEW_CONFIG = JSON.stringify({
-  permission: { bash: 'deny', edit: 'deny', write: 'deny' },
+  permission: { '*': 'deny' },
+  agent: {
+    build: { permission: { '*': 'deny' } },
+    plan: { permission: { '*': 'deny' } },
+  },
 })
 
 /**
@@ -810,10 +816,18 @@ export function createOpencodeTaskParser(
       return
     }
     if (event.type === 'tool_use') {
+      const state = asRecord(part.state)
       const name = firstString(event.name, part.name, part.tool)
       if (name) {
-        const state = asRecord(part.state)
         handlers.onToolUse?.(name, summarize(part.input ?? state.input ?? event.input ?? {}))
+      }
+      // OpenCode emits tool_use when the tool finishes (status completed +
+      // output on the same event). Closing here keeps the watchdog inFlight
+      // from sticking after the first call. A tool_result line is fallback.
+      if (state.status === 'completed' || state.output !== undefined) {
+        const payload =
+          state.output ?? part.output ?? part.content ?? event.output ?? event.content ?? ''
+        handlers.onToolResult?.(handlers.countOnly ? '' : summarizePayload(payload))
       }
       return
     }

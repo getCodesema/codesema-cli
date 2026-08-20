@@ -284,11 +284,30 @@ describe('reviewAgentEnv', () => {
     const env = reviewAgentEnv('opencode run', source)
     expect(env?.OPENCODE_CONFIG_CONTENT).toBe(OPENCODE_REVIEW_CONFIG)
     expect(JSON.parse(OPENCODE_REVIEW_CONFIG)).toEqual({
-      permission: { bash: 'deny', edit: 'deny', write: 'deny' },
+      permission: { '*': 'deny' },
+      agent: {
+        build: { permission: { '*': 'deny' } },
+        plan: { permission: { '*': 'deny' } },
+      },
     })
     expect(env?.ANTHROPIC_API_KEY).toBe('sk-ant-x')
     expect(env?.OPENROUTER_API_KEY).toBe('or-x')
     expect(env?.DATABASE_URL).toBeUndefined()
+  })
+
+  test('nested agent.build.permission is denied so a repo opencode.json cannot win', () => {
+    // OPENCODE_CONFIG_CONTENT overrides top-level permission, but agent rules
+    // take precedence over global permission: without the nested deny, a repo
+    // agent.build.permission: { bash: "allow" } would re-enable the shell.
+    const parsed = JSON.parse(OPENCODE_REVIEW_CONFIG) as {
+      permission: { '*': string }
+      agent: { build: { permission: { '*': string } }; plan: { permission: { '*': string } } }
+    }
+    expect(parsed.permission['*']).toBe('deny')
+    expect(parsed.agent.build.permission['*']).toBe('deny')
+    expect(parsed.agent.plan.permission['*']).toBe('deny')
+    const env = reviewAgentEnv('opencode run', source)
+    expect(JSON.parse(env?.OPENCODE_CONFIG_CONTENT ?? '')).toEqual(parsed)
   })
 
   test('a user-set OPENCODE_CONFIG_CONTENT is not overwritten', () => {
@@ -388,11 +407,41 @@ describe('createOpencodeTaskParser', () => {
     ])
   })
 
-  test('tool_result is summarized', () => {
+  test('completed tool_use fires onToolUse then onToolResult from the same event', () => {
+    const calls: [string, string][] = []
+    const results: string[] = []
+    const parser = createOpencodeTaskParser({
+      onToolUse: (name, input) => calls.push([name, input]),
+      onToolResult: (summary) => results.push(summary),
+    })
+    parser.push(
+      line({
+        type: 'tool_use',
+        part: {
+          tool: 'Write',
+          state: { status: 'completed', input: { file_path: 'a.txt' }, output: 'wrote a.txt' },
+        },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'tool_use',
+        name: 'bash',
+        part: { state: { output: 'ok' }, input: { command: 'ls' } },
+      }),
+    )
+    expect(calls).toEqual([
+      ['Write', '{"file_path":"a.txt"}'],
+      ['bash', '{"command":"ls"}'],
+    ])
+    expect(results).toEqual(['wrote a.txt', 'ok'])
+  })
+
+  test('a tool_result line is still accepted as fallback', () => {
     const results: string[] = []
     const parser = createOpencodeTaskParser({ onToolResult: (summary) => results.push(summary) })
-    parser.push(line({ type: 'tool_result', part: { output: 'wrote a.txt' } }))
-    expect(results).toEqual(['wrote a.txt'])
+    parser.push(line({ type: 'tool_result', part: { output: 'legacy' } }))
+    expect(results).toEqual(['legacy'])
   })
 
   test('step_finish: tokens add input+output or raise to total; cost 0 is a real 0', () => {
@@ -1360,6 +1409,21 @@ describe('runAgent semantic watchdog', () => {
     rig.fake.close(null)
     const err = await rig.promise.catch((e: unknown) => e)
     expect((err as AgentWatchdogError).watchdogCause).toBe('tool_budget')
+  })
+
+  test('a completed opencode tool_use does not leave a tool in flight', async () => {
+    const rig = startRun({ command: 'opencode run' })
+    rig.fake.stdout(
+      frame({
+        type: 'tool_use',
+        name: 'bash',
+        part: { state: { status: 'completed', output: 'ok' } },
+      }),
+    )
+    rig.clock.advance(30 * 60_000 + AGENT_KILL_GRACE_MS)
+    rig.fake.close(null)
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect((err as AgentWatchdogError).watchdogCause).toBe('inactivity')
   })
 
   test('the tool signals are read even when the CALLER added the stream flags', async () => {
