@@ -857,7 +857,8 @@ describe('createTaskManager', () => {
       },
     })
     const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
-    expect(created.ok).toBe(false)
+    expect(created).toMatchObject({ ok: false, code: 400 })
+    expect(created.ok ? true : 'reason_code' in created).toBe(false)
     expect(created.ok ? '' : created.error).toMatch(/opencode\.json|MCP/)
     expect(listTasks(project.path)).toHaveLength(0)
   })

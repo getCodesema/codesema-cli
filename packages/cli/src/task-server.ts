@@ -2521,10 +2521,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       })
       const resolved = resolveTaskIsolation(projectProbe, ctx.command)
       if (!resolved) {
-        // A non-cageable agent can never be boxed: waiting will not help, so
-        // this is a 400 with no retryable D2 code. A missing runtime is still
-        // resource_busy — the engine may come back (claude AND opencode).
+        // 400: config will never succeed by waiting — a non-cageable agent, or
+        // opencode under policy (a host run is unsafe). 409: a cageable agent
+        // blocked by a missing/unreachable runtime (claude AND opencode).
         const agentCannotCage = !cageableCommand(ctx.command)
+        const configRefusal = agentCannotCage || projectProbe.configured === 'policy'
         // Frozen command names what would actually run. When the file now
         // points at a cageable agent, say so — restarting is the fix, waiting
         // is not. A disk edit that is still non-cageable must not send the
@@ -2533,11 +2534,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         const staleCageable = agentCannotCage && pending !== ctx.command && cageableCommand(pending)
         return {
           ok: false,
-          code: agentCannotCage ? 400 : 409,
+          code: configRefusal ? 400 : 409,
           error: staleCageable
             ? t('isolation.unavailableStaleAgent', { running: ctx.command, pending })
             : t('isolation.unavailable', { reason: projectProbe.reason }),
-          ...(agentCannotCage ? {} : { reason_code: 'resource_busy' as const }),
+          ...(configRefusal ? {} : { reason_code: 'resource_busy' as const }),
         }
       }
       const record = createTask(ctx.project.path, {
