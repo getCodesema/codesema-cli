@@ -458,6 +458,24 @@ export type AcceptanceCriterion = {
   text: string
 }
 
+/** The closed outcome of judging one acceptance criterion (DP12). */
+export type CriterionStatus = 'met' | 'unmet' | 'unclear'
+
+/**
+ * One criterion's verdict (DP12): a single shape shared by ReviewRecord (T3.2)
+ * and RecapRecord's `criteria[]` below, so a verdict written by one is
+ * readable by the other. `criterion_id` NAMES the criterion
+ * (AcceptanceCriterion.id); it does not carry the criterion's own wording — a
+ * verdict travels beside the ticket that names it, except in a recap, which
+ * denormalizes `text` on top of this shape (see RecapCriterionVerdict).
+ */
+export type CriterionVerdict = {
+  criterion_id: string
+  status: CriterionStatus
+  /** The reviewer's own quoted grounding for the status. */
+  evidence?: string
+}
+
 /** The five sections of a ticket body (mirrors the contract). */
 export type TicketBody = {
   version: 1
@@ -573,3 +591,58 @@ export type ProjectCandidate = {
 }
 
 export type DiscoverResponse = { candidates: ProjectCandidate[] }
+
+// Mirrors packages/contract/src/recap.ts (T3.4, decision D10): the normalized
+// task recap. Same doctrine as ReviewRecord/TaskChecks above — sanitized on
+// the server, so what reaches this type is always bounded.
+
+/**
+ * `TaskCheckStatus` widened with the two whole-run states a recap must be
+ * able to name honestly: 'unconfigured' (nothing detected/configured — an
+ * EMPTY list here would read as "everything passed") and 'error' (the check
+ * run itself could not happen). Both arrive as one synthetic entry.
+ */
+export type RecapTestStatus = TaskCheckStatus | 'unconfigured' | 'error'
+
+export type RecapTestEntry = {
+  command: string
+  status: RecapTestStatus
+  /** True ONLY on the synthetic entry for an 'unconfigured'/'error' whole run, where `command` is a readable phrase, not an actual command. Absent (never `false`) on every real check entry. */
+  synthetic?: true
+}
+
+/**
+ * One criterion's verdict, denormalized for a document that reads on its own
+ * (DP12): `text` is the ticket's own wording, resolved by the CLI generator.
+ * OPTIONAL — a verdict whose criterion could not be resolved still names a
+ * real `criterion_id` and `status`, simply without a caption.
+ */
+export type RecapCriterionVerdict = CriterionVerdict & {
+  text?: string
+}
+
+/** The normalized recap of one task (.codesema/tasks/<id>/recap.json). */
+export type RecapRecord = {
+  version: 1
+  /** Model-authored. One of exactly three fields the model may fill — never a number, a percentage or a status (invariant 4). */
+  summary: string
+  /** Model-authored bullets of what changed, in words. */
+  changes: string[]
+  /** Model-authored bullets of the decisions taken along the way. */
+  decisions: string[]
+  /** Every file touched, read from the baseline..branch diff. Never from the model. */
+  files: string[]
+  /** One entry per check command that ran, or a synthetic entry naming an 'unconfigured'/'error' whole run. Never from the model. */
+  tests: RecapTestEntry[]
+  /** Per-criterion verdicts, denormalized with their text. Absent means "this task judged no criteria" — normal for a task with no linked ticket, or whose review predates per-criterion verdicts. */
+  criteria?: RecapCriterionVerdict[]
+  /** Total LLM tokens across the task's turns, summed by the CLI. Absent when no turn reported a count — never a free task. */
+  tokens?: number
+  /** The task's running cost, copied from TaskRecord.cost_ticks — never recomputed. Absent means UNKNOWN, not 0. */
+  cost_ticks?: number
+  cost_basis?: CostBasis
+  /** The task's branch. */
+  branch: string
+  /** The merge/pull request URL opened at ship time. Absent before the task has shipped — never a placeholder. */
+  mr_url?: string
+}

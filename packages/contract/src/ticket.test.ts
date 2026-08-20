@@ -3,6 +3,7 @@ import { TASK_REASON_DETAIL_MAX } from './reasons.js'
 import {
   ACCEPTANCE_CRITERIA_HEADING,
   acceptanceCriterionId,
+  CRITERION_VERDICT_EVIDENCE_MAX,
   EARS_RESPONSE,
   EARS_TRIGGER,
   extractAcceptanceCriteria,
@@ -14,6 +15,8 @@ import {
   readAcceptanceCriteria,
   sanitizeAcceptanceCriteria,
   sanitizeAcceptanceCriterion,
+  sanitizeCriterionVerdict,
+  sanitizeCriterionVerdicts,
   sanitizeTicketBody,
   TICKET_CRITERIA_MAX,
   TICKET_CRITERIA_MIN,
@@ -24,6 +27,7 @@ import {
   TICKET_SECTIONS,
   ticketBodySchema,
   type AcceptanceCriterion,
+  type CriterionVerdict,
   type TicketBody,
   type TicketLintResult,
   type TicketProblem,
@@ -2363,6 +2367,134 @@ describe('sanitizeAcceptanceCriterion / sanitizeAcceptanceCriteria', () => {
       TICKET_CRITERION_TEXT_MAX,
     )
     expect(normalizeCriterionText(42)).toBe('')
+  })
+})
+
+describe('sanitizeCriterionVerdict / sanitizeCriterionVerdicts (DP12)', () => {
+  const CID = acceptanceCriterionId(CRITERIA[0] ?? '')
+
+  test('a well-formed verdict round-trips unchanged', () => {
+    const verdict: CriterionVerdict = {
+      criterion_id: CID,
+      status: 'met',
+      evidence: 'the diff shows it',
+    }
+    expect(sanitizeCriterionVerdict(structuredClone(verdict))).toEqual(verdict)
+  })
+
+  test('evidence is optional: a verdict with none keeps none', () => {
+    expect(sanitizeCriterionVerdict({ criterion_id: CID, status: 'unmet' })).toEqual({
+      criterion_id: CID,
+      status: 'unmet',
+    })
+  })
+
+  test('an id the model invented is DISCARDED, never reconstructed', () => {
+    for (const badId of [
+      'not-an-id',
+      'ac-XYZ',
+      'ac-00112233445',
+      `ac-${'0'.repeat(11)}`,
+      '',
+      42,
+      null,
+    ]) {
+      expect(sanitizeCriterionVerdict({ criterion_id: badId, status: 'met' })).toBeNull()
+    }
+  })
+
+  test('an out-of-enum status degrades to unclear, never to met', () => {
+    for (const badStatus of ['MET', 'passed', 'yes', 42, null, undefined, {}]) {
+      expect(sanitizeCriterionVerdict({ criterion_id: CID, status: badStatus })).toEqual({
+        criterion_id: CID,
+        status: 'unclear',
+      })
+    }
+  })
+
+  test('evidence is bounded by the exported constant', () => {
+    const long = 'x'.repeat(CRITERION_VERDICT_EVIDENCE_MAX + 500)
+    const verdict = sanitizeCriterionVerdict({ criterion_id: CID, status: 'met', evidence: long })
+    expect(verdict?.evidence).toHaveLength(CRITERION_VERDICT_EVIDENCE_MAX)
+  })
+
+  test('never throws on hostile input', () => {
+    for (const raw of [null, undefined, 42, 'x', [], Symbol('x'), { criterion_id: CID }]) {
+      expect(() => sanitizeCriterionVerdict(raw)).not.toThrow()
+    }
+    // `{ criterion_id: CID }` (no status) is a real object with a valid id: it
+    // degrades to 'unclear' rather than being dropped, same rule as any other
+    // out-of-enum status.
+    expect(sanitizeCriterionVerdict({ criterion_id: CID })).toEqual({
+      criterion_id: CID,
+      status: 'unclear',
+    })
+  })
+
+  test('a non-array list is an empty list, never throwing', () => {
+    for (const raw of [null, undefined, 'a', 42, {}]) {
+      expect(() => sanitizeCriterionVerdicts(raw)).not.toThrow()
+      expect(sanitizeCriterionVerdicts(raw)).toEqual([])
+    }
+  })
+
+  test('entries with an invalid id are dropped, valid ones kept', () => {
+    const otherCid = acceptanceCriterionId(CRITERIA[1] ?? '')
+    const out = sanitizeCriterionVerdicts([
+      { criterion_id: CID, status: 'met' },
+      { criterion_id: 'not-an-id', status: 'met' },
+      { criterion_id: otherCid, status: 'unmet' },
+    ])
+    expect(out).toEqual([
+      { criterion_id: CID, status: 'met' },
+      { criterion_id: otherCid, status: 'unmet' },
+    ])
+  })
+
+  test('the list is capped at TICKET_CRITERIA_MAX', () => {
+    const many = Array.from({ length: TICKET_CRITERIA_MAX + 10 }, (_, i) => ({
+      criterion_id: acceptanceCriterionId(`WHEN case ${i} happens THE SYSTEM SHALL react`),
+      status: 'met' as const,
+    }))
+    expect(sanitizeCriterionVerdicts(many)).toHaveLength(TICKET_CRITERIA_MAX)
+  })
+
+  test('a repeated criterion_id collapses onto its FIRST occurrence, even when the verdicts disagree', () => {
+    const out = sanitizeCriterionVerdicts([
+      { criterion_id: CID, status: 'met', evidence: 'first pass' },
+      { criterion_id: CID, status: 'unmet', evidence: 'second, contradictory pass' },
+      { criterion_id: CID, status: 'unclear' },
+    ])
+    expect(out).toEqual([{ criterion_id: CID, status: 'met', evidence: 'first pass' }])
+  })
+
+  // Round 2, majeur 1: a lone `\r` is a CommonMark line terminator exactly
+  // like `\n` and `\r\n`, but the round 1 fix only normalized the latter two.
+  test('a lone CR is normalized to LF in evidence, same as CRLF and LF', () => {
+    const verdict = sanitizeCriterionVerdict({
+      criterion_id: CID,
+      status: 'met',
+      evidence: 'first\r\rsecond\r\nthird\nfourth',
+    })
+    expect(verdict?.evidence).toBe('first\n\nsecond\nthird\nfourth')
+    // Without the fix, a lone CR is left untouched: the value below is what
+    // `.replace(/\r\n?/g, '\n')` alone (missing the lone-CR case) still
+    // leaves in place, so asserting against it pins the regression.
+    expect(verdict?.evidence).not.toContain('\r')
+  })
+
+  // Round 2, majeur 4: `cutCodePoints` is exported from this very module
+  // specifically so nothing bounding free text grows its own `.slice()` that
+  // can split a surrogate pair — `sanitizeCriterionVerdict.evidence` did.
+  test('evidence is truncated in code points: a boundary astral character is never split into a lone surrogate', () => {
+    const evidence = `${'a'.repeat(CRITERION_VERDICT_EVIDENCE_MAX - 1)}\u{1F600}b`
+    const verdict = sanitizeCriterionVerdict({ criterion_id: CID, status: 'met', evidence })
+    expect(verdict?.evidence).toBeDefined()
+    // A `.slice()`-based truncation to CRITERION_VERDICT_EVIDENCE_MAX UTF-16
+    // units would cut the astral character in half, leaving a lone high
+    // surrogate (U+D83D) as the last unit — exactly what this pins against.
+    expect(/[\uD800-\uDBFF]$/.test(verdict?.evidence ?? '')).toBe(false)
+    expect(verdict?.evidence?.endsWith('\ud83d')).toBe(false)
   })
 })
 

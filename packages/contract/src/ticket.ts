@@ -82,6 +82,36 @@ export type AcceptanceCriterion = {
   text: string
 }
 
+/** The closed outcome of judging one acceptance criterion (DP12). */
+export type CriterionStatus = 'met' | 'unmet' | 'unclear'
+
+/**
+ * One criterion's verdict — DP12: a single type, defined here beside
+ * `AcceptanceCriterion` and reused **verbatim** by `ReviewRecord` (T3.2) and by
+ * `RecapRecord` (T3.4), so a verdict written by one is readable by the other
+ * without a second definition to drift out of sync.
+ *
+ * The key is `criterion_id`, never `criterion`: an earlier sketch (D10) used
+ * `{criterion, status, evidence}`, which named the SAME fact two ways across
+ * three consumers — the drift D10 risked is exactly what one shared type here
+ * forecloses.
+ *
+ * `criterion_id` NAMES the criterion (`AcceptanceCriterion.id`); it does not
+ * carry the criterion's own text — a verdict always travels beside the ticket
+ * that names it, so re-stating the wording here would be a second copy to
+ * drift. A consumer that reads on its own without that context (`RecapRecord`)
+ * denormalizes the text itself, on top of this type, rather than widening the
+ * shared shape for one reader.
+ */
+export type CriterionVerdict = {
+  /** Must satisfy `isAcceptanceCriterionId`; an id the model invented is DISCARDED by the sanitizer, never reconstructed. */
+  criterion_id: string
+  /** An out-of-enum status DEGRADES to 'unclear' on read — never to 'met', which would fabricate a success. */
+  status: CriterionStatus
+  /** The reviewer's own quoted grounding for the status. OPTIONAL: a verdict can stand without one. */
+  evidence?: string
+}
+
 /**
  * A ticket body: the five sections, with the acceptance criteria already
  * structured. The ticket's TITLE is not here — it lives on the task record
@@ -107,6 +137,14 @@ export const TICKET_CRITERION_TEXT_MAX = 500
 export const TICKET_CRITERIA_MAX = 32
 /** Floor: a ticket with fewer criteria has nothing a gate could verify. */
 export const TICKET_CRITERIA_MIN = 3
+
+/**
+ * Bound of `CriterionVerdict.evidence` (DP12: "bornée par une constante
+ * exportée"). Wider than `TICKET_CRITERION_TEXT_MAX` on purpose: evidence
+ * quotes a snippet of the diff or the transcript the criterion was judged
+ * against, which runs longer than the criterion's own one-line wording.
+ */
+export const CRITERION_VERDICT_EVIDENCE_MAX = 1_000
 
 /**
  * Bound of the readable reason `formatTicketProblems` renders. Deliberately the
@@ -168,11 +206,15 @@ function collapse(raw: unknown): string {
  * stated in. UTF-16 code units are not that unit: one emoji is a single code
  * point and two units, and a bound counted in units would refuse a criterion
  * the spec allows purely for being written in an alphabet outside the BMP.
+ *
+ * Exported so every OTHER module of the contract that bounds free text (e.g.
+ * recap.ts) truncates the same way, instead of growing its own `.slice()`
+ * that silently counts UTF-16 units and can split a surrogate pair.
  */
-const codePointLength = (text: string): number => [...text].length
+export const codePointLength = (text: string): number => [...text].length
 
 /** Cuts at `max` CODE POINTS. Never splits a surrogate pair. */
-function cutCodePoints(text: string, max: number): string {
+export function cutCodePoints(text: string, max: number): string {
   // Fast path: as many code units as code points means nothing astral is here.
   return text.length <= max ? text : [...text].slice(0, max).join('')
 }
@@ -306,6 +348,83 @@ export function sanitizeAcceptanceCriteria(raw: unknown): AcceptanceCriterion[] 
     }
     seen.add(criterion.id)
     out.push(criterion)
+  }
+  return out
+}
+
+const CRITERION_STATUSES: ReadonlySet<CriterionStatus> = new Set(['met', 'unmet', 'unclear'])
+
+/**
+ * Revalidates one criterion verdict (DP12). Null when `criterion_id` is not
+ * `isAcceptanceCriterionId`-shaped — an id the model invented is DISCARDED,
+ * never repaired or reconstructed, since there is no text here to recompute it
+ * from (unlike `sanitizeAcceptanceCriterion`, this function never mints an id).
+ * A `status` outside the closed enum degrades to `'unclear'` rather than
+ * dropping the entry — refusing a status we cannot name is honest, refusing
+ * the whole verdict for it would throw away a criterion_id and evidence that
+ * ARE still readable. Never throws.
+ */
+export function sanitizeCriterionVerdict(raw: unknown): CriterionVerdict | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  if (!isAcceptanceCriterionId(r.criterion_id)) {
+    return null
+  }
+  const status = CRITERION_STATUSES.has(r.status as CriterionStatus)
+    ? (r.status as CriterionStatus)
+    : 'unclear'
+  // Same recipe as `sectionText`: line endings normalized to `\n` FIRST (a
+  // lone `\r` is a line terminator in CommonMark exactly like `\n` — leaving
+  // it alone lets a forged block escape any line-oriented neutralization
+  // downstream), trimmed, cut in CODE POINTS (never `.slice()`, which counts
+  // UTF-16 units and can split a surrogate pair into an ill-formed half),
+  // trimmed again since a mid-sentence cut can leave trailing whitespace.
+  const evidence =
+    typeof r.evidence === 'string'
+      ? cutCodePoints(
+          r.evidence.replace(/\r\n?/g, '\n').trim(),
+          CRITERION_VERDICT_EVIDENCE_MAX,
+        ).trim()
+      : ''
+  return {
+    criterion_id: r.criterion_id,
+    status,
+    ...(evidence ? { evidence } : {}),
+  }
+}
+
+/**
+ * Revalidates a whole list of criterion verdicts: unreadable entries dropped,
+ * capped at `TICKET_CRITERIA_MAX` (a verdict list can never outgrow the ticket
+ * it judges). Never throws, never returns null — an absent list is an empty
+ * one, same doctrine as `sanitizeAcceptanceCriteria`.
+ *
+ * DEDUPLICATED on `criterion_id`, first occurrence wins — same doctrine as
+ * `sanitizeAcceptanceCriteria`'s own dedup, stated there as a CONTRACT
+ * GUARANTEE the schema cannot express (draft 2020-12 has no "unique by
+ * property" keyword). Without it, a model repeating an id could inflate a
+ * ticket's apparent criteria coverage, or leave two contradictory verdicts
+ * (`met` and `unmet`) for the SAME criterion for a reader (T3.6's merge gate,
+ * a recap) to disagree with itself about.
+ */
+export function sanitizeCriterionVerdicts(raw: unknown): CriterionVerdict[] {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  const out: CriterionVerdict[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (out.length >= TICKET_CRITERIA_MAX) {
+      break
+    }
+    const verdict = sanitizeCriterionVerdict(item)
+    if (!verdict || seen.has(verdict.criterion_id)) {
+      continue
+    }
+    seen.add(verdict.criterion_id)
+    out.push(verdict)
   }
   return out
 }
