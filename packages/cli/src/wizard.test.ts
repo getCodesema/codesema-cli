@@ -3,9 +3,14 @@ import type { ProbeExecFn } from './git.js'
 import { setLanguage, t } from './i18n.js'
 import {
   AGENT_DEFS,
+  composeCommand,
   defaultCommand,
   describeConfigEntries,
   detectAgents,
+  listAgentModels,
+  parseCommandEffort,
+  parseCommandModel,
+  parseGrokModels,
   parseOpencodeModels,
   pickOpencodeJudge,
   resolveKnownAgentCommand,
@@ -127,6 +132,59 @@ describe('parseOpencodeModels', () => {
   })
 })
 
+describe('parseGrokModels', () => {
+  test('keeps bullet ids and drops the default marker', () => {
+    expect(
+      parseGrokModels(
+        [
+          'You are logged in with grok.com.',
+          '',
+          'Default model: grok-4.6',
+          '',
+          'Available models:',
+          '  * grok-4.6 (default)',
+          '  - grok-4.5',
+          'not a model',
+        ].join('\n'),
+      ),
+    ).toEqual(['grok-4.6', 'grok-4.5'])
+  })
+})
+
+describe('listAgentModels', () => {
+  test('opencode and grok use `models`; others stay on the static list', async () => {
+    const opencode = AGENT_DEFS.find((d) => d.id === 'opencode')!
+    const grok = AGENT_DEFS.find((d) => d.id === 'grok')!
+    const claude = AGENT_DEFS.find((d) => d.id === 'claude')!
+    const calls: { cmd: string; args: string[] }[] = []
+    const exec: ProbeExecFn = async (cmd, args) => {
+      calls.push({ cmd, args })
+      if (cmd === 'opencode') {
+        return 'openrouter/anthropic/claude-sonnet-4\nopencode/big-pickle\n'
+      }
+      if (cmd === 'grok') {
+        return 'Available models:\n  * grok-4.6 (default)\n  - grok-4.5\n'
+      }
+      return 'should not run'
+    }
+    expect(await listAgentModels(opencode, '/repo', exec)).toEqual([
+      'openrouter/anthropic/claude-sonnet-4',
+      'opencode/big-pickle',
+    ])
+    expect(await listAgentModels(grok, '/repo', exec)).toEqual(['grok-4.6', 'grok-4.5'])
+    expect(await listAgentModels(claude, '/repo', exec)).toEqual([...claude.models])
+    expect(calls).toEqual([
+      { cmd: 'opencode', args: ['models'] },
+      { cmd: 'grok', args: ['models'] },
+    ])
+  })
+
+  test('a missing models subcommand falls back to the static list', async () => {
+    const grok = AGENT_DEFS.find((d) => d.id === 'grok')!
+    expect(await listAgentModels(grok, '/repo', async () => null)).toEqual([...grok.models])
+  })
+})
+
 describe('pickOpencodeJudge', () => {
   test('prefers mini/flash/air/haiku/nano, else first, else empty', () => {
     expect(
@@ -162,5 +220,41 @@ describe('resolveKnownAgentCommand', () => {
   test('an unknown command is null', () => {
     expect(resolveKnownAgentCommand('my-agent run')).toBeNull()
     expect(resolveKnownAgentCommand('')).toBeNull()
+  })
+})
+
+describe('composeCommand / parseCommandModel', () => {
+  test('round-trips a model on every known agent', () => {
+    const opencode = AGENT_DEFS.find((d) => d.id === 'opencode')!
+    const claude = AGENT_DEFS.find((d) => d.id === 'claude')!
+    const codex = AGENT_DEFS.find((d) => d.id === 'codex')!
+    expect(composeCommand(opencode, 'openrouter/anthropic/claude-sonnet-4')).toBe(
+      'opencode run -m openrouter/anthropic/claude-sonnet-4',
+    )
+    expect(parseCommandModel('opencode run -m openrouter/anthropic/claude-sonnet-4')).toBe(
+      'openrouter/anthropic/claude-sonnet-4',
+    )
+    expect(parseCommandModel(composeCommand(claude, 'opus'))).toBe('opus')
+    expect(parseCommandModel(composeCommand(codex, 'gpt-5.5'))).toBe('gpt-5.5')
+    expect(parseCommandModel('claude -p --model=sonnet')).toBe('sonnet')
+  })
+
+  test('no model flag is undefined, not an empty string', () => {
+    expect(parseCommandModel('opencode run')).toBeUndefined()
+    expect(parseCommandModel('claude -p')).toBeUndefined()
+    expect(parseCommandModel('codex exec -')).toBeUndefined()
+  })
+
+  test('round-trips effort on agents that have a flag', () => {
+    const opencode = AGENT_DEFS.find((d) => d.id === 'opencode')!
+    const claude = AGENT_DEFS.find((d) => d.id === 'claude')!
+    const grok = AGENT_DEFS.find((d) => d.id === 'grok')!
+    const codex = AGENT_DEFS.find((d) => d.id === 'codex')!
+    expect(parseCommandEffort(composeCommand(opencode, 'openrouter/foo', 'high'))).toBe('high')
+    expect(parseCommandEffort(composeCommand(claude, 'opus', 'max'))).toBe('max')
+    expect(parseCommandEffort(composeCommand(grok, 'grok-4.6', 'xhigh'))).toBe('xhigh')
+    expect(parseCommandEffort(composeCommand(codex, 'gpt-5.5', 'minimal'))).toBe('minimal')
+    expect(parseCommandEffort('opencode run')).toBeUndefined()
+    expect(parseCommandEffort('claude -p --model opus')).toBeUndefined()
   })
 })

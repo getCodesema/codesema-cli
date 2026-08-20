@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import { writeJsonAtomic } from './atomic-write.js'
-import { saveGlobalConfig, saveRepoConfig, trustRepoAgent } from './config.js'
+import { loadGlobalConfig, saveGlobalConfig, saveRepoConfig, trustRepoAgent } from './config.js'
 import {
   isTerminalReason,
   TICKET_BODY_HASH_TAG,
@@ -3769,14 +3769,31 @@ describe('task routes with a stub manager', () => {
       expect(initial.status).toBe(200)
       const snapshot = JSON.parse(initial.body) as {
         agent?: string
-        agents?: { id: string; label: string; bin: string; command: string; detected: boolean }[]
+        model?: string
+        effort?: string
+        agents?: {
+          id: string
+          label: string
+          bin: string
+          command: string
+          detected: boolean
+          models: string[]
+          efforts: string[]
+        }[]
       }
       expect(snapshot.agent).toBe('claude -p')
+      expect(snapshot.model).toBe('')
+      expect(snapshot.effort).toBe('')
       expect(Array.isArray(snapshot.agents)).toBe(true)
       expect(
         snapshot.agents?.some((a) => a.id === 'opencode' && a.command === 'opencode run'),
       ).toBe(true)
       expect(snapshot.agents?.every((a) => typeof a.detected === 'boolean')).toBe(true)
+      // The picker needs a model list and the effort levels per agent.
+      const claudeOption = snapshot.agents?.find((a) => a.id === 'claude')
+      expect(claudeOption?.models).toContain('opus')
+      expect(claudeOption?.efforts).toContain('xhigh')
+      expect(snapshot.agents?.find((a) => a.id === 'gemini')?.efforts).toEqual([])
 
       const forbidden = await rawRequest(started.port, '/api/config/agent', {
         method: 'PUT',
@@ -3797,10 +3814,74 @@ describe('task routes with a stub manager', () => {
         body: '{"agent":"opencode"}',
       })
       expect(updated.status).toBe(200)
-      expect(JSON.parse(updated.body)).toEqual({ ok: true, agent: 'opencode run' })
+      expect(JSON.parse(updated.body)).toEqual({
+        ok: true,
+        agent: 'opencode run',
+        model: '',
+        effort: '',
+      })
 
       const after = await rawRequest(started.port, '/api/config')
       expect(JSON.parse(after.body).agent).toBe('opencode run')
+
+      const modeled = await rawRequest(started.port, '/api/config/agent', {
+        method: 'PUT',
+        headers: { 'x-codesema-config-token': token },
+        body: '{"agent":"opencode","model":"openrouter/anthropic/claude-sonnet-4"}',
+      })
+      expect(modeled.status).toBe(200)
+      expect(JSON.parse(modeled.body)).toEqual({
+        ok: true,
+        agent: 'opencode run -m openrouter/anthropic/claude-sonnet-4',
+        model: 'openrouter/anthropic/claude-sonnet-4',
+        effort: '',
+      })
+      expect(loadGlobalConfig()).toMatchObject({
+        agent: 'opencode run -m openrouter/anthropic/claude-sonnet-4',
+        agentId: 'opencode',
+        model: 'openrouter/anthropic/claude-sonnet-4',
+      })
+      const overlaid = JSON.parse((await rawRequest(started.port, '/api/config')).body) as {
+        agent?: string
+        agents?: { id: string; command: string }[]
+      }
+      expect(overlaid.agent).toBe('opencode run -m openrouter/anthropic/claude-sonnet-4')
+      expect(overlaid.agents?.find((a) => a.id === 'opencode')?.command).toBe(
+        'opencode run -m openrouter/anthropic/claude-sonnet-4',
+      )
+      expect(overlaid.agents?.find((a) => a.id === 'claude')?.command).toBe('claude -p')
+
+      const withEffort = await rawRequest(started.port, '/api/config/agent', {
+        method: 'PUT',
+        headers: { 'x-codesema-config-token': token },
+        body: '{"agent":"opencode","model":"openrouter/anthropic/claude-sonnet-4","effort":"high"}',
+      })
+      expect(JSON.parse(withEffort.body)).toEqual({
+        ok: true,
+        agent: 'opencode run -m openrouter/anthropic/claude-sonnet-4 --variant high',
+        model: 'openrouter/anthropic/claude-sonnet-4',
+        effort: 'high',
+      })
+      const readBack = JSON.parse((await rawRequest(started.port, '/api/config')).body) as {
+        model?: string
+        effort?: string
+      }
+      expect(readBack.model).toBe('openrouter/anthropic/claude-sonnet-4')
+      expect(readBack.effort).toBe('high')
+
+      const cleared = await rawRequest(started.port, '/api/config/agent', {
+        method: 'PUT',
+        headers: { 'x-codesema-config-token': token },
+        body: '{"agent":"opencode","model":"","effort":""}',
+      })
+      expect(JSON.parse(cleared.body)).toEqual({
+        ok: true,
+        agent: 'opencode run',
+        model: '',
+        effort: '',
+      })
+      expect(loadGlobalConfig().model).toBeUndefined()
+      expect(loadGlobalConfig().effort).toBeUndefined()
     } finally {
       await started.stop()
     }

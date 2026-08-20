@@ -1,4 +1,5 @@
 import type { AgentOption } from '../types'
+import { firstTokenBin } from './agentCommand'
 import type { CreateTaskInput } from './useTasks'
 
 /** Dedicated picker id for a default command that is not an AGENT_DEFS entry. */
@@ -22,18 +23,18 @@ export function taskComposerPayload(input: {
   }
 }
 
-function firstTokenBin(command: string): string {
-  return command.split(/\s+/)[0]?.split('/').pop() ?? ''
+/** Options for the picker: detected first, plus a dedicated current-command row when unmatched. */
+function sameAgent(command: string, agent: AgentOption): boolean {
+  return agent.command === command || agent.bin === firstTokenBin(command)
 }
 
-/** Options for the picker: detected first, plus a dedicated current-command row when unmatched. */
 export function pickerAgents(
   agents: readonly AgentOption[],
   currentAgent: string | undefined,
 ): AgentOption[] {
   const ordered = agents.toSorted((a, b) => Number(b.detected) - Number(a.detected))
   const current = (currentAgent ?? '').trim()
-  if (current && !ordered.some((a) => a.command === current)) {
+  if (current && !ordered.some((a) => sameAgent(current, a))) {
     return [
       {
         id: CURRENT_AGENT_ID,
@@ -53,7 +54,7 @@ export function matchAgentId(command: string | undefined, agents: readonly Agent
   if (!current) {
     return ''
   }
-  return agents.find((a) => a.command === current)?.id ?? CURRENT_AGENT_ID
+  return agents.find((a) => sameAgent(current, a))?.id ?? CURRENT_AGENT_ID
 }
 
 export function commandForAgentId(
@@ -64,5 +65,13 @@ export function commandForAgentId(
   if (id === CURRENT_AGENT_ID) {
     return (currentAgent ?? '').trim()
   }
-  return agents.find((a) => a.id === id)?.command ?? (currentAgent ?? '').trim()
+  const opt = agents.find((a) => a.id === id)
+  if (!opt) {
+    return (currentAgent ?? '').trim()
+  }
+  const current = (currentAgent ?? '').trim()
+  if (current && firstTokenBin(current) === opt.bin) {
+    return current
+  }
+  return opt.command
 }

@@ -105,15 +105,23 @@ describe('taskComposerPayload', () => {
     })
   })
 
-  test('an unmatched default command stays on a dedicated option, never another provider', () => {
+  test('a modeled command of a known agent stays on that agent, keeping the model', () => {
     const current = 'opencode run -m openrouter/foo'
+    expect(matchAgentId(current, AGENTS)).toBe('opencode')
+    expect(pickerAgents(AGENTS, current).some((a) => a.id === CURRENT_AGENT_ID)).toBe(false)
+    expect(commandForAgentId('opencode', AGENTS, current)).toBe(current)
+    expect(commandForAgentId('claude', AGENTS, current)).toBe('claude -p')
+    expect(matchAgentId('claude -p', AGENTS)).toBe('claude')
+    expect(matchAgentId('', AGENTS)).toBe('')
+  })
+
+  test('an unmatched default command stays on a dedicated option, never another provider', () => {
+    const current = 'my-agent --do-it'
     expect(matchAgentId(current, AGENTS)).toBe(CURRENT_AGENT_ID)
     expect(pickerAgents(AGENTS, current)[0]?.id).toBe(CURRENT_AGENT_ID)
     expect(pickerAgents(AGENTS, current)[0]?.command).toBe(current)
     expect(commandForAgentId(CURRENT_AGENT_ID, AGENTS, current)).toBe(current)
     expect(commandForAgentId('claude', AGENTS, current)).toBe('claude -p')
-    expect(matchAgentId('claude -p', AGENTS)).toBe('claude')
-    expect(matchAgentId('', AGENTS)).toBe('')
   })
 })
 
@@ -145,10 +153,16 @@ describe('TaskComposer agent picker', () => {
   })
 
   test('renders the unmatched default command as its own option', async () => {
-    const html = await renderComposer({ currentAgent: 'opencode run -m openrouter/foo' })
+    const html = await renderComposer({ currentAgent: 'my-agent --do-it' })
     expect(html).toContain('value="_current"')
-    expect(html).toContain('opencode run -m openrouter/foo')
+    expect(html).toContain('my-agent --do-it')
     expect(html.indexOf('value="_current"')).toBeLessThan(html.indexOf('value="claude"'))
+  })
+
+  test('a modeled OpenCode default selects OpenCode, not a duplicate row', async () => {
+    const html = await renderComposer({ currentAgent: 'opencode run -m openrouter/foo' })
+    expect(html).not.toContain('value="_current"')
+    expect(html).toContain('value="opencode"')
   })
 })
 
@@ -158,6 +172,11 @@ describe('i18n keys for the per-task agent picker', () => {
       'workspace.agentLabel',
       'workspace.agentBuildHint',
       'settings.agentTitle',
+      'settings.modelLabel',
+      'settings.modelPlaceholder',
+      'settings.modelPlaceholderOpencode',
+      'settings.effortLabel',
+      'settings.effortDefault',
     ] as const) {
       expect(catalogs.en?.[key]).toBeDefined()
       expect(catalogs.fr?.[key]).toBeDefined()
