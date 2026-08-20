@@ -28,6 +28,7 @@ import {
   setSyncAutoPush,
   writeRulesContent,
 } from './repo-config.js'
+import { applyTaskCriteria } from './task-criteria.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskEnvelope, TaskManager } from './task-server.js'
 import {
@@ -821,7 +822,7 @@ async function handleTaskCreate(
   return sendJson(res, 201, created.record)
 }
 
-type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume'
+type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume' | 'criteria'
 
 /**
  * The mutations that carry NO request body: everything they need is already
@@ -862,7 +863,7 @@ function taskActionBody(result: TaskActionResult): Record<string, unknown> {
     : { error: result.error, ...(result.reason_code ? { reason_code: result.reason_code } : {}) }
 }
 
-/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume)?project=, all under the tasks CSRF token. */
+/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume|criteria)?project=, all under the tasks CSRF token. */
 async function handleTaskAction(
   req: IncomingMessage,
   res: ServerResponse,
@@ -881,6 +882,25 @@ async function handleTaskAction(
   }
   if (!isTaskId(action.id)) {
     return sendText(res, 404, 'not found')
+  }
+  if (action.kind === 'criteria') {
+    // T2.5: the ONLY path from a criteria proposal to disk. Persistence lives
+    // in task-criteria.ts (loadTask/saveTask/appendTaskEvent) so this ticket
+    // does not occupy a task-server.ts slot.
+    let body: unknown
+    try {
+      body = await readJsonBody(req, MAX_TASK_BODY_BYTES)
+    } catch {
+      return sendText(res, 400, 'bad request')
+    }
+    const project = getProject(projectId)
+    if (!project) {
+      return sendText(res, 404, 'not found')
+    }
+    const result = applyTaskCriteria(project.path, action.id, body)
+    return result.ok
+      ? sendJson(res, 200, { ok: true, criteria: result.criteria })
+      : sendJson(res, result.code, { error: result.error })
   }
   if (action.kind === 'ship') {
     // T5: push + MR creation. Success detail (MR URL, degraded-ship note)
@@ -1112,7 +1132,8 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
-const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume)$/
+const TASK_ACTION_RE =
+  /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume|criteria)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
 const TASK_REVIEW_RE = /^\/api\/tasks\/([^/]+)\/review$/

@@ -6223,6 +6223,9 @@ describe('workspace server end to end', () => {
     expect(readTaskEvents(repo, created.record.id)).toMatchObject([
       { type: 'isolation', data: { isolation: 'policy' } },
       { type: 'turn_started' },
+      // T2.5: a task launched without criteria journals the unreadable
+      // turn-1 draft and continues — the ship still chains on review_ok.
+      { type: 'criteria', data: { name: 'draft_unparsed' } },
       { type: 'message' },
       { type: 'shipped', data: { mr_url: 'https://github.com/o/r/pull/3' } },
     ])

@@ -14,8 +14,14 @@ import {
 } from './agent.js'
 import { loadConfig, resolveWatchdogBudgets } from './config.js'
 import {
+  acceptanceCriterionId,
+  EARS_RESPONSE,
+  EARS_TRIGGER,
   isActiveTaskStatus,
+  TICKET_BODY_HASH_TAG,
+  type AcceptanceCriterion,
   type TaskEvent,
+  type TaskIssueSnapshot,
   type TaskRecord,
   type TaskStatus,
   type TaskTurn,
@@ -40,12 +46,14 @@ import {
   costRunEnv,
   createTaskRunner,
   createTaskSlotPool,
+  parseCriteriaProposal,
   parseTaskBranchProposal,
   parseTaskQuestion,
   pendingResumeTurn,
   runTaskTurn,
   supportsSessionResume,
   taskCommandFor,
+  taskCriteria,
 } from './task-runner.js'
 import { branchCheckoutPath, type WorktreeLockFn } from './task-worktree.js'
 import { appendTaskEvent, createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
@@ -202,6 +210,131 @@ describe('parseTaskBranchProposal', () => {
   })
 })
 
+const SAMPLE_CRITERIA_TEXTS = [
+  'WHEN the user submits a valid payload THE SYSTEM SHALL persist the rate limit',
+  'WHEN the bucket is empty THE SYSTEM SHALL reject the request',
+  'WHEN the window elapses THE SYSTEM SHALL refill the bucket',
+  'WHEN a client exceeds its quota THE SYSTEM SHALL return 429',
+] as const
+
+function sampleCriteria(): AcceptanceCriterion[] {
+  return SAMPLE_CRITERIA_TEXTS.map((text) => ({ id: acceptanceCriterionId(text), text }))
+}
+
+function taskWithCriteria(extra: Partial<TaskRecord> = {}): TaskRecord {
+  return {
+    title: 'Add rate limiting',
+    isolation: 'policy',
+    criteria: sampleCriteria(),
+    ...extra,
+  } as TaskRecord
+}
+
+describe('buildTaskPrompt with acceptance criteria (T2.5)', () => {
+  test('each criterion and its id are present in the prompt', () => {
+    const prompt = buildTaskPrompt(taskWithCriteria())
+    for (const criterion of sampleCriteria()) {
+      expect(prompt).toContain(criterion.id)
+      expect(prompt).toContain(criterion.text)
+    }
+  })
+
+  test('the prompt announces verification criterion by criterion', () => {
+    const prompt = buildTaskPrompt(taskWithCriteria())
+    expect(prompt.toLowerCase()).toContain('criterion by criterion')
+  })
+
+  test('standing instructions stay intact, including the container line, without stealing first or last line', () => {
+    const prompt = buildTaskPrompt(taskWithCriteria({ isolation: 'container' }), {
+      askBranchName: true,
+    })
+    const lines = prompt.split('\n')
+    expect(lines[0]).toBe(
+      'You are an autonomous coding agent working on a task in a dedicated git worktree of this repository (your current directory).',
+    )
+    expect(lines.at(-1)).toContain("'BRANCH: <name>'")
+    expect(prompt).toContain('Work only inside this worktree')
+    expect(prompt).toContain('Do NOT commit')
+    expect(prompt).toContain('Follow the existing code style')
+    expect(prompt).toContain('cheap checks')
+    expect(prompt).toContain('QUESTION: <your question>')
+    expect(prompt).toContain('short plain-text summary')
+    expect(prompt).toContain('You are running inside a container')
+    expect(prompt).toContain('git commands will fail')
+  })
+
+  test('a task without criteria does not grow an empty section', () => {
+    const prompt = buildTaskPrompt({ title: 'Add rate limiting' } as TaskRecord)
+    expect(prompt).not.toContain('Acceptance criteria:')
+    expect(prompt).not.toContain('CRITERION:')
+  })
+
+  test('a task that already has criteria is never asked for a draft', () => {
+    const prompt = buildTaskPrompt(taskWithCriteria())
+    expect(prompt).not.toContain('CRITERION:')
+    expect(prompt).not.toContain('This task has no acceptance criteria yet')
+  })
+
+  test('issue_snapshot.criteria count as already having criteria', () => {
+    const snapshot: TaskIssueSnapshot = {
+      body_hash: `${TICKET_BODY_HASH_TAG}:${'a'.repeat(64)}`,
+      criteria: sampleCriteria(),
+      taken_at: '2026-08-14T09:00:00.000Z',
+    }
+    const task = { title: 'From issue', issue_snapshot: snapshot } as TaskRecord
+    expect(taskCriteria(task).map((c) => c.id)).toEqual(sampleCriteria().map((c) => c.id))
+    const prompt = buildTaskPrompt(task)
+    expect(prompt).toContain(sampleCriteria()[0]!.id)
+    expect(prompt).not.toContain('This task has no acceptance criteria yet')
+  })
+})
+
+describe('parseCriteriaProposal', () => {
+  const block = [
+    'CRITERION: WHEN a THE SYSTEM SHALL b',
+    'CRITERION: WHEN c THE SYSTEM SHALL d',
+    'CRITERION: WHEN e THE SYSTEM SHALL f',
+    '',
+    'I started the work.',
+  ].join('\n')
+
+  test('the same input yields the same output, in the same order', () => {
+    expect(parseCriteriaProposal(block)).toEqual(parseCriteriaProposal(block))
+    expect(parseCriteriaProposal(block)?.texts).toEqual([
+      'WHEN a THE SYSTEM SHALL b',
+      'WHEN c THE SYSTEM SHALL d',
+      'WHEN e THE SYSTEM SHALL f',
+    ])
+  })
+
+  test('protocol lines are stripped from the user-visible rest', () => {
+    const parsed = parseCriteriaProposal(block)
+    expect(parsed?.rest).toBe('I started the work.')
+    expect(parsed?.rest).not.toContain('CRITERION:')
+  })
+
+  test('no protocol line is the normal absent case', () => {
+    expect(parseCriteriaProposal('all done, tests pass')).toBeNull()
+    expect(parseCriteriaProposal('did stuff\nCRITERION: WHEN a THE SYSTEM SHALL b')).toBeNull()
+  })
+
+  test('blank lines between protocol lines stay protocol', () => {
+    const parsed = parseCriteriaProposal(
+      'CRITERION: WHEN a THE SYSTEM SHALL b\n\nCRITERION: WHEN c THE SYSTEM SHALL d\nprose',
+    )
+    expect(parsed?.texts).toEqual(['WHEN a THE SYSTEM SHALL b', 'WHEN c THE SYSTEM SHALL d'])
+    expect(parsed?.rest).toBe('prose')
+  })
+
+  test('a BRANCH-stripped rest still parses', () => {
+    const full = `BRANCH: fix-rate-limit\n${block}`
+    const branch = parseTaskBranchProposal(full)
+    const parsed = parseCriteriaProposal(branch?.rest ?? '')
+    expect(parsed?.texts).toHaveLength(3)
+    expect(parsed?.rest).toBe('I started the work.')
+  })
+})
+
 // --- test rig: real git repo + real store + injected agent ---
 
 const cleanups: string[] = []
@@ -347,6 +480,7 @@ describe('runTaskTurn', () => {
       'turn_started',
       'tool_use',
       'tool_result',
+      'criteria',
       'message',
     ])
     expect(events[1]?.data).toEqual({ name: 'Write', input: '{"file_path":"a.txt"}' })
@@ -408,6 +542,7 @@ describe('runTaskTurn', () => {
       'turn_started',
       'tool_use',
       'tool_result',
+      'criteria',
       'message',
     ])
     expect(events[1]?.data).toEqual({ name: 'Write', input: '{"file_path":"a.txt"}' })
@@ -534,6 +669,7 @@ describe('runTaskTurn', () => {
       'turn_started',
       'tool_use',
       'tool_result',
+      'criteria',
       'question',
     ])
   })
@@ -640,7 +776,14 @@ describe('createTaskRunner', () => {
     expect(fake.prompts[0]).toContain('write feature.txt')
 
     const types = readTaskEvents(repo, task.id).map((e) => e.type)
-    expect(types).toEqual(['turn_started', 'tool_use', 'tool_result', 'message', 'commit'])
+    expect(types).toEqual([
+      'turn_started',
+      'tool_use',
+      'tool_result',
+      'criteria',
+      'message',
+      'commit',
+    ])
     const commit = readTaskEvents(repo, task.id).at(-1)
     expect(commit?.data.files_changed).toBe(1)
     expect(typeof commit?.data.sha).toBe('string')
@@ -1194,6 +1337,229 @@ describe('createTaskRunner', () => {
     await until(() => status(repo, task.id) === 'waiting_for_you')
     expect(readQueue(repo).entries).toEqual([])
     expect(runner.runningCount()).toBe(0)
+  })
+})
+
+describe('criteria prompting at runtime (T2.5)', () => {
+  const earsDraft = [
+    'CRITERION: WHEN the user submits a valid payload THE SYSTEM SHALL persist the rate limit',
+    'CRITERION: WHEN the bucket is empty THE SYSTEM SHALL reject the request',
+    'CRITERION: WHEN the window elapses THE SYSTEM SHALL refill the bucket',
+    '',
+    'I started the work.',
+  ].join('\n')
+
+  test('turn 1 of a task without criteria asks for an EARS draft', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'no criteria', 'do the thing')
+    const prompts: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        return Promise.resolve(fakeClaude(() => 'ok').run(options))
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(prompts[0]).toContain('CRITERION:')
+    expect(prompts[0]).toContain(EARS_TRIGGER)
+    expect(prompts[0]).toContain(EARS_RESPONSE)
+    expect(prompts[0]).toContain('This task has no acceptance criteria yet')
+  })
+
+  test('turn 1 of a task with criteria never asks for a draft', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'has criteria', 'do the thing')
+    task.criteria = sampleCriteria()
+    saveTask(repo, task)
+    const prompts: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        return Promise.resolve(fakeClaude(() => 'ok').run(options))
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(prompts[0]).toContain(sampleCriteria()[0]!.id)
+    expect(prompts[0]).toContain('criterion by criterion')
+    expect(prompts[0]).not.toContain('This task has no acceptance criteria yet')
+    expect(prompts[0]).not.toContain("'CRITERION:")
+  })
+
+  test('a parseable draft never lands on task.json', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'drafted', 'do the thing')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => earsDraft).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const onDisk = JSON.parse(
+      readFileSync(join(repo, '.codesema', 'tasks', task.id, 'task.json'), 'utf8'),
+    ) as { criteria?: unknown; issue_snapshot?: unknown }
+    expect(onDisk.criteria).toBeUndefined()
+    expect(onDisk.issue_snapshot).toBeUndefined()
+    expect(loadTask(repo, task.id)?.criteria).toBeUndefined()
+    expect(loadTask(repo, task.id)?.turns[0]?.response).toBe('I started the work.')
+    expect(loadTask(repo, task.id)?.turns[0]?.response).not.toContain('CRITERION:')
+  })
+
+  test('later turns without a human validation still write no criteria', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'drafted later', 'start work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: (options) =>
+        Promise.resolve(
+          options.prompt.includes('New instruction') ? 'step two' : `${earsDraft}\nQUESTION: next?`,
+        ),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    runner.reply(task.id, 'continue')
+    await until(
+      () =>
+        loadTask(repo, task.id)?.turns.length === 2 && status(repo, task.id) === 'waiting_for_you',
+    )
+    const onDisk = JSON.parse(
+      readFileSync(join(repo, '.codesema', 'tasks', task.id, 'task.json'), 'utf8'),
+    ) as { criteria?: unknown }
+    expect(onDisk.criteria).toBeUndefined()
+  })
+
+  test('an unreadable draft continues the task, journals the reason, and does not replace the reply', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'unreadable', 'do the thing')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'I just started, no protocol here.').run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(status(repo, task.id)).toBe('waiting_for_you')
+    expect(loadTask(repo, task.id)?.criteria).toBeUndefined()
+    expect(loadTask(repo, task.id)?.turns[0]?.response).toBe('I just started, no protocol here.')
+    const events = readTaskEvents(repo, task.id)
+    const unparsed = events.find((e) => e.type === 'criteria' && e.data.name === 'draft_unparsed')
+    expect(unparsed).toBeDefined()
+    expect(typeof unparsed?.data.message).toBe('string')
+    expect(String(unparsed?.data.message).length).toBeGreaterThan(0)
+    expect(events.some((e) => e.type === 'message')).toBe(true)
+  })
+
+  test('--resume later turns stay the message alone, even when the task has criteria', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'resumed', 'set up storage')
+    task.criteria = sampleCriteria()
+    saveTask(repo, task)
+    const fake = fakeClaude((options) =>
+      options.command.includes('--resume')
+        ? 'postgres wired in'
+        : 'Blocked on a choice.\nQUESTION: postgres or sqlite?',
+    )
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fake.run,
+    })
+    runner.start(task)
+    await until(() => loadTask(repo, task.id)?.turns[0]?.question === 'postgres or sqlite?')
+    expect(runner.reply(task.id, 'postgres')).toEqual({ ok: true })
+    await until(
+      () =>
+        loadTask(repo, task.id)?.turns.length === 2 && status(repo, task.id) === 'waiting_for_you',
+    )
+    expect(fake.prompts[1]).toBe('postgres')
+    expect(fake.prompts[1]).not.toContain('Acceptance criteria:')
+    expect(fake.prompts[1]).not.toContain(sampleCriteria()[0]!.id)
+  })
+
+  test('the transcript path re-injects criteria on a later turn', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'transcripted', 'start work')
+    task.criteria = sampleCriteria()
+    saveTask(repo, task)
+    const prompts: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'codex exec -',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        return Promise.resolve(
+          prompts.length === 1 ? 'step one done\nQUESTION: continue?' : 'step two done',
+        )
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    runner.reply(task.id, 'yes, continue')
+    await until(
+      () =>
+        loadTask(repo, task.id)?.turns.length === 2 && status(repo, task.id) === 'waiting_for_you',
+    )
+    expect(prompts[1]).toContain('Previous turns of this task:')
+    expect(prompts[1]).toContain('New instruction: yes, continue')
+    for (const criterion of sampleCriteria()) {
+      expect(prompts[1]).toContain(criterion.id)
+      expect(prompts[1]).toContain(criterion.text)
+    }
+  })
+
+  test('a snapshot of issue criteria is not overwritten by turn 1', async () => {
+    const repo = makeRepo()
+    const snapshot: TaskIssueSnapshot = {
+      body_hash: `${TICKET_BODY_HASH_TAG}:${'a'.repeat(64)}`,
+      criteria: sampleCriteria(),
+      taken_at: '2026-08-14T09:00:00.000Z',
+    }
+    const task = createTask(repo, {
+      title: 'from issue',
+      prompt: 'do the thing',
+      autoShip: false,
+      base: '',
+      branch: '',
+      worktree: '',
+      issue: {
+        forge: 'github',
+        project: 'acme/repo',
+        iid: 12,
+        url: 'https://github.com/acme/repo/issues/12',
+      },
+      issueSnapshot: snapshot,
+    })
+    const prompts: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        return Promise.resolve(fakeClaude(() => earsDraft).run(options))
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(prompts[0]).not.toContain('This task has no acceptance criteria yet')
+    const reloaded = loadTask(repo, task.id)
+    expect(reloaded?.issue_snapshot?.criteria).toEqual(sampleCriteria())
+    expect(reloaded?.criteria).toBeUndefined()
+    expect(reloaded?.turns[0]?.response).toContain('CRITERION:')
   })
 })
 

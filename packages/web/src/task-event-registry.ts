@@ -56,4 +56,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   queue: TaskEventLine,
   issue: TaskEventLine,
   prep: TaskEventLine,
+  criteria: TaskEventLine,
 }

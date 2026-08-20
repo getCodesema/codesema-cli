@@ -505,6 +505,52 @@ describe('eventSummary', () => {
       expect(eventSummary(event({ type: 'issue', data: {} }))).toBe('Ticket')
     })
   })
+
+  describe("'criteria' (T2.5)", () => {
+    const serverMessage =
+      'the agent reply did not carry a criteria draft protocol, so the task continues without acceptance criteria'
+
+    test('draft_unparsed renders its own translated text, never the raw server message', () => {
+      const summary = eventSummary(
+        event({ type: 'criteria', data: { name: 'draft_unparsed', message: serverMessage } }),
+      )
+      expect(summary).toBe('The criteria draft was unreadable: the task continues without criteria')
+      expect(summary).not.toContain(serverMessage)
+      expect(summary).not.toContain('draft protocol')
+    })
+
+    test('validated renders its own translated text, never the raw server message', () => {
+      const summary = eventSummary(
+        event({
+          type: 'criteria',
+          data: { name: 'validated', message: 'acceptance criteria validated', count: 3 },
+        }),
+      )
+      expect(summary).toBe('Acceptance criteria validated')
+      expect(summary).not.toContain('acceptance criteria validated')
+    })
+
+    test('each data.name gets its OWN text, never the shared label', () => {
+      const unparsed = eventSummary(
+        event({ type: 'criteria', data: { name: 'draft_unparsed', message: 'ENGLISH' } }),
+      )
+      const validated = eventSummary(
+        event({ type: 'criteria', data: { name: 'validated', message: 'ENGLISH' } }),
+      )
+      expect(unparsed).not.toBe(validated)
+      expect(unparsed).not.toBe('Criteria')
+      expect(validated).not.toBe('Criteria')
+      expect(unparsed).not.toContain('ENGLISH')
+      expect(validated).not.toContain('ENGLISH')
+    })
+
+    test('an unrecognized data.name degrades to the plain label, not a raw token', () => {
+      expect(
+        eventSummary(event({ type: 'criteria', data: { name: 'something_future', message: 'x' } })),
+      ).toBe('Criteria')
+      expect(eventSummary(event({ type: 'criteria', data: {} }))).toBe('Criteria')
+    })
+  })
 })
 
 describe('eventTone', () => {
@@ -536,6 +582,14 @@ describe('eventTone', () => {
     expect(eventTone(event({ type: 'issue', data: { name: 'bound' } }))).toBe('idle')
     // An unknown name (a newer server) defaults to the routine tone, never amber.
     expect(eventTone(event({ type: 'issue', data: { name: 'something_future' } }))).toBe('idle')
+  })
+
+  test("'criteria' events are neutral, never red — an unreadable draft does not fail the task", () => {
+    expect(eventTone(event({ type: 'criteria', data: { name: 'draft_unparsed' } }))).toBe('idle')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'validated' } }))).toBe('idle')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'draft_unparsed' } }))).not.toBe(
+      'stop',
+    )
   })
 
   test('branch facts are neutral: none of them is a failure of the work', () => {

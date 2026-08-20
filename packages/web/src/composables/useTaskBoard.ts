@@ -504,6 +504,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   queue: 'workspace.evQueue',
   issue: 'workspace.evIssue',
   prep: 'workspace.evPrep',
+  criteria: 'workspace.evCriteria',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -543,6 +544,9 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   // tone lookup below, consulted first.
   issue: 'idle',
   prep: 'idle',
+  // Neutral: an unreadable draft does not fail the task, and a validation is
+  // a settled fact, not a cry-wolf red.
+  criteria: 'idle',
 }
 
 /**
@@ -648,6 +652,12 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   // T1.3 closed for 'queue').
   issue: [],
   prep: [],
+  // Rendered from `data.name` (criteriaEventText below), never from the raw
+  // `data.message` the server writes: that field is an ENGLISH sentence, and
+  // being always present would make the `?? label` fallback structurally
+  // unreachable — the translated 'workspace.evCriteria' label would be dead
+  // code no journal line ever showed (§6 quater).
+  criteria: [],
 }
 
 /**
@@ -770,6 +780,23 @@ function issueEventText(data: TaskEventData): string {
 }
 
 /**
+ * `data.name` of a 'criteria' event → its own translated key (DP9: the type
+ * names the domain, `data.name` names the incident). An unrecognized name
+ * degrades to the plain 'Criteria' label rather than showing a raw token or
+ * the server's English `data.message`.
+ */
+const CRITERIA_NAME_KEY: Record<string, MessageKey> = {
+  draft_unparsed: 'workspace.evCriteriaDraftUnparsed',
+  validated: 'workspace.evCriteriaValidated',
+}
+
+function criteriaEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? CRITERIA_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.criteria)
+}
+
+/**
  * What a review_started line says beyond its label: which turn is under
  * review, and which flow reviews it. Empty when the payload carries neither
  * (older journals), so the line degrades to the plain label.
@@ -824,6 +851,9 @@ export function eventSummary(event: TaskEvent): string {
   }
   if (event.type === 'prep') {
     return clip(prepEventText(event.data))
+  }
+  if (event.type === 'criteria') {
+    return clip(criteriaEventText(event.data))
   }
   const details = summaryDetails(event)
   if (details.length > 0) {

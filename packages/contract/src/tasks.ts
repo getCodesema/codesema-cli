@@ -177,6 +177,18 @@ export type TaskEventType =
    * `install_passed` / `install_failed`.
    */
   | 'prep'
+  /**
+   * T2.5/D6: the DOMAIN, not an incident — a fact about this task's acceptance
+   * criteria. `data.name` names the incident (`draft_unparsed` when the turn-1
+   * draft did not carry the protocol, `validated` when a human applied a list
+   * via POST /api/tasks/:id/criteria). NEUTRAL like `cost`/`issue`: an
+   * unreadable draft does not fail the task, it continues without criteria.
+   *
+   * Kept on its own last line on purpose: concurrent tickets each append their
+   * own member here, and a line nobody else touches is a rebase conflict that
+   * resolves itself.
+   */
+  | 'criteria'
 
 /**
  * How a task's agent turns are contained.
@@ -481,6 +493,17 @@ export type TaskRecord = {
    * the whole task over one malformed field.
    */
   issue_snapshot?: TaskIssueSnapshot
+  /**
+   * Acceptance criteria this task is judged against when they did not come
+   * from a forge issue (T2.5, D6): a draft the agent wrote at turn 1 and a
+   * human then validated via POST /api/tasks/:id/criteria. OPTIONAL, and
+   * absence is the honest default — a record written before this field
+   * existed, and a task that still has no criteria, name none. Never written
+   * from an unvalidated draft: the endpoint is the only path onto disk.
+   * An empty list after sanitizing is dropped rather than stored, so absence
+   * always means "no criteria".
+   */
+  criteria?: AcceptanceCriterion[]
   created_at: string
   updated_at: string
 }
@@ -537,6 +560,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'queue',
   'issue',
   'prep',
+  'criteria',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
@@ -834,6 +858,7 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
   const headSha = sanitizeBaselineSha(r.head_sha)
   const issue = sanitizeIssueRef(r.issue)
   const issueSnapshot = sanitizeIssueSnapshot(r.issue_snapshot)
+  const criteria = sanitizeAcceptanceCriteria(r.criteria)
   return {
     version: 1,
     id,
@@ -901,6 +926,11 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // than trusted.
     ...(issue ? { issue } : {}),
     ...(issueSnapshot ? { issue_snapshot: issueSnapshot } : {}),
+    // Optional, whitelist-and-truncate, never throw: a missing or unusable
+    // list is "no criteria", which is the honest default for every record
+    // written before T2.5 and every task that still has none. An empty list
+    // after sanitizing is dropped so absence cannot drift from `[]`.
+    ...(criteria.length > 0 ? { criteria } : {}),
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

@@ -91,6 +91,24 @@ describe('T2.4 issue journal labels', () => {
   })
 })
 
+describe('T2.5 criteria journal labels', () => {
+  const criteriaKeys = [
+    'workspace.evCriteria',
+    'workspace.evCriteriaDraftUnparsed',
+    'workspace.evCriteriaValidated',
+  ] as const
+
+  test('each one is actually translated in French, never left on its English text', () => {
+    const en = (catalogs.en ?? {}) as Record<string, string>
+    const fr = (catalogs.fr ?? {}) as Record<string, string>
+    for (const key of criteriaKeys) {
+      expect(en[key]?.trim()).toBeTruthy()
+      expect(fr[key]?.trim()).toBeTruthy()
+      expect(fr[key]).not.toBe(en[key])
+    }
+  })
+})
+
 describe('t', () => {
   test('interpolates params and picks plural forms (no window: English)', () => {
     expect(t('header.copyPrompt', { n: 3 })).toBe('Copy for agent (3)')
