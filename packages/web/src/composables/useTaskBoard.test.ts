@@ -248,6 +248,17 @@ describe('eventSummary', () => {
     expect(eventSummary(event({ type: 'tool_use', data: { tool: 'Bash' } }))).toBe('Bash')
   })
 
+  test('prep lines use the localized name, never a raw server sentence', () => {
+    expect(
+      eventSummary(event({ type: 'prep', data: { name: 'install_started', command: 'npm ci' } })),
+    ).toBe('Installing dependencies · npm ci')
+    expect(
+      eventSummary(
+        event({ type: 'prep', data: { name: 'install_failed', detail: '403 Forbidden from npm' } }),
+      ),
+    ).toBe('Could not install dependencies')
+  })
+
   test('message uses its text', () => {
     expect(eventSummary(event({ type: 'message', data: { text: 'done reading' } }))).toBe(
       'done reading',

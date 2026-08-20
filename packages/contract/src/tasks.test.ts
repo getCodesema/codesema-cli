@@ -122,6 +122,27 @@ describe('sanitizeTaskRecord', () => {
     expect(sanitizeTaskRecord({ ...validRecord, id: ' A1B2C3D4E5F6 ' })?.id).toBe('a1b2c3d4e5f6')
   })
 
+  test('install_lock_hash is kept when it is 16 lowercase hex, dropped otherwise', () => {
+    expect(
+      sanitizeTaskRecord({ ...validRecord, install_lock_hash: 'aaaaaaaaaaaaaaaa' })
+        ?.install_lock_hash,
+    ).toBe('aaaaaaaaaaaaaaaa')
+    expect(
+      sanitizeTaskRecord({ ...validRecord, install_lock_hash: 'not-a-hash' })?.install_lock_hash,
+    ).toBeUndefined()
+  })
+
+  test('prep events survive sanitization', () => {
+    const event = sanitizeTaskEvent({
+      seq: 1,
+      at: '2026-08-20T10:00:00.000Z',
+      type: 'prep',
+      data: { name: 'install_passed', command: 'npm ci' },
+    })
+    expect(event?.type).toBe('prep')
+    expect(event?.data.name).toBe('install_passed')
+  })
+
   test('a legacy record carrying a role field loses it (roles were removed)', () => {
     const r = sanitizeTaskRecord({ ...validRecord, role: 'security' })
     expect(r).toEqual(validRecord)

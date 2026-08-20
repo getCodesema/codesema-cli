@@ -278,6 +278,11 @@ const en = {
   'workspace.evQueueMachine': 'Waiting for a machine slot',
   'workspace.evQueueProject': 'Waiting: another task of this project is already active',
   'workspace.evIssue': 'Ticket',
+  'workspace.evPrep': 'Preparing',
+  'workspace.evPrepStarted': 'Installing dependencies',
+  'workspace.evPrepSkipped': 'Dependencies already installed',
+  'workspace.evPrepPassed': 'Dependencies installed',
+  'workspace.evPrepFailed': 'Could not install dependencies',
   // One per `data.name` of an 'issue' event (DP9: the type names the domain,
   // `data.name` names the incident). The server ALSO writes an English
   // `data.message`; these are what the journal actually shows, so that a
@@ -747,6 +752,11 @@ const fr: Record<MessageKey, string> = {
   'workspace.evQueueMachine': "En attente d'un slot machine",
   'workspace.evQueueProject': 'En attente : une autre tâche de ce projet est déjà active',
   'workspace.evIssue': 'Ticket',
+  'workspace.evPrep': 'Préparation',
+  'workspace.evPrepStarted': 'Installation des dépendances',
+  'workspace.evPrepSkipped': 'Dépendances déjà installées',
+  'workspace.evPrepPassed': 'Dépendances installées',
+  'workspace.evPrepFailed': "Impossible d'installer les dépendances",
   'workspace.evIssueBound': 'Conversation créée depuis un ticket de la forge',
   'workspace.evIssueCoverageGap':
     'Ce ticket porte du contenu hors des cinq sections du contrat : une édition à cet endroit ne sera pas détectée',

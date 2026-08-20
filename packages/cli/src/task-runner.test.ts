@@ -650,6 +650,42 @@ describe('createTaskRunner', () => {
     expect(seenTasks.map((r) => r.status)).toEqual(['running', 'waiting_for_you'])
   })
 
+  test('bootstraps dependencies after the worktree exists and before the agent runs', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":2}')
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-m', 'lock'], { cwd: repo, stdio: 'ignore' })
+    const task = makeTask(repo, 'Add feature', 'write feature.txt')
+    const fake = fakeClaude(() => 'ok', ['feature.txt'])
+    const seenEvents: TaskEvent[] = []
+    const installs: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (_id, event) => seenEvents.push(event),
+      runAgentFn: fake.run,
+      bootstrapInstallFn: async (opts) => {
+        installs.push(opts.worktree)
+        opts.onStart?.('npm ci')
+        return {
+          status: 'passed',
+          command: 'npm ci',
+          fingerprint: 'aaaaaaaaaaaaaaaa',
+          detail: '',
+        }
+      },
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(installs).toHaveLength(1)
+    expect(installs[0]?.length).toBeGreaterThan(0)
+    expect(seenEvents.map((e) => e.type).slice(0, 3)).toEqual(['prep', 'prep', 'turn_started'])
+    expect(seenEvents[0]?.data.name).toBe('install_started')
+    expect(seenEvents[1]?.data.name).toBe('install_passed')
+    expect(loadTask(repo, task.id)?.install_lock_hash).toBe('aaaaaaaaaaaaaaaa')
+  })
+
   test('a record with agent runs that command, not the runner default', async () => {
     const repo = makeRepo()
     const task = createTask(repo, {

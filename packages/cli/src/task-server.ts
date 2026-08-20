@@ -1551,6 +1551,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           final = await run({
             worktree: record.worktree,
             config: readChecksConfig(cwd),
+            projectId,
             headSha,
             onUpdate: (snapshot) => broadcast(snapshot),
           })

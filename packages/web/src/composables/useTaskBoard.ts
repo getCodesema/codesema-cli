@@ -503,6 +503,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   resource: 'workspace.evResource',
   queue: 'workspace.evQueue',
   issue: 'workspace.evIssue',
+  prep: 'workspace.evPrep',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -541,6 +542,7 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   // 'cosmetic'/'bound' (routine) read very differently — see the per-name
   // tone lookup below, consulted first.
   issue: 'idle',
+  prep: 'idle',
 }
 
 /**
@@ -645,6 +647,7 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   // English sentences (round-4 adversarial review, majeur 1; same defect
   // T1.3 closed for 'queue').
   issue: [],
+  prep: [],
 }
 
 /**
@@ -677,6 +680,21 @@ function resourceSummary(data: TaskEventData, label: string): string {
 const QUEUE_NAME_KEY: Record<string, MessageKey> = {
   machine_busy: 'workspace.evQueueMachine',
   project_busy: 'workspace.evQueueProject',
+}
+
+const PREP_NAME_KEY: Record<string, MessageKey> = {
+  install_started: 'workspace.evPrepStarted',
+  install_skipped: 'workspace.evPrepSkipped',
+  install_passed: 'workspace.evPrepPassed',
+  install_failed: 'workspace.evPrepFailed',
+}
+
+function prepEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? PREP_NAME_KEY[name] : undefined
+  const label = key ? t(key) : t(EVENT_LABEL_KEY.prep)
+  const command = firstString(data, ['command'])
+  return command && name !== 'install_failed' ? `${label} · ${command}` : label
 }
 
 function queueEventText(data: TaskEventData): string {
@@ -799,6 +817,9 @@ export function eventSummary(event: TaskEvent): string {
   }
   if (event.type === 'issue') {
     return clip(issueEventText(event.data))
+  }
+  if (event.type === 'prep') {
+    return clip(prepEventText(event.data))
   }
   const details = summaryDetails(event)
   if (details.length > 0) {

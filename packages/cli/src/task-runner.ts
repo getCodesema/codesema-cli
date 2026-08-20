@@ -56,6 +56,11 @@ import {
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
 import {
+  bootstrapWorktreeInstall,
+  type BootstrapInstallResult,
+  type BootstrapWorktreeInstallOptions,
+} from './task-checks.js'
+import {
   agentHomeVolume,
   CAGE_FORWARDED_ENV,
   containerTaskCommandFor,
@@ -991,6 +996,8 @@ export type TaskRunnerOptions = {
   runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
   /** Test seam for the repo's worktree lock; the default takes the real one. */
   worktreeLockFn?: WorktreeLockFn | undefined
+  /** Test seam for the pre-turn dependency install; default drives a checks container. */
+  bootstrapInstallFn?: (opts: BootstrapWorktreeInstallOptions) => Promise<BootstrapInstallResult>
   /**
    * The project's queue changed shape (a task joined it, left it, or started).
    * Everyone still waiting may have moved up a rank, and nothing else would
@@ -1945,6 +1952,45 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     anchorConversation(record, wt, { first, fresh: stranded })
   }
 
+  const bootstrapDeps = async (record: TaskRecord, signal: AbortSignal): Promise<void> => {
+    if (signal.aborted || !record.worktree) {
+      return
+    }
+    const run = opts.bootstrapInstallFn ?? bootstrapWorktreeInstall
+    const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
+    const result = await run({
+      worktree: record.worktree,
+      projectId: opts.projectId ?? projectIdFor(opts.cwd),
+      previousFingerprint: record.install_lock_hash ?? null,
+      ...(checksConfig !== undefined ? { config: checksConfig } : {}),
+      onStart: (command) => {
+        emit(record.id, { type: 'prep', data: { name: 'install_started', command } })
+        notify(() => opts.onText?.(record.id, `Installing dependencies (${command})…`))
+      },
+    })
+    if (result.status === 'unconfigured') {
+      return
+    }
+    const name =
+      result.status === 'skipped'
+        ? 'install_skipped'
+        : result.status === 'passed'
+          ? 'install_passed'
+          : 'install_failed'
+    emit(record.id, {
+      type: 'prep',
+      data: {
+        name,
+        ...(result.command ? { command: result.command } : {}),
+        ...(result.detail ? { detail: result.detail } : {}),
+      },
+    })
+    if (result.fingerprint && result.status !== 'failed') {
+      record.install_lock_hash = result.fingerprint
+      persist(record)
+    }
+  }
+
   /**
    * What one admission attempt did.
    * - 'started': the turn is in flight and owns the claim.
@@ -2348,6 +2394,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       // Exclusion is a real argument, but only while the guard that provides it
       // exists: whoever weakens one of those guards owns this comment too.
       const promise = ensureWorktree(record, controller.signal)
+        .then(() => bootstrapDeps(record, controller.signal))
         .then(() => {
           // Out of the line BEFORE the record says 'running'. The other order
           // left a window where a failing queue write (read-only .codesema,
