@@ -43,6 +43,7 @@ import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../comp
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
 import ProjectsNav from './ProjectsNav.vue'
+import RepoSettings from './RepoSettings.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
@@ -82,6 +83,7 @@ const {
   candidates,
   discoverCandidates,
   workspace,
+  loadProjects,
 } = useTasks(props.token)
 
 const agents = ref<AgentOption[]>([])
@@ -116,6 +118,21 @@ async function loadAgentConfig(): Promise<void> {
     }
   } catch {
     // Older CLIs omit these fields; the picker stays hidden.
+  }
+}
+
+const showSettings = ref(false)
+
+async function closeSettings(): Promise<void> {
+  showSettings.value = false
+  await Promise.all([loadAgentConfig(), loadProjects()])
+}
+
+function toggleSettings(): void {
+  if (showSettings.value) {
+    void closeSettings()
+  } else {
+    showSettings.value = true
   }
 }
 
@@ -446,14 +463,19 @@ async function onRemoveProject(id: string): Promise<void> {
       v-model:query="query"
       :needs-you="counters.needsYou"
       :agents="counters.agents"
+      :settings-open="showSettings"
       @open-oldest-waiting="openOldestWaiting"
+      @settings="toggleSettings"
     />
 
     <p v-if="!connected" class="ws-offline" role="status">
       {{ t('workspace.connectionLost') }}
     </p>
 
-    <div class="ws-body">
+    <div v-if="showSettings" class="ws-settings">
+      <RepoSettings />
+    </div>
+    <div v-else class="ws-body">
       <ProjectsNav
         :projects="projects"
         :selected="filter"
@@ -604,7 +626,9 @@ async function onRemoveProject(id: string): Promise<void> {
                   :creating="runOf(entry.projectId, entry.draft).creating"
                   :error="runOf(entry.projectId, entry.draft).error"
                   :agents="agents"
-                  :current-agent="currentAgent"
+                  :current-agent="
+                    isolationForProject(entry.projectId, projects, workspace)?.agent ?? currentAgent
+                  "
                   :isolation="
                     isolationForProject(entry.projectId, projects, workspace)?.isolation_default ??
                     null
@@ -645,6 +669,12 @@ async function onRemoveProject(id: string): Promise<void> {
   color: var(--cs-amber-text);
   background: var(--cs-amber-soft);
   border-bottom: 1px solid var(--cs-amber-line);
+}
+
+.ws-settings {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .ws-body {

@@ -148,6 +148,7 @@ const composeIsolation = computed(() =>
 const composeIsolationMode = computed<TaskIsolation | null>(
   () => composeIsolation.value?.isolation_default ?? null,
 )
+const composeAgent = computed(() => composeIsolation.value?.agent ?? props.currentAgent ?? '')
 const showIsoBanner = computed(() =>
   shouldOfferIsolationUpgrade(composeIsolation.value, isoBannerDismissed.value),
 )
@@ -185,7 +186,7 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
         :creating="creating"
         :error="createError"
         :agents="agents"
-        :current-agent="currentAgent"
+        :current-agent="composeAgent"
         :isolation="composeIsolationMode"
         @create="onCreate"
       />

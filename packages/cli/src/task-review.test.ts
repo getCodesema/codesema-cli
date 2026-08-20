@@ -279,6 +279,25 @@ describe('createTaskReviewer', () => {
     expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
   })
 
+  test('resolveCommand runs the task CLI, not the reviewer fallback', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'opencode review')
+    record.agent = 'opencode run'
+    saveTask(repo, record)
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, {
+      command: 'claude -p',
+      resolveCommand: (task) => (task.agent === 'opencode run' ? 'opencode run' : 'claude -p'),
+      runSimpleFlowFn: flow.fn,
+    })(record, rig.io)
+
+    expect(flow.calls[0]?.agentCommand).toBe('opencode run')
+    expect(record.status).toBe('review_ok')
+  })
+
   test('the load-cap slot is released even when the review flow throws', async () => {
     const repo = makeRepo()
     const record = await makeTaskWithWorktree(repo, 'failing review')

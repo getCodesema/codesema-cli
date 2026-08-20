@@ -525,14 +525,8 @@ export type RunTaskTurnOptions = {
   worktreeLockFn?: WorktreeLockFn | undefined
 }
 
-/**
- * Runs one agent turn and reports what happened through events. The command
- * carries the stream-json flags itself, so runAgent's own claude parsing
- * stays off (it bails on an explicit --output-format) and onText delivers the
- * raw cumulative JSONL: the task parser is fed the delta of each update.
- */
 /** The CLI a turn actually runs: the record's write-once agent, else the runner default. */
-function commandForTask(record: TaskRecord, fallback: string): string {
+export function commandForTask(record: TaskRecord, fallback: string): string {
   return typeof record.agent === 'string' && record.agent.trim() ? record.agent : fallback
 }
 
@@ -550,6 +544,12 @@ function domainsForTask(
   return opts.allowedDomains
 }
 
+/**
+ * Runs one agent turn and reports what happened through events. The command
+ * carries the stream-json flags itself, so runAgent's own claude parsing
+ * stays off (it bails on an explicit --output-format) and onText delivers the
+ * raw cumulative JSONL: the task parser is fed the delta of each update.
+ */
 export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOutcome> {
   const run = opts.runAgentFn ?? runAgent
   const rawCommand = commandForTask(opts.task, opts.command)

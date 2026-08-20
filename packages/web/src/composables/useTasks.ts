@@ -88,7 +88,7 @@ export type CreateTaskInput = {
   branch?: string
   /** Work-on mode only: the MR target branch, used by the server as base. */
   target?: string
-  /** Full agent command for this task. Absent = session default. */
+  /** Full agent command for this task. Absent = project runtime command. */
   agent?: string
 }
 

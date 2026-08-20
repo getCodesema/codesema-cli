@@ -515,6 +515,7 @@ describe('createTaskManager', () => {
       isolation_default: 'container',
       isolation_reason: 'docker is available',
       isolation_configured: 'auto',
+      agent: 'claude -p',
     })
   })
 
@@ -605,10 +606,12 @@ describe('createTaskManager', () => {
     expect(manager.workspaceInfo(projectA.id)).toMatchObject({
       isolation_configured: 'container',
       isolation_available: true,
+      agent: 'claude -p --model opus',
     })
     expect(manager.workspaceInfo(projectB.id)).toMatchObject({
       isolation_configured: 'policy',
       isolation_available: false,
+      agent: 'claude -p',
     })
   })
 
@@ -3562,6 +3565,7 @@ describe('task routes with a stub manager', () => {
         isolation_default: 'policy',
         isolation_reason: 'stub',
         isolation_configured: 'policy',
+        agent: sessionAgent,
       }),
       startPending: () => Promise.resolve([]),
       sweepOrphanedVolumes: async () => {},
@@ -4276,6 +4280,7 @@ describe('project routes', () => {
       expect(byId.get(current.id)).toMatchObject({
         isolation_available: false,
         isolation_configured: 'policy',
+        agent: 'claude -p',
       })
       // The sibling really is caged, and saying otherwise to the UI is an
       // under-claim of containment on one card and an over-claim on the other.
@@ -4318,6 +4323,7 @@ describe('project routes', () => {
           isolation_default: 'policy',
           isolation_reason: 'container isolation was not probed',
           isolation_configured: 'policy',
+          agent: 'claude -p',
         },
         projects: [
           {
@@ -4330,6 +4336,7 @@ describe('project routes', () => {
               isolation_default: 'policy',
               isolation_reason: 'container isolation was not probed',
               isolation_configured: 'policy',
+              agent: 'claude -p',
             },
           },
         ],

@@ -995,11 +995,7 @@ function createRequestHandler(handlerOpts: {
   // at most one of each, the cap only guards against runaway clients.
   let sseClients = 0
   const repoConfig: RepoConfigEndpoint = { cwd, token: configToken }
-  let agentsCache: Promise<AgentOption[]> | undefined
-  const listAgents = (): Promise<AgentOption[]> => {
-    agentsCache ??= listAgentOptions(cwd)
-    return agentsCache
-  }
+  const listAgents = (): Promise<AgentOption[]> => listAgentOptions(cwd)
 
   return (req: IncomingMessage, res: ServerResponse): void => {
     // The server only binds to loopback, but a malicious site could still reach

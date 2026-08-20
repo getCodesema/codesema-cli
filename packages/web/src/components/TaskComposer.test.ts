@@ -2,7 +2,13 @@ import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
-import { commandForAgentId, matchAgentId, taskComposerPayload } from '../composables/taskComposer'
+import {
+  commandForAgentId,
+  CURRENT_AGENT_ID,
+  matchAgentId,
+  pickerAgents,
+  taskComposerPayload,
+} from '../composables/taskComposer'
 import { catalogs, t } from '../i18n'
 import type { AgentOption } from '../types'
 
@@ -62,26 +68,52 @@ async function renderComposer(
 }
 
 describe('taskComposerPayload', () => {
-  test('emits agent only when a command was selected', () => {
-    expect(taskComposerPayload('Title', 'do it', false, 'opencode run')).toEqual({
+  test('emits agent only when it differs from the project default', () => {
+    expect(
+      taskComposerPayload({
+        title: 'Title',
+        prompt: 'do it',
+        autoShip: false,
+        agent: 'opencode run',
+        defaultAgent: 'claude -p',
+      }),
+    ).toEqual({
       title: 'Title',
       prompt: 'do it',
       autoShip: false,
       agent: 'opencode run',
     })
-    expect(taskComposerPayload('Title', 'do it', true, '')).toEqual({
+    expect(
+      taskComposerPayload({
+        title: 'Title',
+        prompt: 'do it',
+        autoShip: false,
+        agent: 'claude -p',
+        defaultAgent: 'claude -p',
+      }),
+    ).toEqual({
+      title: 'Title',
+      prompt: 'do it',
+      autoShip: false,
+    })
+    expect(
+      taskComposerPayload({ title: 'Title', prompt: 'do it', autoShip: true, agent: '' }),
+    ).toEqual({
       title: 'Title',
       prompt: 'do it',
       autoShip: true,
     })
   })
 
-  test('keeps the session command when the matching agent is selected', () => {
-    expect(matchAgentId('opencode run -m openrouter/foo', AGENTS)).toBe('opencode')
-    expect(commandForAgentId('opencode', AGENTS, 'opencode run -m openrouter/foo')).toBe(
-      'opencode run -m openrouter/foo',
-    )
-    expect(commandForAgentId('claude', AGENTS, 'opencode run -m openrouter/foo')).toBe('claude -p')
+  test('an unmatched default command stays on a dedicated option, never another provider', () => {
+    const current = 'opencode run -m openrouter/foo'
+    expect(matchAgentId(current, AGENTS)).toBe(CURRENT_AGENT_ID)
+    expect(pickerAgents(AGENTS, current)[0]?.id).toBe(CURRENT_AGENT_ID)
+    expect(pickerAgents(AGENTS, current)[0]?.command).toBe(current)
+    expect(commandForAgentId(CURRENT_AGENT_ID, AGENTS, current)).toBe(current)
+    expect(commandForAgentId('claude', AGENTS, current)).toBe('claude -p')
+    expect(matchAgentId('claude -p', AGENTS)).toBe('claude')
+    expect(matchAgentId('', AGENTS)).toBe('')
   })
 })
 
@@ -107,9 +139,16 @@ describe('TaskComposer agent picker', () => {
   })
 
   test('hides the picker when no agents are given', async () => {
-    const html = await renderComposer({ agents: [] })
+    const html = await renderComposer({ agents: [], currentAgent: '' })
     expect(html).not.toContain('tc-agent-select')
     expect(html).not.toContain(t('workspace.agentBuildHint'))
+  })
+
+  test('renders the unmatched default command as its own option', async () => {
+    const html = await renderComposer({ currentAgent: 'opencode run -m openrouter/foo' })
+    expect(html).toContain('value="_current"')
+    expect(html).toContain('opencode run -m openrouter/foo')
+    expect(html.indexOf('value="_current"')).toBeLessThan(html.indexOf('value="claude"'))
   })
 })
 

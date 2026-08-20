@@ -1,11 +1,16 @@
 <script setup lang="ts">
-// Task composer: one textarea (the title derives from its first line) and the
-// per-task auto-ship opt-in. The target repo is the active project card the
-// composer sits under — the parent owns that choice, nothing to pick here.
+// Task composer: one textarea (the title derives from its first line), a
+// per-task agent picker, and the auto-ship opt-in. The target repo is the
+// active project card the composer sits under — the parent owns that choice.
 // No role picker: the tool runs anonymous dev agents, the user defines the
 // workflow in the prompt itself.
 import { computed, ref, watch } from 'vue'
-import { commandForAgentId, matchAgentId, taskComposerPayload } from '../composables/taskComposer'
+import {
+  commandForAgentId,
+  matchAgentId,
+  pickerAgents,
+  taskComposerPayload,
+} from '../composables/taskComposer'
 import { titleFromPrompt } from '../composables/useTaskBoard'
 import type { CreateTaskInput } from '../composables/useTasks'
 import { t } from '../i18n'
@@ -34,15 +39,13 @@ watch(
   },
 )
 
-const orderedAgents = computed(() =>
-  (props.agents ?? []).toSorted((a, b) => Number(b.detected) - Number(a.detected)),
-)
+const orderedAgents = computed(() => pickerAgents(props.agents ?? [], props.currentAgent))
 
 const showPicker = computed(() => orderedAgents.value.length > 0)
 const showBuildHint = computed(() => showPicker.value && props.isolation === 'container')
 
 function optionDisabled(opt: AgentOption): boolean {
-  return !opt.detected && opt.id !== matchAgentId(props.currentAgent, props.agents ?? [])
+  return !opt.detected && opt.id !== selectedId.value
 }
 
 function submit(): void {
@@ -52,12 +55,13 @@ function submit(): void {
   }
   emit(
     'create',
-    taskComposerPayload(
-      titleFromPrompt(text),
-      text,
-      autoShip.value,
-      commandForAgentId(selectedId.value, props.agents ?? [], props.currentAgent),
-    ),
+    taskComposerPayload({
+      title: titleFromPrompt(text),
+      prompt: text,
+      autoShip: autoShip.value,
+      agent: commandForAgentId(selectedId.value, props.agents ?? [], props.currentAgent),
+      defaultAgent: props.currentAgent ?? '',
+    }),
   )
 }
 

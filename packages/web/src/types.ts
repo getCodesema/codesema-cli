@@ -692,6 +692,11 @@ export type WorkspaceInfo = {
    * explicit 'policy' choice is not something to nag about).
    */
   isolation_configured?: IsolationMode
+  /**
+   * Resolved agent command a new unspecified task of this project would run.
+   * OPTIONAL: older CLIs omit it; the composer then falls back to GET /api/config.
+   */
+  agent?: string
 }
 
 export type ProjectsResponse = {

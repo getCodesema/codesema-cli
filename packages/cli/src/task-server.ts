@@ -84,6 +84,7 @@ import {
   type CreateTaskReviewerOptions,
 } from './task-review.js'
 import {
+  commandForTask,
   createTaskRunner,
   pendingResumeTurn,
   type TaskActionResult,
@@ -333,6 +334,8 @@ export type TaskManager = {
      * user already declined.
      */
     isolation_configured: IsolationMode
+    /** Resolved agent command a NEW unspecified task of this project would run. */
+    agent: string
   }
   /**
    * Writes the ready proposal to the project's .codesema/config.json — the
@@ -1643,7 +1646,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     noticeProjectConfig(cwd, runtime)
     const { command, timeoutMs, watchdog, allowedDomains, pinAllowedDomains } = runtime
     // T4: every done turn flows through the automatic review before the human
-    // sees a verdict; the reviewer shares the task agent command and timeout.
+    // sees a verdict. The reviewer is built with the project's command as a
+    // fallback; resolveCommand picks the task's own CLI (`record.agent`) so
+    // an opencode task in a claude project is reviewed by OpenCode.
     // `loadCap` is NOT optional garnish here: it is what makes the end-of-turn
     // review a citizen of the machine-wide budget (T1.3, D4) instead of a
     // fourth heavy process running beside it. Round 4, MAJEUR 3: dropping it
@@ -1654,6 +1659,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       (opts.createReviewerFn ?? createTaskReviewer)({
         cwd,
         command,
+        resolveCommand: (record) => commandForTask(record, command),
         timeoutMs,
         loadCap,
       })
@@ -2738,19 +2744,21 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       const runtime = project ? projectRuntime(project.path) : null
       // Mode and command both come from disk (and the mutable session
       // default): edits apply to new tasks, matching create().
+      const agent =
+        runtime?.command ??
+        resolveProjectAgentCommand(null, opts.flags ?? {}, sessionCommand).command
       const overlaid = overlayIsolationProbe(probe, {
         configured:
           runtime?.isolationMode ??
           resolveProjectConfig(null, opts.flags ?? {}).config.isolation ??
           probe.configured,
-        command:
-          runtime?.command ??
-          resolveProjectAgentCommand(null, opts.flags ?? {}, sessionCommand).command,
+        command: agent,
       })
       return {
         ...isolationDefaults(overlaid),
         isolation_reason: overlaid.reason,
         isolation_configured: overlaid.configured,
+        agent,
       }
     },
 
