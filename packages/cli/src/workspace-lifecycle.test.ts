@@ -1427,11 +1427,14 @@ describe('workspace() boot wiring, by source shape (T1.4 round 6)', () => {
   // probe. Nothing else in the process can observe this call.
   test('the boot probe is a CAPABILITY probe: agent-agnostic, mode-agnostic', () => {
     const source = code()
-    expect(source.match(/probeIsolation\(/g) ?? []).toHaveLength(1)
-    expect(/probeIsolation\(\{[^}]*ignoreAgent:\s*true[^}]*\}\)/s.test(source)).toBe(true)
+    // The call site went through the `probeIsolationFn` seam (hermetic boot
+    // test); the guard follows it rather than being dropped. Still exactly
+    // ONE probe, and still asked the same two ways.
+    expect(source.match(/probeIsolationFn \?\? probeIsolation\)\(/g) ?? []).toHaveLength(1)
+    expect(/probeIsolation\)\(\{[^}]*ignoreAgent:\s*true[^}]*\}\)/s.test(source)).toBe(true)
     // ...and asked as 'auto', not as the launch repo's mode: a launch repo set
     // to 'policy' must not make the machine report "no runtime here".
-    expect(/probeIsolation\(\{[^}]*configured:\s*'auto'[^}]*\}\)/s.test(source)).toBe(true)
+    expect(/probeIsolation\)\(\{[^}]*configured:\s*'auto'[^}]*\}\)/s.test(source)).toBe(true)
   })
 
   // E9 / P9. "La décision juste, l'annonce fausse" (§6 bis) on invariant 3:
@@ -1453,7 +1456,9 @@ describe('workspace() boot wiring, by source shape (T1.4 round 6)', () => {
   test('the fallback agent is the flag or the GLOBAL file, never the launch repo file', () => {
     const source = code()
     expect(
-      /resolveAgentCommand\(\s*opts\.cwd,\s*opts\.agent \?\? global\.agent,?\s*\)/.test(source),
+      /resolveAgentCommand\(\s*opts\.cwd,\s*opts\.agent \?\? global\.agent,\s*opts\.detectAgentsFn \?\? detectAgents,?\s*\)/.test(
+        source,
+      ),
     ).toBe(true)
     // `config` is loadConfig(repoRoot) — the merged launch-repo view. It may
     // still feed the port and the global-only keys, never the agent.

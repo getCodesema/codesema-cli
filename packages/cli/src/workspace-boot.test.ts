@@ -11,11 +11,25 @@
 // on the CLI side: tasks.md promises "at boot … list the volumes" and "read
 // at boot with the rest of the config".
 //
-// Hermetic by construction: `isolation: 'policy'` makes probeIsolation answer
-// without touching a runtime, a configured `agent` skips the binary probes,
-// the project registry lives in a per-test CODESEMA_CONFIG_DIR, and both the
-// manager and the HTTP server are injected — no port is bound, no container
-// is reached, no agent is spawned.
+// Hermetic by INJECTION, not by configuration. Both hermeticity claims this
+// header used to make were false, and the CI runner is where that showed:
+//
+//   * `isolation: 'policy'` does NOT keep the boot off the container runtime.
+//     The boot probes with a hardcoded `configured: 'auto'` (workspace.ts), on
+//     purpose — the boot line must be able to say a cage is AVAILABLE even
+//     when this repo declines it. So the probe ran, and on a machine with no
+//     docker/podman it is the slowest thing in the boot.
+//   * a configured `agent` did NOT skip the binary probes. `detectAgents`
+//     only ever feeds the FALLBACK, but it was awaited unconditionally —
+//     `<bin> --version` for every known agent, under one shared 8s window,
+//     its answer then discarded.
+//
+// Together they cost ~1s per boot on a developer machine and enough on a CI
+// runner (no runtime, no agent binary) to blow this file's 5s-per-test budget.
+// Both are now injected, so this suite reaches neither. The project registry
+// lives in a per-test CODESEMA_CONFIG_DIR, and the manager and the HTTP server
+// were already injected — no port is bound, no container is reached, no agent
+// is spawned.
 
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -24,8 +38,19 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { saveGlobalConfig } from './config.js'
 import type { LiveSession } from './serve.js'
+import type { IsolationProbe } from './task-isolation.js'
 import { createTaskManager, type CreateTaskManagerOptions } from './task-server.js'
+import { AGENT_DEFS, type AgentDef } from './wizard.js'
 import { workspace } from './workspace.js'
+
+/** What the injected runtime probe answers: no cage, no runtime touched. */
+const NO_RUNTIME: IsolationProbe = {
+  available: false,
+  mode: 'policy',
+  reason: 'no container runtime was probed in this test',
+  configured: 'auto',
+  runtime: null,
+}
 
 const cleanups: string[] = []
 const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
@@ -68,6 +93,10 @@ type Boot = {
   passes: string[]
   /** Whether the server was asked to start at all (it never binds here). */
   served: boolean
+  /** Whether the boot asked the (injected) container-runtime probe at all. */
+  probed: boolean
+  /** Whether the boot asked the (injected) agent-binary probe at all. */
+  detected: boolean
 }
 
 /**
@@ -76,10 +105,12 @@ type Boot = {
  * startPending for the queues) stays the genuine implementation, so this
  * cannot pass against a manager that does not really work.
  */
-async function boot(cwd: string): Promise<Boot> {
+async function boot(cwd: string, agents: AgentDef[] = []): Promise<Boot> {
   const passes: string[] = []
   let managerOptions: CreateTaskManagerOptions | null = null
   let served = false
+  let probed = false
+  let detected = false
   // installShutdownHandlers registers process-wide SIGINT/SIGTERM listeners;
   // a test must not leave them behind for the rest of the file.
   const beforeSigint = process.listeners('SIGINT')
@@ -90,6 +121,14 @@ async function boot(cwd: string): Promise<Boot> {
     await workspace({
       cwd,
       open: false,
+      probeIsolationFn: () => {
+        probed = true
+        return Promise.resolve(NO_RUNTIME)
+      },
+      detectAgentsFn: () => {
+        detected = true
+        return Promise.resolve(agents)
+      },
       createTaskManagerFn: (options) => {
         managerOptions = options
         const real = createTaskManager(options)
@@ -130,7 +169,7 @@ async function boot(cwd: string): Promise<Boot> {
   if (!managerOptions) {
     throw new Error('the boot never built a task manager')
   }
-  return { managerOptions, passes, served }
+  return { managerOptions, passes, served, probed, detected }
 }
 
 describe('workspace() boot housekeeping', () => {
@@ -170,5 +209,36 @@ describe('workspace() boot housekeeping', () => {
     const outcome = await boot(makeRepo())
 
     expect(outcome.managerOptions.taskRetention).toBeUndefined()
+  })
+
+  // The two seams below are what makes this file hermetic. Each is asserted
+  // rather than assumed: drop the seam from workspace() and the boot reaches
+  // the real probe, which is exactly the ~1s-per-boot this suite must not pay.
+  test('the runtime probe is the injected one — a policy config does NOT keep the boot off it', async () => {
+    saveGlobalConfig({ agent: 'claude', isolation: 'policy' })
+
+    const outcome = await boot(makeRepo())
+
+    expect(outcome.probed).toBe(true)
+  })
+
+  test('a configured agent skips the binary probes entirely', async () => {
+    saveGlobalConfig({ agent: 'claude', isolation: 'policy' })
+
+    const outcome = await boot(makeRepo())
+
+    expect(outcome.detected).toBe(false)
+  })
+
+  // The mirror image, and the reason the skip above is a skip and not a
+  // deletion: with nothing configured, detection is the ONLY source of an
+  // agent command, and a boot without one throws rather than serving.
+  test('an unconfigured agent still falls back to detection', async () => {
+    saveGlobalConfig({ isolation: 'policy' })
+
+    const outcome = await boot(makeRepo(), [AGENT_DEFS[0] as AgentDef])
+
+    expect(outcome.detected).toBe(true)
+    expect(outcome.served).toBe(true)
   })
 })
