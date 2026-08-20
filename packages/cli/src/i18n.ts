@@ -407,6 +407,10 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
     'note: maxParallelTasks={n} is deprecated — honored as an alias of maxConcurrentAgents (the machine-wide load cap, default 4); set maxConcurrentAgents instead to silence this notice',
   'workspace.invalidLoadCapKey':
     'note: {key} is set but not usable (must be a whole number, 1 or more) — the machine-wide load cap default applies instead',
+  'config.globalOnlyIgnored':
+    "note: {key} in this repo's .codesema/config.json is ignored — it is a machine-wide setting; set it in ~/.config/codesema/config.json",
+  'config.untrustedRepoAgent':
+    'note: repo-provided agent command ({command}) is not approved for this repo — using the workspace agent instead (codesema review to approve it)',
   'workspace.shutdownWaiting':
     'waiting for {n} task to settle (its agent was stopped)… | waiting for {n} tasks to settle (their agents were stopped)…',
   'workspace.shutdownGaveUp':
@@ -854,6 +858,10 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
     'note : maxParallelTasks={n} est déprécié — honoré comme alias de maxConcurrentAgents (le plafond de charge machine, défaut 4) ; réglez maxConcurrentAgents pour faire taire cet avis',
   'workspace.invalidLoadCapKey':
     'note : {key} est défini mais inutilisable (doit être un entier ≥ 1) — le plafond de charge machine par défaut s’applique à la place',
+  'config.globalOnlyIgnored':
+    'note : {key} dans le .codesema/config.json de ce dépôt est ignoré — c’est un réglage machine ; placez-le dans ~/.config/codesema/config.json',
+  'config.untrustedRepoAgent':
+    'note : la commande d’agent fournie par ce dépôt ({command}) n’est pas approuvée — l’agent du workspace est utilisé (codesema review pour l’approuver)',
   'workspace.shutdownWaiting':
     "attente de {n} tâche le temps qu'elle se règle (son agent a été arrêté)… | attente de {n} tâches le temps qu'elles se règlent (leurs agents ont été arrêtés)…",
   'workspace.shutdownGaveUp':

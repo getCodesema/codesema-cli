@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import { writeJsonAtomic } from './atomic-write.js'
+import { saveRepoConfig, trustRepoAgent } from './config.js'
 import {
   isTerminalReason,
   TICKET_BODY_HASH_TAG,
@@ -533,7 +534,150 @@ describe('createTaskManager', () => {
     await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     const options = rig.runnerOptions()
     expect(options.allowedDomains).toEqual(['api.anthropic.com', 'registry.npmjs.org'])
-    expect(options.checksConfig?.image).toBe('oven/bun:1')
+    expect(options.getChecksConfig?.()?.image).toBe('oven/bun:1')
+  })
+
+  test('checks-apply is picked up on the next turn without rebuilding the runner (T1.4)', () => {
+    const project = register(makeRepo())
+    mkdirSync(join(project.path, '.codesema'), { recursive: true })
+    writeFileSync(
+      join(project.path, '.codesema', 'config.json'),
+      JSON.stringify({ checks: { image: 'oven/bun:1' } }),
+    )
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    const getter = rig.runnerOptions().getChecksConfig
+    expect(getter?.()?.image).toBe('oven/bun:1')
+    writeFileSync(
+      join(project.path, '.codesema', 'config.json'),
+      JSON.stringify({ checks: { image: 'node:26' } }),
+    )
+    expect(getter?.()?.image).toBe('node:26')
+    expect(rig.allRunnerOptions).toHaveLength(1)
+  })
+
+  test('two projects keep their own isolation, timeout and agent (T1.4)', async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, {
+      isolation: 'container',
+      timeout: 30,
+      agent: 'claude -p --model opus',
+    })
+    saveRepoConfig(repoB, { isolation: 'policy', timeout: 120 })
+    trustRepoAgent(repoA, 'claude -p --model opus')
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const rig = fakeRunner()
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      timeoutMs: 900_000,
+      command: 'claude -p',
+      onNotice: (message) => notices.push(message),
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const createdA = await manager.create(projectA.id, {
+      title: 'a',
+      prompt: 'p',
+      autoShip: false,
+    })
+    const createdB = await manager.create(projectB.id, {
+      title: 'b',
+      prompt: 'p',
+      autoShip: false,
+    })
+    expect(createdA.ok && createdA.record.isolation).toBe('container')
+    expect(createdB.ok && createdB.record.isolation).toBe('policy')
+    const optsByCwd = new Map(rig.allRunnerOptions.map((options) => [options.cwd, options]))
+    expect(optsByCwd.get(repoA)?.timeoutMs).toBe(30_000)
+    expect(optsByCwd.get(repoB)?.timeoutMs).toBe(120_000)
+    expect(optsByCwd.get(repoA)?.command).toBe('claude -p --model opus')
+    expect(optsByCwd.get(repoB)?.command).toBe('claude -p')
+  })
+
+  test('an existing record keeps its isolation after the project config changes (T1.4)', () => {
+    const repo = makeRepo()
+    const project = register(repo)
+    const seeded = seedTask(repo)
+    seeded.isolation = 'policy'
+    saveTask(repo, seeded)
+    saveRepoConfig(repo, { isolation: 'container' })
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    expect(manager.list(project.id)?.find((record) => record.id === seeded.id)?.isolation).toBe(
+      'policy',
+    )
+    const reloaded = loadTask(repo, seeded.id)
+    expect(reloaded?.isolation).toBe('policy')
+    if (reloaded) {
+      saveTask(repo, reloaded)
+    }
+    expect(loadTask(repo, seeded.id)?.isolation).toBe('policy')
+  })
+
+  test('a repo maxConcurrentAgents is named and does not size the project (T1.4)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { maxConcurrentAgents: 1 })
+    const project = register(repo)
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message) => notices.push(message),
+    })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(notices.some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
+  })
+
+  test('a CLI isolation flag wins over both projects (T1.4)', async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, { isolation: 'policy' })
+    saveRepoConfig(repoB, { isolation: 'container' })
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      flags: { isolation: 'policy' },
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const createdA = await manager.create(projectA.id, {
+      title: 'a',
+      prompt: 'p',
+      autoShip: false,
+    })
+    const createdB = await manager.create(projectB.id, {
+      title: 'b',
+      prompt: 'p',
+      autoShip: false,
+    })
+    expect(createdA.ok && createdA.record.isolation).toBe('policy')
+    expect(createdB.ok && createdB.record.isolation).toBe('policy')
   })
 
   test('create validates title and prompt before touching the store', async () => {

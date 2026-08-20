@@ -9,10 +9,14 @@ import {
   loadConfig,
   loadGlobalConfig,
   loadRepoConfig,
+  presentRepoLoadCapKeys,
   repoConfigPath,
+  repoLoadCapIgnoredNotices,
+  resolveProjectConfig,
   resolveWatchdogBudgets,
   saveGlobalConfig,
   saveRepoConfig,
+  trustedProjectAgentCommand,
   trustRepoAgent,
   trustStorePath,
   type CodesemaConfig,
@@ -281,10 +285,6 @@ describe('watchdog budgets (D3)', () => {
     })
   })
 
-  // NOTE: this is loadConfig's merge, not per-project resolution. The workspace
-  // resolves these three ONCE at boot from the launch repo and applies them to
-  // every registered project (TODO(T1.4)); the README says so rather than
-  // promising a per-repo behaviour that does not exist yet.
   test('a repo budget wins over the global one, field by field', () => {
     saveGlobalConfig({ watchdogInactivitySeconds: 60, watchdogHeartbeatSeconds: 5 })
     saveRepoConfig(repoDir, { watchdogInactivitySeconds: 120 })
@@ -369,27 +369,35 @@ describe('machine load cap keys (T1.3, D4)', () => {
     rmSync(repoDir, { recursive: true, force: true })
   })
 
-  test('maxConcurrentAgents survives a round-trip, integer >= 1 only', () => {
-    saveRepoConfig(repoDir, { maxConcurrentAgents: 6 })
-    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBe(6)
-    saveRepoConfig(repoDir, { maxConcurrentAgents: 0 })
-    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBeUndefined()
-    saveRepoConfig(repoDir, { maxConcurrentAgents: -1 })
-    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBeUndefined()
-    saveRepoConfig(repoDir, { maxConcurrentAgents: 1.5 })
-    expect(loadRepoConfig(repoDir).maxConcurrentAgents).toBeUndefined()
+  test('maxConcurrentAgents survives a GLOBAL round-trip, integer >= 1 only', () => {
+    saveGlobalConfig({ maxConcurrentAgents: 6 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBe(6)
+    saveGlobalConfig({ maxConcurrentAgents: 0 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBeUndefined()
+    saveGlobalConfig({ maxConcurrentAgents: -1 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBeUndefined()
+    saveGlobalConfig({ maxConcurrentAgents: 1.5 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBeUndefined()
   })
 
-  test('the deprecated maxParallelTasks still round-trips (read and honored, never dropped)', () => {
-    saveRepoConfig(repoDir, { maxParallelTasks: 2 })
-    expect(loadRepoConfig(repoDir).maxParallelTasks).toBe(2)
+  test('the deprecated maxParallelTasks still round-trips on the GLOBAL file', () => {
+    saveGlobalConfig({ maxParallelTasks: 2 })
+    expect(loadGlobalConfig().maxParallelTasks).toBe(2)
   })
 
-  test('both keys can coexist on disk: loadConfig hands both back, the caller picks', () => {
-    saveRepoConfig(repoDir, { maxParallelTasks: 2, maxConcurrentAgents: 5 })
+  test('both keys can coexist on the GLOBAL file: loadConfig hands both back, the caller picks', () => {
+    saveGlobalConfig({ maxParallelTasks: 2, maxConcurrentAgents: 5 })
     const config = loadConfig(repoDir)
     expect(config.maxParallelTasks).toBe(2)
     expect(config.maxConcurrentAgents).toBe(5)
+  })
+
+  test('a repo file that sets either key is stripped (T1.4: global-only)', () => {
+    saveGlobalConfig({ maxConcurrentAgents: 4 })
+    saveRepoConfig(repoDir, { maxParallelTasks: 2, maxConcurrentAgents: 9, agent: 'claude -p' })
+    expect(loadRepoConfig(repoDir)).toEqual({ agent: 'claude -p' })
+    expect(loadConfig(repoDir).maxConcurrentAgents).toBe(4)
+    expect(loadConfig(repoDir).maxParallelTasks).toBeUndefined()
   })
 
   // MINEUR (adversarial review): parseConfig drops an unusable value in
@@ -424,5 +432,76 @@ describe('machine load cap keys (T1.3, D4)', () => {
         hasInvalidPositiveIntKey(join(repoDir, 'nope', 'config.json'), 'maxConcurrentAgents'),
       ).toBe(false)
     })
+  })
+})
+
+describe('resolveProjectConfig (T1.4)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-proj-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-proj-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('repo timeout wins over global', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    expect(resolveProjectConfig(repoDir).config.timeout).toBe(300)
+  })
+
+  test('a CLI flag wins over the repo file', () => {
+    saveRepoConfig(repoDir, { isolation: 'policy', timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir, { isolation: 'container', timeout: 60 })
+    expect(resolved.config.isolation).toBe('container')
+    expect(resolved.config.timeout).toBe(60)
+  })
+
+  test('outside any repo, only the global file (and flags) apply', () => {
+    saveGlobalConfig({ timeout: 900, isolation: 'policy' })
+    saveRepoConfig(repoDir, { timeout: 300, isolation: 'container' })
+    expect(resolveProjectConfig(null).config).toMatchObject({ timeout: 900, isolation: 'policy' })
+    expect(resolveProjectConfig(null, { timeout: 15 }).config.timeout).toBe(15)
+  })
+
+  test('a repo maxConcurrentAgents is ignored, the global cap stands, and a warning names the key', () => {
+    saveGlobalConfig({ maxConcurrentAgents: 4 })
+    saveRepoConfig(repoDir, { maxConcurrentAgents: 1 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxConcurrentAgents).toBe(4)
+    expect(resolved.warnings.some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
+    expect(presentRepoLoadCapKeys(repoDir)).toEqual(['maxConcurrentAgents'])
+  })
+
+  test('the deprecated alias in a repo file is named the same way', () => {
+    saveRepoConfig(repoDir, { maxParallelTasks: 2 })
+    const notices = repoLoadCapIgnoredNotices(repoDir)
+    expect(notices.some((line) => line.includes('maxParallelTasks'))).toBe(true)
+    expect(repoLoadCapIgnoredNotices(null)).toEqual([])
+  })
+
+  test('trustedProjectAgentCommand is scoped to the repo that provided the command', () => {
+    trustRepoAgent(repoDir, 'claude -p --model opus')
+    expect(trustedProjectAgentCommand(repoDir, 'claude -p --model opus')).toEqual({
+      kind: 'trusted',
+      command: 'claude -p --model opus',
+    })
+    expect(trustedProjectAgentCommand('/other-repo', 'claude -p --model opus')).toEqual({
+      kind: 'untrusted',
+      command: 'claude -p --model opus',
+    })
+    expect(trustedProjectAgentCommand(repoDir, undefined)).toEqual({ kind: 'none' })
   })
 })

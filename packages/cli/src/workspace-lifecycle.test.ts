@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import { saveRepoConfig } from './config.js'
+import { saveGlobalConfig, saveRepoConfig } from './config.js'
 import type { TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
 import { projectIdFor } from './projects.js'
@@ -1160,6 +1160,7 @@ describe('workspaceTaskManagerOptions (the whole createTaskManager argument)', (
       runtime: 'podman' as const,
     },
     allowedDomains: ['registry.npmjs.org'],
+    flags: { timeout: 15, isolation: 'policy' as const },
   })
 
   test('shutdownSignal is the signal draining.abort() actually fires', () => {
@@ -1183,6 +1184,7 @@ describe('workspaceTaskManagerOptions (the whole createTaskManager argument)', (
     expect(opts.watchdog).toEqual(input.watchdog)
     expect(opts.isolation).toEqual(input.isolation)
     expect(opts.allowedDomains).toEqual(input.allowedDomains)
+    expect(opts.flags).toEqual(input.flags)
   })
 
   test('neither key configured: maxParallel and maxConcurrentAgents are both absent', () => {
@@ -1295,20 +1297,20 @@ describe('invalidLoadCapKeyNotice', () => {
     expect(invalidLoadCapKeyNotice(repoDir)).toBeNull()
   })
 
-  test('an invalid maxConcurrentAgents in the REPO config is named', () => {
+  test('an invalid maxConcurrentAgents in the REPO config is named as global-only (T1.4)', () => {
     withConfigDir()
     repoDir = mkdtempSync(join(tmpdir(), 'codesema-invalid-cap-repo-'))
     saveRepoConfig(repoDir, { maxConcurrentAgents: 0 })
-    const line = invalidLoadCapKeyNotice(repoDir)
-    expect(line).toContain('maxConcurrentAgents')
+    expect(invalidLoadCapKeyNotice(repoDir)).toBeNull()
+    expect(bootNotices({}, repoDir).some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
   })
 
-  test('the deprecated alias, invalid, is also named', () => {
+  test('the deprecated alias in a repo file is named as global-only (T1.4)', () => {
     withConfigDir()
     repoDir = mkdtempSync(join(tmpdir(), 'codesema-invalid-cap-repo-'))
     saveRepoConfig(repoDir, { maxParallelTasks: -1 })
-    const line = invalidLoadCapKeyNotice(repoDir)
-    expect(line).toContain('maxParallelTasks')
+    expect(invalidLoadCapKeyNotice(repoDir)).toBeNull()
+    expect(bootNotices({}, repoDir).some((line) => line.includes('maxParallelTasks'))).toBe(true)
   })
 
   test('outside any repo (repoRoot null), only the global config is consulted', () => {
@@ -1328,10 +1330,10 @@ describe('invalidLoadCapKeyNotice', () => {
       expect(bootNotices({}, repoDir)).toEqual([])
     })
 
-    test('an invalid value AND a deprecated key: both lines, deprecation first', () => {
+    test('an invalid GLOBAL value AND a deprecated key: both lines, deprecation first', () => {
       withConfigDir()
       repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
-      saveRepoConfig(repoDir, { maxConcurrentAgents: 0 })
+      saveGlobalConfig({ maxConcurrentAgents: 0 })
       const lines = bootNotices({ maxParallelTasks: 2 }, repoDir)
       // The mutant this kills: dropping either entry from the array. A silent
       // deprecation, or a value silently ignored, is invariant 2's exact
@@ -1339,6 +1341,16 @@ describe('invalidLoadCapKeyNotice', () => {
       expect(lines).toHaveLength(2)
       expect(lines[0]).toContain('maxParallelTasks')
       expect(lines[1]).toContain('maxConcurrentAgents')
+    })
+
+    test('a well-formed repo load-cap key is named as ignored, not as unusable (T1.4)', () => {
+      withConfigDir()
+      repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
+      saveRepoConfig(repoDir, { maxConcurrentAgents: 3 })
+      const lines = bootNotices({}, repoDir)
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain('maxConcurrentAgents')
+      expect(lines[0]).toMatch(/ignored|global/i)
     })
 
     test('only the deprecated key set: one line, the deprecation', () => {

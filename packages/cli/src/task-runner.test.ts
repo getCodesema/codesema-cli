@@ -3016,6 +3016,38 @@ describe('container isolation branch', () => {
     expect(call?.checksConfig?.image).toBe('oven/bun:1')
   })
 
+  test('getChecksConfig is re-read at the turn and wins over the snapshot (T1.4)', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    const cage = fakeCage()
+    let image = 'stale'
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      checksConfig: { image: 'stale' },
+      getChecksConfig: () => ({ image }),
+      runContainerTurnFn: cage.run,
+    })
+    expect(cage.calls[0]?.checksConfig?.image).toBe('stale')
+    image = 'fresh'
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      checksConfig: { image: 'stale' },
+      getChecksConfig: () => ({ image }),
+      runContainerTurnFn: cage.run,
+    })
+    expect(cage.calls[1]?.checksConfig?.image).toBe('fresh')
+  })
+
   test("a 'policy' record keeps the host path exactly as it was", async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'host', 'do it')

@@ -23,9 +23,11 @@ import {
   hasInvalidPositiveIntKey,
   isRepoAgentTrusted,
   loadConfig,
+  loadGlobalConfig,
   loadRepoConfig,
-  repoConfigPath,
+  repoLoadCapIgnoredNotices,
   resolveWatchdogBudgets,
+  type ProjectConfigFlags,
 } from './config.js'
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
 import { tryGit } from './git.js'
@@ -127,13 +129,17 @@ export function maxParallelNotice(configured: number | undefined): string | null
  * because the value it ignores directly controls how many heavy processes
  * this machine runs at once, and a user who typed one meant to size that
  * (adversarial review, MINEUR — invariant § 0.3 n°2's non-silence, applied to
- * the ticket's own new key). Null when both keys, across both config files,
- * are either absent or usable.
+ * the ticket's own new key). Null when both keys on the GLOBAL file are
+ * either absent or usable. A repo file that sets them is a different
+ * warning (`repoLoadCapIgnoredNotices`, T1.4): the key is global-only, so
+ * "unusable value" would mis-describe a value that is not applied at all.
  */
 export function invalidLoadCapKeyNotice(repoRoot: string | null): string | null {
   const keys = ['maxConcurrentAgents', 'maxParallelTasks'] as const
-  const paths = [globalConfigPath(), ...(repoRoot !== null ? [repoConfigPath(repoRoot)] : [])]
-  const bad = keys.find((key) => paths.some((path) => hasInvalidPositiveIntKey(path, key)))
+  // `repoRoot` is kept so existing call sites do not drift; T1.4 stopped
+  // reading the repo file here — that key is named as global-only instead.
+  void repoRoot
+  const bad = keys.find((key) => hasInvalidPositiveIntKey(globalConfigPath(), key))
   return bad ? t('workspace.invalidLoadCapKey', { key: bad }) : null
 }
 
@@ -156,9 +162,11 @@ export function bootNotices(
   config: { maxParallelTasks?: number | undefined },
   repoRoot: string | null,
 ): string[] {
-  return [maxParallelNotice(config.maxParallelTasks), invalidLoadCapKeyNotice(repoRoot)].filter(
-    (line): line is string => line !== null,
-  )
+  return [
+    maxParallelNotice(config.maxParallelTasks),
+    invalidLoadCapKeyNotice(repoRoot),
+    ...repoLoadCapIgnoredNotices(repoRoot),
+  ].filter((line): line is string => line !== null)
 }
 
 /**
@@ -220,7 +228,7 @@ export function workspaceTaskManagerOptions(
    */
   boot: Pick<
     Parameters<typeof createTaskManager>[0],
-    'command' | 'timeoutMs' | 'watchdog' | 'isolation' | 'allowedDomains'
+    'command' | 'timeoutMs' | 'watchdog' | 'isolation' | 'allowedDomains' | 'flags'
   >,
 ): Parameters<typeof createTaskManager>[0] {
   return {
@@ -343,13 +351,16 @@ export async function workspace(
     port?: number | undefined
     open: boolean
     cwd: string
+    agent?: string | undefined
+    timeout?: number | undefined
   } & WorkspaceSeams,
 ): Promise<void> {
   // Launchable from anywhere: a repo auto-registers and becomes the current
   // project, a plain directory opens the workspace on the registry as-is.
   const repoRoot = tryGit(['rev-parse', '--show-toplevel'], opts.cwd)
   const config = loadConfig(repoRoot)
-  const agentCommand = await resolveAgentCommand(opts.cwd, repoRoot, config.agent)
+  const global = loadGlobalConfig()
+  const agentCommand = await resolveAgentCommand(opts.cwd, repoRoot, opts.agent ?? config.agent)
   // A custom (non claude/codex/gemini) agent command gets NO hardening flags:
   // full env, no read-only harness, no strict-mcp. The user chose it, but the
   // workspace must say so out loud once per boot.
@@ -357,19 +368,28 @@ export async function workspace(
     console.log(t('workspace.customAgentWarning', { command: agentCommand }))
   }
 
-  // Container cage: probed ONCE at boot (is a runtime there, does its engine
-  // answer, can it run the configured agent) and handed to the manager, so
-  // every task creation resolves its isolation from the same answer.
-  const allowedDomains = config.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
+  // Container RUNTIME is probed ONCE at boot (T1.4): is an engine there, does
+  // it answer. Per-project isolation mode and agent are overlaid at task
+  // creation, so a launch repo set to `policy` cannot poison a sibling set to
+  // `container`. `ignoreAgent` skips the claude-only check — that one is
+  // per-project too.
+  const allowedDomains = global.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
   const probe = await probeIsolation({
-    configured: config.isolation ?? 'auto',
+    configured: 'auto',
     command: agentCommand,
+    ignoreAgent: true,
   })
 
   // The lock must be held BEFORE the manager touches any task store: its boot
   // recovery would mark another live workspace's running tasks as orphans.
   const lock = acquireWorkspaceLock()
-  const timeoutMs = (config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
+  // Fallback ceiling only (T1.4): a project that sets `timeout` wins in
+  // context(). The launch repo must not dictate other projects' budgets.
+  const timeoutMs = (global.timeout ?? DEFAULT_TIMEOUT_S) * 1000
+  const flags: ProjectConfigFlags = {
+    ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
+    ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
+  }
   // Aborted by the first SIGINT/SIGTERM, handed to the runners that wait on the
   // repo lock while cleaning up, so the exit never sits behind one.
   const draining = new AbortController()
@@ -396,12 +416,12 @@ export async function workspace(
       workspaceTaskManagerOptions(config, draining, {
         command: agentCommand,
         timeoutMs,
-        // What actually decides a task is dead (D3): silence with no tool
-        // out, or one tool that never comes back. `timeoutMs` above is only
-        // the last resort under it.
-        watchdog: resolveWatchdogBudgets(config),
+        // Fallback budgets (T1.4): a project that sets watchdog keys wins
+        // in context(). Global file, then D3 defaults.
+        watchdog: resolveWatchdogBudgets(global),
         isolation: probe,
         allowedDomains,
+        flags,
       }),
     )
 

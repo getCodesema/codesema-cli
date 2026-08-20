@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_WATCHDOG_DEFAULTS, type WatchdogBudgets } from './agent.js'
-import { isSupportedLanguage, type SupportedLanguage } from './i18n.js'
+import { isSupportedLanguage, t, type SupportedLanguage } from './i18n.js'
 
 export type CodesemaConfig = {
   /** Full headless agent shell command (e.g. "claude -p --model opus"). */
@@ -20,6 +20,9 @@ export type CodesemaConfig = {
    * with a named boot warning (workspace.ts's maxParallelNotice) whenever it
    * is set. When BOTH keys are present, `maxConcurrentAgents` wins the value
    * (design.md Decision 5) and the warning still fires.
+   *
+   * GLOBAL-ONLY (T1.4), same as `maxConcurrentAgents`: a repo file that sets
+   * it is stripped and warned about.
    */
   maxParallelTasks?: number | undefined
   /**
@@ -37,6 +40,10 @@ export type CodesemaConfig = {
    * ONE budget — this workspace runs at once, across every project.
    * Undefined applies DEFAULT_MAX_CONCURRENT_AGENTS (load-cap.ts, currently
    * 4). See `maxParallelTasks` for the key this replaces.
+   *
+   * GLOBAL-ONLY (T1.4): a repo `.codesema/config.json` that sets this is
+   * stripped and warned about — the resource being capped is the machine, not
+   * the repository. Same doctrine as `syncUrl` / `syncSecret` / `syncAutoPush`.
    */
   maxConcurrentAgents?: number | undefined
   /**
@@ -44,12 +51,9 @@ export type CodesemaConfig = {
    * D3 defaults apply (30 min of silence, 2 h of one tool in flight, a 30 s
    * heartbeat) — see AGENT_WATCHDOG_DEFAULTS and resolveWatchdogBudgets.
    *
-   * TODO(T1.4): these are read ONCE at boot, from the launch repo's effective
-   * config, and applied to every registered project. They are therefore a
-   * WORKSPACE-WIDE setting today, whichever file they sit in — a second
-   * project's `.codesema/config.json` is not consulted for them. Per-project
-   * resolution belongs to T1.4 (config resolved per project); until then the
-   * README documents them as global on purpose.
+   * Resolved per project (T1.4) with the same flag > repo > global precedence
+   * as `timeout`. A project that does not set them inherits the global file,
+   * then the D3 defaults — never the launch repo's values.
    */
   watchdogInactivitySeconds?: number | undefined
   watchdogToolBudgetSeconds?: number | undefined
@@ -155,7 +159,13 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       // watching the wall clock, so a 0 or a negative would mean "kill on
       // sight": same guard as the watchdog budgets, the default applies.
       ...(secs(raw.timeout) !== undefined ? { timeout: secs(raw.timeout) } : {}),
-      ...(Number.isInteger(raw.maxParallelTasks) && (raw.maxParallelTasks as number) >= 1
+      // Machine-wide load cap (T1.3) is GLOBAL-ONLY (T1.4): a repo file that
+      // sets either key is stripped here and named by resolveProjectConfig —
+      // never silently, never applied. The resource being capped is the
+      // machine, not the repository (D4).
+      ...(scope === 'global' &&
+      Number.isInteger(raw.maxParallelTasks) &&
+      (raw.maxParallelTasks as number) >= 1
         ? { maxParallelTasks: raw.maxParallelTasks as number }
         : {}),
       // 0 is a legitimate choice (purge every terminated task at the next
@@ -165,13 +175,11 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       ...(Number.isInteger(raw.taskRetentionCount) && (raw.taskRetentionCount as number) >= 0
         ? { taskRetentionCount: raw.taskRetentionCount as number }
         : {}),
-      ...(Number.isInteger(raw.maxConcurrentAgents) && (raw.maxConcurrentAgents as number) >= 1
+      ...(scope === 'global' &&
+      Number.isInteger(raw.maxConcurrentAgents) &&
+      (raw.maxConcurrentAgents as number) >= 1
         ? { maxConcurrentAgents: raw.maxConcurrentAgents as number }
         : {}),
-      // Read from either scope, but resolved ONCE at boot for the whole
-      // workspace: see the TODO(T1.4) on CodesemaConfig. Whichever file holds
-      // them, they can only ever change when a run is cut — never what the run
-      // is allowed to reach.
       ...(secs(raw.watchdogInactivitySeconds) !== undefined
         ? { watchdogInactivitySeconds: secs(raw.watchdogInactivitySeconds) }
         : {}),
@@ -273,6 +281,111 @@ export function loadConfig(repoRoot: string | null): CodesemaConfig {
   const global = loadGlobalConfig()
   const repo = repoRoot ? loadRepoConfig(repoRoot) : {}
   return { ...global, ...repo }
+}
+
+/**
+ * CLI flags that win over both config files (documented precedence:
+ * flag > `.codesema/config.json` > `~/.config/codesema/config.json`).
+ * Process-wide: a flag applies to every registered project.
+ */
+export type ProjectConfigFlags = {
+  isolation?: IsolationMode | undefined
+  isolationAllowedDomains?: string[] | undefined
+  timeout?: number | undefined
+  agent?: string | undefined
+  agentId?: string | undefined
+  model?: string | undefined
+  effort?: string | undefined
+}
+
+export type ResolvedProjectConfig = {
+  config: CodesemaConfig
+  /** Named degradations (global-only keys stripped from a repo file). */
+  warnings: string[]
+}
+
+const LOAD_CAP_KEYS = ['maxConcurrentAgents', 'maxParallelTasks'] as const
+
+/**
+ * Load-cap keys PRESENT in a repo `.codesema/config.json`, raw — including
+ * values parseConfig would drop. Presence is what we warn about (T1.4): the
+ * key is global-only, so a well-formed `3` is ignored just as a `0` is.
+ * Never throws: unreadable JSON is "nothing to warn about".
+ */
+export function presentRepoLoadCapKeys(repoRoot: string): Array<(typeof LOAD_CAP_KEYS)[number]> {
+  try {
+    const raw = JSON.parse(readFileSync(repoConfigPath(repoRoot), 'utf8')) as Record<
+      string,
+      unknown
+    >
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return []
+    }
+    return LOAD_CAP_KEYS.filter((key) => raw[key] !== undefined)
+  } catch {
+    return []
+  }
+}
+
+export function repoLoadCapIgnoredNotices(repoRoot: string | null): string[] {
+  if (repoRoot === null) {
+    return []
+  }
+  return presentRepoLoadCapKeys(repoRoot).map((key) => t('config.globalOnlyIgnored', { key }))
+}
+
+/**
+ * Per-project configuration (T1.4). Precedence is the documented one:
+ * CLI flags > repo `.codesema/config.json` > `~/.config/codesema/config.json`.
+ * `maxConcurrentAgents` / `maxParallelTasks` never come from the repo file
+ * (stripped in parseConfig); if they were written there, `warnings` says so.
+ *
+ * `projectPath` null is the no-repo launch: only the global file (and flags)
+ * apply, which is the pre-T1.4 behaviour of `loadConfig(null)`.
+ */
+export function resolveProjectConfig(
+  projectPath: string | null,
+  flags: ProjectConfigFlags = {},
+): ResolvedProjectConfig {
+  const global = loadGlobalConfig()
+  const repo = projectPath ? loadRepoConfig(projectPath) : {}
+  const warnings = repoLoadCapIgnoredNotices(projectPath)
+  const merged: CodesemaConfig = { ...global, ...repo }
+  const flagged = <K extends keyof ProjectConfigFlags>(
+    key: K,
+    value: ProjectConfigFlags[K],
+  ): Partial<CodesemaConfig> =>
+    value !== undefined ? ({ [key]: value } as Partial<CodesemaConfig>) : {}
+  return {
+    config: {
+      ...merged,
+      ...flagged('isolation', flags.isolation),
+      ...flagged('isolationAllowedDomains', flags.isolationAllowedDomains),
+      ...flagged('timeout', flags.timeout),
+      ...flagged('agent', flags.agent),
+      ...flagged('agentId', flags.agentId),
+      ...flagged('model', flags.model),
+      ...flagged('effort', flags.effort),
+    },
+    warnings,
+  }
+}
+
+/**
+ * Whether a repo-provided agent command may run unattended (workspace TOFU).
+ * `none` = the repo did not set `agent`; the caller uses its fallback.
+ */
+export function trustedProjectAgentCommand(
+  projectPath: string,
+  configured: string | undefined,
+):
+  { kind: 'trusted'; command: string } | { kind: 'untrusted'; command: string } | { kind: 'none' } {
+  if (!configured) {
+    return { kind: 'none' }
+  }
+  return isRepoAgentTrusted(projectPath, configured)
+    ? { kind: 'trusted', command: configured }
+    : { kind: 'untrusted', command: configured }
 }
 
 /**

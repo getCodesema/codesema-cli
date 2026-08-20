@@ -167,6 +167,8 @@ async function runCommand(
         port: parseIntFlag('port', values.port, 1, 65535),
         open: !values['no-open'],
         cwd: process.cwd(),
+        agent: values.agent,
+        timeout: parseIntFlag('timeout', values.timeout, 1, 86400),
       })
       break
     case 'menu':
