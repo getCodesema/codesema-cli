@@ -430,6 +430,8 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'isolation.homeFailed':
     "container isolation: the task's home volume could not be prepared — {error}",
   'isolation.unavailable': 'container isolation is unavailable: {reason}',
+  'isolation.unavailableStaleAgent':
+    'container isolation is unavailable: this workspace is still running {running}, which cannot be caged. Restart the workspace to pick up {pending}.',
   'isolation.reasonConfigured': "isolation is set to 'policy' in the configuration",
   'isolation.reasonAgent':
     'the cage only provides claude-code, and the configured agent is {command}',
@@ -882,6 +884,8 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'isolation.homeFailed':
     "isolation container : le volume home de la tâche n'a pas pu être préparé — {error}",
   'isolation.unavailable': "l'isolation container est indisponible : {reason}",
+  'isolation.unavailableStaleAgent':
+    "l'isolation container est indisponible : ce workspace exécute encore {running}, qui ne peut pas être cagé. Redémarrez le workspace pour prendre en compte {pending}.",
   'isolation.reasonConfigured': "l'isolation est réglée sur « policy » dans la configuration",
   'isolation.reasonAgent': "la cage ne fournit que claude-code, or l'agent configuré est {command}",
   'isolation.reasonNoRuntime': 'aucun runtime de container trouvé (installez docker ou podman)',

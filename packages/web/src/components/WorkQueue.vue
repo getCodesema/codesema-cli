@@ -9,8 +9,9 @@
 // [Ship] + [Diff], and the folded "DONE" pile. Clicking a card opens it in
 // the focus zone. Each live card carries a discreet isolation dot (green =
 // caged in a container, hollow = policy) whenever that dot tells the cards
-// apart, and a dismissible banner sits on top when the whole workspace fell
-// back to policy while a container runtime could have carried it. All
+// apart, and a dismissible banner sits on top when the compose-target
+// project fell back to policy while a container runtime could have carried
+// it (in "All projects", that is the select, not the launch-repo blob). All
 // grouping/extraction is pure; the queue only holds its disclosure state, the
 // banner dismissal and a minute tick for the pause durations.
 import { computed, onUnmounted, ref, watch } from 'vue'
@@ -136,11 +137,14 @@ const showIso = (state: TaskState): boolean =>
 
 // Dismissal is a local preference, persisted for good on this machine.
 const isoBannerDismissed = ref(readIsolationBannerDismissed())
+// Banner follows the repo a NEW task would land in (filter, else the All-mode
+// select). Passing filter=null would fall back to the launch-repo blob and
+// hide a degraded sibling you are about to create on.
+const composeIsolation = computed(() =>
+  isolationForProject(effectiveTarget.value, props.projects, props.workspace),
+)
 const showIsoBanner = computed(() =>
-  shouldOfferIsolationUpgrade(
-    isolationForProject(props.filter, props.projects, props.workspace),
-    isoBannerDismissed.value,
-  ),
+  shouldOfferIsolationUpgrade(composeIsolation.value, isoBannerDismissed.value),
 )
 
 function dismissIsoBanner(): void {
@@ -184,10 +188,7 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
         <p class="wq-iso-body">
           {{
             t('workspace.isolationUpgradeBody', {
-              reason:
-                isolationForProject(filter, projects, workspace)?.isolation_reason ??
-                workspace?.isolation_reason ??
-                '',
+              reason: composeIsolation?.isolation_reason ?? workspace?.isolation_reason ?? '',
             })
           }}
         </p>

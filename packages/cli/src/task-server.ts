@@ -2521,10 +2521,19 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // this is a 400 with no retryable D2 code. A missing runtime is still
         // resource_busy — the engine may come back.
         const agentCannotCage = knownAgent(ctx.command) !== 'claude'
+        // Frozen command names what would actually run. When the file now
+        // points at a cageable agent, say so — restarting is the fix, waiting
+        // is not. A disk edit that is still non-claude must not send the
+        // human on a reboot that would 400 again.
+        const pending = runtime.command
+        const staleCageable =
+          agentCannotCage && pending !== ctx.command && knownAgent(pending) === 'claude'
         return {
           ok: false,
           code: agentCannotCage ? 400 : 409,
-          error: t('isolation.unavailable', { reason: projectProbe.reason }),
+          error: staleCageable
+            ? t('isolation.unavailableStaleAgent', { running: ctx.command, pending })
+            : t('isolation.unavailable', { reason: projectProbe.reason }),
           ...(agentCannotCage ? {} : { reason_code: 'resource_busy' as const }),
         }
       }

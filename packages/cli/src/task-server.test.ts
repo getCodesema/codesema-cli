@@ -736,8 +736,40 @@ describe('createTaskManager', () => {
     // The runner still executes the command it was built with. Recording
     // container here would send that command into a claude-only cage.
     expect(second).toMatchObject({ ok: false, code: 400 })
+    expect(second.ok).toBe(false)
+    if (!second.ok) {
+      expect(second.error).toContain('codex exec -')
+      expect(second.error).toContain('Restart the workspace')
+      expect(second.error).toContain('claude -p')
+    }
     expect(rig.allRunnerOptions).toHaveLength(1)
     expect(rig.runnerOptions().command).toBe('codex exec -')
+  })
+
+  test('a frozen non-claude 400 does not ask to restart when the file still agrees (T1.4)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'container', agent: 'codex exec -' })
+    trustRepoAgent(repo, 'codex exec -')
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'codex exec -',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const created = manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
+    expect(created).toMatchObject({ ok: false, code: 400 })
+    expect(created.ok).toBe(false)
+    if (!created.ok) {
+      expect(created.error).toContain('codex exec -')
+      expect(created.error).not.toContain('Restart the workspace')
+    }
   })
 
   test('isolation-mode edits still apply when the frozen command can be caged (T1.4 A)', () => {
