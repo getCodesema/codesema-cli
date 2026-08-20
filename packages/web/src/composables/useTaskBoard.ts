@@ -65,6 +65,10 @@ export function queueSectionOf(status: TaskStatus): QueueSection {
  * lives on the task's `queue` journal EVENT, not on the record itself, and
  * WorkQueue.vue's #N pill only ever has the record — never that task's
  * events (adversarial review round 3, MAJEUR 3: "à défaut reason.detail").
+ *
+ * The mirror is checked, not merely documented: WorkQueue.test.ts extracts
+ * `MACHINE_LOAD_DETAIL` from the CLI source and renders the pill with it, so
+ * a drift on either side turns that test red (round 5, mineur F).
  */
 const MACHINE_LOAD_WAIT_DETAIL =
   'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'

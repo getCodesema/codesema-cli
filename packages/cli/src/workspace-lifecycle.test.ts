@@ -1346,6 +1346,38 @@ describe('invalidLoadCapKeyNotice', () => {
       repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
       expect(bootNotices({ maxParallelTasks: 4 }, repoDir)).toEqual([maxParallelNotice(4)!])
     })
+
+    // A SOURCE-SHAPE assertion, same kind and for the same reason as
+    // 'workspace() builds its manager THROUGH this function and nothing else'
+    // 190 lines above: `workspace()` listens on a port, takes the global
+    // workspace lock, probes container runtimes and installs real SIGINT
+    // handlers, so no runtime assertion can observe what it prints at boot.
+    //
+    // The gap this closes was measured, not imagined (adversarial round 5,
+    // MAJEUR A): replacing the loop with `for (const line of [] as string[])`
+    // kept `tsc --noEmit` green and the whole suite at 0 fail, while BOTH
+    // normative boot lines vanished in silence — the `maxParallelTasks`
+    // deprecation warning and the `workspace.invalidLoadCapKey` notice. The
+    // three tests above prove the array's CONTENT; this one proves the boot
+    // still reads it, which is the half invariant 2 (no silent degradation)
+    // actually depends on.
+    //
+    // Not tautological: it compares nothing to the constant that produces it.
+    test('workspace() prints EVERY bootNotices line, and gets them from nowhere else', () => {
+      const code = readFileSync(join(import.meta.dir, 'workspace.ts'), 'utf8')
+        .split('\n')
+        // Comment lines name the call on purpose; only code counts.
+        .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+        .join('\n')
+      // Exactly two mentions: the declaration and the one call site.
+      expect(code.match(/\bbootNotices\(/g) ?? []).toHaveLength(2)
+      // And that call site iterates the result, printing each line as-is.
+      expect(
+        /for\s*\(\s*const\s+line\s+of\s+bootNotices\([^)]*\)\s*\)\s*\{\s*console\.log\(line\)\s*\}/.test(
+          code,
+        ),
+      ).toBe(true)
+    })
   })
 })
 

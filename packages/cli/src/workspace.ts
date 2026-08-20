@@ -144,10 +144,13 @@ export function invalidLoadCapKeyNotice(repoRoot: string | null): string | null 
  *
  * Pure and exported (round 4, mineur) so the ANNOUNCEMENT is proven where the
  * two notices are actually assembled, not only inside each notice function:
- * `workspace()` cannot be called from a test, so before this the step from
- * "the notice function returns a string" to "the boot prints it, and prints
- * BOTH" rested on reading the call site. Dropping either entry from this
- * array now turns a test red.
+ * `workspace()` cannot be called from a test (it listens on a port, takes the
+ * global lock, installs real signal handlers), so nothing runtime-level can
+ * observe what the boot prints. Dropping either entry from this array turns a
+ * test red — and, since round 5 (MAJEUR A), so does severing the call below:
+ * extracting the array left its CALL SITE unproven, and replacing the loop
+ * with an empty one kept the suite at 0 fail while both notices disappeared.
+ * `workspace-lifecycle.test.ts` now pins that loop by source shape too.
  */
 export function bootNotices(
   config: { maxParallelTasks?: number | undefined },

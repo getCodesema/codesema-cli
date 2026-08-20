@@ -1161,7 +1161,11 @@ const QUEUED_BEHIND_DETAIL = 'another task of this project is already active'
  * the queue's #N pill silently fall back to the project-busy wording, and no
  * test in this package would notice (round 4, mineur: the cross-reference
  * used to point only one way, so a change starting on THIS side had nothing
- * to warn it).
+ * to warn it). Round 5 (mineur F) replaced that comment-only cross-reference
+ * with an actual lock: `packages/web/src/components/WorkQueue.test.ts` reads
+ * THIS literal out of this file and renders the pill with it, so changing it
+ * on one side alone is red on both sides. The two task-runner tests that
+ * mention the sentence are copies of it and were never that lock.
  */
 const MACHINE_LOAD_DETAIL =
   'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'
