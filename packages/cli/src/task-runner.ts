@@ -488,6 +488,13 @@ export type RunTaskTurnOptions = {
   allowedDomains?: readonly string[] | undefined
   /** Repo checks config: the base image of the cage falls back to it. */
   checksConfig?: ChecksConfig | null | undefined
+  /**
+   * Re-read the checks config at the moment of the turn (T1.4). When the
+   * getter is provided it always wins — including a `null` meaning "this repo
+   * has no checks block anymore". The snapshot is only for callers that have
+   * no file to re-read (tests).
+   */
+  getChecksConfig?: () => ChecksConfig | null | undefined
   /** Test seam for the caged path; the default drives real containers. */
   runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
   /** Test seam for the repo's worktree lock; the default takes the real one. */
@@ -579,6 +586,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // never named itself. The turn's ceiling is therefore raised, never lowered,
   // to sit above the largest budget plus the whole kill escalation.
   const absoluteCapMs = effectiveAbsoluteCapMs(opts.timeoutMs, budgets)
+  const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
   const raw = caged
     ? await (opts.runContainerTurnFn ?? runContainerTurn)({
         taskId: opts.task.id,
@@ -589,7 +597,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
         watchdog: budgets,
         ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
         ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
-        ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
+        ...(checksConfig !== undefined ? { checksConfig } : {}),
         ...(opts.signal ? { signal: opts.signal } : {}),
         onText,
       })
@@ -897,8 +905,8 @@ export type TaskRunnerOptions = {
    * Watchdog budgets (D3) handed to every turn, host and caged alike; the D3
    * defaults apply when absent.
    *
-   * TODO(T1.4): resolved ONCE at boot from the launch repo and shared by every
-   * project — per-project config resolution is T1.4's job.
+   * Resolved per project (T1.4) from that repo's config; the manager passes
+   * the project's budgets, not the launch repo's.
    */
   watchdog?: WatchdogBudgets | undefined
   /** INERT since T1.2 (see DEFAULT_MAX_PARALLEL_TASKS): admission is per project. */
@@ -922,6 +930,8 @@ export type TaskRunnerOptions = {
   allowedDomains?: readonly string[] | undefined
   /** Repo checks config (base image fallback of the cage). */
   checksConfig?: ChecksConfig | null | undefined
+  /** Re-read the checks config per turn (T1.4); wins over `checksConfig`. */
+  getChecksConfig?: () => ChecksConfig | null | undefined
   /** Test seam for the caged path; the default drives real containers. */
   runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
   /** Test seam for the repo's worktree lock; the default takes the real one. */
@@ -2123,6 +2133,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // had already spent if it dies — and the marker that keeps that figure
     // from being folded twice when both exit paths run.
     const attempt: TurnAttempt = { cost: null, folded: false }
+    const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
     return (
       runTaskTurn({
         cwd: record.worktree,
@@ -2141,7 +2152,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         },
         ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
         ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
-        ...(opts.checksConfig !== undefined ? { checksConfig: opts.checksConfig } : {}),
+        ...(checksConfig !== undefined ? { checksConfig } : {}),
         ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
       })
         .then((outcome) => {

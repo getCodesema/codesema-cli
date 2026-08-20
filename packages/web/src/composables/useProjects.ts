@@ -5,7 +5,7 @@
 // with bun:test, no DOM, no fetch); the thin localStorage wrappers at the
 // bottom are the only impure parts and stay best-effort.
 
-import type { ForgeMr, LocalBranch, Project, TaskRecord, TaskStatus } from '../types'
+import type { ForgeMr, LocalBranch, Project, TaskRecord, TaskStatus, WorkspaceInfo } from '../types'
 import { compareByActivity, sectionOf } from './useTaskBoard'
 import type { TaskState } from './useTasks'
 
@@ -74,6 +74,22 @@ export function deriveActiveProject(
     return apiCurrent
   }
   return projects[0]?.id ?? null
+}
+
+/**
+ * Isolation facts for the card the human is looking at (T1.4). Each project
+ * carries its overlay on GET /api/projects; older CLIs omit it and we fall
+ * back to the process-wide blob (launch repo).
+ */
+export function isolationForProject(
+  projectId: string | null,
+  projects: readonly Project[],
+  fallback: WorkspaceInfo | null,
+): WorkspaceInfo | null {
+  if (projectId === null) {
+    return fallback
+  }
+  return projects.find((project) => project.id === projectId)?.isolation ?? fallback
 }
 
 /** Card counters: conversations needing the human vs conversations moving. */

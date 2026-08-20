@@ -42,6 +42,7 @@ import {
   generateAgentDockerfile,
   GIT_INSTALL_COMMAND,
   HOME_VOLUME_OWNER_LABEL,
+  overlayIsolationProbe,
   parseJsonc,
   probeIsolation,
   releaseAgentHome,
@@ -1880,6 +1881,82 @@ describe('probeIsolation', () => {
     })
     expect(probe.available).toBe(false)
     expect(probe.reason).toContain('codex')
+  })
+
+  test('ignoreAgent: a non-claude command still probes the runtime (T1.4 boot)', async () => {
+    const { exec } = fakeExec()
+    const probe = await probeIsolation({
+      configured: 'auto',
+      command: 'codex exec -',
+      ignoreAgent: true,
+      execFn: exec,
+    })
+    expect(probe).toMatchObject({ available: true, mode: 'container', runtime: 'docker' })
+  })
+})
+
+describe('overlayIsolationProbe (T1.4)', () => {
+  const machine: IsolationProbe = {
+    available: true,
+    mode: 'container',
+    reason: 'podman is available',
+    configured: 'auto',
+    runtime: 'podman',
+  }
+
+  test('an unprobed machine keeps "was not probed", not a fake configured-policy reason', () => {
+    const unprobed: IsolationProbe = {
+      available: false,
+      mode: 'policy',
+      reason: 'container isolation was not probed',
+      configured: 'policy',
+      runtime: null,
+    }
+    expect(
+      overlayIsolationProbe(unprobed, { configured: 'policy', command: 'claude -p' }).reason,
+    ).toBe('container isolation was not probed')
+  })
+
+  test('a project set to policy stays policy even if the machine has a cage', () => {
+    const overlaid = overlayIsolationProbe(machine, {
+      configured: 'policy',
+      command: 'claude -p',
+    })
+    expect(overlaid).toMatchObject({ available: false, mode: 'policy', configured: 'policy' })
+    expect(resolveTaskIsolation(overlaid)?.isolation).toBe('policy')
+  })
+
+  test('a project set to container with a cage is caged', () => {
+    const overlaid = overlayIsolationProbe(machine, {
+      configured: 'container',
+      command: 'claude -p',
+    })
+    expect(resolveTaskIsolation(overlaid)?.isolation).toBe('container')
+  })
+
+  test('a non-claude project agent cannot use the cage, even if the machine can', () => {
+    const overlaid = overlayIsolationProbe(machine, {
+      configured: 'auto',
+      command: 'codex exec -',
+    })
+    expect(overlaid.available).toBe(false)
+    expect(overlaid.reason).toContain('codex')
+    expect(resolveTaskIsolation(overlaid)?.isolation).toBe('policy')
+  })
+
+  test('a sibling policy probe cannot hide a missing runtime from a container project', () => {
+    const unprobed: IsolationProbe = {
+      available: false,
+      mode: 'policy',
+      reason: 'container isolation was not probed',
+      configured: 'policy',
+      runtime: null,
+    }
+    const overlaid = overlayIsolationProbe(unprobed, {
+      configured: 'container',
+      command: 'claude -p',
+    })
+    expect(resolveTaskIsolation(overlaid)).toBeNull()
   })
 })
 

@@ -26,7 +26,7 @@ import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
-import type { TaskRecord } from '../types'
+import type { Project, TaskRecord, WorkspaceInfo } from '../types'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -69,10 +69,16 @@ const MACHINE_DETAIL = (() => {
   return match[1]
 })()
 
-function state(reason: NonNullable<TaskRecord['reason']>, queuePosition: number): TaskState {
+function state(
+  reason: NonNullable<TaskRecord['reason']>,
+  queuePosition: number,
+  projectId = 'p1',
+  isolation: TaskRecord['isolation'] = 'policy',
+): TaskState {
   return {
-    projectId: 'p1',
+    projectId,
     record: {
+      isolation,
       version: 1,
       id: 'a1b2c3d4e5f6',
       title: 'a queued task',
@@ -109,20 +115,30 @@ function state(reason: NonNullable<TaskRecord['reason']>, queuePosition: number)
  * Nothing under test depends on it firing: the pause durations it refreshes
  * are seeded from `Date.now()` at setup.
  */
-async function renderQueue(states: TaskState[]): Promise<string> {
+async function renderQueue(
+  states: TaskState[],
+  overrides: {
+    projects?: Project[]
+    filter?: string | null
+    workspace?: WorkspaceInfo | null
+  } = {},
+): Promise<string> {
   const WorkQueue = (await import('./WorkQueue.vue')).default
   const realSetInterval = globalThis.setInterval
   globalThis.setInterval = (() => 0) as unknown as typeof globalThis.setInterval
   try {
     const app = createSSRApp(WorkQueue, {
       states,
-      projectNames: new Map([['p1', 'repo']]),
+      projectNames: new Map([
+        ['p1', 'repo'],
+        ['p2', 'sibling'],
+      ]),
       focusedKeys: [],
-      projects: [],
-      filter: 'p1',
+      projects: overrides.projects ?? [],
+      filter: overrides.filter === undefined ? 'p1' : overrides.filter,
       creating: false,
       createError: null,
-      workspace: null,
+      workspace: overrides.workspace ?? null,
     })
     app.config.globalProperties.$t = t
     return await renderToString(app)
@@ -177,5 +193,74 @@ describe('WorkQueue renders the #N pill tooltip (round 3 MAJEUR 3, the wiring ha
     expect(html).toContain(idleHint(2))
     expect(html).not.toContain(projectHint(2))
     expect(html).not.toContain(machineHint(2))
+  })
+})
+
+// --- the per-project isolation WIRING, rendered (T1.4 round 6, MAJEUR B3) --
+//
+// `isolationForProject` had two unit tests. Its three CALL SITES in
+// WorkQueue.vue had none, and an adversarial campaign confirmed all three
+// survive with the whole suite green:
+//
+//   1. `shouldOfferIsolationUpgrade(composeIsolation.value, …)`
+//      -> `shouldOfferIsolationUpgrade(props.workspace, …)`
+//   2. `showIsolationDot(state.record, isolationOf(state.projectId))`
+//      -> `showIsolationDot(state.record, props.workspace)`
+//   3. the banner's `reason:` read off `workspace` instead of `composeIsolation`
+//
+// All three are the same failure: the human is shown the LAUNCH repo's cage
+// while looking at (or about to create in) another repo. This suite renders
+// the component and asserts on the STRING, with the cross-assertion that the
+// wrong claim is absent — the only thing that kills a fallback mutant.
+
+describe('WorkQueue renders isolation PER PROJECT, not per launch repo', () => {
+  const CAGED: WorkspaceInfo = {
+    isolation_available: true,
+    isolation_default: 'container',
+    isolation_reason: 'podman is available',
+    isolation_configured: 'auto',
+  }
+  const NOT_CAGED: WorkspaceInfo = {
+    isolation_available: false,
+    isolation_default: 'policy',
+    isolation_reason:
+      'the cage only provides claude-code, and the configured agent is codex exec -',
+    isolation_configured: 'auto',
+  }
+  const project = (id: string, isolation: WorkspaceInfo): Project => ({
+    id,
+    path: `/repos/${id}`,
+    name: id,
+    added_at: '2026-08-13T10:00:00.000Z',
+    isolation,
+  })
+  const busy = { code: 'resource_busy' as const, detail: 'another task' }
+  const banner = (reason: string) => inAttribute(t('workspace.isolationUpgradeBody', { reason }))
+
+  test('the degraded SIBLING you are composing on gets the banner, with ITS reason', async () => {
+    const html = await renderQueue([state(busy, 1, 'p2')], {
+      projects: [project('p1', CAGED), project('p2', NOT_CAGED)],
+      filter: 'p2',
+      // The launch repo IS caged: reading the banner off this blob hides the
+      // degradation of the repo the next task actually lands in.
+      workspace: CAGED,
+    })
+    expect(html).toContain(t('workspace.isolationUpgradeTitle'))
+    expect(html).toContain(banner(NOT_CAGED.isolation_reason))
+    expect(html).not.toContain(banner(CAGED.isolation_reason))
+    // And the dot: p2 cannot cage anything, so a 'policy' card there carries
+    // no information — while the launch-repo blob would have shown one.
+    expect(html).not.toContain('wq-iso--policy')
+  })
+
+  test('a caged compose target shows no banner, and its policy cards keep their dot', async () => {
+    const html = await renderQueue([state(busy, 1, 'p1')], {
+      projects: [project('p1', CAGED), project('p2', NOT_CAGED)],
+      filter: 'p1',
+      // Mirror image: the process-wide blob is the degraded one this time.
+      workspace: NOT_CAGED,
+    })
+    expect(html).not.toContain(t('workspace.isolationUpgradeTitle'))
+    expect(html).toContain('wq-iso--policy')
   })
 })

@@ -1863,6 +1863,13 @@ export type ProbeIsolationOptions = {
   configured: IsolationMode
   /** Configured agent command: the cage image only provides claude-code. */
   command: string
+  /**
+   * When true, skip the "cage only ships claude-code" check. T1.4 probes the
+   * RUNTIME once at boot (machine-wide) and binds the agent/mode per project
+   * at task creation via `overlayIsolationProbe`. Default false: a direct
+   * caller still gets the honest agent-reason.
+   */
+  ignoreAgent?: boolean
   execFn?: IsolationExecFn
 }
 
@@ -1884,7 +1891,7 @@ export async function probeIsolation(opts: ProbeIsolationOptions): Promise<Isola
   if (configured === 'policy') {
     return deny(t('isolation.reasonConfigured'))
   }
-  if (knownAgent(opts.command) !== 'claude') {
+  if (!opts.ignoreAgent && knownAgent(opts.command) !== 'claude') {
     return deny(t('isolation.reasonAgent', { command: opts.command }))
   }
   const runtime = await isolationRuntime(opts.execFn)
@@ -1907,6 +1914,68 @@ export async function probeIsolation(opts: ProbeIsolationOptions): Promise<Isola
     reason: t('isolation.reasonReady', { runtime }),
     configured,
     runtime,
+  }
+}
+
+/**
+ * Re-bind a machine-level isolation probe (is a runtime reachable?) to one
+ * project's configured mode and agent command. The boot probe no longer
+ * carries the launch repo's isolation/agent, so two projects can disagree
+ * on container vs policy without one poisoning the other (T1.4).
+ *
+ * Pure: no I/O. The machine probe is the injectable seam.
+ */
+export function overlayIsolationProbe(
+  machine: IsolationProbe,
+  opts: { configured: IsolationMode; command: string },
+): IsolationProbe {
+  const { configured, command } = opts
+  if (configured === 'policy') {
+    // UNPROBED_ISOLATION is configured 'policy' with no runtime: keep its
+    // "was not probed" reason rather than inventing "set in the configuration"
+    // when nothing was ever asked (T1.4 review nit).
+    const unprobed = machine.runtime === null && machine.configured === 'policy'
+    return {
+      available: false,
+      mode: 'policy',
+      reason: unprobed ? machine.reason : t('isolation.reasonConfigured'),
+      configured,
+      runtime: machine.runtime,
+    }
+  }
+  if (knownAgent(command) !== 'claude') {
+    return {
+      available: false,
+      mode: 'policy',
+      reason: t('isolation.reasonAgent', { command }),
+      configured,
+      runtime: machine.runtime,
+    }
+  }
+  if (!machine.runtime) {
+    return {
+      available: false,
+      mode: 'policy',
+      reason: machine.reason,
+      configured,
+      runtime: null,
+    }
+  }
+  if (!machine.available) {
+    return {
+      available: false,
+      mode: 'policy',
+      reason: machine.reason,
+      configured,
+      runtime: machine.runtime,
+    }
+  }
+  return {
+    available: true,
+    mode: 'container',
+    reason: machine.reason,
+    configured,
+    runtime: machine.runtime,
   }
 }
 

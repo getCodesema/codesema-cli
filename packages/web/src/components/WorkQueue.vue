@@ -9,8 +9,9 @@
 // [Ship] + [Diff], and the folded "DONE" pile. Clicking a card opens it in
 // the focus zone. Each live card carries a discreet isolation dot (green =
 // caged in a container, hollow = policy) whenever that dot tells the cards
-// apart, and a dismissible banner sits on top when the whole workspace fell
-// back to policy while a container runtime could have carried it. All
+// apart, and a dismissible banner sits on top when the compose-target
+// project fell back to policy while a container runtime could have carried
+// it (in "All projects", that is the select, not the launch-repo blob). All
 // grouping/extraction is pure; the queue only holds its disclosure state, the
 // banner dismissal and a minute tick for the pause durations.
 import { computed, onUnmounted, ref, watch } from 'vue'
@@ -23,6 +24,7 @@ import {
   shouldOfferIsolationUpgrade,
   showIsolationDot,
 } from '../composables/useIsolation'
+import { isolationForProject } from '../composables/useProjects'
 import {
   formatDuration,
   groupQueue,
@@ -51,8 +53,7 @@ const props = defineProps<{
   filter: string | null
   creating: boolean
   createError: string | null
-  /** Workspace isolation facts (GET /api/projects); null = the server said
-   * nothing, so the queue claims nothing either. */
+  /** Launch-repo / process-wide isolation (fallback for older CLIs). */
   workspace: WorkspaceInfo | null
 }>()
 
@@ -129,12 +130,21 @@ const rankHint = (state: TaskState, rank: number): string =>
 
 // ── Isolation: per-card dot + the one-time upgrade banner ─────────────────
 const isoOf = (state: TaskState) => isolationBadge(state.record)
-const showIso = (state: TaskState): boolean => showIsolationDot(state.record, props.workspace)
+const isolationOf = (projectId: string): WorkspaceInfo | null =>
+  isolationForProject(projectId, props.projects, props.workspace)
+const showIso = (state: TaskState): boolean =>
+  showIsolationDot(state.record, isolationOf(state.projectId))
 
 // Dismissal is a local preference, persisted for good on this machine.
 const isoBannerDismissed = ref(readIsolationBannerDismissed())
+// Banner follows the repo a NEW task would land in (filter, else the All-mode
+// select). Passing filter=null would fall back to the launch-repo blob and
+// hide a degraded sibling you are about to create on.
+const composeIsolation = computed(() =>
+  isolationForProject(effectiveTarget.value, props.projects, props.workspace),
+)
 const showIsoBanner = computed(() =>
-  shouldOfferIsolationUpgrade(props.workspace, isoBannerDismissed.value),
+  shouldOfferIsolationUpgrade(composeIsolation.value, isoBannerDismissed.value),
 )
 
 function dismissIsoBanner(): void {
@@ -176,7 +186,11 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           <span aria-hidden="true">🛡</span> {{ t('workspace.isolationUpgradeTitle') }}
         </p>
         <p class="wq-iso-body">
-          {{ t('workspace.isolationUpgradeBody', { reason: workspace?.isolation_reason ?? '' }) }}
+          {{
+            t('workspace.isolationUpgradeBody', {
+              reason: composeIsolation?.isolation_reason ?? workspace?.isolation_reason ?? '',
+            })
+          }}
         </p>
         <p class="wq-iso-actions">
           <a
