@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import { writeJsonAtomic } from './atomic-write.js'
-import { saveRepoConfig, trustRepoAgent } from './config.js'
+import { saveGlobalConfig, saveRepoConfig, trustRepoAgent } from './config.js'
 import {
   isTerminalReason,
   TICKET_BODY_HASH_TAG,
@@ -602,6 +602,140 @@ describe('createTaskManager', () => {
     expect(optsByCwd.get(repoB)?.timeoutMs).toBe(120_000)
     expect(optsByCwd.get(repoA)?.command).toBe('claude -p --model opus')
     expect(optsByCwd.get(repoB)?.command).toBe('claude -p')
+  })
+
+  test("a sibling without agent inherits the global command, not the launch repo's (T1.4)", () => {
+    saveGlobalConfig({ agent: 'codex exec -' })
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, { agent: 'claude -p --model opus' })
+    trustRepoAgent(repoA, 'claude -p --model opus')
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const rig = fakeRunner()
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      command: 'codex exec -',
+      onNotice: (message) => notices.push(message),
+    })
+    manager.create(projectA.id, { title: 'a', prompt: 'p', autoShip: false })
+    manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
+    const optsByCwd = new Map(rig.allRunnerOptions.map((options) => [options.cwd, options]))
+    expect(optsByCwd.get(repoA)?.command).toBe('claude -p --model opus')
+    expect(optsByCwd.get(repoB)?.command).toBe('codex exec -')
+    expect(notices.some((line) => line.includes('not approved'))).toBe(false)
+  })
+
+  test('a global agent is not TOFU-warned as repo-provided (T1.4)', () => {
+    saveGlobalConfig({ agent: 'codex exec -' })
+    const project = register(makeRepo())
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'codex exec -',
+      onNotice: (message) => notices.push(message),
+    })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(notices.some((line) => line.includes('not approved'))).toBe(false)
+  })
+
+  test('--agent bypasses TOFU for an untrusted repo command (T1.4)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { agent: 'claude -p --model opus' })
+    const project = register(repo)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      command: 'claude -p',
+      flags: { agent: 'codex exec -' },
+    })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(rig.runnerOptions().command).toBe('codex exec -')
+  })
+
+  test('container isolation with a non-claude agent is a 400, not a retryable 409 (T1.4)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'container' })
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'codex exec -',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const created = manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created).toMatchObject({ ok: false, code: 400 })
+    expect(created.ok ? '' : created.error).toContain('codex')
+    expect(created.ok ? true : 'reason_code' in created).toBe(false)
+  })
+
+  test('workspaceInfo overlays a global policy onto a live runtime probe (T1.4)', () => {
+    saveGlobalConfig({ isolation: 'policy' })
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    expect(manager.workspaceInfo()).toMatchObject({
+      isolation_available: false,
+      isolation_default: 'policy',
+      isolation_configured: 'policy',
+    })
+  })
+
+  test('create re-reads isolation and agent together after the context exists (T1.4)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'policy', agent: 'codex exec -' })
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'codex exec -',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const first = manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
+    expect(first.ok && first.record.isolation).toBe('policy')
+    saveRepoConfig(repo, { isolation: 'container', agent: 'claude -p' })
+    trustRepoAgent(repo, 'claude -p')
+    const second = manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
+    expect(second.ok && second.record.isolation).toBe('container')
+  })
+
+  test('a repo load-cap warning is not repeated on the second context of the same path (T1.4)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { maxConcurrentAgents: 1 })
+    const project = register(repo)
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message) => notices.push(message),
+      loadCapNoticeShown: [repo],
+    })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(notices.some((line) => line.includes('maxConcurrentAgents'))).toBe(false)
   })
 
   test('an existing record keeps its isolation after the project config changes (T1.4)', () => {
@@ -3581,7 +3715,7 @@ describe('project routes', () => {
         workspace: {
           isolation_available: false,
           isolation_default: 'policy',
-          isolation_reason: 'container isolation was not probed',
+          isolation_reason: "isolation is set to 'policy' in the configuration",
           isolation_configured: 'policy',
         },
       })

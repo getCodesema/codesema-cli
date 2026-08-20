@@ -374,6 +374,8 @@ export function resolveProjectConfig(
 /**
  * Whether a repo-provided agent command may run unattended (workspace TOFU).
  * `none` = the repo did not set `agent`; the caller uses its fallback.
+ * Only the value from `.codesema/config.json` is a TOFU surface — never the
+ * merged/global agent (T1.4 review: a global `agent` is not "repo-provided").
  */
 export function trustedProjectAgentCommand(
   projectPath: string,
@@ -386,6 +388,35 @@ export function trustedProjectAgentCommand(
   return isRepoAgentTrusted(projectPath, configured)
     ? { kind: 'trusted', command: configured }
     : { kind: 'untrusted', command: configured }
+}
+
+/**
+ * Agent command this project will actually run (T1.4). Precedence:
+ * CLI `--agent` (bypasses TOFU) > this repo's `.codesema/config.json` (TOFU)
+ * > global `agent` (no TOFU) > `fallback` (detected at boot, never another
+ * project's repo-provided command).
+ */
+export function resolveProjectAgentCommand(
+  projectPath: string | null,
+  flags: ProjectConfigFlags,
+  fallback: string,
+): { command: string; warning?: string } {
+  if (flags.agent) {
+    return { command: flags.agent }
+  }
+  if (projectPath) {
+    const repoAgent = trustedProjectAgentCommand(projectPath, loadRepoConfig(projectPath).agent)
+    if (repoAgent.kind === 'trusted') {
+      return { command: repoAgent.command }
+    }
+    if (repoAgent.kind === 'untrusted') {
+      return {
+        command: loadGlobalConfig().agent ?? fallback,
+        warning: t('config.untrustedRepoAgent', { command: repoAgent.command }),
+      }
+    }
+  }
+  return { command: loadGlobalConfig().agent ?? fallback }
 }
 
 /**

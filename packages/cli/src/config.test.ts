@@ -12,6 +12,7 @@ import {
   presentRepoLoadCapKeys,
   repoConfigPath,
   repoLoadCapIgnoredNotices,
+  resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveWatchdogBudgets,
   saveGlobalConfig,
@@ -503,5 +504,32 @@ describe('resolveProjectConfig (T1.4)', () => {
       command: 'claude -p --model opus',
     })
     expect(trustedProjectAgentCommand(repoDir, undefined)).toEqual({ kind: 'none' })
+  })
+
+  test('resolveProjectAgentCommand TOFU-checks only the repo file, never the global agent', () => {
+    saveGlobalConfig({ agent: 'codex exec -' })
+    saveRepoConfig(repoDir, { agent: 'claude -p --model opus' })
+    trustRepoAgent(repoDir, 'claude -p --model opus')
+    expect(resolveProjectAgentCommand(repoDir, {}, 'fallback').command).toBe(
+      'claude -p --model opus',
+    )
+    const other = mkdtempSync(join(tmpdir(), 'codesema-proj-other-'))
+    expect(resolveProjectAgentCommand(other, {}, 'fallback')).toEqual({ command: 'codex exec -' })
+    rmSync(other, { recursive: true, force: true })
+  })
+
+  test('a CLI --agent flag bypasses TOFU', () => {
+    saveRepoConfig(repoDir, { agent: 'claude -p --model opus' })
+    expect(resolveProjectAgentCommand(repoDir, { agent: 'codex exec -' }, 'fallback').command).toBe(
+      'codex exec -',
+    )
+  })
+
+  test('an untrusted repo agent falls back to global, with a warning', () => {
+    saveGlobalConfig({ agent: 'codex exec -' })
+    saveRepoConfig(repoDir, { agent: 'claude -p --model opus' })
+    const resolved = resolveProjectAgentCommand(repoDir, {}, 'fallback')
+    expect(resolved.command).toBe('codex exec -')
+    expect(resolved.warning).toContain('claude -p --model opus')
   })
 })

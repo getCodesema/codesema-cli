@@ -453,8 +453,13 @@ export type ChecksSetupRunner = {
 }
 
 export type CreateChecksSetupRunnerOptions = {
-  /** Raw configured agent command; empty means no agent (every start 501s). */
+  /** Fallback agent command; empty means no agent (every start 501s). */
   command: string
+  /**
+   * Per-project agent (T1.4). When set, a checks proposal for project B uses
+   * B's resolved command, not the launch-repo fallback.
+   */
+  resolveCommand?: (projectPath: string) => string
   timeoutMs?: number
   /** Test seam: the default spawns the real agent (read-only, minimal env). */
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
@@ -488,7 +493,7 @@ export function createChecksSetupRunner(opts: CreateChecksSetupRunnerOptions): C
     status: (projectId) => states.get(projectId) ?? IDLE,
 
     start(project) {
-      const command = opts.command.trim()
+      const command = (opts.resolveCommand?.(project.path) ?? opts.command).trim()
       if (!command) {
         return { ok: false, code: 501, error: 'no agent configured' }
       }

@@ -1048,7 +1048,7 @@ function createRequestHandler(handlerOpts: {
         return sendJson(res, 200, {
           projects: listProjects(),
           current: tasks.currentProjectId,
-          workspace: tasks.manager.workspaceInfo(),
+          workspace: tasks.manager.workspaceInfo(tasks.currentProjectId),
         })
       }
       if (pathname === '/api/projects/discover') {

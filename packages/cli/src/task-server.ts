@@ -11,16 +11,16 @@
 // across N projects ride one EventSource.
 
 import { existsSync } from 'node:fs'
-import type { AgentRunOptions, WatchdogBudgets } from './agent.js'
+import { knownAgent, type AgentRunOptions, type WatchdogBudgets } from './agent.js'
 import {
   createChecksSetupRunner,
   type ChecksSetupRunner,
   type ChecksSetupState,
 } from './checks-setup.js'
 import {
+  resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveWatchdogBudgets,
-  trustedProjectAgentCommand,
   type IsolationMode,
   type ProjectConfigFlags,
 } from './config.js'
@@ -308,11 +308,11 @@ export type TaskManager = {
   /** Current proposal state of a project; null on unknown project. */
   checksSetupStatus: (projectId: string) => ChecksSetupState | null
   /**
-   * Workspace-wide facts the UI needs before creating anything: whether the
-   * container cage is usable here, and which isolation a new task would get.
-   * Exposed on GET /api/projects.
+   * Isolation facts for the UI. When `projectId` is given, overlaid with that
+   * project's resolved mode and agent (T1.4); otherwise with the process-wide
+   * fallback (global config + flags). Exposed on GET /api/projects.
    */
-  workspaceInfo: () => {
+  workspaceInfo: (projectId?: string | null) => {
     isolation_available: boolean
     isolation_default: TaskIsolation
     /** Why — always present, so a policy fallback is never silent in the UI either. */
@@ -382,6 +382,11 @@ export type CreateTaskManagerOptions = {
    * registered project. Absent means "no flag", not "empty override".
    */
   flags?: ProjectConfigFlags | undefined
+  /**
+   * Repo paths whose "global-only key ignored" warning was already printed at
+   * boot (the launch repo). context() skips repeating them (T1.4 review).
+   */
+  loadCapNoticeShown?: readonly string[] | undefined
   /** Watchdog budgets (D3), read from the config by resolveWatchdogBudgets. */
   watchdog?: WatchdogBudgets | undefined
   /**
@@ -769,8 +774,6 @@ type ProjectContext = {
   shipping: Set<string>
   /** Tasks with a checks run in flight (one run at a time per task). */
   checking: Set<string>
-  /** Agent command resolved for THIS project (T1.4); overlay uses it at create. */
-  command: string
 }
 
 /**
@@ -1208,11 +1211,51 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const heldTicketedOrder = new Map<string, string[]>()
 
   const contexts = new Map<string, ProjectContext>()
+  const loadCapNoticeShown = new Set(opts.loadCapNoticeShown ?? [])
 
-  // Project-scoped, context-free: proposing a checks configuration needs no
-  // runner, no store and no worktree — only the repo path and the agent.
+  /**
+   * Fresh per-project snapshot (T1.4 review): command, isolation, timeout and
+   * allowlist from the same read. Used both when building a context and when
+   * deciding isolation at create, so a config edit cannot mix a new isolation
+   * with a stale agent (or the other way around).
+   */
+  const projectRuntime = (cwd: string) => {
+    const { config, warnings } = resolveProjectConfig(cwd, opts.flags ?? {})
+    const agent = resolveProjectAgentCommand(cwd, opts.flags ?? {}, opts.command)
+    return {
+      command: agent.command,
+      timeoutMs: config.timeout !== undefined ? config.timeout * 1000 : opts.timeoutMs,
+      watchdog:
+        config.watchdogInactivitySeconds !== undefined ||
+        config.watchdogToolBudgetSeconds !== undefined ||
+        config.watchdogHeartbeatSeconds !== undefined
+          ? resolveWatchdogBudgets(config)
+          : opts.watchdog,
+      allowedDomains: config.isolationAllowedDomains ?? opts.allowedDomains,
+      isolationMode: config.isolation ?? probe.configured,
+      warnings,
+      agentWarning: agent.warning,
+    }
+  }
+
+  const noticeProjectConfig = (cwd: string, runtime: ReturnType<typeof projectRuntime>): void => {
+    if (!loadCapNoticeShown.has(cwd)) {
+      for (const warning of runtime.warnings) {
+        notice(warning)
+      }
+      loadCapNoticeShown.add(cwd)
+    }
+    if (runtime.agentWarning) {
+      notice(runtime.agentWarning)
+    }
+  }
+
+  // Project-scoped: proposing a checks configuration needs no runner, no store
+  // and no worktree — only the repo path and THAT project's agent (T1.4).
   const checksSetup: ChecksSetupRunner = createChecksSetupRunner({
     command: opts.command,
+    resolveCommand: (projectPath) =>
+      resolveProjectAgentCommand(projectPath, opts.flags ?? {}, opts.command).command,
     ...(opts.runSetupAgentFn ? { runAgentFn: opts.runSetupAgentFn } : {}),
     onState: (projectId, state) =>
       emit({ project_id: projectId, event: { name: 'checks_proposal', data: state } }),
@@ -1549,25 +1592,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       holdTicketedTasks(project)
     }
     const cwd = project.path
-    const { config, warnings } = resolveProjectConfig(cwd, opts.flags ?? {})
-    for (const warning of warnings) {
-      notice(warning)
-    }
-    let command = opts.command
-    const repoAgent = trustedProjectAgentCommand(cwd, config.agent)
-    if (repoAgent.kind === 'trusted') {
-      command = repoAgent.command
-    } else if (repoAgent.kind === 'untrusted') {
-      notice(t('config.untrustedRepoAgent', { command: repoAgent.command }))
-    }
-    const timeoutMs = config.timeout !== undefined ? config.timeout * 1000 : opts.timeoutMs
-    const watchdog =
-      config.watchdogInactivitySeconds !== undefined ||
-      config.watchdogToolBudgetSeconds !== undefined ||
-      config.watchdogHeartbeatSeconds !== undefined
-        ? resolveWatchdogBudgets(config)
-        : opts.watchdog
-    const allowedDomains = config.isolationAllowedDomains ?? opts.allowedDomains
+    const runtime = projectRuntime(cwd)
+    noticeProjectConfig(cwd, runtime)
+    const { command, timeoutMs, watchdog, allowedDomains } = runtime
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict; the reviewer shares the task agent command and timeout.
     // `loadCap` is NOT optional garnish here: it is what makes the end-of-turn
@@ -1746,7 +1773,6 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       runner,
       shipping: new Set(),
       checking: new Set(),
-      command,
     }
     contexts.set(projectId, ctx)
     // A project the boot pass never enumerated gets its OWN pass now, on the
@@ -2458,23 +2484,25 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // reads it and never re-decides. A workspace configured 'container'
       // refuses the creation outright rather than quietly running the task on
       // the host under a weaker containment than the one that was asked for.
-      // Mode and agent are THIS project's (T1.4), overlaid on the machine
-      // runtime probe — a sibling repo's `policy` cannot poison this one.
-      const isolationMode =
-        resolveProjectConfig(ctx.project.path, opts.flags ?? {}).config.isolation ??
-        probe.configured
-      const resolved = resolveTaskIsolation(
-        overlayIsolationProbe(probe, { configured: isolationMode, command: ctx.command }),
-      )
+      // Mode and agent are THIS project's, from ONE snapshot (T1.4 review):
+      // re-read together so a config edit cannot overlay a new isolation on a
+      // stale agent. The machine probe is only the runtime; overlay binds it.
+      const runtime = projectRuntime(ctx.project.path)
+      const projectProbe = overlayIsolationProbe(probe, {
+        configured: runtime.isolationMode,
+        command: runtime.command,
+      })
+      const resolved = resolveTaskIsolation(projectProbe)
       if (!resolved) {
+        // A non-claude agent can never be caged: waiting will not help, so
+        // this is a 400 with no retryable D2 code. A missing runtime is still
+        // resource_busy — the engine may come back.
+        const agentCannotCage = knownAgent(runtime.command) !== 'claude'
         return {
           ok: false,
-          code: 409,
-          error: t('isolation.unavailable', { reason: probe.reason }),
-          // The cage was ASKED for and is not there right now: an engine that
-          // does not answer is a resource the machine currently lacks, so the
-          // refusal is retryable — the readable error keeps saying why.
-          reason_code: 'resource_busy',
+          code: agentCannotCage ? 400 : 409,
+          error: t('isolation.unavailable', { reason: projectProbe.reason }),
+          ...(agentCannotCage ? {} : { reason_code: 'resource_busy' as const }),
         }
       }
       const record = createTask(ctx.project.path, {
@@ -2641,11 +2669,24 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       return project ? checksSetup.status(project.id) : null
     },
 
-    workspaceInfo: () => ({
-      ...isolationDefaults(probe),
-      isolation_reason: probe.reason,
-      isolation_configured: probe.configured,
-    }),
+    workspaceInfo: (projectId) => {
+      const project = projectId ? findProject(projectId) : null
+      const runtime = project ? projectRuntime(project.path) : null
+      const overlaid = overlayIsolationProbe(probe, {
+        configured:
+          runtime?.isolationMode ??
+          resolveProjectConfig(null, opts.flags ?? {}).config.isolation ??
+          probe.configured,
+        command:
+          runtime?.command ??
+          resolveProjectAgentCommand(null, opts.flags ?? {}, opts.command).command,
+      })
+      return {
+        ...isolationDefaults(overlaid),
+        isolation_reason: overlaid.reason,
+        isolation_configured: overlaid.configured,
+      }
+    },
 
     checksApply(projectId) {
       const project = findProject(projectId)

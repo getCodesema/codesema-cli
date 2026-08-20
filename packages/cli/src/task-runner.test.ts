@@ -3048,6 +3048,24 @@ describe('container isolation branch', () => {
     expect(cage.calls[1]?.checksConfig?.image).toBe('fresh')
   })
 
+  test('getChecksConfig returning null does not fall back on the snapshot (T1.4)', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    const cage = fakeCage()
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      checksConfig: { image: 'stale' },
+      getChecksConfig: () => null,
+      runContainerTurnFn: cage.run,
+    })
+    expect(cage.calls[0]?.checksConfig).toBeNull()
+  })
+
   test("a 'policy' record keeps the host path exactly as it was", async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'host', 'do it')

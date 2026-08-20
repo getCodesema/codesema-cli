@@ -489,10 +489,10 @@ export type RunTaskTurnOptions = {
   /** Repo checks config: the base image of the cage falls back to it. */
   checksConfig?: ChecksConfig | null | undefined
   /**
-   * Re-read the checks config at the moment of the turn (T1.4). When present
-   * it wins over the snapshot `checksConfig` so a checks-apply is picked up
-   * without restarting the workspace. The frozen snapshot stays for callers
-   * that have no file to re-read (tests).
+   * Re-read the checks config at the moment of the turn (T1.4). When the
+   * getter is provided it always wins — including a `null` meaning "this repo
+   * has no checks block anymore". The snapshot is only for callers that have
+   * no file to re-read (tests).
    */
   getChecksConfig?: () => ChecksConfig | null | undefined
   /** Test seam for the caged path; the default drives real containers. */
@@ -586,7 +586,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // never named itself. The turn's ceiling is therefore raised, never lowered,
   // to sit above the largest budget plus the whole kill escalation.
   const absoluteCapMs = effectiveAbsoluteCapMs(opts.timeoutMs, budgets)
-  const checksConfig = opts.getChecksConfig?.() ?? opts.checksConfig
+  const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
   const raw = caged
     ? await (opts.runContainerTurnFn ?? runContainerTurn)({
         taskId: opts.task.id,
@@ -2133,7 +2133,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // had already spent if it dies — and the marker that keeps that figure
     // from being folded twice when both exit paths run.
     const attempt: TurnAttempt = { cost: null, folded: false }
-    const checksConfig = opts.getChecksConfig?.() ?? opts.checksConfig
+    const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
     return (
       runTaskTurn({
         cwd: record.worktree,

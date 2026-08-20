@@ -26,6 +26,8 @@ import {
   loadGlobalConfig,
   loadRepoConfig,
   repoLoadCapIgnoredNotices,
+  resolveProjectAgentCommand,
+  resolveProjectConfig,
   resolveWatchdogBudgets,
   type ProjectConfigFlags,
 } from './config.js'
@@ -38,6 +40,7 @@ import { addProject, listProjects, type Project } from './projects.js'
 import { createSession, startServer } from './serve.js'
 import {
   DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+  overlayIsolationProbe,
   probeIsolation,
   teardownEgressProxy,
   type IsolationProbe,
@@ -228,7 +231,13 @@ export function workspaceTaskManagerOptions(
    */
   boot: Pick<
     Parameters<typeof createTaskManager>[0],
-    'command' | 'timeoutMs' | 'watchdog' | 'isolation' | 'allowedDomains' | 'flags'
+    | 'command'
+    | 'timeoutMs'
+    | 'watchdog'
+    | 'isolation'
+    | 'allowedDomains'
+    | 'flags'
+    | 'loadCapNoticeShown'
   >,
 ): Parameters<typeof createTaskManager>[0] {
   return {
@@ -360,36 +369,51 @@ export async function workspace(
   const repoRoot = tryGit(['rev-parse', '--show-toplevel'], opts.cwd)
   const config = loadConfig(repoRoot)
   const global = loadGlobalConfig()
-  const agentCommand = await resolveAgentCommand(opts.cwd, repoRoot, opts.agent ?? config.agent)
+  const flags: ProjectConfigFlags = {
+    ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
+    ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
+  }
+  // Fallback agent: CLI flag / global file / detected in cwd. The launch
+  // repo's `.codesema/config.json` is NOT baked in — that would leak A's
+  // TOFU-approved command onto every sibling (T1.4 review).
+  const agentCommand = await resolveAgentCommand(opts.cwd, null, opts.agent ?? global.agent)
+  const launchAgent = resolveProjectAgentCommand(repoRoot, flags, agentCommand)
   // A custom (non claude/codex/gemini) agent command gets NO hardening flags:
   // full env, no read-only harness, no strict-mcp. The user chose it, but the
   // workspace must say so out loud once per boot.
-  if (agentCommand && knownAgent(agentCommand) === null) {
-    console.log(t('workspace.customAgentWarning', { command: agentCommand }))
+  if (knownAgent(launchAgent.command) === null) {
+    console.log(t('workspace.customAgentWarning', { command: launchAgent.command }))
+  }
+  if (launchAgent.warning) {
+    console.log(launchAgent.warning)
   }
 
   // Container RUNTIME is probed ONCE at boot (T1.4): is an engine there, does
   // it answer. Per-project isolation mode and agent are overlaid at task
-  // creation, so a launch repo set to `policy` cannot poison a sibling set to
-  // `container`. `ignoreAgent` skips the claude-only check — that one is
-  // per-project too.
-  const allowedDomains = global.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
+  // creation AND on the boot line, so a launch repo set to `policy` cannot
+  // claim the cage is on. `ignoreAgent` skips the claude-only check — that
+  // one is per-project too.
+  const launchConfig = resolveProjectConfig(repoRoot, flags).config
+  const allowedDomains = launchConfig.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
   const probe = await probeIsolation({
     configured: 'auto',
     command: agentCommand,
     ignoreAgent: true,
   })
+  const bootProbe = overlayIsolationProbe(probe, {
+    configured: launchConfig.isolation ?? 'auto',
+    command: launchAgent.command,
+  })
 
   // The lock must be held BEFORE the manager touches any task store: its boot
   // recovery would mark another live workspace's running tasks as orphans.
   const lock = acquireWorkspaceLock()
-  // Fallback ceiling only (T1.4): a project that sets `timeout` wins in
-  // context(). The launch repo must not dictate other projects' budgets.
-  const timeoutMs = (global.timeout ?? DEFAULT_TIMEOUT_S) * 1000
-  const flags: ProjectConfigFlags = {
-    ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
-    ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
-  }
+  // Launch-repo ceiling (flags > that repo > global) for fix / MR-review,
+  // which only exist for the repo we started in. The manager's fallback is
+  // global+flags so a sibling without `timeout` does not inherit A's.
+  const timeoutMs = (launchConfig.timeout ?? DEFAULT_TIMEOUT_S) * 1000
+  const fallbackTimeoutMs =
+    (resolveProjectConfig(null, flags).config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
   // Aborted by the first SIGINT/SIGTERM, handed to the runners that wait on the
   // repo lock while cleaning up, so the exit never sits behind one.
   const draining = new AbortController()
@@ -415,13 +439,14 @@ export async function workspace(
     taskManager = (opts.createTaskManagerFn ?? createTaskManager)(
       workspaceTaskManagerOptions(config, draining, {
         command: agentCommand,
-        timeoutMs,
+        timeoutMs: fallbackTimeoutMs,
         // Fallback budgets (T1.4): a project that sets watchdog keys wins
         // in context(). Global file, then D3 defaults.
         watchdog: resolveWatchdogBudgets(global),
         isolation: probe,
         allowedDomains,
         flags,
+        ...(repoRoot !== null ? { loadCapNoticeShown: [repoRoot] } : {}),
       }),
     )
 
@@ -438,13 +463,13 @@ export async function workspace(
             fixRunner: createFixRunner({
               getRecord: () => session.record(),
               cwd: repoRoot,
-              command: agentCommand,
+              command: launchAgent.command,
               timeoutMs,
             }),
             mrReviewRunner: createMrReviewRunner({
               cwd: repoRoot,
               session,
-              agentCommand,
+              agentCommand: launchAgent.command,
               timeoutMs,
               shutdownSignal: draining.signal,
             }),
@@ -466,7 +491,7 @@ export async function workspace(
   console.log(`  ${started.url}`)
   console.log(`  ${t('review.ctrlc')}`)
   console.log('')
-  logIsolation(probe, allowedDomains)
+  logIsolation(bootProbe, allowedDomains)
   for (const line of bootNotices(config, repoRoot)) {
     console.log(line)
   }
