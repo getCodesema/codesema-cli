@@ -429,6 +429,40 @@ describe('reconcileIssueSnapshot', () => {
     }
   })
 
+  // Round-5 adversarial review, mineur: the `?? taskReason('forge_unreachable',
+  // …)` fallback is reached on exactly ONE input — `invalid-input`, the only
+  // unavailability `forgeIssueReason` maps to no code — and nothing exercised
+  // it, so the five-line invariant justifying that mapping had no test behind
+  // it while the code IS raised to the API. `getIssue` refuses a non-positive
+  // iid before probing anything, which is the reachable way in.
+  test('an "invalid-input" refusal still degrades under forge_unreachable, with its own words', async () => {
+    const repo = makeRepo()
+    try {
+      const snapshot = await admittedSnapshot(repo, ticketBody())
+      const { calls, execFn } = rig(() => ({ kind: 'missing' }))
+      const outcome = await reconcileIssueSnapshot({
+        cwd: repo,
+        issue: { ...REF, iid: 0 },
+        snapshot,
+        execFn,
+      })
+      expect(outcome.kind).toBe('unreachable')
+      if (outcome.kind !== 'unreachable') {
+        throw new Error('unreachable')
+      }
+      // The branch really is the no-code one: no forge binary was ever asked
+      // anything, so `forgeIssueReason` returned null and only the fallback
+      // could have produced this code.
+      expect(calls).toHaveLength(0)
+      expect(outcome.reason.code).toBe('forge_unreachable')
+      // Invariant 2: the code is ADDED to the refusal's own words, never
+      // substituted for them.
+      expect(outcome.reason.detail).toContain('invalid issue number: 0')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   // Adversarial review, majeur 1: reordering the SAME three criteria used to
   // move the CANONICAL hash (list-order serialization), reporting 'edited'
   // with an empty sections/criteria diff — the bare "the issue changed" DP13
@@ -687,6 +721,31 @@ describe('issue journal event builders (DP9: domain type, cause in data.name)', 
     expect(event.type).toBe('issue')
     expect(event.data.name).toBe('not_ticket')
     expect(event.data.message).toContain('section_missing')
+  })
+
+  // Round-5 adversarial review, MAJEUR 1. 'unreachable' used to be routed to
+  // `type: 'error'` — red, and (because SUMMARY_KEYS.error probes
+  // ['message','error','summary']) with its English sentence read straight
+  // into a French journal, on every ticketed task, at every boot of a machine
+  // with no gh/glab. DP15 lists it among the 'issue' domain's data.names and
+  // DP9 forbids painting a non-event red: the task carries on unmodified.
+  test('issueReconcileEvent — unreachable is an "issue" fact, never an "error"', () => {
+    const event = issueReconcileEvent({
+      kind: 'unreachable',
+      reason: { code: 'forge_unreachable', detail: 'no-cli: no forge CLI is available' },
+    })
+    expect(event.type).toBe('issue')
+    expect(event.type).not.toBe('error')
+    expect(event.data.name).toBe('unreachable')
+    // The D2 code still rides the event: `reason_code` is a field of its own,
+    // independent of the type — that is invariant 2's API leg, and it is the
+    // only thing routing through `error` was really buying.
+    expect(event.reason_code).toBe('forge_unreachable')
+    // The producer's own words survive next to the code, for the API and CLI
+    // readers that have no catalog (the web renders from `data.name`).
+    expect(String(event.data.message)).toContain('no forge CLI is available')
+    // DP13: no claim either way about whether the issue actually moved.
+    expect(String(event.data.message)).toContain('existing snapshot')
   })
 })
 

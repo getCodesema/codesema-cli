@@ -407,7 +407,7 @@ describe('eventSummary', () => {
       expect(summary).not.toContain('issue_snapshot')
     })
 
-    test('each of the six data.names gets its OWN text, never the shared label', () => {
+    test('each of the seven data.names gets its OWN text, never the shared label', () => {
       const summaries = (
         [
           'bound',
@@ -416,11 +416,17 @@ describe('eventSummary', () => {
           'edited',
           'not_ticket',
           'snapshot_unreadable',
+          // Round-5 review, MAJEUR 1: this one used to travel on
+          // `type: 'error'`, whose SUMMARY_KEYS probe `data.message` — so the
+          // French journal read the server's English sentence, on every
+          // ticketed task, at every boot without gh/glab.
+          'unreachable',
         ] as const
       ).map((name) => eventSummary(event({ type: 'issue', data: { name, message: 'ENGLISH' } })))
-      // Six distinct lines: routing them all to the same key (or to the plain
-      // 'Ticket' label) collapses this set.
-      expect(new Set(summaries).size).toBe(6)
+      // Seven distinct lines: routing them all to the same key (or to the
+      // plain 'Ticket' label) collapses this set — and pointing any ONE of
+      // them at a sibling's key collapses it by one.
+      expect(new Set(summaries).size).toBe(7)
       for (const summary of summaries) {
         expect(summary).not.toBe('Ticket')
         expect(summary).not.toContain('ENGLISH')
@@ -509,6 +515,12 @@ describe('eventTone', () => {
     // A snapshot that cannot be read back retires edit detection for this
     // task until a human re-binds it: amber, like the other two.
     expect(eventTone(event({ type: 'issue', data: { name: 'snapshot_unreadable' } }))).toBe('check')
+    // A forge this session could not read: amber, because the comparison did
+    // not conclude — and above all NEVER 'stop', which is where it used to
+    // land by travelling on `type: 'error'` while the task carried on
+    // unmodified on its snapshot (DP9's cry-wolf).
+    expect(eventTone(event({ type: 'issue', data: { name: 'unreachable' } }))).toBe('check')
+    expect(eventTone(event({ type: 'issue', data: { name: 'unreachable' } }))).not.toBe('stop')
     expect(eventTone(event({ type: 'issue', data: { name: 'cosmetic' } }))).toBe('idle')
     expect(eventTone(event({ type: 'issue', data: { name: 'bound' } }))).toBe('idle')
     // An unknown name (a newer server) defaults to the routine tone, never amber.

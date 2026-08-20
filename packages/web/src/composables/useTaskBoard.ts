@@ -545,8 +545,9 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
 
 /**
  * `data.name` is what actually distinguishes an 'issue' event's tone (DP9):
- * `edited`/`not_ticket` need a human decision, `bound`/`coverage_gap`/`cosmetic`
- * are routine. Falls back to `EVENT_TONE.issue` for a name this build does
+ * `edited`/`not_ticket`/`snapshot_unreadable`/`unreachable` leave this task's
+ * ticket unresolved, `bound`/`coverage_gap`/`cosmetic` are settled facts.
+ * NONE of them is ever red. Falls back to `EVENT_TONE.issue` for a name this build does
  * not know (a newer server), which is deliberately the ROUTINE tone —
  * defaulting an unknown cause to "check" would paint every future addition
  * red or amber before anyone decided it should be.
@@ -558,6 +559,13 @@ const ISSUE_EVENT_TONE: Record<string, EventTone> = {
   // edit detection until a human re-binds it: amber, like the two above, for
   // the same reason — it is waiting on a person, not on the machine.
   snapshot_unreadable: 'check',
+  // A forge this session could not read: AMBER, never red (DP9 — the task
+  // carries on unmodified on its frozen snapshot, nothing is refused) and
+  // never neutral either. It sits with the three above on the axis that
+  // actually separates this table: the comparison did NOT conclude, so this
+  // task's ticket is of unknown freshness — and, unlike every 'idle' name
+  // here, this line comes with a D2 `reason_code` posed on the record.
+  unreachable: 'check',
   bound: 'idle',
   coverage_gap: 'idle',
   cosmetic: 'idle',
@@ -689,6 +697,7 @@ const ISSUE_NAME_KEY: Record<string, MessageKey> = {
   cosmetic: 'workspace.evIssueCosmetic',
   not_ticket: 'workspace.evIssueNotTicket',
   snapshot_unreadable: 'workspace.evIssueSnapshotUnreadable',
+  unreachable: 'workspace.evIssueUnreachable',
 }
 
 const ISSUE_SECTION_KEY: Record<string, MessageKey> = {

@@ -906,14 +906,13 @@ function applyIssueReconcile(
       if (canPoseReason) {
         record.reason = outcome.reason
       }
-      return {
-        event: {
-          type: 'error',
-          data: { message: outcome.reason.detail ?? outcome.reason.code },
-          reason_code: outcome.reason.code,
-        },
-        mutated: canPoseReason,
-      }
+      // DP15/DP9: 'issue', like every other outcome here — a forge this
+      // session could not read is a fact about the bound TICKET, and the task
+      // carries on unmodified. `error` would paint it red (the cry-wolf DP9
+      // refuses) and, worse, would serve its English sentence verbatim into a
+      // French journal. The `reason_code` below is unchanged: it rides the
+      // event whatever its type.
+      return { event: issueReconcileEvent(outcome), mutated: canPoseReason }
     }
   }
 }
@@ -930,6 +929,16 @@ function applyIssueReconcile(
  * the literal.
  */
 export const BOOT_ISSUE_RECONCILE_CONCURRENCY = 6
+
+/**
+ * The hard wall-clock ceiling on the WHOLE boot reconciliation pass, in ms —
+ * the published "45 s" of the CHANGELOG. See its use site below for WHY it is
+ * a deadline rather than a budget derived from the ladder's cost. Exported so
+ * a test can pin the shipped value: every other test overrides it through the
+ * `bootIssueReconcileDeadlineMs` seam, so without this pin the wall could be
+ * moved to infinity with every test still green.
+ */
+export const DEFAULT_BOOT_ISSUE_RECONCILE_DEADLINE_MS = 45_000
 
 /**
  * Runs `worker` over `items`, at most `limit` of them in flight at once.
@@ -1871,8 +1880,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    * derived from one: every task's own reconciliation races it individually
    * and degrades to `forge_unreachable` — never blocking the pump longer
    * than this, whatever the ladder costs on any one call.
+   *
+   * The DEFAULT lives at module scope, exported, for the same reason
+   * `BOOT_ISSUE_RECONCILE_CONCURRENCY` does: every test overrides it through
+   * the `bootIssueReconcileDeadlineMs` seam, so nothing else would notice a
+   * refactor pushing the wall to infinity while the CHANGELOG keeps
+   * publishing "45 s".
    */
-  const BOOT_ISSUE_RECONCILE_DEADLINE_MS = opts.bootIssueReconcileDeadlineMs ?? 45_000
+  const BOOT_ISSUE_RECONCILE_DEADLINE_MS =
+    opts.bootIssueReconcileDeadlineMs ?? DEFAULT_BOOT_ISSUE_RECONCILE_DEADLINE_MS
 
   /**
    * Says, once per boot pass, that a task naming a forge issue has no readable

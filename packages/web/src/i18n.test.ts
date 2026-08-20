@@ -57,9 +57,10 @@ describe('placeholder parity', () => {
   })
 })
 
-// Round-4 adversarial review, MAJEUR 1: the six 'issue' journal lines (T2.4)
-// are the ones a French workspace used to read in English, because the
-// server's own `data.message` shadowed them. Their French values being real
+// Round-4 adversarial review, MAJEUR 1: the 'issue' journal lines (T2.4) are
+// the ones a French workspace used to read in English, because the server's
+// own `data.message` shadowed them (round 5 added `unreachable`, which was
+// shadowed the same way while it travelled on `type: 'error'`). Their French values being real
 // translations — not copies of the English, not empty — is the whole point of
 // that fix, and nothing else in this repo asserts it.
 describe('T2.4 issue journal labels', () => {
@@ -70,6 +71,7 @@ describe('T2.4 issue journal labels', () => {
     'workspace.evIssueEdited',
     'workspace.evIssueNotTicket',
     'workspace.evIssueSnapshotUnreadable',
+    'workspace.evIssueUnreachable',
     'workspace.evIssueNone',
     'workspace.evIssueSectionsUnknown',
     'workspace.evIssueSectionContext',

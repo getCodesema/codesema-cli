@@ -430,13 +430,26 @@ export function issueCoverageGapEvent(): AppendTaskEventInput {
 /**
  * The journal line for a fact about the bound issue itself, mirroring
  * `costEvent` (task-runner.ts) exactly: the DOMAIN type ('issue'), the
- * specific cause in `data.name`. `'unreachable'` has NO entry here — it is
- * reported on `'error'` with `reason_code: 'forge_unreachable'` instead,
- * because THAT is a degradation of codesema's own machinery, not a fact
- * about the issue (DP9).
+ * specific cause in `data.name`.
+ *
+ * `'unreachable'` is one of those causes, not an exception to them (DP15
+ * enumerates it alongside `bound`, `edited`, `not_ticket` and `cosmetic`).
+ * It used to be routed onto `type: 'error'`; that was wrong twice over. The
+ * tone: DP9 forbids painting a non-event red, and this IS a non-event for
+ * the task — it carries on unmodified on its existing snapshot, nothing is
+ * refused, nothing is asked of anyone. And the language: `SUMMARY_KEYS.error`
+ * probes `['message','error','summary']`, so the English sentence built here
+ * reached a French journal verbatim, on EVERY ticketed task, at every boot of
+ * a machine with no `gh`/`glab` (brief §6 quater, "the raw English technical
+ * message served as is"). On `'issue'` the web renders from `data.name`
+ * through its own catalog key instead.
+ *
+ * `reason_code` is a field of its own, independent of `type`: the event still
+ * carries `forge_unreachable` for the API and CLI readers (invariant 2's
+ * third leg), which is what routing through `error` was really buying.
  */
 export function issueReconcileEvent(
-  outcome: Extract<IssueReconcile, { kind: 'cosmetic' | 'edited' | 'not_ticket' }>,
+  outcome: Extract<IssueReconcile, { kind: 'cosmetic' | 'edited' | 'not_ticket' | 'unreachable' }>,
 ): AppendTaskEventInput {
   switch (outcome.kind) {
     case 'cosmetic':
@@ -490,6 +503,21 @@ export function issueReconcileEvent(
           name: 'not_ticket',
           message: `the issue no longer passes the ticket contract's lint: ${outcome.message}`,
         },
+      }
+    case 'unreachable':
+      return {
+        type: 'issue',
+        data: {
+          name: 'unreachable',
+          // DP13: "forge injoignable → on continue sur le snapshot, et AUCUNE
+          // affirmation sur la dérive". The producer's own words are kept
+          // verbatim next to the code (invariant 2: the code is added to the
+          // readable message, never substituted for it) — this field is read
+          // by the API and the CLI, never by the web journal, which renders
+          // the translated line from `data.name`.
+          message: `the forge could not be read to compare this task's ticket (${outcome.reason.detail ?? outcome.reason.code}); the task carries on unmodified on its existing snapshot, and nothing is claimed about whether the issue moved`,
+        },
+        reason_code: outcome.reason.code,
       }
   }
 }

@@ -288,6 +288,8 @@ const en = {
   'workspace.evIssueNotTicket': 'The ticket no longer passes the ticket contract',
   'workspace.evIssueSnapshotUnreadable':
     'The frozen ticket could not be read back: edits to this ticket are no longer detected',
+  'workspace.evIssueUnreachable':
+    'The forge could not be read: this ticket was not compared, the conversation carries on on its frozen copy',
   'workspace.evIssueNone': 'none',
   'workspace.evIssueSectionsUnknown': 'unknown (this snapshot has no per-section breakdown)',
   'workspace.evIssueSectionContext': 'context',
@@ -745,6 +747,8 @@ const fr: Record<MessageKey, string> = {
   'workspace.evIssueNotTicket': 'Le ticket ne passe plus le contrat de ticket',
   'workspace.evIssueSnapshotUnreadable':
     'Le ticket figé est illisible : les éditions de ce ticket ne sont plus détectées',
+  'workspace.evIssueUnreachable':
+    "La forge n'a pas pu être lue : ce ticket n'a pas été comparé, la conversation continue sur sa copie figée",
   'workspace.evIssueNone': 'aucun',
   'workspace.evIssueSectionsUnknown': 'inconnues (ce snapshot ne ventile pas par section)',
   'workspace.evIssueSectionContext': 'contexte',

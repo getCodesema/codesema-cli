@@ -151,18 +151,22 @@ export type TaskEventType =
   /**
    * D7/DP9: the DOMAIN, not an incident — a fact about the forge issue this
    * task is bound to, named the same way `checks`/`isolation`/`cost` name
-   * theirs. The specific cause travels in `data.name` (`bound` at admission;
-   * `edited`, `cosmetic` or `not_ticket` at reconciliation — see
+   * theirs. The specific cause travels in `data.name` (`bound` and
+   * `coverage_gap` at admission; `edited`, `cosmetic`, `not_ticket`,
+   * `snapshot_unreadable` or `unreachable` at reconciliation — see
    * task-issue.ts), exactly like `cost`'s `data.name` distinguishes its nine
    * causes. `edited` and `not_ticket` move the task to `waiting_for_you` in
    * the SAME transition — never mid-turn, never a silent restart; `cosmetic`
-   * changes nothing. Deliberately no `reason_code` on this type: none of D2's
-   * ten codes names "the ticket moved under the agent", and most of what this
-   * type reports is not itself a degradation of codesema's own machinery the
-   * way those codes are — it is news about the WORK's source of truth. (A
-   * forge that cannot be reached during reconciliation is reported on `error`
-   * instead, with `forge_unreachable` — that IS a degradation of the
-   * machinery, D2's existing vocabulary already names it.)
+   * changes nothing.
+   *
+   * Most of these carry no `reason_code`: none of D2's ten codes names "the
+   * ticket moved under the agent", and news about the WORK's source of truth
+   * is not itself a degradation of codesema's machinery. `unreachable` is the
+   * one that IS, and it carries `forge_unreachable` — on THIS type, because
+   * `reason_code` is a field of its own and the type still has to name the
+   * domain honestly (DP15). Routing it to `error` instead would paint red a
+   * task that carries on unmodified on its frozen snapshot, which is exactly
+   * the cry-wolf DP9 refuses.
    */
   | 'issue'
 

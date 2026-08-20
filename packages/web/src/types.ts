@@ -309,11 +309,14 @@ export type TaskEventType =
    * D7/DP9: the DOMAIN, not an incident — a fact about the forge issue a task
    * is bound to, named like `checks`/`isolation`/`cost` name theirs. The
    * specific cause travels in `data.name` (`bound`, `coverage_gap`, `edited`,
-   * `cosmetic`, `not_ticket`). `edited` and `not_ticket` move the task to
-   * `waiting_for_you` in the SAME transition — never mid-turn, never a silent
-   * restart; `cosmetic` changes nothing (a forge that cannot be reached is
-   * reported on `error` with `forge_unreachable` instead — that IS a
-   * degradation of the machinery, this type is not).
+   * `cosmetic`, `not_ticket`, `snapshot_unreadable`, `unreachable`). `edited`
+   * and `not_ticket` move the task to `waiting_for_you` in the SAME
+   * transition — never mid-turn, never a silent restart; `cosmetic` changes
+   * nothing. A forge that cannot be reached is `unreachable` on THIS type,
+   * carrying `reason_code: 'forge_unreachable'` (a field of its own): the
+   * task carries on unmodified on its frozen snapshot, so `error` would paint
+   * a non-event red — and would serve its English `data.message` verbatim
+   * into a French journal (DP9/DP15).
    */
   | 'issue'
 

@@ -51,6 +51,7 @@ import { pendingResumeTurn, type TaskRunner, type TaskRunnerOptions } from './ta
 import {
   BOOT_ISSUE_RECONCILE_CONCURRENCY,
   createTaskManager,
+  DEFAULT_BOOT_ISSUE_RECONCILE_DEADLINE_MS,
   QUEUE_BROADCAST_MAX,
   queueEntriesRetired,
   type TaskEnvelope,
@@ -991,6 +992,47 @@ describe('manager.create — from a forge issue (T2.4)', () => {
       (e) => e.type === 'issue' && e.data.name === 'bound',
     )
     expect(bound).toBeDefined()
+    // …and nothing claims a coverage gap on a body that has none: the
+    // disclosure below has to be CONDITIONAL, not posed on every admission.
+    expect(
+      readTaskEvents(project.path, created.record.id).some(
+        (e) => e.type === 'issue' && e.data.name === 'coverage_gap',
+      ),
+    ).toBe(false)
+  })
+
+  // Round-5 adversarial review, MAJEUR 2. The three legs of this disclosure
+  // were each tested apart — the computation (`admitIssue.coverage_gap`), the
+  // constructor (`issueCoverageGapEvent`) and the web rendering — while the
+  // WIRE between them was not: forcing `if (coverageGap)` to `if (false)` in
+  // `create` left the whole suite green. DP13 requires the blind spot of the
+  // edit detector to be NAMED at admission, and the CHANGELOG announces it,
+  // so the wire is what has to fail when it goes.
+  test('an issue carrying content outside the five sections journals the coverage_gap disclosure', async () => {
+    const project = register(makeRepoWithRemote())
+    // Prepended: content AFTER the last heading is read as more of THAT
+    // section (still covered); only content BEFORE the first recognized
+    // heading is genuinely outside every one of the five.
+    const stray = 'Some unrelated note nobody put under a recognized heading, on and on. '.repeat(
+      10,
+    )
+    const { execFn } = ghIssueRig(`${stray}\n\n${conformingTicketBody()}`)
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+
+    const created = await manager.create(project.id, { autoShip: false, issue: VALID_ISSUE_REF })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      throw new Error('unreachable')
+    }
+    const events = readTaskEvents(project.path, created.record.id)
+    const gap = events.find((e) => e.type === 'issue' && e.data.name === 'coverage_gap')
+    expect(gap).toBeDefined()
+    // DP14: a disclosure, not a degradation — no D2 code, and the creation
+    // was not refused.
+    expect(gap?.reason_code).toBeUndefined()
+    expect(created.record.issue_snapshot).toBeDefined()
+    // It rides ALONGSIDE 'bound', never instead of it.
+    expect(events.some((e) => e.type === 'issue' && e.data.name === 'bound')).toBe(true)
   })
 
   test('the title+prompt path stays available, unaffected: no issue, no criteria', async () => {
@@ -1734,7 +1776,7 @@ describe('onTurnDone — issue reconciliation (T2.4/DP13, pre-review recompariso
     expect(event?.reason_code).toBeUndefined()
   })
 
-  test('forge unreachable: continues on the snapshot, forge_unreachable journaled on error, review still runs', async () => {
+  test('forge unreachable: continues on the snapshot, forge_unreachable journaled on an "issue" line, review still runs', async () => {
     const project = register(makeRepoWithRemote())
     const body = conformingTicketBody()
     const record = await seedIssueTask(project, body)
@@ -1754,8 +1796,15 @@ describe('onTurnDone — issue reconciliation (T2.4/DP13, pre-review recompariso
     const { io, emitted } = taskIo(project.path, record)
     await rig.runnerOptions().onTurnDone!(record, io)
     expect(reviewRan).toBe(true)
-    const event = emitted.find((e) => e.type === 'error' && e.reason_code === 'forge_unreachable')
+    // Round-5 review, MAJEUR 1: the line is an 'issue' fact named
+    // 'unreachable' (DP15), NOT an 'error' — red would be a cry-wolf on a
+    // task that carries on unmodified, and 'error' renders the server's
+    // English `data.message` verbatim in a French journal. The D2 code still
+    // rides it: `reason_code` is independent of the type.
+    const event = emitted.find((e) => e.type === 'issue' && e.data.name === 'unreachable')
     expect(event).toBeDefined()
+    expect(event?.reason_code).toBe('forge_unreachable')
+    expect(emitted.some((e) => e.type === 'error')).toBe(false)
     expect(record.reason?.code).toBe('forge_unreachable')
   })
 
@@ -1966,7 +2015,10 @@ describe('boot — issue reconciliation (T2.4/D7)', () => {
 
     await until(() =>
       readTaskEvents(project.path, record.id).some(
-        (e) => e.type === 'error' && e.reason_code === 'forge_unreachable',
+        (e) =>
+          e.type === 'issue' &&
+          e.data.name === 'unreachable' &&
+          e.reason_code === 'forge_unreachable',
       ),
     )
     // The task was NEVER dropped from the queue: an unreachable forge is not an edit.
@@ -1981,6 +2033,16 @@ describe('boot — issue reconciliation (T2.4/D7)', () => {
   // here instead of surviving unnoticed.
   test('the published boot reconciliation concurrency cap is 6', () => {
     expect(BOOT_ISSUE_RECONCILE_CONCURRENCY).toBe(6)
+  })
+
+  // Round-5 adversarial review, mineur — the SAME hole, one constant over.
+  // Every test of the deadline goes through the `bootIssueReconcileDeadlineMs`
+  // seam, so the shipped default was pinned by nothing at all: raising it to
+  // 45_000_000 left the whole suite green while the CHANGELOG went on
+  // publishing "45 s". Same remedy as its neighbour above: pin the published
+  // value literally, so a refactor that pushes the wall to infinity dies here.
+  test('the published boot reconciliation deadline is 45s', () => {
+    expect(DEFAULT_BOOT_ISSUE_RECONCILE_DEADLINE_MS).toBe(45_000)
   })
 
   // Majeur 3, adversarial review: an unbounded fan-out opens one subprocess
@@ -2123,7 +2185,10 @@ describe('boot — issue reconciliation (T2.4/D7)', () => {
     expect(loadTask(project.path, record.id)?.reason?.code).toBe('interrupted_by_user')
     expect(
       readTaskEvents(project.path, record.id).some(
-        (e) => e.type === 'error' && e.reason_code === 'forge_unreachable',
+        (e) =>
+          e.type === 'issue' &&
+          e.data.name === 'unreachable' &&
+          e.reason_code === 'forge_unreachable',
       ),
     ).toBe(true)
 
@@ -2541,6 +2606,61 @@ describe('boot — issue reconciliation (T2.4/D7)', () => {
 
       await until(() => invocations() > 0, 8000)
       expect(loadTask(late, record.id)?.status).not.toBe('queued')
+      await manager.shutdown()
+    })
+
+    // Round-5 adversarial review, mineur. "Put back AT ITS ORIGINAL RANK" is
+    // why `holdTicketedTasks` remembers the WHOLE pre-hold order rather than
+    // just the ids it lifted — and reversing that remembered order left every
+    // test green, because the two above queue exactly ONE task each and
+    // reversing a one-element list is a no-op. Three in line, the ticketed one
+    // in the MIDDLE, is the shape that can tell the rule from its absence.
+    test('the held ticketed task goes back at its ORIGINAL rank, not at the tail', async () => {
+      const body = conformingTicketBody()
+      const origin = await donorIssue()
+      const late = makeRepoWithRemote()
+      const plainA = seedTask(late, 'plain A')
+      plainA.status = 'queued'
+      saveTask(late, plainA)
+      const ticketed = plantTicketedTask(late, origin)
+      const plainC = seedTask(late, 'plain C')
+      plainC.status = 'queued'
+      saveTask(late, plainC)
+      writeJsonAtomic(queuePath(late), {
+        version: 1,
+        entries: [plainA, ticketed, plainC].map((task) => ({
+          id: task.id,
+          enqueued_at: new Date().toISOString(),
+        })),
+      })
+
+      register(makeRepo()) // an ordinary project, so the boot pass has work
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        ...rig,
+        // Same body: 'unchanged', so the hold is released rather than turning
+        // into a status change that would remove tasks from the line.
+        issueExecFn: ghIssueRig(body).execFn,
+      })
+      await manager.startPending()
+
+      const lateProject = register(late)
+      manager.checks(lateProject.id, 'aaaaaaaaaaaa')
+
+      // The rebuild enqueues every id but the LAST, which goes to
+      // `runner.start()` instead — that is the only gesture that both puts a
+      // task at the tail and pumps. Read as one line, queue-then-started IS
+      // the restored order.
+      await until(() => rig.starts.length > 0)
+      const restored = [
+        ...readQueue(late).entries.map((entry) => entry.id),
+        ...rig.starts.map((task) => task.id),
+      ]
+      expect(restored).toEqual([plainA.id, ticketed.id, plainC.id])
+      // Nothing was dropped or re-ranked on the way, and the held one is
+      // still just waiting: the hold is a DELAY, never a status change.
+      expect(loadTask(late, ticketed.id)?.status).toBe('queued')
       await manager.shutdown()
     })
   })
