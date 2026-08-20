@@ -532,12 +532,21 @@ describe('installCommandFor', () => {
     expect(claude).toContain('bun install -g')
     expect(claude).toContain('echo')
     expect(claude).toContain('exit 1')
+    expect(claude).toContain('$HOME/.local/bin/claude')
+    expect(claude).toContain('command -v claude')
+    expect(claude).toContain('/usr/local/bin/claude')
     const opencode = installCommandFor('opencode')
     expect(opencode).toContain('https://opencode.ai/install')
     expect(opencode).toContain('npm cache clean --force')
     expect(opencode).toContain('bun install -g')
     expect(opencode).toContain('echo')
     expect(opencode).toContain('exit 1')
+    expect(opencode).toContain('$HOME/.local/bin/opencode')
+    expect(opencode).toContain('command -v opencode')
+    expect(opencode).toContain('/usr/local/bin/opencode')
+    // A failed native installer must fall through to npm, not `exit 0`.
+    expect(claude).toContain('npm install -g')
+    expect(claude.indexOf('command -v claude')).toBeLessThan(claude.indexOf('npm install -g'))
   })
 })
 
@@ -1486,21 +1495,24 @@ describe('containerTaskCommandFor', () => {
     expect(containerTaskCommandFor('codex exec -', { session: null })).toBe('codex exec -')
   })
 
-  test('opencode gets --format json and resumes with -s, never skip-permissions', () => {
+  test('opencode gets --format json, --auto, and resumes with -s, never skip-permissions', () => {
     const fresh = containerTaskCommandFor('opencode run', {
       session: { kind: 'new', id: 'uuid-1' },
     })
     expect(fresh).toContain('--format json')
+    expect(fresh).toContain('--auto')
     expect(fresh).not.toContain('--dangerously-skip-permissions')
     expect(fresh).not.toContain('-s ')
     const resume = containerTaskCommandFor('opencode run', {
       session: { kind: 'resume', id: 'sess-9' },
     })
     expect(resume).toContain('--format json')
+    expect(resume).toContain('--auto')
     expect(resume).toContain('-s sess-9')
     expect(resume).not.toContain('--dangerously-skip-permissions')
-    const custom = containerTaskCommandFor('opencode run --format stream', { session: null })
-    expect(custom).toBe('opencode run --format stream')
+    const custom = containerTaskCommandFor('opencode run --format stream --auto', { session: null })
+    expect(custom).toBe('opencode run --format stream --auto')
+    expect(custom.match(/--auto/g)).toHaveLength(1)
   })
 })
 
@@ -2151,6 +2163,14 @@ describe('isolationDomainsFor', () => {
       'models.opencode.ai',
     ])
     expect(isolationDomainsFor('opencode -m openrouter/foo')).toEqual([
+      'openrouter.ai',
+      'models.opencode.ai',
+    ])
+    expect(isolationDomainsFor("opencode --model 'openrouter/foo'")).toEqual([
+      'openrouter.ai',
+      'models.opencode.ai',
+    ])
+    expect(isolationDomainsFor('opencode --model="openrouter/bar"')).toEqual([
       'openrouter.ai',
       'models.opencode.ai',
     ])

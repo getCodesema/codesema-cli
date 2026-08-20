@@ -529,7 +529,7 @@ describe('createTaskManager', () => {
     const manager = createTaskManager({
       ...managerOpts,
       ...rig,
-      allowedDomains: ['api.anthropic.com', 'registry.npmjs.org'],
+      flags: { isolationAllowedDomains: ['api.anthropic.com', 'registry.npmjs.org'] },
     })
     await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     const options = rig.runnerOptions()
@@ -634,8 +634,42 @@ describe('createTaskManager', () => {
     await manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
     const optsByCwd = new Map(rig.allRunnerOptions.map((options) => [options.cwd, options]))
     expect(optsByCwd.get(repoA)?.allowedDomains).toEqual(['npm.acme-internal.example'])
-    // The cross-assertion is what kills the leak: B keeps the boot fallback.
-    expect(optsByCwd.get(repoB)?.allowedDomains).toEqual(['api.anthropic.com'])
+    // The cross-assertion is what kills the leak: B keeps the claude default,
+    // never A's widened list, never a launch-agent allowlist.
+    expect(optsByCwd.get(repoB)?.allowedDomains).toEqual([
+      'api.anthropic.com',
+      'platform.claude.com',
+    ])
+  })
+
+  test('a sibling opencode project without an allowlist gets opencode domains, not Anthropic', async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoB, { agent: 'opencode run' })
+    trustRepoAgent(repoB, 'opencode run')
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      command: 'claude -p',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    await manager.create(projectA.id, { title: 'a', prompt: 'p', autoShip: false })
+    await manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
+    const optsByCwd = new Map(rig.allRunnerOptions.map((options) => [options.cwd, options]))
+    expect(optsByCwd.get(repoA)?.allowedDomains).toEqual([
+      'api.anthropic.com',
+      'platform.claude.com',
+    ])
+    expect(optsByCwd.get(repoB)?.allowedDomains).toEqual(['opencode.ai', 'models.opencode.ai'])
   })
 
   // C5 (adversarial review, mineur): the README promises the three `watchdog*`
@@ -803,6 +837,54 @@ describe('createTaskManager', () => {
     })
     await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(rig.runnerOptions().command).toBe('codex exec -')
+  })
+
+  test('policy + opencode is refused at create, never a host policy task', async () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'policy', agent: 'opencode run' })
+    trustRepoAgent(repo, 'opencode run')
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'opencode run',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created.ok).toBe(false)
+    expect(created.ok ? '' : created.error).toMatch(/opencode\.json|MCP/)
+    expect(listTasks(project.path)).toHaveLength(0)
+  })
+
+  test('container isolation with opencode and no runtime is 409, same as claude', async () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'container' })
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'opencode run',
+      isolation: {
+        available: false,
+        mode: 'policy',
+        reason: 'docker is installed but its engine does not answer',
+        configured: 'container',
+        runtime: 'docker',
+      },
+    })
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created).toMatchObject({
+      ok: false,
+      code: 409,
+      reason_code: 'resource_busy',
+      error: expect.stringContaining('does not answer'),
+    })
   })
 
   test('container isolation with a non-claude agent is a 400, not a retryable 409 (T1.4)', async () => {

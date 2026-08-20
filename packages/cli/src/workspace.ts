@@ -37,6 +37,7 @@ import { openBrowser } from './open.js'
 import { addProject, listProjects, type Project } from './projects.js'
 import { createSession, startServer } from './serve.js'
 import {
+  DEFAULT_ISOLATION_ALLOWED_DOMAINS,
   isolationDomainsFor,
   overlayIsolationProbe,
   probeIsolation,
@@ -271,10 +272,7 @@ export function workspaceTaskManagerOptions(
  * it directly: `workspace()` itself listens on a port, takes the global lock
  * and installs real signal handlers, and can never be called from the suite.
  */
-export function workspaceBootFallbacks(
-  flags: ProjectConfigFlags,
-  command?: string,
-): {
+export function workspaceBootFallbacks(flags: ProjectConfigFlags): {
   timeoutMs: number
   allowedDomains: readonly string[]
   watchdog: WatchdogBudgets
@@ -282,7 +280,7 @@ export function workspaceBootFallbacks(
   const fallback = resolveProjectConfig(null, flags).config
   return {
     timeoutMs: (fallback.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
-    allowedDomains: fallback.isolationAllowedDomains ?? isolationDomainsFor(command ?? 'claude'),
+    allowedDomains: fallback.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS,
     watchdog: resolveWatchdogBudgets(fallback),
   }
 }
@@ -419,7 +417,7 @@ export async function workspace(
   const launchConfig = resolveProjectConfig(repoRoot, flags).config
   // What EVERY project falls back to. Read from the global file + flags only:
   // the launch repo's own allowlist/timeout/budgets are its business alone.
-  const fallbacks = workspaceBootFallbacks(flags, launchAgent.command)
+  const fallbacks = workspaceBootFallbacks(flags)
   // ...and what the BOOT LINE announces, which is about the launch repo and
   // must therefore name the allowlist THAT repo's caged tasks would get.
   const launchDomains =

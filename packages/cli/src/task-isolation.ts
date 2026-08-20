@@ -256,19 +256,38 @@ export function cageForwardedEnv(command: string): readonly string[] {
     : CAGE_FORWARDED_ENV
 }
 
-/** `-m` / `--model` value on a command line, if any. */
+/** Strip a matching pair of quotes; `--model='openrouter/foo'` keeps them otherwise. */
+function stripQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+/**
+ * `-m` / `--model` value on a command line, quote-aware so
+ * `--model 'openrouter/foo'` still selects the OpenRouter allowlist.
+ */
 function commandModel(command: string): string | undefined {
-  const tokens = command
-    .replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, ' ')
-    .trim()
-    .split(/\s+/)
+  const tokens: string[] = []
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g
+  let match = re.exec(command)
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '')
+    match = re.exec(command)
+  }
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i] ?? ''
     if (tok === '-m' || tok === '--model') {
-      return tokens[i + 1]
+      const next = tokens[i + 1]
+      return next !== undefined ? stripQuotes(next) : undefined
     }
     if (tok.startsWith('--model=')) {
-      return tok.slice('--model='.length)
+      return stripQuotes(tok.slice('--model='.length))
     }
   }
   return undefined
@@ -609,21 +628,28 @@ const runLine = (command: string): string => `RUN ["sh","-lc",${JSON.stringify(c
  */
 export function installCommandFor(agent: string, baseRef?: string): string {
   void baseRef
-  const native =
+  const pkg = agent === 'opencode' ? 'opencode-ai' : '@anthropic-ai/claude-code'
+  const nativePipe =
+    agent === 'opencode'
+      ? 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path || true'
+      : 'curl -fsSL https://claude.ai/install.sh | bash || true'
+  const nativeHomes =
     agent === 'opencode'
       ? [
-          'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path',
           'if [ -x "$HOME/.opencode/bin/opencode" ]; then mv "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; fi',
-        ].join('\n  ')
+          'if [ -x "$HOME/.local/bin/opencode" ]; then mv "$HOME/.local/bin/opencode" /usr/local/bin/opencode; fi',
+        ]
       : [
-          'curl -fsSL https://claude.ai/install.sh | bash',
           'if [ -x "$HOME/.local/bin/claude" ]; then mv "$HOME/.local/bin/claude" /usr/local/bin/claude; fi',
-        ].join('\n  ')
-  const pkg = agent === 'opencode' ? 'opencode-ai' : '@anthropic-ai/claude-code'
+        ]
   return [
     'if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then',
-    `  ${native}`,
-    '  exit $?;',
+    `  ${nativePipe}`,
+    ...nativeHomes.map((line) => `  ${line}`),
+    // Native tools present is not native success: a failed curl | bash still
+    // leaves the following `if [ -x ]` false with status 0. Only a binary on
+    // the shared PATH (or at /usr/local/bin) exits the RUN; otherwise npm.
+    `  if command -v ${agent} >/dev/null 2>&1 || [ -x /usr/local/bin/${agent} ]; then exit 0; fi`,
     'fi',
     'if command -v npm >/dev/null 2>&1; then',
     `  npm install -g ${pkg} && npm cache clean --force; exit $?;`,
@@ -1524,9 +1550,9 @@ export type CagedSession = { kind: 'new' | 'resume'; id: string }
 /**
  * Per-turn agent command INSIDE the cage. Claude: policy hardening is
  * replaced by --dangerously-skip-permissions (the container IS the
- * guarantee). OpenCode: `--format json` and resume `-s`, never
- * skip-permissions. Nothing here restricts settings or MCP: a hostile repo
- * file can only reach the cage.
+ * guarantee). OpenCode: `--format json`, `--auto` (headless equivalent of
+ * skip-permissions), and resume `-s`. Nothing here restricts settings or
+ * MCP: a hostile repo file can only reach the cage.
  */
 export function containerTaskCommandFor(
   command: string,
@@ -1536,6 +1562,9 @@ export function containerTaskCommandFor(
     let cmd = command
     if (!flagPresent(cmd, '--format')) {
       cmd += ' --format json'
+    }
+    if (!flagPresent(cmd, '--auto')) {
+      cmd += ' --auto'
     }
     if (opts.session?.kind === 'resume') {
       cmd += ` -s ${opts.session.id}`
