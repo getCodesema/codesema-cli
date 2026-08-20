@@ -158,6 +158,31 @@ describe('TaskConversation renders the header phrase (AC-12)', () => {
     expect(html).toContain(t('workspace.phaseQueued'))
     expect(html).not.toContain(t('workspace.phaseQueuedMachine'))
   })
+
+  // T3.1: `review_ko` used to always say "findings to fix". A green review
+  // blocked by red checks must not reuse that sentence — the human would
+  // open the review looking for findings that are not there.
+  test('a review_ko from failed checks says so, and does not mention findings', async () => {
+    const html = await renderConversation({
+      record: {
+        status: 'review_ko',
+        reason: { code: 'checks_failed', detail: 'repository checks failed (bun test)' },
+      },
+    })
+    expect(html).toContain(t('workspace.phaseChecksFailed'))
+    expect(html).not.toContain(t('workspace.phaseReviewKo'))
+  })
+
+  test('a review_ko from the review itself still mentions findings', async () => {
+    const html = await renderConversation({
+      record: {
+        status: 'review_ko',
+        reason: { code: 'review_blocked', detail: 'review failed' },
+      },
+    })
+    expect(html).toContain(t('workspace.phaseReviewKo'))
+    expect(html).not.toContain(t('workspace.phaseChecksFailed'))
+  })
 })
 
 describe('TaskConversation renders the checks bar', () => {

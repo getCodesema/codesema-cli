@@ -79,8 +79,10 @@ import {
   type TaskRetentionOutcome,
 } from './task-retention.js'
 import {
+  applyChecksGate,
   createTaskReviewer,
   readTaskReview,
+  terminalChecksResult,
   type CreateTaskReviewerOptions,
 } from './task-review.js'
 import {
@@ -1371,6 +1373,14 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     if (ctx.runner.isAbandoning(id)) {
       return { ok: false, code: 409, error: 'task is being abandoned' }
     }
+    if (ctx.checking.has(id)) {
+      return {
+        ok: false,
+        code: 409,
+        error: 'checks are still running',
+        reason_code: 'resource_busy',
+      }
+    }
     const record = loadTask(cwd, id)
     if (!record) {
       return { ok: false, code: 404, error: 'task not found' }
@@ -1432,27 +1442,40 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   /**
-   * Containerized checks (task-checks.ts) on the task's worktree, in the
-   * background. Guards run synchronously (409 while in flight, 409 without a
-   * turn commit); the run itself is fire-and-forget and BEST-EFFORT: every
-   * outcome — missing container runtime included — lands in checks.json as a
-   * status, and a checks problem never touches the task record.
+   * Same wording as the runner's machine-cap wait (task-runner.ts
+   * `MACHINE_LOAD_DETAIL`). Copied: T3.1 must not edit that file. The web
+   * discriminates the two `resource_busy` motifs on this exact string.
    */
-  const startChecks = (ctx: ProjectContext, id: string): TaskActionResult => {
+  const LOAD_CAP_WAIT_DETAIL =
+    'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'
+
+  type PreparedChecks =
+    { ok: false; result: TaskActionResult } | { ok: true; job: () => Promise<TaskChecks | null> }
+
+  /**
+   * Containerized checks (task-checks.ts) on the task's worktree. Guards run
+   * synchronously (409 while in flight, 409 without a turn commit). The job
+   * itself is BEST-EFFORT: every outcome — missing container runtime included
+   * — lands in checks.json as a status. The HTTP POST stays fire-and-forget
+   * (`startChecks` does not await the job); the end-of-turn path awaits it so
+   * the reviewer can consume the result. The job never writes `review_ok` /
+   * `review_ko` — that stays the reviewer's persist.
+   */
+  const prepareChecks = (ctx: ProjectContext, id: string): PreparedChecks => {
     const cwd = ctx.project.path
     const projectId = ctx.project.id
     if (ctx.checking.has(id)) {
-      return { ok: false, code: 409, error: 'checks already running' }
+      return { ok: false, result: { ok: false, code: 409, error: 'checks already running' } }
     }
     const record = loadTask(cwd, id)
     if (!record) {
-      return { ok: false, code: 404, error: 'task not found' }
+      return { ok: false, result: { ok: false, code: 404, error: 'task not found' } }
     }
     // Checks verify COMMITTED work: a task whose turns never committed (or
     // whose worktree is gone) has nothing to run against.
     const hasCommit = readTaskEvents(cwd, id).some((event) => event.type === 'commit')
     if (!hasCommit || !record.worktree || !existsSync(record.worktree)) {
-      return { ok: false, code: 409, error: 'task has no commit to check' }
+      return { ok: false, result: { ok: false, code: 409, error: 'task has no commit to check' } }
     }
     // Adversarial review round 3, MAJEUR 2: a shutdown that beat this call to
     // the start line is NOT a checks failure — no container was ever going to
@@ -1469,7 +1492,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         reason_code: 'interrupted_by_user',
       })
       emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
-      return { ok: true }
+      return { ok: true, job: () => Promise.resolve(null) }
     }
     const headSha = tryGit(['rev-parse', 'HEAD'], record.worktree) ?? ''
     ctx.checking.add(id)
@@ -1515,7 +1538,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       error: null,
     })
     const run = opts.runChecksFn ?? runChecks
-    void (async () => {
+    const job = async (): Promise<TaskChecks | null> => {
       try {
         let final: TaskChecks
         // T1.3 (D4): a checks run is a heavy consumer of the machine load
@@ -1526,6 +1549,24 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // interruptible (adversarial review fix): a checks run has no
         // project queue of its own, so without it a parked acquire() had no
         // way to be woken by a shutdown at all.
+        //
+        // T3.1: a saturated cap is SAID (journal + API), never a silent hang
+        // and never confused with a checks `error`. The slot is released in
+        // `finally` on EVERY path — passed/failed/error/unconfigured, and
+        // the shutdown-abandoned wait — BEFORE the reviewer asks for its own.
+        const capSnap = loadCap.snapshot()
+        if (capSnap.occupied >= capSnap.max) {
+          const waiting = appendTaskEvent(cwd, id, {
+            type: 'queue',
+            data: { name: 'machine_busy', message: LOAD_CAP_WAIT_DETAIL },
+            reason_code: 'resource_busy',
+          })
+          emit({
+            project_id: projectId,
+            task_id: id,
+            event: { name: 'task_event', data: waiting },
+          })
+        }
         const release = await loadCap.acquire('checks', opts.shutdownSignal)
         try {
           if (opts.shutdownSignal?.aborted) {
@@ -1546,7 +1587,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
               reason_code: 'interrupted_by_user',
             })
             emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
-            return
+            return null
           }
           final = await run({
             worktree: record.worktree,
@@ -1575,40 +1616,70 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         const failed = clean.checks.filter(
           (c) => c.status === 'failed' || c.status === 'timeout',
         ).length
+        const blocking =
+          clean.status === 'failed' || clean.checks.some((c) => c.status === 'timeout')
         const event = appendTaskEvent(cwd, id, {
           type: 'checks',
-          data: { status: clean.status, passed, failed },
+          data: {
+            status: clean.status,
+            passed,
+            failed,
+            ...(clean.error ? { error: clean.error } : {}),
+          },
+          ...(blocking ? { reason_code: 'checks_failed' as const } : {}),
         })
         emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+        return clean
       } catch {
         // Even persistence trouble stays best-effort: the task never breaks
         // because its checks could not be recorded.
+        return null
       } finally {
         ctx.checking.delete(id)
       }
-    })()
+    }
+    return { ok: true, job }
+  }
+
+  /**
+   * Manual POST /api/tasks/:id/checks: 202 fire-and-forget for the HTTP
+   * caller. The job is the same one the end-of-turn path awaits.
+   */
+  const startChecks = (ctx: ProjectContext, id: string): TaskActionResult => {
+    const prepared = prepareChecks(ctx, id)
+    if (!prepared.ok) {
+      return prepared.result
+    }
+    void prepared.job()
     return { ok: true }
   }
 
   /**
-   * Auto-trigger after a turn COMMIT: fired from onTurnDone, in parallel with
-   * the review and never awaited. Only when this very turn committed (the
-   * runner appends its 'commit' event right before calling onTurnDone) — a
-   * no-change turn re-checks nothing.
+   * Auto-trigger after a turn COMMIT: awaited from onTurnDone so the reviewer
+   * can consume the result. Only when this very turn committed (the runner
+   * appends its 'commit' event right before calling onTurnDone) — a no-change
+   * turn re-checks nothing and does not delay the decision. A synchronous
+   * 409 (run already in flight, no commit) returns null immediately so the
+   * end of turn still completes.
    */
-  const startChecksAfterCommit = (ctx: ProjectContext, record: TaskRecord): void => {
+  const startChecksAfterCommit = async (
+    ctx: ProjectContext,
+    record: TaskRecord,
+  ): Promise<TaskChecks | null> => {
     try {
       const commits = readTaskEvents(ctx.project.path, record.id).filter(
         (event) => event.type === 'commit',
       )
       if (commits.at(-1)?.data.turn !== record.turns.length) {
-        return
+        return null
       }
-      // The result is deliberately dropped: a 409 (manual run already in
-      // flight) or a missing-commit refusal must never disturb the turn.
-      startChecks(ctx, record.id)
+      const prepared = prepareChecks(ctx, record.id)
+      if (!prepared.ok) {
+        return null
+      }
+      return await prepared.job()
     } catch {
-      // Best-effort by contract.
+      return null
     }
   }
 
@@ -1670,10 +1741,24 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // rejects, so a failed auto-push cannot trip the runner's review_ko
     // fallback. `ctx` is assigned right below, before any turn can end.
     const onTurnDone: TaskTurnReviewFn = async (record, io) => {
-      // Checks run in PARALLEL with the review, fire-and-forget: they never
-      // delay the review nor the turn, and their failure (even a missing
-      // container runtime) never blocks anything.
-      startChecksAfterCommit(ctx, record)
+      // T3.1: wait for THIS turn's checks (if it committed) BEFORE the
+      // review. The checks slot is acquired and released inside the job, so
+      // it is never held while the reviewer asks for its own — the T1.3
+      // deadlock the design forbids. A 409 (already running / no commit)
+      // returns null immediately and does not stall the turn.
+      const thisTurnChecks = await startChecksAfterCommit(ctx, record)
+      const gateChecks =
+        terminalChecksResult(thisTurnChecks) ?? terminalChecksResult(readTaskChecks(cwd, record.id))
+      // The persist the reviewer (or a test stub) calls is THE unique write
+      // of the final status: the gate mutates the in-memory record first, so
+      // a settle OK never lands on disk only to be overwritten.
+      const gatedIo = {
+        ...io,
+        persist: () => {
+          applyChecksGate(record, gateChecks)
+          io.persist()
+        },
+      }
       // T2.4/D7, second of the two recomparison points: BEFORE the turn's
       // review, never mid-turn. An edit moves the task straight to
       // 'waiting_for_you' and skips the review outright — the turn that just
@@ -1703,10 +1788,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // never restart it. 'cosmetic' and 'unreachable' fall through — the
         // task continues on its snapshot exactly as before.
         if (reconciled.kind === 'edited' || reconciled.kind === 'not_ticket') {
+          applyChecksGate(record, gateChecks)
+          io.persist()
           return
         }
       }
-      await reviewTurn(record, io)
+      await reviewTurn(record, gatedIo)
+      // Stubs that set status without persist, and the no-review path, still
+      // fold the gate in: idempotent if the wrapped persist already did.
+      applyChecksGate(record, gateChecks)
+      io.persist()
       if (record.auto_ship && record.status === 'review_ok') {
         await ship(ctx, record.id)
       }

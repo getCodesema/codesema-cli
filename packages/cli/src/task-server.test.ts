@@ -2303,14 +2303,19 @@ describe('manager.checks', () => {
     await until(() => readTaskChecks(project.path, record.id)?.status === 'error')
     expect(readTaskChecks(project.path, record.id)?.error).toBe('engine exploded')
     const journal = readTaskEvents(project.path, record.id).find((e) => e.type === 'checks')
-    expect(journal?.data).toEqual({ status: 'error', passed: 0, failed: 0 })
+    expect(journal?.data).toEqual({
+      status: 'error',
+      passed: 0,
+      failed: 0,
+      error: 'engine exploded',
+    })
     // The TASK is untouched: checks are best-effort by contract.
     expect(loadTask(project.path, record.id)?.status).toBe(statusBefore)
     // And the in-flight flag was released even on the error path.
     expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
   })
 
-  test('auto-trigger: onTurnDone starts checks for a committed turn WITHOUT blocking the review', async () => {
+  test('auto-trigger: onTurnDone waits for checks of a committed turn BEFORE the review', async () => {
     const project = register(makeRepo())
     const rig = fakeRunner()
     let release!: (checks: TaskChecks) => void
@@ -2318,10 +2323,12 @@ describe('manager.checks', () => {
       release = resolve
     })
     let runs = 0
+    let reviewStarted = false
     const manager = createTaskManager({
       ...managerOpts,
       createRunnerFn: rig.createRunnerFn,
       reviewTurnFn: async (record) => {
+        reviewStarted = true
         record.status = 'review_ok'
       },
       runChecksFn: () => {
@@ -2339,18 +2346,22 @@ describe('manager.checks', () => {
       signal: new AbortController().signal,
     }
 
-    // onTurnDone resolves while the checks promise is still pending: the
-    // review was never gated on the container run.
-    await rig.runnerOptions().onTurnDone!(record, io)
-    expect(runs).toBe(1)
-    expect(record.status).toBe('review_ok')
+    const done = rig.runnerOptions().onTurnDone!(record, io)
+    await until(() => runs === 1)
+    // Checks are in flight: the review must not have started, and the
+    // decision is not taken yet.
+    expect(reviewStarted).toBe(false)
+    expect(record.status).not.toBe('review_ok')
     expect(readTaskChecks(project.path, record.id)?.status).toBe('running')
 
     release(finishedChecks())
-    await until(() => readTaskChecks(project.path, record.id)?.status === 'passed')
+    await done
+    expect(reviewStarted).toBe(true)
+    expect(record.status).toBe('review_ok')
+    expect(readTaskChecks(project.path, record.id)?.status).toBe('passed')
 
     // A turn WITHOUT a fresh commit (last commit event belongs to turn 1,
-    // record now has 2 turns) never re-triggers.
+    // record now has 2 turns) never re-triggers and does not delay.
     const again = loadTask(project.path, record.id)!
     again.turns.push({
       prompt: 'follow-up',
@@ -2360,8 +2371,337 @@ describe('manager.checks', () => {
       ended_at: null,
     })
     saveTask(project.path, again)
+    reviewStarted = false
     await rig.runnerOptions().onTurnDone!(again, io)
     expect(runs).toBe(1)
+    expect(reviewStarted).toBe(true)
+  })
+})
+
+// --- checks gate (T3.1) ---------------------------------------------------
+
+describe('checks gate (T3.1)', () => {
+  function turnIo(cwd: string, record: TaskRecord) {
+    return {
+      emit: (input: Parameters<typeof appendTaskEvent>[2]) =>
+        appendTaskEvent(cwd, record.id, input),
+      persist: () => saveTask(cwd, record),
+      text: () => {},
+      signal: new AbortController().signal,
+    }
+  }
+
+  async function driveTurn(opts: {
+    checks: TaskChecks | Promise<TaskChecks>
+    review?: (record: TaskRecord) => void | Promise<void>
+    autoShip?: boolean
+    shipTaskFn?: (options: ShipTaskOptions) => Promise<ShipOutcome>
+    loadCap?: ReturnType<typeof createLoadCap>
+  }) {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      ...(opts.loadCap ? { loadCap: opts.loadCap } : {}),
+      ...(opts.shipTaskFn ? { shipTaskFn: opts.shipTaskFn } : {}),
+      reviewTurnFn: async (record) => {
+        if (opts.review) {
+          await opts.review(record)
+        } else {
+          record.status = 'review_ok'
+        }
+      },
+      runChecksFn: () => Promise.resolve(opts.checks),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    if (opts.autoShip) {
+      record.auto_ship = true
+      saveTask(project.path, record)
+    }
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    return { project, record, manager, rig }
+  }
+
+  test('AC1: checks failed + review OK → not ready, carries checks_failed', async () => {
+    const { record, project } = await driveTurn({
+      checks: finishedChecks({
+        status: 'failed',
+        checks: [
+          { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'boom' },
+        ],
+      }),
+    })
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('checks_failed')
+    expect(record.reason?.detail).toContain('bun test')
+    expect(record.checks_status).toBe('failed')
+    const journal = readTaskEvents(project.path, record.id).find((e) => e.type === 'checks')
+    expect(journal?.reason_code).toBe('checks_failed')
+    expect(journal?.data.status).toBe('failed')
+    expect(loadTask(project.path, record.id)?.reason?.code).toBe('checks_failed')
+  })
+
+  test('AC1: a timeout check blocks with checks_failed even if the review is green', async () => {
+    const { record } = await driveTurn({
+      checks: finishedChecks({
+        status: 'passed',
+        checks: [
+          { command: 'bun test', status: 'timeout', exit_code: null, duration_ms: 5, tail: '' },
+        ],
+      }),
+    })
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('checks_failed')
+    expect(record.reason?.detail).toContain('timed out')
+    expect(record.reason?.detail).toContain('bun test')
+  })
+
+  test('AC2: checks passed + review OK → review_ok, no checks reason', async () => {
+    const { record } = await driveTurn({ checks: finishedChecks({ status: 'passed' }) })
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    expect(record.checks_status).toBe('passed')
+  })
+
+  test('AC3: unconfigured does not block and is said on the record and in the journal', async () => {
+    const { record, project } = await driveTurn({
+      checks: finishedChecks({ status: 'unconfigured', checks: [], error: null }),
+    })
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    expect(record.checks_status).toBe('unconfigured')
+    const journal = readTaskEvents(project.path, record.id).find((e) => e.type === 'checks')
+    expect(journal?.data.status).toBe('unconfigured')
+    expect(journal?.reason_code).toBeUndefined()
+    expect(loadTask(project.path, record.id)?.checks_status).toBe('unconfigured')
+  })
+
+  test('AC3: no lockfile → no plan is unconfigured, distinct from a green run', async () => {
+    // Real engine, no injected runChecksFn: a worktree with leftover CI
+    // declarations but no recognised lockfile resolves no plan.
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async (record) => {
+        record.status = 'review_ok'
+      },
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record, worktree } = seedCommittedTask(project.path)
+    writeFileSync(
+      join(worktree, 'lefthook.yml'),
+      'pre-push:\n  commands:\n    all:\n      run: make check\n',
+    )
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    expect(record.status).toBe('review_ok')
+    expect(record.checks_status).toBe('unconfigured')
+    expect(readTaskChecks(project.path, record.id)?.status).toBe('unconfigured')
+    const journal = readTaskEvents(project.path, record.id).find((e) => e.type === 'checks')
+    expect(journal?.data.status).toBe('unconfigured')
+    expect(journal?.data.status).not.toBe('passed')
+  })
+
+  test('AC4: no runtime / engine throw → named error, non-blocking, said in the API', async () => {
+    const { record, project, manager } = await driveTurn({
+      checks: finishedChecks({
+        status: 'error',
+        checks: [],
+        error: 'no container runtime found: install docker or podman to run checks in a sandbox',
+      }),
+    })
+    expect(record.status).toBe('review_ok')
+    expect(record.checks_status).toBe('error')
+    expect(record.reason).toBeUndefined()
+    const persisted = manager.getChecks(project.id, record.id)
+    expect(persisted?.status).toBe('error')
+    expect(persisted?.error).toContain('no container runtime')
+    const journal = readTaskEvents(project.path, record.id).find((e) => e.type === 'checks')
+    expect(journal?.data.status).toBe('error')
+    expect(journal?.data.error).toContain('no container runtime')
+  })
+
+  test('non-regression: a rejecting runChecks becomes error and never stays running', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async (record) => {
+        record.status = 'review_ok'
+      },
+      runChecksFn: () => Promise.reject(new Error('engine exploded')),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    expect(readTaskChecks(project.path, record.id)?.status).toBe('error')
+    expect(readTaskChecks(project.path, record.id)?.error).toBe('engine exploded')
+    expect(record.status).toBe('review_ok')
+    expect(record.checks_status).toBe('error')
+  })
+
+  test('AC5: checks slot is released before the review acquires, including on failed/error/unconfigured', async () => {
+    for (const status of ['failed', 'error', 'unconfigured'] as const) {
+      const cap = createLoadCap(1)
+      const order: string[] = []
+      const project = register(makeRepo())
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        loadCap: cap,
+        createRunnerFn: rig.createRunnerFn,
+        runChecksFn: async () => {
+          order.push(`checks-held:${cap.snapshot().occupied}`)
+          return finishedChecks({
+            status,
+            checks:
+              status === 'failed'
+                ? [
+                    {
+                      command: 'bun test',
+                      status: 'failed',
+                      exit_code: 1,
+                      duration_ms: 5,
+                      tail: '',
+                    },
+                  ]
+                : [],
+            error: status === 'error' ? 'no runtime' : null,
+          })
+        },
+        reviewTurnFn: async (record) => {
+          order.push(`review-before-acquire:${cap.snapshot().occupied}`)
+          const release = await cap.acquire('review')
+          try {
+            order.push(`review-held:${cap.snapshot().occupied}`)
+            record.status = 'review_ok'
+          } finally {
+            release()
+          }
+        },
+      })
+      manager.checks(project.id, 'aaaaaaaaaaaa')
+      const { record } = seedCommittedTask(project.path)
+      await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+      expect(order).toEqual(['checks-held:1', 'review-before-acquire:0', 'review-held:1'])
+      expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+    }
+  })
+
+  test('AC5: a saturated cap makes the end of turn WAIT, never fail, and names the wait', async () => {
+    const cap = createLoadCap(1)
+    const holder = cap.tryAcquire('turn')
+    const project = register(makeRepo())
+    const rig = fakeRunner()
+    const envelopes: TaskEnvelope[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      loadCap: cap,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async (record) => {
+        record.status = 'review_ok'
+      },
+      runChecksFn: () => Promise.resolve(finishedChecks()),
+    })
+    manager.subscribe((e) => envelopes.push(e))
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    const done = rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    await until(() => cap.snapshot().queued === 1)
+    const queued = readTaskEvents(project.path, record.id).filter((e) => e.type === 'queue')
+    expect(queued.length).toBeGreaterThanOrEqual(1)
+    expect(queued[0]?.data.name).toBe('machine_busy')
+    expect(queued[0]?.reason_code).toBe('resource_busy')
+    expect(record.status).not.toBe('failed')
+    holder?.()
+    await done
+    expect(record.status).toBe('review_ok')
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  test('AC6: ship while checks run is 409 resource_busy, no residue', async () => {
+    const project = register(makeRepo())
+    const { record } = seedCommittedTask(project.path)
+    record.status = 'review_ok'
+    record.base = 'origin/main'
+    record.branch = 'codesema/task-shippable-task'
+    saveTask(project.path, record)
+    let release!: (checks: TaskChecks) => void
+    const gate = new Promise<TaskChecks>((resolve) => {
+      release = resolve
+    })
+    const shipCalls: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      runChecksFn: () => gate,
+      shipTaskFn: (options) => {
+        shipCalls.push(options.task.id)
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+    })
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+    const refused = await manager.ship(project.id, record.id)
+    expect(refused).toEqual({
+      ok: false,
+      code: 409,
+      error: 'checks are still running',
+      reason_code: 'resource_busy',
+    })
+    expect(shipCalls).toEqual([])
+    expect(loadTask(project.path, record.id)?.status).toBe('review_ok')
+    expect(existsSync(record.worktree)).toBe(true)
+    release(finishedChecks())
+    await until(() => readTaskChecks(project.path, record.id)?.status === 'passed')
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(shipCalls).toEqual([record.id])
+  })
+
+  test('a 409 from startChecks (already running) does not stall the end of turn', async () => {
+    const project = register(makeRepo())
+    const { record } = seedCommittedTask(project.path)
+    let release!: (checks: TaskChecks) => void
+    const gate = new Promise<TaskChecks>((resolve) => {
+      release = resolve
+    })
+    const rig = fakeRunner()
+    let reviews = 0
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: async (rec) => {
+        reviews++
+        rec.status = 'review_ok'
+      },
+      runChecksFn: () => gate,
+    })
+    expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    expect(reviews).toBe(1)
+    expect(record.status).toBe('review_ok')
+    release(finishedChecks())
+    await until(() => readTaskChecks(project.path, record.id)?.status === 'passed')
+  })
+
+  test('auto_ship does not fire when checks fail even if the review is green', async () => {
+    const shipCalls: string[] = []
+    const { record } = await driveTurn({
+      autoShip: true,
+      checks: finishedChecks({
+        status: 'failed',
+        checks: [{ command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: '' }],
+      }),
+      shipTaskFn: (options) => {
+        shipCalls.push(options.task.id)
+        return Promise.resolve({ pushed: true, mrUrl: 'https://example/mr/1', note: null })
+      },
+    })
+    expect(record.status).toBe('review_ko')
+    expect(shipCalls).toEqual([])
   })
 })
 
@@ -4037,6 +4377,40 @@ describe('task routes with a stub manager', () => {
           })
         ).status,
       ).toBe(404)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('ship 409 forwards reason_code next to the readable error (T3.1 checks in flight)', async () => {
+    const project = register(makeRepo())
+    const base = stubManager(project)
+    const manager: TaskManager = {
+      ...base.manager,
+      ship: async () => ({
+        ok: false as const,
+        code: 409,
+        error: 'checks are still running',
+        reason_code: 'resource_busy' as const,
+      }),
+    }
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5142,
+      taskManager: manager,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const ship = await rawRequest(
+        started.port,
+        `/api/tasks/${base.record.id}/ship?project=${project.id}`,
+        { method: 'POST', headers: { 'x-codesema-tasks-token': token } },
+      )
+      expect(ship.status).toBe(409)
+      expect(JSON.parse(ship.body)).toEqual({
+        error: 'checks are still running',
+        reason_code: 'resource_busy',
+      })
     } finally {
       await started.stop()
     }

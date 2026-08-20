@@ -465,6 +465,13 @@ export type TaskRecord = {
    * records written before reason codes existed, and on tasks nothing went
    * wrong with — absence claims nothing. */
   reason?: TaskReason
+  /**
+   * Last aggregated checks-run status the end-of-turn gate observed.
+   * OPTIONAL: absent on records written before the gate, and on a turn that
+   * produced no commit. Never `'running'` — the gate waits for a terminal
+   * status. Mirror of packages/contract/src/tasks.ts.
+   */
+  checks_status?: Exclude<TaskChecksStatus, 'running'>
   /** Last liveness beat of the task's agent (ISO-8601), written by the semantic
    * watchdog. Tells a LONG task from a DEAD one: `updated_at` only moves when
    * something happens. Only meaningful while `running` (a starting turn clears

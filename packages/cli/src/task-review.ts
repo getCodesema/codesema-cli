@@ -11,7 +11,13 @@
 
 import { join, resolve, sep } from 'node:path'
 import { ensureWorkDir } from './config.js'
-import { sanitizeRecord, type Finding, type ReviewRecord, type TaskRecord } from './contract.js'
+import {
+  sanitizeRecord,
+  type Finding,
+  type ReviewRecord,
+  type TaskChecks,
+  type TaskRecord,
+} from './contract.js'
 import { buildAgentFixPrompt } from './fix.js'
 import { isAncestor, refExists, tryGit } from './git.js'
 import { createLoadCap, DEFAULT_MAX_CONCURRENT_AGENTS, type LoadCap } from './load-cap.js'
@@ -127,10 +133,86 @@ export function findingSeverityCounts(findings: readonly Finding[]): Record<stri
 }
 
 /**
+ * The same sentence the runner journals on a machine-cap wait (task-runner.ts
+ * `MACHINE_LOAD_DETAIL`). Copied rather than imported: T3.1 must not touch
+ * that file. The web tells the two `resource_busy` motifs apart on this
+ * exact string, so a wording drift here would lie in the queue pill.
+ */
+const LOAD_CAP_WAIT_DETAIL =
+  'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'
+
+/**
+ * A checks snapshot the gate may read: `running` is never a result, so it
+ * is treated as "no result yet" rather than as a pass or a fail.
+ */
+export function terminalChecksResult(checks: TaskChecks | null | undefined): TaskChecks | null {
+  return checks && checks.status !== 'running' ? checks : null
+}
+
+/**
+ * Whether a finished checks run blocks the "ready to merge" state. `running`
+ * is never a result — the caller waits — and `error`/`unconfigured` are named
+ * degradations that must not be mistaken for a red run.
+ */
+export function checksBlockReady(checks: TaskChecks | null | undefined): boolean {
+  if (!checks || checks.status === 'running' || checks.status === 'error') {
+    return false
+  }
+  if (checks.status === 'unconfigured') {
+    return false
+  }
+  if (checks.status === 'failed') {
+    return true
+  }
+  // Spec: an individual `timeout` blocks even when the run was not labelled
+  // `failed` (runChecks itself folds timeout into `failed`; this is the
+  // defensive reading of a hand-edited or older snapshot).
+  return checks.checks.some((check) => check.status === 'timeout')
+}
+
+/** Readable message the `checks_failed` code is ADDED to, never a replacement. */
+export function checksFailedDetail(checks: TaskChecks): string {
+  const timedOut = checks.checks.filter((check) => check.status === 'timeout').map((c) => c.command)
+  const failed = checks.checks.filter((check) => check.status === 'failed').map((c) => c.command)
+  if (failed.length > 0 && timedOut.length > 0) {
+    return `repository checks failed (${failed.join(', ')}; timed out: ${timedOut.join(', ')})`
+  }
+  if (timedOut.length > 0) {
+    return `repository checks timed out (${timedOut.join(', ')})`
+  }
+  if (failed.length > 0) {
+    return `repository checks failed (${failed.join(', ')})`
+  }
+  return 'repository checks failed'
+}
+
+/**
+ * Folds a finished checks run into the reviewer's persist. The reviewer stays
+ * the unique writer of `review_ok`/`review_ko`: this mutates the in-memory
+ * record *before* `io.persist()`, so a settle OK never lands on disk only to
+ * be overwritten. `running` is ignored. `error`/`unconfigured` are stamped
+ * on the record (so they are said) and never block.
+ */
+export function applyChecksGate(record: TaskRecord, checks: TaskChecks | null | undefined): void {
+  if (checks && checks.status !== 'running') {
+    record.checks_status = checks.status
+  }
+  if (record.status !== 'review_ok' || !checks || !checksBlockReady(checks)) {
+    return
+  }
+  record.status = 'review_ko'
+  record.reason = taskReason('checks_failed', checksFailedDetail(checks))
+}
+
+/**
  * Final transition of the automatic review. A KO states WHY in the record —
  * the code plus the producer's own message in `detail` — while an OK clears
  * any reason a previous turn left behind: a record that passed its review must
  * not keep claiming the one that blocked it.
+ *
+ * The persist the caller wraps (task-server's onTurnDone) folds the checks
+ * gate into THIS write, so a red run never becomes `review_ok` even for a
+ * millisecond on the wire.
  */
 const settle = (
   record: TaskRecord,
@@ -228,7 +310,7 @@ export type CreateTaskReviewerOptions = {
    * hands back immediately and the `io.signal.aborted` check right below
    * settles the task as 'interrupted', slot never taken.
    */
-  loadCap?: Pick<LoadCap, 'acquire'>
+  loadCap?: Pick<LoadCap, 'acquire' | 'snapshot'>
 }
 
 type FlowRunner = (
@@ -373,6 +455,16 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       // process, nothing worth budgeting). Acquired here, not earlier: the
       // runner already released the turn's OWN slot before this hook was
       // even called, so there is nothing held to self-deadlock against.
+      // T3.1: a saturated cap is SAID (journal + API), never a silent hang
+      // and never an `error` — an ordinary wait is not a failed review.
+      const capSnap = loadCap.snapshot()
+      if (capSnap.occupied >= capSnap.max) {
+        io.emit({
+          type: 'queue',
+          data: { name: 'machine_busy', message: LOAD_CAP_WAIT_DETAIL },
+          reason_code: 'resource_busy',
+        })
+      }
       const release = await loadCap.acquire('review', io.signal)
       let outcome: SimpleOutcome | DualOutcome
       try {

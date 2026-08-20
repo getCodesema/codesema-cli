@@ -425,6 +425,18 @@ export type TaskRecord = {
    */
   reason?: TaskReason
   /**
+   * Last aggregated checks-run status the end-of-turn gate observed.
+   *
+   * OPTIONAL, and absence is the honest default: a record written before this
+   * field existed never carried a gated checks result, and a turn that
+   * produced no commit (so no checks ran) has nothing to report. It is NOT a
+   * sixth TaskStatus — ready / not-ready still lands on `review_ok` /
+   * `review_ko`. `running` is never stored here: the gate waits for a
+   * terminal status before writing, and a hand-edited `'running'` is dropped
+   * rather than treated as a verdict.
+   */
+  checks_status?: Exclude<TaskChecksStatus, 'running'>
+  /**
    * Last liveness beat of this task's agent (ISO-8601), written by the
    * semantic watchdog's heartbeat. It is what lets a reader tell a task that
    * is LONG from a task that is DEAD: `updated_at` only moves when something
@@ -538,6 +550,14 @@ const TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'shipped',
   'failed',
   'interrupted',
+])
+
+/** Terminal checks statuses a TaskRecord may carry. `running` is never a result. */
+const TASK_RECORD_CHECKS_STATUSES: ReadonlySet<Exclude<TaskChecksStatus, 'running'>> = new Set([
+  'passed',
+  'failed',
+  'error',
+  'unconfigured',
 ])
 
 const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
@@ -910,6 +930,13 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // newer vocabulary, tampered file) drops the key entirely rather than
     // claiming a reason no reader can name. Never throws.
     ...(reason ? { reason } : {}),
+    // Optional and whitelisted: a record written before the gate existed
+    // keeps none, `'running'` (not a result) and an unknown token are
+    // dropped rather than treated as a verdict. Never throws.
+    ...(typeof r.checks_status === 'string' &&
+    TASK_RECORD_CHECKS_STATUSES.has(r.checks_status as Exclude<TaskChecksStatus, 'running'>)
+      ? { checks_status: r.checks_status as Exclude<TaskChecksStatus, 'running'> }
+      : {}),
     // Same doctrine: optional, whitelisted to a plain bounded string, dropped
     // entirely when it is not one. A missing beat means "we know nothing",
     // never "the agent is dead".
