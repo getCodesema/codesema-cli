@@ -803,6 +803,38 @@ describe('parseGlabHierarchyHasChildren (T2.2)', () => {
     const payload = JSON.stringify({ data: { workItem: { widgets: [{ description: 'x' }] } } })
     expect(parseGlabHierarchyHasChildren(payload)).toEqual({ kind: 'ok', value: false })
   })
+
+  test('a top-level UNRECOGNIZED error stays "error", never defaults to "unsupported" (M46)', () => {
+    // The fourth (and, until this round, only untested) copy of the
+    // `schemaGap ? unsupported : error` ternary. It matters MORE here than
+    // on its three siblings, not less: this parser answers the cheap
+    // `first: 1` probe the one-level guard runs, so a refusal reclassified
+    // as `unsupported` would leave `forgeIssueReason` returning null — no
+    // D2 code, no journal line, exactly the silent degradation invariant 2
+    // forbids.
+    const payload = JSON.stringify({
+      errors: [{ message: 'You are not authorized to perform this action' }],
+    })
+    expect(parseGlabHierarchyHasChildren(payload)).toEqual({
+      kind: 'error',
+      message: 'You are not authorized to perform this action',
+    })
+  })
+
+  test('a top-level RECOGNIZED schema gap answers "unsupported", carrying the forge message', () => {
+    // The other direction of the same ternary: an edition whose schema has
+    // no WorkItemWidgetHierarchy type at all fails the fragment condition,
+    // and THAT is a genuine capability gap, not an outage.
+    const payload = JSON.stringify({
+      errors: [
+        { message: "No such type WorkItemWidgetHierarchy, so it can't be a fragment condition" },
+      ],
+    })
+    expect(parseGlabHierarchyHasChildren(payload)).toEqual({
+      kind: 'unsupported',
+      message: "No such type WorkItemWidgetHierarchy, so it can't be a fragment condition",
+    })
+  })
 })
 
 describe('hierarchy query constants (T2.2)', () => {

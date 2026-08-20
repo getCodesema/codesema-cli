@@ -1242,6 +1242,30 @@ describe('hierarchy: unavailability never throws, and unsupported is narrowly na
     })
   })
 
+  test('GitLab: an authorization refusal on the HAS-CHILDREN probe stays cli-error, and stays journalable', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      // The `first: 1` existence probe is the ONE hierarchy read whose
+      // parser had no error-protocol test at all. A refusal there must
+      // reach the caller as `cli-error` — `unsupported` would map to NO D2
+      // code and NO journal line (see forgeIssueReason), which is exactly
+      // the silent degradation invariant 2 forbids.
+      const execFn: ForgeIssuesExecFn = async (_cli, args) => {
+        const query = glabQueryOf({ args })
+        if (query.includes('parent { iid }')) {
+          return { kind: 'ok', stdout: glabParentPayload(null) }
+        }
+        if (query.includes('first: 1)')) {
+          return { kind: 'ok', stdout: GLAB_TOPLEVEL_AUTH_ERROR }
+        }
+        return { kind: 'ok', stdout: glabIssueRestAnswer(1) }
+      }
+      const result = await linkChildIssue({ cwd: repo, execFn, parent: 1, child: 2 })
+      expect(result).toMatchObject({ available: false, reason: 'cli-error' })
+      expect('detail' in result && result.detail).toContain('not authorized')
+      expect(!result.available && forgeIssueReason(result)).not.toBeNull()
+    })
+  })
+
   test('GitLab: OUR OWN typo in a widget leaf field stays cli-error, never "unsupported" (MAJEUR C)', async () => {
     await withRepo(GITLAB_REMOTE, async (repo) => {
       // Same message SHAPE as a genuine gap ("Field 'x' doesn't exist on
@@ -1383,6 +1407,62 @@ describe('hierarchy: one level is enforced against the REAL forge (T2.2, MAJEUR 
       // Refused purely from the cache: no argv at all, even though the
       // fake forge (if asked) would have said "no parent".
       expect(r.calls).toEqual([])
+    })
+  })
+
+  test('a cache HIT on the CHILDREN side skips its probe too (mirror of realParentOf)', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      // The cache already maps 20 → 10, so 10 HAS a child by the cache
+      // alone. The fake forge deliberately knows nothing: without the
+      // cache-hit branch of `realHasChildren`, the probe would answer "no
+      // children" and this link would be allowed through.
+      const hierarchy: IssueHierarchyCache = new Map([[20, 10]])
+      const r = rig(hierarchyReply(new Map()))
+      const result = await linkChildIssue({
+        cwd: repo,
+        execFn: r.execFn,
+        parent: 99,
+        child: 10,
+        hierarchy,
+      })
+      expect(result).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect('detail' in result && result.detail).toContain('already has children')
+      // Only the parent-probe on 99 ran: the has-children probe was skipped
+      // and no write was attempted.
+      expect(r.calls).toHaveLength(1)
+      expect(r.calls[0]?.args).toEqual(['api', 'repos/{owner}/{repo}/issues/99/parent'])
+    })
+  })
+
+  test('the guard MEMOIZES the parent it just read: a later call on the same cache re-probes nothing', async () => {
+    await withRepo(GITHUB_REMOTE, async (repo) => {
+      // On the forge, 20 is already 10's child. The first call discovers
+      // that with one probe; the memoization in the guard is what lets the
+      // second call refuse without asking again.
+      const hierarchy: IssueHierarchyCache = new Map()
+      const state = new Map([[20, 10]])
+      const r1 = rig(hierarchyReply(state))
+      const first = await linkChildIssue({
+        cwd: repo,
+        execFn: r1.execFn,
+        parent: 20,
+        child: 30,
+        hierarchy,
+      })
+      expect(first).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect(r1.calls).toHaveLength(1)
+
+      const r2 = rig(hierarchyReply(state))
+      const second = await linkChildIssue({
+        cwd: repo,
+        execFn: r2.execFn,
+        parent: 20,
+        child: 31,
+        hierarchy,
+      })
+      expect(second).toMatchObject({ available: false, reason: 'invalid-input' })
+      expect('detail' in second && second.detail).toContain('already a child of 10')
+      expect(r2.calls).toEqual([])
     })
   })
 
@@ -2053,11 +2133,17 @@ describe('hierarchy mutation constants (T2.2, MINEUR 3 round 5)', () => {
   // here (`hierarchywidget`) reads to `looksLikeSchemaGap` exactly like a
   // real schema gap, so our own bug would present GitLab as unable to link —
   // silently, since `unsupported` maps to no journaled D2 code at all.
-  test('the set-parent mutation spells hierarchyWidget correctly', () => {
+  test('the set-parent mutation spells workItemUpdate and hierarchyWidget correctly', () => {
     expect(GLAB_HIERARCHY_SET_PARENT).toContain('hierarchyWidget: {parentId: $parentId}')
+    // The ENTRY POINT name is the other half of `looksLikeSchemaGap`'s
+    // premise ("both always spelled correctly here"): its recognition list
+    // is compared lowercased, so `workitemUpdate` would be indistinguishable
+    // from an edition that genuinely has no such mutation.
+    expect(GLAB_HIERARCHY_SET_PARENT).toContain('workItemUpdate(input:')
   })
 
-  test('the clear-parent mutation spells hierarchyWidget correctly', () => {
+  test('the clear-parent mutation spells workItemUpdate and hierarchyWidget correctly', () => {
     expect(GLAB_HIERARCHY_CLEAR_PARENT).toContain('hierarchyWidget: {parentId: null}')
+    expect(GLAB_HIERARCHY_CLEAR_PARENT).toContain('workItemUpdate(input:')
   })
 })
