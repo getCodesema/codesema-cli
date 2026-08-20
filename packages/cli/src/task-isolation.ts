@@ -8,12 +8,12 @@
 //   detection image → node:26), so the agent works in the environment the
 //   project already describes for humans;
 // - an AGENT image derived from it (non-root user at the host's uid + git +
-//   claude-code),
-//   tagged by content hash and built once;
+//   the agent CLI), tagged by content hash (including the agent name) and
+//   built once;
 // - a per-workspace INTERNAL network plus one squid container as the only way
 //   out: CONNECT to the allowlisted domains, nothing else;
-// - a per-task named volume as the agent's HOME (claude credentials copied in
-//   once, provider sessions persisted across turns);
+// - a per-task named volume as the agent's HOME (credentials copied in once,
+//   provider sessions persisted across turns);
 // - the task worktree as the ONLY host path mounted (rw), everything else of
 //   the machine is simply absent.
 //
@@ -36,6 +36,7 @@ import {
   AGENT_WATCHDOG_DEFAULTS,
   AgentWatchdogError,
   armStreamWatchdog,
+  flagPresent,
   knownAgent,
   systemClock,
   watchdogMessage,
@@ -213,6 +214,102 @@ export const CAGE_FORWARDED_ENV: readonly string[] = [
   'ANTHROPIC_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
 ]
+
+const OPENCODE_FORWARDED_ENV: readonly string[] = [
+  'OPENCODE_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'XAI_API_KEY',
+]
+
+/** First PATH token of a command line (`/usr/bin/opencode run` → `opencode`). */
+function commandBin(command: string): string {
+  return (command.trim().split(/\s+/)[0] ?? '').split('/').pop() ?? ''
+}
+
+/**
+ * Is this command a cageable agent without touching agent.ts (PR 1 may not
+ * have added `opencode` to AGENT_BINS yet).
+ */
+export function cageableCommand(command: string): boolean {
+  const agent: string | null = knownAgent(command)
+  if (agent === 'claude' || agent === 'opencode') {
+    return true
+  }
+  return commandBin(command) === 'opencode'
+}
+
+export function isOpencode(command: string): boolean {
+  const agent: string | null = knownAgent(command)
+  if (agent === 'opencode') {
+    return true
+  }
+  return commandBin(command) === 'opencode'
+}
+
+/** Provider env forwarded into the cage for this command. Anthropic-only unless opencode. */
+export function cageForwardedEnv(command: string): readonly string[] {
+  return isOpencode(command)
+    ? [...CAGE_FORWARDED_ENV, ...OPENCODE_FORWARDED_ENV]
+    : CAGE_FORWARDED_ENV
+}
+
+/** Strip a matching pair of quotes; `--model='openrouter/foo'` keeps them otherwise. */
+function stripQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+/**
+ * `-m` / `--model` value on a command line, quote-aware so
+ * `--model 'openrouter/foo'` still selects the OpenRouter allowlist.
+ */
+function commandModel(command: string): string | undefined {
+  const tokens: string[] = []
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g
+  let match = re.exec(command)
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '')
+    match = re.exec(command)
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i] ?? ''
+    if (tok === '-m' || tok === '--model') {
+      const next = tokens[i + 1]
+      return next !== undefined ? stripQuotes(next) : undefined
+    }
+    if (tok.startsWith('--model=')) {
+      return stripQuotes(tok.slice('--model='.length))
+    }
+  }
+  return undefined
+}
+
+/**
+ * Egress allowlist for a caged command. `DEFAULT_ISOLATION_ALLOWED_DOMAINS`
+ * stays the claude list; opencode's depends on `-m`/`--model`.
+ */
+export function isolationDomainsFor(command: string): readonly string[] {
+  if (!isOpencode(command)) {
+    return DEFAULT_ISOLATION_ALLOWED_DOMAINS
+  }
+  const model = commandModel(command) ?? ''
+  if (model.startsWith('openrouter/')) {
+    return ['openrouter.ai', 'models.opencode.ai']
+  }
+  if (model.startsWith('anthropic/')) {
+    return [...DEFAULT_ISOLATION_ALLOWED_DOMAINS, 'models.opencode.ai']
+  }
+  return ['opencode.ai', 'models.opencode.ai']
+}
 
 /** Deterministic per-task container name: interrupt/timeout kill it by name. */
 export function agentContainerName(taskId: string): string {
@@ -523,17 +620,57 @@ export function readBaseImageInputs(
 /** Shell-quoted safely by construction: JSON exec form, never a bare RUN line. */
 const runLine = (command: string): string => `RUN ["sh","-lc",${JSON.stringify(command)}]`
 
-/** npm on most bases, bun on a bun base — the seam exists so tests pin it. */
+/**
+ * Agent CLI install, branched INSIDE the image (same shape as GIT_INSTALL_COMMAND):
+ * curl+tar+bash → native installer, else npm (same RUN as cache clean), else bun,
+ * else a sentence a human can act on. `baseRef` is kept on the signature so
+ * callers that used to pick bun vs npm still compile; the image decides.
+ */
+export function installCommandFor(agent: string, baseRef?: string): string {
+  void baseRef
+  const pkg = agent === 'opencode' ? 'opencode-ai' : '@anthropic-ai/claude-code'
+  const nativePipe =
+    agent === 'opencode'
+      ? 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path || true'
+      : 'curl -fsSL https://claude.ai/install.sh | bash || true'
+  const nativeHomes =
+    agent === 'opencode'
+      ? [
+          'if [ -x "$HOME/.opencode/bin/opencode" ]; then mv "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; fi',
+          'if [ -x "$HOME/.local/bin/opencode" ]; then mv "$HOME/.local/bin/opencode" /usr/local/bin/opencode; fi',
+        ]
+      : [
+          'if [ -x "$HOME/.local/bin/claude" ]; then mv "$HOME/.local/bin/claude" /usr/local/bin/claude; fi',
+        ]
+  return [
+    'if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then',
+    `  ${nativePipe}`,
+    ...nativeHomes.map((line) => `  ${line}`),
+    // Native tools present is not native success: a failed curl | bash still
+    // leaves the following `if [ -x ]` false with status 0. Only a binary on
+    // the shared PATH (or at /usr/local/bin) exits the RUN; otherwise npm.
+    `  if command -v ${agent} >/dev/null 2>&1 || [ -x /usr/local/bin/${agent} ]; then exit 0; fi`,
+    'fi',
+    'if command -v npm >/dev/null 2>&1; then',
+    `  npm install -g ${pkg} && npm cache clean --force; exit $?;`,
+    'fi',
+    'if command -v bun >/dev/null 2>&1; then',
+    `  BUN_INSTALL=/usr/local bun install -g ${pkg}; exit $?;`,
+    'fi',
+    `echo "codesema: this base image has neither curl+tar+bash, npm, nor bun, so ${agent} cannot be installed` +
+      ' — add one of those to the image your .devcontainer or checks config points at" >&2',
+    'exit 1',
+  ].join('\n')
+}
+
 export function defaultInstallCommand(baseRef: string): string {
-  return /(^|\/)bun(:|$)/.test(baseRef)
-    ? BUN_CLAUDE_INSTALL_COMMAND
-    : DEFAULT_CLAUDE_INSTALL_COMMAND
+  return installCommandFor('claude', baseRef)
 }
 
 export type AgentDockerfileInput = {
   /** Fully resolved FROM reference (a plain image, or the pre-built base tag). */
   baseRef: string
-  /** claude-code installation, run as root so the binary lands on the shared PATH. */
+  /** Agent CLI installation, run as root so the binary lands on the shared PATH. */
   installCommand: string
   /** devcontainer postCreateCommand, or null. */
   postCreate: string | null
@@ -554,7 +691,7 @@ export type AgentDockerfileInput = {
  * that cannot read the worktree's history is not the agent the task was
  * recorded with.
  *
- * Order is load-bearing: the user setup, the git install and the claude-code
+ * Order is load-bearing: the user setup, the git install and the agent CLI
  * install all run as ROOT, before the final USER, so the binaries land on the
  * shared PATH and the package manager can write.
  */
@@ -584,10 +721,15 @@ export function generateAgentDockerfile(input: AgentDockerfileInput): string {
   return lines.join('\n')
 }
 
-/** codesema-agent:<12 hex of sha256(base + dockerfile + host claude version)>. */
-export function agentImageTag(baseRef: string, dockerfile: string, claudeVersion: string): string {
+/** codesema-agent:<12 hex of sha256(agent + base + dockerfile + host agent version)>. */
+export function agentImageTag(
+  baseRef: string,
+  dockerfile: string,
+  claudeVersion: string,
+  agent = 'claude',
+): string {
   const hash = createHash('sha256')
-    .update(`${baseRef} ${dockerfile} ${claudeVersion}`)
+    .update(`${agent} ${baseRef} ${dockerfile} ${claudeVersion}`)
     .digest('hex')
     .slice(0, 12)
   return `codesema-agent:${hash}`
@@ -596,11 +738,13 @@ export function agentImageTag(baseRef: string, dockerfile: string, claudeVersion
 export type BuildAgentImageOptions = {
   worktree: string
   base: BaseImage
-  /** Host claude version, folded into the tag: a CLI upgrade rebuilds the cage. */
+  /** Host agent version, folded into the tag: a CLI upgrade rebuilds the cage. */
   claudeVersion: string
+  /** Agent the image is for; hashed into the tag. Defaults to claude. */
+  agent?: string
   runtime: string
   execFn?: IsolationExecFn
-  /** Test/smoke seam; defaults to defaultInstallCommand(base). */
+  /** Test/smoke seam; defaults to installCommandFor(agent, base). */
   installCommand?: string
   uid?: number
   gid?: number
@@ -621,7 +765,7 @@ export function resetIsolationCaches(): void {
   homes.clear()
   podmanProbes.clear()
   cachedRuntime = null
-  cachedClaudeVersion = null
+  cachedAgentVersions.clear()
 }
 
 function buildFailure(result: ExecResult): string {
@@ -665,14 +809,15 @@ export async function buildAgentImage(opts: BuildAgentImageOptions): Promise<str
     }
   }
 
+  const agent = opts.agent ?? 'claude'
   const dockerfile = generateAgentDockerfile({
     baseRef,
-    installCommand: opts.installCommand ?? defaultInstallCommand(baseRef),
+    installCommand: opts.installCommand ?? installCommandFor(agent, baseRef),
     postCreate: opts.base.postCreate,
     uid,
     gid,
   })
-  const tag = agentImageTag(baseRef, dockerfile, opts.claudeVersion)
+  const tag = agentImageTag(baseRef, dockerfile, opts.claudeVersion, agent)
   const cached = imageBuilds.get(tag)
   if (cached) {
     return cached
@@ -908,10 +1053,20 @@ export type BootstrapAgentHomeOptions = {
   image: string
   execFn?: IsolationExecFn
   env?: NodeJS.ProcessEnv
-  /** Host credentials file; defaults to ~/.claude/.credentials.json. */
+  /** Host credentials file; defaults to agentCredentialsPath(agent, env). */
   credentialsPath?: string
+  /** Which agent's credentials to seed; defaults to claude. */
+  agent?: string
   /** Resolved podman-ness; probed from the binary when absent. */
   podman?: boolean
+}
+
+/** Host path of the agent's credentials file. */
+export function agentCredentialsPath(agent: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (agent === 'opencode') {
+    return join(env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'opencode', 'auth.json')
+  }
+  return join(homedir(), '.claude', '.credentials.json')
 }
 
 const homes = new Map<string, Promise<AgentHome>>()
@@ -980,15 +1135,16 @@ export async function runtimeIsPodman(
 const usernsArgs = (podman: boolean): string[] => (podman ? ['--userns=keep-id'] : [])
 
 /**
- * Creates the task's HOME volume and seeds it ONCE. With
- * CLAUDE_CODE_OAUTH_TOKEN in the environment nothing is copied (the token is
- * forwarded per run); otherwise the host's ~/.claude/.credentials.json is
- * piped into the volume through an ephemeral container — on STDIN, so the
- * secret never appears in an argv the whole machine can read in `ps`.
+ * Creates the task's HOME volume and seeds it ONCE. For claude, a
+ * CLAUDE_CODE_OAUTH_TOKEN in the environment means nothing is copied (the
+ * token is forwarded per run); otherwise the host credentials file is piped
+ * into the volume through an ephemeral container — on STDIN, so the secret
+ * never appears in an argv the whole machine can read in `ps`. OpenCode is
+ * never skipped on that token: its auth lives in auth.json.
  *
  * Bootstrapping is what the volume's existence means: an existing volume is
- * left strictly alone, which is also how a claude session survives from one
- * turn to the next.
+ * left strictly alone, which is also how a session survives from one turn
+ * to the next.
  */
 export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promise<AgentHome> {
   const cached = homes.get(opts.taskId)
@@ -997,7 +1153,11 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
   }
   const exec = opts.execFn ?? defaultExec
   const env = opts.env ?? process.env
+  const agent = opts.agent ?? 'claude'
   const volume = agentHomeVolume(opts.taskId)
+  const destDir =
+    agent === 'opencode' ? `${CAGE_HOME_DIR}/.local/share/opencode` : `${CAGE_HOME_DIR}/.claude`
+  const destFile = agent === 'opencode' ? 'auth.json' : '.credentials.json'
   const run = (async (): Promise<AgentHome> => {
     if (await inspectOk(exec, opts.runtime, 'volume', volume)) {
       return { volume, credentials: 'already-bootstrapped' }
@@ -1010,16 +1170,16 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
     if (created.code !== 0) {
       throw new Error(t('isolation.homeFailed', { error: buildFailure(created) }))
     }
-    if (env.CLAUDE_CODE_OAUTH_TOKEN) {
+    if (agent !== 'opencode' && env.CLAUDE_CODE_OAUTH_TOKEN) {
       return { volume, credentials: 'oauth-token' }
     }
-    const path = opts.credentialsPath ?? join(homedir(), '.claude', '.credentials.json')
+    const path = opts.credentialsPath ?? agentCredentialsPath(agent, env)
     let content: string
     try {
       content = readFileSync(path, 'utf8')
     } catch {
-      // No credentials to copy: the cage still runs, and claude inside it says
-      // it is unauthenticated — far better than pretending we seeded something.
+      // No credentials to copy: the cage still runs, and the agent inside it
+      // says it is unauthenticated — far better than pretending we seeded.
       return { volume, credentials: 'missing' }
     }
     const seeded = await exec(
@@ -1042,7 +1202,7 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
         opts.image,
         'sh',
         '-lc',
-        `umask 077; mkdir -p ${CAGE_HOME_DIR}/.claude && cat > ${CAGE_HOME_DIR}/.claude/.credentials.json`,
+        `umask 077; mkdir -p ${destDir} && cat > ${destDir}/${destFile}`,
       ],
       { timeoutMs: 120_000, input: content },
     )
@@ -1388,16 +1548,29 @@ export async function sweepOrphanedHomeVolumes(
 export type CagedSession = { kind: 'new' | 'resume'; id: string }
 
 /**
- * Per-turn agent command INSIDE the cage. Same stream/session flags as the
- * host path (taskCommandFor), but the policy hardening is replaced by
- * --dangerously-skip-permissions: the container IS the guarantee, so the
- * agent gets its full toolset — including Bash — within it. Nothing here
- * restricts settings or MCP: a hostile repo file can only reach the cage.
+ * Per-turn agent command INSIDE the cage. Claude: policy hardening is
+ * replaced by --dangerously-skip-permissions (the container IS the
+ * guarantee). OpenCode: `--format json`, `--auto` (headless equivalent of
+ * skip-permissions), and resume `-s`. Nothing here restricts settings or
+ * MCP: a hostile repo file can only reach the cage.
  */
 export function containerTaskCommandFor(
   command: string,
   opts: { session: CagedSession | null },
 ): string {
+  if (isOpencode(command)) {
+    let cmd = command
+    if (!flagPresent(cmd, '--format')) {
+      cmd += ' --format json'
+    }
+    if (!flagPresent(cmd, '--auto')) {
+      cmd += ' --auto'
+    }
+    if (opts.session?.kind === 'resume') {
+      cmd += ` -s ${opts.session.id}`
+    }
+    return cmd
+  }
   let cmd = command
   if (!/^claude(\s|$)/.test(command)) {
     return cmd
@@ -1714,20 +1887,32 @@ export function isolationRuntime(execFn?: IsolationExecFn): Promise<string | nul
   return cachedRuntime
 }
 
-let cachedClaudeVersion: Promise<string> | null = null
+/** bin → host `--version` probe. Tests clear it via resetIsolationCaches. */
+const cachedAgentVersions = new Map<string, Promise<string>>()
 
-/** Host claude version, part of the image tag: upgrading the CLI rebuilds the cage. */
-export function hostClaudeVersion(execFn?: IsolationExecFn): Promise<string> {
+/** Host agent version, part of the image tag: upgrading the CLI rebuilds the cage. */
+export function hostAgentVersion(command: string, execFn?: IsolationExecFn): Promise<string> {
+  const bin = commandBin(command) || 'claude'
   const probe = async (): Promise<string> => {
     const exec = execFn ?? defaultExec
-    const result = await exec('claude', ['--version'], { timeoutMs: 20_000 })
+    const result = await exec(bin, ['--version'], { timeoutMs: 20_000 })
     return result.code === 0 ? result.stdout.trim().slice(0, 100) || 'unknown' : 'unknown'
   }
   if (execFn) {
     return probe()
   }
-  cachedClaudeVersion ??= probe()
-  return cachedClaudeVersion
+  const cached = cachedAgentVersions.get(bin)
+  if (cached) {
+    return cached
+  }
+  const started = probe()
+  cachedAgentVersions.set(bin, started)
+  return started
+}
+
+/** Host claude version; wrapper around hostAgentVersion. */
+export function hostClaudeVersion(execFn?: IsolationExecFn): Promise<string> {
+  return hostAgentVersion('claude', execFn)
 }
 
 export type RunContainerTurnOptions = {
@@ -1781,10 +1966,12 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
   // treats null as a reason to stop.
   const podman = (await runtimeIsPodman(runtime, opts.execFn)) ?? false
   const base = resolveBaseImage(readBaseImageInputs(opts.worktree, opts.checksConfig ?? undefined))
+  const agent = commandBin(opts.command) || 'claude'
   const image = await buildAgentImage({
     worktree: opts.worktree,
     base,
-    claudeVersion: opts.claudeVersion ?? (await hostClaudeVersion(opts.execFn)),
+    agent,
+    claudeVersion: opts.claudeVersion ?? (await hostAgentVersion(opts.command, opts.execFn)),
     runtime,
     ...(opts.execFn ? { execFn: opts.execFn } : {}),
     ...(opts.installCommand !== undefined ? { installCommand: opts.installCommand } : {}),
@@ -1798,6 +1985,7 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
     runtime,
     taskId: opts.taskId,
     image,
+    agent,
     podman,
     ...(opts.execFn ? { execFn: opts.execFn } : {}),
     ...(opts.env ? { env: opts.env } : {}),
@@ -1818,7 +2006,7 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
     network: proxy.network,
     proxyUrl: proxy.url,
     command: opts.command,
-    forwardEnv: CAGE_FORWARDED_ENV.filter((key) => env[key]),
+    forwardEnv: cageForwardedEnv(opts.command).filter((key) => env[key]),
     ...(git ? { gitMounts: git.mountArgs } : {}),
   })
   const spawnFn = opts.spawnFn ?? spawnContainer
@@ -1861,13 +2049,13 @@ export type IsolationProbe = {
 
 export type ProbeIsolationOptions = {
   configured: IsolationMode
-  /** Configured agent command: the cage image only provides claude-code. */
+  /** Configured agent command: the cage image ships claude and opencode. */
   command: string
   /**
-   * When true, skip the "cage only ships claude-code" check. T1.4 probes the
-   * RUNTIME once at boot (machine-wide) and binds the agent/mode per project
-   * at task creation via `overlayIsolationProbe`. Default false: a direct
-   * caller still gets the honest agent-reason.
+   * When true, skip the cageable-agent check. T1.4 probes the RUNTIME once
+   * at boot (machine-wide) and binds the agent/mode per project at task
+   * creation via `overlayIsolationProbe`. Default false: a direct caller
+   * still gets the honest agent-reason.
    */
   ignoreAgent?: boolean
   execFn?: IsolationExecFn
@@ -1891,7 +2079,7 @@ export async function probeIsolation(opts: ProbeIsolationOptions): Promise<Isola
   if (configured === 'policy') {
     return deny(t('isolation.reasonConfigured'))
   }
-  if (!opts.ignoreAgent && knownAgent(opts.command) !== 'claude') {
+  if (!opts.ignoreAgent && !cageableCommand(opts.command)) {
     return deny(t('isolation.reasonAgent', { command: opts.command }))
   }
   const runtime = await isolationRuntime(opts.execFn)
@@ -1931,6 +2119,15 @@ export function overlayIsolationProbe(
 ): IsolationProbe {
   const { configured, command } = opts
   if (configured === 'policy') {
+    if (isOpencode(command)) {
+      return {
+        available: false,
+        mode: 'policy',
+        reason: t('isolation.reasonPolicyUnsafe'),
+        configured,
+        runtime: machine.runtime,
+      }
+    }
     // UNPROBED_ISOLATION is configured 'policy' with no runtime: keep its
     // "was not probed" reason rather than inventing "set in the configuration"
     // when nothing was ever asked (T1.4 review nit).
@@ -1943,7 +2140,7 @@ export function overlayIsolationProbe(
       runtime: machine.runtime,
     }
   }
-  if (knownAgent(command) !== 'claude') {
+  if (!cageableCommand(command)) {
     return {
       available: false,
       mode: 'policy',
@@ -1980,19 +2177,26 @@ export function overlayIsolationProbe(
 }
 
 /** Isolation a task gets at creation, and why. Null result = refuse the creation. */
-export function resolveTaskIsolation(probe: IsolationProbe): {
+export function resolveTaskIsolation(
+  probe: IsolationProbe,
+  command?: string,
+): {
   isolation: TaskIsolation
   reason: string
 } | null {
   if (probe.configured === 'container' && !probe.available) {
     return null
   }
-  if (probe.configured === 'policy') {
-    return { isolation: 'policy', reason: probe.reason }
+  const result: { isolation: TaskIsolation; reason: string } =
+    probe.configured === 'policy'
+      ? { isolation: 'policy', reason: probe.reason }
+      : probe.available
+        ? { isolation: 'container', reason: probe.reason }
+        : { isolation: 'policy', reason: probe.reason }
+  if (result.isolation === 'policy' && command !== undefined && isOpencode(command)) {
+    return null
   }
-  return probe.available
-    ? { isolation: 'container', reason: probe.reason }
-    : { isolation: 'policy', reason: probe.reason }
+  return result
 }
 
 /** True when the workspace holds a resolved probe saying the cage is usable. */

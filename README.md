@@ -91,14 +91,14 @@ The second only exists once a workspace is linked: `codesema review` then asks t
 
 Before uploading, sync scans the diff for anything that looks like a committed secret (dotenv files, private keys, and AWS/GitHub/Slack/Google/Stripe/OpenAI/Anthropic credentials) and refuses to send it. Fix the diff, or pass `--force` once you have checked.
 
-The review subprocess is locked down. The prompt already contains everything the agent needs (branch names, commit subjects, changed files, the diff), so `codesema review` runs the known agent CLIs with their tools switched off: `claude` gets `--tools "" --strict-mcp-config --setting-sources user` (no tools, no MCP servers, the repo's own `.claude/` settings ignored), `codex` gets `--sandbox read-only --ask-for-approval never` with `AGENTS.md` loading disabled, and `grok` gets `--deny '*'` — a permission rule rather than a tool list, because an empty or unknown `--tools` value leaves every tool reachable while the rule refuses the shell and the file tools alike. Grok still reads the repo's `AGENTS.md`/`CLAUDE.md` and offers no flag to stop it, so there the hardening buys the absence of execution, not the absence of injected instructions. Known agents also receive a minimal environment — `PATH`, `HOME`, locale, proxy settings and the provider's own variables — so your other credentials and tokens never reach the subprocess. Flags you set yourself and custom agent commands are left untouched, and "Run fixes" intentionally keeps the edit tools it needs.
+The review subprocess is locked down. The prompt already contains everything the agent needs (branch names, commit subjects, changed files, the diff), so `codesema review` runs the known agent CLIs with their tools switched off: `claude` gets `--tools "" --strict-mcp-config --setting-sources user` (no tools, no MCP servers, the repo's own `.claude/` settings ignored), `codex` gets `--sandbox read-only --ask-for-approval never` with `AGENTS.md` loading disabled, `grok` gets `--deny '*'` — a permission rule rather than a tool list, because an empty or unknown `--tools` value leaves every tool reachable while the rule refuses the shell and the file tools alike — and `opencode` is hardened through `reviewAgentEnv`, which injects `OPENCODE_CONFIG_CONTENT` denying every permission on the default `build`/`plan` agents and pinning `default_agent` to `build` so a repo `opencode.json` cannot re-enable tools via a custom-named agent. Grok still reads the repo's `AGENTS.md`/`CLAUDE.md` and offers no flag to stop it, so there the hardening buys the absence of execution, not the absence of injected instructions. Known agents also receive a minimal environment — `PATH`, `HOME`, locale, proxy settings and the provider's own variables — so your other credentials and tokens never reach the subprocess. Flags you set yourself and custom agent commands are left untouched, and "Run fixes" intentionally keeps the edit tools it needs.
 
 Workspace tasks are the opposite case — they exist to edit code — so they are contained instead: in a container when one is available, and otherwise on the host with `--strict-mcp-config --setting-sources user`, so a turn that writes a `.claude/settings.json` or `.mcp.json` into its own worktree cannot have it loaded by the next turn. A custom agent command gets none of this and says so at startup.
 
 ## Requirements
 
 - Node.js ≥ 20 and `git`
-- An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI), `gemini` (Google) and `grok` (xAI) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'` (e.g. `--agent 'opencode run "$(cat)"'`). A CLI that cannot read its prompt from stdin at all takes it as a **file**: put `{promptFile}` where the path goes and codesema writes the prompt to a private temp file, substitutes its quoted path and deletes it when the run ends — that is how `grok` is run (`grok --prompt-file {promptFile}`)
+- An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI), `gemini` (Google), `grok` (xAI) and `opencode` (OpenCode) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'`. A CLI that cannot read its prompt from stdin at all takes it as a **file**: put `{promptFile}` where the path goes and codesema writes the prompt to a private temp file, substitutes its quoted path and deletes it when the run ends — that is how `grok` is run (`grok --prompt-file {promptFile}`)
 - Optional: `glab` or `gh` on the PATH, to auto-detect the target branch from the open MR/PR (and to list MRs and ship from the workspace)
 - Optional: `docker` or `podman`, for the workspace's sandboxed checks and per-task container isolation (without one, checks report they cannot run and tasks fall back to the host hardening)
 
@@ -238,12 +238,17 @@ the environment of the processes it spawns.
   `SHELL`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `TZ`, the 8 proxy
   variables, the 4 `XDG_*` ones and the 4 CA-bundle ones — plus the provider's
   own prefixes (`ANTHROPIC_`/`CLAUDE_`, `OPENAI_`/`CODEX_`,
-  `GEMINI_`/`GOOGLE_`, `XAI_`/`GROK_`), widened to `AWS_` or `GOOGLE_`/`GCP_` only when
-  `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` is set. Everything else
-  in your environment — cloud keys, tokens, database URLs — never reaches the
-  subprocess. A custom agent command inherits the full environment (its needs
-  are unknowable, and you chose it explicitly), and so does Windows, where
-  narrowing the environment can break the spawn itself.
+  `GEMINI_`/`GOOGLE_`, `XAI_`/`GROK_`, and for OpenCode `OPENCODE_`/`OPENROUTER_`
+  plus every other provider prefix it can authenticate with), widened to `AWS_` or `GOOGLE_`/`GCP_` only when
+  `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` is set. Review, checks and
+  eval wrap that in `reviewAgentEnv`, which additionally injects
+  `OPENCODE_CONFIG_CONTENT` (wildcard permission deny, including `agent.build` /
+  `agent.plan`, with `default_agent` pinned to `build`) when the command is OpenCode and the user did not set that
+  variable. Everything else in your environment — cloud keys, tokens, database
+  URLs — never reaches the subprocess. A custom agent command inherits the full
+  environment (its needs are unknowable, and you chose it explicitly), and so
+  does Windows, where narrowing the environment can break the spawn itself
+  (`reviewAgentEnv` still returns the full source plus the OpenCode inject).
 - **A caged task agent gets 6 provider variables, by name.**
   `CAGE_FORWARDED_ENV` (`task-isolation.ts`) forwards
   `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,

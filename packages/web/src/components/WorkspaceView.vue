@@ -32,6 +32,7 @@ import {
 import {
   buildProjectTree,
   countProjectActivity,
+  isolationForProject,
   isTrunkBranch,
   otherBranches,
   resolveBranchClick,
@@ -40,8 +41,9 @@ import {
 import { agentCounts, matchesQuery, oldestWaiting } from '../composables/useTaskBoard'
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
-import type { ForgeMr, ReviewRecord } from '../types'
+import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
 import ProjectsNav from './ProjectsNav.vue'
+import RepoSettings from './RepoSettings.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
@@ -81,9 +83,63 @@ const {
   candidates,
   discoverCandidates,
   workspace,
+  loadProjects,
 } = useTasks(props.token)
 
-onMounted(start)
+const agents = ref<AgentOption[]>([])
+const currentAgent = ref('')
+
+function isAgentOption(value: unknown): value is AgentOption {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const o = value as Record<string, unknown>
+  return (
+    typeof o.id === 'string' &&
+    typeof o.label === 'string' &&
+    typeof o.bin === 'string' &&
+    typeof o.command === 'string' &&
+    typeof o.detected === 'boolean'
+  )
+}
+
+async function loadAgentConfig(): Promise<void> {
+  try {
+    const res = await fetch('/api/config')
+    if (!res.ok) {
+      return
+    }
+    const body = (await res.json()) as { agent?: unknown; agents?: unknown }
+    if (typeof body.agent === 'string') {
+      currentAgent.value = body.agent
+    }
+    if (Array.isArray(body.agents)) {
+      agents.value = body.agents.filter(isAgentOption)
+    }
+  } catch {
+    // Older CLIs omit these fields; the picker stays hidden.
+  }
+}
+
+const showSettings = ref(false)
+
+async function closeSettings(): Promise<void> {
+  showSettings.value = false
+  await Promise.all([loadAgentConfig(), loadProjects()])
+}
+
+function toggleSettings(): void {
+  if (showSettings.value) {
+    void closeSettings()
+  } else {
+    showSettings.value = true
+  }
+}
+
+onMounted(() => {
+  start()
+  void loadAgentConfig()
+})
 onUnmounted(stop)
 
 const projectNameById = computed(
@@ -407,14 +463,19 @@ async function onRemoveProject(id: string): Promise<void> {
       v-model:query="query"
       :needs-you="counters.needsYou"
       :agents="counters.agents"
+      :settings-open="showSettings"
       @open-oldest-waiting="openOldestWaiting"
+      @settings="toggleSettings"
     />
 
     <p v-if="!connected" class="ws-offline" role="status">
       {{ t('workspace.connectionLost') }}
     </p>
 
-    <div class="ws-body">
+    <div v-if="showSettings" class="ws-settings">
+      <RepoSettings />
+    </div>
+    <div v-else class="ws-body">
       <ProjectsNav
         :projects="projects"
         :selected="filter"
@@ -444,6 +505,8 @@ async function onRemoveProject(id: string): Promise<void> {
         :creating="creating"
         :create-error="createError"
         :workspace="workspace"
+        :agents="agents"
+        :current-agent="currentAgent"
         @open="(state) => openConversation(state.projectId, state.record.id)"
         @ship="onQueueShip"
         @resume="onQueueResume"
@@ -562,6 +625,14 @@ async function onRemoveProject(id: string): Promise<void> {
                   compact
                   :creating="runOf(entry.projectId, entry.draft).creating"
                   :error="runOf(entry.projectId, entry.draft).error"
+                  :agents="agents"
+                  :current-agent="
+                    isolationForProject(entry.projectId, projects, workspace)?.agent ?? currentAgent
+                  "
+                  :isolation="
+                    isolationForProject(entry.projectId, projects, workspace)?.isolation_default ??
+                    null
+                  "
                   @create="(input) => onDraftCreate(entry.projectId, entry.draft, input)"
                 />
               </div>
@@ -598,6 +669,12 @@ async function onRemoveProject(id: string): Promise<void> {
   color: var(--cs-amber-text);
   background: var(--cs-amber-soft);
   border-bottom: 1px solid var(--cs-amber-line);
+}
+
+.ws-settings {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .ws-body {

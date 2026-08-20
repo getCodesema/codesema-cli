@@ -433,8 +433,9 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'isolation.unavailableStaleAgent':
     'container isolation is unavailable: this workspace is still running {running}, which cannot be caged. Restart the workspace to pick up {pending}.',
   'isolation.reasonConfigured': "isolation is set to 'policy' in the configuration",
-  'isolation.reasonAgent':
-    'the cage only provides claude-code, and the configured agent is {command}',
+  'isolation.reasonAgent': 'the cage has no image for this agent ({command})',
+  'isolation.reasonPolicyUnsafe':
+    'opencode cannot run in policy mode because a repo opencode.json can spawn local MCP servers on the host; use container isolation.',
   'isolation.reasonNoRuntime': 'no container runtime found (install docker or podman)',
   'isolation.reasonUnreachable': '{runtime} is installed but its engine does not answer',
   'isolation.reasonReady': '{runtime} is available',
@@ -887,7 +888,9 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'isolation.unavailableStaleAgent':
     "l'isolation container est indisponible : ce workspace exécute encore {running}, qui ne peut pas être cagé. Redémarrez le workspace pour prendre en compte {pending}.",
   'isolation.reasonConfigured': "l'isolation est réglée sur « policy » dans la configuration",
-  'isolation.reasonAgent': "la cage ne fournit que claude-code, or l'agent configuré est {command}",
+  'isolation.reasonAgent': "la cage n'a pas d'image pour cet agent ({command})",
+  'isolation.reasonPolicyUnsafe':
+    "opencode ne peut pas tourner en mode policy : un opencode.json du dépôt peut lancer des serveurs MCP locaux sur la machine ; utilisez l'isolation container.",
   'isolation.reasonNoRuntime': 'aucun runtime de container trouvé (installez docker ou podman)',
   'isolation.reasonUnreachable': '{runtime} est installé mais son moteur ne répond pas',
   'isolation.reasonReady': '{runtime} est disponible',

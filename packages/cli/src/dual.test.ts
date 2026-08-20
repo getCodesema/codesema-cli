@@ -55,7 +55,15 @@ describe('judgeCommandFor', () => {
   })
 
   test('custom command unchanged', () => {
-    expect(judgeCommandFor('opencode run "$(cat)"')).toBe('opencode run "$(cat)"')
+    expect(judgeCommandFor('my-agent run')).toBe('my-agent run')
+  })
+
+  test('opencode with an empty judge model is left alone', () => {
+    // AGENT_DEFS.judgeModel stays '': dual uses the primary model.
+    expect(judgeCommandFor('opencode run')).toBe('opencode run')
+    expect(judgeCommandFor('opencode run -m anthropic/claude-sonnet-4-5')).toBe(
+      'opencode run -m anthropic/claude-sonnet-4-5',
+    )
   })
 })
 

@@ -8,16 +8,27 @@ import {
   agentEnv,
   agentReasonCode,
   AgentWatchdogError,
+  cageableAgent,
   claudeStreamCommand,
+  createAgentStreamParser,
   createClaudeStreamParser,
   createClaudeTaskParser,
+  createOpencodeStreamParser,
+  createOpencodeTaskParser,
   createSemanticWatchdog,
   effectiveAbsoluteCapMs,
   emitsClaudeStreamJson,
+  emitsOpencodeJson,
   hardenedReviewCommand,
+  hostPolicyUnsafe,
+  knownAgent,
   MAX_TIMER_MS,
+  OPENCODE_REVIEW_CONFIG,
+  opencodeJsonCommand,
   promptFileCommand,
+  reviewAgentEnv,
   runAgent,
+  streamFlagsCommand,
   systemClock,
   TASK_TOOL_SUMMARY_MAX,
   usesPromptFile,
@@ -109,9 +120,10 @@ describe('hardenedReviewCommand', () => {
     expect(hardenedReviewCommand(once)).toBe(once)
   })
 
-  test('gemini and custom commands are unchanged', () => {
+  test('gemini, opencode and custom commands are unchanged', () => {
     expect(hardenedReviewCommand('gemini -m gemini-2.5-pro')).toBe('gemini -m gemini-2.5-pro')
-    expect(hardenedReviewCommand('opencode run "$(cat)"')).toBe('opencode run "$(cat)"')
+    expect(hardenedReviewCommand('opencode run')).toBe('opencode run')
+    expect(hardenedReviewCommand('my-agent run')).toBe('my-agent run')
   })
 
   test('an absolute path to a known binary is recognized', () => {
@@ -182,7 +194,20 @@ describe('agentEnv', () => {
   })
 
   test('custom command: undefined, the subprocess inherits everything', () => {
-    expect(agentEnv('opencode run "$(cat)"', source)).toBeUndefined()
+    expect(agentEnv('my-agent run', source)).toBeUndefined()
+  })
+
+  test('opencode: provider prefixes pass, DATABASE_URL is stripped', () => {
+    const env = agentEnv('opencode run', {
+      ...source,
+      OPENROUTER_API_KEY: 'or-x',
+      OPENCODE_SERVER_PASSWORD: 'pw',
+    })
+    expect(env?.ANTHROPIC_API_KEY).toBe('sk-ant-x')
+    expect(env?.OPENROUTER_API_KEY).toBe('or-x')
+    expect(env?.OPENCODE_SERVER_PASSWORD).toBe('pw')
+    expect(env?.DATABASE_URL).toBeUndefined()
+    expect(env?.OPENCODE_CONFIG_CONTENT).toBeUndefined()
   })
 
   test('windows: no narrowing, cmd.exe needs its system variables', () => {
@@ -224,6 +249,264 @@ describe('agentEnv', () => {
     })
     expect(env?.GOOGLE_APPLICATION_CREDENTIALS).toBe('/sa.json')
     expect(env?.CLOUD_ML_REGION).toBe('us-east5')
+  })
+
+  test('windows without inject still inherits the full env', () => {
+    expect(agentEnv('opencode run', source, 'win32')).toBeUndefined()
+  })
+
+  test('windows with inject returns the full source plus missing keys', () => {
+    const env = agentEnv('opencode run', source, 'win32', {
+      OPENCODE_CONFIG_CONTENT: OPENCODE_REVIEW_CONFIG,
+    })
+    expect(env?.DATABASE_URL).toBe('postgres://secret')
+    expect(env?.OPENCODE_CONFIG_CONTENT).toBe(OPENCODE_REVIEW_CONFIG)
+  })
+
+  test('inject never overwrites a key the source already set', () => {
+    const env = agentEnv('opencode run', { ...source, OPENCODE_CONFIG_CONTENT: 'mine' }, 'linux', {
+      OPENCODE_CONFIG_CONTENT: OPENCODE_REVIEW_CONFIG,
+    })
+    expect(env?.OPENCODE_CONFIG_CONTENT).toBe('mine')
+  })
+})
+
+describe('reviewAgentEnv', () => {
+  const source = {
+    PATH: '/usr/bin',
+    HOME: '/home/dev',
+    DATABASE_URL: 'postgres://secret',
+    ANTHROPIC_API_KEY: 'sk-ant-x',
+    OPENROUTER_API_KEY: 'or-x',
+  }
+
+  test('opencode review injects the permission-deny config', () => {
+    const env = reviewAgentEnv('opencode run', source)
+    expect(env?.OPENCODE_CONFIG_CONTENT).toBe(OPENCODE_REVIEW_CONFIG)
+    expect(JSON.parse(OPENCODE_REVIEW_CONFIG)).toEqual({
+      permission: { '*': 'deny' },
+      default_agent: 'build',
+      agent: {
+        build: { permission: { '*': 'deny' } },
+        plan: { permission: { '*': 'deny' } },
+      },
+    })
+    expect(env?.ANTHROPIC_API_KEY).toBe('sk-ant-x')
+    expect(env?.OPENROUTER_API_KEY).toBe('or-x')
+    expect(env?.DATABASE_URL).toBeUndefined()
+  })
+
+  test('nested agent.build.permission is denied so a repo opencode.json cannot win', () => {
+    // OPENCODE_CONFIG_CONTENT overrides top-level permission, but agent rules
+    // take precedence over global permission: without the nested deny, a repo
+    // agent.build.permission: { bash: "allow" } would re-enable the shell.
+    const parsed = JSON.parse(OPENCODE_REVIEW_CONFIG) as {
+      permission: { '*': string }
+      default_agent: string
+      agent: { build: { permission: { '*': string } }; plan: { permission: { '*': string } } }
+    }
+    expect(parsed.permission['*']).toBe('deny')
+    expect(parsed.default_agent).toBe('build')
+    expect(parsed.agent.build.permission['*']).toBe('deny')
+    expect(parsed.agent.plan.permission['*']).toBe('deny')
+    const env = reviewAgentEnv('opencode run', source)
+    expect(JSON.parse(env?.OPENCODE_CONFIG_CONTENT ?? '')).toEqual(parsed)
+  })
+
+  test('a user-set OPENCODE_CONFIG_CONTENT is not overwritten', () => {
+    const env = reviewAgentEnv('opencode run', {
+      ...source,
+      OPENCODE_CONFIG_CONTENT: '{"permission":{"bash":"ask"}}',
+    })
+    expect(env?.OPENCODE_CONFIG_CONTENT).toBe('{"permission":{"bash":"ask"}}')
+  })
+
+  test('claude review is unchanged versus agentEnv', () => {
+    expect(reviewAgentEnv('claude -p', source)).toEqual(agentEnv('claude -p', source))
+  })
+})
+
+describe('knownAgent / cageableAgent / hostPolicyUnsafe', () => {
+  test('opencode is a known, cageable, host-unsafe agent', () => {
+    expect(knownAgent('opencode run')).toBe('opencode')
+    expect(knownAgent('/usr/bin/opencode run -m x')).toBe('opencode')
+    expect(cageableAgent('opencode run')).toBe(true)
+    expect(cageableAgent('claude -p')).toBe(true)
+    expect(cageableAgent('codex exec -')).toBe(false)
+    expect(hostPolicyUnsafe('opencode run')).toBe(true)
+    expect(hostPolicyUnsafe('claude -p')).toBe(false)
+    expect(hostPolicyUnsafe('my-agent run')).toBe(false)
+  })
+})
+
+describe('opencodeJsonCommand / emitsOpencodeJson / streamFlagsCommand', () => {
+  test('opencode run gets --format json unless already set', () => {
+    expect(opencodeJsonCommand('opencode run')).toBe('opencode run --format json')
+    expect(opencodeJsonCommand('opencode run --format json')).toBeNull()
+    expect(opencodeJsonCommand('opencode run --format default')).toBeNull()
+    expect(opencodeJsonCommand('claude -p')).toBeNull()
+  })
+
+  test('emitsOpencodeJson reads the flag as a token', () => {
+    expect(emitsOpencodeJson('opencode run --format json')).toBe(true)
+    expect(emitsOpencodeJson('opencode run --format=json')).toBe(true)
+    expect(emitsOpencodeJson('opencode run')).toBe(false)
+    expect(emitsOpencodeJson('claude -p --format json')).toBe(false)
+  })
+
+  test('streamFlagsCommand is claude stream-json or opencode json', () => {
+    expect(streamFlagsCommand('claude -p')).toContain('--output-format stream-json')
+    expect(streamFlagsCommand('opencode run')).toBe('opencode run --format json')
+    expect(streamFlagsCommand('codex exec -')).toBeNull()
+  })
+})
+
+describe('createOpencodeTaskParser', () => {
+  const line = (event: unknown) => `${JSON.stringify(event)}\n`
+
+  test('decoded JSON is activity, first sessionID fires onInit once', () => {
+    let beats = 0
+    const sessions: string[] = []
+    const parser = createOpencodeTaskParser({
+      onActivity: () => beats++,
+      onInit: (id) => sessions.push(id),
+    })
+    parser.push(line({ type: 'step_start', sessionID: 'ses_1' }))
+    parser.push(line({ type: 'text', part: { text: 'PONG' }, sessionID: 'ses_1' }))
+    parser.push(line({ type: 'step_finish', sessionId: 'ses_other' }))
+    expect(beats).toBe(3)
+    expect(sessions).toEqual(['ses_1'])
+  })
+
+  test('text deltas accumulate; step_start after text bumps seq', () => {
+    const texts: [string, number][] = []
+    const parser = createOpencodeTaskParser({
+      onText: (text, seq) => texts.push([text, seq]),
+    })
+    parser.push(line({ type: 'text', part: { text: 'let me ' } }))
+    parser.push(line({ type: 'text', part: { text: 'look' } }))
+    parser.push(line({ type: 'step_start' }))
+    parser.push(line({ type: 'text', part: { text: 'done' } }))
+    expect(texts).toEqual([
+      ['let me ', 0],
+      ['let me look', 0],
+      ['done', 1],
+    ])
+    expect(parser.finalText()).toBe('done')
+  })
+
+  test('tool_use name is event.name || part.name || part.tool', () => {
+    const calls: [string, string][] = []
+    const parser = createOpencodeTaskParser({
+      onToolUse: (name, input) => calls.push([name, input]),
+    })
+    parser.push(line({ type: 'tool_use', name: 'bash', part: { input: { command: 'ls' } } }))
+    parser.push(line({ type: 'tool_use', part: { name: 'Write', input: { path: 'a.ts' } } }))
+    parser.push(line({ type: 'tool_use', part: { tool: 'read', input: { path: 'b.ts' } } }))
+    expect(calls).toEqual([
+      ['bash', '{"command":"ls"}'],
+      ['Write', '{"path":"a.ts"}'],
+      ['read', '{"path":"b.ts"}'],
+    ])
+  })
+
+  test('completed tool_use fires onToolUse then onToolResult from the same event', () => {
+    const calls: [string, string][] = []
+    const results: string[] = []
+    const parser = createOpencodeTaskParser({
+      onToolUse: (name, input) => calls.push([name, input]),
+      onToolResult: (summary) => results.push(summary),
+    })
+    parser.push(
+      line({
+        type: 'tool_use',
+        part: {
+          tool: 'Write',
+          state: { status: 'completed', input: { file_path: 'a.txt' }, output: 'wrote a.txt' },
+        },
+      }),
+    )
+    parser.push(
+      line({
+        type: 'tool_use',
+        name: 'bash',
+        part: { state: { output: 'ok' }, input: { command: 'ls' } },
+      }),
+    )
+    expect(calls).toEqual([
+      ['Write', '{"file_path":"a.txt"}'],
+      ['bash', '{"command":"ls"}'],
+    ])
+    expect(results).toEqual(['wrote a.txt', 'ok'])
+  })
+
+  test('a tool_result line is still accepted as fallback', () => {
+    const results: string[] = []
+    const parser = createOpencodeTaskParser({ onToolResult: (summary) => results.push(summary) })
+    parser.push(line({ type: 'tool_result', part: { output: 'legacy' } }))
+    expect(results).toEqual(['legacy'])
+  })
+
+  test('step_finish: tokens add input+output or raise to total; cost 0 is a real 0', () => {
+    const tokens: number[] = []
+    const costs: { ticks: number; basis: string }[] = []
+    const parser = createOpencodeTaskParser({
+      onTokens: (n) => tokens.push(n),
+      onCost: (cost) => {
+        if (cost) {
+          costs.push(cost)
+        }
+      },
+    })
+    parser.push(
+      line({
+        type: 'step_finish',
+        part: { tokens: { total: 8946, input: 33, output: 17 }, cost: 0 },
+      }),
+    )
+    expect(tokens).toEqual([8946])
+    expect(costs).toEqual([{ ticks: 0, basis: 'harness' }])
+  })
+
+  test('step_finish costs accumulate as harness ticks', () => {
+    const costs: { ticks: number; basis: string }[] = []
+    const parser = createOpencodeTaskParser({
+      onCost: (cost) => {
+        if (cost) {
+          costs.push(cost)
+        }
+      },
+    })
+    parser.push(line({ type: 'step_finish', part: { cost: 0.01 } }))
+    parser.push(line({ type: 'step_finish', part: { cost: 0.02 } }))
+    expect(costs).toEqual([
+      { ticks: 100_000_000, basis: 'harness' },
+      { ticks: 300_000_000, basis: 'harness' },
+    ])
+  })
+
+  test('junk lines are not activity', () => {
+    let beats = 0
+    const parser = createOpencodeTaskParser({ onActivity: () => beats++ })
+    parser.push('not json\n')
+    parser.push('\n')
+    expect(beats).toBe(0)
+    expect(parser.finalText()).toBeNull()
+  })
+
+  test('createOpencodeStreamParser and createAgentStreamParser share the surface', () => {
+    const seen: string[] = []
+    const stream = createOpencodeStreamParser((text) => seen.push(text))
+    stream.push(line({ type: 'text', part: { text: 'PONG' } }))
+    expect(seen).toEqual(['PONG'])
+    const agent = createAgentStreamParser('opencode run --format json', {
+      onText: (text) => seen.push(text),
+    })
+    agent.push(line({ type: 'text', part: { text: 'hi' } }))
+    expect(seen).toEqual(['PONG', 'hi'])
+    const claude = createAgentStreamParser('claude -p --output-format stream-json', {})
+    claude.push(line({ type: 'result', result: 'from claude' }))
+    expect(claude.finalText()).toBe('from claude')
   })
 })
 
@@ -1112,6 +1395,40 @@ describe('runAgent semantic watchdog', () => {
     expect((err as AgentWatchdogError).watchdogCause).toBe('inactivity')
   })
 
+  test('opencode run is spawned with --format json and the parser owns the reply', async () => {
+    const rig = startRun({ command: 'opencode run' })
+    expect(rig.spawned[0]?.command).toBe('opencode run --format json')
+    rig.fake.stdout(frame({ type: 'text', part: { text: 'PONG' }, sessionID: 'ses_1' }))
+    rig.fake.close(0)
+    expect(await rig.promise).toBe('PONG')
+  })
+
+  test('opencode json tool_use is a tool in flight', async () => {
+    const rig = startRun({ command: 'opencode run' })
+    rig.fake.stdout(frame({ type: 'tool_use', name: 'bash', part: { input: { command: 'ls' } } }))
+    rig.clock.advance(100 * 60_000)
+    expect(rig.fake.ops).toEqual(['stdin:write(go)', 'stdin:end'])
+    rig.clock.advance(25 * 60_000 + AGENT_KILL_GRACE_MS)
+    rig.fake.close(null)
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect((err as AgentWatchdogError).watchdogCause).toBe('tool_budget')
+  })
+
+  test('a completed opencode tool_use does not leave a tool in flight', async () => {
+    const rig = startRun({ command: 'opencode run' })
+    rig.fake.stdout(
+      frame({
+        type: 'tool_use',
+        name: 'bash',
+        part: { state: { status: 'completed', output: 'ok' } },
+      }),
+    )
+    rig.clock.advance(30 * 60_000 + AGENT_KILL_GRACE_MS)
+    rig.fake.close(null)
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect((err as AgentWatchdogError).watchdogCause).toBe('inactivity')
+  })
+
   test('the tool signals are read even when the CALLER added the stream flags', async () => {
     // The task runner's path: the command already carries --output-format
     // stream-json, so runAgent does not own the text — but it must still see
@@ -1120,6 +1437,17 @@ describe('runAgent semantic watchdog', () => {
       command: 'claude -p --output-format stream-json --include-partial-messages --verbose',
     })
     rig.fake.stdout(toolUse)
+    rig.clock.advance(100 * 60_000)
+    expect(rig.fake.ops).toEqual(['stdin:write(go)', 'stdin:end'])
+    rig.clock.advance(25 * 60_000 + AGENT_KILL_GRACE_MS)
+    rig.fake.close(null)
+    const err = await rig.promise.catch((e: unknown) => e)
+    expect((err as AgentWatchdogError).watchdogCause).toBe('tool_budget')
+  })
+
+  test('opencode --format json added by the caller still feeds the watchdog parser', async () => {
+    const rig = startRun({ command: 'opencode run --format json' })
+    rig.fake.stdout(frame({ type: 'tool_use', part: { name: 'bash' } }))
     rig.clock.advance(100 * 60_000)
     expect(rig.fake.ops).toEqual(['stdin:write(go)', 'stdin:end'])
     rig.clock.advance(25 * 60_000 + AGENT_KILL_GRACE_MS)

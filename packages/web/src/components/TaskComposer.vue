@@ -1,42 +1,75 @@
 <script setup lang="ts">
-// Task composer: one textarea (the title derives from its first line) and the
-// per-task auto-ship opt-in. The target repo is the active project card the
-// composer sits under — the parent owns that choice, nothing to pick here.
+// Task composer: one textarea (the title derives from its first line), a
+// per-task agent picker, and the auto-ship opt-in. The target repo is the
+// active project card the composer sits under — the parent owns that choice.
 // No role picker: the tool runs anonymous dev agents, the user defines the
 // workflow in the prompt itself.
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import {
+  commandForAgentId,
+  matchAgentId,
+  pickerAgents,
+  taskComposerPayload,
+} from '../composables/taskComposer'
 import { titleFromPrompt } from '../composables/useTaskBoard'
 import type { CreateTaskInput } from '../composables/useTasks'
 import { t } from '../i18n'
+import type { AgentOption, TaskIsolation } from '../types'
 
 const props = defineProps<{
   creating: boolean
   error: string | null
   /** Embedded in a draft column: the column is the card, drop the chrome. */
   compact?: boolean
+  agents?: readonly AgentOption[]
+  currentAgent?: string
+  isolation?: TaskIsolation | null
 }>()
 
 const emit = defineEmits<{ create: [input: CreateTaskInput] }>()
 
 const prompt = ref('')
 const autoShip = ref(false)
+const selectedId = ref(matchAgentId(props.currentAgent, props.agents ?? []))
+
+watch(
+  () => [props.currentAgent, props.agents] as const,
+  ([command, agents]) => {
+    selectedId.value = matchAgentId(command, agents ?? [])
+  },
+)
+
+const orderedAgents = computed(() => pickerAgents(props.agents ?? [], props.currentAgent))
+
+const showPicker = computed(() => orderedAgents.value.length > 0)
+const showBuildHint = computed(() => showPicker.value && props.isolation === 'container')
+
+function optionDisabled(opt: AgentOption): boolean {
+  return !opt.detected && opt.id !== selectedId.value
+}
 
 function submit(): void {
   const text = prompt.value.trim()
   if (!text || props.creating) {
     return
   }
-  emit('create', {
-    title: titleFromPrompt(text),
-    prompt: text,
-    autoShip: autoShip.value,
-  })
+  emit(
+    'create',
+    taskComposerPayload({
+      title: titleFromPrompt(text),
+      prompt: text,
+      autoShip: autoShip.value,
+      agent: commandForAgentId(selectedId.value, props.agents ?? [], props.currentAgent),
+      defaultAgent: props.currentAgent ?? '',
+    }),
+  )
 }
 
 /** Called by the parent once the task is actually created. */
 function reset(): void {
   prompt.value = ''
   autoShip.value = false
+  selectedId.value = matchAgentId(props.currentAgent, props.agents ?? [])
 }
 
 defineExpose({ reset })
@@ -52,6 +85,19 @@ defineExpose({ reset })
       @keydown.enter="(e) => (e.metaKey || e.ctrlKey) && submit()"
     />
     <div class="tc-row">
+      <label v-if="showPicker" class="tc-agent">
+        <span>{{ t('workspace.agentLabel') }}</span>
+        <select v-model="selectedId" class="tc-agent-select">
+          <option
+            v-for="opt in orderedAgents"
+            :key="opt.id"
+            :value="opt.id"
+            :disabled="optionDisabled(opt)"
+          >
+            {{ opt.label }}
+          </option>
+        </select>
+      </label>
       <label class="tc-autoship" :title="t('workspace.autoShipHint')">
         <input v-model="autoShip" type="checkbox" class="tc-check" />
         <span>{{ t('workspace.autoShip') }}</span>
@@ -60,6 +106,7 @@ defineExpose({ reset })
         {{ creating ? t('workspace.launching') : t('workspace.launch') }}
       </button>
     </div>
+    <p v-if="showBuildHint" class="tc-hint">{{ t('workspace.agentBuildHint') }}</p>
     <p v-if="error" class="tc-error">{{ t('workspace.createError') }} ({{ error }})</p>
   </form>
 </template>
@@ -107,6 +154,30 @@ defineExpose({ reset })
   align-items: center;
   gap: 14px;
   flex-wrap: wrap;
+}
+
+.tc-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--cs-text-2);
+}
+
+.tc-agent-select {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--cs-text);
+  background: var(--cs-bg);
+  border: 1px solid var(--cs-line);
+  border-radius: 7px;
+  padding: 4px 8px;
+}
+
+.tc-hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--cs-text-2);
 }
 
 .tc-autoship {

@@ -197,6 +197,11 @@ export type CreateTaskReviewerOptions = {
   cwd: string
   /** Raw configured agent command (the review flow applies its own hardening). */
   command: string
+  /**
+   * Per-task override of `command`. When set, the end-of-turn review runs
+   * the CLI that task stored (`record.agent`), not the project's frozen one.
+   */
+  resolveCommand?: (record: TaskRecord) => string
   timeoutMs: number
   /** 'simple' (default) or 'dual'; per-task selection is deferred (see plan T4 notes). */
   mode?: TaskReviewMode
@@ -379,7 +384,14 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           settleInterrupted(record, io)
           return
         }
-        outcome = await runReviewFlow(opts, input, io)
+        outcome = await runReviewFlow(
+          {
+            ...opts,
+            command: opts.resolveCommand?.(record) ?? opts.command,
+          },
+          input,
+          io,
+        )
       } finally {
         release()
       }

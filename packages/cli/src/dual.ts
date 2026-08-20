@@ -26,13 +26,15 @@ function escapeRegExp(s: string): string {
 /**
  * The judge runs on the same provider as the configured agent, remapped to its
  * mid-tier model (adjudication needs reasoning, not the flagship price).
- * Custom commands are returned unchanged: their model is unknowable.
+ * Custom commands, and providers with an empty judgeModel (OpenCode: models
+ * are discovered per machine, never written into AGENT_DEFS), are returned
+ * unchanged — dual then uses the primary model.
  */
 export function judgeCommandFor(command: string): string {
   const first = command.trim().split(/\s+/)[0] ?? ''
   const bin = first.split('/').pop() ?? ''
   const def = AGENT_DEFS.find((d) => d.bin === bin)
-  if (!def) {
+  if (!def || !def.judgeModel) {
     return command
   }
   const flagPattern = new RegExp(`(^|\\s)${escapeRegExp(def.modelFlag)}(?:=|\\s+)\\S+`)

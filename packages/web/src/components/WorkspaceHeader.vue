@@ -13,11 +13,13 @@ defineProps<{
   needsYou: number
   /** Agents currently working: running + reviewing. */
   agents: number
+  /** Settings overlay is open: the button reads as back. */
+  settingsOpen?: boolean
 }>()
 
 const query = defineModel<string>('query', { default: '' })
 
-const emit = defineEmits<{ 'open-oldest-waiting': [] }>()
+const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
 
 const searchInput = ref<HTMLInputElement | null>(null)
 
@@ -55,6 +57,9 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
     </div>
 
     <div class="wh-right">
+      <button class="wh-settings" type="button" @click="emit('settings')">
+        {{ settingsOpen ? t('workspace.back') : t('nav.settings') }}
+      </button>
       <!-- Amber attention: at least one agent is blocked on the human. -->
       <button
         v-if="needsYou > 0"
@@ -156,6 +161,22 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
   display: flex;
   align-items: center;
   gap: 14px;
+}
+
+.wh-settings {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--cs-line);
+  background: var(--cs-surface);
+  color: var(--cs-text-2);
+  cursor: pointer;
+}
+
+.wh-settings:hover {
+  border-color: var(--cs-line-2);
 }
 
 /* The bell is a STATE: amber means the human is the bottleneck right now. */

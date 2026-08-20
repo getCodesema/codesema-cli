@@ -54,6 +54,13 @@ describe('fixCommandFor', () => {
   test('custom commands are used verbatim', () => {
     expect(fixCommandFor('my-agent --edit')).toBe('my-agent --edit')
   })
+
+  test('opencode is left unchanged: the default build agent already allows every tool', () => {
+    expect(fixCommandFor('opencode run')).toBe('opencode run')
+    expect(fixCommandFor('opencode run -m anthropic/claude-sonnet-4-5')).toBe(
+      'opencode run -m anthropic/claude-sonnet-4-5',
+    )
+  })
 })
 
 function record() {

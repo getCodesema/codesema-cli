@@ -37,7 +37,7 @@ import {
 import { taskKey, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { EXECUTION_STATUS } from '../execution-status'
 import { t } from '../i18n'
-import type { Project, WorkspaceInfo } from '../types'
+import type { AgentOption, Project, TaskIsolation, WorkspaceInfo } from '../types'
 import TaskComposer from './TaskComposer.vue'
 
 const props = defineProps<{
@@ -55,6 +55,8 @@ const props = defineProps<{
   createError: string | null
   /** Launch-repo / process-wide isolation (fallback for older CLIs). */
   workspace: WorkspaceInfo | null
+  agents?: readonly AgentOption[]
+  currentAgent?: string
 }>()
 
 const emit = defineEmits<{
@@ -143,6 +145,10 @@ const isoBannerDismissed = ref(readIsolationBannerDismissed())
 const composeIsolation = computed(() =>
   isolationForProject(effectiveTarget.value, props.projects, props.workspace),
 )
+const composeIsolationMode = computed<TaskIsolation | null>(
+  () => composeIsolation.value?.isolation_default ?? null,
+)
+const composeAgent = computed(() => composeIsolation.value?.agent ?? props.currentAgent ?? '')
 const showIsoBanner = computed(() =>
   shouldOfferIsolationUpgrade(composeIsolation.value, isoBannerDismissed.value),
 )
@@ -175,7 +181,15 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           </option>
         </select>
       </label>
-      <TaskComposer ref="composer" :creating="creating" :error="createError" @create="onCreate" />
+      <TaskComposer
+        ref="composer"
+        :creating="creating"
+        :error="createError"
+        :agents="agents ?? []"
+        :current-agent="composeAgent"
+        :isolation="composeIsolationMode"
+        @create="onCreate"
+      />
     </div>
 
     <div class="wq-scroll">

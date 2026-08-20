@@ -17,10 +17,12 @@ import {
   agentEnv,
   agentReasonCode,
   claudeStreamCommand,
-  createClaudeTaskParser,
+  createAgentStreamParser,
   effectiveAbsoluteCapMs,
   emitsClaudeStreamJson,
+  emitsOpencodeJson,
   flagPresent,
+  knownAgent,
   runAgent,
   type AgentHeartbeat,
   type AgentRunOptions,
@@ -57,6 +59,7 @@ import {
   agentHomeVolume,
   CAGE_FORWARDED_ENV,
   containerTaskCommandFor,
+  isolationDomainsFor,
   releaseAgentHome,
   runContainerTurn,
   type ReleaseAgentHomeResult,
@@ -109,8 +112,11 @@ function preview(text: string): string {
     : text
 }
 
-/** Claude in print mode can pin and resume a session; other providers run one-shot turns. */
+/** Claude in print mode, and OpenCode, can pin and resume a session; other providers run one-shot turns. */
 export function supportsSessionResume(command: string): boolean {
+  if (knownAgent(command) === 'opencode') {
+    return true
+  }
   return /^claude(\s|$)/.test(command) && /(^|\s)(-p|--print)(\s|$)/.test(command)
 }
 
@@ -122,10 +128,21 @@ export type TaskSession = { kind: 'new' | 'resume'; id: string }
  * its own worktree). Claude additionally gets the stream-json flags (tool
  * events + text deltas feed the live conversation) and a stable session:
  * --session-id on the first turn, --resume afterwards (flags verified against
- * claude 2.1.231 with -p).
+ * claude 2.1.231 with -p). OpenCode gets `--format json` and `-s` on resume;
+ * the first turn carries no session flag (the stream's sessionID is captured
+ * instead).
  */
 export function taskCommandFor(command: string, opts: { session: TaskSession | null }): string {
   let cmd = fixCommandFor(command)
+  if (knownAgent(command) === 'opencode') {
+    if (!flagPresent(cmd, '--format')) {
+      cmd += ' --format json'
+    }
+    if (opts.session?.kind === 'resume') {
+      cmd += ` -s ${opts.session.id}`
+    }
+    return cmd
+  }
   if (!/^claude(\s|$)/.test(command)) {
     return cmd
   }
@@ -486,6 +503,13 @@ export type RunTaskTurnOptions = {
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
   /** Egress allowlist of the cage (container isolation only). */
   allowedDomains?: readonly string[] | undefined
+  /**
+   * When true, `allowedDomains` is a project-level override and every caged
+   * turn uses it, even if the task picked a different agent. When false, a
+   * record whose `agent` differs from `command` derives the allowlist from
+   * that command.
+   */
+  pinAllowedDomains?: boolean | undefined
   /** Repo checks config: the base image of the cage falls back to it. */
   checksConfig?: ChecksConfig | null | undefined
   /**
@@ -501,6 +525,25 @@ export type RunTaskTurnOptions = {
   worktreeLockFn?: WorktreeLockFn | undefined
 }
 
+/** The CLI a turn actually runs: the record's write-once agent, else the runner default. */
+export function commandForTask(record: TaskRecord, fallback: string): string {
+  return typeof record.agent === 'string' && record.agent.trim() ? record.agent : fallback
+}
+
+function domainsForTask(
+  record: TaskRecord,
+  opts: Pick<RunTaskTurnOptions, 'command' | 'allowedDomains' | 'pinAllowedDomains'>,
+): readonly string[] | undefined {
+  if (opts.pinAllowedDomains) {
+    return opts.allowedDomains
+  }
+  const taskCommand = commandForTask(record, opts.command)
+  if (record.agent && record.agent !== opts.command) {
+    return isolationDomainsFor(taskCommand)
+  }
+  return opts.allowedDomains
+}
+
 /**
  * Runs one agent turn and reports what happened through events. The command
  * carries the stream-json flags itself, so runAgent's own claude parsing
@@ -509,7 +552,8 @@ export type RunTaskTurnOptions = {
  */
 export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOutcome> {
   const run = opts.runAgentFn ?? runAgent
-  const session: TaskSession | null = supportsSessionResume(opts.command)
+  const rawCommand = commandForTask(opts.task, opts.command)
+  const session: TaskSession | null = supportsSessionResume(rawCommand)
     ? opts.task.agent_session_id
       ? { kind: 'resume', id: opts.task.agent_session_id }
       : { kind: 'new', id: randomUUID() }
@@ -519,8 +563,8 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // everything else keeps the host path with its policy hardening.
   const caged = opts.task.isolation === 'container'
   const command = caged
-    ? containerTaskCommandFor(opts.command, { session })
-    : taskCommandFor(opts.command, { session })
+    ? containerTaskCommandFor(rawCommand, { session })
+    : taskCommandFor(rawCommand, { session })
 
   opts.onEvent({
     type: 'turn_started',
@@ -528,7 +572,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   })
 
   let sessionId: string | null = null
-  if (session) {
+  // Seed only an id that actually went on the command line. OpenCode's first
+  // turn never sends -s; a generated UUID would be persisted and resume a
+  // session that does not exist.
+  if (session && (session.kind === 'resume' || knownAgent(rawCommand) !== 'opencode')) {
     sessionId = session.id
   }
   let tokens = 0
@@ -542,30 +589,32 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // nothing and says so, never a clock reading that would quietly bill the
   // turn at today's rate.
   const startedAt = opts.task.turns.at(-1)?.started_at ?? ''
-  const parser = emitsClaudeStreamJson(command)
-    ? createClaudeTaskParser(
-        {
-          onInit: (id) => {
-            sessionId = id
+  const parser =
+    emitsClaudeStreamJson(command) || emitsOpencodeJson(command)
+      ? createAgentStreamParser(
+          command,
+          {
+            onInit: (id) => {
+              sessionId = id
+            },
+            onToolUse: (name, input) => opts.onEvent({ type: 'tool_use', data: { name, input } }),
+            onToolResult: (summary) => opts.onEvent({ type: 'tool_result', data: { summary } }),
+            ...(opts.onText ? { onText: opts.onText } : {}),
+            onTokens: (total) => {
+              tokens = total
+              opts.onTokens?.(total)
+            },
+            // The meter republishes at every change, `null` included: the last
+            // thing it said is what this turn can honestly claim.
+            onCost: (settled) => {
+              cost = settled
+              opts.onCost?.(settled)
+            },
+            onCostDegraded: (degradation) => opts.onEvent(costEvent(degradation)),
           },
-          onToolUse: (name, input) => opts.onEvent({ type: 'tool_use', data: { name, input } }),
-          onToolResult: (summary) => opts.onEvent({ type: 'tool_result', data: { summary } }),
-          ...(opts.onText ? { onText: opts.onText } : {}),
-          onTokens: (total) => {
-            tokens = total
-            opts.onTokens?.(total)
-          },
-          // The meter republishes at every change, `null` included: the last
-          // thing it said is what this turn can honestly claim.
-          onCost: (settled) => {
-            cost = settled
-            opts.onCost?.(settled)
-          },
-          onCostDegraded: (degradation) => opts.onEvent(costEvent(degradation)),
-        },
-        { at: startedAt, env: costRunEnv(caged, command) },
-      )
-    : null
+          { at: startedAt, env: costRunEnv(caged, command) },
+        )
+      : null
   let fed = 0
   // Both paths deliver the SAME cumulative stdout, so the stream-json parser
   // is fed identically whether the agent ran on the host or in its box.
@@ -587,6 +636,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // to sit above the largest budget plus the whole kill escalation.
   const absoluteCapMs = effectiveAbsoluteCapMs(opts.timeoutMs, budgets)
   const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
+  const allowedDomains = domainsForTask(opts.task, opts)
   const raw = caged
     ? await (opts.runContainerTurnFn ?? runContainerTurn)({
         taskId: opts.task.id,
@@ -596,7 +646,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
         timeoutMs: absoluteCapMs,
         watchdog: budgets,
         ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
-        ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
+        ...(allowedDomains ? { allowedDomains } : {}),
         ...(checksConfig !== undefined ? { checksConfig } : {}),
         ...(opts.signal ? { signal: opts.signal } : {}),
         onText,
@@ -928,6 +978,11 @@ export type TaskRunnerOptions = {
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
   /** Egress allowlist handed to every caged turn of this repo. */
   allowedDomains?: readonly string[] | undefined
+  /**
+   * When true, `allowedDomains` is a project-level override. When false, a
+   * task whose `agent` differs from this runner's command derives its own.
+   */
+  pinAllowedDomains?: boolean | undefined
   /** Repo checks config (base image fallback of the cage). */
   checksConfig?: ChecksConfig | null | undefined
   /** Re-read the checks config per turn (T1.4); wins over `checksConfig`. */
@@ -2134,11 +2189,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     // from being folded twice when both exit paths run.
     const attempt: TurnAttempt = { cost: null, folded: false }
     const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
+    const taskCommand = commandForTask(record, opts.command)
     return (
       runTaskTurn({
         cwd: record.worktree,
         task: record,
-        prompt: composeTurnPrompt(record, opts.command),
+        prompt: composeTurnPrompt(record, taskCommand),
         command: opts.command,
         timeoutMs: opts.timeoutMs,
         ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
@@ -2152,6 +2208,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         },
         ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
         ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
+        ...(opts.pinAllowedDomains ? { pinAllowedDomains: true } : {}),
         ...(checksConfig !== undefined ? { checksConfig } : {}),
         ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
       })
