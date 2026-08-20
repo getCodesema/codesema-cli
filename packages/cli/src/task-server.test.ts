@@ -839,6 +839,82 @@ describe('createTaskManager', () => {
     expect(rig.runnerOptions().command).toBe('codex exec -')
   })
 
+  test('a per-task opencode agent is refused under policy, even when the project default could cage', async () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'policy' })
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'claude -p',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const created = await manager.create(project.id, {
+      title: 't',
+      prompt: 'p',
+      autoShip: false,
+      agent: 'opencode',
+    })
+    expect(created).toMatchObject({ ok: false, code: 400 })
+    expect(created.ok ? true : 'reason_code' in created).toBe(false)
+    expect(created.ok ? '' : created.error).toMatch(/opencode\.json|MCP/)
+    expect(listTasks(project.path)).toHaveLength(0)
+  })
+
+  test('a per-task agent is stored as the resolved command and cages against it', async () => {
+    const repo = makeRepo()
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'claude -p',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const created = await manager.create(project.id, {
+      title: 't',
+      prompt: 'p',
+      autoShip: false,
+      agent: 'opencode run',
+    })
+    expect(created.ok && created.record.agent).toBe('opencode run')
+    expect(created.ok && created.record.isolation).toBe('container')
+  })
+
+  test('setDefaultCommand is the fallback stored on unspecified new tasks', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), command: 'claude -p' })
+    expect(manager.defaultCommand()).toBe('claude -p')
+    manager.setDefaultCommand('claude -p --model opus')
+    expect(manager.defaultCommand()).toBe('claude -p --model opus')
+    const created = await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(created.ok && created.record.agent).toBe('claude -p --model opus')
+  })
+
+  test('an unknown per-task agent is a 400 and writes nothing', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const created = await manager.create(project.id, {
+      title: 't',
+      prompt: 'p',
+      autoShip: false,
+      agent: 'my-agent run',
+    })
+    expect(created).toMatchObject({ ok: false, code: 400 })
+    expect(listTasks(project.path)).toHaveLength(0)
+  })
+
   test('policy + opencode is refused at create, never a host policy task', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'policy', agent: 'opencode run' })
@@ -930,15 +1006,10 @@ describe('createTaskManager', () => {
     })
   })
 
-  // Round 6 (adversarial review, MAJEUR B1): this test used to fix the
-  // manager-level fallback to 'codex exec -' AND have the repo declare the
-  // same command, which made the two sources of `ctx.command` indistinguishable
-  // — mutating the frozen command to `opts.command` left it green while
-  // `create()` started recording `container` for an agent the cage does not
-  // provide. The repo now declares a NON-cageable agent (TOFU-approved, so it
-  // really is what the runner executes) while the boot fallback is a cageable
-  // one: the two can no longer be confused.
-  test('create isolation follows the FROZEN runner command, not a later disk agent (T1.4 A)', async () => {
+  // Unspecified tasks follow a FRESH projectRuntime snapshot (the session
+  // default, or the repo's own agent), not the runner's frozen boot command.
+  // The chosen CLI is stored on the record so later turns keep it.
+  test('unspecified create isolation follows the live project agent, not the frozen runner', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'policy', agent: 'codex exec -' })
     trustRepoAgent(repo, 'codex exec -')
@@ -958,29 +1029,21 @@ describe('createTaskManager', () => {
     })
     const first = await manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
     expect(first.ok && first.record.isolation).toBe('policy')
+    expect(first.ok && first.record.agent).toBe('codex exec -')
     saveRepoConfig(repo, { isolation: 'container', agent: 'claude -p' })
     trustRepoAgent(repo, 'claude -p')
     expect(manager.workspaceInfo(project.id)).toMatchObject({
       isolation_configured: 'container',
-      isolation_available: false,
+      isolation_available: true,
     })
     const second = await manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
-    // The runner still executes the command it was built with. Recording
-    // container here would send that command into a claude-only cage — which
-    // is exactly what reading `opts.command` (a cageable 'claude -p') instead
-    // of the frozen one would do.
-    expect(second).toMatchObject({ ok: false, code: 400 })
-    expect(second.ok).toBe(false)
-    if (!second.ok) {
-      expect(second.error).toContain('codex exec -')
-      expect(second.error).toContain('Restart the workspace')
-      expect(second.error).toContain('claude -p')
-    }
+    expect(second.ok && second.record.isolation).toBe('container')
+    expect(second.ok && second.record.agent).toBe('claude -p')
     expect(rig.allRunnerOptions).toHaveLength(1)
     expect(rig.runnerOptions().command).toBe('codex exec -')
   })
 
-  test('a frozen non-claude 400 does not ask to restart when the file still agrees (T1.4)', async () => {
+  test('a non-cageable project agent is a 400, even when the session default could cage (T1.4)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'container', agent: 'codex exec -' })
     trustRepoAgent(repo, 'codex exec -')
@@ -989,7 +1052,7 @@ describe('createTaskManager', () => {
       ...managerOpts,
       ...fakeRunner(),
       // Deliberately CAGEABLE, and deliberately different from the repo's:
-      // the refusal below must follow the frozen command, not this one.
+      // the refusal below must follow the live project agent, not this one.
       command: 'claude -p',
       isolation: {
         available: true,
@@ -1043,9 +1106,9 @@ describe('createTaskManager', () => {
     expect(second).toMatchObject({ ok: false, code: 400 })
     expect(second.ok).toBe(false)
     if (!second.ok) {
-      expect(second.error).toContain('codex exec -')
+      expect(second.error).toContain('gemini')
       expect(second.error).not.toContain('Restart the workspace')
-      expect(second.error).not.toContain('gemini')
+      expect(second.error).not.toContain('codex exec -')
     }
   })
 
@@ -3418,6 +3481,7 @@ describe('task routes with a stub manager', () => {
   function stubManager(project: Project) {
     const listeners = new Set<(envelope: TaskEnvelope) => void>()
     const record = seedTask(project.path, 'stubbed task', 'stub work')
+    let sessionAgent = 'claude -p'
     const calls = {
       creates: [] as string[],
       createInputs: [] as unknown[],
@@ -3514,6 +3578,10 @@ describe('task routes with a stub manager', () => {
         listeners.add(listener)
         return () => listeners.delete(listener)
       },
+      defaultCommand: () => sessionAgent,
+      setDefaultCommand: (command) => {
+        sessionAgent = command
+      },
     }
     const emit = (envelope: TaskEnvelope) => {
       for (const listener of listeners) {
@@ -3569,6 +3637,45 @@ describe('task routes with a stub manager', () => {
       expect(JSON.parse(created.body)).toMatchObject({ id: record.id })
       expect(calls.creates).toEqual([project.id])
 
+      const unknownAgent = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 't',
+          prompt: 'p',
+          agent: 'my-agent run',
+        }),
+      })
+      expect(unknownAgent.status).toBe(400)
+      expect(calls.creates).toEqual([project.id])
+
+      const byId = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 't',
+          prompt: 'p',
+          agent: 'opencode',
+        }),
+      })
+      expect(byId.status).toBe(201)
+      expect((calls.createInputs.at(-1) as { agent?: string }).agent).toBe('opencode run')
+
+      const byCommand = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({
+          project_id: project.id,
+          title: 't',
+          prompt: 'p',
+          agent: 'opencode run',
+        }),
+      })
+      expect(byCommand.status).toBe(201)
+      expect((calls.createInputs.at(-1) as { agent?: string }).agent).toBe('opencode run')
+
       // Missing project_id: 400 before the manager is reached.
       const noProject = await rawRequest(started.port, '/api/tasks', {
         method: 'POST',
@@ -3590,7 +3697,7 @@ describe('task routes with a stub manager', () => {
         body: JSON.stringify({ project_id: project.id, title: 42, prompt: 'p' }),
       })
       expect(badBody.status).toBe(400)
-      expect(calls.creates).toEqual([project.id])
+      expect(calls.creates).toEqual([project.id, project.id, project.id])
 
       // T2.4: `issue` is an alternative to title/prompt, reaching the manager verbatim
       // as `unknown` — validation is entirely task-issue.ts's job, not serve.ts's.
@@ -3620,7 +3727,7 @@ describe('task routes with a stub manager', () => {
         body: JSON.stringify({ project_id: project.id }),
       })
       expect(neither.status).toBe(400)
-      expect(calls.creates).toEqual([project.id, project.id])
+      expect(calls.creates).toEqual([project.id, project.id, project.id, project.id])
 
       // issue must be an object, not an array or a scalar.
       const issueIsArray = await rawRequest(started.port, '/api/tasks', {
@@ -3635,6 +3742,61 @@ describe('task routes with a stub manager', () => {
         headers: { host: 'evil.com' },
       })
       expect(rebound.status).toBe(403)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('GET /api/config includes agent + agents, and PUT /api/config/agent updates it', async () => {
+    const project = register(makeRepo())
+    const { manager } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5122,
+      taskManager: manager,
+    })
+    try {
+      const html = await rawRequest(started.port, '/')
+      const tokenMatch = /__CODESEMA_CONFIG_TOKEN__="([a-f0-9]{32})"/.exec(html.body)
+      expect(tokenMatch).not.toBeNull()
+      const token = tokenMatch![1]!
+
+      const initial = await rawRequest(started.port, '/api/config')
+      expect(initial.status).toBe(200)
+      const snapshot = JSON.parse(initial.body) as {
+        agent?: string
+        agents?: { id: string; label: string; bin: string; command: string; detected: boolean }[]
+      }
+      expect(snapshot.agent).toBe('claude -p')
+      expect(Array.isArray(snapshot.agents)).toBe(true)
+      expect(
+        snapshot.agents?.some((a) => a.id === 'opencode' && a.command === 'opencode run'),
+      ).toBe(true)
+      expect(snapshot.agents?.every((a) => typeof a.detected === 'boolean')).toBe(true)
+
+      const forbidden = await rawRequest(started.port, '/api/config/agent', {
+        method: 'PUT',
+        body: '{"agent":"opencode"}',
+      })
+      expect(forbidden.status).toBe(403)
+
+      const unknown = await rawRequest(started.port, '/api/config/agent', {
+        method: 'PUT',
+        headers: { 'x-codesema-config-token': token },
+        body: '{"agent":"my-agent run"}',
+      })
+      expect(unknown.status).toBe(400)
+
+      const updated = await rawRequest(started.port, '/api/config/agent', {
+        method: 'PUT',
+        headers: { 'x-codesema-config-token': token },
+        body: '{"agent":"opencode"}',
+      })
+      expect(updated.status).toBe(200)
+      expect(JSON.parse(updated.body)).toEqual({ ok: true, agent: 'opencode run' })
+
+      const after = await rawRequest(started.port, '/api/config')
+      expect(JSON.parse(after.body).agent).toBe('opencode run')
     } finally {
       await started.stop()
     }

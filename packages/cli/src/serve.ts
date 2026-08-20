@@ -5,7 +5,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { listLocalBranches } from './branches.js'
-import { isTaskId, type ReviewRecord } from './contract.js'
+import { loadGlobalConfig, saveGlobalConfig } from './config.js'
+import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
 import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
@@ -29,6 +30,7 @@ import {
 } from './repo-config.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskEnvelope, TaskManager } from './task-server.js'
+import { AGENT_DEFS, defaultCommand, detectAgents, resolveKnownAgentCommand } from './wizard.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
 
@@ -465,7 +467,81 @@ async function handleSyncAutoPushUpdate(
   return sendJson(res, 200, { ok: true, syncAutoPush: enabled })
 }
 
+async function handleConfigGet(
+  res: ServerResponse,
+  cwd: string,
+  tasks: TasksEndpoint | undefined,
+  agents: () => Promise<AgentOption[]>,
+): Promise<void> {
+  const body: {
+    rulesContent: string
+    syncAutoPush: boolean
+    agent?: string
+    agents?: AgentOption[]
+  } = {
+    rulesContent: readRulesContent(cwd),
+    syncAutoPush: readSyncAutoPush(cwd),
+  }
+  if (tasks) {
+    body.agent = tasks.manager.defaultCommand()
+    body.agents = await agents()
+  }
+  return sendJson(res, 200, body)
+}
+
+async function handleConfigAgentUpdate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  repoConfig: RepoConfigEndpoint,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  if (!tasks) {
+    return sendJson(res, 501, { error: 'task manager unavailable' })
+  }
+  if (req.headers['x-codesema-config-token'] !== repoConfig.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_AGENT_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const raw = (body as { agent?: unknown } | null)?.agent
+  if (typeof raw !== 'string') {
+    return sendText(res, 400, 'bad request')
+  }
+  const resolved = resolveKnownAgentCommand(raw)
+  if (!resolved || resolved.length > TASK_AGENT_MAX) {
+    return sendText(res, 400, 'bad request')
+  }
+  saveGlobalConfig({ ...loadGlobalConfig(), agent: resolved })
+  tasks.manager.setDefaultCommand(resolved)
+  return sendJson(res, 200, { ok: true, agent: resolved })
+}
+
 const MAX_TASK_BODY_BYTES = 64 * 1024
+const MAX_AGENT_BODY_BYTES = TASK_AGENT_MAX + 1024
+
+type AgentOption = {
+  id: string
+  label: string
+  bin: string
+  command: string
+  detected: boolean
+}
+
+async function listAgentOptions(cwd: string): Promise<AgentOption[]> {
+  const detected = await detectAgents(cwd)
+  const ids = new Set(detected.map((def) => def.id))
+  return AGENT_DEFS.map((def) => ({
+    id: def.id,
+    label: def.label,
+    bin: def.bin,
+    command: defaultCommand(def),
+    detected: ids.has(def.id),
+  }))
+}
 
 /**
  * Every task route is scoped by a MANDATORY project id (the multi-project
@@ -533,6 +609,7 @@ async function handleTaskCreate(
     branch?: unknown
     target?: unknown
     issue?: unknown
+    agent?: unknown
   } | null
   // T2.4: `issue` replaces `title`+`prompt` (which then become optional) — an
   // object is enough to route the request to the manager, which owns the
@@ -551,9 +628,18 @@ async function handleTaskCreate(
     (b.autoShip !== undefined && typeof b.autoShip !== 'boolean') ||
     (b.base !== undefined && typeof b.base !== 'string') ||
     (b.branch !== undefined && typeof b.branch !== 'string') ||
-    (b.target !== undefined && typeof b.target !== 'string')
+    (b.target !== undefined && typeof b.target !== 'string') ||
+    (b.agent !== undefined && typeof b.agent !== 'string')
   ) {
     return sendText(res, 400, 'bad request')
+  }
+  let resolvedAgent: string | undefined
+  if (typeof b.agent === 'string') {
+    const resolved = resolveKnownAgentCommand(b.agent)
+    if (!resolved || resolved.length > TASK_AGENT_MAX) {
+      return sendText(res, 400, 'bad request')
+    }
+    resolvedAgent = resolved
   }
   // base/branch/target are only type-checked here: the manager owns the real
   // validation (trim, length bound, option-lookalike refusal, branch
@@ -567,6 +653,7 @@ async function handleTaskCreate(
     ...(typeof b.base === 'string' ? { base: b.base } : {}),
     ...(typeof b.branch === 'string' ? { branch: b.branch } : {}),
     ...(typeof b.target === 'string' ? { target: b.target } : {}),
+    ...(resolvedAgent ? { agent: resolvedAgent } : {}),
     ...(issue
       ? {
           issue: {
@@ -908,6 +995,11 @@ function createRequestHandler(handlerOpts: {
   // at most one of each, the cap only guards against runaway clients.
   let sseClients = 0
   const repoConfig: RepoConfigEndpoint = { cwd, token: configToken }
+  let agentsCache: Promise<AgentOption[]> | undefined
+  const listAgents = (): Promise<AgentOption[]> => {
+    agentsCache ??= listAgentOptions(cwd)
+    return agentsCache
+  }
 
   return (req: IncomingMessage, res: ServerResponse): void => {
     // The server only binds to loopback, but a malicious site could still reach
@@ -973,6 +1065,9 @@ function createRequestHandler(handlerOpts: {
       if (pathname === '/api/config/sync-auto-push') {
         return void handleSyncAutoPushUpdate(req, res, repoConfig)
       }
+      if (pathname === '/api/config/agent') {
+        return void handleConfigAgentUpdate(req, res, repoConfig, tasks)
+      }
       return sendText(res, 405, 'method not allowed')
     }
     if (req.method !== 'GET') {
@@ -991,10 +1086,7 @@ function createRequestHandler(handlerOpts: {
         return sendJson(res, 200, record)
       }
       if (pathname === '/api/config') {
-        return sendJson(res, 200, {
-          rulesContent: readRulesContent(cwd),
-          syncAutoPush: readSyncAutoPush(cwd),
-        })
+        return void handleConfigGet(res, cwd, tasks, listAgents)
       }
       if (
         pathname === '/api/mrs' ||

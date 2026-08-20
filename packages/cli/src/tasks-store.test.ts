@@ -141,6 +141,15 @@ describe('createTask', () => {
       expect(() => createTask(cwd, { ...input, issueSnapshot })).toThrow()
     })
   })
+
+  test('agent is copied onto the record when present, and stays absent otherwise', () => {
+    const withAgent = createTask(cwd, { ...input, agent: 'opencode run' })
+    expect(withAgent.agent).toBe('opencode run')
+    expect(loadTask(cwd, withAgent.id)?.agent).toBe('opencode run')
+    const without = createTask(cwd, input)
+    expect(without.agent).toBeUndefined()
+    expect(loadTask(cwd, without.id)?.agent).toBeUndefined()
+  })
 })
 
 describe('saveTask / loadTask round-trip', () => {

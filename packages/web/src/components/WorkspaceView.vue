@@ -32,6 +32,7 @@ import {
 import {
   buildProjectTree,
   countProjectActivity,
+  isolationForProject,
   isTrunkBranch,
   otherBranches,
   resolveBranchClick,
@@ -40,7 +41,7 @@ import {
 import { agentCounts, matchesQuery, oldestWaiting } from '../composables/useTaskBoard'
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
-import type { ForgeMr, ReviewRecord } from '../types'
+import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
 import ProjectsNav from './ProjectsNav.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
@@ -83,7 +84,45 @@ const {
   workspace,
 } = useTasks(props.token)
 
-onMounted(start)
+const agents = ref<AgentOption[]>([])
+const currentAgent = ref('')
+
+function isAgentOption(value: unknown): value is AgentOption {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const o = value as Record<string, unknown>
+  return (
+    typeof o.id === 'string' &&
+    typeof o.label === 'string' &&
+    typeof o.bin === 'string' &&
+    typeof o.command === 'string' &&
+    typeof o.detected === 'boolean'
+  )
+}
+
+async function loadAgentConfig(): Promise<void> {
+  try {
+    const res = await fetch('/api/config')
+    if (!res.ok) {
+      return
+    }
+    const body = (await res.json()) as { agent?: unknown; agents?: unknown }
+    if (typeof body.agent === 'string') {
+      currentAgent.value = body.agent
+    }
+    if (Array.isArray(body.agents)) {
+      agents.value = body.agents.filter(isAgentOption)
+    }
+  } catch {
+    // Older CLIs omit these fields; the picker stays hidden.
+  }
+}
+
+onMounted(() => {
+  start()
+  void loadAgentConfig()
+})
 onUnmounted(stop)
 
 const projectNameById = computed(
@@ -444,6 +483,8 @@ async function onRemoveProject(id: string): Promise<void> {
         :creating="creating"
         :create-error="createError"
         :workspace="workspace"
+        :agents="agents"
+        :current-agent="currentAgent"
         @open="(state) => openConversation(state.projectId, state.record.id)"
         @ship="onQueueShip"
         @resume="onQueueResume"
@@ -562,6 +603,12 @@ async function onRemoveProject(id: string): Promise<void> {
                   compact
                   :creating="runOf(entry.projectId, entry.draft).creating"
                   :error="runOf(entry.projectId, entry.draft).error"
+                  :agents="agents"
+                  :current-agent="currentAgent"
+                  :isolation="
+                    isolationForProject(entry.projectId, projects, workspace)?.isolation_default ??
+                    null
+                  "
                   @create="(input) => onDraftCreate(entry.projectId, entry.draft, input)"
                 />
               </div>

@@ -382,6 +382,13 @@ export type TaskRecord = {
    */
   isolation: TaskIsolation
   /**
+   * Full agent CLI this task's turns run with (e.g. "opencode run -m foo").
+   * WRITE-ONCE at creation, like `isolation`. OPTIONAL: a record written
+   * before this field inherits the workspace boot command at runtime, and
+   * absence is the honest default — nothing is invented on read-back.
+   */
+  agent?: string
+  /**
    * Why the task is where it is, when where it is is a degradation: the code
    * plus, in `detail`, the producer's own readable message verbatim. OPTIONAL,
    * and absence is the honest default — a record written by 0.12 has no reason
@@ -467,6 +474,8 @@ export const TASK_TITLE_MAX = 200
 /** Bound for a caller-supplied base branch name (POST /api/tasks `base`). */
 export const TASK_BASE_MAX = 200
 export const TASK_PATH_MAX = 500
+/** Bound for a persisted per-task agent command (POST /api/tasks `agent`). */
+export const TASK_AGENT_MAX = 500
 export const TASK_SESSION_ID_MAX = 200
 /** Bound for a timestamp read back from disk: an ISO-8601 instant, nothing longer. */
 export const TASK_TIMESTAMP_MAX = 40
@@ -846,6 +855,12 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     isolation: TASK_ISOLATIONS.has(r.isolation as TaskIsolation)
       ? (r.isolation as TaskIsolation)
       : 'policy',
+    // Optional and bounded, same doctrine as `heartbeat_at`: a record written
+    // before this field existed keeps none, and a non-string or blank value
+    // drops the key rather than inventing the workspace default here.
+    ...(typeof r.agent === 'string' && r.agent.trim()
+      ? { agent: r.agent.trim().slice(0, TASK_AGENT_MAX) }
+      : {}),
     // Optional and whitelisted, exactly like `source` on TaskChecks: a record
     // without a reason keeps none, and one whose code is unknown (older or
     // newer vocabulary, tampered file) drops the key entirely rather than

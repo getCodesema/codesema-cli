@@ -6,6 +6,7 @@ import {
   sanitizeTaskChecks,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
+  TASK_AGENT_MAX,
   TASK_CHECK_COMMAND_MAX,
   TASK_CHECK_TAIL_MAX,
   TASK_CHECKS_ERROR_MAX,
@@ -213,6 +214,33 @@ describe('sanitizeTaskRecord', () => {
     expect(sanitizeTaskRecord({ ...validRecord, isolation: 'vm' })?.isolation).toBe('policy')
     expect(sanitizeTaskRecord({ ...validRecord, isolation: 42 })?.isolation).toBe('policy')
     expect(sanitizeTaskRecord({ ...validRecord, isolation: null })?.isolation).toBe('policy')
+  })
+
+  test('agent: a bounded command survives a round-trip', () => {
+    expect(sanitizeTaskRecord({ ...validRecord, agent: 'opencode run' })?.agent).toBe(
+      'opencode run',
+    )
+    expect(
+      sanitizeTaskRecord({
+        ...validRecord,
+        agent: '  opencode run -m openrouter/foo  ',
+      })?.agent,
+    ).toBe('opencode run -m openrouter/foo')
+  })
+
+  test('agent: a record written before the field existed keeps none', () => {
+    const legacy: Record<string, unknown> = { ...validRecord }
+    delete legacy.agent
+    expect(sanitizeTaskRecord(legacy)?.agent).toBeUndefined()
+  })
+
+  test('agent: a non-string, blank, or overlong value never invents a command', () => {
+    expect(sanitizeTaskRecord({ ...validRecord, agent: 42 })?.agent).toBeUndefined()
+    expect(sanitizeTaskRecord({ ...validRecord, agent: '' })?.agent).toBeUndefined()
+    expect(sanitizeTaskRecord({ ...validRecord, agent: '   ' })?.agent).toBeUndefined()
+    expect(sanitizeTaskRecord({ ...validRecord, agent: 'x'.repeat(600) })?.agent?.length).toBe(
+      TASK_AGENT_MAX,
+    )
   })
 
   test('reason: a 0.12 record has none, and gets none invented for it', () => {

@@ -348,6 +348,15 @@ export type TaskReason = {
 /** How a task's agent turns are contained (mirrors the contract). */
 export type TaskIsolation = 'container' | 'policy'
 
+/** One known agent CLI, as GET /api/config `agents` lists them. */
+export type AgentOption = {
+  id: string
+  label: string
+  bin: string
+  command: string
+  detected: boolean
+}
+
 /** The two forges the CLI's client speaks (mirrors the contract). */
 export type IssueForge = 'github' | 'gitlab'
 
@@ -437,6 +446,8 @@ export type TaskRecord = {
   work_on?: boolean
   /** Containment of the task's turns, fixed at creation. Absent on older records = 'policy'. */
   isolation?: TaskIsolation
+  /** Full agent CLI this task's turns run with. Absent on older records = workspace boot command. */
+  agent?: string
   /** Why the task is where it is, when that is a degradation. Absent on
    * records written before reason codes existed, and on tasks nothing went
    * wrong with — absence claims nothing. */

@@ -650,6 +650,30 @@ describe('createTaskRunner', () => {
     expect(seenTasks.map((r) => r.status)).toEqual(['running', 'waiting_for_you'])
   })
 
+  test('a record with agent runs that command, not the runner default', async () => {
+    const repo = makeRepo()
+    const task = createTask(repo, {
+      title: 'oc',
+      prompt: 'do it',
+      autoShip: false,
+      base: '',
+      branch: '',
+      worktree: '',
+      agent: 'opencode run',
+    })
+    const fake = fakeClaude(() => 'done')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fake.run,
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(fake.commands[0]).toContain('opencode')
+    expect(fake.commands[0]).not.toContain('claude')
+  })
+
   test('a turn without changes ends without a commit event', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'read only', 'just look around')
@@ -3130,6 +3154,46 @@ describe('container isolation branch', () => {
     expect(call?.watchdog).toEqual(AGENT_WATCHDOG_DEFAULTS)
     expect(call?.allowedDomains).toEqual(['api.anthropic.com', 'registry.npmjs.org'])
     expect(call?.checksConfig?.image).toBe('oven/bun:1')
+  })
+
+  test("a record with its own agent runs that CLI and that CLI's egress", async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    task.agent = 'opencode run'
+    const cage = fakeCage()
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      allowedDomains: ['api.anthropic.com', 'platform.claude.com'],
+      runContainerTurnFn: cage.run,
+    })
+    const call = cage.calls[0]
+    expect(call?.command).toContain('opencode')
+    expect(call?.command).not.toContain('claude')
+    expect(call?.allowedDomains).toEqual(['opencode.ai', 'models.opencode.ai'])
+  })
+
+  test('a project-pinned allowlist wins over the task agent', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    task.agent = 'opencode run'
+    const cage = fakeCage()
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      allowedDomains: ['npm.acme-internal.example'],
+      pinAllowedDomains: true,
+      runContainerTurnFn: cage.run,
+    })
+    expect(cage.calls[0]?.allowedDomains).toEqual(['npm.acme-internal.example'])
   })
 
   test('getChecksConfig is re-read at the turn and wins over the snapshot (T1.4)', async () => {

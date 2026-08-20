@@ -83,6 +83,12 @@ export type CreateTaskInput = {
   /** Containment of the task's turns, resolved by the manager. Defaults to 'policy'. */
   isolation?: TaskIsolation
   /**
+   * Full agent CLI this task's turns run with. WRITE-ONCE: copied onto the
+   * record when present, omitted otherwise (older records inherit the
+   * workspace boot command at runtime).
+   */
+  agent?: string
+  /**
    * T2.4/D7: the forge issue this task was created from, and what its body was
    * worth at that moment. Always given TOGETHER by the manager (never one
    * without the other) — absent for the ordinary title+prompt path.
@@ -129,6 +135,7 @@ export function createTask(cwd: string, input: CreateTaskInput): TaskRecord {
     work_on: input.workOn === true,
     // Fixed here, once: nothing downstream may change how a task is contained.
     isolation: input.isolation ?? 'policy',
+    ...(input.agent ? { agent: input.agent } : {}),
     ...(input.issue && input.issueSnapshot
       ? { issue: input.issue, issue_snapshot: input.issueSnapshot }
       : {}),

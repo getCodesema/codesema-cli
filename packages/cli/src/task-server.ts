@@ -26,6 +26,7 @@ import {
 } from './config.js'
 import {
   isActiveTaskStatus,
+  TASK_AGENT_MAX,
   TASK_BASE_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
@@ -112,6 +113,7 @@ import {
   writeTaskChecks,
   type AppendTaskEventInput,
 } from './tasks-store.js'
+import { resolveKnownAgentCommand } from './wizard.js'
 
 /**
  * Everything a subscriber (the SSE stream) receives. 'task' carries the full
@@ -225,6 +227,12 @@ export type CreateTaskManagerInput = {
    * simply wins.
    */
   issue?: CreateTaskManagerIssueInput
+  /**
+   * Per-task agent CLI (id or full known command). Validated with
+   * `resolveKnownAgentCommand`; unknown/custom is a 400. Absent: the
+   * project's current runtime command is used and stored on the record.
+   */
+  agent?: string
 }
 
 export type TaskCreateResult =
@@ -365,6 +373,13 @@ export type TaskManager = {
   /** Graceful exit: interrupts every active agent (all projects) and resolves once all turns persisted. */
   shutdown: () => Promise<void>
   subscribe: (listener: (envelope: TaskEnvelope) => void) => () => void
+  /** Session-default agent command (fallback for projects without their own). */
+  defaultCommand: () => string
+  /**
+   * Updates the in-memory session default used by `projectRuntime` for
+   * projects that do not set `agent`. Does not rebuild existing runners.
+   */
+  setDefaultCommand: (command: string) => void
 }
 
 export type CreateTaskManagerOptions = {
@@ -784,10 +799,9 @@ type ProjectContext = {
   /** Tasks with a checks run in flight (one run at a time per task). */
   checking: Set<string>
   /**
-   * Agent command baked into `runner` at construction (T1.4 review A). Isolation
-   * at create() is decided against THIS command, never a fresher disk read —
-   * otherwise a record can be `container` while the runner still executes a
-   * non-claude agent inside a claude-only cage.
+   * Agent command baked into `runner` at construction. Isolation at create()
+   * uses the *task's* command (POST `agent`, else a fresh `projectRuntime`
+   * snapshot). This fallback is what turns of a record without `agent` run.
    */
   command: string
 }
@@ -1230,14 +1244,22 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const globalOnlyNoticeShown = new Set(opts.globalOnlyNoticeShown ?? [])
 
   /**
+   * Session-default agent command: the fallback `projectRuntime` uses for
+   * projects that do not set `agent`. Mutated by `setDefaultCommand` so a
+   * PUT /api/config/agent takes effect without a reboot.
+   */
+  let sessionCommand = opts.command
+
+  /**
    * Fresh per-project snapshot (T1.4): isolation mode, timeout, allowlist and
-   * the command a NEW context would bake. Isolation at create() uses the
-   * already-frozen `ctx.command` instead — a disk agent edit does not recage
-   * a runner that is still executing the previous one.
+   * the command a NEW task would run when it does not name its own agent.
+   * Isolation at create() uses the *task's* command (POST `agent`, else this
+   * snapshot) — a disk agent edit applies to unspecified new tasks.
    */
   const projectRuntime = (cwd: string) => {
     const { config, warnings } = resolveProjectConfig(cwd, opts.flags ?? {})
-    const agent = resolveProjectAgentCommand(cwd, opts.flags ?? {}, opts.command)
+    const agent = resolveProjectAgentCommand(cwd, opts.flags ?? {}, sessionCommand)
+    const pinned = config.isolationAllowedDomains
     return {
       command: agent.command,
       timeoutMs: config.timeout !== undefined ? config.timeout * 1000 : opts.timeoutMs,
@@ -1247,7 +1269,8 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         config.watchdogHeartbeatSeconds !== undefined
           ? resolveWatchdogBudgets(config)
           : opts.watchdog,
-      allowedDomains: config.isolationAllowedDomains ?? isolationDomainsFor(agent.command),
+      allowedDomains: pinned ?? isolationDomainsFor(agent.command),
+      pinAllowedDomains: pinned !== undefined,
       isolationMode: config.isolation ?? probe.configured,
       warnings,
       agentWarning: agent.warning,
@@ -1277,9 +1300,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   // Project-scoped: proposing a checks configuration needs no runner, no store
   // and no worktree — only the repo path and THAT project's agent (T1.4).
   const checksSetup: ChecksSetupRunner = createChecksSetupRunner({
-    command: opts.command,
+    command: sessionCommand,
     resolveCommand: (projectPath) =>
-      resolveProjectAgentCommand(projectPath, opts.flags ?? {}, opts.command).command,
+      resolveProjectAgentCommand(projectPath, opts.flags ?? {}, sessionCommand).command,
     ...(opts.runSetupAgentFn ? { runAgentFn: opts.runSetupAgentFn } : {}),
     onState: (projectId, state) =>
       emit({ project_id: projectId, event: { name: 'checks_proposal', data: state } }),
@@ -1618,7 +1641,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const cwd = project.path
     const runtime = projectRuntime(cwd)
     noticeProjectConfig(cwd, runtime)
-    const { command, timeoutMs, watchdog, allowedDomains } = runtime
+    const { command, timeoutMs, watchdog, allowedDomains, pinAllowedDomains } = runtime
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict; the reviewer shares the task agent command and timeout.
     // `loadCap` is NOT optional garnish here: it is what makes the end-of-turn
@@ -1706,6 +1729,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // checks-apply is picked up without restarting the workspace (T1.4).
       getChecksConfig: () => readChecksConfig(cwd),
       ...(allowedDomains ? { allowedDomains } : {}),
+      ...(pinAllowedDomains ? { pinAllowedDomains } : {}),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
       ...(opts.releaseAgentHomeFn ? { releaseAgentHomeFn: opts.releaseAgentHomeFn } : {}),
       onTask: (record) =>
@@ -2509,35 +2533,38 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // reads it and never re-decides. A workspace configured 'container'
       // refuses the creation outright rather than quietly running the task on
       // the host under a weaker containment than the one that was asked for.
-      // Isolation at create uses the command BAKED into this runner (T1.4
-      // review A), plus the isolation mode currently on disk. Re-reading the
-      // agent here would record `container` while the runner still executes
-      // the previous command. A config change of agent takes effect at the
-      // next workspace boot; isolation-mode edits still apply to new tasks.
+      // The command is the task's own (POST `agent`, validated) or a FRESH
+      // projectRuntime snapshot — not the runner's frozen boot command — so
+      // a per-task pick, and a session-default PUT, cage the CLI that will
+      // actually run. Stored on the record so later turns keep the same CLI.
       const runtime = projectRuntime(ctx.project.path)
+      let taskCommand = runtime.command
+      if (input.agent !== undefined) {
+        const trimmed = input.agent.trim()
+        if (trimmed.length > TASK_AGENT_MAX) {
+          return { ok: false, code: 400, error: `agent too long (max ${TASK_AGENT_MAX})` }
+        }
+        const resolvedAgent = resolveKnownAgentCommand(trimmed)
+        if (!resolvedAgent) {
+          return { ok: false, code: 400, error: `unknown agent '${trimmed}'` }
+        }
+        taskCommand = resolvedAgent
+      }
       const projectProbe = overlayIsolationProbe(probe, {
         configured: runtime.isolationMode,
-        command: ctx.command,
+        command: taskCommand,
       })
-      const resolved = resolveTaskIsolation(projectProbe, ctx.command)
+      const resolved = resolveTaskIsolation(projectProbe, taskCommand)
       if (!resolved) {
         // 400: config will never succeed by waiting — a non-cageable agent, or
         // opencode under policy (a host run is unsafe). 409: a cageable agent
         // blocked by a missing/unreachable runtime (claude AND opencode).
-        const agentCannotCage = !cageableCommand(ctx.command)
+        const agentCannotCage = !cageableCommand(taskCommand)
         const configRefusal = agentCannotCage || projectProbe.configured === 'policy'
-        // Frozen command names what would actually run. When the file now
-        // points at a cageable agent, say so — restarting is the fix, waiting
-        // is not. A disk edit that is still non-cageable must not send the
-        // human on a reboot that would 400 again.
-        const pending = runtime.command
-        const staleCageable = agentCannotCage && pending !== ctx.command && cageableCommand(pending)
         return {
           ok: false,
           code: configRefusal ? 400 : 409,
-          error: staleCageable
-            ? t('isolation.unavailableStaleAgent', { running: ctx.command, pending })
-            : t('isolation.unavailable', { reason: projectProbe.reason }),
+          error: t('isolation.unavailable', { reason: projectProbe.reason }),
           ...(configRefusal ? {} : { reason_code: 'resource_busy' as const }),
         }
       }
@@ -2550,6 +2577,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         worktree: '',
         workOn: branch !== '',
         isolation: resolved.isolation,
+        agent: taskCommand,
         // Always given together (TaskOrigin pairs them by construction, see
         // resolveIssueOrigin/resolveTitlePromptOrigin) — one guard, not two,
         // so a future drift here cannot silently split the pair.
@@ -2708,18 +2736,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     workspaceInfo: (projectId) => {
       const project = projectId ? findProject(projectId) : null
       const runtime = project ? projectRuntime(project.path) : null
-      // Mode still comes from disk (edits apply to new tasks). The command
-      // must match create(): once a runner exists, that is ctx.command.
-      const frozen = projectId ? contexts.get(projectId)?.command : undefined
+      // Mode and command both come from disk (and the mutable session
+      // default): edits apply to new tasks, matching create().
       const overlaid = overlayIsolationProbe(probe, {
         configured:
           runtime?.isolationMode ??
           resolveProjectConfig(null, opts.flags ?? {}).config.isolation ??
           probe.configured,
         command:
-          frozen ??
           runtime?.command ??
-          resolveProjectAgentCommand(null, opts.flags ?? {}, opts.command).command,
+          resolveProjectAgentCommand(null, opts.flags ?? {}, sessionCommand).command,
       })
       return {
         ...isolationDefaults(overlaid),
@@ -2740,6 +2766,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
+    },
+
+    defaultCommand: () => sessionCommand,
+
+    setDefaultCommand(command) {
+      sessionCommand = command
     },
   }
 }

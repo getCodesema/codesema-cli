@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import type { AgentOption } from '../types'
 
-type RepoConfigSnapshot = { rulesContent: string; syncAutoPush: boolean }
+type RepoConfigSnapshot = {
+  rulesContent: string
+  syncAutoPush: boolean
+  agent?: string
+  agents?: AgentOption[]
+}
 
 const isClient = typeof window !== 'undefined'
 const configToken = isClient
@@ -12,6 +18,8 @@ const loading = ref(true)
 const loadError = ref<string | null>(null)
 const rulesContent = ref('')
 const syncAutoPush = ref(false)
+const agent = ref('')
+const agents = ref<AgentOption[]>([])
 
 const savingRules = ref(false)
 const rulesSaved = ref(false)
@@ -20,6 +28,9 @@ let rulesSavedTimer: ReturnType<typeof setTimeout> | undefined
 
 const togglingSync = ref(false)
 const syncError = ref<string | null>(null)
+
+const savingAgent = ref(false)
+const agentError = ref<string | null>(null)
 
 async function load() {
   loading.value = true
@@ -32,6 +43,8 @@ async function load() {
     const snapshot = (await res.json()) as RepoConfigSnapshot
     rulesContent.value = snapshot.rulesContent
     syncAutoPush.value = snapshot.syncAutoPush
+    agent.value = snapshot.agent ?? ''
+    agents.value = Array.isArray(snapshot.agents) ? snapshot.agents : []
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -92,6 +105,44 @@ async function toggleAutoSync() {
   }
 }
 
+const agentSelectValue = computed(() => {
+  const current = agent.value.trim()
+  if (agents.value.some((opt) => opt.command === current)) {
+    return current
+  }
+  const bin = current.split(/\s+/)[0]?.split('/').pop() ?? ''
+  return agents.value.find((opt) => opt.bin === bin)?.command ?? current
+})
+
+async function saveAgent(next: string) {
+  if (!configToken || savingAgent.value || next === agent.value) {
+    return
+  }
+  const previous = agent.value
+  agent.value = next
+  savingAgent.value = true
+  agentError.value = null
+  try {
+    const res = await fetch('/api/config/agent', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-codesema-config-token': configToken },
+      body: JSON.stringify({ agent: next }),
+    })
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
+    const body = (await res.json()) as { agent?: string }
+    if (typeof body.agent === 'string') {
+      agent.value = body.agent
+    }
+  } catch (e) {
+    agent.value = previous
+    agentError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    savingAgent.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -123,6 +174,31 @@ onMounted(load)
           </button>
           <p v-if="rulesError" class="cfg-error">
             {{ $t('settings.saveError') }} ({{ rulesError }})
+          </p>
+        </div>
+      </section>
+
+      <section v-if="agents.length > 0" class="cfg-section">
+        <h2 class="cfg-section-title">{{ $t('settings.agentTitle') }}</h2>
+        <p class="cfg-hint codesema-muted">{{ $t('settings.agentHint') }}</p>
+        <div class="cfg-section-actions">
+          <select
+            class="cfg-select"
+            :value="agentSelectValue"
+            :disabled="!configToken || savingAgent"
+            @change="saveAgent(($event.target as HTMLSelectElement).value)"
+          >
+            <option
+              v-for="opt in agents"
+              :key="opt.id"
+              :value="opt.command"
+              :disabled="!opt.detected && opt.command !== agentSelectValue"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+          <p v-if="agentError" class="cfg-error">
+            {{ $t('settings.agentError') }} ({{ agentError }})
           </p>
         </div>
       </section>
@@ -244,6 +320,16 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.cfg-select {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--codesema-ink);
+  background: var(--codesema-bg);
+  border: 1px solid var(--codesema-line);
+  border-radius: 8px;
+  padding: 7px 10px;
 }
 
 .cfg-save-btn,

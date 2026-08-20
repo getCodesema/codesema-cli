@@ -152,6 +152,10 @@ const en = {
   'settings.autoSyncOn': 'Auto-sync: on',
   'settings.autoSyncOff': 'Auto-sync: off',
   'settings.autoSyncError': 'Could not update auto-sync.',
+  'settings.agentTitle': 'Default agent',
+  'settings.agentHint':
+    'New tasks use this agent unless you pick another one when launching a conversation.',
+  'settings.agentError': 'Could not update the default agent.',
 
   'mrs.title': 'Open MRs',
   'mrs.refresh': 'Refresh',
@@ -348,6 +352,8 @@ const en = {
   'workspace.tabDiffCount': 'Diff · {n} file | Diff · {n} files',
   'workspace.tabChecks': 'Checks',
   'workspace.agentLabel': 'Agent',
+  'workspace.agentBuildHint':
+    'The first task with this agent builds a container image (~1.4 GB); later tasks reuse it.',
   'workspace.agoTime': '{t} ago',
   'workspace.quickReplyOther': 'Something else…',
   'workspace.pin': 'Pin this conversation (side by side)',
@@ -617,6 +623,10 @@ const fr: Record<MessageKey, string> = {
   'settings.autoSyncOn': 'Auto-sync : activée',
   'settings.autoSyncOff': 'Auto-sync : désactivée',
   'settings.autoSyncError': 'Impossible de mettre à jour la synchronisation automatique.',
+  'settings.agentTitle': 'Agent par défaut',
+  'settings.agentHint':
+    "Les nouvelles tâches utilisent cet agent, sauf si tu en choisis un autre au lancement d'une conversation.",
+  'settings.agentError': "Impossible de mettre à jour l'agent par défaut.",
 
   'mrs.title': 'MRs ouvertes',
   'mrs.refresh': 'Rafraîchir',
@@ -809,6 +819,8 @@ const fr: Record<MessageKey, string> = {
   'workspace.tabDiffCount': 'Diff · {n} fichier | Diff · {n} fichiers',
   'workspace.tabChecks': 'Checks',
   'workspace.agentLabel': 'Agent',
+  'workspace.agentBuildHint':
+    'La première tâche avec cet agent construit une image de container (~1,4 Go) ; les suivantes la réutilisent.',
   'workspace.agoTime': 'il y a {t}',
   'workspace.quickReplyOther': 'Autre chose…',
   'workspace.pin': 'Épingler cette conversation (côte à côte)',
