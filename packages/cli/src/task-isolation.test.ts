@@ -1904,6 +1904,19 @@ describe('overlayIsolationProbe (T1.4)', () => {
     runtime: 'podman',
   }
 
+  test('an unprobed machine keeps "was not probed", not a fake configured-policy reason', () => {
+    const unprobed: IsolationProbe = {
+      available: false,
+      mode: 'policy',
+      reason: 'container isolation was not probed',
+      configured: 'policy',
+      runtime: null,
+    }
+    expect(
+      overlayIsolationProbe(unprobed, { configured: 'policy', command: 'claude -p' }).reason,
+    ).toBe('container isolation was not probed')
+  })
+
   test('a project set to policy stays policy even if the machine has a cage', () => {
     const overlaid = overlayIsolationProbe(machine, {
       configured: 'policy',

@@ -656,6 +656,11 @@ export type Project = {
   /** Display name (basename of the path). */
   name: string
   added_at: string
+  /**
+   * Isolation overlay for THIS repo (T1.4). Optional: older CLIs omit it and
+   * the UI falls back to the process-wide `workspace` blob.
+   */
+  isolation?: WorkspaceInfo
 }
 
 /**

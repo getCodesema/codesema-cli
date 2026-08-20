@@ -21,10 +21,8 @@ import { knownAgent } from './agent.js'
 import {
   globalConfigPath,
   hasInvalidPositiveIntKey,
-  isRepoAgentTrusted,
   loadConfig,
   loadGlobalConfig,
-  loadRepoConfig,
   repoLoadCapIgnoredNotices,
   resolveProjectAgentCommand,
   resolveProjectConfig,
@@ -238,6 +236,7 @@ export function workspaceTaskManagerOptions(
     | 'allowedDomains'
     | 'flags'
     | 'loadCapNoticeShown'
+    | 'launchRepoPath'
   >,
 ): Parameters<typeof createTaskManager>[0] {
   return {
@@ -315,28 +314,17 @@ function installShutdownHandlers(deps: {
 }
 
 /**
- * Agent command the workspace will drive, or a loud throw: unlike review, the
- * workspace is pointless without an agent (every task would 501). A
- * repo-provided command (TOFU surface) is never run unattended — the workspace
- * launches agents without further prompts, so it requires the explicit
- * one-time approval `codesema review` performs interactively. Outside a repo
- * there is no repo config, hence no TOFU surface to check.
+ * Fallback agent the workspace will drive, or a loud throw: unlike review, the
+ * workspace is pointless without an agent (every task would 501). TOFU for a
+ * repo-provided command lives in `resolveProjectAgentCommand` — an untrusted
+ * launch-repo agent no longer aborts boot; the project notices and falls back
+ * instead (T1.4 review nit).
  */
-async function resolveAgentCommand(
-  cwd: string,
-  repoRoot: string | null,
-  configured: string | undefined,
-): Promise<string> {
+async function resolveAgentCommand(cwd: string, configured: string | undefined): Promise<string> {
   const [detected] = await detectAgents(cwd)
   const agentCommand = configured ?? (detected ? defaultCommand(detected) : undefined)
   if (!agentCommand) {
     throw new Error(t('agent.noneFound', { bins: AGENT_DEFS.map((d) => d.bin).join(', ') }))
-  }
-  if (repoRoot !== null) {
-    const repoAgent = loadRepoConfig(repoRoot).agent
-    if (repoAgent === agentCommand && !isRepoAgentTrusted(repoRoot, agentCommand)) {
-      throw new Error(t('review.repoAgentUnattended', { command: agentCommand }))
-    }
   }
   return agentCommand
 }
@@ -376,7 +364,7 @@ export async function workspace(
   // Fallback agent: CLI flag / global file / detected in cwd. The launch
   // repo's `.codesema/config.json` is NOT baked in — that would leak A's
   // TOFU-approved command onto every sibling (T1.4 review).
-  const agentCommand = await resolveAgentCommand(opts.cwd, null, opts.agent ?? global.agent)
+  const agentCommand = await resolveAgentCommand(opts.cwd, opts.agent ?? global.agent)
   const launchAgent = resolveProjectAgentCommand(repoRoot, flags, agentCommand)
   // A custom (non claude/codex/gemini) agent command gets NO hardening flags:
   // full env, no read-only harness, no strict-mcp. The user chose it, but the
@@ -446,7 +434,7 @@ export async function workspace(
         isolation: probe,
         allowedDomains,
         flags,
-        ...(repoRoot !== null ? { loadCapNoticeShown: [repoRoot] } : {}),
+        ...(repoRoot !== null ? { loadCapNoticeShown: [repoRoot], launchRepoPath: repoRoot } : {}),
       }),
     )
 

@@ -4,6 +4,7 @@ import {
   buildProjectTree,
   countProjectActivity,
   deriveActiveProject,
+  isolationForProject,
   isTrunkBranch,
   migrateActiveProject,
   nameColor,
@@ -39,6 +40,27 @@ describe('migrateActiveProject', () => {
 
   test('null when nothing usable was persisted', () => {
     expect(migrateActiveProject(null, null)).toBeNull()
+  })
+})
+
+describe('isolationForProject', () => {
+  test('prefers the project overlay, falls back to the process-wide blob', () => {
+    const overlay = {
+      isolation_available: true,
+      isolation_default: 'container' as const,
+      isolation_reason: 'podman is available',
+      isolation_configured: 'auto' as const,
+    }
+    const fallback = {
+      isolation_available: false,
+      isolation_default: 'policy' as const,
+      isolation_reason: 'isolation is set to policy',
+      isolation_configured: 'policy' as const,
+    }
+    const withOverlay = project({ id: 'aaaa1111', isolation: overlay })
+    expect(isolationForProject('aaaa1111', [withOverlay], fallback)).toEqual(overlay)
+    expect(isolationForProject('bbbb2222', [withOverlay], fallback)).toEqual(fallback)
+    expect(isolationForProject(null, [withOverlay], fallback)).toEqual(fallback)
   })
 })
 

@@ -387,6 +387,11 @@ export type CreateTaskManagerOptions = {
    * boot (the launch repo). context() skips repeating them (T1.4 review).
    */
   loadCapNoticeShown?: readonly string[] | undefined
+  /**
+   * Launch-repo path whose TOFU / custom-agent warnings were already printed
+   * at boot. context() skips repeating them for that path (T1.4 review C/D).
+   */
+  launchRepoPath?: string | undefined
   /** Watchdog budgets (D3), read from the config by resolveWatchdogBudgets. */
   watchdog?: WatchdogBudgets | undefined
   /**
@@ -774,6 +779,13 @@ type ProjectContext = {
   shipping: Set<string>
   /** Tasks with a checks run in flight (one run at a time per task). */
   checking: Set<string>
+  /**
+   * Agent command baked into `runner` at construction (T1.4 review A). Isolation
+   * at create() is decided against THIS command, never a fresher disk read —
+   * otherwise a record can be `container` while the runner still executes a
+   * non-claude agent inside a claude-only cage.
+   */
+  command: string
 }
 
 /**
@@ -1214,10 +1226,10 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const loadCapNoticeShown = new Set(opts.loadCapNoticeShown ?? [])
 
   /**
-   * Fresh per-project snapshot (T1.4 review): command, isolation, timeout and
-   * allowlist from the same read. Used both when building a context and when
-   * deciding isolation at create, so a config edit cannot mix a new isolation
-   * with a stale agent (or the other way around).
+   * Fresh per-project snapshot (T1.4): isolation mode, timeout, allowlist and
+   * the command a NEW context would bake. Isolation at create() uses the
+   * already-frozen `ctx.command` instead — a disk agent edit does not recage
+   * a runner that is still executing the previous one.
    */
   const projectRuntime = (cwd: string) => {
     const { config, warnings } = resolveProjectConfig(cwd, opts.flags ?? {})
@@ -1238,6 +1250,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     }
   }
 
+  const customAgentNoticeShown = new Set<string>()
   const noticeProjectConfig = (cwd: string, runtime: ReturnType<typeof projectRuntime>): void => {
     if (!loadCapNoticeShown.has(cwd)) {
       for (const warning of runtime.warnings) {
@@ -1245,8 +1258,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
       loadCapNoticeShown.add(cwd)
     }
-    if (runtime.agentWarning) {
+    const bootAlreadySaid = opts.launchRepoPath !== undefined && cwd === opts.launchRepoPath
+    if (runtime.agentWarning && !bootAlreadySaid) {
       notice(runtime.agentWarning)
+    }
+    if (knownAgent(runtime.command) === null && !customAgentNoticeShown.has(cwd)) {
+      customAgentNoticeShown.add(cwd)
+      if (!bootAlreadySaid) {
+        notice(t('workspace.customAgentWarning', { command: runtime.command }))
+      }
     }
   }
 
@@ -1773,6 +1793,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       runner,
       shipping: new Set(),
       checking: new Set(),
+      command,
     }
     contexts.set(projectId, ctx)
     // A project the boot pass never enumerated gets its OWN pass now, on the
@@ -2484,20 +2505,22 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // reads it and never re-decides. A workspace configured 'container'
       // refuses the creation outright rather than quietly running the task on
       // the host under a weaker containment than the one that was asked for.
-      // Mode and agent are THIS project's, from ONE snapshot (T1.4 review):
-      // re-read together so a config edit cannot overlay a new isolation on a
-      // stale agent. The machine probe is only the runtime; overlay binds it.
+      // Isolation at create uses the command BAKED into this runner (T1.4
+      // review A), plus the isolation mode currently on disk. Re-reading the
+      // agent here would record `container` while the runner still executes
+      // the previous command. A config change of agent takes effect at the
+      // next workspace boot; isolation-mode edits still apply to new tasks.
       const runtime = projectRuntime(ctx.project.path)
       const projectProbe = overlayIsolationProbe(probe, {
         configured: runtime.isolationMode,
-        command: runtime.command,
+        command: ctx.command,
       })
       const resolved = resolveTaskIsolation(projectProbe)
       if (!resolved) {
         // A non-claude agent can never be caged: waiting will not help, so
         // this is a 400 with no retryable D2 code. A missing runtime is still
         // resource_busy — the engine may come back.
-        const agentCannotCage = knownAgent(runtime.command) !== 'claude'
+        const agentCannotCage = knownAgent(ctx.command) !== 'claude'
         return {
           ok: false,
           code: agentCannotCage ? 400 : 409,
@@ -2672,12 +2695,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     workspaceInfo: (projectId) => {
       const project = projectId ? findProject(projectId) : null
       const runtime = project ? projectRuntime(project.path) : null
+      // Mode still comes from disk (edits apply to new tasks). The command
+      // must match create(): once a runner exists, that is ctx.command.
+      const frozen = projectId ? contexts.get(projectId)?.command : undefined
       const overlaid = overlayIsolationProbe(probe, {
         configured:
           runtime?.isolationMode ??
           resolveProjectConfig(null, opts.flags ?? {}).config.isolation ??
           probe.configured,
         command:
+          frozen ??
           runtime?.command ??
           resolveProjectAgentCommand(null, opts.flags ?? {}, opts.command).command,
       })

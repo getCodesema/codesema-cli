@@ -23,6 +23,7 @@ import {
   shouldOfferIsolationUpgrade,
   showIsolationDot,
 } from '../composables/useIsolation'
+import { isolationForProject } from '../composables/useProjects'
 import {
   formatDuration,
   groupQueue,
@@ -51,8 +52,7 @@ const props = defineProps<{
   filter: string | null
   creating: boolean
   createError: string | null
-  /** Workspace isolation facts (GET /api/projects); null = the server said
-   * nothing, so the queue claims nothing either. */
+  /** Launch-repo / process-wide isolation (fallback for older CLIs). */
   workspace: WorkspaceInfo | null
 }>()
 
@@ -129,12 +129,18 @@ const rankHint = (state: TaskState, rank: number): string =>
 
 // ── Isolation: per-card dot + the one-time upgrade banner ─────────────────
 const isoOf = (state: TaskState) => isolationBadge(state.record)
-const showIso = (state: TaskState): boolean => showIsolationDot(state.record, props.workspace)
+const isolationOf = (projectId: string): WorkspaceInfo | null =>
+  isolationForProject(projectId, props.projects, props.workspace)
+const showIso = (state: TaskState): boolean =>
+  showIsolationDot(state.record, isolationOf(state.projectId))
 
 // Dismissal is a local preference, persisted for good on this machine.
 const isoBannerDismissed = ref(readIsolationBannerDismissed())
 const showIsoBanner = computed(() =>
-  shouldOfferIsolationUpgrade(props.workspace, isoBannerDismissed.value),
+  shouldOfferIsolationUpgrade(
+    isolationForProject(props.filter, props.projects, props.workspace),
+    isoBannerDismissed.value,
+  ),
 )
 
 function dismissIsoBanner(): void {
@@ -176,7 +182,14 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           <span aria-hidden="true">🛡</span> {{ t('workspace.isolationUpgradeTitle') }}
         </p>
         <p class="wq-iso-body">
-          {{ t('workspace.isolationUpgradeBody', { reason: workspace?.isolation_reason ?? '' }) }}
+          {{
+            t('workspace.isolationUpgradeBody', {
+              reason:
+                isolationForProject(filter, projects, workspace)?.isolation_reason ??
+                workspace?.isolation_reason ??
+                '',
+            })
+          }}
         </p>
         <p class="wq-iso-actions">
           <a

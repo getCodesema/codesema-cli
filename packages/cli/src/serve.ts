@@ -1042,11 +1042,15 @@ function createRequestHandler(handlerOpts: {
         if (!tasks) {
           return sendJson(res, 501, { error: 'task manager unavailable' })
         }
-        // `workspace` carries the process-wide facts the UI needs before it
-        // can honestly label anything: whether the container cage is usable
-        // here, and which isolation a new task would be created with.
+        // Isolation is per project (T1.4). Each registry entry carries its
+        // own overlay; `workspace` stays the launch-repo (or global) facts
+        // for older UIs. selectProject is client-local, so the UI reads
+        // `project.isolation` for the active card instead of refetching.
         return sendJson(res, 200, {
-          projects: listProjects(),
+          projects: listProjects().map((project) => ({
+            ...project,
+            isolation: tasks.manager.workspaceInfo(project.id),
+          })),
           current: tasks.currentProjectId,
           workspace: tasks.manager.workspaceInfo(tasks.currentProjectId),
         })

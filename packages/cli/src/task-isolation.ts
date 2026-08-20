@@ -1931,10 +1931,14 @@ export function overlayIsolationProbe(
 ): IsolationProbe {
   const { configured, command } = opts
   if (configured === 'policy') {
+    // UNPROBED_ISOLATION is configured 'policy' with no runtime: keep its
+    // "was not probed" reason rather than inventing "set in the configuration"
+    // when nothing was ever asked (T1.4 review nit).
+    const unprobed = machine.runtime === null && machine.configured === 'policy'
     return {
       available: false,
       mode: 'policy',
-      reason: t('isolation.reasonConfigured'),
+      reason: unprobed ? machine.reason : t('isolation.reasonConfigured'),
       configured,
       runtime: machine.runtime,
     }

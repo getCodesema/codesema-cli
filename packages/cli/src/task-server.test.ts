@@ -602,6 +602,14 @@ describe('createTaskManager', () => {
     expect(optsByCwd.get(repoB)?.timeoutMs).toBe(120_000)
     expect(optsByCwd.get(repoA)?.command).toBe('claude -p --model opus')
     expect(optsByCwd.get(repoB)?.command).toBe('claude -p')
+    expect(manager.workspaceInfo(projectA.id)).toMatchObject({
+      isolation_configured: 'container',
+      isolation_available: true,
+    })
+    expect(manager.workspaceInfo(projectB.id)).toMatchObject({
+      isolation_configured: 'policy',
+      isolation_available: false,
+    })
   })
 
   test("a sibling without agent inherits the global command, not the launch repo's (T1.4)", () => {
@@ -699,13 +707,14 @@ describe('createTaskManager', () => {
     })
   })
 
-  test('create re-reads isolation and agent together after the context exists (T1.4)', () => {
+  test('create isolation follows the FROZEN runner command, not a later disk agent (T1.4 A)', () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'policy', agent: 'codex exec -' })
     const project = register(repo)
+    const rig = fakeRunner()
     const manager = createTaskManager({
       ...managerOpts,
-      ...fakeRunner(),
+      ...rig,
       command: 'codex exec -',
       isolation: {
         available: true,
@@ -719,8 +728,72 @@ describe('createTaskManager', () => {
     expect(first.ok && first.record.isolation).toBe('policy')
     saveRepoConfig(repo, { isolation: 'container', agent: 'claude -p' })
     trustRepoAgent(repo, 'claude -p')
+    expect(manager.workspaceInfo(project.id)).toMatchObject({
+      isolation_configured: 'container',
+      isolation_available: false,
+    })
+    const second = manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
+    // The runner still executes the command it was built with. Recording
+    // container here would send that command into a claude-only cage.
+    expect(second).toMatchObject({ ok: false, code: 400 })
+    expect(rig.allRunnerOptions).toHaveLength(1)
+    expect(rig.runnerOptions().command).toBe('codex exec -')
+  })
+
+  test('isolation-mode edits still apply when the frozen command can be caged (T1.4 A)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'policy' })
+    const project = register(repo)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const first = manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false })
+    expect(first.ok && first.record.isolation).toBe('policy')
+    saveRepoConfig(repo, { isolation: 'container' })
     const second = manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
     expect(second.ok && second.record.isolation).toBe('container')
+    expect(rig.allRunnerOptions).toHaveLength(1)
+    expect(rig.runnerOptions().command).toBe('claude -p')
+  })
+
+  test('a launch-repo TOFU warning is not repeated at context() (T1.4 C)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { agent: 'claude -p --model opus' })
+    const project = register(repo)
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message) => notices.push(message),
+      launchRepoPath: repo,
+    })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(notices.some((line) => line.includes('not approved'))).toBe(false)
+  })
+
+  test('a sibling custom agent is named at context construction (T1.4 D)', () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { agent: 'mytool run' })
+    trustRepoAgent(repo, 'mytool run')
+    const project = register(repo)
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'claude -p',
+      onNotice: (message) => notices.push(message),
+    })
+    manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
+    expect(notices.some((line) => line.includes('mytool run'))).toBe(true)
   })
 
   test('a repo load-cap warning is not repeated on the second context of the same path (T1.4)', () => {
@@ -3703,21 +3776,27 @@ describe('project routes', () => {
       const initial = await rawRequest(started.port, '/api/projects')
       expect(initial.status).toBe(200)
       expect(JSON.parse(initial.body)).toEqual({
+        current: current.id,
+        workspace: {
+          isolation_available: false,
+          isolation_default: 'policy',
+          isolation_reason: 'container isolation was not probed',
+          isolation_configured: 'policy',
+        },
         projects: [
           {
             id: current.id,
             path: current.path,
             name: current.name,
             added_at: current.added_at,
+            isolation: {
+              isolation_available: false,
+              isolation_default: 'policy',
+              isolation_reason: 'container isolation was not probed',
+              isolation_configured: 'policy',
+            },
           },
         ],
-        current: current.id,
-        workspace: {
-          isolation_available: false,
-          isolation_default: 'policy',
-          isolation_reason: "isolation is set to 'policy' in the configuration",
-          isolation_configured: 'policy',
-        },
       })
 
       // Register a second repo by path.
