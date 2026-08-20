@@ -30,6 +30,8 @@ import {
   settlesLiveMessages,
   severityBreakdown,
   splitInlineCode,
+  statusLabelKey,
+  statusPhraseKey,
   streamsLiveText,
   timeAgo,
   titleFromPrompt,
@@ -112,6 +114,26 @@ describe('queuePhraseKey', () => {
 
   test('any other status never gets the machine phrase, even if waitingForSlot lingers true', () => {
     expect(queuePhraseKey('running', true)).toBeNull()
+  })
+})
+
+describe('statusPhraseKey / statusLabelKey (T3.1 checks_failed)', () => {
+  test('review_ko from checks does not reuse the findings phrasing', () => {
+    const blocked = record({
+      status: 'review_ko',
+      reason: { code: 'checks_failed', detail: 'repository checks failed (bun test)' },
+    })
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseChecksFailed')
+    expect(statusLabelKey(blocked)).toBe('workspace.statusChecksFailed')
+  })
+
+  test('review_ko from the review itself keeps the findings phrasing', () => {
+    const blocked = record({
+      status: 'review_ko',
+      reason: { code: 'review_blocked', detail: 'review failed: agent timed out' },
+    })
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseReviewKo')
+    expect(statusLabelKey(blocked)).toBe('workspace.statusReviewKo')
   })
 })
 

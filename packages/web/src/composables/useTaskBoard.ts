@@ -3,6 +3,7 @@
 // compose these functions; none of this logic lives in a .vue file (testable
 // with bun:test).
 
+import { EXECUTION_STATUS } from '../execution-status'
 import { t, type MessageKey } from '../i18n'
 import type { TaskEvent, TaskEventData, TaskEventType, TaskRecord, TaskStatus } from '../types'
 import type { FindingSeverity } from './useDiff'
@@ -117,6 +118,34 @@ export function queuePhraseKey(
   waitingForSlot: boolean,
 ): 'workspace.phaseQueuedMachine' | null {
   return status === 'queued' && waitingForSlot ? 'workspace.phaseQueuedMachine' : null
+}
+
+/**
+ * Header phrase for a conversation. T3.1: `review_ko` with `checks_failed`
+ * must not reuse "findings to fix" — that sentence is a lie when the review
+ * was green and the checks were red. Same shape as `queuePhraseKey`: a
+ * neighbour helper whose premise this ticket invalidated.
+ */
+export function statusPhraseKey(
+  record: Pick<TaskRecord, 'status' | 'reason'>,
+  waitingForSlot: boolean,
+): MessageKey {
+  const queued = queuePhraseKey(record.status, waitingForSlot)
+  if (queued) {
+    return queued
+  }
+  if (record.status === 'review_ko' && record.reason?.code === 'checks_failed') {
+    return 'workspace.phaseChecksFailed'
+  }
+  return EXECUTION_STATUS[record.status].phraseKey
+}
+
+/** Queue-card flag: same split as `statusPhraseKey`, for the short label. */
+export function statusLabelKey(record: Pick<TaskRecord, 'status' | 'reason'>): MessageKey {
+  if (record.status === 'review_ko' && record.reason?.code === 'checks_failed') {
+    return 'workspace.statusChecksFailed'
+  }
+  return EXECUTION_STATUS[record.status].labelKey
 }
 
 export type QueueGroups<T> = Record<QueueSection, T[]>

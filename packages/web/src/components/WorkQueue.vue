@@ -31,6 +31,7 @@ import {
   lastQuestion,
   queueRankHintKey,
   resumeStateOf,
+  statusLabelKey,
   waitingSince,
   type QueueSection,
 } from '../composables/useTaskBoard'
@@ -254,7 +255,7 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
               :aria-label="t(isoOf(state).labelKey)"
               :title="t(isoOf(state).hintKey)"
             />
-            <span class="wq-flag">{{ t(EXECUTION_STATUS[state.record.status].labelKey) }}</span>
+            <span class="wq-flag">{{ t(statusLabelKey(state.record)) }}</span>
           </span>
           <span v-if="excerptOf(state)" class="wq-question">« {{ excerptOf(state) }} »</span>
           <span class="wq-meta">

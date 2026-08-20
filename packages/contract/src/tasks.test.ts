@@ -300,6 +300,25 @@ describe('sanitizeTaskRecord', () => {
     expect(r?.version).toBe(1)
   })
 
+  test('checks_status: optional, terminal only, running and junk dropped', () => {
+    expect(
+      sanitizeTaskRecord(validRecord) && 'checks_status' in sanitizeTaskRecord(validRecord)!,
+    ).toBe(false)
+    for (const status of ['passed', 'failed', 'error', 'unconfigured'] as const) {
+      expect(sanitizeTaskRecord({ ...validRecord, checks_status: status })?.checks_status).toBe(
+        status,
+      )
+    }
+    expect(
+      sanitizeTaskRecord({ ...validRecord, checks_status: 'running' }) &&
+        'checks_status' in sanitizeTaskRecord({ ...validRecord, checks_status: 'running' })!,
+    ).toBe(false)
+    expect(
+      sanitizeTaskRecord({ ...validRecord, checks_status: 'green' }) &&
+        'checks_status' in sanitizeTaskRecord({ ...validRecord, checks_status: 'green' })!,
+    ).toBe(false)
+  })
+
   test('cost_ticks: a 0.12 record has none, on the record and on its turns', () => {
     // FROZEN fixture of a record as codesema 0.12 wrote it: no `cost_ticks`
     // key anywhere, because the cost unit did not exist yet.

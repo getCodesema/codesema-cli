@@ -264,3 +264,29 @@ describe('WorkQueue renders isolation PER PROJECT, not per launch repo', () => {
     expect(html).toContain('wq-iso--policy')
   })
 })
+
+describe('WorkQueue renders the checks_failed flag (T3.1)', () => {
+  function attention(reason: NonNullable<TaskRecord['reason']>): TaskState {
+    const s = state(reason, 0)
+    s.record.status = 'review_ko'
+    delete s.record.queue_position
+    s.record.title = 'blocked by checks'
+    return s
+  }
+
+  test('a review_ko from failed checks is not labelled as a blocked review', async () => {
+    const html = await renderQueue([
+      attention({ code: 'checks_failed', detail: 'repository checks failed (bun test)' }),
+    ])
+    expect(html).toContain(t('workspace.statusChecksFailed'))
+    expect(html).not.toContain(t('workspace.statusReviewKo'))
+  })
+
+  test('a review_ko from the review itself keeps the review-blocked flag', async () => {
+    const html = await renderQueue([
+      attention({ code: 'review_blocked', detail: 'review failed: agent timed out' }),
+    ])
+    expect(html).toContain(t('workspace.statusReviewKo'))
+    expect(html).not.toContain(t('workspace.statusChecksFailed'))
+  })
+})

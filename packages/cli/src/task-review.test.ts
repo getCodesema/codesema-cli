@@ -3,16 +3,27 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
-import type { Finding, ReviewRecord, TaskRecord, TaskStatus, Verdict } from './contract.js'
+import type {
+  Finding,
+  ReviewRecord,
+  TaskChecks,
+  TaskRecord,
+  TaskStatus,
+  Verdict,
+} from './contract.js'
 import { createLoadCap } from './load-cap.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview } from './record.js'
 import type { runSimpleFlow, SimpleOutcome } from './review.js'
 import {
+  applyChecksGate,
   buildFixTurnPrompt,
+  checksBlockReady,
+  checksFailedDetail,
   createTaskReviewer,
   readTaskReview,
   taskReviewVerdict,
+  terminalChecksResult,
   type CreateTaskReviewerOptions,
 } from './task-review.js'
 import { createTaskRunner, type TaskTurnIo } from './task-runner.js'
@@ -170,6 +181,144 @@ describe('taskReviewVerdict', () => {
     expect(taskReviewVerdict(fakeReview('comment', [major]))).toBe('review_ko')
     expect(taskReviewVerdict(fakeReview('comment', [info, praise]))).toBe('review_ok')
     expect(taskReviewVerdict(fakeReview('comment'))).toBe('review_ok')
+  })
+})
+
+// --- checks gate (T3.1) ---------------------------------------------------
+
+function checksOf(over: Partial<TaskChecks> = {}): TaskChecks {
+  return {
+    head_sha: 'abc',
+    started_at: '2026-08-14T10:00:00.000Z',
+    finished_at: '2026-08-14T10:01:00.000Z',
+    status: 'passed',
+    checks: [{ command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 5, tail: '' }],
+    error: null,
+    ...over,
+  }
+}
+
+function recordAt(status: TaskStatus): TaskRecord {
+  return {
+    version: 1,
+    id: 'a1b2c3d4e5f6',
+    title: 't',
+    status,
+    base: 'main',
+    branch: 'codesema/task-t',
+    worktree: '/tmp/w',
+    agent_session_id: null,
+    turns: [],
+    review_ref: null,
+    work_ms: 0,
+    wait_ms: 0,
+    auto_ship: false,
+    work_on: false,
+    isolation: 'policy',
+    created_at: '2026-08-14T10:00:00.000Z',
+    updated_at: '2026-08-14T10:00:00.000Z',
+  }
+}
+
+describe('checksBlockReady / applyChecksGate (T3.1)', () => {
+  test('failed blocks; a timeout check blocks even if the run is not labelled failed', () => {
+    expect(checksBlockReady(checksOf({ status: 'failed' }))).toBe(true)
+    expect(
+      checksBlockReady(
+        checksOf({
+          status: 'passed',
+          checks: [
+            { command: 'bun test', status: 'timeout', exit_code: null, duration_ms: 5, tail: '' },
+          ],
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  test('passed, unconfigured, error, running and absence never block', () => {
+    expect(checksBlockReady(checksOf({ status: 'passed' }))).toBe(false)
+    expect(checksBlockReady(checksOf({ status: 'unconfigured', checks: [] }))).toBe(false)
+    expect(checksBlockReady(checksOf({ status: 'error', checks: [], error: 'no runtime' }))).toBe(
+      false,
+    )
+    expect(checksBlockReady(checksOf({ status: 'running', finished_at: null }))).toBe(false)
+    expect(checksBlockReady(null)).toBe(false)
+    expect(checksBlockReady(undefined)).toBe(false)
+  })
+
+  test('error is not a failed run even when a check happened to fail', () => {
+    expect(
+      checksBlockReady(
+        checksOf({
+          status: 'error',
+          error: 'docker vanished',
+          checks: [
+            { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: '' },
+          ],
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  test('applyChecksGate: review_ok + red checks → review_ko with checks_failed, message kept', () => {
+    const record = recordAt('review_ok')
+    const red = checksOf({
+      status: 'failed',
+      checks: [
+        { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'boom' },
+      ],
+    })
+    applyChecksGate(record, red)
+    expect(record.status).toBe('review_ko')
+    expect(record.reason).toEqual({
+      code: 'checks_failed',
+      detail: checksFailedDetail(red),
+    })
+    expect(record.reason?.detail).toContain('bun test')
+    expect(record.checks_status).toBe('failed')
+  })
+
+  test('applyChecksGate: review_ok + passed keeps review_ok and stamps passed', () => {
+    const record = recordAt('review_ok')
+    applyChecksGate(record, checksOf({ status: 'passed' }))
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    expect(record.checks_status).toBe('passed')
+  })
+
+  test('applyChecksGate: unconfigured and error stamp the record but do not block', () => {
+    const unconfigured = recordAt('review_ok')
+    applyChecksGate(unconfigured, checksOf({ status: 'unconfigured', checks: [] }))
+    expect(unconfigured.status).toBe('review_ok')
+    expect(unconfigured.checks_status).toBe('unconfigured')
+    expect(unconfigured.reason).toBeUndefined()
+
+    const errored = recordAt('review_ok')
+    applyChecksGate(errored, checksOf({ status: 'error', checks: [], error: 'no docker' }))
+    expect(errored.status).toBe('review_ok')
+    expect(errored.checks_status).toBe('error')
+    expect(errored.reason).toBeUndefined()
+  })
+
+  test('applyChecksGate never overrides interrupted or review_ko', () => {
+    const interrupted = recordAt('interrupted')
+    applyChecksGate(interrupted, checksOf({ status: 'failed' }))
+    expect(interrupted.status).toBe('interrupted')
+    expect(interrupted.checks_status).toBe('failed')
+
+    const ko = recordAt('review_ko')
+    ko.reason = { code: 'review_blocked', detail: 'findings' }
+    applyChecksGate(ko, checksOf({ status: 'failed' }))
+    expect(ko.status).toBe('review_ko')
+    expect(ko.reason?.code).toBe('review_blocked')
+  })
+
+  test('terminalChecksResult drops running and keeps every finished status', () => {
+    expect(terminalChecksResult(checksOf({ status: 'running', finished_at: null }))).toBeNull()
+    expect(terminalChecksResult(null)).toBeNull()
+    expect(terminalChecksResult(checksOf({ status: 'unconfigured', checks: [] }))?.status).toBe(
+      'unconfigured',
+    )
   })
 })
 
@@ -348,6 +497,26 @@ describe('createTaskReviewer', () => {
     // exactly what it was before — never taken, never double-freed.
     expect(cap.snapshot().queued).toBe(0)
     holderRelease?.()
+    expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  test('a review parked on a saturated cap journals a named wait, never an error', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'named wait')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const cap = createLoadCap(1)
+    const holderRelease = cap.tryAcquire('turn')
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    const done = reviewer(repo, { runSimpleFlowFn: flow.fn, loadCap: cap })(record, rig.io)
+    await until(() => cap.snapshot().queued === 1)
+    expect(rig.events.some((e) => e.type === 'queue' && e.data.name === 'machine_busy')).toBe(true)
+    expect(rig.events.some((e) => e.type === 'error')).toBe(false)
+    expect(rig.events.find((e) => e.type === 'queue')?.reason_code).toBe('resource_busy')
+    holderRelease?.()
+    await done
+    expect(record.status).toBe('review_ok')
     expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
   })
 

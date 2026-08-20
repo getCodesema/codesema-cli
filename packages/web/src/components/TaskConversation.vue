@@ -43,10 +43,10 @@ import {
   formatTokens,
   groupThreadEvents,
   lastQuestion,
-  queuePhraseKey,
   replyModeOf,
   resumeStateOf,
   reviewRefOf,
+  statusPhraseKey,
   streamsLiveText,
   timeAgo,
   type FocusTab,
@@ -95,10 +95,8 @@ const visual = computed(() => EXECUTION_STATUS[record.value.status])
 // waiting for the MACHINE-wide cap gets its own header phrase instead of the
 // generic "queued — waiting for a slot" — the only consumer of
 // `state.liveLoadCap`/`waitingForSlot` outside the store itself.
-const phraseKey = computed(
-  () =>
-    queuePhraseKey(record.value.status, props.state.liveLoadCap?.waitingForSlot ?? false) ??
-    visual.value.phraseKey,
+const phraseKey = computed(() =>
+  statusPhraseKey(record.value, props.state.liveLoadCap?.waitingForSlot ?? false),
 )
 // Containment of this conversation's turns, fixed at its creation: the chip
 // states it, the tooltip says what it actually guarantees.

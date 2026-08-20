@@ -15,6 +15,17 @@ describe('catalog parity', () => {
 // catalogs — a French entry copy-pasted from the English one satisfies it
 // perfectly. These five keys are the ticket's own, and three of them are the
 // only French an operator ever reads about the machine-wide cap.
+describe('T3.1 checks-failed labels are actually translated, not copied', () => {
+  const keys = ['workspace.statusChecksFailed', 'workspace.phaseChecksFailed'] as const
+
+  test('every one of them differs from its English source', () => {
+    for (const key of keys) {
+      expect(catalogs.fr?.[key]).toBeDefined()
+      expect(catalogs.fr?.[key]).not.toBe(catalogs.en?.[key])
+    }
+  })
+})
+
 describe('the machine-cap keys are actually translated, not copied', () => {
   const keys = [
     'workspace.evQueue',

@@ -905,10 +905,12 @@ async function handleTaskAction(
   if (action.kind === 'ship') {
     // T5: push + MR creation. Success detail (MR URL, degraded-ship note)
     // travels on the SSE stream as the 'shipped' event and the record update.
+    // T3.1: a 409 (checks in flight, ship already in progress, …) carries
+    // `reason_code` next to the readable message, same as POST /api/tasks.
     const result = await tasks.manager.ship(projectId, action.id)
     return result.ok
       ? sendJson(res, 200, { ok: true })
-      : sendJson(res, result.code, { error: result.error })
+      : sendJson(res, result.code, taskActionBody(result))
   }
   if (action.kind === 'checks') {
     // Fire-and-forget start: 202 says the run is on its way, the outcome
