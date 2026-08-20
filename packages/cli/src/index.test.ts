@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { setLanguage, t } from './i18n.js'
 import {
@@ -279,5 +281,38 @@ describe('parseFailOn', () => {
     expect(() => parseFailOn('bogus')).toThrow(
       "--fail-on bogus invalide : attendu l'un de critical, major, minor, info, request_changes",
     )
+  })
+})
+
+// --- the workspace command's flag wiring (T1.4 round 6, MAJEUR M1) ---------
+//
+// `--agent` and `--timeout` on `codesema workspace` are the CLI half of the
+// documented precedence "flag > repo file > global file": they become
+// `ProjectConfigFlags` and win for EVERY registered project. `runCommand` is
+// not exported (each branch of it runs a real command — a server, an agent, a
+// browser), so this is the same source-shape assertion
+// `workspace-lifecycle.test.ts` uses for `workspace()`'s own boot lines, and
+// for the same reason: dropping either line from the `workspace({…})` call
+// left `tsc` green (both options are optional) and the whole suite at 0 fail,
+// while the two flags silently stopped applying anywhere.
+//
+// Not tautological: it compares nothing to the constant that produces it.
+describe('codesema workspace passes its CLI flags on', () => {
+  test('--agent and --timeout reach workspace(), parsed like everywhere else', () => {
+    const source = readFileSync(join(import.meta.dir, 'index.ts'), 'utf8')
+      // Comment lines may name the flags on purpose; only code counts.
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+      .join('\n')
+    const marker = "case 'workspace':"
+    const start = source.indexOf(marker)
+    expect(start).toBeGreaterThanOrEqual(0)
+    const block = source.slice(start, source.indexOf("case 'menu':", start))
+    expect(block).toContain('await workspace({')
+    expect(/agent:\s*values\.agent/.test(block)).toBe(true)
+    // Same bounds as `codesema review`: 1 s to 24 h, refused loudly otherwise.
+    expect(
+      /timeout:\s*parseIntFlag\('timeout',\s*values\.timeout,\s*1,\s*86400\)/.test(block),
+    ).toBe(true)
   })
 })

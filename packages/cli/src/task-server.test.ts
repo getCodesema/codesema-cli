@@ -612,6 +612,146 @@ describe('createTaskManager', () => {
     })
   })
 
+  // T1.4 review round 6, MAJEUR A1. The egress allowlist is the ONLY of the
+  // four per-project settings that was still read off the launch repo at boot
+  // and handed over as THE fallback, so a sibling that declared none ran its
+  // CAGED agent against A's widened allowlist — an inter-repo widening of
+  // trust on the isolation surface (invariant 3). Both halves were unproven:
+  // this pins the per-project read, workspace-lifecycle pins the boot line.
+  test("the egress allowlist is per project: a sibling never inherits the launch repo's (T1.4 A1)", async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, { isolationAllowedDomains: ['npm.acme-internal.example'] })
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      allowedDomains: ['api.anthropic.com'],
+    })
+    await manager.create(projectA.id, { title: 'a', prompt: 'p', autoShip: false })
+    await manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
+    const optsByCwd = new Map(rig.allRunnerOptions.map((options) => [options.cwd, options]))
+    expect(optsByCwd.get(repoA)?.allowedDomains).toEqual(['npm.acme-internal.example'])
+    // The cross-assertion is what kills the leak: B keeps the boot fallback.
+    expect(optsByCwd.get(repoB)?.allowedDomains).toEqual(['api.anthropic.com'])
+  })
+
+  // C5 (adversarial review, mineur): the README promises the three `watchdog*`
+  // keys are "Resolved per project" too, and `projectRuntime` does resolve
+  // them — but nothing turned red when it stopped. A project's budgets decide
+  // when its agent is declared dead; inheriting A's 60 s silence budget kills
+  // B's legitimately quiet tool call.
+  test('the three watchdog budgets are per project, and a sibling keeps the boot ones (T1.4)', async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, {
+      watchdogInactivitySeconds: 60,
+      watchdogToolBudgetSeconds: 120,
+      watchdogHeartbeatSeconds: 5,
+    })
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const rig = fakeRunner()
+    const bootBudgets = { inactivityMs: 1_800_000, toolBudgetMs: 7_200_000, heartbeatMs: 30_000 }
+    const manager = createTaskManager({ ...managerOpts, ...rig, watchdog: bootBudgets })
+    await manager.create(projectA.id, { title: 'a', prompt: 'p', autoShip: false })
+    await manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
+    const optsByCwd = new Map(rig.allRunnerOptions.map((options) => [options.cwd, options]))
+    expect(optsByCwd.get(repoA)?.watchdog).toEqual({
+      inactivityMs: 60_000,
+      toolBudgetMs: 120_000,
+      heartbeatMs: 5_000,
+    })
+    expect(optsByCwd.get(repoB)?.watchdog).toEqual(bootBudgets)
+  })
+
+  // C6 (adversarial review, mineur): the end-of-turn reviewer is a second
+  // agent run, on the same branch, and it is built from the SAME per-project
+  // resolution as the runner. Nothing pinned that: a reviewer left on the
+  // launch repo's command would run B's review with A's TOFU-approved agent,
+  // and with A's ceiling.
+  test("the end-of-turn reviewer of a project uses THAT project's command and ceiling (T1.4)", () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, { agent: 'claude -p --model opus', timeout: 30 })
+    trustRepoAgent(repoA, 'claude -p --model opus')
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const seen: CreateTaskReviewerOptions[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: fakeRunner().createRunnerFn,
+      createReviewerFn: (options) => {
+        seen.push(options)
+        return async () => {}
+      },
+    })
+    // Forces the lazy per-project assembly for both projects.
+    manager.checks(projectA.id, 'aaaaaaaaaaaa')
+    manager.checks(projectB.id, 'aaaaaaaaaaaa')
+    const byCwd = new Map(seen.map((options) => [options.cwd, options]))
+    expect(byCwd.get(repoA)?.command).toBe('claude -p --model opus')
+    expect(byCwd.get(repoA)?.timeoutMs).toBe(30_000)
+    expect(byCwd.get(repoB)?.command).toBe(managerOpts.command)
+    expect(byCwd.get(repoB)?.timeoutMs).toBe(managerOpts.timeoutMs)
+  })
+
+  // J2 (adversarial review, mineur): proposing a checks configuration is a
+  // third agent run, and its `resolveCommand` seam was branched in production
+  // with nothing red in either direction — a proposal for B would have been
+  // computed by the launch repo's agent.
+  test("a checks proposal for a project runs THAT project's agent (T1.4)", async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoB, { agent: 'claude -p --model haiku' })
+    trustRepoAgent(repoB, 'claude -p --model haiku')
+    register(repoA)
+    const projectB = register(repoB)
+    const runs: AgentRunOptions[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'claude -p',
+      runSetupAgentFn: (options) => {
+        runs.push(options)
+        return Promise.resolve('{}')
+      },
+    })
+    expect(manager.checksSetup(projectB.id)).toEqual({ ok: true })
+    await until(() => runs.length === 1)
+    expect(runs[0]?.command).toContain('claude -p --model haiku')
+    expect(runs[0]?.command).not.toBe(managerOpts.command)
+  })
+
+  // P5 (adversarial review, mineur): the TOFU warning of a SIBLING was only
+  // ever proven by its negative — three tests assert the notice is ABSENT, and
+  // all three stay green when the notice is deleted outright. Invariant 2 is
+  // about the positive case: an agent command a repo declared and nobody
+  // approved is dropped, and the human is told which one and why.
+  test("a sibling's unapproved repo agent is NAMED, not silently dropped (T1.4)", async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoB, { agent: 'claude -p --model opus' })
+    const projectB = register(repoB)
+    const rig = fakeRunner()
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      command: 'claude -p',
+      // The boot already said its piece about the LAUNCH repo; B is not it.
+      launchRepoPath: repoA,
+      onNotice: (message) => notices.push(message),
+    })
+    await manager.create(projectB.id, { title: 'b', prompt: 'p', autoShip: false })
+    expect(rig.runnerOptions().command).toBe('claude -p')
+    const named = notices.filter((line) => line.includes('claude -p --model opus'))
+    expect(named).toHaveLength(1)
+    expect(named[0]).toMatch(/not approved/)
+  })
+
   test("a sibling without agent inherits the global command, not the launch repo's (T1.4)", async () => {
     saveGlobalConfig({ agent: 'codex exec -' })
     const repoA = makeRepo()
@@ -707,15 +847,24 @@ describe('createTaskManager', () => {
     })
   })
 
+  // Round 6 (adversarial review, MAJEUR B1): this test used to fix the
+  // manager-level fallback to 'codex exec -' AND have the repo declare the
+  // same command, which made the two sources of `ctx.command` indistinguishable
+  // — mutating the frozen command to `opts.command` left it green while
+  // `create()` started recording `container` for an agent the cage does not
+  // provide. The repo now declares a NON-cageable agent (TOFU-approved, so it
+  // really is what the runner executes) while the boot fallback is a cageable
+  // one: the two can no longer be confused.
   test('create isolation follows the FROZEN runner command, not a later disk agent (T1.4 A)', async () => {
     const repo = makeRepo()
     saveRepoConfig(repo, { isolation: 'policy', agent: 'codex exec -' })
+    trustRepoAgent(repo, 'codex exec -')
     const project = register(repo)
     const rig = fakeRunner()
     const manager = createTaskManager({
       ...managerOpts,
       ...rig,
-      command: 'codex exec -',
+      command: 'claude -p',
       isolation: {
         available: true,
         mode: 'container',
@@ -734,7 +883,9 @@ describe('createTaskManager', () => {
     })
     const second = await manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
     // The runner still executes the command it was built with. Recording
-    // container here would send that command into a claude-only cage.
+    // container here would send that command into a claude-only cage — which
+    // is exactly what reading `opts.command` (a cageable 'claude -p') instead
+    // of the frozen one would do.
     expect(second).toMatchObject({ ok: false, code: 400 })
     expect(second.ok).toBe(false)
     if (!second.ok) {
@@ -754,7 +905,9 @@ describe('createTaskManager', () => {
     const manager = createTaskManager({
       ...managerOpts,
       ...fakeRunner(),
-      command: 'codex exec -',
+      // Deliberately CAGEABLE, and deliberately different from the repo's:
+      // the refusal below must follow the frozen command, not this one.
+      command: 'claude -p',
       isolation: {
         available: true,
         mode: 'container',
@@ -769,6 +922,47 @@ describe('createTaskManager', () => {
     if (!created.ok) {
       expect(created.error).toContain('codex exec -')
       expect(created.error).not.toContain('Restart the workspace')
+    }
+  })
+
+  // G4 (adversarial review, mineur). "Restart the workspace to pick up X" is
+  // only true when X could actually be caged. A disk edit from one non-claude
+  // agent to ANOTHER non-claude agent would 400 again after the reboot, so
+  // the hint must not fire — the decision stays right, and the ANNOUNCEMENT
+  // must not promise a trip that leads nowhere (§6 bis).
+  test('an edit from one non-claude agent to another promises no useful restart (T1.4)', async () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'container', agent: 'codex exec -' })
+    trustRepoAgent(repo, 'codex exec -')
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'claude -p',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    expect(
+      await manager.create(project.id, { title: 'a', prompt: 'p', autoShip: false }),
+    ).toMatchObject({
+      ok: false,
+      code: 400,
+    })
+    // The file now names a DIFFERENT agent — and it still cannot be caged.
+    saveRepoConfig(repo, { isolation: 'container', agent: 'gemini -p' })
+    trustRepoAgent(repo, 'gemini -p')
+    const second = await manager.create(project.id, { title: 'b', prompt: 'p', autoShip: false })
+    expect(second).toMatchObject({ ok: false, code: 400 })
+    expect(second.ok).toBe(false)
+    if (!second.ok) {
+      expect(second.error).toContain('codex exec -')
+      expect(second.error).not.toContain('Restart the workspace')
+      expect(second.error).not.toContain('gemini')
     }
   })
 
@@ -837,7 +1031,7 @@ describe('createTaskManager', () => {
       ...managerOpts,
       ...fakeRunner(),
       onNotice: (message) => notices.push(message),
-      loadCapNoticeShown: [repo],
+      globalOnlyNoticeShown: [repo],
     })
     await manager.create(project.id, { title: 't', prompt: 'p', autoShip: false })
     expect(notices.some((line) => line.includes('maxConcurrentAgents'))).toBe(false)
@@ -3790,6 +3984,71 @@ describe('task routes with a stub manager', () => {
 // --- /api/projects --------------------------------------------------------
 
 describe('project routes', () => {
+  // T1.4 review round 6, MAJEUR B2. The wiring of `workspaceInfo` on the REAL
+  // route was pinned by a single project with no config of its own, so both
+  // halves of the per-project overlay survived mutation with the suite green:
+  // `workspaceInfo(project.id)` -> `workspaceInfo(tasks.currentProjectId)`
+  // (every registry entry then reports the CURRENT project's cage) and
+  // `workspaceInfo(tasks.currentProjectId)` -> `workspaceInfo()` (the blob
+  // then reports the process-wide fallback rather than the current project).
+  // Two projects that DISAGREE are what tells the three apart.
+  test('GET /api/projects gives each project ITS own isolation, and the blob the current one (T1.4)', async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    // A is the launch/current repo and opted out of the cage; B did not.
+    saveRepoConfig(repoA, { isolation: 'policy' })
+    saveRepoConfig(repoB, { isolation: 'auto' })
+    const current = register(repoA)
+    const sibling = register(repoB)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'claude -p',
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+    const started = await startServer(createSession(), {
+      cwd: current.path,
+      port: 5162,
+      taskManager: manager,
+      currentProjectId: current.id,
+    })
+    try {
+      const body = JSON.parse((await rawRequest(started.port, '/api/projects')).body) as {
+        current: string
+        workspace: { isolation_available: boolean; isolation_configured: string }
+        projects: {
+          id: string
+          isolation: { isolation_available: boolean; isolation_configured: string }
+        }[]
+      }
+      const byId = new Map(body.projects.map((project) => [project.id, project.isolation]))
+      expect(byId.get(current.id)).toMatchObject({
+        isolation_available: false,
+        isolation_configured: 'policy',
+      })
+      // The sibling really is caged, and saying otherwise to the UI is an
+      // under-claim of containment on one card and an over-claim on the other.
+      expect(byId.get(sibling.id)).toMatchObject({
+        isolation_available: true,
+        isolation_configured: 'auto',
+      })
+      // ...and the process-wide blob follows the CURRENT project, not the
+      // global fallback (which, here, would claim the cage is on).
+      expect(body.workspace).toMatchObject({
+        isolation_available: false,
+        isolation_configured: 'policy',
+      })
+    } finally {
+      await started.stop()
+    }
+  })
+
   test('GET lists the registry with the current project; POST/DELETE edit it under the token', async () => {
     const current = register(makeRepo())
     const { manager } = (() => {

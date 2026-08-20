@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import { saveGlobalConfig, saveRepoConfig } from './config.js'
+import { loadConfig, saveGlobalConfig, saveRepoConfig } from './config.js'
 import type { TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
 import { projectIdFor } from './projects.js'
@@ -34,6 +34,7 @@ import {
   logIsolation,
   maxParallelNotice,
   resolveMaxConcurrentAgents,
+  workspaceBootFallbacks,
   workspaceTaskManagerOptions,
 } from './workspace.js'
 
@@ -1254,6 +1255,251 @@ describe('workspaceTaskManagerOptions (the whole createTaskManager argument)', (
     // inline beside it.
     expect(code.match(/createTaskManager[)\s]*\(/g) ?? []).toHaveLength(1)
     expect(/createTaskManager\)\(\s*workspaceTaskManagerOptions\(/.test(code)).toBe(true)
+  })
+})
+
+// --- T1.4 review, round 6: the boot lines nothing was pinning ------------
+//
+// Nine mutations of `workspace()` survived an adversarial campaign for one
+// structural reason: `workspace()` cannot be called from a test (it listens on
+// a port, takes the global workspace lock, probes container runtimes and
+// installs real SIGINT/SIGTERM handlers), so nothing runtime-level observes
+// what it resolves at boot. The two answers this file already used are applied
+// here to the T1.4 lines: extract the decision into a PURE function and assert
+// it for real, and pin the CALL SITE by source shape for what cannot be
+// extracted. Neither is tautological — no assertion compares a value to the
+// constant that produced it.
+
+describe('workspaceBootFallbacks (what EVERY project inherits)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    if (configDir) {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  function withConfigDir(): void {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-boot-fallbacks-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  }
+
+  test('nothing configured: the documented defaults reach the manager', () => {
+    withConfigDir()
+    const fallbacks = workspaceBootFallbacks({})
+    // 900 s is fix.ts's DEFAULT_TIMEOUT_S; the two domains are the strict
+    // minimum a caged claude needs (task-isolation.ts).
+    expect(fallbacks.timeoutMs).toBe(900_000)
+    expect(fallbacks.allowedDomains).toEqual(['api.anthropic.com', 'platform.claude.com'])
+    expect(fallbacks.watchdog).toEqual({
+      inactivityMs: 30 * 60_000,
+      toolBudgetMs: 2 * 60 * 60_000,
+      heartbeatMs: 30_000,
+    })
+  })
+
+  test('the GLOBAL file supplies all three, and the CLI flags win over it', () => {
+    withConfigDir()
+    saveGlobalConfig({
+      timeout: 300,
+      isolationAllowedDomains: ['registry.npmjs.org'],
+      watchdogInactivitySeconds: 60,
+      watchdogToolBudgetSeconds: 120,
+      watchdogHeartbeatSeconds: 5,
+    })
+    expect(workspaceBootFallbacks({})).toEqual({
+      timeoutMs: 300_000,
+      allowedDomains: ['registry.npmjs.org'],
+      watchdog: { inactivityMs: 60_000, toolBudgetMs: 120_000, heartbeatMs: 5_000 },
+    })
+    expect(
+      workspaceBootFallbacks({ timeout: 30, isolationAllowedDomains: ['proxy.internal'] }),
+    ).toMatchObject({
+      timeoutMs: 30_000,
+      allowedDomains: ['proxy.internal'],
+    })
+  })
+})
+
+// MAJEUR A2 (T1.4 review round 6). `applyRetention()` reads ONE keep count and
+// applies it to EVERY registered project: a cloned repo that wrote
+// `taskRetentionCount: 0` in its own .codesema/config.json purged, at the next
+// boot, every terminated task of every OTHER project — worktree, HOME volume
+// and .codesema/tasks/<id>/ included. The key is global-only since T1.4, and
+// this pins the exact assembly `workspace()` performs: loadConfig on the
+// launch repo, then workspaceTaskManagerOptions.
+describe('taskRetentionCount cannot travel from a repo file to the manager (T1.4 A2)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    if (configDir) {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  function setup(): void {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-retention-scope-cfg-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    repoDir = makeRepo()
+  }
+
+  const boot = () => ({
+    command: 'claude -p',
+    timeoutMs: 900_000,
+    isolation: {
+      available: false,
+      mode: 'policy' as const,
+      reason: 'container isolation was not probed',
+      configured: 'policy' as const,
+      runtime: null,
+    },
+  })
+
+  test('the launch repo asking for 0 does not purge every project: the global count stands', () => {
+    setup()
+    saveGlobalConfig({ taskRetentionCount: 20 })
+    saveRepoConfig(repoDir, { taskRetentionCount: 0 })
+    const opts = workspaceTaskManagerOptions(loadConfig(repoDir), new AbortController(), boot())
+    expect(opts.taskRetention).toBe(20)
+  })
+
+  test('and it is NAMED at boot, never dropped in silence (invariant 2)', () => {
+    setup()
+    saveRepoConfig(repoDir, { taskRetentionCount: 5 })
+    const lines = bootNotices(loadConfig(repoDir), repoDir)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('taskRetentionCount')
+    expect(lines[0]).toMatch(/ignored|global/i)
+  })
+})
+
+// The T1.4 boot lines, pinned by SOURCE SHAPE — same kind, and for the same
+// reason, as the two assertions above ('workspace() builds its manager THROUGH
+// this function' and 'workspace() prints EVERY bootNotices line'). Each one
+// below names the mutation an adversarial campaign confirmed survives with the
+// whole suite green.
+describe('workspace() boot wiring, by source shape (T1.4 round 6)', () => {
+  /** workspace.ts with its comment lines removed: only code counts. */
+  const code = (): string =>
+    readFileSync(join(import.meta.dir, 'workspace.ts'), 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+      .join('\n')
+
+  /** The object literal handed to `workspaceTaskManagerOptions`, balanced. */
+  function managerBootArgument(source: string): string {
+    const marker = 'workspaceTaskManagerOptions(config, draining, {'
+    const start = source.indexOf(marker)
+    expect(start).toBeGreaterThanOrEqual(0)
+    let depth = 0
+    for (let i = start + marker.length - 1; i < source.length; i++) {
+      if (source[i] === '{') {
+        depth++
+      } else if (source[i] === '}') {
+        depth--
+        if (depth === 0) {
+          return source.slice(start, i + 1)
+        }
+      }
+    }
+    throw new Error('unbalanced workspaceTaskManagerOptions argument')
+  }
+
+  // E8. `ignoreAgent: true` is the ticket's central promise: the boot probe
+  // asks the MACHINE one question ("is a runtime there and does it answer"),
+  // and the claude-only check is re-applied per project by
+  // overlayIsolationProbe. Flipping it to false makes a launch repo running a
+  // non-claude agent report "no cage" for every sibling, including the ones
+  // configured with claude — the capability probe stops being a capability
+  // probe. Nothing else in the process can observe this call.
+  test('the boot probe is a CAPABILITY probe: agent-agnostic, mode-agnostic', () => {
+    const source = code()
+    expect(source.match(/probeIsolation\(/g) ?? []).toHaveLength(1)
+    expect(/probeIsolation\(\{[^}]*ignoreAgent:\s*true[^}]*\}\)/s.test(source)).toBe(true)
+    // ...and asked as 'auto', not as the launch repo's mode: a launch repo set
+    // to 'policy' must not make the machine report "no runtime here".
+    expect(/probeIsolation\(\{[^}]*configured:\s*'auto'[^}]*\}\)/s.test(source)).toBe(true)
+  })
+
+  // E9 / P9. "La décision juste, l'annonce fausse" (§6 bis) on invariant 3:
+  // with `logIsolation(probe, …)` the boot of a launch repo configured
+  // 'policy', on a machine where docker answers, prints
+  //   🛡 container isolation ON (docker): each task runs in its own container…
+  // while every task it creates runs on the host. The decision stays right —
+  // create() overlays per project — and the announcement lies.
+  test('the boot line announces the OVERLAID probe, not the raw machine one', () => {
+    const source = code()
+    expect(/const bootProbe = overlayIsolationProbe\(\s*probe,/.test(source)).toBe(true)
+    expect(source.match(/\blogIsolation\(/g) ?? []).toHaveLength(2)
+    expect(/logIsolation\(bootProbe,\s*launchDomains\)/.test(source)).toBe(true)
+  })
+
+  // L3. The leak 191fc51 says it removed: baking the launch repo's
+  // `.codesema/config.json` agent into the fallback hands A's TOFU-approved
+  // command to every sibling that declares none of its own.
+  test('the fallback agent is the flag or the GLOBAL file, never the launch repo file', () => {
+    const source = code()
+    expect(
+      /resolveAgentCommand\(\s*opts\.cwd,\s*opts\.agent \?\? global\.agent,?\s*\)/.test(source),
+    ).toBe(true)
+    // `config` is loadConfig(repoRoot) — the merged launch-repo view. It may
+    // still feed the port and the global-only keys, never the agent.
+    expect(/config\.agent/.test(source)).toBe(false)
+  })
+
+  // A1 / L1 / L2. The three per-project fallbacks the manager carries. The
+  // measured leak: `allowedDomains` was still read off the launch repo, so a
+  // sibling with no allowlist of its own ran its CAGED agent against A's
+  // widened one — an inter-repo widening of trust on the isolation surface.
+  test('the manager gets its fallbacks from workspaceBootFallbacks, and from nothing else', () => {
+    const source = code()
+    expect(source.match(/\bworkspaceBootFallbacks\(/g) ?? []).toHaveLength(2)
+    expect(/const fallbacks = workspaceBootFallbacks\(flags\)/.test(source)).toBe(true)
+    const argument = managerBootArgument(source)
+    expect(/timeoutMs:\s*fallbacks\.timeoutMs/.test(argument)).toBe(true)
+    expect(/watchdog:\s*fallbacks\.watchdog/.test(argument)).toBe(true)
+    expect(/allowedDomains:\s*fallbacks\.allowedDomains/.test(argument)).toBe(true)
+  })
+
+  // P10 (adversarial review, mineur). context() SUPPRESSES the launch repo's
+  // TOFU and custom-agent notices because the boot already printed them — and
+  // that suppression is pinned by a test, while the printing itself was not.
+  // Deleting either console.log leaves the suppression standing and the human
+  // never told at all: an unapproved or unhardened agent runs unannounced.
+  test('the launch repo agent warnings ARE printed at boot, which is why context() skips them', () => {
+    const source = code()
+    expect(
+      /if \(launchAgent\.warning\) \{\s*console\.log\(launchAgent\.warning\)\s*\}/.test(source),
+    ).toBe(true)
+    expect(
+      /if \(knownAgent\(launchAgent\.command\) === null\) \{\s*console\.log\(\s*t\('workspace\.customAgentWarning'/.test(
+        source,
+      ),
+    ).toBe(true)
+  })
+
+  // L4 / L5. Without `flags`, `--agent`/`--timeout` stop applying to every
+  // registered project (they would only reach the launch repo's own boot
+  // values); without `launchRepoPath`, context() repeats on the launch repo
+  // the TOFU / custom-agent warnings the boot already printed.
+  test('the process-wide flags and the launch repo path reach the manager', () => {
+    const argument = managerBootArgument(code())
+    expect(/(^|[\s{,])flags,/.test(argument)).toBe(true)
+    expect(/launchRepoPath:\s*repoRoot/.test(argument)).toBe(true)
+    expect(/globalOnlyNoticeShown:\s*\[repoRoot\]/.test(argument)).toBe(true)
   })
 })
 

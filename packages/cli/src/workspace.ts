@@ -17,13 +17,13 @@
 // <globalConfigDir()>/workspace.lock prevents a second workspace process from
 // racing this one's registry and task stores.
 
-import { knownAgent } from './agent.js'
+import { knownAgent, type WatchdogBudgets } from './agent.js'
 import {
   globalConfigPath,
   hasInvalidPositiveIntKey,
   loadConfig,
   loadGlobalConfig,
-  repoLoadCapIgnoredNotices,
+  repoGlobalOnlyIgnoredNotices,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveWatchdogBudgets,
@@ -132,7 +132,7 @@ export function maxParallelNotice(configured: number | undefined): string | null
  * (adversarial review, MINEUR — invariant § 0.3 n°2's non-silence, applied to
  * the ticket's own new key). Null when both keys on the GLOBAL file are
  * either absent or usable. A repo file that sets them is a different
- * warning (`repoLoadCapIgnoredNotices`, T1.4): the key is global-only, so
+ * warning (`repoGlobalOnlyIgnoredNotices`, T1.4): the key is global-only, so
  * "unusable value" would mis-describe a value that is not applied at all.
  */
 export function invalidLoadCapKeyNotice(repoRoot: string | null): string | null {
@@ -166,7 +166,7 @@ export function bootNotices(
   return [
     maxParallelNotice(config.maxParallelTasks),
     invalidLoadCapKeyNotice(repoRoot),
-    ...repoLoadCapIgnoredNotices(repoRoot),
+    ...repoGlobalOnlyIgnoredNotices(repoRoot),
   ].filter((line): line is string => line !== null)
 }
 
@@ -235,7 +235,7 @@ export function workspaceTaskManagerOptions(
     | 'isolation'
     | 'allowedDomains'
     | 'flags'
-    | 'loadCapNoticeShown'
+    | 'globalOnlyNoticeShown'
     | 'launchRepoPath'
   >,
 ): Parameters<typeof createTaskManager>[0] {
@@ -249,6 +249,38 @@ export function workspaceTaskManagerOptions(
       ? { taskRetention: config.taskRetentionCount }
       : {}),
     shutdownSignal: draining.signal,
+  }
+}
+
+/**
+ * The three per-project settings a project inherits when it declares NONE of
+ * its own — resolved from the GLOBAL file plus the CLI flags, and **never**
+ * from the launch repo's `.codesema/config.json`.
+ *
+ * This is the whole point of T1.4 restated as a function: `workspace()` is
+ * launched from repo A, but the manager it builds serves every registered
+ * repo, so whatever it hands over as a fallback becomes B's, C's and D's
+ * default. An adversarial round measured the leak that shape invites — the
+ * egress allowlist was still read off the launch repo (review MAJEUR A1), so
+ * a sibling with no `isolationAllowedDomains` of its own ran its CAGED agent
+ * against A's widened allowlist. That is an inter-repo widening of trust on
+ * the isolation surface (invariant 3), and it was invisible because the
+ * function that would have shown it did not exist.
+ *
+ * Exported and pure of anything but the two config reads so a test can assert
+ * it directly: `workspace()` itself listens on a port, takes the global lock
+ * and installs real signal handlers, and can never be called from the suite.
+ */
+export function workspaceBootFallbacks(flags: ProjectConfigFlags): {
+  timeoutMs: number
+  allowedDomains: readonly string[]
+  watchdog: WatchdogBudgets
+} {
+  const fallback = resolveProjectConfig(null, flags).config
+  return {
+    timeoutMs: (fallback.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
+    allowedDomains: fallback.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+    watchdog: resolveWatchdogBudgets(fallback),
   }
 }
 
@@ -382,7 +414,12 @@ export async function workspace(
   // claim the cage is on. `ignoreAgent` skips the claude-only check — that
   // one is per-project too.
   const launchConfig = resolveProjectConfig(repoRoot, flags).config
-  const allowedDomains = launchConfig.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
+  // What EVERY project falls back to. Read from the global file + flags only:
+  // the launch repo's own allowlist/timeout/budgets are its business alone.
+  const fallbacks = workspaceBootFallbacks(flags)
+  // ...and what the BOOT LINE announces, which is about the launch repo and
+  // must therefore name the allowlist THAT repo's caged tasks would get.
+  const launchDomains = launchConfig.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
   const probe = await probeIsolation({
     configured: 'auto',
     command: agentCommand,
@@ -400,8 +437,6 @@ export async function workspace(
   // which only exist for the repo we started in. The manager's fallback is
   // global+flags so a sibling without `timeout` does not inherit A's.
   const timeoutMs = (launchConfig.timeout ?? DEFAULT_TIMEOUT_S) * 1000
-  const fallbackTimeoutMs =
-    (resolveProjectConfig(null, flags).config.timeout ?? DEFAULT_TIMEOUT_S) * 1000
   // Aborted by the first SIGINT/SIGTERM, handed to the runners that wait on the
   // repo lock while cleaning up, so the exit never sits behind one.
   const draining = new AbortController()
@@ -427,14 +462,17 @@ export async function workspace(
     taskManager = (opts.createTaskManagerFn ?? createTaskManager)(
       workspaceTaskManagerOptions(config, draining, {
         command: agentCommand,
-        timeoutMs: fallbackTimeoutMs,
-        // Fallback budgets (T1.4): a project that sets watchdog keys wins
-        // in context(). Global file, then D3 defaults.
-        watchdog: resolveWatchdogBudgets(global),
+        // Fallback ceiling, egress allowlist and watchdog budgets (T1.4): a
+        // project that sets its own wins in context(). Global file + flags,
+        // then the defaults — never the launch repo's file.
+        timeoutMs: fallbacks.timeoutMs,
+        watchdog: fallbacks.watchdog,
         isolation: probe,
-        allowedDomains,
+        allowedDomains: fallbacks.allowedDomains,
         flags,
-        ...(repoRoot !== null ? { loadCapNoticeShown: [repoRoot], launchRepoPath: repoRoot } : {}),
+        ...(repoRoot !== null
+          ? { globalOnlyNoticeShown: [repoRoot], launchRepoPath: repoRoot }
+          : {}),
       }),
     )
 
@@ -479,7 +517,7 @@ export async function workspace(
   console.log(`  ${started.url}`)
   console.log(`  ${t('review.ctrlc')}`)
   console.log('')
-  logIsolation(bootProbe, allowedDomains)
+  logIsolation(bootProbe, launchDomains)
   for (const line of bootNotices(config, repoRoot)) {
     console.log(line)
   }

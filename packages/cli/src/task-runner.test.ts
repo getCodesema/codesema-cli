@@ -3087,6 +3087,38 @@ describe('container isolation branch', () => {
     expect(host.commands[0]).not.toContain('--dangerously-skip-permissions')
   })
 
+  // I2 (adversarial review, mineur). `runTaskTurn`'s own getter is proven
+  // twice above, and the manager is proven to BUILD a `getChecksConfig` —
+  // but the link between them, inside `createTaskRunner`, was not: replacing
+  // `opts.getChecksConfig ? … : opts.checksConfig` with `opts.checksConfig`
+  // left the suite green while the cage of EVERY production turn lost its
+  // base-image config in silence (task-server passes ONLY the getter).
+  test('createTaskRunner re-reads getChecksConfig per turn, with no snapshot behind it (T1.4)', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged', 'do it', 'container')
+    const calls: RunContainerTurnOptions[] = []
+    let image = 'oven/bun:1'
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      // Exactly what task-server.ts passes: the getter, and nothing else.
+      getChecksConfig: () => ({ image }),
+      runContainerTurnFn: (options) => {
+        calls.push(options)
+        return Promise.resolve(claudeStream('done in the box'))
+      },
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(calls[0]?.checksConfig?.image).toBe('oven/bun:1')
+    // A checks-apply between two turns lands without rebuilding the runner.
+    image = 'node:26'
+    expect(runner.reply(task.id, 'again')).toEqual({ ok: true })
+    await until(() => calls.length === 2)
+    expect(calls[1]?.checksConfig?.image).toBe('node:26')
+  })
+
   test('a caged turn still gets its commit from the HOST runner (no git creds in the box)', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'Caged feature', 'write feature.txt', 'container')

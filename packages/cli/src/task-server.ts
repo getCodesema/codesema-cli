@@ -383,10 +383,12 @@ export type CreateTaskManagerOptions = {
    */
   flags?: ProjectConfigFlags | undefined
   /**
-   * Repo paths whose "global-only key ignored" warning was already printed at
-   * boot (the launch repo). context() skips repeating them (T1.4 review).
+   * Repo paths whose "global-only key ignored" warnings were already printed
+   * at boot (the launch repo). context() skips repeating them (T1.4 review).
+   * Named for what it actually holds since `taskRetentionCount` joined the
+   * stripped keys (T1.4 review A2) — it was never only about the load cap.
    */
-  loadCapNoticeShown?: readonly string[] | undefined
+  globalOnlyNoticeShown?: readonly string[] | undefined
   /**
    * Launch-repo path whose TOFU / custom-agent warnings were already printed
    * at boot. context() skips repeating them for that path (T1.4 review C/D).
@@ -1223,7 +1225,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const heldTicketedOrder = new Map<string, string[]>()
 
   const contexts = new Map<string, ProjectContext>()
-  const loadCapNoticeShown = new Set(opts.loadCapNoticeShown ?? [])
+  const globalOnlyNoticeShown = new Set(opts.globalOnlyNoticeShown ?? [])
 
   /**
    * Fresh per-project snapshot (T1.4): isolation mode, timeout, allowlist and
@@ -1252,11 +1254,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
 
   const customAgentNoticeShown = new Set<string>()
   const noticeProjectConfig = (cwd: string, runtime: ReturnType<typeof projectRuntime>): void => {
-    if (!loadCapNoticeShown.has(cwd)) {
+    if (!globalOnlyNoticeShown.has(cwd)) {
       for (const warning of runtime.warnings) {
         notice(warning)
       }
-      loadCapNoticeShown.add(cwd)
+      globalOnlyNoticeShown.add(cwd)
     }
     const bootAlreadySaid = opts.launchRepoPath !== undefined && cwd === opts.launchRepoPath
     if (runtime.agentWarning && !bootAlreadySaid) {

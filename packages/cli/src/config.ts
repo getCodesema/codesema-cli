@@ -32,6 +32,15 @@ export type CodesemaConfig = {
    * removed. Absent means DEFAULT_TASK_RETENTION (task-retention.ts).
    * Active tasks and 'interrupted' (reprenable) ones are NEVER candidates,
    * whatever this is set to.
+   *
+   * GLOBAL-ONLY (T1.4 review A2), same doctrine as the load cap: one
+   * `applyRetention()` pass reads ONE value and applies it to EVERY registered
+   * project, so a cloned repo that set `taskRetentionCount: 0` in its
+   * `.codesema/config.json` would purge the finished tasks of all the OTHERS
+   * at the next boot — worktree, HOME volume and `.codesema/tasks/<id>/`
+   * included. The resource it governs is the workspace, not the repository.
+   * A repo file that sets it is stripped here and NAMED by
+   * `repoGlobalOnlyIgnoredNotices` — never dropped in silence.
    */
   taskRetentionCount?: number | undefined
   /**
@@ -168,11 +177,17 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       (raw.maxParallelTasks as number) >= 1
         ? { maxParallelTasks: raw.maxParallelTasks as number }
         : {}),
-      // 0 is a legitimate choice (purge every terminated task at the next
-      // boot, keep none); a negative or non-integer value is not, and the
-      // DEFAULT_TASK_RETENTION default applies instead of a value that would
+      // GLOBAL-ONLY (T1.4 review A2): retention is applied by ONE pass over
+      // EVERY registered project, so a repo file that set it would decide how
+      // long the OTHER projects keep their finished tasks. Stripped here, and
+      // named by `repoGlobalOnlyIgnoredNotices` rather than dropped silently.
+      // On the global file: 0 is a legitimate choice (purge every terminated
+      // task at the next boot, keep none); a negative or non-integer value is
+      // not, and DEFAULT_TASK_RETENTION applies instead of a value that would
       // mean nothing sliced against an array.
-      ...(Number.isInteger(raw.taskRetentionCount) && (raw.taskRetentionCount as number) >= 0
+      ...(scope === 'global' &&
+      Number.isInteger(raw.taskRetentionCount) &&
+      (raw.taskRetentionCount as number) >= 0
         ? { taskRetentionCount: raw.taskRetentionCount as number }
         : {}),
       ...(scope === 'global' &&
@@ -287,15 +302,20 @@ export function loadConfig(repoRoot: string | null): CodesemaConfig {
  * CLI flags that win over both config files (documented precedence:
  * flag > `.codesema/config.json` > `~/.config/codesema/config.json`).
  * Process-wide: a flag applies to every registered project.
+ *
+ * Deliberately four keys, not seven (T1.4 review P8): `agentId`, `model` and
+ * `effort` are WIZARD METADATA — `wizard.ts` composes them into `agent` and
+ * writes all four to a config FILE. No CLI flag ever produces them, so a flag
+ * layer for them was output no caller could reach. They still get the
+ * repo > global precedence every other config key gets, through the merge in
+ * `resolveProjectConfig` below; what they do not get is a third layer that
+ * nothing can fill.
  */
 export type ProjectConfigFlags = {
   isolation?: IsolationMode | undefined
   isolationAllowedDomains?: string[] | undefined
   timeout?: number | undefined
   agent?: string | undefined
-  agentId?: string | undefined
-  model?: string | undefined
-  effort?: string | undefined
 }
 
 export type ResolvedProjectConfig = {
@@ -304,15 +324,35 @@ export type ResolvedProjectConfig = {
   warnings: string[]
 }
 
-const LOAD_CAP_KEYS = ['maxConcurrentAgents', 'maxParallelTasks'] as const
+/**
+ * Every key a repo `.codesema/config.json` may hold that is stripped by
+ * `parseConfig` AND named out loud when it is. Deliberately NOT called
+ * LOAD_CAP_KEYS any more (T1.4 review A2): the list stopped being about the
+ * machine load cap the day `taskRetentionCount` joined it, and an identifier
+ * that says less than it contains is how a key ends up stripped in silence.
+ *
+ * The sync keys (`syncUrl`, `syncSecret`, `syncAutoPush`) are stripped too but
+ * stay OUT of this list on purpose: they are credentials, and echoing back
+ * that a repo tried to redirect where reviews are sent is not a warning a
+ * human can act on. These three govern a resource that belongs to the MACHINE
+ * or to the WHOLE workspace, so a human who set one meant something real and
+ * has to be told it did not happen.
+ */
+const REPO_IGNORED_GLOBAL_ONLY_KEYS = [
+  'maxConcurrentAgents',
+  'maxParallelTasks',
+  'taskRetentionCount',
+] as const
 
 /**
- * Load-cap keys PRESENT in a repo `.codesema/config.json`, raw — including
+ * Global-only keys PRESENT in a repo `.codesema/config.json`, raw — including
  * values parseConfig would drop. Presence is what we warn about (T1.4): the
  * key is global-only, so a well-formed `3` is ignored just as a `0` is.
  * Never throws: unreadable JSON is "nothing to warn about".
  */
-export function presentRepoLoadCapKeys(repoRoot: string): Array<(typeof LOAD_CAP_KEYS)[number]> {
+export function presentRepoGlobalOnlyKeys(
+  repoRoot: string,
+): Array<(typeof REPO_IGNORED_GLOBAL_ONLY_KEYS)[number]> {
   try {
     const raw = JSON.parse(readFileSync(repoConfigPath(repoRoot), 'utf8')) as Record<
       string,
@@ -321,24 +361,25 @@ export function presentRepoLoadCapKeys(repoRoot: string): Array<(typeof LOAD_CAP
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       return []
     }
-    return LOAD_CAP_KEYS.filter((key) => raw[key] !== undefined)
+    return REPO_IGNORED_GLOBAL_ONLY_KEYS.filter((key) => raw[key] !== undefined)
   } catch {
     return []
   }
 }
 
-export function repoLoadCapIgnoredNotices(repoRoot: string | null): string[] {
+export function repoGlobalOnlyIgnoredNotices(repoRoot: string | null): string[] {
   if (repoRoot === null) {
     return []
   }
-  return presentRepoLoadCapKeys(repoRoot).map((key) => t('config.globalOnlyIgnored', { key }))
+  return presentRepoGlobalOnlyKeys(repoRoot).map((key) => t('config.globalOnlyIgnored', { key }))
 }
 
 /**
  * Per-project configuration (T1.4). Precedence is the documented one:
  * CLI flags > repo `.codesema/config.json` > `~/.config/codesema/config.json`.
- * `maxConcurrentAgents` / `maxParallelTasks` never come from the repo file
- * (stripped in parseConfig); if they were written there, `warnings` says so.
+ * `maxConcurrentAgents` / `maxParallelTasks` / `taskRetentionCount` never come
+ * from the repo file (stripped in parseConfig); if they were written there,
+ * `warnings` names each of them.
  *
  * `projectPath` null is the no-repo launch: only the global file (and flags)
  * apply, which is the pre-T1.4 behaviour of `loadConfig(null)`.
@@ -349,7 +390,7 @@ export function resolveProjectConfig(
 ): ResolvedProjectConfig {
   const global = loadGlobalConfig()
   const repo = projectPath ? loadRepoConfig(projectPath) : {}
-  const warnings = repoLoadCapIgnoredNotices(projectPath)
+  const warnings = repoGlobalOnlyIgnoredNotices(projectPath)
   const merged: CodesemaConfig = { ...global, ...repo }
   const flagged = <K extends keyof ProjectConfigFlags>(
     key: K,
@@ -362,10 +403,12 @@ export function resolveProjectConfig(
       ...flagged('isolation', flags.isolation),
       ...flagged('isolationAllowedDomains', flags.isolationAllowedDomains),
       ...flagged('timeout', flags.timeout),
+      // `--agent` is applied here even though the command a project RUNS is
+      // resolved by `resolveProjectAgentCommand` (which owns the TOFU rules
+      // this merge has no business replaying): a resolved view whose `agent`
+      // still named the config file while the flag overrode it would be a
+      // trap for the next reader, not an economy.
       ...flagged('agent', flags.agent),
-      ...flagged('agentId', flags.agentId),
-      ...flagged('model', flags.model),
-      ...flagged('effort', flags.effort),
     },
     warnings,
   }

@@ -9,9 +9,9 @@ import {
   loadConfig,
   loadGlobalConfig,
   loadRepoConfig,
-  presentRepoLoadCapKeys,
+  presentRepoGlobalOnlyKeys,
   repoConfigPath,
-  repoLoadCapIgnoredNotices,
+  repoGlobalOnlyIgnoredNotices,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveWatchdogBudgets,
@@ -332,15 +332,43 @@ describe('watchdog budgets (D3)', () => {
   // ("keep none, purge every terminated task at the next boot"), so the
   // guard must accept 0 while still rejecting anything that would slice an
   // array with a negative or fractional count.
-  test('taskRetentionCount: 0 is a legitimate deliberate choice, negative/fractional/non-numeric fall back to the default', () => {
+  //
+  // T1.4 review A2 moved the key to GLOBAL-ONLY, so the value guard is now
+  // pinned on the scope that can still carry it: the global file. The repo
+  // scope is pinned by the test right below — this pair replaces the single
+  // `loadRepoConfig` assertion this test used to make, which described a
+  // contract that let a cloned repo purge every other project's work.
+  test('taskRetentionCount on the GLOBAL file: 0 is a legitimate deliberate choice, negative/fractional fall back to the default', () => {
+    saveGlobalConfig({ taskRetentionCount: 0 })
+    expect(loadGlobalConfig().taskRetentionCount).toBe(0)
+    saveGlobalConfig({ taskRetentionCount: 5 })
+    expect(loadGlobalConfig().taskRetentionCount).toBe(5)
+    saveGlobalConfig({ taskRetentionCount: -1 })
+    expect(loadGlobalConfig().taskRetentionCount).toBeUndefined()
+    saveGlobalConfig({ taskRetentionCount: 2.5 })
+    expect(loadGlobalConfig().taskRetentionCount).toBeUndefined()
+  })
+
+  // The destructive half of T1.4 review A2, pinned on the merge every boot
+  // actually performs: `applyRetention()` takes ONE keep count and applies it
+  // to EVERY registered project, so a cloned repo that wrote
+  // `taskRetentionCount: 0` used to purge the finished tasks — worktree, HOME
+  // volume and .codesema/tasks/<id>/ — of all the OTHER projects at the next
+  // boot. The repo value is now stripped, and NAMED (invariant 2).
+  test('taskRetentionCount is GLOBAL-ONLY: a repo file cannot decide how long other projects keep their tasks', () => {
+    saveGlobalConfig({ taskRetentionCount: 20 })
     saveRepoConfig(repoDir, { taskRetentionCount: 0 })
-    expect(loadRepoConfig(repoDir).taskRetentionCount).toBe(0)
-    saveRepoConfig(repoDir, { taskRetentionCount: 5 })
-    expect(loadRepoConfig(repoDir).taskRetentionCount).toBe(5)
-    saveRepoConfig(repoDir, { taskRetentionCount: -1 })
     expect(loadRepoConfig(repoDir).taskRetentionCount).toBeUndefined()
-    saveRepoConfig(repoDir, { taskRetentionCount: 2.5 })
-    expect(loadRepoConfig(repoDir).taskRetentionCount).toBeUndefined()
+    // What `workspace()` actually feeds `createTaskManager`.
+    expect(loadConfig(repoDir).taskRetentionCount).toBe(20)
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.taskRetentionCount).toBe(20)
+    expect(resolved.warnings.some((line) => line.includes('taskRetentionCount'))).toBe(true)
+    // Even a value the parser would have kept is ignored: presence is what is
+    // warned about, not usability.
+    saveRepoConfig(repoDir, { taskRetentionCount: 3 })
+    expect(loadConfig(repoDir).taskRetentionCount).toBe(20)
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual(['taskRetentionCount'])
   })
 
   test('a budget that is not a number at all is simply absent', () => {
@@ -483,14 +511,14 @@ describe('resolveProjectConfig (T1.4)', () => {
     const resolved = resolveProjectConfig(repoDir)
     expect(resolved.config.maxConcurrentAgents).toBe(4)
     expect(resolved.warnings.some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
-    expect(presentRepoLoadCapKeys(repoDir)).toEqual(['maxConcurrentAgents'])
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual(['maxConcurrentAgents'])
   })
 
   test('the deprecated alias in a repo file is named the same way', () => {
     saveRepoConfig(repoDir, { maxParallelTasks: 2 })
-    const notices = repoLoadCapIgnoredNotices(repoDir)
+    const notices = repoGlobalOnlyIgnoredNotices(repoDir)
     expect(notices.some((line) => line.includes('maxParallelTasks'))).toBe(true)
-    expect(repoLoadCapIgnoredNotices(null)).toEqual([])
+    expect(repoGlobalOnlyIgnoredNotices(null)).toEqual([])
   })
 
   test('trustedProjectAgentCommand is scoped to the repo that provided the command', () => {
