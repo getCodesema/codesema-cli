@@ -1466,8 +1466,10 @@ describe('workspace() boot wiring, by source shape (T1.4 round 6)', () => {
   // widened one — an inter-repo widening of trust on the isolation surface.
   test('the manager gets its fallbacks from workspaceBootFallbacks, and from nothing else', () => {
     const source = code()
-    expect(source.match(/\bworkspaceBootFallbacks\(/g) ?? []).toHaveLength(2)
-    expect(/const fallbacks = workspaceBootFallbacks\(flags\)/.test(source)).toBe(true)
+    expect(source.match(/\bworkspaceBootFallbacks\b/g) ?? []).toHaveLength(2)
+    expect(
+      /const fallbacks = workspaceBootFallbacks\(flags,\s*launchAgent\.command\)/.test(source),
+    ).toBe(true)
     const argument = managerBootArgument(source)
     expect(/timeoutMs:\s*fallbacks\.timeoutMs/.test(argument)).toBe(true)
     expect(/watchdog:\s*fallbacks\.watchdog/.test(argument)).toBe(true)

@@ -37,7 +37,7 @@ import { openBrowser } from './open.js'
 import { addProject, listProjects, type Project } from './projects.js'
 import { createSession, startServer } from './serve.js'
 import {
-  DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+  isolationDomainsFor,
   overlayIsolationProbe,
   probeIsolation,
   teardownEgressProxy,
@@ -271,7 +271,10 @@ export function workspaceTaskManagerOptions(
  * it directly: `workspace()` itself listens on a port, takes the global lock
  * and installs real signal handlers, and can never be called from the suite.
  */
-export function workspaceBootFallbacks(flags: ProjectConfigFlags): {
+export function workspaceBootFallbacks(
+  flags: ProjectConfigFlags,
+  command?: string,
+): {
   timeoutMs: number
   allowedDomains: readonly string[]
   watchdog: WatchdogBudgets
@@ -279,7 +282,7 @@ export function workspaceBootFallbacks(flags: ProjectConfigFlags): {
   const fallback = resolveProjectConfig(null, flags).config
   return {
     timeoutMs: (fallback.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
-    allowedDomains: fallback.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+    allowedDomains: fallback.isolationAllowedDomains ?? isolationDomainsFor(command ?? 'claude'),
     watchdog: resolveWatchdogBudgets(fallback),
   }
 }
@@ -411,15 +414,16 @@ export async function workspace(
   // Container RUNTIME is probed ONCE at boot (T1.4): is an engine there, does
   // it answer. Per-project isolation mode and agent are overlaid at task
   // creation AND on the boot line, so a launch repo set to `policy` cannot
-  // claim the cage is on. `ignoreAgent` skips the claude-only check — that
+  // claim the cage is on. `ignoreAgent` skips the cageable-agent check — that
   // one is per-project too.
   const launchConfig = resolveProjectConfig(repoRoot, flags).config
   // What EVERY project falls back to. Read from the global file + flags only:
   // the launch repo's own allowlist/timeout/budgets are its business alone.
-  const fallbacks = workspaceBootFallbacks(flags)
+  const fallbacks = workspaceBootFallbacks(flags, launchAgent.command)
   // ...and what the BOOT LINE announces, which is about the launch repo and
   // must therefore name the allowlist THAT repo's caged tasks would get.
-  const launchDomains = launchConfig.isolationAllowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS
+  const launchDomains =
+    launchConfig.isolationAllowedDomains ?? isolationDomainsFor(launchAgent.command)
   const probe = await probeIsolation({
     configured: 'auto',
     command: agentCommand,
