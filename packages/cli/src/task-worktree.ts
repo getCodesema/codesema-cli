@@ -12,7 +12,7 @@
 // never renamed, without saying so out loud when the attempt is refused or
 // when a caller chooses to keep one that carries work.
 
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { listWorktrees } from './branches.js'
 import { ensureWorkDir } from './config.js'
@@ -440,6 +440,26 @@ export async function createTaskWorktree(
  * where it can be read. Any other lock failure is a real fault and propagates.
  */
 export type WorktreeRemoval = {
+  /**
+   * Did the worktree ACTUALLY go away?
+   *
+   * T1.9 review round 4, MAJEUR 2: this used to be unknowable — the
+   * `git worktree remove --force` below is a `tryGit`, whose null return was
+   * thrown away, so every caller was told `{serialized:true}` whether git had
+   * succeeded or refused. Two realistic refusals: a `git worktree lock`, and
+   * a file owned by root that a rootful containerized turn wrote into the
+   * worktree and the host user cannot unlink (EACCES). Under either, a caller
+   * that also drops the task record — retention does exactly that — leaves a
+   * worktree on disk that NO record names any more: a permanent orphan no
+   * future pass can find, which is precisely the disk space the pass existed
+   * to reclaim.
+   *
+   * True also when there was nothing to remove (the path is already gone):
+   * "the worktree is not there" is the outcome callers act on, and a git
+   * failure on a worktree that no longer exists is not a failure to remove
+   * it.
+   */
+  worktree_removed: boolean
   /** False when the cleanup ran without the repo lock (its wait ran out). */
   serialized: boolean
   /** Pid that was holding the lock, when the wait ran out. */
@@ -488,11 +508,11 @@ export async function removeTaskWorktree(
   opts: { deleteBranch: boolean; lockFn?: WorktreeLockFn | undefined },
 ): Promise<WorktreeRemoval> {
   let lock: WorktreeLockHandle | null = null
-  let removal: WorktreeRemoval = { serialized: true }
+  let lockState: Omit<WorktreeRemoval, 'worktree_removed'> = { serialized: true }
   try {
     lock = await (opts.lockFn ?? defaultLockFn)(cwd)
     if (lock.stolen) {
-      removal = {
+      lockState = {
         serialized: true,
         lock_stolen: { pid: lock.stolen.pid, age_ms: lock.stolen.ageMs },
       }
@@ -504,10 +524,16 @@ export async function removeTaskWorktree(
     if (!(err instanceof WorktreeLockBusyError)) {
       throw err
     }
-    removal = { serialized: false, holder_pid: err.pid, holder_age_ms: err.ageMs }
+    lockState = { serialized: false, holder_pid: err.pid, holder_age_ms: err.ageMs }
   }
+  const path = taskWorktreePath(cwd, taskId)
+  let removed: boolean
   try {
-    tryGit(['worktree', 'remove', '--force', taskWorktreePath(cwd, taskId)], cwd)
+    // The one call whose outcome a caller may not assume (see
+    // WorktreeRemoval.worktree_removed). `tryGit` answers null on refusal;
+    // the disk has the last word, because git also fails when there is
+    // nothing left to remove — an already-gone worktree IS removed.
+    removed = tryGit(['worktree', 'remove', '--force', path], cwd) !== null || !existsSync(path)
     tryGit(['worktree', 'prune'], cwd)
     if (opts.deleteBranch && branch) {
       tryGit(['branch', '-D', branch], cwd)
@@ -515,5 +541,5 @@ export async function removeTaskWorktree(
   } finally {
     lock?.release()
   }
-  return removal
+  return { ...lockState, worktree_removed: removed }
 }

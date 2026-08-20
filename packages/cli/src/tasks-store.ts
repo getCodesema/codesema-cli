@@ -6,10 +6,10 @@
 import { randomBytes } from 'node:crypto'
 import {
   appendFileSync,
-  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   type Dirent,
 } from 'node:fs'
@@ -38,6 +38,35 @@ export function tasksDir(cwd: string): string {
 
 export function taskDir(cwd: string, id: string): string {
   return join(tasksDir(cwd), id)
+}
+
+/**
+ * Retention (T1.9) ONLY: deletes a task's whole directory — task.json,
+ * events.jsonl, checks.json, everything. Callers past the retention window
+ * decided the task itself, not just its worktree, no longer belongs on disk.
+ *
+ * This is the ONE place that removes a task directory outright, so it is
+ * also the ONE place that proves DP9's premise: once this returns `true`,
+ * `appendTaskEvent(cwd, id, …)` on this id would `mkdirSync` a fresh, empty
+ * directory back into existence — an events.jsonl with no task.json beside
+ * it. Retention's own outcome is therefore NEVER journaled here; the caller
+ * reports it through the workspace's notice channel instead.
+ *
+ * Tolerant like every other write in this store (invariant 1): a removal
+ * that cannot complete (permissions, a file still open) returns `false`
+ * rather than throwing, and the caller decides whether that is worth saying
+ * out loud.
+ */
+export function removeTaskDir(cwd: string, id: string): boolean {
+  if (!isTaskId(id)) {
+    return false
+  }
+  try {
+    rmSync(taskDir(cwd, id), { recursive: true, force: true })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export type CreateTaskInput = {
@@ -206,9 +235,27 @@ export function resetStoreReports(): void {
  */
 function taskDirEntries(cwd: string): Dirent[] {
   const dir = tasksDir(cwd)
-  if (!existsSync(dir)) {
-    // A store that was never created is not a store that broke.
-    storeReports.delete(dir)
+  // T1.9 review round 3, CRITIQUE: `existsSync(dir)` collapses EVERY stat
+  // error into `false` — not just ENOENT, but EACCES on the parent, an
+  // unmounted/renamed `.codesema`, an EIO. Read as "never created", each of
+  // those silently swept a project's still-live tasks off the sweep's
+  // inventory instead of reporting the store unreadable (the exact doctrine
+  // `taskRecordExists` above already applies to `task.json`, and the one this
+  // function's own doc comment on `report` promises but did not deliver: "no
+  // task is treated as gone, and nothing is written on the strength of it").
+  // `statSync` distinguishes: only ENOENT/ENOTDIR mean the store genuinely
+  // was never created; everything else is "could not find out", which must
+  // never be read as "empty".
+  try {
+    statSync(dir)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      // A store that was never created is not a store that broke.
+      storeReports.delete(dir)
+      return []
+    }
+    report(cwd, dir, storeUnlistable(code ?? (err as Error).message))
     return []
   }
   try {

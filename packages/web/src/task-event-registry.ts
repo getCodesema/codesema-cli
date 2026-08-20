@@ -50,4 +50,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   isolation: TaskEventLine,
   cost: TaskEventLine,
   branch: TaskEventLine,
+  resource: TaskEventLine,
 }

@@ -697,6 +697,7 @@ describe('sanitizeTaskEvent', () => {
       'isolation',
       'cost',
       'branch',
+      'resource',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

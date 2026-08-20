@@ -323,6 +323,23 @@ describe('watchdog budgets (D3)', () => {
     expect(loadRepoConfig(repoDir).timeout).toBe(3600)
   })
 
+  // T1.9 review round 1, Mineur 5: taskRetentionCount's `>= 0` guard was one
+  // of three surviving mutants — unlike timeout/maxParallelTasks, 0 here is
+  // the OPPOSITE of "kill on sight": it is a legitimate, deliberate choice
+  // ("keep none, purge every terminated task at the next boot"), so the
+  // guard must accept 0 while still rejecting anything that would slice an
+  // array with a negative or fractional count.
+  test('taskRetentionCount: 0 is a legitimate deliberate choice, negative/fractional/non-numeric fall back to the default', () => {
+    saveRepoConfig(repoDir, { taskRetentionCount: 0 })
+    expect(loadRepoConfig(repoDir).taskRetentionCount).toBe(0)
+    saveRepoConfig(repoDir, { taskRetentionCount: 5 })
+    expect(loadRepoConfig(repoDir).taskRetentionCount).toBe(5)
+    saveRepoConfig(repoDir, { taskRetentionCount: -1 })
+    expect(loadRepoConfig(repoDir).taskRetentionCount).toBeUndefined()
+    saveRepoConfig(repoDir, { taskRetentionCount: 2.5 })
+    expect(loadRepoConfig(repoDir).taskRetentionCount).toBeUndefined()
+  })
+
   test('a budget that is not a number at all is simply absent', () => {
     saveRepoConfig(repoDir, { watchdogInactivitySeconds: '600' as never })
     expect(loadRepoConfig(repoDir).watchdogInactivitySeconds).toBeUndefined()

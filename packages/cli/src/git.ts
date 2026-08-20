@@ -24,7 +24,18 @@ export function subprocessEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.P
   )
 }
 
-export function git(args: string[], cwd: string): string {
+/**
+ * Optional per-call budget. Deliberately NOT a default on every git call: the
+ * repository's git commands include commits that run the user's own hooks and
+ * pushes that talk to a forge, and killing those on a timer would break work
+ * that is merely slow. It exists for the callers that run UNATTENDED and can
+ * hang on something outside git itself — a suspended network mount under a
+ * worktree makes `git status` block forever, which would stall a boot pass
+ * nobody is watching with nothing said. Those callers set it explicitly.
+ */
+export type GitCallOptions = { timeoutMs?: number | undefined }
+
+export function git(args: string[], cwd: string, opts: GitCallOptions = {}): string {
   try {
     // stderr captured, not inherited: failing probes don't pollute the output
     return execFileSync('git', args, {
@@ -33,6 +44,7 @@ export function git(args: string[], cwd: string): string {
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: subprocessEnv(),
+      ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     }).trimEnd()
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -42,9 +54,9 @@ export function git(args: string[], cwd: string): string {
   }
 }
 
-export function tryGit(args: string[], cwd: string): string | null {
+export function tryGit(args: string[], cwd: string, opts: GitCallOptions = {}): string | null {
   try {
-    return git(args, cwd)
+    return git(args, cwd, opts)
   } catch {
     return null
   }

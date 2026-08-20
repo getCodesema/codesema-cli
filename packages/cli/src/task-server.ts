@@ -34,16 +34,26 @@ import {
 } from './contract.js'
 import { refExists, tryGit } from './git.js'
 import { t } from './i18n.js'
-import { listProjects, type Project } from './projects.js'
+import { listProjects, listProjectsDetailed, type Project } from './projects.js'
 import { readChecksConfig } from './repo-config.js'
 import { runChecks } from './task-checks.js'
 import {
+  agentHomeVolume,
   isolationDefaults,
+  releaseAgentHome,
   resolveTaskIsolation,
+  sweepOrphanedHomeVolumes,
   UNPROBED_ISOLATION,
+  type HomeVolumeSweepOutcome,
   type IsolationProbe,
+  type ReleaseAgentHomeResult,
 } from './task-isolation.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
+import {
+  applyTaskRetention,
+  DEFAULT_TASK_RETENTION,
+  type TaskRetentionOutcome,
+} from './task-retention.js'
 import { createTaskReviewer, readTaskReview } from './task-review.js'
 import {
   createTaskRunner,
@@ -68,6 +78,7 @@ import {
   readTaskChecks,
   readTaskEvents,
   saveTask,
+  taskIdsOnDisk,
   taskReason,
   writeTaskChecks,
   type AppendTaskEventInput,
@@ -233,6 +244,24 @@ export type TaskManager = {
    * Idempotent: a project already running is not restarted.
    */
   startPending: () => PendingQueue[]
+  /**
+   * T1.9. Removes every HOME volume (`codesema-home-<id>`) whose id no
+   * record of NO registered project claims — the backstop for whatever a
+   * ship/abandon release could not do in the moment (runtime unreachable,
+   * daemon busy). Explicit step, same reason as startPending: called once
+   * the workspace is up, never inside the constructor. NEVER through the
+   * task journal (DP9) — reported entirely through the notice channel.
+   * Never rejects; a sweep this pass could not even attempt (a project's
+   * store unreadable, so the claimed-id inventory is incomplete) is a named
+   * notice, not a wider sweep (Risk 1 of design.md).
+   */
+  sweepOrphanedVolumes: () => Promise<void>
+  /**
+   * T1.9. Purges terminated tasks past the retention window, project by
+   * project (applyTaskRetention). Same explicit-step reasoning as
+   * startPending/sweepOrphanedVolumes; never rejects.
+   */
+  applyRetention: () => Promise<void>
   /** Graceful exit: interrupts every active agent (all projects) and resolves once all turns persisted. */
   shutdown: () => Promise<void>
   subscribe: (listener: (envelope: TaskEnvelope) => void) => () => void
@@ -277,6 +306,23 @@ export type CreateTaskManagerOptions = {
   listProjectsFn?: () => Project[]
   /** Test seam: the default runs real containers (task-checks.ts). */
   runChecksFn?: typeof runChecks
+  /**
+   * T1.9: HOME volume release at termination (ship, and — via the runner —
+   * abandon). Test seam; the default drives the real IsolationExecFn seam.
+   */
+  releaseAgentHomeFn?: (opts: { taskId: string }) => Promise<ReleaseAgentHomeResult>
+  /** T1.9: boot sweep of orphaned HOME volumes. Test seam; default drives the real runtime. */
+  sweepOrphanedVolumesFn?: typeof sweepOrphanedHomeVolumes
+  /** T1.9 review round 1: the default reads the global registry WITH its completeness flag. Test seam. */
+  listProjectsDetailedFn?: typeof listProjectsDetailed
+  /** T1.9: retention pass of one project. Test seam; default is the real applyTaskRetention. */
+  applyTaskRetentionFn?: typeof applyTaskRetention
+  /**
+   * T1.9: how many of the most-recently-updated terminated tasks PER PROJECT
+   * survive `applyRetention()` untouched. Absent means DEFAULT_TASK_RETENTION
+   * — same "workspace-wide until T1.4" caveat as maxParallel above.
+   */
+  taskRetention?: number
   /**
    * Test seam for the checks SETUP agent (checks-setup.ts). Separate from
    * runAgentFn: the setup agent is a read-only text transformer, never the
@@ -627,7 +673,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   // told. It is also the exact moment the queue loses its ability to name what
   // it could not place. No journal here on purpose: the ids are precisely what
   // the failure denied us.
+  // T1.9: whether ANY project's tasks/ failed to list, at least once since
+  // the flag was last cleared. sweepOrphanedVolumes() reads this right after
+  // rebuilding its claimed-id inventory — Risk 1 of design.md: an inventory
+  // this process could not read COMPLETELY must forbid the sweep rather than
+  // let it run on a narrower list, which would declare another project's
+  // still-live volumes orphaned.
+  let storeReadFailed = false
   onStoreUnreadable((cwd, reason) => {
+    storeReadFailed = true
     const project = registered().find((candidate) => candidate.path === cwd)
     notice(project ? `${project.name}: ${reason}` : reason)
   })
@@ -642,6 +696,60 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const queued = recover(project)
     if (queued > 0) {
       pendingAtBoot.push({ projectId: project.id, queued })
+    }
+  }
+
+  /**
+   * Every task id claimed by a registered project, by DIRECTORY NAME only
+   * (`taskIdsOnDisk`, never `listTasks`/`loadTask`): a `task.json` this
+   * process cannot currently PARSE — truncated by a crash mid-write, a
+   * transient EACCES, a torn read during a burst of open descriptors — still
+   * names a directory that exists, and a claimed id must never depend on
+   * that file being readable AT THIS INSTANT (T1.9 review round 1, Critique
+   * 1). `taskIdsOnDisk`'s own doc comment says why, for the queue
+   * reconciliation this borrows the rule from: "the set the queue must not
+   * treat as gone".
+   *
+   * `complete` is false whenever EITHER the project registry itself could
+   * not be read completely (`listProjectsDetailed`, an entry dropped or the
+   * file unparsable) OR any registered project's tasks/ directory failed to
+   * list (`storeReadFailed`, sticky) — either one narrows the inventory in
+   * exactly the way Risk 1 (design.md) forbids: a project or a task this
+   * process merely failed to SEE must never be read as "does not claim
+   * anything".
+   */
+  const projectClaimedIds = (): {
+    ids: ReadonlySet<string>
+    complete: boolean
+    projectCount: number
+  } => {
+    const listDetailed = opts.listProjectsDetailedFn ?? listProjectsDetailed
+    const registry = listDetailed()
+    const ids = new Set<string>()
+    // T1.9 review round 3, CRITIQUE (ceinture): a REGISTERED project whose
+    // path no longer resolves (renamed, unmounted, the repo moved) is not a
+    // project that happens to have zero tasks — it is one this process
+    // cannot currently read. `taskIdsOnDisk` on an unresolvable path already
+    // degrades to [] (via `taskDirEntries`'s own ENOENT handling, harmless on
+    // its own), but folding that silently into "claims nothing" is exactly
+    // the narrowing Risk 1 (design.md) forbids: every HOME volume that
+    // project's still-existing tasks claim would read as orphaned. A path
+    // that will not resolve forbids the WHOLE sweep, same as an unparsable
+    // registry or a tasks/ that will not list.
+    let pathUnresolved = false
+    for (const project of registry.projects) {
+      if (!existsSync(project.path)) {
+        pathUnresolved = true
+        continue
+      }
+      for (const id of taskIdsOnDisk(project.path)) {
+        ids.add(id)
+      }
+    }
+    return {
+      ids,
+      complete: registry.complete && !storeReadFailed && !pathUnresolved,
+      projectCount: registry.projects.length,
     }
   }
 
@@ -678,6 +786,45 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   /** Registry lookup shared by the project-scoped routes (no lazy context needed). */
   const findProject = (projectId: string): Project | null =>
     registered().find((candidate) => candidate.id === projectId) ?? null
+
+  /**
+   * T1.9: releases a task's HOME volume once its ship has durably landed.
+   * Same doctrine as the runner's own releaseTaskHome (task-runner.ts): the
+   * IsolationExecFn seam, never a runtime binary named here, a NEUTRAL
+   * 'resource' journal line (no D2 code — DP9/DP10), and never a reason to
+   * turn ship's own ok:true into anything else.
+   */
+  const releaseShippedTaskHome = async (
+    cwd: string,
+    projectId: string,
+    id: string,
+  ): Promise<void> => {
+    const release = opts.releaseAgentHomeFn ?? releaseAgentHome
+    const outcome = await release({ taskId: id })
+    const volume = agentHomeVolume(id)
+    const input = outcome.released
+      ? {
+          type: 'resource' as const,
+          data: { name: 'home_volume_released', message: `HOME volume ${volume} released` },
+        }
+      : outcome.reason === 'no-runtime'
+        ? {
+            type: 'resource' as const,
+            data: {
+              name: 'container_runtime_absent',
+              message: `no container runtime detected — HOME volume ${volume} could not be released`,
+            },
+          }
+        : {
+            type: 'resource' as const,
+            data: {
+              name: 'home_volume_not_released',
+              message: `HOME volume ${volume} could not be released: ${outcome.detail}`,
+            },
+          }
+    const event = appendTaskEvent(cwd, id, input)
+    emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+  }
 
   /**
    * T5. Never rejects: a push failure comes back as a plain error result with
@@ -746,6 +893,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       record.updated_at = new Date().toISOString()
       saveTask(cwd, record)
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      // T1.9: nothing was ever created for a 'policy' task, so nothing is
+      // attempted for one either — same gate as the runner's abandon path.
+      if (record.isolation === 'container') {
+        await releaseShippedTaskHome(cwd, projectId, id)
+      }
       return { ok: true }
     } finally {
       ctx.shipping.delete(id)
@@ -928,6 +1080,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       checksConfig: readChecksConfig(cwd),
       ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
+      ...(opts.releaseAgentHomeFn ? { releaseAgentHomeFn: opts.releaseAgentHomeFn } : {}),
       onTask: (record) =>
         emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } }),
       onEvent: (taskId, event) =>
@@ -1020,6 +1173,78 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         }
       }
       return resumed
+    },
+
+    // T1.9 review round 1, Mineur 3, accepted rather than reworked: this runs
+    // ONCE per boot (workspace.ts), never on a timer or a retry loop. A
+    // volume this workspace orphaned while it was down is only ever caught
+    // at the NEXT boot — routine, and the whole point of the sweep. But if
+    // THAT boot's registry or store read is itself incomplete (a transient
+    // I/O error, a 0.12 store mid-migration), the guard above correctly
+    // refuses to run rather than narrow the inventory, which pushes the
+    // catch-up to the boot AFTER — a second restart, not the first. This is
+    // a real, if narrow, latency window (an orphaned volume can survive up
+    // to two boots instead of one), left as documented rather than given a
+    // background retry: the sweep already runs unattended and destructively
+    // enough that "wait for a clean boot" is the safer failure mode than
+    // "poll until the registry looks readable and then delete things".
+    async sweepOrphanedVolumes() {
+      const first = projectClaimedIds()
+      if (!first.complete || first.projectCount === 0) {
+        notice(
+          "orphaned HOME volume sweep skipped: the project registry or a project's task store could not be read completely",
+        )
+        return
+      }
+      const sweep = opts.sweepOrphanedVolumesFn ?? sweepOrphanedHomeVolumes
+      let outcome: HomeVolumeSweepOutcome
+      try {
+        outcome = await sweep({
+          claimedIds: first.ids,
+          // Re-verified immediately before EACH removal (T1.9 review round
+          // 1, Critique 3): claimedIds above is a snapshot taken BEFORE the
+          // slow `volume ls`/`volume rm` round trips, so a task created (or a
+          // project registered) during that window must never lose a volume
+          // it never had the chance to appear in the snapshot for.
+          recheckClaimedIds: () => {
+            const fresh = projectClaimedIds()
+            return fresh.complete && fresh.projectCount > 0 ? fresh.ids : null
+          },
+        })
+      } catch (err) {
+        notice(`orphaned HOME volume sweep failed: ${errorMessage(err)}`)
+        return
+      }
+      for (const line of outcome.notices) {
+        notice(line)
+      }
+    },
+
+    async applyRetention() {
+      const keep = opts.taskRetention ?? DEFAULT_TASK_RETENTION
+      const run = opts.applyTaskRetentionFn ?? applyTaskRetention
+      for (const project of registered()) {
+        let outcome: TaskRetentionOutcome
+        try {
+          outcome = await run({ cwd: project.path, keep })
+        } catch (err) {
+          notice(`${project.name}: retention failed (${errorMessage(err)})`)
+          continue
+        }
+        for (const line of outcome.notices) {
+          notice(`${project.name}: ${line}`)
+        }
+        // T1.9 review round 3, Mineur 8: `purged` was returned by
+        // applyTaskRetention and read by NOTHING in production — every
+        // consumer only ever forwarded `notices`. A per-project count, once
+        // per boot, is the one summary line a human skimming startup output
+        // can use without adding up how many "task directory removed" lines
+        // scrolled past; the per-task detail stays exactly where it was, on
+        // `outcome.notices` above.
+        if (outcome.purged.length > 0) {
+          notice(`${project.name}: retention purged ${outcome.purged.length} task(s)`)
+        }
+      }
     },
 
     list(projectId) {

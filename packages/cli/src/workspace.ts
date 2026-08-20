@@ -194,11 +194,27 @@ async function resolveAgentCommand(
   return agentCommand
 }
 
-export async function workspace(opts: {
-  port?: number | undefined
-  open: boolean
-  cwd: string
-}): Promise<void> {
+/**
+ * Test seams of the boot itself. `workspace()` is the ONLY place the two
+ * unattended housekeeping passes are wired and the only place
+ * `taskRetentionCount` travels from the config to the manager — none of which
+ * any other module can observe. Without these, deleting either `void
+ * taskManager.…()` line below, or the `taskRetention` mapping, leaves the
+ * whole suite green while the feature is gone (T1.9 review round 4, MAJEUR 4;
+ * §6 quater: the ticked box that renders nothing).
+ */
+export type WorkspaceSeams = {
+  createTaskManagerFn?: typeof createTaskManager
+  startServerFn?: typeof startServer
+}
+
+export async function workspace(
+  opts: {
+    port?: number | undefined
+    open: boolean
+    cwd: string
+  } & WorkspaceSeams,
+): Promise<void> {
   // Launchable from anywhere: a repo auto-registers and becomes the current
   // project, a plain directory opens the workspace on the registry as-is.
   const repoRoot = tryGit(['rev-parse', '--show-toplevel'], opts.cwd)
@@ -239,7 +255,7 @@ export async function workspace(opts: {
       currentProjectId = added.project.id
     }
 
-    taskManager = createTaskManager({
+    taskManager = (opts.createTaskManagerFn ?? createTaskManager)({
       command: agentCommand,
       timeoutMs,
       // What actually decides a task is dead (D3): silence with no tool out,
@@ -249,13 +265,16 @@ export async function workspace(opts: {
       isolation: probe,
       allowedDomains,
       ...(config.maxParallelTasks !== undefined ? { maxParallel: config.maxParallelTasks } : {}),
+      ...(config.taskRetentionCount !== undefined
+        ? { taskRetention: config.taskRetentionCount }
+        : {}),
     })
 
     // The review surface (fix, MR review) stays available from the same server
     // when launched inside a repo: the workspace extends the product, it does
     // not replace the review API. Outside a repo those runners have no target.
     const session = createSession()
-    started = await startServer(session, {
+    started = await (opts.startServerFn ?? startServer)(session, {
       cwd: repoRoot ?? opts.cwd,
       port: opts.port ?? config.port,
       locale: uiLocale(),
@@ -305,6 +324,13 @@ export async function workspace(opts: {
     openBrowser(started.url)
   }
   installShutdownHandlers({ manager: taskManager, stop: started.stop, lock, probe, draining })
+  // T1.9 housekeeping: orphaned HOME volumes and the retention purge of old
+  // terminated tasks. Neither gates the workspace being usable (both report
+  // through `notice` — the console today, see task-server.ts) and neither is
+  // awaited: a slow container runtime or a large tasks/ directory must not
+  // delay the line below any more than starting the queued tasks does.
+  void taskManager.sweepOrphanedVolumes()
+  void taskManager.applyRetention()
   // ONLY NOW do the persisted queues restart. Everything above had to be true
   // first: the server listens (a task that starts has somewhere to report),
   // the shutdown handlers are installed (a Ctrl-C drains it instead of killing

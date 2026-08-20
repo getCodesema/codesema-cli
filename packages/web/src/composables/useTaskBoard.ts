@@ -454,6 +454,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   isolation: 'workspace.evIsolation',
   cost: 'workspace.evCost',
   branch: 'workspace.evBranch',
+  resource: 'workspace.evResource',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -482,6 +483,10 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   // carries stops anything — a declined rename, a preserved branch, a
   // fallen-back-to anchor are none of them a failure of the work.
   branch: 'idle',
+  // Neutral even on a release FAILURE (DP9): a leaked volume the boot sweep
+  // will rattrap is not the cry-wolf red 'error' would paint on a task that
+  // otherwise shipped or was abandoned cleanly.
+  resource: 'idle',
 }
 
 export function eventTone(type: TaskEventType): EventTone {
@@ -523,6 +528,36 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   isolation: ['reason', 'isolation'],
   cost: ['message', 'summary'],
   branch: ['text'],
+  // Unreachable, and NOT what protects this type. `eventSummary` branches on
+  // `event.type === 'resource'` BEFORE it ever indexes this table, so the
+  // whole entry — empty or not — is dead weight; it is here because the
+  // Record<TaskEventType, …> type demands one key per event type. The actual
+  // protection is that branch, and it lives in `eventSummary`: what must never
+  // happen is a `resource` line rendering `data.message`, the SERVER's own
+  // English sentence, verbatim in a French UI (§6 quater's "message technique
+  // anglais servi tel quel" trap). Restoring keys here would change nothing;
+  // removing that branch would break it. See RESOURCE_NAME_LABEL_KEY below.
+  resource: [],
+}
+
+/**
+ * Per-`data.name` voice of a `resource` event (DP9's closed discriminant;
+ * T1.9 emits exactly these three). An unrecognized name — a future DP9
+ * addition this build predates — falls back to the localized type label
+ * ("Resource"/"Ressource"), NEVER to the raw `data.message`: the whole point
+ * is that the English server sentence must never reach the French journal.
+ */
+const RESOURCE_NAME_LABEL_KEY: Record<string, MessageKey> = {
+  home_volume_released: 'workspace.evResourceHomeReleased',
+  home_volume_not_released: 'workspace.evResourceHomeNotReleased',
+  container_runtime_absent: 'workspace.evResourceNoRuntime',
+}
+
+/** `eventSummary`'s branch for `resource` events — see RESOURCE_NAME_LABEL_KEY. */
+function resourceSummary(data: TaskEventData, label: string): string {
+  const name = firstString(data, ['name'])
+  const key = name ? RESOURCE_NAME_LABEL_KEY[name] : undefined
+  return key ? t(key) : label
 }
 
 /**
@@ -568,6 +603,9 @@ export function eventSummary(event: TaskEvent): string {
       return clip(`${name} · ${detail}`)
     }
     return clip(name ?? detail ?? label)
+  }
+  if (event.type === 'resource') {
+    return clip(resourceSummary(event.data, label))
   }
   const details = summaryDetails(event)
   if (details.length > 0) {

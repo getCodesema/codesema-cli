@@ -264,6 +264,59 @@ describe('eventSummary', () => {
     expect(long.length).toBeLessThanOrEqual(140)
     expect(long.endsWith('…')).toBe(true)
   })
+
+  // T1.9 review round 3, MAJEUR 5 / §6 quater piège n°1: every `resource`
+  // event T1.9 actually emits carries `data.message` — the server's own
+  // English sentence — which is exactly the key `message` SUMMARY_KEYS uses
+  // for most other types. If eventSummary ever fell back to the generic
+  // firstString(data, SUMMARY_KEYS.resource) path, this would render that
+  // raw English text in a French UI; the localized `workspace.evResource*`
+  // keys would be dead code no test would ever catch (round 3's audit found
+  // exactly that: 0 red tests on four separate mutations of this chain).
+  test('resource: a recognized name renders its OWN translated line, never the raw server message', () => {
+    expect(
+      eventSummary(
+        event({
+          type: 'resource',
+          data: { name: 'home_volume_released', message: 'HOME volume codesema-home-abc released' },
+        }),
+      ),
+    ).toBe('HOME volume released')
+    expect(
+      eventSummary(
+        event({
+          type: 'resource',
+          data: {
+            name: 'home_volume_not_released',
+            message: 'HOME volume codesema-home-abc could not be released: busy',
+          },
+        }),
+      ),
+    ).toBe('HOME volume could not be released')
+    expect(
+      eventSummary(
+        event({
+          type: 'resource',
+          data: {
+            name: 'container_runtime_absent',
+            message:
+              'no container runtime detected — HOME volume codesema-home-abc could not be released',
+          },
+        }),
+      ),
+    ).toBe('No container runtime — HOME volume could not be released')
+  })
+
+  test('resource: an unrecognized (or absent) name falls back to the localized type label, never to data.message', () => {
+    expect(
+      eventSummary(
+        event({ type: 'resource', data: { name: 'not_a_real_name', message: 'raw english' } }),
+      ),
+    ).toBe('Resource')
+    expect(
+      eventSummary(event({ type: 'resource', data: { message: 'raw english, no name at all' } })),
+    ).toBe('Resource')
+  })
 })
 
 describe('eventTone', () => {
@@ -281,6 +334,13 @@ describe('eventTone', () => {
 
   test('branch facts are neutral: none of them is a failure of the work', () => {
     expect(eventTone('branch')).toBe('idle')
+  })
+
+  // T1.9 review round 3, MAJEUR 5: a released/leaked HOME volume never paints
+  // the journal red (DP9) — the boot sweep is the backstop, not a task
+  // failure. Round 3's audit mutated this to 'error' and found 0 red tests.
+  test('resource stays neutral even on a release failure (DP9: the boot sweep is the backstop, not a task failure)', () => {
+    expect(eventTone('resource')).toBe('idle')
   })
 })
 

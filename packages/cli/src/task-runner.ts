@@ -48,9 +48,12 @@ import { reviewLanguage, t } from './i18n.js'
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
 import {
+  agentHomeVolume,
   CAGE_FORWARDED_ENV,
   containerTaskCommandFor,
+  releaseAgentHome,
   runContainerTurn,
+  type ReleaseAgentHomeResult,
   type RunContainerTurnOptions,
 } from './task-isolation.js'
 import { createTaskQueue, type EnqueueResult, type TaskQueueIo } from './task-queue.js'
@@ -949,6 +952,13 @@ export type TaskRunnerOptions = {
   onQueueDegraded?: (reason: string, ids: readonly string[]) => void
   /** Filesystem seam of the persisted queue (§ 0.4); the default drives node:fs. */
   queueIo?: TaskQueueIo
+  /**
+   * Test seam for the task's HOME volume release at abandon (T1.9); the
+   * default drives the real IsolationExecFn seam (task-isolation.ts). Never
+   * called for a task whose isolation is not 'container' — nothing was ever
+   * created for it to release.
+   */
+  releaseAgentHomeFn?: (opts: { taskId: string }) => Promise<ReleaseAgentHomeResult>
 }
 
 export type TaskRunner = {
@@ -1206,6 +1216,46 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
   const emit = (id: string, input: AppendTaskEventInput): void => {
     const event = appendTaskEvent(opts.cwd, id, input)
     notify(() => opts.onEvent?.(id, event))
+  }
+
+  /**
+   * T1.9: releases a task's HOME volume at termination, through the same
+   * IsolationExecFn seam as the rest of isolation (never a runtime binary
+   * named here — Décision 2) and reports the outcome as a NEUTRAL 'resource'
+   * journal line (DP9, DP10): no reason_code, because a `volume rm` that
+   * fails takes nothing and refuses nothing, and the boot sweep is the
+   * backstop for whatever it leaves behind. Never blocks the caller: the
+   * release itself never throws (releaseAgentHome's contract), so this is
+   * plain sequential await, not a try/catch.
+   */
+  const releaseTaskHome = async (taskId: string): Promise<void> => {
+    const release = opts.releaseAgentHomeFn ?? releaseAgentHome
+    const outcome = await release({ taskId })
+    const volume = agentHomeVolume(taskId)
+    if (outcome.released) {
+      emit(taskId, {
+        type: 'resource',
+        data: { name: 'home_volume_released', message: `HOME volume ${volume} released` },
+      })
+      return
+    }
+    if (outcome.reason === 'no-runtime') {
+      emit(taskId, {
+        type: 'resource',
+        data: {
+          name: 'container_runtime_absent',
+          message: `no container runtime detected — HOME volume ${volume} could not be released`,
+        },
+      })
+      return
+    }
+    emit(taskId, {
+      type: 'resource',
+      data: {
+        name: 'home_volume_not_released',
+        message: `HOME volume ${volume} could not be released: ${outcome.detail}`,
+      },
+    })
   }
 
   /**
@@ -2567,8 +2617,21 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         if (current.status !== 'shipped') {
           current.status = 'failed'
         }
-        emit(taskId, { type: 'error', data: { message: 'worktree removed, task abandoned' } })
+        // T1.9 review round 3, Mineur 3: the terminal status is written to
+        // disk BEFORE the (possibly slow, up to the release seam's own
+        // timeout) HOME volume release below — not after. A daemon that
+        // hangs on `volume rm` must never keep a task's record sitting on a
+        // non-terminal status for the whole wait: if the process dies in
+        // that window, the record on disk is already 'failed'/'shipped'
+        // rather than whatever it was before this abandon started.
         persist(current)
+        emit(taskId, { type: 'error', data: { message: 'worktree removed, task abandoned' } })
+        // T1.9: the HOME volume is a resource of ITS OWN isolation, not of
+        // the worktree just removed above — nothing was ever created for a
+        // 'policy' task, so nothing is attempted for one either.
+        if (current.isolation === 'container') {
+          await releaseTaskHome(taskId)
+        }
         return { ok: true, ...preservedBranchResult }
       } finally {
         abandoning.delete(taskId)

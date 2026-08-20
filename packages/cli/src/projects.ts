@@ -63,31 +63,61 @@ function sanitizeProject(raw: unknown): Project | null {
   }
 }
 
+/** listProjects, plus whether the read was COMPLETE (see listProjectsDetailed). */
+export type ProjectRegistry = { projects: Project[]; complete: boolean }
+
 /**
- * All registered projects, in registration order. A missing, corrupt or
- * hand-mangled file degrades to an empty (or partial) registry — same
- * tolerance as parseConfig. Duplicate ids keep the first occurrence.
+ * Same registry as `listProjects`, but says whether the read was COMPLETE.
+ * `complete: false` on a `projects.json` that exists but could not be parsed
+ * (corrupt JSON, an I/O error) or on ANY entry the sanitizer had to drop (a
+ * hand-edited id, a path missing, a newer schema this build cannot read) —
+ * as opposed to a registry that was simply never created (ENOENT), which is
+ * an honestly EMPTY, complete registry.
+ *
+ * Most callers only ever want the tolerant `Project[]` (a broken registry
+ * must never crash the workspace) and `listProjects` keeps giving them
+ * exactly that. This exists for the rarer caller that would otherwise read
+ * "no project claims this resource" from a registry it silently narrowed —
+ * the T1.9 orphaned-volume sweep is the first one.
  */
-export function listProjects(): Project[] {
+export function listProjectsDetailed(): ProjectRegistry {
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(projectsPath(), 'utf8'))
-  } catch {
-    return []
+  } catch (err) {
+    // A registry that was never created is an honest empty one; anything
+    // else that kept this from being read (corrupt JSON, EACCES, EIO) is an
+    // INCOMPLETE one — the two must never be conflated (see doctrine above).
+    const complete = (err as NodeJS.ErrnoException).code === 'ENOENT'
+    return { projects: [], complete }
   }
   const entries = Array.isArray((raw as { projects?: unknown } | null)?.projects)
     ? ((raw as { projects: unknown[] }).projects as unknown[])
     : []
   const projects: Project[] = []
   const seen = new Set<string>()
+  let complete = true
   for (const entry of entries) {
     const project = sanitizeProject(entry)
-    if (project && !seen.has(project.id)) {
+    if (!project) {
+      complete = false
+      continue
+    }
+    if (!seen.has(project.id)) {
       seen.add(project.id)
       projects.push(project)
     }
   }
-  return projects
+  return { projects, complete }
+}
+
+/**
+ * All registered projects, in registration order. A missing, corrupt or
+ * hand-mangled file degrades to an empty (or partial) registry — same
+ * tolerance as parseConfig. Duplicate ids keep the first occurrence.
+ */
+export function listProjects(): Project[] {
+  return listProjectsDetailed().projects
 }
 
 export function getProject(id: string): Project | null {

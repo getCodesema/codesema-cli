@@ -18,3 +18,19 @@ describe('t', () => {
     expect(t('live.commits', { n: 2 })).toBe('2 commits')
   })
 })
+
+// T1.9 review round 3, MAJEUR 5: the parity test above only proves the FR
+// catalog has a value for every EN key, not that the FR value is actually
+// French. Round 3's audit mutated 'Ressource' to 'Resource' and found 0 red
+// tests anywhere in the suite.
+describe('workspace.evResource (T1.9 resource events)', () => {
+  test('the French label is actually French', () => {
+    expect(catalogs.fr?.['workspace.evResource']).toBe('Ressource')
+    expect(catalogs.en?.['workspace.evResource']).toBe('Resource')
+  })
+
+  test('the per-name resource lines are translated in both catalogs', () => {
+    expect(catalogs.fr?.['workspace.evResourceHomeReleased']).toBe('Volume HOME libéré')
+    expect(catalogs.en?.['workspace.evResourceHomeReleased']).toBe('HOME volume released')
+  })
+})

@@ -17,6 +17,7 @@ import {
   getProject,
   isProjectId,
   listProjects,
+  listProjectsDetailed,
   projectIdFor,
   projectsPath,
   removeProject,
@@ -192,6 +193,55 @@ describe('listProjects / getProject', () => {
     expect(listed[0]?.name).toBe(basename(added.project.path))
     expect(typeof listed[0]?.added_at).toBe('string')
     expect(getProject(added.project.id)?.path).toBe(added.project.path)
+  })
+})
+
+// T1.9 review round 3, Mineur 1 (m1 in the report): the ENOENT/corrupt
+// distinction this function exists FOR had no direct test — the only test
+// that named it (task-server.test.ts, 'an unparsable projects.json forbids
+// the sweep') passed for a DIFFERENT reason, `projectCount === 0`, which is
+// true whether `complete` is right or wrong. `listProjectsDetailed` is
+// exported, so a future caller that reads `complete` on its own (not behind
+// the projectCount belt-and-suspenders) deserves a test that actually
+// exercises the flag it is named for, isolated from that other guard by
+// registering a real project first.
+describe('listProjectsDetailed', () => {
+  test('no registry yet (ENOENT): complete, honestly empty', () => {
+    expect(listProjectsDetailed()).toEqual({ projects: [], complete: true })
+  })
+
+  test('a corrupt registry (unparsable JSON) is INCOMPLETE, never read as zero projects', () => {
+    const repo = makeRepo()
+    const added = addProject(repo)
+    if (!added.ok) {
+      throw new Error('add failed')
+    }
+    // Overwrite the registry that just gained one real project with garbage.
+    writeFileSync(projectsPath(), '{ this is not json')
+    const detailed = listProjectsDetailed()
+    expect(detailed.complete).toBe(false)
+    expect(detailed.projects).toEqual([])
+  })
+
+  test('a registry with one mangled entry among valid ones is INCOMPLETE, valid ones still returned', () => {
+    const repo = makeRepo()
+    const added = addProject(repo)
+    if (!added.ok) {
+      throw new Error('add failed')
+    }
+    writeFileSync(
+      projectsPath(),
+      JSON.stringify({
+        projects: [
+          { id: added.project.id, path: added.project.path, name: 'x', added_at: '2020' },
+          { id: 'not-hex!', path: '/somewhere' },
+        ],
+      }),
+    )
+    const detailed = listProjectsDetailed()
+    expect(detailed.complete).toBe(false)
+    expect(detailed.projects).toHaveLength(1)
+    expect(detailed.projects[0]?.id).toBe(added.project.id)
   })
 })
 

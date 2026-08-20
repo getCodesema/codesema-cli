@@ -263,6 +263,13 @@ const en = {
   'workspace.evIsolation': 'Isolation',
   'workspace.evCost': 'Cost',
   'workspace.evBranch': 'Branch',
+  'workspace.evResource': 'Resource',
+  // Per-`data.name` voice of a `resource` event (T1.9/DP9): translated so the
+  // journal never falls back to the server's own English `data.message` —
+  // see RESOURCE_NAME_LABEL_KEY in useTaskBoard.ts.
+  'workspace.evResourceHomeReleased': 'HOME volume released',
+  'workspace.evResourceHomeNotReleased': 'HOME volume could not be released',
+  'workspace.evResourceNoRuntime': 'No container runtime — HOME volume could not be released',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -693,6 +700,10 @@ const fr: Record<MessageKey, string> = {
   'workspace.evIsolation': 'Isolation',
   'workspace.evCost': 'Coût',
   'workspace.evBranch': 'Branche',
+  'workspace.evResource': 'Ressource',
+  'workspace.evResourceHomeReleased': 'Volume HOME libéré',
+  'workspace.evResourceHomeNotReleased': 'Volume HOME non libéré',
+  'workspace.evResourceNoRuntime': 'Aucun runtime de conteneur — volume HOME non libéré',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',

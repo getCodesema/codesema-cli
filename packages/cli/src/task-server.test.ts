@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -23,11 +24,12 @@ import {
   type TaskRecord,
   type Verdict,
 } from './contract.js'
-import { addProject, listProjects, type Project } from './projects.js'
+import { addProject, listProjects, projectsPath, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
 import type { RunChecksOptions } from './task-checks.js'
+import type { HomeVolumeSweepOutcome } from './task-isolation.js'
 import {
   activeTask,
   corruptQueuePath,
@@ -38,6 +40,7 @@ import {
   resetActiveClaims,
   resetQueueDegradedReports,
 } from './task-queue.js'
+import type { TaskRetentionOutcome } from './task-retention.js'
 import { readTaskReview } from './task-review.js'
 import { pendingResumeTurn, type TaskRunner, type TaskRunnerOptions } from './task-runner.js'
 import {
@@ -58,6 +61,8 @@ import {
   resetStoreReports,
   saveTask,
   STORE_UNLISTABLE,
+  taskDir,
+  taskRecordExists,
   writeTaskChecks,
 } from './tasks-store.js'
 
@@ -1095,6 +1100,98 @@ describe('manager.ship', () => {
     release({ pushed: true, mrUrl: null, note: null })
     expect(await inFlight).toEqual({ ok: true })
   })
+
+  test('a successful ship releases the HOME volume of a container-isolated task', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: null, note: null })
+    const released: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      shipTaskFn: stub.fn,
+      ...fakeRunner(),
+      releaseAgentHomeFn: (opts) => {
+        released.push(opts.taskId)
+        return Promise.resolve({ released: true })
+      },
+    })
+    const record = seedShippable(cwd)
+    record.isolation = 'container'
+    saveTask(cwd, record)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+
+    expect(released).toEqual([record.id])
+    const event = readTaskEvents(cwd, record.id).find((e) => e.type === 'resource')
+    expect(event?.data.name).toBe('home_volume_released')
+    expect(event?.reason_code).toBeUndefined()
+  })
+
+  test('ship on a policy-isolated task never attempts a release', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: null, note: null })
+    let calls = 0
+    const manager = createTaskManager({
+      ...managerOpts,
+      shipTaskFn: stub.fn,
+      ...fakeRunner(),
+      releaseAgentHomeFn: () => {
+        calls++
+        return Promise.resolve({ released: true })
+      },
+    })
+    const record = seedShippable(cwd) // default isolation: 'policy'
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+
+    expect(calls).toBe(0)
+    expect(readTaskEvents(cwd, record.id).find((e) => e.type === 'resource')).toBeUndefined()
+  })
+
+  test('a release failure is named and journaled, and never turns the ship into a failure', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1', note: null })
+    const manager = createTaskManager({
+      ...managerOpts,
+      shipTaskFn: stub.fn,
+      ...fakeRunner(),
+      releaseAgentHomeFn: () =>
+        Promise.resolve({ released: false, reason: 'rm-failed', detail: 'daemon busy' }),
+    })
+    const record = seedShippable(cwd)
+    record.isolation = 'container'
+    saveTask(cwd, record)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+
+    expect(loadTask(cwd, record.id)?.status).toBe('shipped')
+    const event = readTaskEvents(cwd, record.id).find((e) => e.type === 'resource')
+    expect(event?.data.name).toBe('home_volume_not_released')
+    expect(String(event?.data.message)).toContain('daemon busy')
+    expect(event?.reason_code).toBeUndefined()
+  })
+
+  test('no container runtime at ship time: named distinctly from an ordinary release failure', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: null, note: null })
+    const manager = createTaskManager({
+      ...managerOpts,
+      shipTaskFn: stub.fn,
+      ...fakeRunner(),
+      releaseAgentHomeFn: () => Promise.resolve({ released: false, reason: 'no-runtime' }),
+    })
+    const record = seedShippable(cwd)
+    record.isolation = 'container'
+    saveTask(cwd, record)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+
+    const event = readTaskEvents(cwd, record.id).find((e) => e.type === 'resource')
+    expect(event?.data.name).toBe('container_runtime_absent')
+  })
 })
 
 // --- manager.checks -------------------------------------------------------
@@ -1477,6 +1574,8 @@ describe('task routes with a stub manager', () => {
         isolation_configured: 'policy',
       }),
       startPending: () => [],
+      sweepOrphanedVolumes: async () => {},
+      applyRetention: async () => {},
       checksApply: (projectId) => {
         if (!known(projectId)) {
           return { ok: false, code: 404, error: 'unknown project' }
@@ -3689,5 +3788,433 @@ describe('checks setup routes', () => {
     } finally {
       await started.stop()
     }
+  })
+})
+
+// --- manager.sweepOrphanedVolumes / manager.applyRetention (T1.9) ---------
+
+describe('manager.sweepOrphanedVolumes', () => {
+  test("claimed ids span EVERY registered project, and the sweep's notices are forwarded verbatim", async () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const claimedA = seedTask(projectA.path, 'a task')
+    const claimedB = seedTask(projectB.path, 'b task')
+    const seenClaimed: ReadonlySet<string>[] = []
+    const notices: string[] = []
+    const outcome: HomeVolumeSweepOutcome = {
+      removed: ['orphan1'],
+      notices: [
+        'orphaned HOME volume codesema-home-orphan1 removed at boot: no task record claims it',
+      ],
+    }
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sweepOrphanedVolumesFn: (opts) => {
+        seenClaimed.push(opts.claimedIds)
+        return Promise.resolve(outcome)
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(seenClaimed).toEqual([new Set([claimedA.id, claimedB.id])])
+    expect(notices).toEqual(outcome.notices)
+  })
+
+  // T1.9 review round 1, Critique 1: listTasks/loadTask drops an unparsable
+  // task.json IN SILENCE (no onStoreUnreadable call — the directory listed
+  // fine, only the file's content didn't parse). Building claimedIds from it
+  // would un-claim a LIVE task's id the moment its record is merely
+  // mid-write or transiently unreadable, and the sweep would remove its
+  // volume out from under it.
+  test('a task whose task.json cannot currently be PARSED still claims its id (directory name, not file content)', async () => {
+    const project = register(makeRepo())
+    const alive = seedTask(project.path, 'mid-write or corrupt, still very much alive')
+    writeFileSync(join(taskDir(project.path, alive.id), 'task.json'), '{ not json at all')
+    // listTasks silently drops it — the very trap this fix avoids.
+    expect(listTasks(project.path).map((r) => r.id)).not.toContain(alive.id)
+
+    const seenClaimed: ReadonlySet<string>[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      sweepOrphanedVolumesFn: (opts) => {
+        seenClaimed.push(opts.claimedIds)
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(seenClaimed[0]?.has(alive.id)).toBe(true)
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'a project whose store could not be listed forbids the sweep rather than narrowing it (Risk 1)',
+    async () => {
+      const project = register(makeRepo())
+      seedTask(project.path, 'invisible')
+      let called = false
+      chmodSync(join(project.path, '.codesema', 'tasks'), 0o000)
+      const notices: string[] = []
+      try {
+        const manager = createTaskManager({
+          ...managerOpts,
+          onNotice: (message) => notices.push(message),
+          sweepOrphanedVolumesFn: () => {
+            called = true
+            return Promise.resolve({ removed: [], notices: [] })
+          },
+          ...fakeRunner(),
+        })
+        await manager.sweepOrphanedVolumes()
+      } finally {
+        chmodSync(join(project.path, '.codesema', 'tasks'), 0o700)
+      }
+      expect(called).toBe(false)
+      expect(notices.some((line) => line.includes('sweep skipped'))).toBe(true)
+    },
+  )
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'a boot-time listing failure keeps forbidding the sweep even once the store reads again (storeReadFailed is sticky, never cleared)',
+    async () => {
+      const project = register(makeRepo())
+      seedTask(project.path, 'invisible')
+      chmodSync(join(project.path, '.codesema', 'tasks'), 0o000)
+      let called = false
+      const notices: string[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        onNotice: (message) => notices.push(message),
+        sweepOrphanedVolumesFn: () => {
+          called = true
+          return Promise.resolve({ removed: [], notices: [] })
+        },
+        ...fakeRunner(),
+      })
+      // The store reads again by the time the sweep itself would list it —
+      // only the STALE boot-time failure remains. A check performed only
+      // AFTER building a fresh inventory would miss this case entirely.
+      chmodSync(join(project.path, '.codesema', 'tasks'), 0o700)
+      await manager.sweepOrphanedVolumes()
+
+      expect(called).toBe(false)
+      expect(notices.some((line) => line.includes('sweep skipped'))).toBe(true)
+    },
+  )
+
+  test('a sweep that throws is reported, never left to crash the caller', async () => {
+    const project = register(makeRepo())
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sweepOrphanedVolumesFn: () => Promise.reject(new Error('daemon unreachable')),
+      ...fakeRunner(),
+    })
+    void project
+
+    await expect(manager.sweepOrphanedVolumes()).resolves.toBeUndefined()
+    expect(notices.some((line) => line.includes('daemon unreachable'))).toBe(true)
+  })
+
+  // T1.9 review round 1, Critique 2: listProjects()/registered() degrades
+  // SILENTLY on a corrupt or hand-edited projects.json (documented in
+  // projects.ts as "degrades to an empty (or partial) registry") — nothing
+  // of that ever reached storeReadFailed, so the sweep ran on a narrowed or
+  // even EMPTY project list and could remove every codesema-home-* volume
+  // on the daemon. listProjectsDetailed's `complete` flag closes it.
+  test('a projects.json entry the sanitizer had to drop forbids the sweep (registry incomplete, not just narrower)', async () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'still claims a volume')
+    // Hand-edited: an id that is not 8 hex, exactly the reproduction from
+    // the review — sanitizeProject drops the WHOLE entry, silently, in the
+    // real listProjects().
+    writeFileSync(
+      projectsPath(),
+      JSON.stringify({
+        projects: [{ id: 'not-8-hex', path: project.path, added_at: new Date().toISOString() }],
+      }),
+    )
+    let called = false
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sweepOrphanedVolumesFn: () => {
+        called = true
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(called).toBe(false)
+    expect(notices.some((line) => line.includes('sweep skipped'))).toBe(true)
+  })
+
+  // Isolates `complete: false` from `projectCount === 0`: a SECOND, dropped
+  // entry alongside one perfectly good, real project. The registry here is
+  // NOT empty (one project, with a task claiming a volume) — a mutant that
+  // only checks `projectCount === 0` and drops the `complete` check would
+  // pass every OTHER Critique 2 test above (all of which happen to leave
+  // zero surviving projects) while missing this one entirely.
+  test('one dropped entry forbids the sweep even with another, perfectly readable project still in the registry', async () => {
+    const good = register(makeRepo())
+    seedTask(good.path, 'still claims a volume')
+    const raw = JSON.parse(readFileSync(projectsPath(), 'utf8')) as { projects: unknown[] }
+    raw.projects.push({ id: 'not-8-hex', path: '/nowhere', added_at: new Date().toISOString() })
+    writeFileSync(projectsPath(), JSON.stringify(raw))
+    expect(listProjects()).toHaveLength(1) // the registry is NOT empty
+    let called = false
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sweepOrphanedVolumesFn: () => {
+        called = true
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(called).toBe(false)
+    expect(notices.some((line) => line.includes('sweep skipped'))).toBe(true)
+  })
+
+  // T1.9 review round 3, CRITIQUE (ceinture `pathUnresolved`) — the correction
+  // shipped WITHOUT a test, and removing `&& !pathUnresolved` left the whole
+  // suite green. Non-equivalence, reproduced here: project B is registered,
+  // still has live tasks, and its directory has MOVED (renamed, unmounted,
+  // relocated) — `taskIdsOnDisk` on a path that no longer resolves degrades to
+  // [] through taskDirEntries' own ENOENT handling, which is harmless on its
+  // own and catastrophic when folded into the sweep's inventory: without the
+  // belt, the sweep RUNS on an inventory amputated of every one of B's ids,
+  // and each HOME volume one of B's live tasks still claims is declared
+  // orphaned and destroyed. A registered path that will not resolve is not a
+  // project claiming nothing — it is one this process cannot read.
+  test('a registered project whose path no longer resolves forbids the sweep, it never reads as "claims nothing"', async () => {
+    const good = register(makeRepo())
+    seedTask(good.path, 'A still claims a volume')
+    const moved = register(makeRepo())
+    const liveInB = seedTask(moved.path, 'B still claims a volume too')
+    // The repo MOVES: its tasks (and the volumes they claim) still exist,
+    // they are simply not where the registry says any more.
+    const elsewhere = `${moved.path}-relocated`
+    renameSync(moved.path, elsewhere)
+    cleanups.push(elsewhere)
+    expect(existsSync(moved.path)).toBe(false)
+    expect(taskRecordExists(elsewhere, liveInB.id)).toBe(true)
+    expect(listProjects()).toHaveLength(2) // the registry itself is intact and complete
+
+    let seenClaimed: ReadonlySet<string> | null = null
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sweepOrphanedVolumesFn: (opts) => {
+        seenClaimed = opts.claimedIds
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    // Not "ran on A's ids only" — did not run at all.
+    expect(seenClaimed).toBeNull()
+    expect(notices.some((line) => line.includes('sweep skipped'))).toBe(true)
+  })
+
+  test('an unparsable projects.json forbids the sweep rather than reading as zero projects', async () => {
+    writeFileSync(projectsPath(), '{ this is not json')
+    let called = false
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sweepOrphanedVolumesFn: () => {
+        called = true
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(called).toBe(false)
+    expect(notices.some((line) => line.includes('sweep skipped'))).toBe(true)
+  })
+
+  test('an empty (but technically well-formed) registry never runs the sweep either — belt and suspenders', async () => {
+    let called = false
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      // A registry that reads as COMPLETE but genuinely empty — the ENOENT
+      // case in listProjectsDetailed, or every project having been removed.
+      // projectCount === 0 must forbid the sweep on its own, independent of
+      // `complete`, per "never sweep an empty inventory".
+      listProjectsDetailedFn: () => ({ projects: [], complete: true }),
+      sweepOrphanedVolumesFn: () => {
+        called = true
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(called).toBe(false)
+    expect(notices.some((line) => line.includes('sweep skipped'))).toBe(true)
+  })
+
+  // T1.9 review round 1, Critique 3: claimedIds is a snapshot taken BEFORE
+  // the slow volume ls/rm round trips. A task created (its task.json
+  // written) in that window must not lose its volume — proven here by
+  // driving the manager's OWN recheckClaimedIds end to end against a real
+  // repo, exactly as sweepOrphanedHomeVolumes would call it.
+  test('recheckClaimedIds is wired to the LIVE registry: a task created after the snapshot is claimed on recheck', async () => {
+    const project = register(makeRepo())
+    let recheck: (() => ReadonlySet<string> | null) | undefined
+    const manager = createTaskManager({
+      ...managerOpts,
+      sweepOrphanedVolumesFn: (opts) => {
+        recheck = opts.recheckClaimedIds
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+    expect(recheck).toBeDefined()
+    expect(recheck?.()).toEqual(new Set())
+
+    // A task created AFTER the sweep's initial snapshot but before this
+    // recheck — exactly what a live volume ls/rm round trip leaves time for.
+    const justCreated = seedTask(project.path, 'created mid-sweep')
+    expect(recheck?.()).toEqual(new Set([justCreated.id]))
+  })
+
+  test('recheckClaimedIds returns null (never an empty Set) once the registry stops being readable — forbidding the removal it guards, not permitting it', async () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'x')
+    let recheck: (() => ReadonlySet<string> | null) | undefined
+    const manager = createTaskManager({
+      ...managerOpts,
+      sweepOrphanedVolumesFn: (opts) => {
+        recheck = opts.recheckClaimedIds
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+    await manager.sweepOrphanedVolumes()
+    expect(recheck).toBeDefined()
+
+    writeFileSync(projectsPath(), '{ broken')
+    expect(recheck?.()).toBeNull()
+  })
+})
+
+describe('manager.applyRetention', () => {
+  test('runs per registered project, with the configured keep count and the project name on each notice', async () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const seen: { cwd: string; keep: number }[] = []
+    const outcome: TaskRetentionOutcome = {
+      purged: ['x'],
+      notices: ['task x: retention_worktree_purged — …'],
+    }
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      taskRetention: 5,
+      onNotice: (message) => notices.push(message),
+      applyTaskRetentionFn: (opts) => {
+        seen.push({ cwd: opts.cwd, keep: opts.keep })
+        return Promise.resolve(outcome)
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.applyRetention()
+
+    expect(seen).toEqual([
+      { cwd: projectA.path, keep: 5 },
+      { cwd: projectB.path, keep: 5 },
+    ])
+    expect(notices).toEqual([
+      `${projectA.name}: ${outcome.notices[0]}`,
+      `${projectA.name}: retention purged 1 task(s)`,
+      `${projectB.name}: ${outcome.notices[0]}`,
+      `${projectB.name}: retention purged 1 task(s)`,
+    ])
+  })
+
+  // T1.9 review round 3, Mineur 8: `outcome.purged` gets its own production
+  // consumer — a per-project summary count — but only when something was
+  // actually purged; a project where retention had nothing to do stays
+  // silent rather than adding a "purged 0 task(s)" line nobody needs.
+  test('purged summary line is skipped when nothing was actually purged', async () => {
+    register(makeRepo())
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      applyTaskRetentionFn: () => Promise.resolve({ purged: [], notices: [] }),
+      ...fakeRunner(),
+    })
+
+    await manager.applyRetention()
+
+    expect(notices.some((line) => line.includes('purged'))).toBe(false)
+  })
+
+  test('the default keep count applies when unconfigured', async () => {
+    register(makeRepo())
+    const seen: number[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      applyTaskRetentionFn: (opts) => {
+        seen.push(opts.keep)
+        return Promise.resolve({ purged: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.applyRetention()
+
+    expect(seen).toEqual([20]) // DEFAULT_TASK_RETENTION
+  })
+
+  test('one project failing does not stop the others (fenced per project, like boot recovery)', async () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const notices: string[] = []
+    const ran: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      applyTaskRetentionFn: (opts) => {
+        ran.push(opts.cwd)
+        if (opts.cwd === projectA.path) {
+          return Promise.reject(new Error('disk full'))
+        }
+        return Promise.resolve({ purged: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.applyRetention()
+
+    expect(ran).toEqual([projectA.path, projectB.path])
+    expect(notices.some((line) => line.includes('disk full'))).toBe(true)
   })
 })

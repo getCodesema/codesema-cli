@@ -1752,6 +1752,198 @@ describe('baseline recorded by the runner', () => {
     expect(await runner.abandon(task.id)).toEqual({ ok: true })
   })
 
+  test('abandon releases the HOME volume of a container-isolated task', async () => {
+    const repo = makeRepo()
+    // Started as 'policy' so the turn runs on the fake host agent — real
+    // container isolation is a different module's concern (task-isolation.test.ts).
+    // The record is flipped to 'container' right before the abandon this test
+    // is actually about, so only the RELEASE gate is exercised here.
+    const task = makeTask(repo, 'caged task', 'work', 'policy')
+    const released: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      releaseAgentHomeFn: (opts) => {
+        released.push(opts.taskId)
+        return Promise.resolve({ released: true })
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id) as TaskRecord
+    record.isolation = 'container'
+    saveTask(repo, record)
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+
+    expect(released).toEqual([task.id])
+    const event = readTaskEvents(repo, task.id).find((e) => e.type === 'resource')
+    expect(event?.data.name).toBe('home_volume_released')
+    // Neutral vocabulary (DP9/DP10): a release outcome never carries a D2 code.
+    expect(event?.reason_code).toBeUndefined()
+  })
+
+  test('abandon on a policy-isolated task never attempts a release: nothing was ever created', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'host task', 'work', 'policy')
+    let calls = 0
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      releaseAgentHomeFn: () => {
+        calls++
+        return Promise.resolve({ released: true })
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+
+    expect(calls).toBe(0)
+    expect(readTaskEvents(repo, task.id).find((e) => e.type === 'resource')).toBeUndefined()
+  })
+
+  // T1.9 review round 3, Majeur 6(b): the ADDED requirement "Abandon
+  // libérant les ressources sans détruire de travail" had zero test coverage
+  // — no line in this file mentioned `branch`, `work_on` or `preserved`. This
+  // is the T1.6 non-regression spec.md's "Abandon d'une tâche work_on"
+  // scenario asks for directly: the volume is released, the worktree is
+  // retired, and the branch — the USER's, not this conversation's to delete
+  // — is never touched, same commit before and after.
+  test('abandon on a work_on task releases the volume and retires the worktree, but the branch is NEVER touched (T1.6 non-regression)', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'existing-feature'], { cwd: repo, stdio: 'ignore' })
+    const shaBefore = execFileSync('git', ['rev-parse', 'existing-feature'], { cwd: repo })
+      .toString()
+      .trim()
+    // Started as 'policy' so the turn runs on the fake host agent — real
+    // container isolation is a different module's concern, same pattern as
+    // the 'abandon releases the HOME volume of a container-isolated task'
+    // test above: the record is flipped to 'container' right before the
+    // abandon this test is actually about.
+    const task = createTask(repo, {
+      title: 'work on existing feature',
+      prompt: 'work',
+      autoShip: false,
+      base: '',
+      branch: 'existing-feature',
+      worktree: '',
+      workOn: true,
+    })
+    const released: string[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      releaseAgentHomeFn: (opts) => {
+        released.push(opts.taskId)
+        return Promise.resolve({ released: true })
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const worktree = loadTask(repo, task.id)?.worktree ?? ''
+    expect(worktree).not.toBe('')
+    const record = loadTask(repo, task.id) as TaskRecord
+    record.isolation = 'container'
+    saveTask(repo, record)
+
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+
+    expect(status(repo, task.id)).toBe('failed')
+    expect(existsSync(worktree)).toBe(false) // the worktree IS retired
+    expect(released).toEqual([task.id]) // the volume IS released
+    // The branch survives, untouched: same name, same commit.
+    const branches = execFileSync('git', ['branch', '--list', 'existing-feature'], {
+      cwd: repo,
+    }).toString()
+    expect(branches).toContain('existing-feature')
+    expect(
+      execFileSync('git', ['rev-parse', 'existing-feature'], { cwd: repo }).toString().trim(),
+    ).toBe(shaBefore)
+  })
+
+  test('a release failure never blocks the abandon from reaching its terminal status', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged task', 'work', 'policy')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      releaseAgentHomeFn: () =>
+        Promise.resolve({ released: false, reason: 'rm-failed', detail: 'daemon busy' }),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id) as TaskRecord
+    record.isolation = 'container'
+    saveTask(repo, record)
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+
+    expect(status(repo, task.id)).toBe('failed')
+    const event = readTaskEvents(repo, task.id).find((e) => e.type === 'resource')
+    expect(event?.data.name).toBe('home_volume_not_released')
+    expect(String(event?.data.message)).toContain('daemon busy')
+    expect(event?.reason_code).toBeUndefined()
+  })
+
+  // T1.9 review round 3, Mineur 3: `releaseTaskHome` used to be awaited
+  // BEFORE `persist(current)` — a daemon blocked on `volume rm` could delay
+  // writing the terminal status by up to the release seam's own budget, and a
+  // process death in that window would strand the task on a non-terminal
+  // status. Proven directly: the fake release reads the record back WHILE it
+  // is still being awaited, and the terminal status must already be there.
+  test('abandon persists the terminal status BEFORE awaiting the HOME volume release, never after', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged task', 'work', 'policy')
+    let observedDuringRelease: TaskStatus | undefined
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      releaseAgentHomeFn: () => {
+        observedDuringRelease = loadTask(repo, task.id)?.status
+        return Promise.resolve({ released: true })
+      },
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id) as TaskRecord
+    record.isolation = 'container'
+    saveTask(repo, record)
+
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+
+    expect(observedDuringRelease).toBe('failed')
+  })
+
+  test('no container runtime detected: named distinctly from an ordinary release failure', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'caged task', 'work', 'policy')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      releaseAgentHomeFn: () => Promise.resolve({ released: false, reason: 'no-runtime' }),
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id) as TaskRecord
+    record.isolation = 'container'
+    saveTask(repo, record)
+    expect(await runner.abandon(task.id)).toEqual({ ok: true })
+
+    const event = readTaskEvents(repo, task.id).find((e) => e.type === 'resource')
+    expect(event?.data.name).toBe('container_runtime_absent')
+  })
+
   test('an abandon never writes back the record it read before waiting', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'shipped under it', 'work')
