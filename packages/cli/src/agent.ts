@@ -148,8 +148,7 @@ export function hardenedReviewCommand(command: string): string {
     return `${command} --deny '*'`
   }
   // opencode: command unchanged. Review hardening is OPENCODE_CONFIG_CONTENT
-  // (wildcard deny, including agent.build/plan so a repo opencode.json cannot
-  // re-enable tools via agent rules).
+  // (wildcard deny, including agent.build/plan, default_agent pinned to build).
   return command
 }
 
@@ -203,9 +202,12 @@ const AGENT_ENV_PREFIXES: Record<KnownAgent, string[]> = {
 }
 
 /** Inline opencode.json: wildcard deny, including default agent rules so a
- *  repo `agent.build.permission` cannot re-enable tools. */
+ *  repo `agent.build.permission` cannot re-enable tools. `default_agent` is
+ *  pinned to the denied `build` so a repo `default_agent` named something
+ *  else cannot beat the global `*`. User `--agent` on the command still wins. */
 export const OPENCODE_REVIEW_CONFIG = JSON.stringify({
   permission: { '*': 'deny' },
+  default_agent: 'build',
   agent: {
     build: { permission: { '*': 'deny' } },
     plan: { permission: { '*': 'deny' } },

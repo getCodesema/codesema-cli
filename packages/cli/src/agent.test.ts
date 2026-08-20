@@ -285,6 +285,7 @@ describe('reviewAgentEnv', () => {
     expect(env?.OPENCODE_CONFIG_CONTENT).toBe(OPENCODE_REVIEW_CONFIG)
     expect(JSON.parse(OPENCODE_REVIEW_CONFIG)).toEqual({
       permission: { '*': 'deny' },
+      default_agent: 'build',
       agent: {
         build: { permission: { '*': 'deny' } },
         plan: { permission: { '*': 'deny' } },
@@ -301,9 +302,11 @@ describe('reviewAgentEnv', () => {
     // agent.build.permission: { bash: "allow" } would re-enable the shell.
     const parsed = JSON.parse(OPENCODE_REVIEW_CONFIG) as {
       permission: { '*': string }
+      default_agent: string
       agent: { build: { permission: { '*': string } }; plan: { permission: { '*': string } } }
     }
     expect(parsed.permission['*']).toBe('deny')
+    expect(parsed.default_agent).toBe('build')
     expect(parsed.agent.build.permission['*']).toBe('deny')
     expect(parsed.agent.plan.permission['*']).toBe('deny')
     const env = reviewAgentEnv('opencode run', source)
