@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
@@ -22,14 +22,15 @@ import {
 import type { ExecResult } from './task-checks.js'
 import {
   agentContainerName,
+  agentCredentialsPath,
   agentHomeVolume,
   agentImageTag,
   agentUserCommand,
   bootstrapAgentHome,
   buildAgentImage,
   buildSquidConfig,
-  BUN_CLAUDE_INSTALL_COMMAND,
   CAGE_FORWARDED_ENV,
+  cageForwardedEnv,
   CONTAINER_KILL_GRACE_MS,
   containerRunArgs,
   containerTaskCommandFor,
@@ -42,6 +43,8 @@ import {
   generateAgentDockerfile,
   GIT_INSTALL_COMMAND,
   HOME_VOLUME_OWNER_LABEL,
+  installCommandFor,
+  isolationDomainsFor,
   overlayIsolationProbe,
   parseJsonc,
   probeIsolation,
@@ -513,10 +516,37 @@ describe('generateAgentDockerfile', () => {
 })
 
 describe('defaultInstallCommand', () => {
-  test('npm on a node base, bun on a bun base', () => {
-    expect(defaultInstallCommand('node:22')).toBe(DEFAULT_CLAUDE_INSTALL_COMMAND)
-    expect(defaultInstallCommand('python:3.12')).toBe(DEFAULT_CLAUDE_INSTALL_COMMAND)
-    expect(defaultInstallCommand('oven/bun:1')).toBe(BUN_CLAUDE_INSTALL_COMMAND)
+  test('native-first for claude, not a bare npm line', () => {
+    const cmd = defaultInstallCommand('node:22')
+    expect(cmd).not.toBe(DEFAULT_CLAUDE_INSTALL_COMMAND)
+    expect(cmd).toBe(installCommandFor('claude', 'node:22'))
+    expect(defaultInstallCommand('oven/bun:1')).toBe(installCommandFor('claude', 'oven/bun:1'))
+  })
+})
+
+describe('installCommandFor', () => {
+  test('opencode and claude contain native URL, npm cache clean, bun fallback, failure echo', () => {
+    const claude = installCommandFor('claude')
+    expect(claude).toContain('https://claude.ai/install.sh')
+    expect(claude).toContain('npm cache clean --force')
+    expect(claude).toContain('bun install -g')
+    expect(claude).toContain('echo')
+    expect(claude).toContain('exit 1')
+    expect(claude).toContain('$HOME/.local/bin/claude')
+    expect(claude).toContain('command -v claude')
+    expect(claude).toContain('/usr/local/bin/claude')
+    const opencode = installCommandFor('opencode')
+    expect(opencode).toContain('https://opencode.ai/install')
+    expect(opencode).toContain('npm cache clean --force')
+    expect(opencode).toContain('bun install -g')
+    expect(opencode).toContain('echo')
+    expect(opencode).toContain('exit 1')
+    expect(opencode).toContain('$HOME/.local/bin/opencode')
+    expect(opencode).toContain('command -v opencode')
+    expect(opencode).toContain('/usr/local/bin/opencode')
+    // A failed native installer must fall through to npm, not `exit 0`.
+    expect(claude).toContain('npm install -g')
+    expect(claude.indexOf('command -v claude')).toBeLessThan(claude.indexOf('npm install -g'))
   })
 })
 
@@ -532,6 +562,12 @@ describe('agentImageTag', () => {
     expect(agentImageTag('node:22', 'FROM node:22', '2.1.234')).not.toBe(base)
     expect(agentImageTag('node:24', 'FROM node:22', '2.1.233')).not.toBe(base)
     expect(agentImageTag('node:22', 'FROM node:22\nUSER agent', '2.1.233')).not.toBe(base)
+  })
+
+  test('claude and opencode produce different tags; 3-arg calls stay claude', () => {
+    const claude = agentImageTag('node:22', 'FROM node:22', '2.1.233')
+    expect(agentImageTag('node:22', 'FROM node:22', '2.1.233', 'claude')).toBe(claude)
+    expect(agentImageTag('node:22', 'FROM node:22', '2.1.233', 'opencode')).not.toBe(claude)
   })
 
   // The tag hashes the WHOLE recipe, so adding the git step invalidates every
@@ -921,6 +957,34 @@ describe('bootstrapAgentHome', () => {
     expect(home.credentials).toBe('already-bootstrapped')
     expect(argsOf(calls, 'volume', 'create')).toHaveLength(0)
     expect(argsOf(calls, 'run')).toHaveLength(0)
+  })
+
+  test('opencode credentials land in the XDG data path, not .claude', async () => {
+    const dir = makeDir()
+    const path = join(dir, 'auth.json')
+    writeFileSync(path, '{"token":"ok"}')
+    const { calls, exec } = fakeExec((call) =>
+      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+    )
+    const home = await bootstrapAgentHome({
+      runtime: 'docker',
+      taskId,
+      image: 'codesema-agent:deadbeefcafe',
+      execFn: exec,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok' },
+      agent: 'opencode',
+      credentialsPath: path,
+    })
+    expect(home.credentials).toBe('copied')
+    const seed = calls.find((call) => call.args[0] === 'run')
+    expect(seed?.args.at(-1)).toContain('/home/agent/.local/share/opencode/auth.json')
+    expect(seed?.args.at(-1)).not.toContain('.claude')
+    expect(agentCredentialsPath('opencode', {})).toBe(
+      join(homedir(), '.local', 'share', 'opencode', 'auth.json'),
+    )
+    expect(agentCredentialsPath('opencode', { XDG_DATA_HOME: '/xdg' })).toBe(
+      join('/xdg', 'opencode', 'auth.json'),
+    )
   })
 
   test('memoized per task: two turns bootstrap once', async () => {
@@ -1430,6 +1494,26 @@ describe('containerTaskCommandFor', () => {
   test('a non-claude command is passed through untouched', () => {
     expect(containerTaskCommandFor('codex exec -', { session: null })).toBe('codex exec -')
   })
+
+  test('opencode gets --format json, --auto, and resumes with -s, never skip-permissions', () => {
+    const fresh = containerTaskCommandFor('opencode run', {
+      session: { kind: 'new', id: 'uuid-1' },
+    })
+    expect(fresh).toContain('--format json')
+    expect(fresh).toContain('--auto')
+    expect(fresh).not.toContain('--dangerously-skip-permissions')
+    expect(fresh).not.toContain('-s ')
+    const resume = containerTaskCommandFor('opencode run', {
+      session: { kind: 'resume', id: 'sess-9' },
+    })
+    expect(resume).toContain('--format json')
+    expect(resume).toContain('--auto')
+    expect(resume).toContain('-s sess-9')
+    expect(resume).not.toContain('--dangerously-skip-permissions')
+    const custom = containerTaskCommandFor('opencode run --format stream --auto', { session: null })
+    expect(custom).toBe('opencode run --format stream --auto')
+    expect(custom.match(/--auto/g)).toHaveLength(1)
+  })
 })
 
 describe('containerRunArgs', () => {
@@ -1883,6 +1967,16 @@ describe('probeIsolation', () => {
     expect(probe.reason).toContain('codex')
   })
 
+  test('opencode with a runtime gets a container cage', async () => {
+    const { exec } = fakeExec()
+    const probe = await probeIsolation({
+      configured: 'auto',
+      command: 'opencode run',
+      execFn: exec,
+    })
+    expect(probe).toMatchObject({ available: true, mode: 'container', runtime: 'docker' })
+  })
+
   test('ignoreAgent: a non-claude command still probes the runtime (T1.4 boot)', async () => {
     const { exec } = fakeExec()
     const probe = await probeIsolation({
@@ -1944,6 +2038,26 @@ describe('overlayIsolationProbe (T1.4)', () => {
     expect(resolveTaskIsolation(overlaid)?.isolation).toBe('policy')
   })
 
+  test('opencode is admitted when the machine has a cage', () => {
+    const overlaid = overlayIsolationProbe(machine, {
+      configured: 'auto',
+      command: 'opencode run',
+    })
+    expect(overlaid.available).toBe(true)
+    expect(overlaid.mode).toBe('container')
+  })
+
+  test('policy + opencode is unsafe, not a silent policy fallback', () => {
+    const overlaid = overlayIsolationProbe(machine, {
+      configured: 'policy',
+      command: 'opencode run',
+    })
+    expect(overlaid.available).toBe(false)
+    expect(overlaid.mode).toBe('policy')
+    expect(overlaid.reason).toContain('opencode.json')
+    expect(resolveTaskIsolation(overlaid, 'opencode run')).toBeNull()
+  })
+
   test('a sibling policy probe cannot hide a missing runtime from a container project', () => {
     const unprobed: IsolationProbe = {
       available: false,
@@ -1995,6 +2109,10 @@ describe('resolveTaskIsolation', () => {
   test('configured policy stays policy even if a runtime shows up', () => {
     expect(resolveTaskIsolation(probe({ configured: 'policy' }))?.isolation).toBe('policy')
   })
+
+  test('policy + opencode is refused (null), never a host policy run', () => {
+    expect(resolveTaskIsolation(probe({ configured: 'policy' }), 'opencode run')).toBeNull()
+  })
 })
 
 describe('names', () => {
@@ -2007,6 +2125,20 @@ describe('names', () => {
     for (const name of CAGE_FORWARDED_ENV) {
       expect(/^(CLAUDE|ANTHROPIC)_/.test(name)).toBe(true)
     }
+  })
+
+  test('opencode forwards extra provider keys without changing the Anthropic list', () => {
+    expect(cageForwardedEnv('claude -p')).toEqual(CAGE_FORWARDED_ENV)
+    const extra = cageForwardedEnv('opencode run')
+    expect(extra).toEqual([
+      ...CAGE_FORWARDED_ENV,
+      'OPENCODE_API_KEY',
+      'OPENROUTER_API_KEY',
+      'OPENAI_API_KEY',
+      'GEMINI_API_KEY',
+      'GOOGLE_API_KEY',
+      'XAI_API_KEY',
+    ])
   })
 })
 
@@ -2021,6 +2153,31 @@ describe('the default allowlist', () => {
     const config = buildSquidConfig(DEFAULT_ISOLATION_ALLOWED_DOMAINS)
     expect(config).not.toContain('registry.npmjs.org')
     expect(config).not.toContain('github.com')
+  })
+})
+
+describe('isolationDomainsFor', () => {
+  test('openrouter model allowlists openrouter.ai', () => {
+    expect(isolationDomainsFor('opencode --model openrouter/anthropic/claude-sonnet')).toEqual([
+      'openrouter.ai',
+      'models.opencode.ai',
+    ])
+    expect(isolationDomainsFor('opencode -m openrouter/foo')).toEqual([
+      'openrouter.ai',
+      'models.opencode.ai',
+    ])
+    expect(isolationDomainsFor("opencode --model 'openrouter/foo'")).toEqual([
+      'openrouter.ai',
+      'models.opencode.ai',
+    ])
+    expect(isolationDomainsFor('opencode --model="openrouter/bar"')).toEqual([
+      'openrouter.ai',
+      'models.opencode.ai',
+    ])
+  })
+
+  test('non-opencode keeps the claude default', () => {
+    expect(isolationDomainsFor('claude -p')).toEqual(DEFAULT_ISOLATION_ALLOWED_DOMAINS)
   })
 })
 

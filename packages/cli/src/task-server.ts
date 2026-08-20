@@ -49,7 +49,9 @@ import { readChecksConfig } from './repo-config.js'
 import { runChecks } from './task-checks.js'
 import {
   agentHomeVolume,
+  cageableCommand,
   isolationDefaults,
+  isolationDomainsFor,
   overlayIsolationProbe,
   releaseAgentHome,
   resolveTaskIsolation,
@@ -1245,7 +1247,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         config.watchdogHeartbeatSeconds !== undefined
           ? resolveWatchdogBudgets(config)
           : opts.watchdog,
-      allowedDomains: config.isolationAllowedDomains ?? opts.allowedDomains,
+      allowedDomains: config.isolationAllowedDomains ?? isolationDomainsFor(agent.command),
       isolationMode: config.isolation ?? probe.configured,
       warnings,
       agentWarning: agent.warning,
@@ -2517,26 +2519,26 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         configured: runtime.isolationMode,
         command: ctx.command,
       })
-      const resolved = resolveTaskIsolation(projectProbe)
+      const resolved = resolveTaskIsolation(projectProbe, ctx.command)
       if (!resolved) {
-        // A non-claude agent can never be caged: waiting will not help, so
-        // this is a 400 with no retryable D2 code. A missing runtime is still
-        // resource_busy — the engine may come back.
-        const agentCannotCage = knownAgent(ctx.command) !== 'claude'
+        // 400: config will never succeed by waiting — a non-cageable agent, or
+        // opencode under policy (a host run is unsafe). 409: a cageable agent
+        // blocked by a missing/unreachable runtime (claude AND opencode).
+        const agentCannotCage = !cageableCommand(ctx.command)
+        const configRefusal = agentCannotCage || projectProbe.configured === 'policy'
         // Frozen command names what would actually run. When the file now
         // points at a cageable agent, say so — restarting is the fix, waiting
-        // is not. A disk edit that is still non-claude must not send the
+        // is not. A disk edit that is still non-cageable must not send the
         // human on a reboot that would 400 again.
         const pending = runtime.command
-        const staleCageable =
-          agentCannotCage && pending !== ctx.command && knownAgent(pending) === 'claude'
+        const staleCageable = agentCannotCage && pending !== ctx.command && cageableCommand(pending)
         return {
           ok: false,
-          code: agentCannotCage ? 400 : 409,
+          code: configRefusal ? 400 : 409,
           error: staleCageable
             ? t('isolation.unavailableStaleAgent', { running: ctx.command, pending })
             : t('isolation.unavailable', { reason: projectProbe.reason }),
-          ...(agentCannotCage ? {} : { reason_code: 'resource_busy' as const }),
+          ...(configRefusal ? {} : { reason_code: 'resource_busy' as const }),
         }
       }
       const record = createTask(ctx.project.path, {
