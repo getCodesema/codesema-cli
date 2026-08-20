@@ -169,6 +169,14 @@ export type TaskEventType =
    * the cry-wolf DP9 refuses.
    */
   | 'issue'
+  /**
+   * Worktree preparation before a turn: installing dependencies in a
+   * checks-shaped container. NEUTRAL — a skipped install is success, a
+   * failed one is journaled here rather than as `error` so the turn can still
+   * start. `data.name` is `install_started` / `install_skipped` /
+   * `install_passed` / `install_failed`.
+   */
+  | 'prep'
 
 /**
  * How a task's agent turns are contained.
@@ -389,6 +397,13 @@ export type TaskRecord = {
    */
   agent?: string
   /**
+   * sha256 (16 hex) of the lockfile that the last successful/skipped install
+   * ran against. OPTIONAL: a record written before bootstrap existed has none,
+   * so the next turn installs. Cleared implicitly when the worktree is gone
+   * (no node_modules) — the runner reinstalls rather than trusting the hash.
+   */
+  install_lock_hash?: string
+  /**
    * Why the task is where it is, when where it is is a degradation: the code
    * plus, in `detail`, the producer's own readable message verbatim. OPTIONAL,
    * and absence is the honest default — a record written by 0.12 has no reason
@@ -521,6 +536,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'resource',
   'queue',
   'issue',
+  'prep',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
@@ -860,6 +876,9 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // drops the key rather than inventing the workspace default here.
     ...(typeof r.agent === 'string' && r.agent.trim()
       ? { agent: r.agent.trim().slice(0, TASK_AGENT_MAX) }
+      : {}),
+    ...(typeof r.install_lock_hash === 'string' && /^[0-9a-f]{16}$/.test(r.install_lock_hash)
+      ? { install_lock_hash: r.install_lock_hash }
       : {}),
     // Optional and whitelisted, exactly like `source` on TaskChecks: a record
     // without a reason keeps none, and one whose code is unknown (older or

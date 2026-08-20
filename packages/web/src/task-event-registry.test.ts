@@ -32,4 +32,8 @@ describe('TASK_EVENT_COMPONENTS', () => {
   test("'issue' (T2.4) routes to the generic neutral line, not a bespoke renderer", () => {
     expect(TASK_EVENT_COMPONENTS.issue).toBe(TaskEventLine)
   })
+
+  test("'prep' routes to the generic neutral line, not a checks card", () => {
+    expect(TASK_EVENT_COMPONENTS.prep).toBe(TaskEventLine)
+  })
 })

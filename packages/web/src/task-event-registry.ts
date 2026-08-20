@@ -55,4 +55,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   // rendered as an error.
   queue: TaskEventLine,
   issue: TaskEventLine,
+  prep: TaskEventLine,
 }

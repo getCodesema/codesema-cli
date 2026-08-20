@@ -6,14 +6,19 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { containerGitStateDir } from './container-git.js'
 import { TASK_CHECK_TAIL_MAX, type TaskChecks } from './contract.js'
 import {
+  bootstrapWorktreeInstall,
   DEFAULT_CHECK_TIMEOUT_SECONDS,
   DEFAULT_CHECKS_IMAGE,
   detectChecks,
   detectContainerRuntime,
   detectFromDeclarations,
+  detectInstall,
+  lockfileFingerprint,
+  pkgCacheVolume,
   planFromConfig,
   resolveChecksPlan,
   runChecks,
+  worktreeHasDeps,
   type ExecFn,
   type ExecResult,
 } from './task-checks.js'
@@ -67,6 +72,9 @@ function dockerRig(byCommand: (command: string, call: Call) => ExecResult) {
       return call.file === 'docker' ? ok({ stdout: 'Docker version 27' }) : ok({ code: 1 })
     }
     if (call.args[0] === 'kill') {
+      return ok()
+    }
+    if (call.args[0] === 'volume') {
       return ok()
     }
     const command = call.args.at(-1) ?? ''
@@ -162,6 +170,122 @@ describe('detectChecks', () => {
   test('nothing recognizable: null (unconfigured)', () => {
     expect(detectChecks({ files: ['README.md', 'Makefile'] })).toBeNull()
     expect(detectChecks({ files: [] })).toBeNull()
+  })
+})
+
+describe('detectInstall', () => {
+  test('npm lockfile with no check scripts still has an install step', () => {
+    expect(
+      detectInstall({
+        files: ['package-lock.json', 'package.json'],
+        packageJson: packageJson({ build: 'tsc -b' }),
+      }),
+    ).toEqual({
+      image: DEFAULT_CHECKS_IMAGE,
+      install: 'npm ci',
+      timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+    })
+  })
+
+  test('package.json without a lockfile falls back to npm install', () => {
+    expect(detectInstall({ files: ['package.json'] })?.install).toBe('npm install')
+  })
+
+  test('bun lockfile wins and uses frozen install', () => {
+    expect(detectInstall({ files: ['bun.lock', 'package-lock.json'] })).toEqual({
+      image: 'oven/bun:1',
+      install: 'bun install --frozen-lockfile',
+      timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+    })
+  })
+
+  test('nothing recognizable: null', () => {
+    expect(detectInstall({ files: ['README.md'] })).toBeNull()
+  })
+})
+
+describe('lockfileFingerprint / worktreeHasDeps', () => {
+  test('hashes the first present lockfile and is stable', () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const a = lockfileFingerprint(worktree)
+    const b = lockfileFingerprint(worktree)
+    expect(a).toMatch(/^[0-9a-f]{16}$/)
+    expect(a).toBe(b)
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":3}')
+    expect(lockfileFingerprint(worktree)).not.toBe(a)
+  })
+
+  test('deps are present only when node_modules or .venv exists', () => {
+    expect(worktreeHasDeps(worktree)).toBe(false)
+    mkdirSync(join(worktree, 'node_modules'))
+    expect(worktreeHasDeps(worktree)).toBe(true)
+  })
+})
+
+describe('bootstrapWorktreeInstall', () => {
+  test('unconfigured worktree never probes a runtime', async () => {
+    const { calls, exec } = fakeExec(() => ok())
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'aaaa1111bbbb',
+      execFn: exec,
+    })
+    expect(result.status).toBe('unconfigured')
+    expect(calls).toEqual([])
+  })
+
+  test('skips when the lockfile hash matches and node_modules is there', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    mkdirSync(join(worktree, 'node_modules'))
+    const hash = lockfileFingerprint(worktree)
+    const { calls, exec } = dockerRig(() => ok())
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'aaaa1111bbbb',
+      previousFingerprint: hash,
+      execFn: exec,
+    })
+    expect(result.status).toBe('skipped')
+    expect(result.fingerprint).toBe(hash)
+    expect(calls).toEqual([])
+  })
+
+  test('installs with network, cache volume, and host uid when the worktree is fresh', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const started: string[] = []
+    const { calls, exec } = dockerRig(() => ok({ stdout: 'added 10 packages' }))
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'projdeadbeef',
+      uid: 1000,
+      gid: 1000,
+      execFn: exec,
+      onStart: (command) => started.push(command),
+    })
+    expect(result.status).toBe('passed')
+    expect(started).toEqual(['npm ci'])
+    const volume = calls.find((c) => c.args[0] === 'volume')
+    expect(volume?.args).toEqual(['volume', 'create', pkgCacheVolume('projdeadbeef')])
+    const run = calls.find((c) => c.args[0] === 'run')
+    expect(run?.args).toContain('npm ci')
+    expect(run?.args).not.toContain('--network')
+    expect(run?.args.join(' ')).toContain(`${pkgCacheVolume('projdeadbeef')}:/cache`)
+    expect(run?.args).toContain('--user')
+    expect(run?.args[run.args.indexOf('--user') + 1]).toBe('1000:1000')
+  })
+
+  test('reinstalls a matching hash when node_modules is gone (rebuilt worktree)', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const hash = lockfileFingerprint(worktree)
+    const { calls, exec } = dockerRig(() => ok())
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'projdeadbeef',
+      previousFingerprint: hash,
+      execFn: exec,
+    })
+    expect(result.status).toBe('passed')
+    expect(calls.some((c) => c.args[0] === 'run')).toBe(true)
   })
 })
 

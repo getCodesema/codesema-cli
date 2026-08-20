@@ -319,6 +319,8 @@ export type TaskEventType =
    * into a French journal (DP9/DP15).
    */
   | 'issue'
+  /** Pre-turn dependency install. data.name: install_started/skipped/passed/failed. */
+  | 'prep'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
