@@ -321,6 +321,13 @@ export type TaskEventType =
   | 'issue'
   /** Pre-turn dependency install. data.name: install_started/skipped/passed/failed. */
   | 'prep'
+  /**
+   * T2.5/D6: the DOMAIN, not an incident — a fact about this task's acceptance
+   * criteria. `data.name` names the incident (`draft_unparsed`, `validated`).
+   * NEUTRAL like `cost`/`issue`. Kept on its own last line so concurrent
+   * tickets append without a rebase fight (mirrors packages/contract/src/tasks.ts).
+   */
+  | 'criteria'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
@@ -491,6 +498,12 @@ export type TaskRecord = {
   issue?: TaskIssueRef
   /** What the issue's body and criteria were worth at launch (T2.4, D7). */
   issue_snapshot?: TaskIssueSnapshot
+  /**
+   * Acceptance criteria this task is judged against when they did not come
+   * from a forge issue (T2.5, D6). Absent = no criteria (records written
+   * before the field, and tasks that still have none).
+   */
+  criteria?: AcceptanceCriterion[]
   created_at: string
   updated_at: string
 }

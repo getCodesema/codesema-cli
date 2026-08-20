@@ -99,3 +99,50 @@ describe('the T2.4 issue journal, read in French', () => {
     expect(new Set(lines.map((line) => line.summary)).size).toBe(names.length)
   })
 })
+
+async function renderCriteriaInFrench(
+  events: readonly TaskEventData[],
+): Promise<{ summary: string; tone: string }[]> {
+  const modulePath = join(import.meta.dir, 'useTaskBoard.ts')
+  const script = [
+    `globalThis.window = { __CODESEMA_LOCALE__: 'fr' }`,
+    `const board = await import(${JSON.stringify(modulePath)})`,
+    `const data = ${JSON.stringify(events)}`,
+    `const lines = data.map((d) => {`,
+    `  const event = { seq: 1, at: '2026-08-20T09:00:00.000Z', type: 'criteria', data: d }`,
+    `  return { summary: board.eventSummary(event), tone: board.eventTone(event) }`,
+    `})`,
+    `process.stdout.write(JSON.stringify(lines))`,
+  ].join('\n')
+  const child = Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'pipe' })
+  const [stdout, stderr] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  await child.exited
+  if (!stdout.trim()) {
+    throw new Error(`the French render never produced anything: ${stderr}`)
+  }
+  return JSON.parse(stdout) as { summary: string; tone: string }[]
+}
+
+describe('the T2.5 criteria journal, read in French', () => {
+  const SERVER_MESSAGE =
+    'the agent reply did not carry a criteria draft protocol, so the task continues without acceptance criteria'
+
+  test('an unreadable draft reads in French, never as the server sentence, and never red', async () => {
+    const [unparsed, validated] = await renderCriteriaInFrench([
+      { name: 'draft_unparsed', message: SERVER_MESSAGE },
+      { name: 'validated', message: 'acceptance criteria validated' },
+    ])
+    expect(unparsed?.summary).toBe(
+      "Le brouillon de critères n'était pas lisible : la tâche continue sans critères",
+    )
+    expect(unparsed?.summary).not.toContain(SERVER_MESSAGE)
+    expect(unparsed?.summary).not.toContain('draft protocol')
+    expect(unparsed?.summary).not.toBe(validated?.summary)
+    expect(validated?.summary).toBe("Critères d'acceptation validés")
+    expect(unparsed?.tone).not.toBe('stop')
+    expect(validated?.tone).not.toBe('stop')
+  })
+})

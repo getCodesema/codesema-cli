@@ -29,8 +29,12 @@ import {
   type WatchdogBudgets,
 } from './agent.js'
 import {
+  EARS_RESPONSE,
+  EARS_TRIGGER,
   isTerminalReason,
   reasonCodeOf,
+  TICKET_CRITERIA_MIN,
+  type AcceptanceCriterion,
   type ReasonCode,
   type TaskEvent,
   type TaskRecord,
@@ -189,6 +193,41 @@ function taskLanguageRule(): string {
 }
 
 /**
+ * Criteria this task is judged against: a human-validated top-level list
+ * (T2.5) takes precedence; otherwise the frozen snapshot taken from a forge
+ * issue at launch (T2.4). Empty means the task has none — the honest default,
+ * and the case that asks for a turn-1 draft.
+ */
+export function taskCriteria(task: TaskRecord): AcceptanceCriterion[] {
+  if (task.criteria && task.criteria.length > 0) {
+    return task.criteria
+  }
+  const fromIssue = task.issue_snapshot?.criteria
+  if (fromIssue && fromIssue.length > 0) {
+    return fromIssue
+  }
+  return []
+}
+
+function acceptanceCriteriaSection(task: TaskRecord): string[] {
+  const criteria = taskCriteria(task)
+  if (criteria.length === 0) {
+    return []
+  }
+  return [
+    'Acceptance criteria:',
+    'The work will be verified criterion by criterion against this list.',
+    ...criteria.map((criterion) => `- [${criterion.id}] ${criterion.text}`),
+    '',
+  ]
+}
+
+/** Turn-1 instruction when the task has no criteria. Not part of the standing rules. */
+function criteriaDraftInstruction(): string {
+  return `This task has no acceptance criteria yet. Start this reply with one dedicated line per proposed criterion of the exact form 'CRITERION: ${EARS_TRIGGER} … ${EARS_RESPONSE} …' (uppercase keywords, at least ${TICKET_CRITERIA_MIN} lines). Then continue with your reply as usual. A human will validate the list before the work is judged against it.`
+}
+
+/**
  * Standing instructions sent with the first turn (and replayed for providers
  * without session resume). The QUESTION protocol is the whole question
  * mechanism: a turn ends either in a summary or in that final line.
@@ -203,6 +242,7 @@ export function buildTaskPrompt(task: TaskRecord, opts: { askBranchName?: boolea
     '',
     `Task: ${task.title}`,
     '',
+    ...acceptanceCriteriaSection(task),
     'Rules:',
     '- Work only inside this worktree. Never touch files outside it.',
     '- Do NOT commit, stage, push, or run destructive git commands: the runner commits your work at the end of the turn.',
@@ -267,6 +307,49 @@ export function parseTaskBranchProposal(response: string): TaskBranchProposal | 
   const usable =
     raw.length >= 3 && raw.length <= BRANCH_PROPOSAL_MAX && BRANCH_PROPOSAL_RE.test(raw)
   return { name: usable ? raw : null, rest }
+}
+
+export type TaskCriteriaProposal = {
+  /** Proposed criterion texts, in protocol order. */
+  texts: string[]
+  /** The reply with the protocol lines removed. */
+  rest: string
+}
+
+/**
+ * The turn-1 prompt of a task without criteria asks the agent to OPEN (or,
+ * after a BRANCH line, continue) with dedicated `CRITERION: <EARS>` lines.
+ * Null when there is no such protocol — the common case of a provider that
+ * ignored the instruction. Present lines are stripped even when empty: they
+ * are protocol, not prose. No natural-language heuristic: only a dedicated
+ * line of the exact form is recognized, and only at the start of the text.
+ */
+export function parseCriteriaProposal(response: string): TaskCriteriaProposal | null {
+  const trimmed = response.trimStart()
+  const lines = trimmed.split('\n')
+  const texts: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = (lines[i] ?? '').trim()
+    if (line === '' && texts.length > 0) {
+      const next = (lines[i + 1] ?? '').trim()
+      if (/^CRITERION:\s*/i.test(next)) {
+        i += 1
+        continue
+      }
+      break
+    }
+    const match = /^CRITERION:\s*(.*)$/i.exec(line)
+    if (!match) {
+      break
+    }
+    texts.push((match[1] ?? '').trim())
+    i += 1
+  }
+  if (texts.length === 0) {
+    return null
+  }
+  return { texts, rest: lines.slice(i).join('\n').trim() }
 }
 
 /**
@@ -678,8 +761,29 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // with 'BRANCH:' was never protocol and stays plain prose in the response.
   const asked = opts.task.turns.length <= 1 && !opts.task.work_on
   const proposal = asked ? parseTaskBranchProposal(full) : null
-  const response = proposal ? proposal.rest : full
+  let response = proposal ? proposal.rest : full
   const branch = proposal?.name ? { branchProposal: proposal.name } : {}
+  // Draft protocol: first turn of a task that has no criteria. A parseable
+  // list stays in memory (the local `draft`) and is NEVER written to the
+  // record — POST /api/tasks/:id/criteria is the only path onto disk. An
+  // unreadable draft does not block: the turn continues, the reason is
+  // journaled next to the agent's own message, never instead of it.
+  const wantsDraft = opts.task.turns.length <= 1 && taskCriteria(opts.task).length === 0
+  if (wantsDraft) {
+    const draft = parseCriteriaProposal(response)
+    if (draft) {
+      response = draft.rest
+    } else {
+      opts.onEvent({
+        type: 'criteria',
+        data: {
+          name: 'draft_unparsed',
+          message:
+            'the agent reply did not carry a criteria draft protocol, so the task continues without acceptance criteria',
+        },
+      })
+    }
+  }
 
   const question = parseTaskQuestion(response)
   if (question) {
@@ -1200,7 +1304,9 @@ function composeTurnPrompt(record: TaskRecord, command: string): string {
   if (record.turns.length <= 1) {
     // A work-on conversation is not asked to name anything: it works on the
     // user's own pre-existing branch, which is never renamed.
-    return `${buildTaskPrompt(record, { askBranchName: !record.work_on })}\n\n${message}`
+    const standing = buildTaskPrompt(record, { askBranchName: !record.work_on })
+    const draft = taskCriteria(record).length === 0 ? `\n\n${criteriaDraftInstruction()}` : ''
+    return `${standing}${draft}\n\n${message}`
   }
   if (supportsSessionResume(command) && record.agent_session_id) {
     return message

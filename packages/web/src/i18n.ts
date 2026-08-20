@@ -310,6 +310,10 @@ const en = {
   'workspace.evIssueSectionGoal': 'goal',
   'workspace.evIssueSectionScope': 'scope',
   'workspace.evIssueSectionOutOfScope': 'out of scope',
+  'workspace.evCriteria': 'Criteria',
+  'workspace.evCriteriaDraftUnparsed':
+    'The criteria draft was unreadable: the task continues without criteria',
+  'workspace.evCriteriaValidated': 'Acceptance criteria validated',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -785,6 +789,10 @@ const fr: Record<MessageKey, string> = {
   'workspace.evIssueSectionGoal': 'objectif',
   'workspace.evIssueSectionScope': 'périmètre',
   'workspace.evIssueSectionOutOfScope': 'hors périmètre',
+  'workspace.evCriteria': 'Critères',
+  'workspace.evCriteriaDraftUnparsed':
+    "Le brouillon de critères n'était pas lisible : la tâche continue sans critères",
+  'workspace.evCriteriaValidated': "Critères d'acceptation validés",
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',

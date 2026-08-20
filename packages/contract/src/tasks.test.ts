@@ -876,6 +876,46 @@ describe('sanitizeTaskRecord — issue binding (T2.4)', () => {
   })
 })
 
+describe('sanitizeTaskRecord — top-level criteria (T2.5)', () => {
+  const validCriterion = {
+    id: acceptanceCriterionId(CRITERION_TEXT),
+    text: CRITERION_TEXT,
+  }
+
+  test('a record with validated criteria round-trips unchanged', () => {
+    const withCriteria = { ...validRecord, criteria: [validCriterion] }
+    expect(sanitizeTaskRecord(structuredClone(withCriteria))).toEqual(withCriteria)
+  })
+
+  test('absence is the honest default: a record without the key keeps none', () => {
+    const r = sanitizeTaskRecord(structuredClone(validRecord))
+    expect(r && 'criteria' in r).toBe(false)
+  })
+
+  test('an empty or unusable list is dropped rather than stored as []', () => {
+    for (const junk of [null, 'WHEN x THE SYSTEM SHALL y', 42, {}, true, []]) {
+      const r = sanitizeTaskRecord({ ...validRecord, criteria: junk })
+      expect(r && 'criteria' in r).toBe(false)
+    }
+  })
+
+  test('unreadable entries are dropped and the rest kept, never throws', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      criteria: [validCriterion, null, { text: '' }, validCriterion],
+    })
+    expect(r?.criteria).toEqual([validCriterion])
+  })
+
+  test('the list is capped at TICKET_CRITERIA_MAX', () => {
+    const many = Array.from({ length: TICKET_CRITERIA_MAX + 20 }, (_, i) => ({
+      text: `WHEN input ${i} THE SYSTEM SHALL respond`,
+    }))
+    const r = sanitizeTaskRecord({ ...validRecord, criteria: many })
+    expect(r?.criteria?.length).toBe(TICKET_CRITERIA_MAX)
+  })
+})
+
 describe('isActiveTaskStatus', () => {
   test('only shipped and failed are terminal', () => {
     const active: TaskStatus[] = [
@@ -950,6 +990,7 @@ describe('sanitizeTaskEvent', () => {
       // actually added.
       'queue',
       'issue',
+      'criteria',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)
