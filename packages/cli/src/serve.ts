@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { listLocalBranches } from './branches.js'
-import { loadGlobalConfig, saveGlobalConfig } from './config.js'
+import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './config.js'
 import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
@@ -30,7 +30,17 @@ import {
 } from './repo-config.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskEnvelope, TaskManager } from './task-server.js'
-import { AGENT_DEFS, defaultCommand, detectAgents, resolveKnownAgentCommand } from './wizard.js'
+import {
+  AGENT_DEFS,
+  composeCommand,
+  defaultCommand,
+  detectAgents,
+  listAgentModels,
+  parseCommandEffort,
+  parseCommandModel,
+  resolveKnownAgentCommand,
+  type AgentDef,
+} from './wizard.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
 
@@ -477,6 +487,8 @@ async function handleConfigGet(
     rulesContent: string
     syncAutoPush: boolean
     agent?: string
+    model?: string
+    effort?: string
     agents?: AgentOption[]
   } = {
     rulesContent: readRulesContent(cwd),
@@ -484,7 +496,11 @@ async function handleConfigGet(
   }
   if (tasks) {
     body.agent = tasks.manager.defaultCommand()
-    body.agents = await agents()
+    // Read back from the command itself, not the config file: the command is
+    // what actually runs, and a `--agent` flag can override the stored config.
+    body.model = parseCommandModel(body.agent) ?? ''
+    body.effort = parseCommandEffort(body.agent) ?? ''
+    body.agents = overlayConfiguredAgent(await agents(), body.agent)
   }
   return sendJson(res, 200, body)
 }
@@ -507,17 +523,89 @@ async function handleConfigAgentUpdate(
   } catch {
     return sendText(res, 400, 'bad request')
   }
-  const raw = (body as { agent?: unknown } | null)?.agent
+  const payload = body as { agent?: unknown; model?: unknown; effort?: unknown } | null
+  const raw = payload?.agent
   if (typeof raw !== 'string') {
+    return sendText(res, 400, 'bad request')
+  }
+  if (payload?.model !== undefined && typeof payload.model !== 'string') {
+    return sendText(res, 400, 'bad request')
+  }
+  if (payload?.effort !== undefined && typeof payload.effort !== 'string') {
     return sendText(res, 400, 'bad request')
   }
   const resolved = resolveKnownAgentCommand(raw)
   if (!resolved || resolved.length > TASK_AGENT_MAX) {
     return sendText(res, 400, 'bad request')
   }
-  saveGlobalConfig({ ...loadGlobalConfig(), agent: resolved })
-  tasks.manager.setDefaultCommand(resolved)
-  return sendJson(res, 200, { ok: true, agent: resolved })
+  const current = loadGlobalConfig()
+  const picked = resolveAgentSelection(resolved, current, payload)
+  if (picked.command.length > TASK_AGENT_MAX) {
+    return sendText(res, 400, 'bad request')
+  }
+  saveGlobalConfig(nextGlobalConfig(current, picked))
+  tasks.manager.setDefaultCommand(picked.command)
+  return sendJson(res, 200, {
+    ok: true,
+    agent: picked.command,
+    model: picked.model ?? '',
+    effort: picked.effort ?? '',
+  })
+}
+
+type AgentSelection = {
+  command: string
+  def: AgentDef | undefined
+  model: string | undefined
+  effort: string | undefined
+}
+
+/**
+ * A PUT may carry only `agent` (the wizard-composed default keeps its model),
+ * or `agent` plus an explicit model/effort the settings panel just edited. An
+ * empty string is a deliberate CLEAR, which is why absent and '' differ here.
+ */
+function resolveAgentSelection(
+  resolved: string,
+  current: CodesemaConfig,
+  payload: { model?: unknown; effort?: unknown } | null,
+): AgentSelection {
+  const bin = resolved.trim().split(/\s+/)[0]?.split('/').pop() ?? ''
+  const def = AGENT_DEFS.find((d) => d.bin === bin)
+  let model = parseCommandModel(resolved)
+  let effort = parseCommandEffort(resolved)
+  const modelInput = typeof payload?.model === 'string' ? payload.model : undefined
+  const effortInput = typeof payload?.effort === 'string' ? payload.effort : undefined
+  if (!def || (modelInput === undefined && effortInput === undefined)) {
+    return { command: resolved, def, model, effort }
+  }
+  model = modelInput === undefined ? (model ?? current.model) : modelInput.trim() || undefined
+  effort =
+    effortInput === undefined
+      ? current.agentId === def.id
+        ? current.effort
+        : undefined
+      : effortInput.trim() || undefined
+  return { command: composeCommand(def, model, effort), def, model, effort }
+}
+
+function nextGlobalConfig(current: CodesemaConfig, picked: AgentSelection): CodesemaConfig {
+  const next: CodesemaConfig = { ...current, agent: picked.command }
+  if (picked.def) {
+    next.agentId = picked.def.id
+  }
+  // A cleared model or effort must LEAVE the file, not linger as a stale key.
+  if (picked.model) {
+    next.model = picked.model
+  } else {
+    delete next.model
+  }
+  if (picked.effort) {
+    next.effort = picked.effort
+  } else {
+    delete next.effort
+  }
+  return next
 }
 
 const MAX_TASK_BODY_BYTES = 64 * 1024
@@ -529,18 +617,70 @@ type AgentOption = {
   bin: string
   command: string
   detected: boolean
+  models: string[]
+  efforts: string[]
+}
+
+/**
+ * `opencode models` / `grok models` are real subprocess launches that cost
+ * SECONDS, and GET /api/config is hit every time the settings panel opens: the
+ * response must never wait on one. The list is served from this cache (falling
+ * back to the static suggestions until it is warm) while a refresh runs in the
+ * background, so at worst the live ids land on the next open.
+ */
+const AGENT_MODELS_TTL_MS = 5 * 60 * 1000
+const agentModelsCache = new Map<string, { at: number; models: string[] }>()
+const agentModelsInFlight = new Set<string>()
+
+async function refreshAgentModels(def: AgentDef, cwd: string, now: number): Promise<void> {
+  const key = `${cwd}\u0000${def.id}`
+  if (agentModelsInFlight.has(key)) {
+    return
+  }
+  agentModelsInFlight.add(key)
+  try {
+    agentModelsCache.set(key, { at: now, models: await listAgentModels(def, cwd) })
+  } catch {
+    // A failed probe leaves the previous entry (or the static list) in place.
+  } finally {
+    agentModelsInFlight.delete(key)
+  }
+}
+
+function agentModels(def: AgentDef, cwd: string, detected: boolean, now: number): string[] {
+  const hit = agentModelsCache.get(`${cwd}\u0000${def.id}`)
+  if (detected && (!hit || now - hit.at >= AGENT_MODELS_TTL_MS)) {
+    void refreshAgentModels(def, cwd, now)
+  }
+  return hit ? [...hit.models] : [...def.models]
 }
 
 async function listAgentOptions(cwd: string): Promise<AgentOption[]> {
   const detected = await detectAgents(cwd)
   const ids = new Set(detected.map((def) => def.id))
+  const now = Date.now()
   return AGENT_DEFS.map((def) => ({
     id: def.id,
     label: def.label,
     bin: def.bin,
     command: defaultCommand(def),
     detected: ids.has(def.id),
+    models: agentModels(def, cwd, ids.has(def.id), now),
+    efforts: def.efforts ? [...def.efforts] : [],
   }))
+}
+
+/** The configured command (with `-m`) replaces that provider's default row. */
+export function overlayConfiguredAgent(
+  agents: readonly AgentOption[],
+  current: string | undefined,
+): AgentOption[] {
+  const trimmed = current?.trim() ?? ''
+  if (!trimmed) {
+    return [...agents]
+  }
+  const bin = trimmed.split(/\s+/)[0]?.split('/').pop() ?? ''
+  return agents.map((agent) => (agent.bin === bin ? { ...agent, command: trimmed } : agent))
 }
 
 /**

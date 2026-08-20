@@ -154,8 +154,13 @@ const en = {
   'settings.autoSyncError': 'Could not update auto-sync.',
   'settings.agentTitle': 'Default agent',
   'settings.agentHint':
-    'New tasks use this agent unless you pick another one when launching a conversation.',
+    'New tasks use this agent and model unless you pick another one when launching a conversation. For OpenCode, a model like openrouter/… also opens that provider in the cage.',
   'settings.agentError': 'Could not update the default agent.',
+  'settings.modelLabel': 'Model',
+  'settings.modelPlaceholder': 'optional — CLI default',
+  'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
+  'settings.effortLabel': 'Reasoning effort',
+  'settings.effortDefault': 'CLI default',
 
   'mrs.title': 'Open MRs',
   'mrs.refresh': 'Refresh',
@@ -630,8 +635,13 @@ const fr: Record<MessageKey, string> = {
   'settings.autoSyncError': 'Impossible de mettre à jour la synchronisation automatique.',
   'settings.agentTitle': 'Agent par défaut',
   'settings.agentHint':
-    "Les nouvelles tâches utilisent cet agent, sauf si tu en choisis un autre au lancement d'une conversation.",
+    "Les nouvelles tâches utilisent cet agent et ce modèle, sauf si tu en choisis un autre au lancement d'une conversation. Pour OpenCode, un modèle du type openrouter/… ouvre aussi ce provider dans la cage.",
   'settings.agentError': "Impossible de mettre à jour l'agent par défaut.",
+  'settings.modelLabel': 'Modèle',
+  'settings.modelPlaceholder': 'optionnel — défaut du CLI',
+  'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
+  'settings.effortLabel': 'Effort de raisonnement',
+  'settings.effortDefault': 'défaut du CLI',
 
   'mrs.title': 'MRs ouvertes',
   'mrs.refresh': 'Rafraîchir',

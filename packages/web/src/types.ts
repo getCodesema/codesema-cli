@@ -357,6 +357,10 @@ export type AgentOption = {
   bin: string
   command: string
   detected: boolean
+  /** Model ids the CLI itself listed (or the built-in suggestions). */
+  models?: readonly string[]
+  /** Reasoning-effort values the CLI accepts; empty when it has no such flag. */
+  efforts?: readonly string[]
 }
 
 /** The two forges the CLI's client speaks (mirrors the contract). */

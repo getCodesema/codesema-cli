@@ -82,7 +82,7 @@ export const AGENT_DEFS: AgentDef[] = [
     models: ['grok-4.6', 'grok-4.5'],
     judgeModel: 'grok-4.5',
     effortFlag: (v) => `--reasoning-effort ${v}`,
-    efforts: ['low', 'medium', 'high', 'xhigh'],
+    efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   },
   {
     id: 'opencode',
@@ -112,6 +112,39 @@ export function parseOpencodeModels(stdout: string): string[] {
     models.push(line)
   }
   return models
+}
+
+/** `grok models` prints a bullet list (`* grok-4.6 (default)`, `- grok-4.5`). */
+export function parseGrokModels(stdout: string): string[] {
+  const models: string[] = []
+  const seen = new Set<string>()
+  for (const raw of stdout.split(/\r?\n/)) {
+    const id = /^\s*[*+-]\s+(\S+)/.exec(raw)?.[1]
+    if (!id || seen.has(id)) {
+      continue
+    }
+    seen.add(id)
+    models.push(id)
+  }
+  return models
+}
+
+/** Live `bin models` stdout when the CLI has that subcommand; else the static list. */
+export async function listAgentModels(
+  def: AgentDef,
+  cwd: string,
+  execFn: ProbeExecFn = tryExecAsync,
+): Promise<string[]> {
+  if (def.id === 'opencode' || def.id === 'grok') {
+    const stdout = await execFn(def.bin, ['models'], cwd)
+    if (stdout) {
+      const parsed = def.id === 'opencode' ? parseOpencodeModels(stdout) : parseGrokModels(stdout)
+      if (parsed.length > 0) {
+        return parsed
+      }
+    }
+  }
+  return [...def.models]
 }
 
 const OPENCODE_JUDGE_RE = /mini|flash|air|haiku|nano/i
@@ -184,6 +217,82 @@ export function composeCommand(def: AgentDef, model?: string, effort?: string): 
     command += ` ${def.suffix}`
   }
   return command
+}
+
+/** `-m` / `--model` value on a known-agent command, if the flag is present. */
+export function parseCommandModel(command: string): string | undefined {
+  const bin = command.trim().split(/\s+/)[0]?.split('/').pop() ?? ''
+  const def = AGENT_DEFS.find((d) => d.bin === bin)
+  if (!def) {
+    return undefined
+  }
+  const flag = def.modelFlag
+  const tokens: string[] = []
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g
+  let match = re.exec(command)
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '')
+    match = re.exec(command)
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i] ?? ''
+    if (tok === flag) {
+      const next = tokens[i + 1]
+      if (!next || next === def.suffix) {
+        return undefined
+      }
+      return next
+    }
+    if (flag.startsWith('--') && tok.startsWith(`${flag}=`)) {
+      const value = tok.slice(flag.length + 1)
+      return value || undefined
+    }
+  }
+  return undefined
+}
+
+/** Effort/variant value composed onto a known-agent command, if present. */
+export function parseCommandEffort(command: string): string | undefined {
+  const bin = command.trim().split(/\s+/)[0]?.split('/').pop() ?? ''
+  const def = AGENT_DEFS.find((d) => d.bin === bin)
+  if (!def?.effortFlag) {
+    return undefined
+  }
+  const marker = '__CODESEMA_EFFORT__'
+  const shaped = def.effortFlag(marker).trim()
+  const at = shaped.indexOf(marker)
+  if (at < 0) {
+    return undefined
+  }
+  const prefix = shaped.slice(0, at).trim()
+  const tokens: string[] = []
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g
+  let match = re.exec(command)
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '')
+    match = re.exec(command)
+  }
+  const prefixTokens = prefix.split(/\s+/).filter(Boolean)
+  const last = prefixTokens.at(-1) ?? ''
+  if (last.endsWith('=')) {
+    const key = last
+    for (const tok of tokens) {
+      if (tok.startsWith(key)) {
+        return tok.slice(key.length) || undefined
+      }
+    }
+    return undefined
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === last) {
+      const next = tokens[i + 1]
+      if (!next || next === def.suffix) {
+        return undefined
+      }
+      return next
+    }
+  }
+  return undefined
 }
 
 const CLI_DEFAULT = Symbol('cli-default')
@@ -276,12 +385,11 @@ export async function runAgentWizard(
   }
 
   let def = picked
-  if (def.id === 'opencode' && def.models.length === 0) {
-    const stdout = await tryExecAsync(def.bin, ['models'], cwd)
-    if (stdout) {
-      const models = parseOpencodeModels(stdout)
-      def = { ...def, models, judgeModel: pickOpencodeJudge(models) }
-    }
+  const models = await listAgentModels(def, cwd)
+  def = {
+    ...def,
+    models,
+    ...(def.id === 'opencode' ? { judgeModel: pickOpencodeJudge(models) } : {}),
   }
 
   const modelOptions = [
