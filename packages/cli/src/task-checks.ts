@@ -29,6 +29,13 @@ export const DEFAULT_CHECK_TIMEOUT_SECONDS = 300
 /** Image used when an explicit config sets commands but no image. */
 export const DEFAULT_CHECKS_IMAGE = 'node:26'
 
+/**
+ * Bun's default installer hardlinks from its cache into node_modules. The
+ * cache is a named volume and the worktree is a bind mount — two filesystems
+ * — so hardlink fails with ENOENT. copyfile is slower and works.
+ */
+export const BUN_INSTALL_COMMAND = 'bun install --frozen-lockfile --backend=copyfile'
+
 /** Combined stdout+stderr capture cap per exec (the persisted tail is far smaller). */
 const EXEC_MAX_BUFFER = 10 * 1024 * 1024
 
@@ -167,7 +174,7 @@ export function detectChecks(input: DetectChecksInput): ChecksPlan | null {
     if (scripts.has('lint')) {
       commands.push('bun run lint')
     }
-    return { image: 'oven/bun:1', install: 'bun install --frozen-lockfile', commands, ...base }
+    return { image: 'oven/bun:1', install: BUN_INSTALL_COMMAND, commands, ...base }
   }
   if (files.has('package-lock.json') || files.has('yarn.lock')) {
     const commands = CHECK_SCRIPT_NAMES.filter((name) => scripts.has(name)).map(
@@ -206,7 +213,7 @@ export function detectInstall(input: DetectChecksInput): InstallPlan | null {
   const files = new Set(input.files)
   const timeoutSeconds = DEFAULT_CHECK_TIMEOUT_SECONDS
   if (files.has('bun.lock') || files.has('bun.lockb')) {
-    return { image: 'oven/bun:1', install: 'bun install --frozen-lockfile', timeoutSeconds }
+    return { image: 'oven/bun:1', install: BUN_INSTALL_COMMAND, timeoutSeconds }
   }
   if (files.has('package-lock.json') || files.has('yarn.lock')) {
     return { image: DEFAULT_CHECKS_IMAGE, install: 'npm ci', timeoutSeconds }
@@ -793,7 +800,9 @@ async function runStep(input: RunStepInput): Promise<StepOutcome> {
     plan.image,
     'sh',
     '-lc',
-    step.command,
+    input.extraArgs && input.extraArgs.length > 0
+      ? `mkdir -p "$HOME" "$npm_config_cache" "$BUN_INSTALL_CACHE_DIR" "$PIP_CACHE_DIR"; ${step.command}`
+      : step.command,
   ]
   const startedAt = Date.now()
   const run = await exec(runtime, args, { timeoutMs: plan.timeoutSeconds * 1000 })
@@ -923,6 +932,14 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
 
 const PKG_CACHE_DIR = '/cache'
 
+async function runtimeLooksLikePodman(runtime: string, exec: ExecFn): Promise<boolean> {
+  if (/(^|\/)podman$/.test(runtime)) {
+    return true
+  }
+  const probe = await exec(runtime, ['--version'], { timeoutMs: 20_000 })
+  return /podman/i.test(`${probe.stdout}${probe.stderr}`)
+}
+
 async function ensureInstallExtraArgs(opts: {
   exec: ExecFn
   runtime: string
@@ -935,6 +952,27 @@ async function ensureInstallExtraArgs(opts: {
   await opts.exec(opts.runtime, ['volume', 'create', volume], { timeoutMs: 30_000 })
   const uid = opts.uid ?? process.getuid?.() ?? 1000
   const gid = opts.gid ?? process.getgid?.() ?? 1000
+  const podman = opts.podman ?? (await runtimeLooksLikePodman(opts.runtime, opts.exec))
+  const uidArgs = podman ? ['--userns=keep-id'] : ['--user', `${uid}:${gid}`]
+  if (!podman) {
+    // The cache volume is born root:root. Without keep-id, the install user
+    // cannot mkdir inside it unless we chown first.
+    await opts.exec(
+      opts.runtime,
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${volume}:${PKG_CACHE_DIR}`,
+        'busybox',
+        'chown',
+        '-R',
+        `${uid}:${gid}`,
+        PKG_CACHE_DIR,
+      ],
+      { timeoutMs: 60_000 },
+    )
+  }
   return [
     '-v',
     `${volume}:${PKG_CACHE_DIR}`,
@@ -948,9 +986,7 @@ async function ensureInstallExtraArgs(opts: {
     `PIP_CACHE_DIR=${PKG_CACHE_DIR}/pip`,
     '-e',
     `XDG_CACHE_HOME=${PKG_CACHE_DIR}`,
-    ...(opts.podman ? ['--userns=keep-id'] : []),
-    '--user',
-    `${uid}:${gid}`,
+    ...uidArgs,
   ]
 }
 
