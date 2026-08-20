@@ -693,8 +693,12 @@ function prepEventText(data: TaskEventData): string {
   const name = firstString(data, ['name'])
   const key = name ? PREP_NAME_KEY[name] : undefined
   const label = key ? t(key) : t(EVENT_LABEL_KEY.prep)
+  if (name === 'install_failed') {
+    const detail = firstString(data, ['detail'])
+    return detail ? `${label} · ${clip(detail)}` : label
+  }
   const command = firstString(data, ['command'])
-  return command && name !== 'install_failed' ? `${label} · ${command}` : label
+  return command ? `${label} · ${command}` : label
 }
 
 function queueEventText(data: TaskEventData): string {

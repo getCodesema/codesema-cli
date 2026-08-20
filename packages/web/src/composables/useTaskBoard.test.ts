@@ -254,9 +254,9 @@ describe('eventSummary', () => {
     ).toBe('Installing dependencies · npm ci')
     expect(
       eventSummary(
-        event({ type: 'prep', data: { name: 'install_failed', detail: '403 Forbidden from npm' } }),
+        event({ type: 'prep', data: { name: 'install_failed', detail: 'ENOENT: failed to link' } }),
       ),
-    ).toBe('Could not install dependencies')
+    ).toBe('Could not install dependencies · ENOENT: failed to link')
   })
 
   test('message uses its text', () => {
