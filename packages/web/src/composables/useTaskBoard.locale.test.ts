@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { catalogs } from '../i18n'
 import type { TaskEventData } from '../types'
 
 /**
@@ -172,5 +173,105 @@ describe('the T2.5 criteria journal, read in French', () => {
     }
     expect(blocked?.tone).toBe('check')
     expect(passed?.tone).toBe('idle')
+  })
+})
+
+/**
+ * Renders a conversation's HEADER phrase and short label through the real
+ * `statusPhraseKey`/`statusLabelKey` and the real `t()`, in a French process.
+ * Same child-process reason as above: the catalog is frozen once per process.
+ */
+async function renderStatusInFrench(
+  records: readonly { status: string; reason?: { code: string; detail?: string } }[],
+): Promise<{ phrase: string; label: string }[]> {
+  const boardPath = join(import.meta.dir, 'useTaskBoard.ts')
+  const i18nPath = join(import.meta.dir, '..', 'i18n.ts')
+  const script = [
+    `globalThis.window = { __CODESEMA_LOCALE__: 'fr' }`,
+    `const board = await import(${JSON.stringify(boardPath)})`,
+    `const { t } = await import(${JSON.stringify(i18nPath)})`,
+    `const data = ${JSON.stringify(records)}`,
+    `const lines = data.map((record) => ({`,
+    `  phrase: t(board.statusPhraseKey(record, false)),`,
+    `  label: t(board.statusLabelKey(record)),`,
+    `}))`,
+    `process.stdout.write(JSON.stringify(lines))`,
+  ].join('\n')
+  const child = Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'pipe' })
+  const [stdout, stderr] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  await child.exited
+  if (!stdout.trim()) {
+    throw new Error(`the French render never produced anything: ${stderr}`)
+  }
+  return JSON.parse(stdout) as { phrase: string; label: string }[]
+}
+
+describe('the T3.3 fix-loop exit, read in French', () => {
+  test('a task the loop gave up on reads as blocked, never as "waiting for your answer"', async () => {
+    const [findings, criteria, asking, blockedReview] = await renderStatusInFrench([
+      {
+        status: 'waiting_for_you',
+        reason: { code: 'review_blocked', detail: 'a.ts:3 leaks a descriptor' },
+      },
+      {
+        status: 'waiting_for_you',
+        reason: { code: 'criteria_unmet', detail: '1 of 3 acceptance criteria are not satisfied' },
+      },
+      // The ordinary case, unchanged: a conversation that asked a question.
+      { status: 'waiting_for_you' },
+      // The comparison that matters: the SAME code, on the status the
+      // reviewer settles — a verdict a human may still assume and ship.
+      { status: 'review_ko', reason: { code: 'review_blocked', detail: 'a.ts:3 leaks' } },
+    ])
+    expect(findings?.label).toBe('Correction auto arrêtée')
+    expect(findings?.phrase).toContain('corrections automatiques arrêtées')
+    expect(criteria?.label).toBe('Correction auto arrêtée')
+    expect(criteria?.phrase).toContain("critères d'acceptation encore non satisfaits")
+    // What a human cannot deduce from the status, and needs before clicking
+    // Fix: their own turn restarts the automatic budget from zero.
+    for (const line of [findings, criteria]) {
+      expect(line?.phrase).toContain('budget de correction complet')
+      // The sentence that would be a lie: nobody asked anything.
+      expect(line?.phrase).not.toBe('en pause — attend votre réponse')
+      // ...and not the English server detail either.
+      expect(line?.phrase).not.toContain('leaks a descriptor')
+      expect(line?.phrase).not.toContain('acceptance criteria')
+    }
+    expect(asking?.phrase).toBe('en pause — attend votre réponse')
+    expect(asking?.label).toBe('Besoin de toi')
+    // The whole point of the split, in the language a human actually reads:
+    // the parked task and the blocked review do NOT say the same thing.
+    expect(blockedReview?.label).toBe('Review bloquée')
+    expect(blockedReview?.phrase).toBe('review bloquée — findings à corriger')
+    expect(blockedReview?.label).not.toBe(findings?.label)
+    expect(blockedReview?.phrase).not.toBe(findings?.phrase)
+  })
+
+  test('the same sentence carries in ENGLISH, catalog by catalog', () => {
+    // Found by mutating this ticket's own correction: the French phrase was
+    // asserted verbatim and the English one was not, so the English copy could
+    // be gutted with nothing going red. The thing that must survive a reword
+    // is the FACT — a reply restarts the budget — not the wording, so both
+    // catalogs are checked for it and neither is checked letter by letter.
+    for (const locale of ['en', 'fr'] as const) {
+      const catalog = catalogs[locale] as Record<string, string>
+      for (const key of [
+        'workspace.phaseFixLoopStopped',
+        'workspace.phaseFixLoopStoppedCriteria',
+      ] as const) {
+        const phrase = catalog[key] ?? ''
+        expect(phrase).toMatch(/budget/i)
+        // ...and it says the automatic rounds are over, not that the review is
+        // simply blocked — that is the sentence the `review_ko` already owns.
+        expect(phrase).toMatch(locale === 'en' ? /automatic fixes stopped/i : /automatiques/i)
+      }
+      expect(catalog['workspace.statusFixLoopStopped']).toBeTruthy()
+      expect(catalog['workspace.statusFixLoopStopped']).not.toBe(
+        catalog['workspace.statusReviewKo'],
+      )
+    }
   })
 })

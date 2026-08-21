@@ -305,6 +305,45 @@ export function criteriaUnmetDetail(outcome: CriteriaOutcome): string {
 }
 
 /**
+ * The chapter T3.3's automatic fix turn appends to the review's own fix prompt
+ * when the criteria gate is what blocks. Null when nothing blocks — every
+ * criterion `met`, or a task that carries none — so the caller can tell
+ * "nothing to say" from "an empty chapter".
+ *
+ * It exists because `buildAgentFixPrompt` only knows how to speak about
+ * FINDINGS: a review that approved the code and still failed this gate
+ * produces no finding at all, and a round of the loop spent on an empty
+ * `<findings>[]` would name no work. The criterion's own TEXT travels here,
+ * not just its id — the id is a join key, not an instruction.
+ *
+ * The statuses read are the gate's OWN normalized verdicts (`resolveCriteria`
+ * wrote them onto the archived review), never the model's raw report.
+ */
+export function unmetCriteriaFixChapter(
+  criteria: readonly AcceptanceCriterion[],
+  verdicts: readonly CriterionVerdict[] | undefined,
+): string | null {
+  const status = new Map((verdicts ?? []).map((verdict) => [verdict.criterion_id, verdict.status]))
+  // A criterion the archive says nothing about is NOT assumed satisfied:
+  // `resolveCriteria` reads a missing entry as `unclear`, and this chapter has
+  // to name exactly what the gate blocked on.
+  const blocking = criteria.filter((criterion) => (status.get(criterion.id) ?? 'unclear') !== 'met')
+  if (blocking.length === 0) {
+    return null
+  }
+  return [
+    'Acceptance criteria still not satisfied — MANDATORY:',
+    'This branch is judged criterion by criterion. The ones below are NOT satisfied by the diff yet. The rules above still apply, the "do not commit" one included.',
+    ...blocking.map(
+      (criterion) =>
+        `- [${criterion.id}] (${status.get(criterion.id) ?? 'unclear'}) ${criterion.text}`,
+    ),
+    '',
+    'Make the diff itself show each of them. A criterion judged "unclear" was not disproved: it could not be anchored in the diff at all, so either implement it or make the evidence visible in the code you change.',
+  ].join('\n')
+}
+
+/**
  * Which of two dual lanes' statuses stands for one criterion. Ranked by how
  * much it blocks, most blocking last: a lane that positively identified a
  * failure (`unmet`) beats a lane that shrugged (`unclear`), which beats a lane

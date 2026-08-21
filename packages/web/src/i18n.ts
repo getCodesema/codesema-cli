@@ -219,6 +219,7 @@ const en = {
   'workspace.statusReviewKo': 'Review blocked',
   'workspace.statusChecksFailed': 'Checks failed',
   'workspace.statusCriteriaUnmet': 'Criteria not met',
+  'workspace.statusFixLoopStopped': 'Auto-fix gave up',
   'workspace.statusShipped': 'Shipped',
   'workspace.statusFailed': 'Failed',
   'workspace.statusInterrupted': 'Interrupted',
@@ -388,6 +389,10 @@ const en = {
   'workspace.phaseReviewKo': 'review blocked — findings to fix',
   'workspace.phaseChecksFailed': 'review blocked — checks failed',
   'workspace.phaseCriteriaUnmet': 'review blocked — acceptance criteria not met',
+  'workspace.phaseFixLoopStopped':
+    'automatic fixes stopped — findings still to fix; your reply starts a fresh fix budget',
+  'workspace.phaseFixLoopStoppedCriteria':
+    'automatic fixes stopped — acceptance criteria still not met; your reply starts a fresh fix budget',
   'workspace.phaseShipped': 'shipped',
   'workspace.phaseFailed': 'failed',
   'workspace.phaseInterrupted': 'interrupted',
@@ -754,6 +759,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.statusReviewKo': 'Review bloquée',
   'workspace.statusChecksFailed': 'Checks en échec',
   'workspace.statusCriteriaUnmet': 'Critères non satisfaits',
+  'workspace.statusFixLoopStopped': 'Correction auto arrêtée',
   'workspace.statusShipped': 'Publiée',
   'workspace.statusFailed': 'Échouée',
   'workspace.statusInterrupted': 'Interrompue',
@@ -920,6 +926,10 @@ const fr: Record<MessageKey, string> = {
   'workspace.phaseReviewKo': 'review bloquée — findings à corriger',
   'workspace.phaseChecksFailed': 'review bloquée — checks en échec',
   'workspace.phaseCriteriaUnmet': "review bloquée — critères d'acceptation non satisfaits",
+  'workspace.phaseFixLoopStopped':
+    'corrections automatiques arrêtées — findings encore à corriger ; votre réponse repart avec un budget de correction complet',
+  'workspace.phaseFixLoopStoppedCriteria':
+    "corrections automatiques arrêtées — critères d'acceptation encore non satisfaits ; votre réponse repart avec un budget de correction complet",
   'workspace.phaseShipped': 'shippée',
   'workspace.phaseFailed': 'échouée',
   'workspace.phaseInterrupted': 'interrompue',

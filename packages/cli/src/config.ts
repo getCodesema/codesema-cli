@@ -93,6 +93,17 @@ export type CodesemaConfig = {
    * queues, it does not oversubscribe.
    */
   reviewMode?: ReviewMode | undefined
+  /**
+   * How many AUTOMATIC fix turns a task may chain after a blocking end-of-turn
+   * review before the loop gives up and hands it back to a human (T3.3,
+   * decision D14). Absent means DEFAULT_MAX_AUTO_FIX_ROUNDS (2).
+   *
+   * Repo-settable, same argument as `reviewMode`: how many times a repository
+   * wants its own branches re-worked without a human is a property of that
+   * repository, and what those turns cost in parallelism is bounded by the
+   * machine-wide load cap (D4), which a repo cannot raise.
+   */
+  maxAutoFixRounds?: number | undefined
   /** Cloud sync (codesema.com): base URL override and workspace credentials. */
   syncUrl?: string | undefined
   syncWorkspaceId?: string | undefined
@@ -124,6 +135,32 @@ export function isReviewMode(value: unknown): value is ReviewMode {
  */
 export function resolveReviewMode(config: CodesemaConfig): ReviewMode {
   return config.reviewMode ?? 'simple'
+}
+
+/**
+ * D14, answered: TWO automatic fix turns after a blocking review, then the
+ * task goes back to a human. Declared HERE, beside the key it defaults, for
+ * the same reason `ReviewMode` is: the config layer and the loop must never
+ * end up with two numbers to keep in step.
+ */
+export const DEFAULT_MAX_AUTO_FIX_ROUNDS = 2
+
+/**
+ * The bound a resolved config selects for the automatic fix loop. Absent,
+ * malformed, zero or negative all land on the D14 default, and NONE of them
+ * throws — a repository must never lose its reviewer to a typo.
+ *
+ * `0` is deliberately NOT a switch that turns the loop off: giving that value
+ * its own meaning is an arbitrage this ticket does not carry (design decision
+ * 4's own non-binding note), so it is treated exactly like `-1` or `"two"` —
+ * an unusable bound, and the default applies. The day `0` is specified, it
+ * becomes ONE branch here rather than a behaviour that was never decided.
+ */
+export function resolveMaxAutoFixRounds(config: CodesemaConfig): number {
+  const value = config.maxAutoFixRounds
+  return Number.isInteger(value) && (value as number) >= 1
+    ? (value as number)
+    : DEFAULT_MAX_AUTO_FIX_ROUNDS
 }
 
 /** Configured isolation policy for workspace tasks (see CodesemaConfig.isolation). */
@@ -254,6 +291,13 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       // never leave a project with no reviewer, nor promote it to the flow
       // that costs twice as much.
       ...(isReviewMode(raw.reviewMode) ? { reviewMode: raw.reviewMode } : {}),
+      // T3.3 (D14), repo-settable: only an integer >= 1 is kept, so a typo, a
+      // negative and a `0` alike are DROPPED here and
+      // `resolveMaxAutoFixRounds` answers with the D14 default. Never a throw
+      // (invariant n° 1), and never a bound of zero nobody specified.
+      ...(Number.isInteger(raw.maxAutoFixRounds) && (raw.maxAutoFixRounds as number) >= 1
+        ? { maxAutoFixRounds: raw.maxAutoFixRounds as number }
+        : {}),
     }
   } catch {
     return {}

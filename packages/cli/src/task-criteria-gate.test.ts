@@ -13,6 +13,7 @@ import {
   criteriaUnmetDetail,
   mergeCriterionVerdicts,
   resolveCriteria,
+  unmetCriteriaFixChapter,
 } from './task-criteria-gate.js'
 
 // --- rig ------------------------------------------------------------------
@@ -387,6 +388,70 @@ describe('mergeCriterionVerdicts (dual)', () => {
     const outcome = resolveCriteria(TASK_CRITERIA, merged, DIFF)
     expect(outcome.verdicts[2]).toEqual({ criterion_id: C3.id, status: 'unclear' })
     expect(outcome.satisfied).toBe(false)
+  })
+})
+
+// --- the fix chapter of the automatic loop (T3.3) --------------------------
+
+describe('unmetCriteriaFixChapter', () => {
+  test('names every criterion that is not `met`, with its text and its status', () => {
+    const chapter = unmetCriteriaFixChapter(TASK_CRITERIA, [
+      met(C1, ANCHORED),
+      { criterion_id: C2.id, status: 'unmet' },
+      { criterion_id: C3.id, status: 'unclear' },
+    ])
+    expect(chapter).toContain(C2.id)
+    expect(chapter).toContain(C2.text)
+    expect(chapter).toContain('(unmet)')
+    // An `unclear` blocks the gate exactly as hard as an `unmet`, so the fix
+    // turn has to be asked for it too.
+    expect(chapter).toContain(C3.id)
+    expect(chapter).toContain('(unclear)')
+    // ...and the satisfied one is never re-asked for.
+    expect(chapter).not.toContain(C1.id)
+  })
+
+  test('a criterion the archive never judged is BLOCKING, not assumed satisfied', () => {
+    // The gate itself reads a missing entry as `unclear` (resolveCriteria's
+    // fourth normalization), and this chapter has to name exactly what the
+    // gate blocked on. Reading the gap as "met" would send a fix turn that
+    // silently omits the one criterion nobody ever looked at — and, when it
+    // is the ONLY one missing, a round with nothing in it at all.
+    const chapter = unmetCriteriaFixChapter(TASK_CRITERIA, [met(C1, ANCHORED), met(C2, ANCHORED)])
+    expect(chapter).toContain(C3.id)
+    expect(chapter).toContain('(unclear)')
+    expect(chapter).not.toContain(C1.id)
+    // An archive that judged NOTHING blocks on all three, the same way.
+    for (const verdicts of [undefined, []]) {
+      const blind = unmetCriteriaFixChapter(TASK_CRITERIA, verdicts)
+      for (const unjudged of TASK_CRITERIA) {
+        expect(blind).toContain(unjudged.id)
+      }
+    }
+  })
+
+  test('null — not an empty chapter — when there is nothing to ask for', () => {
+    expect(
+      unmetCriteriaFixChapter(TASK_CRITERIA, [
+        met(C1, ANCHORED),
+        met(C2, ANCHORED),
+        met(C3, ANCHORED),
+      ]),
+    ).toBeNull()
+    // A task with no acceptance criteria at all: the loop must not append a
+    // chapter about a list that does not exist.
+    expect(unmetCriteriaFixChapter([], [met(C1, ANCHORED)])).toBeNull()
+    expect(unmetCriteriaFixChapter([], undefined)).toBeNull()
+  })
+
+  test('it never contradicts the rule the fix prompt already carries', () => {
+    const chapter = unmetCriteriaFixChapter(TASK_CRITERIA, [
+      { criterion_id: C2.id, status: 'unmet' },
+    ])
+    // The agent commits nothing — the runner does, at the end of the turn —
+    // and a chapter appended after `buildAgentFixPrompt` must not reopen it.
+    expect(chapter).toContain('"do not commit"')
+    expect(chapter).not.toMatch(/\bgit (commit|push)\b/)
   })
 })
 

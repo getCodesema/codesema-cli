@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -19,14 +20,18 @@ import type { AgentRunOptions } from './agent.js'
 import { writeJsonAtomic } from './atomic-write.js'
 import { loadGlobalConfig, saveGlobalConfig, saveRepoConfig, trustRepoAgent } from './config.js'
 import {
+  acceptanceCriterionId,
   isTerminalReason,
   TICKET_BODY_HASH_TAG,
+  type CriterionVerdict,
+  type Finding,
   type ReviewRecord,
   type TaskChecks,
   type TaskEvent,
   type TaskIssueRef,
   type TaskIssueSnapshot,
   type TaskRecord,
+  type TaskStatus,
   type Verdict,
 } from './contract.js'
 import type { ForgeCli, ForgeCliOutcome, ForgeIssuesExecFn } from './forge-issues.js'
@@ -37,6 +42,14 @@ import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
 import type { RunChecksOptions } from './task-checks.js'
+import {
+  AUTO_FIX_EXHAUSTED_NAME,
+  AUTO_FIX_JOURNAL_DAMAGED_NAME,
+  AUTO_FIX_NOT_QUEUED_NAME,
+  AUTO_FIX_NOT_STARTED_NAME,
+  AUTO_FIX_ROUND_NAME,
+  autoFixRoundsUsed,
+} from './task-fix-loop.js'
 import type { HomeVolumeSweepOutcome } from './task-isolation.js'
 import type { TaskPlan } from './task-plan.js'
 import {
@@ -53,7 +66,13 @@ import {
 } from './task-queue.js'
 import type { TaskRetentionOutcome } from './task-retention.js'
 import { readTaskReview, type CreateTaskReviewerOptions } from './task-review.js'
-import { pendingResumeTurn, type TaskRunner, type TaskRunnerOptions } from './task-runner.js'
+import {
+  pendingResumeTurn,
+  type TaskActionResult,
+  type TaskRunner,
+  type TaskRunnerOptions,
+  type TaskTurnIo,
+} from './task-runner.js'
 import {
   BOOT_ISSUE_RECONCILE_CONCURRENCY,
   createTaskManager,
@@ -73,8 +92,10 @@ import {
   readTaskEvents,
   resetStoreReports,
   saveTask,
+  setJournalReader,
   STORE_UNLISTABLE,
   taskDir,
+  taskReason,
   taskRecordExists,
   writeTaskChecks,
 } from './tasks-store.js'
@@ -202,8 +223,21 @@ type FakeRunnerRig = {
   abandoning: Set<string>
 }
 
-/** Captures the manager→runner seam without ever launching an agent. */
-function fakeRunner(): FakeRunnerRig {
+/**
+ * Captures the manager→runner seam without ever launching an agent.
+ *
+ * `replyResult` (T3.3) is what `reply()` answers. The default stays the 409 it
+ * has always been — a manager test that only wants to SEE the call must not
+ * have to think about it — and a caller that drives the automatic fix loop
+ * passes `{ ok: true }`, which is what the real runner answers on a task its
+ * review just settled.
+ */
+function fakeRunner(opts: { replyResult?: TaskActionResult } = {}): FakeRunnerRig {
+  const replyResult: TaskActionResult = opts.replyResult ?? {
+    ok: false,
+    code: 409,
+    error: 'task is not waiting for a reply',
+  }
   const rig: FakeRunnerRig = {
     allRunnerOptions: [],
     starts: [],
@@ -228,7 +262,7 @@ function fakeRunner(): FakeRunnerRig {
         },
         reply: (id, message) => {
           rig.replies.push({ id, message })
-          return { ok: false, code: 409, error: 'task is not waiting for a reply' }
+          return replyResult
         },
         resume: (id) => {
           rig.resumes.push(id)
@@ -8261,6 +8295,928 @@ describe('T2.6 preview ↔ launch coherence', () => {
       expect(launched?.base).toBe(plan.target)
     } finally {
       await started.stop()
+    }
+  })
+})
+
+// --- the bounded automatic fix loop (T3.3, D14) ---------------------------
+
+describe('automatic fix loop (T3.3)', () => {
+  const AC1 = {
+    id: acceptanceCriterionId('WHEN it ships THE SYSTEM SHALL recap'),
+    text: 'WHEN it ships THE SYSTEM SHALL recap',
+  }
+  const AC2 = {
+    id: acceptanceCriterionId('WHEN checks fail THE SYSTEM SHALL block'),
+    text: 'WHEN checks fail THE SYSTEM SHALL block',
+  }
+  const MAJOR: Finding = { file: 'a.ts', line: 3, severity: 'major', message: 'leaks a descriptor' }
+
+  type ReviewSpec = {
+    verdict?: Verdict
+    findings?: Finding[]
+    criteria?: CriterionVerdict[]
+    /** What the reviewer settles the record on. Absent means a clean review_ok. */
+    blocked?: { code: 'review_blocked' | 'criteria_unmet'; detail: string }
+    /** A review that never produced an archive (agent crash, timeout). */
+    crashed?: boolean
+  }
+
+  function turnIo(cwd: string, record: TaskRecord, written?: TaskStatus[]) {
+    return {
+      emit: (input: Parameters<typeof appendTaskEvent>[2]) =>
+        appendTaskEvent(cwd, record.id, input),
+      persist: () => {
+        written?.push(record.status)
+        saveTask(cwd, record)
+      },
+      text: () => {},
+      signal: new AbortController().signal,
+    }
+  }
+
+  /**
+   * A reviewer stub that behaves like the real one where it matters here: it
+   * ARCHIVES a review record and emits `review_done` before settling, which is
+   * exactly what the loop reads to know it has something to work from.
+   */
+  function stubReviewer(cwd: string, plan: (n: number) => ReviewSpec) {
+    let n = 0
+    return async (record: TaskRecord, io: TaskTurnIo): Promise<void> => {
+      const spec = plan(n)
+      n += 1
+      io.emit({ type: 'review_started', data: { turn: record.turns.length, mode: 'simple' } })
+      if (spec.crashed) {
+        io.emit({
+          type: 'error',
+          data: { message: 'review failed: the review agent died' },
+          reason_code: 'review_blocked',
+        })
+        record.status = 'review_ko'
+        record.reason = taskReason('review_blocked', 'review failed: the review agent died')
+        io.persist()
+        return
+      }
+      const verdict = spec.verdict ?? 'request_changes'
+      const base = fakeReviewRecord(verdict, 'a summary')
+      const review: ReviewRecord = {
+        ...base,
+        review: {
+          ...base.review,
+          findings: spec.findings ?? [],
+          ...(spec.criteria ? { criteria: spec.criteria } : {}),
+        },
+      }
+      record.review_ref = archiveRecord(review, cwd)
+      io.emit({
+        type: 'review_done',
+        data: {
+          verdict,
+          findings_count: review.review.findings.length,
+          ref: record.review_ref,
+        },
+      })
+      if (spec.blocked) {
+        record.status = 'review_ko'
+        record.reason = taskReason(spec.blocked.code, spec.blocked.detail)
+      } else {
+        record.status = 'review_ok'
+        delete record.reason
+      }
+      io.persist()
+    }
+  }
+
+  type LoopRig = {
+    project: Project
+    record: TaskRecord
+    rig: FakeRunnerRig
+    written: TaskStatus[]
+    /** Runs end-of-turn cycles until the loop stops asking for another one. */
+    drive: (maxCycles?: number) => Promise<number>
+  }
+
+  function loopRig(opts: { plan: (n: number) => ReviewSpec; criteria?: (typeof AC1)[] }): LoopRig {
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, opts.plan),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    if (opts.criteria) {
+      record.criteria = opts.criteria
+      saveTask(project.path, record)
+    }
+    const written: TaskStatus[] = []
+    const io = turnIo(project.path, record, written)
+    const drive = async (maxCycles = 8): Promise<number> => {
+      let cycles = 0
+      for (let i = 0; i < maxCycles; i++) {
+        const before = rig.replies.length
+        record.status = 'reviewing' as TaskStatus
+        await rig.runnerOptions().onTurnDone!(record, io)
+        cycles += 1
+        if (rig.replies.length === before) {
+          return cycles
+        }
+        // What the runner does with an accepted reply: it appends the turn and
+        // emits `turn_started` when the turn actually begins.
+        record.turns.push({
+          prompt: String(rig.replies.at(-1)?.message ?? ''),
+          response: null,
+          question: null,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+        })
+        appendTaskEvent(project.path, record.id, {
+          type: 'turn_started',
+          data: { turn: record.turns.length, prompt: 'fix' },
+        })
+      }
+      throw new Error(`the loop never stopped: ${maxCycles} cycles and still going`)
+    }
+    return { project, record, rig, written, drive }
+  }
+
+  const blockedByFindings = {
+    findings: [MAJOR],
+    blocked: { code: 'review_blocked' as const, detail: 'a.ts:3 leaks a descriptor' },
+  }
+
+  const markers = (project: Project, record: TaskRecord) =>
+    readTaskEvents(project.path, record.id).filter((e) => e.data.name === AUTO_FIX_ROUND_NAME)
+
+  test('AC: review_ko + a major finding starts a fix turn WITHOUT a human click', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    // Exactly one end-of-turn cycle, no gesture from anyone.
+    const before = loop.rig.replies.length
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies.length).toBe(before + 1)
+    // ...and it is the FIX prompt, built from the review this turn archived.
+    const message = String(loop.rig.replies.at(-1)?.message)
+    expect(message).toContain('leaks a descriptor')
+    expect(message).toContain('applying code review fixes')
+    // The runner commits, never the agent: the prompt says so, unchanged.
+    expect(message).toContain('Do NOT commit')
+    // Said out loud, and numbered.
+    const marker = markers(loop.project, loop.record).at(-1)
+    expect(marker?.type).toBe('message')
+    expect(marker?.data.round).toBe(1)
+    expect(marker?.data.max).toBe(2)
+    expect(String(marker?.data.text)).toContain('a.ts:3 leaks a descriptor')
+  })
+
+  test('AC: criteria unmet with a review_ok verdict ENTERS the loop too', async () => {
+    const loop = loopRig({
+      criteria: [AC1, AC2],
+      plan: () => ({
+        verdict: 'approve',
+        criteria: [
+          { criterion_id: AC1.id, status: 'met' },
+          { criterion_id: AC2.id, status: 'unmet' },
+        ],
+        blocked: { code: 'criteria_unmet', detail: '1 of 2 acceptance criteria are not satisfied' },
+      }),
+    })
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies).toHaveLength(1)
+    const message = String(loop.rig.replies[0]?.message)
+    // The criterion's own TEXT travels, not just its id: an id is a join key.
+    expect(message).toContain(AC2.id)
+    expect(message).toContain('WHEN checks fail THE SYSTEM SHALL block')
+    // The satisfied one is not re-asked for.
+    expect(message).not.toContain(AC1.id)
+  })
+
+  test('AC: two blocked rounds at the default bound, then the loop hands it back', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    const cycles = await loop.drive()
+    // Three end-of-turn cycles: the original turn plus TWO fix rounds.
+    expect(cycles).toBe(3)
+    expect(loop.rig.replies).toHaveLength(2)
+    expect(markers(loop.project, loop.record).map((e) => e.data.round)).toEqual([1, 2])
+    expect(loop.record.status).toBe('waiting_for_you')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    // The code is ADDED to what the reviewer said, never a replacement.
+    expect(loop.record.reason?.detail).toContain('a.ts:3 leaks a descriptor')
+    expect(loop.record.reason?.detail).toContain('automatic fix loop stopped after 2')
+    expect(loadTask(loop.project.path, loop.record.id)?.status).toBe('waiting_for_you')
+    // Journal + API, both (invariant n° 2).
+    const said = readTaskEvents(loop.project.path, loop.record.id).find(
+      (e) => e.data.name === AUTO_FIX_EXHAUSTED_NAME,
+    )
+    expect(said?.reason_code).toBe('review_blocked')
+    expect(String(said?.data.text)).toContain('stopped after 2')
+  })
+
+  test('AC: an agent that fixes NOTHING still terminates — the bound is the whole guarantee', async () => {
+    // The stub never changes its verdict, whatever the fix turn did: the only
+    // thing that can stop this is the bound.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await expect(loop.drive(8)).resolves.toBe(3)
+  })
+
+  test('AC: a criteria-blocked exit carries criteria_unmet, not review_blocked', async () => {
+    const loop = loopRig({
+      criteria: [AC1, AC2],
+      plan: () => ({
+        verdict: 'approve',
+        criteria: [
+          { criterion_id: AC1.id, status: 'met' },
+          { criterion_id: AC2.id, status: 'unmet' },
+        ],
+        blocked: { code: 'criteria_unmet', detail: '1 of 2 acceptance criteria are not satisfied' },
+      }),
+    })
+    await loop.drive()
+    expect(loop.record.status).toBe('waiting_for_you')
+    expect(loop.record.reason?.code).toBe('criteria_unmet')
+    expect(loop.record.reason?.detail).toContain('1 of 2 acceptance criteria')
+  })
+
+  test('the exit is written by the SINGLE owner: the disk never shows review_ko first', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    // Only the last cycle's writes matter — the two retries legitimately
+    // persist 'review_ko' before their fix turn is queued.
+    await loop.drive()
+    loop.written.length = 0
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(
+      loop.record,
+      turnIo(loop.project.path, loop.record, loop.written),
+    )
+    // The reviewer's own settle() and the hook's belt-and-braces write both
+    // land on the FINAL status: the loop's decision is folded INTO the
+    // transition, never applied as a second write after it.
+    expect([...new Set(loop.written)]).toEqual(['waiting_for_you'])
+  })
+
+  test('the bound is configurable: 1 allows one round, 3 allows three', async () => {
+    for (const [max, expected] of [
+      [1, 1],
+      [3, 3],
+    ] as const) {
+      const project = register(makeRepo())
+      saveRepoConfig(project.path, { maxAutoFixRounds: max })
+      const rig = fakeRunner({ replyResult: { ok: true } })
+      const manager = createTaskManager({
+        ...managerOpts,
+        createRunnerFn: rig.createRunnerFn,
+        reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+      })
+      manager.checks(project.id, 'aaaaaaaaaaaa')
+      const { record } = seedCommittedTask(project.path)
+      const io = turnIo(project.path, record)
+      for (let i = 0; i < expected + 2; i++) {
+        const before = rig.replies.length
+        record.status = 'reviewing'
+        await rig.runnerOptions().onTurnDone!(record, io)
+        if (rig.replies.length === before) {
+          break
+        }
+        record.turns.push({
+          prompt: 'fix',
+          response: null,
+          question: null,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+        })
+        appendTaskEvent(project.path, record.id, {
+          type: 'turn_started',
+          data: { turn: record.turns.length },
+        })
+      }
+      expect(rig.replies).toHaveLength(expected)
+      expect(record.status).toBe('waiting_for_you')
+    }
+  })
+
+  test('the count survives a restart: it is read off the journal, not off memory', async () => {
+    const project = register(makeRepo())
+    const { record } = seedCommittedTask(project.path)
+    // A previous session already ran ONE automatic round and died. Nothing in
+    // memory carries that over — only these two journal lines do.
+    appendTaskEvent(project.path, record.id, {
+      type: 'message',
+      data: { text: 'starting automatic fix round 1 of 2', name: AUTO_FIX_ROUND_NAME },
+    })
+    appendTaskEvent(project.path, record.id, { type: 'turn_started', data: { turn: 2 } })
+
+    // A brand-new manager, a brand-new runner: this process has never seen
+    // this task before.
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const io = turnIo(project.path, record)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, io)
+    // Round 2 of 2, not round 1: the previous session's round counted.
+    expect(rig.replies).toHaveLength(1)
+    expect(markers(project, record).at(-1)?.data.round).toBe(2)
+    record.turns.push({
+      prompt: 'fix',
+      response: null,
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    appendTaskEvent(project.path, record.id, { type: 'turn_started', data: { turn: 3 } })
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(rig.replies).toHaveLength(1)
+    expect(record.status).toBe('waiting_for_you')
+  })
+
+  test('a human reply renews the budget, so a task never loses the loop for good', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await loop.drive()
+    expect(loop.record.status).toBe('waiting_for_you')
+    // The human answers by hand: a turn with no marker in front of it.
+    loop.record.turns.push({
+      prompt: 'try the other approach',
+      response: null,
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    appendTaskEvent(loop.project.path, loop.record.id, {
+      type: 'turn_started',
+      data: { turn: loop.record.turns.length, prompt: 'try the other approach' },
+    })
+    const before = loop.rig.replies.length
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies.length).toBe(before + 1)
+    expect(markers(loop.project, loop.record).at(-1)?.data.round).toBe(1)
+  })
+
+  test('a broken review STAYS review_ko: no round spent, no capability taken away', async () => {
+    // MAJOR 1. A review nobody could archive is not a review whose budget was
+    // spent, and the two must not end in the same place. This ticket's own
+    // spec says a review breakdown stays `review_ko` + an `error` event, and
+    // `review_ko` is the status on which a human may still assume the KO and
+    // ship — the exact capability parking the task would silently remove,
+    // for a round that was never spent.
+    const loop = loopRig({ plan: () => ({ crashed: true }) })
+    const cycles = await loop.drive()
+    expect(cycles).toBe(1)
+    expect(loop.rig.replies).toHaveLength(0)
+    expect(markers(loop.project, loop.record)).toHaveLength(0)
+    expect(loop.record.status).toBe('review_ko')
+    expect(loadTask(loop.project.path, loop.record.id)?.status).toBe('review_ko')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    // The honest sentence: nothing was tried, as opposed to "tried twice".
+    expect(loop.record.reason?.detail).toContain('no automatic fix round was started')
+    expect(loop.record.reason?.detail).not.toContain('stopped after')
+    // The reviewer's own failure message is still there, in front of it.
+    expect(loop.record.reason?.detail).toContain('the review agent died')
+    // Said in the journal too, under its OWN name — "could not begin" and
+    // "gave up after two rounds" are different facts on the timeline.
+    const events = readTaskEvents(loop.project.path, loop.record.id)
+    const stood = events.find((e) => e.data.name === AUTO_FIX_NOT_STARTED_NAME)
+    expect(stood?.reason_code).toBe('review_blocked')
+    expect(String(stood?.data.text)).toContain('no automatic fix round was started')
+    expect(events.find((e) => e.data.name === AUTO_FIX_EXHAUSTED_NAME)).toBeUndefined()
+    // The `error` event the spec requires of a review breakdown is untouched.
+    expect(events.some((e) => e.type === 'error')).toBe(true)
+  })
+
+  test('a broken review can still be SHIPPED by a human assuming the KO', async () => {
+    // The half of MAJOR 1 no status assertion can catch: `shipRefusal` lets a
+    // `review_ko` through and refuses a `waiting_for_you`, so parking the task
+    // deleted the force ship without a word. This is that capability, pinned.
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const ship = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1', note: null })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => ({ crashed: true })),
+      shipTaskFn: ship.fn,
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    expect(record.status).toBe('review_ko')
+    // A branch is the ship's other precondition and has nothing to do with
+    // the loop; give it one so the gate under test is the STATUS gate.
+    record.branch = 'codesema/task-broken'
+    saveTask(project.path, record)
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(ship.calls).toHaveLength(1)
+  })
+
+  test('the ship refusal of a HANDED-BACK task names the way out (DP1)', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const ship = shipStub({ pushed: true, mrUrl: null, note: null })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+      shipTaskFn: ship.fn,
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    const io = turnIo(project.path, record)
+    for (let i = 0; i < 3; i++) {
+      record.status = 'reviewing' as TaskStatus
+      await rig.runnerOptions().onTurnDone!(record, io)
+      record.turns.push({
+        prompt: 'fix',
+        response: null,
+        question: null,
+        started_at: new Date().toISOString(),
+        ended_at: null,
+      })
+      appendTaskEvent(project.path, record.id, {
+        type: 'turn_started',
+        data: { turn: record.turns.length },
+      })
+    }
+    expect(record.status).toBe('waiting_for_you')
+    const refused = await manager.ship(project.id, record.id)
+    expect(refused).toMatchObject({ ok: false, code: 409, reason_code: 'review_blocked' })
+    // `task is waiting_for_you` alone describes a task nobody asked anything
+    // about and leaves the reader with no idea what unblocks the ship.
+    const message = String((refused as { error: string }).error)
+    expect(message).toContain('automatic fix loop')
+    expect(message).toContain('Reply to it')
+    expect(message).toContain('restarts the fix budget')
+    expect(ship.calls).toHaveLength(0)
+  })
+
+  test('a crashed review never sends the agent back at the PREVIOUS turn’s archive', async () => {
+    // The discriminating shape: the task ALREADY has an archive on disk — the
+    // first turn produced one — and `record.review_ref` still points at it.
+    // The second turn's review then dies before archiving anything, so it
+    // settles review_ko/review_blocked with a stale `review_ref` in place.
+    // Reading that archive would produce a perfectly well-formed fix prompt
+    // about findings from a turn that has already been worked on: a round
+    // spent re-fixing what may be fixed, and a lie about which review it
+    // answers. The loop must decline instead, on THIS turn's evidence.
+    const loop = loopRig({ plan: (n) => (n === 0 ? blockedByFindings : { crashed: true }) })
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies).toHaveLength(1)
+    const staleRef = loop.record.review_ref
+    expect(staleRef).toBeTruthy()
+    // The fix turn the first round queued runs and finishes.
+    loop.record.turns.push({
+      prompt: String(loop.rig.replies.at(-1)?.message ?? ''),
+      response: null,
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    appendTaskEvent(loop.project.path, loop.record.id, {
+      type: 'turn_started',
+      data: { turn: loop.record.turns.length, prompt: 'fix' },
+    })
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    // No second round: the crashed review left nothing to work from.
+    expect(loop.rig.replies).toHaveLength(1)
+    expect(markers(loop.project, loop.record).map((e) => e.data.round)).toEqual([1])
+    // ...and the stale archive is still sitting there, unused — which is what
+    // makes this an abstention rather than an absence.
+    expect(loop.record.review_ref).toBe(staleRef)
+    // Still `review_ko`: one round WAS spent here, but the loop's refusal to
+    // spend a second is an abstention, not an exhausted budget.
+    expect(loop.record.status).toBe('review_ko')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    expect(loop.record.reason?.detail).toContain('no automatic fix round was started')
+    expect(loop.record.reason?.detail).not.toContain('stopped after')
+    expect(loop.record.reason?.detail).toContain('the review agent died')
+  })
+
+  test('a round the runner refuses is said, and never charged to the next reply', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner() // its reply() answers 409, like a drain would
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    const events = readTaskEvents(project.path, record.id)
+    const refused = events.find((e) => e.data.name === AUTO_FIX_NOT_QUEUED_NAME)
+    expect(refused?.type).toBe('error')
+    expect(String(refused?.data.message)).toContain('could not be queued')
+    // The announced round is retracted, so a later human reply keeps its two.
+    expect(autoFixRoundsUsed(events)).toBe(0)
+  })
+
+  test('non-regression: a clean review is untouched — no round, no marker, no reply', async () => {
+    const loop = loopRig({ plan: () => ({ verdict: 'approve' }) })
+    const cycles = await loop.drive()
+    expect(cycles).toBe(1)
+    expect(loop.record.status).toBe('review_ok')
+    expect(loop.record.reason).toBeUndefined()
+    expect(loop.rig.replies).toHaveLength(0)
+    expect(markers(loop.project, loop.record)).toHaveLength(0)
+  })
+
+  test('non-regression: a red checks run is NOT the loop’s business', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => ({ verdict: 'approve' })),
+      runChecksFn: () =>
+        Promise.resolve(
+          finishedChecks({
+            status: 'failed',
+            checks: [
+              { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'boom' },
+            ],
+          }),
+        ),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    // T3.1's verdict stands, exactly as before: no fix turn is guessed at.
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('checks_failed')
+    expect(rig.replies).toHaveLength(0)
+  })
+
+  test('an UNREADABLE journal grants no round at all, and never a full budget', async () => {
+    // MAJOR 2, at the boundary the loop actually crosses. `readTaskJournal`
+    // used to answer `[]` for "there is nothing" and for "I could not read
+    // it" alike; the second read as a budget nobody had spent, so every turn
+    // renewed it and the loop had no bound left. Here the journal EXISTS and
+    // the reader refuses it (EACCES / EMFILE / EIO), and the discriminating
+    // outcome is: no reply queued, and no marker written either.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    setJournalReader(() => null)
+    try {
+      loop.record.status = 'reviewing' as TaskStatus
+      await loop.rig.runnerOptions().onTurnDone!(
+        loop.record,
+        turnIo(loop.project.path, loop.record),
+      )
+    } finally {
+      setJournalReader(null)
+    }
+    expect(loop.rig.replies).toHaveLength(0)
+    expect(markers(loop.project, loop.record)).toHaveLength(0)
+    // And no round is charged either: the task keeps the review_ko a human
+    // can still act on, rather than being parked on a budget nobody counted.
+    expect(loop.record.status).toBe('review_ko')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    expect(loop.record.reason?.detail).toContain('journal could not be read')
+    // Invariant n° 2: a refused budget without a word is a silent degradation.
+    const stood = readTaskEvents(loop.project.path, loop.record.id).find(
+      (e) => e.data.name === AUTO_FIX_NOT_STARTED_NAME,
+    )
+    expect(String(stood?.data.text)).toContain('unknown budget is never a full one')
+  })
+
+  test('an ABSENT journal is not an unreadable one: the first round still runs', async () => {
+    // The other half of the same distinction, and the one that would make the
+    // fix a regression if it were wrong: a task with no journal file at all
+    // has genuinely spent no round, and must still get its first.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    setJournalReader(() => '')
+    try {
+      loop.record.status = 'reviewing' as TaskStatus
+      await loop.rig.runnerOptions().onTurnDone!(
+        loop.record,
+        turnIo(loop.project.path, loop.record),
+      )
+    } finally {
+      setJournalReader(null)
+    }
+    expect(loop.rig.replies).toHaveLength(1)
+    expect(loop.record.status).toBe('review_ko')
+  })
+
+  test('a journal that LOST a line still counts, but never in silence', async () => {
+    // The count is derived from journal lines, so a line that does not parse
+    // moves the budget — bounded (the loop still stops at `max` from wherever
+    // the count resumed), never fatal, but never silent either.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    appendFileSync(join(taskDir(loop.project.path, loop.record.id), 'events.jsonl'), '{"seq":\n')
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    const damaged = readTaskEvents(loop.project.path, loop.record.id).find(
+      (e) => e.data.name === AUTO_FIX_JOURNAL_DAMAGED_NAME,
+    )
+    expect(damaged?.type).toBe('error')
+    expect(String(damaged?.data.message)).toContain('could not be read')
+    expect(damaged?.data.dropped).toBe(1)
+    // ...and the round it qualifies did happen: this names a degradation, it
+    // does not cancel the loop.
+    expect(loop.rig.replies).toHaveLength(1)
+  })
+
+  test('an intact journal says nothing about damage', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await loop.drive()
+    expect(
+      readTaskEvents(loop.project.path, loop.record.id).filter(
+        (e) => e.data.name === AUTO_FIX_JOURNAL_DAMAGED_NAME,
+      ),
+    ).toHaveLength(0)
+  })
+
+  test('the record NEVER grows a field for the counter', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await loop.drive()
+    const persisted = loadTask(loop.project.path, loop.record.id)
+    expect(persisted).not.toBeNull()
+    const keys = Object.keys(persisted as TaskRecord)
+    expect(keys.filter((key) => /round|cycle|fix/i.test(key))).toEqual([])
+    expect(persisted?.version).toBe(1)
+  })
+})
+
+// --- the fix loop, end to end on the REAL runner (T3.3) -------------------
+
+describe('automatic fix loop, end to end (T3.3)', () => {
+  const MAJOR: Finding = { file: 'feature.txt', line: 1, severity: 'major', message: 'still wrong' }
+
+  /** Fake claude that edits the worktree, so the RUNNER has something to commit. */
+  function writingAgent(
+    seen: { prompt: string; capOccupied: number }[],
+    cap: ReturnType<typeof createLoadCap>,
+  ) {
+    let n = 0
+    return (options: AgentRunOptions): Promise<string> => {
+      n += 1
+      seen.push({ prompt: options.prompt, capOccupied: cap.snapshot().occupied })
+      writeFileSync(join(options.cwd, 'feature.txt'), `revision ${n}\n`)
+      const raw = `${JSON.stringify({ type: 'result', result: `revision ${n}` })}\n`
+      options.onText?.(raw)
+      return Promise.resolve(raw)
+    }
+  }
+
+  /**
+   * The e2e's own bound on the loop under test — a COUNTER, never a delay.
+   *
+   * Every temporal guard in this file (`until`'s timeout, bun's
+   * `--timeout`) is a macro-task, and a fix loop that has lost its bound
+   * chains its turns in micro-tasks: it starves the timer queue and none of
+   * those guards is ever served. A broken loop therefore HANGS the run
+   * instead of reddening it, which on a merge queue is a stuck job rather
+   * than a failure — the one shape of red that reports nothing.
+   *
+   * So the reviewer counts its own cycles and, past the cap, stops blocking:
+   * the loop has nothing left to retry, the event loop breathes again, and
+   * `assert()` turns the runaway into the same clean red the unit rig's
+   * `drive()` produces. The cap is generously above the real bound (2 rounds
+   * = 3 cycles), so it can only fire on a loop that has genuinely lost it.
+   */
+  function cycleCap(max = 6) {
+    let cycles = 0
+    return {
+      /** Counts one review cycle; false once the cap is blown. */
+      spend(): boolean {
+        cycles += 1
+        return cycles <= max
+      },
+      get runaway(): boolean {
+        return cycles > max
+      },
+      assert(): void {
+        if (cycles > max) {
+          throw new Error(`the loop never stopped: ${max} review cycles and still going`)
+        }
+      },
+    }
+  }
+
+  /**
+   * A review that always blocks on the same major finding, archive included —
+   * until the cycle cap says the loop has run away, at which point it approves
+   * so the run can end and report.
+   */
+  function alwaysBlocks(
+    cwd: string,
+    guard: ReturnType<typeof cycleCap>,
+    before?: () => Promise<void>,
+  ) {
+    return async (record: TaskRecord, io: TaskTurnIo): Promise<void> => {
+      await before?.()
+      const base = fakeReviewRecord('request_changes', 'still not there')
+      record.review_ref = archiveRecord(
+        { ...base, review: { ...base.review, findings: [MAJOR] } },
+        cwd,
+      )
+      io.emit({
+        type: 'review_done',
+        data: { verdict: 'request_changes', findings_count: 1, ref: record.review_ref },
+      })
+      if (!guard.spend()) {
+        // Past the cap: stop feeding the loop so the process can finish and
+        // the assertion below can speak. This is not the behaviour under
+        // test — reaching it IS the failure.
+        record.status = 'review_ok'
+        delete record.reason
+        io.persist()
+        return
+      }
+      record.status = 'review_ko'
+      record.reason = taskReason('review_blocked', 'feature.txt:1 still wrong')
+      io.persist()
+    }
+  }
+
+  test('the fix turns really run: bounded, committed by the runner, under the machine cap', async () => {
+    const project = register(makeRepo())
+    const cap = createLoadCap(2)
+    const seen: { prompt: string; capOccupied: number }[] = []
+    const guard = cycleCap()
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: writingAgent(seen, cap),
+      reviewTurnFn: alwaysBlocks(project.path, guard),
+    })
+    const created = await manager.create(project.id, {
+      title: 'looped',
+      prompt: 'p',
+      autoShip: false,
+    })
+    if (!created.ok) {
+      throw new Error('task was not created')
+    }
+    const id = created.record.id
+    // Shut the manager down on EVERY exit, assertion failures included: a real
+    // runner left alive holds a queue, a load-cap subscription and an in-flight
+    // promise, and the whole `bun test` process then hangs on them instead of
+    // reporting the failure.
+    try {
+      // `guard.runaway` FIRST, and it is what makes this wait finite: a loop
+      // that lost its bound never lets the timeout fire (see `cycleCap`), so
+      // the only exit from a runaway is the counter the reviewer keeps.
+      await until(
+        () => guard.runaway || loadTask(project.path, id)?.status === 'waiting_for_you',
+        15000,
+      )
+    } finally {
+      await manager.shutdown()
+    }
+    guard.assert()
+
+    // One human turn plus exactly TWO automatic rounds, then it stops.
+    expect(seen).toHaveLength(3)
+    expect(seen[0]?.prompt).toContain('p')
+    for (const round of [1, 2]) {
+      expect(seen[round]?.prompt).toContain('still wrong')
+      expect(seen[round]?.prompt).toContain('applying code review fixes')
+    }
+    // Every turn — the automatic ones included — held a slot of the machine
+    // cap while it ran. A fix turn wired around `launch()` would show 0 here.
+    expect(seen.map((s) => s.capOccupied >= 1)).toEqual([true, true, true])
+
+    const record = loadTask(project.path, id)
+    expect(record?.status).toBe('waiting_for_you')
+    expect(record?.reason?.code).toBe('review_blocked')
+    expect(record?.turns).toHaveLength(3)
+    const events = readTaskEvents(project.path, id)
+    // The commit of each fix turn comes from the RUNNER at the end of turn —
+    // the agent stub above never runs git at all.
+    expect(events.filter((e) => e.type === 'commit')).toHaveLength(3)
+    expect(events.filter((e) => e.type === 'turn_started')).toHaveLength(3)
+    expect(autoFixRoundsUsed(events)).toBe(2)
+    // Nothing leaked: every slot taken by a turn or a round came back.
+    expect(cap.snapshot().occupied).toBe(0)
+  })
+
+  test('a BLIND journal bounds the loop instead of feeding it a fresh budget', async () => {
+    // MAJOR 2, end to end on the real runner. The journal keeps being WRITTEN
+    // — appends are untouched — but every read of it fails (EACCES, EMFILE
+    // under a descriptor storm, EIO). The count the bound rests on is derived
+    // from that journal, so a read that answers "nothing" instead of "I could
+    // not tell" hands the loop a full budget on every single turn, and the
+    // only thing left stopping it is whatever the test rig runs out of first.
+    //
+    // The discriminating number is the AGENT TURN COUNT: 1 here, 9-and-going
+    // before the fix. The cycle cap is what makes the difference visible as a
+    // red rather than as a hang.
+    const project = register(makeRepo())
+    const cap = createLoadCap(2)
+    const seen: { prompt: string; capOccupied: number }[] = []
+    const guard = cycleCap()
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: writingAgent(seen, cap),
+      reviewTurnFn: alwaysBlocks(project.path, guard),
+    })
+    const created = await manager.create(project.id, {
+      title: 'blind',
+      prompt: 'p',
+      autoShip: false,
+    })
+    if (!created.ok) {
+      throw new Error('task was not created')
+    }
+    const id = created.record.id
+    try {
+      // Blinded only AFTER the task exists, so the failure under test is the
+      // journal read and not the creation.
+      setJournalReader(() => null)
+      await until(
+        () => guard.runaway || (loadTask(project.path, id)?.turns.length ?? 0) >= 1,
+        15000,
+      )
+      // Let any round the loop might still be chaining land.
+      await until(() => guard.runaway || seen.length > 1, 1000).catch(() => {})
+    } finally {
+      setJournalReader(null)
+      await manager.shutdown()
+    }
+    guard.assert()
+    // The human's own turn ran; NO automatic round followed it, because the
+    // budget could not be counted and an uncounted budget is never a full one.
+    expect(seen).toHaveLength(1)
+    const record = loadTask(project.path, id)
+    // And the task is left where a human can still act on it — review_ko, not
+    // parked: nothing was tried, so nothing was exhausted.
+    expect(record?.status).toBe('review_ko')
+    expect(record?.reason?.detail).toContain('journal could not be read')
+  })
+
+  test('a fix turn QUEUES for its machine slot — it never short-circuits the cap, and never deadlocks', async () => {
+    const project = register(makeRepo())
+    const cap = createLoadCap(1)
+    const seen: { prompt: string; capOccupied: number }[] = []
+    const guard = cycleCap()
+    const slot: { release: (() => void) | null } = { release: null }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: writingAgent(seen, cap),
+      // The FIRST review takes the machine's only slot and keeps it: the fix
+      // round the loop is about to queue has nowhere to run yet.
+      reviewTurnFn: alwaysBlocks(project.path, guard, async () => {
+        slot.release ??= await cap.acquire('review')
+      }),
+    })
+    const created = await manager.create(project.id, {
+      title: 'starved',
+      prompt: 'p',
+      autoShip: false,
+    })
+    if (!created.ok) {
+      throw new Error('task was not created')
+    }
+    const id = created.record.id
+
+    try {
+      // The end-of-turn hook RESOLVED even though the machine is full — it
+      // never waits on the round it queued — and the round is parked, named.
+      await until(
+        () =>
+          readTaskEvents(project.path, id).some(
+            (e) => e.type === 'queue' && e.data.name === 'machine_busy',
+          ),
+        15000,
+      )
+      const waiting = loadTask(project.path, id)
+      expect(waiting?.status).toBe('queued')
+      expect(waiting?.reason?.code).toBe('resource_busy')
+      // Nothing ran on the stolen slot: still just the first turn's agent.
+      expect(seen).toHaveLength(1)
+
+      // The slot comes back; the parked round starts on its own.
+      slot.release?.()
+      await until(
+        () => guard.runaway || loadTask(project.path, id)?.status === 'waiting_for_you',
+        15000,
+      )
+      guard.assert()
+      expect(seen.length).toBeGreaterThanOrEqual(2)
+      expect(seen[1]?.prompt).toContain('still wrong')
+      expect(cap.snapshot().occupied).toBe(0)
+    } finally {
+      // Same reason as the test above — plus the held slot itself, which an
+      // early failure would otherwise leave taken for the rest of the file.
+      slot.release?.()
+      await manager.shutdown()
     }
   })
 })

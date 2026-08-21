@@ -19,7 +19,7 @@ import {
   type TaskReason,
   type TaskRecord,
 } from './contract.js'
-import { buildAgentFixPrompt } from './fix.js'
+import { buildAgentFixPrompt, isFixable } from './fix.js'
 import { isAncestor, refExists, tryGit } from './git.js'
 import { createLoadCap, DEFAULT_MAX_CONCURRENT_AGENTS, type LoadCap } from './load-cap.js'
 import { prep } from './prep.js'
@@ -36,6 +36,7 @@ import {
   buildCriteriaChapter,
   criteriaUnmetDetail,
   resolveCriteria,
+  unmetCriteriaFixChapter,
   type CriteriaOutcome,
 } from './task-criteria-gate.js'
 import {
@@ -69,10 +70,68 @@ export function taskReviewVerdict(record: ReviewRecord): 'review_ok' | 'review_k
   if (verdict === 'request_changes') {
     return 'review_ko'
   }
-  const actionable = findings.some(
-    (f) => f.kind !== 'praise' && f.kind !== 'why' && f.severity !== 'info',
-  )
-  return actionable ? 'review_ko' : 'review_ok'
+  // `isFixable` (fix.ts) rather than a second copy of the same predicate: the
+  // bar that makes a 'comment' block has to be the bar the fix prompt then
+  // carries, or a task blocks on a finding nobody is ever asked to fix.
+  return findings.some(isFixable) ? 'review_ko' : 'review_ok'
+}
+
+/**
+ * Severities that make a finding BLOCKING whatever the model concluded — the
+ * deterministic half of T3.3's guard-rail (invariant n° 4). `critical` is
+ * already escalated by the contract's `groundReview`, but only when the diff
+ * could be indexed; `major` never was.
+ */
+const BLOCKING_SEVERITIES = ['critical', 'major'] as const
+
+/**
+ * Whether a review still carries a finding no `approve` may override: a
+ * `critical` or `major` one that asks for a code change (T3.3). "Unresolved"
+ * needs no bookkeeping — a finding a later review no longer raises is
+ * resolved, so the LAST archive is the whole state.
+ *
+ * Composed, deliberately, from the two bricks that already exist — `isFixable`
+ * for "does this ask for a change" and `findingSeverityCounts` for the tally —
+ * rather than a second severity scale of its own: two definitions of
+ * "blocking" drift in silence, and the merge gate downstream (T3.6) reads
+ * THIS one.
+ */
+export function hasBlockingFindings(record: ReviewRecord): boolean {
+  const counts = findingSeverityCounts(record.review.findings.filter(isFixable))
+  return BLOCKING_SEVERITIES.some((severity) => (counts[`severity_${severity}`] ?? 0) > 0)
+}
+
+/**
+ * Why an `approve` was not enough, with the exact tally beside it. ADDED to
+ * what the reviewer itself said, never a replacement for it (invariant n° 2).
+ */
+export function blockingFindingsDetail(record: ReviewRecord): string {
+  const counts = findingSeverityCounts(record.review.findings.filter(isFixable))
+  const named = BLOCKING_SEVERITIES.filter(
+    (severity) => (counts[`severity_${severity}`] ?? 0) > 0,
+  ).map((severity) => `${counts[`severity_${severity}`] as number} ${severity}`)
+  return `the review verdict was '${record.review.verdict}' but the review still carries blocking findings (${named.join(', ')}): a model verdict never releases an unresolved critical or major finding`
+}
+
+/**
+ * Indices of the findings a fix turn is asked to apply, in the archive's own
+ * order — the same bar `taskReviewVerdict` blocks on, so an automatic round
+ * never asks for less than what blocked it.
+ */
+export function actionableFindingIds(record: ReviewRecord): number[] {
+  return record.review.findings.flatMap((finding, index) => (isFixable(finding) ? [index] : []))
+}
+
+/** The archived review a task's `review_ref` points at, or null on every miss. */
+function readReviewRef(task: TaskRecord): ReviewRecord | null {
+  if (!task.review_ref) {
+    return null
+  }
+  try {
+    return sanitizeRecord(readJson(task.review_ref))
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -83,15 +142,37 @@ export function taskReviewVerdict(record: ReviewRecord): 'review_ok' | 'review_k
  * turns that into a 4xx, never a crash.
  */
 export function buildFixTurnPrompt(task: TaskRecord, findingIds: number[]): string | null {
-  if (!task.review_ref) {
+  const review = readReviewRef(task)
+  return review ? buildAgentFixPrompt(review, findingIds) : null
+}
+
+/**
+ * The prompt of an AUTOMATIC fix turn (T3.3). It IS the manual path's prompt —
+ * `buildAgentFixPrompt` on the same archive, through the same helper the click
+ * uses — with the two differences that automating it requires:
+ *
+ *  - the findings are not a human's selection but every ACTIONABLE one, which
+ *    is exactly the set that made the review block. Asking for less would
+ *    guarantee the next review blocks on the remainder and burns a round;
+ *  - a criteria chapter is appended when the acceptance-criteria gate is what
+ *    blocks, because a review that approved the code raises no finding at all.
+ *
+ * Null when there is nothing concrete to ask for — no archive, an unreadable
+ * one, or an archive carrying neither an actionable finding nor an unsatisfied
+ * criterion. That null is a REFUSAL to spend a round, never an empty prompt.
+ */
+export function buildAutoFixTurnPrompt(task: TaskRecord): string | null {
+  const review = readReviewRef(task)
+  if (!review) {
     return null
   }
-  try {
-    const review = sanitizeRecord(readJson(task.review_ref))
-    return review ? buildAgentFixPrompt(review, findingIds) : null
-  } catch {
+  const ids = actionableFindingIds(review)
+  const chapter = unmetCriteriaFixChapter(taskCriteria(task), review.review.criteria)
+  if (ids.length === 0 && !chapter) {
     return null
   }
+  const base = buildAgentFixPrompt(review, ids)
+  return chapter ? `${base}\n\n${chapter}` : base
 }
 
 /**
@@ -629,6 +710,28 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         emitCriteriaGate(io, gate)
       }
       const verdict = taskReviewVerdict(outcome.record)
+      // T3.3, and BEFORE the criteria gate: the deterministic guard-rail.
+      // `groundReview` already escalates an `approve` that carries a
+      // `critical` — but only when it could index the diff — and it has never
+      // covered `major` at all. Here the CLI decides, on the findings that
+      // survived grounding: an unresolved critical or major keeps the task
+      // blocked whatever the model concluded (invariant n° 4). It only turns
+      // an OK into a KO, same discipline as the criteria gate below, and it
+      // runs FIRST because "there are still blocking findings" is the more
+      // actionable of the two reasons.
+      if (verdict === 'review_ok' && hasBlockingFindings(outcome.record)) {
+        const detail = blockingFindingsDetail(outcome.record)
+        // Said out loud (invariant n° 2): the `review_done` line above states
+        // the model's own verdict, so without this the journal would show an
+        // `approve` beside a blocked task and nothing explaining the gap.
+        io.emit({
+          type: 'message',
+          data: { text: detail, name: 'review_verdict_overridden' },
+          reason_code: 'review_blocked',
+        })
+        settle(record, io, 'review_ko', taskReason('review_blocked', detail))
+        return
+      }
       // The HARD gate (D11): one criterion that is not `met` blocks "ready to
       // merge", with no weighting and no exception. It only ever turns an OK
       // into a KO — a review that already blocks keeps its own, more

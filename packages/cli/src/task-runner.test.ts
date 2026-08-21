@@ -54,6 +54,7 @@ import {
   supportsSessionResume,
   taskCommandFor,
   taskCriteria,
+  type TaskActionResult,
 } from './task-runner.js'
 import { branchCheckoutPath, type WorktreeLockFn } from './task-worktree.js'
 import { appendTaskEvent, createTask, loadTask, readTaskEvents, saveTask } from './tasks-store.js'
@@ -1880,6 +1881,46 @@ describe('machine load cap (T1.3, D4)', () => {
     runner.start(task)
     await until(() => status(repo, task.id) === 'review_ok')
     expect(cap.snapshot()).toEqual({ occupied: 0, max: 1, queued: 0 })
+  })
+
+  test('onTurnDone runs with the id already OUT of `active`, so a reply() from it is accepted', async () => {
+    // The dependency T3.3's whole fix loop rests on, pinned rather than
+    // described. `active.delete` happens in runTurn's `.then()`, BEFORE
+    // finishTurn — and `onTurnDone` is called from inside finishTurn, so the
+    // `reply()` the loop issues from that hook is accepted instead of being
+    // refused with 'task is running'. The four-await exclusion comment above
+    // `launch()` claimed the opposite for a long time; whoever moves
+    // `active.delete` after finishTurn makes the loop a silent no-op, and this
+    // goes red instead of the feature going quiet.
+    const repo = makeRepo()
+    const task = makeTask(repo, 'reply from the hook', 'work')
+    const seen: { running: number; reply: TaskActionResult }[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: fakeClaude(() => 'done').run,
+      onTurnDone: (record, io) => {
+        record.status = 'review_ko'
+        io.persist()
+        if (seen.length === 0) {
+          seen.push({
+            running: runner.runningCount(),
+            reply: runner.reply(record.id, 'fix the findings'),
+          })
+        }
+        return Promise.resolve()
+      },
+    })
+    runner.start(task)
+    await until(() => seen.length === 1)
+    // The id has left `active`: the agent process is done, and this hook runs
+    // after that delete rather than before it.
+    expect(seen[0]?.running).toBe(0)
+    // Not `{ ok: false, error: 'task is running' }`: THAT is the shape a late
+    // `active.delete` would produce, and the loop would never fire.
+    expect(seen[0]?.reply).toMatchObject({ ok: true })
+    await runner.shutdown()
   })
 
   // CRITIQUE/MAJEUR 1 (adversarial review): the D2 vocabulary requirement is

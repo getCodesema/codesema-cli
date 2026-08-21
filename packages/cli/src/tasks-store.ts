@@ -380,12 +380,27 @@ export type AppendTaskEventInput = {
   reason_code?: ReasonCode
 }
 
-/** Tolerant read of a journal: null when there is none, or it cannot be read. */
+/**
+ * Tolerant read of a journal, with ONE distinction that matters: `''` when
+ * there is no journal at all, `null` when there is one and it could not be
+ * read.
+ *
+ * A task that has never journalled anything has no file, and that is genuinely
+ * "no events" — an empty answer is the truth for it. Every OTHER error (EACCES
+ * after a chmod, EMFILE under a descriptor storm, EIO on a failing disk) means
+ * the journal exists and this process could not see it, which is a completely
+ * different fact. Callers that DERIVE something from the journal — the T3.3
+ * fix loop derives a spent budget from it — must be able to tell "zero" from
+ * "I could not know", or an unreadable journal reads as a fresh full budget on
+ * every single turn. Same trap, same doctrine as `taskRecordExists` on the
+ * record side: `null` for two very different facts is how a refusal becomes a
+ * permission.
+ */
 function defaultJournalReader(path: string): string | null {
   try {
     return readFileSync(path, 'utf8')
-  } catch {
-    return null
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | null)?.code === 'ENOENT' ? '' : null
   }
 }
 
@@ -394,8 +409,10 @@ let journalReader: (path: string) => string | null = defaultJournalReader
 /**
  * Test seam: every read of an events.jsonl content goes through this hook, so a
  * test can count journal reads (an append must cost zero of them once the
- * cursor is warm) without instrumenting readFileSync globally. Pass null to
- * restore the real read.
+ * cursor is warm) without instrumenting readFileSync globally, and so a test
+ * can simulate a journal that EXISTS and cannot be read (return null) as
+ * opposed to one that is absent (return ''). Pass null to restore the real
+ * read.
  */
 export function setJournalReader(reader: ((path: string) => string | null) | null): void {
   journalReader = reader ?? defaultJournalReader
@@ -596,22 +613,49 @@ export function removeTaskChecks(cwd: string, id: string): void {
 }
 
 /**
- * Reads the journal in file order. Corrupt or truncated lines (crash mid-append,
- * hand editing) are silently skipped — the journal is informative, never a
- * reason to fail a task. afterSeq filters to events strictly newer, for SSE
- * catch-up after a reconnect.
+ * Everything ONE read of a journal could establish — the events, and what the
+ * read had to give up on. Two facts `readTaskEvents`'s bare `TaskEvent[]`
+ * cannot carry, and that a caller deriving state from the journal needs:
+ *
+ *  - `unreadable`: the journal exists and could not be read. `events` is then
+ *    empty and means NOTHING — it is the absence of an answer, not the answer
+ *    zero. A derivation that confuses the two grants on ignorance.
+ *  - `dropped`: how many non-empty lines did not survive parse+sanitize (a
+ *    crash-truncated tail, a hand edit). The events are still usable — the
+ *    journal is informative, never a reason to fail a task — but a caller
+ *    counting them knows its count may be short, and can say so instead of
+ *    quietly acting on a number a corruption moved.
  */
-export function readTaskEvents(cwd: string, id: string, opts?: { afterSeq?: number }): TaskEvent[] {
+export type TaskJournalRead = {
+  events: TaskEvent[]
+  unreadable: boolean
+  dropped: number
+}
+
+/**
+ * Reads the journal in file order, reporting what it could not read (see
+ * `TaskJournalRead`). Corrupt or truncated lines are skipped rather than
+ * fatal, and nothing here ever throws. afterSeq filters to events strictly
+ * newer, for SSE catch-up after a reconnect.
+ */
+export function readTaskJournal(
+  cwd: string,
+  id: string,
+  opts?: { afterSeq?: number },
+): TaskJournalRead {
   if (!isTaskId(id)) {
-    return []
+    // Not "this task has no events": this is a refusal to look, and the only
+    // honest shape for it is the same one an unreadable journal takes.
+    return { events: [], unreadable: true, dropped: 0 }
   }
   const path = join(taskDir(cwd, id), 'events.jsonl')
   const raw = journalReader(path)
   if (raw === null) {
-    return []
+    return { events: [], unreadable: true, dropped: 0 }
   }
   const afterSeq = opts?.afterSeq
   const events: TaskEvent[] = []
+  let dropped = 0
   for (const line of raw.split('\n')) {
     if (!line.trim()) {
       continue
@@ -620,10 +664,12 @@ export function readTaskEvents(cwd: string, id: string, opts?: { afterSeq?: numb
     try {
       parsed = JSON.parse(line)
     } catch {
+      dropped += 1
       continue
     }
     const event = sanitizeTaskEvent(parsed)
     if (!event) {
+      dropped += 1
       continue
     }
     if (afterSeq !== undefined && event.seq <= afterSeq) {
@@ -631,5 +677,14 @@ export function readTaskEvents(cwd: string, id: string, opts?: { afterSeq?: numb
     }
     events.push(event)
   }
-  return events
+  return { events, unreadable: false, dropped }
+}
+
+/**
+ * The journal's events and nothing else — what every reader that only wants
+ * the timeline uses. An unreadable journal and an empty one both answer `[]`
+ * here; a caller that must tell them apart reads `readTaskJournal` instead.
+ */
+export function readTaskEvents(cwd: string, id: string, opts?: { afterSeq?: number }): TaskEvent[] {
+  return readTaskJournal(cwd, id, opts).events
 }

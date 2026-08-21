@@ -12,6 +12,7 @@ import {
   presentRepoGlobalOnlyKeys,
   repoConfigPath,
   repoGlobalOnlyIgnoredNotices,
+  resolveMaxAutoFixRounds,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveReviewMode,
@@ -549,6 +550,68 @@ describe('resolveProjectConfig (T1.4)', () => {
     const resolved = resolveProjectConfig(repoDir)
     expect(resolved.config.reviewMode).toBeUndefined()
     expect(resolveReviewMode(resolved.config)).toBe('simple')
+  })
+
+  // --- T3.3 (D14): the bound of the automatic fix loop --------------------
+
+  test('resolveMaxAutoFixRounds answers on its OWN bar, not on the parser’s', () => {
+    // Hand-built configs, deliberately: `parseConfig` drops an unusable value
+    // before the resolver sees it, so going through `resolveProjectConfig`
+    // cannot tell whether this function has a bar of its own. It must, because
+    // it is exported and read by callers that never opened a config file.
+    expect(resolveMaxAutoFixRounds({})).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: undefined })).toBe(2)
+    // `0` has no meaning this ticket specified — it is an unusable bound like
+    // any other, NOT a switch that turns the loop off.
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 0 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: -3 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 2.5 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: Number.NaN })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: '3' as unknown as number })).toBe(2)
+    // ...and a usable one is honoured verbatim.
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 1 })).toBe(1)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 7 })).toBe(7)
+  })
+
+  test('the fix-loop bound a project declares is what resolves (T3.3/D14)', () => {
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 3 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxAutoFixRounds).toBe(3)
+    expect(resolveMaxAutoFixRounds(resolved.config)).toBe(3)
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 1 })
+    expect(resolveMaxAutoFixRounds(resolveProjectConfig(repoDir).config)).toBe(1)
+  })
+
+  test('a repo bound wins over the global one, like every repo-settable key', () => {
+    saveGlobalConfig({ maxAutoFixRounds: 5 })
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 1 })
+    expect(resolveMaxAutoFixRounds(resolveProjectConfig(repoDir).config)).toBe(1)
+  })
+
+  test('no bound declared anywhere answers the D14 default of 2', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxAutoFixRounds).toBeUndefined()
+    expect(resolveMaxAutoFixRounds(resolved.config)).toBe(2)
+  })
+
+  test('an unusable bound falls back on the default without throwing', () => {
+    saveRepoConfig(repoDir, { timeout: 300 })
+    // `0` is in this list on purpose: this ticket does NOT give it the
+    // meaning "switch the loop off", so it is an unusable bound like any
+    // other and the D14 default stands.
+    for (const bad of [0, -1, 2.5, '3', null, [], { rounds: 2 }] as unknown[]) {
+      writeFileSync(
+        repoConfigPath(repoDir),
+        JSON.stringify({ timeout: 300, maxAutoFixRounds: bad }),
+        'utf8',
+      )
+      expect(() => resolveProjectConfig(repoDir)).not.toThrow()
+      const resolved = resolveProjectConfig(repoDir)
+      expect(resolved.config.maxAutoFixRounds).toBeUndefined()
+      expect(resolveMaxAutoFixRounds(resolved.config)).toBe(2)
+    }
   })
 
   test('the deprecated alias in a repo file is named the same way', () => {

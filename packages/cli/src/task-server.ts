@@ -18,6 +18,7 @@ import {
   type ChecksSetupState,
 } from './checks-setup.js'
 import {
+  resolveMaxAutoFixRounds,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveReviewMode,
@@ -58,6 +59,17 @@ import { listProjects, listProjectsDetailed, type Project } from './projects.js'
 import { readChecksConfig } from './repo-config.js'
 import { runChecks } from './task-checks.js'
 import {
+  applyFixLoopDecision,
+  AUTO_FIX_EXHAUSTED_NAME,
+  AUTO_FIX_JOURNAL_DAMAGED_NAME,
+  AUTO_FIX_NOT_QUEUED_NAME,
+  AUTO_FIX_NOT_STARTED_NAME,
+  AUTO_FIX_ROUND_NAME,
+  autoFixRoundsUsed,
+  decideFixLoop,
+  type FixLoopDecision,
+} from './task-fix-loop.js'
+import {
   agentHomeVolume,
   isolationDefaults,
   isolationDomainsFor,
@@ -88,6 +100,7 @@ import {
 } from './task-retention.js'
 import {
   applyChecksGate,
+  buildAutoFixTurnPrompt,
   createTaskReviewer,
   readTaskReview,
   terminalChecksResult,
@@ -111,6 +124,7 @@ import {
   onStoreUnreadable,
   readTaskChecks,
   readTaskEvents,
+  readTaskJournal,
   removeTaskChecks,
   saveTask,
   taskIdsOnDisk,
@@ -818,12 +832,31 @@ function withQueuePositions(queue: TaskQueue, records: TaskRecord[]): TaskRecord
  * the human assumes the KO. 'shipped' refuses again for idempotence (the
  * branch is on origin, the MR exists: a re-ship would duplicate it). Null
  * means the ship may proceed.
+ *
+ * T3.3 created ONE new way to be refused here: the bounded fix loop hands a
+ * task back on 'waiting_for_you' carrying `review_blocked`/`criteria_unmet`,
+ * and 'waiting_for_you' does not ship. That refusal gets its own sentence
+ * (DP1's rule: a refusal names the way out), because `task is waiting_for_you`
+ * describes a task nobody asked a question about and leaves the reader with no
+ * idea that answering it is what unblocks the ship.
  */
 function shipRefusal(record: TaskRecord): TaskActionResult | null {
   if (record.status === 'shipped') {
     return { ok: false, code: 409, error: 'task is already shipped' }
   }
   if (record.status !== 'review_ok' && record.status !== 'review_ko') {
+    const code = record.reason?.code
+    if (
+      record.status === 'waiting_for_you' &&
+      (code === 'review_blocked' || code === 'criteria_unmet')
+    ) {
+      return {
+        ok: false,
+        code: 409,
+        error: `task is waiting_for_you: the automatic fix loop spent its rounds and handed it back (${code}). Reply to it — your turn restarts the fix budget from zero — and ship once the review that follows has settled`,
+        reason_code: code,
+      }
+    }
     return { ok: false, code: 409, error: `task is ${record.status}` }
   }
   if (!record.branch) {
@@ -1319,6 +1352,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // precedence every other project key gets, and passed EXPLICITLY at the
       // call site below.
       reviewMode: resolveReviewMode(config),
+      // T3.3 (D14): how many automatic fix turns this project chains after a
+      // blocking review. Resolved with the same repo > global precedence as
+      // every other per-project key; an absent or unusable value lands on the
+      // D14 default without a word of complaint and without a throw.
+      maxAutoFixRounds: resolveMaxAutoFixRounds(config),
       timeoutMs: config.timeout !== undefined ? config.timeout * 1000 : opts.timeoutMs,
       watchdog:
         config.watchdogInactivitySeconds !== undefined ||
@@ -1808,6 +1846,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const runtime = projectRuntime(cwd)
     noticeProjectConfig(cwd, runtime)
     const { command, timeoutMs, watchdog, allowedDomains, pinAllowedDomains, reviewMode } = runtime
+    const { maxAutoFixRounds } = runtime
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict. The reviewer is built with the project's command as a
     // fallback; resolveCommand picks the task's own CLI (`record.agent`) so
@@ -1845,13 +1884,72 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       const thisTurnChecks = await startChecksAfterCommit(ctx, record)
       const gateChecks =
         terminalChecksResult(thisTurnChecks) ?? terminalChecksResult(readTaskChecks(cwd, record.id))
+      // T3.3: whether THIS review got as far as archiving a verdict. A review
+      // that crashed leaves `record.review_ref` pointing at a PREVIOUS turn's
+      // archive, and a fix turn built from it would ask the agent to re-fix
+      // findings that may already be gone. `review_done` is emitted right
+      // after the archive is written, so it is the exact signal.
+      let reviewArchived = false
+      // A holder rather than four plain `let`s: these are written from inside
+      // `applyGates` (a closure) and read after it, which is precisely the
+      // shape the compiler's flow analysis narrows away on a bare local.
+      const state: {
+        loop: FixLoopDecision
+        decided: boolean
+        fixPrompt: string | null
+        /** Journal lines the count could not read. 0 is the ordinary case. */
+        journalDropped: number
+      } = {
+        loop: { kind: 'none' },
+        decided: false,
+        fixPrompt: null,
+        journalDropped: 0,
+      }
+      /**
+       * The gates the FINAL transition folds in, in order: the checks result
+       * (T3.1) then the fix loop (T3.3). Both mutate the in-memory record
+       * BEFORE `io.persist()` writes it, which is what keeps a single writer
+       * of that transition — the loop's "hand it back" is part of the
+       * reviewer's own write, never a second one landing after it.
+       */
+      const applyGates = (): void => {
+        applyChecksGate(record, gateChecks)
+        if (state.decided) {
+          return
+        }
+        state.decided = true
+        // Read at THIS instant on purpose: the archive the fix turn works
+        // from is the one the reviewer just wrote.
+        state.fixPrompt = reviewArchived ? buildAutoFixTurnPrompt(record) : null
+        // A function of the DISK, never of a counter this process holds: a
+        // workspace restarted mid-loop resumes at the right round. And a
+        // journal it could not READ is handed on as null — not as the count
+        // zero, which would renew the whole budget on every turn for as long
+        // as the fault lasted, i.e. remove the bound entirely.
+        const journal = readTaskJournal(cwd, record.id)
+        state.journalDropped = journal.dropped
+        state.loop = decideFixLoop({
+          status: record.status,
+          reason: record.reason,
+          roundsUsed: journal.unreadable ? null : autoFixRoundsUsed(journal.events),
+          max: maxAutoFixRounds,
+          fixable: state.fixPrompt !== null,
+        })
+        applyFixLoopDecision(record, state.loop)
+      }
       // The persist the reviewer (or a test stub) calls is THE unique write
-      // of the final status: the gate mutates the in-memory record first, so
+      // of the final status: the gates mutate the in-memory record first, so
       // a settle OK never lands on disk only to be overwritten.
       const gatedIo = {
         ...io,
+        emit: (input: AppendTaskEventInput) => {
+          if (input.type === 'review_done') {
+            reviewArchived = true
+          }
+          io.emit(input)
+        },
         persist: () => {
-          applyChecksGate(record, gateChecks)
+          applyGates()
           io.persist()
         },
       }
@@ -1891,11 +1989,96 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
       await reviewTurn(record, gatedIo)
       // Stubs that set status without persist, and the no-review path, still
-      // fold the gate in: idempotent if the wrapped persist already did.
-      applyChecksGate(record, gateChecks)
+      // fold the gates in: idempotent if the wrapped persist already did.
+      applyGates()
       io.persist()
       if (record.auto_ship && record.status === 'review_ok') {
         await ship(ctx, record.id)
+      }
+      // T3.3, LAST and outside the transition: the loop's own action. It runs
+      // after the write above because the record on disk is what `reply()`
+      // re-reads, and after the auto-ship because the two are mutually
+      // exclusive by construction — a task the loop retries is 'review_ko',
+      // and auto-ship only ever fires on 'review_ok'.
+      //
+      // A fix turn is enqueued through the runner's ORDINARY reply path, the
+      // very one the human's "fix the findings" click uses. That is not a
+      // shortcut, it is the point: the turn queues behind the project's
+      // admission claim (still held by this turn until this hook returns),
+      // takes its own slot of the machine load cap through `launch()`, runs
+      // under the watchdog, and gets its commit from the runner at the end —
+      // none of which a bespoke trigger would inherit.
+      //
+      // `reply()` is synchronous and NEVER launches the turn from here: the
+      // project's claim is only released once this hook's promise settles, so
+      // the pump inside `schedule()` is a no-op and the turn starts on the
+      // release. There is therefore no await to omit and no chain to leave
+      // dangling — and no cycle either, since nothing in this hook ever waits
+      // on the fix turn it queued.
+      const { loop, fixPrompt } = state
+      if (loop.kind !== 'none' && state.journalDropped > 0) {
+        // Said BEFORE whatever the loop decided, because it qualifies it: the
+        // streak was counted over a journal that lost lines, so the count may
+        // be short and the round about to start may be one this task already
+        // had. Bounded (the loop still stops at `max` from wherever the count
+        // resumed) but never silent — a budget moved by a corruption is a
+        // degradation, and invariant n° 2 gives it a line of its own.
+        io.emit({
+          type: 'error',
+          data: {
+            message: `${state.journalDropped} journal line(s) of this task could not be read, so the automatic fix round count may be short by up to that many rounds`,
+            name: AUTO_FIX_JOURNAL_DAMAGED_NAME,
+            dropped: state.journalDropped,
+          },
+        })
+      }
+      if (loop.kind === 'retry' && fixPrompt !== null) {
+        // Journaled BEFORE the round is queued, and this ordering is what
+        // makes the bound hold: the marker is what the counter reads, so a
+        // crash between the two costs a round rather than granting one.
+        io.emit({
+          type: 'message',
+          data: {
+            text: `${loop.text}: ${record.reason?.detail ?? 'the end-of-turn review blocked this task'}`,
+            name: AUTO_FIX_ROUND_NAME,
+            round: loop.round,
+            max: loop.max,
+          },
+        })
+        const queued = ctx.runner.reply(record.id, fixPrompt)
+        if (!queued.ok) {
+          // A drain in progress, a queue that will not write: the round does
+          // not happen. Said out loud, and the marker is retracted so the
+          // human's next reply keeps its full budget.
+          io.emit({
+            type: 'error',
+            data: {
+              message: `the automatic fix round could not be queued: ${queued.error}`,
+              name: AUTO_FIX_NOT_QUEUED_NAME,
+            },
+            ...(queued.reason_code ? { reason_code: queued.reason_code } : {}),
+          })
+        }
+      } else if (loop.kind === 'exit') {
+        // The record already carries the code and the whole sentence (the
+        // write above folded them in); this is its journal half, so a human
+        // reading the timeline sees WHY the machine stopped trying.
+        io.emit({
+          type: 'message',
+          data: { text: loop.text, name: AUTO_FIX_EXHAUSTED_NAME, rounds: maxAutoFixRounds },
+          reason_code: loop.code,
+        })
+      } else if (loop.kind === 'stand') {
+        // The loop never began, so nothing was handed back: the record still
+        // says `review_ko` and a human may still assume it and ship. Its own
+        // journal line, under its own name, because "the machine could not
+        // start" and "the machine gave up after two rounds" are two different
+        // facts and the timeline has to keep them apart.
+        io.emit({
+          type: 'message',
+          data: { text: loop.text, name: AUTO_FIX_NOT_STARTED_NAME },
+          reason_code: loop.code,
+        })
       }
     }
     /** Rank last broadcast per waiting id, so only real changes go on the wire. */

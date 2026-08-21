@@ -25,11 +25,15 @@ import {
   type SimpleOutcome,
 } from './review.js'
 import {
+  actionableFindingIds,
   applyChecksGate,
+  blockingFindingsDetail,
+  buildAutoFixTurnPrompt,
   buildFixTurnPrompt,
   checksBlockReady,
   checksFailedDetail,
   createTaskReviewer,
+  hasBlockingFindings,
   readTaskReview,
   taskReviewVerdict,
   terminalChecksResult,
@@ -1717,5 +1721,196 @@ describe('createTaskReviewer: explicit review mode (T3.2)', () => {
     await reviewer(repo, { mode: 'dual', runDualFlowFn: dual.fn })(record, rig.io)
 
     expect(dual.calls[0]?.criteriaChapter).toBeUndefined()
+  })
+})
+
+// --- the deterministic guard-rail (T3.3) ----------------------------------
+
+describe('hasBlockingFindings', () => {
+  const critical: Finding = { file: 'a.ts', severity: 'critical', message: 'auth bypass' }
+  const major: Finding = { file: 'a.ts', severity: 'major', message: 'leaks a descriptor' }
+  const minor: Finding = { file: 'a.ts', severity: 'minor', message: 'rename this' }
+  const info: Finding = { file: 'a.ts', severity: 'info', message: 'nit' }
+  const praised: Finding = { file: 'a.ts', severity: 'critical', kind: 'praise', message: 'nice' }
+  const why: Finding = { file: 'a.ts', severity: 'major', kind: 'why', message: 'context' }
+
+  test('critical and major block, whatever the model concluded', () => {
+    for (const verdict of ['approve', 'comment', 'request_changes'] as Verdict[]) {
+      expect(hasBlockingFindings(fakeReview(verdict, [critical]))).toBe(true)
+      expect(hasBlockingFindings(fakeReview(verdict, [major]))).toBe(true)
+    }
+  })
+
+  test('minor, info, praise and why do not', () => {
+    expect(hasBlockingFindings(fakeReview('approve', []))).toBe(false)
+    expect(hasBlockingFindings(fakeReview('approve', [minor, info]))).toBe(false)
+    // Severity alone is not the bar: a praise or a "why" note never asks for a
+    // change, so it never blocks however loudly it is graded.
+    expect(hasBlockingFindings(fakeReview('approve', [praised, why]))).toBe(false)
+  })
+
+  test('the detail names the exact tally, so a human knows what is left', () => {
+    const detail = blockingFindingsDetail(fakeReview('approve', [critical, major, major, info]))
+    expect(detail).toContain('1 critical')
+    expect(detail).toContain('2 major')
+    expect(detail).toContain("verdict was 'approve'")
+  })
+
+  test('actionableFindingIds is the set the fix prompt is asked for', () => {
+    const review = fakeReview('comment', [praised, major, info, minor])
+    expect(actionableFindingIds(review)).toEqual([1, 3])
+  })
+})
+
+describe('createTaskReviewer: an approve never releases a blocking finding (T3.3)', () => {
+  async function runVerdict(
+    verdict: Verdict,
+    findings: Finding[],
+  ): Promise<{ record: TaskRecord; rig: IoRig; repo: string }> {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'guarded task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReview(verdict, findings),
+      reportLines: [],
+    })
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+    return { record, rig, repo }
+  }
+
+  test('approve + an unresolved MAJOR finding: the task stays blocked', async () => {
+    // `groundReview` escalates approve+critical, never approve+major: this is
+    // the gap the CLI-side guard-rail closes.
+    const { record, rig } = await runVerdict('approve', [
+      { file: 'feature.txt', severity: 'major', message: 'leaks a descriptor' },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('review_blocked')
+    expect(record.reason?.detail).toContain('1 major')
+    // Said out loud, beside the review_done line that still quotes the model's
+    // own 'approve': without it the journal would show an approval next to a
+    // blocked task and nothing bridging the two.
+    const said = rig.events.find((event) => event.data.name === 'review_verdict_overridden')
+    expect(said?.type).toBe('message')
+    expect(said?.reason_code).toBe('review_blocked')
+    expect(String(said?.data.text)).toContain('1 major')
+    // The model's own verdict is still reported untouched.
+    expect(rig.events.find((event) => event.type === 'review_done')?.data.verdict).toBe('approve')
+  })
+
+  test('approve + a CRITICAL the grounding could not escalate: still blocked', async () => {
+    // An empty/unindexable diff makes groundReview a no-op, so the escalation
+    // it normally performs never runs — and the record still must not ship.
+    const { record } = await runVerdict('approve', [
+      { file: 'feature.txt', severity: 'critical', message: 'auth bypass' },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.detail).toContain('1 critical')
+  })
+
+  test('non-regression: an approve with only info/praise findings still releases', async () => {
+    const { record, rig } = await runVerdict('approve', [
+      { file: 'feature.txt', severity: 'info', message: 'nit' },
+      { file: 'feature.txt', severity: 'critical', kind: 'praise', message: 'nice' },
+    ])
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    expect(rig.events.some((event) => event.data.name === 'review_verdict_overridden')).toBe(false)
+  })
+
+  test('a plain approve with no finding at all is untouched', async () => {
+    const { record } = await runVerdict('approve', [])
+    expect(record.status).toBe('review_ok')
+  })
+})
+
+describe('buildAutoFixTurnPrompt (T3.3)', () => {
+  test('asks for every actionable finding, and never for the notes', () => {
+    const repo = makeRepo()
+    const saved = archiveRecord(
+      fakeReview('request_changes', [
+        { file: 'a.ts', severity: 'info', message: 'a nit nobody must chase' },
+        { file: 'a.ts', line: 3, severity: 'major', message: 'off by one' },
+      ]),
+      repo,
+    )
+    const prompt = buildAutoFixTurnPrompt({ review_ref: saved, turns: [] } as unknown as TaskRecord)
+    expect(prompt).toContain('off by one')
+    expect(prompt).not.toContain('a nit nobody must chase')
+    // It IS the manual path's prompt: same builder, same rules.
+    expect(prompt).toContain('applying code review fixes')
+    // The agent is told not to commit — the runner commits at the end of turn.
+    expect(prompt).toContain('Do NOT commit')
+  })
+
+  test('a review that approved the code still gets a prompt when criteria block', () => {
+    const repo = makeRepo()
+    const saved = archiveRecord(
+      {
+        ...fakeReview('approve', []),
+        review: {
+          ...fakeReview('approve', []).review,
+          criteria: [
+            { criterion_id: GC1.id, status: 'met' as const, evidence: ANCHOR },
+            { criterion_id: GC2.id, status: 'unmet' as const },
+            { criterion_id: GC3.id, status: 'unclear' as const },
+          ],
+        },
+      },
+      repo,
+    )
+    const prompt = buildAutoFixTurnPrompt({
+      review_ref: saved,
+      criteria: [GC1, GC2, GC3],
+      turns: [],
+    } as unknown as TaskRecord)
+    expect(prompt).toContain(GC2.id)
+    expect(prompt).toContain('WHEN checks fail')
+    expect(prompt).toContain(GC3.id)
+    // The satisfied one is not re-asked for.
+    expect(prompt).not.toContain(GC1.id)
+  })
+
+  test('null when there is nothing concrete to ask for', () => {
+    const repo = makeRepo()
+    // An archive with no actionable finding and no criteria: a round spent on
+    // this would name no work at all.
+    const empty = archiveRecord(
+      fakeReview('comment', [{ file: 'a.ts', severity: 'info', message: 'nit' }]),
+      repo,
+    )
+    expect(buildAutoFixTurnPrompt({ review_ref: empty, turns: [] } as unknown as TaskRecord)).toBe(
+      null,
+    )
+    expect(buildAutoFixTurnPrompt({ review_ref: null, turns: [] } as unknown as TaskRecord)).toBe(
+      null,
+    )
+    expect(
+      buildAutoFixTurnPrompt({
+        review_ref: join(repo, 'gone.json'),
+        turns: [],
+      } as unknown as TaskRecord),
+    ).toBe(null)
+  })
+
+  test('non-regression: the MANUAL path still honours the human’s own selection', () => {
+    const repo = makeRepo()
+    const saved = archiveRecord(
+      fakeReview('request_changes', [
+        { file: 'a.ts', severity: 'major', message: 'first one' },
+        { file: 'b.ts', severity: 'major', message: 'second one' },
+      ]),
+      repo,
+    )
+    const task = { review_ref: saved, turns: [] } as unknown as TaskRecord
+    const manual = buildFixTurnPrompt(task, [1])
+    expect(manual).toContain('second one')
+    expect(manual).not.toContain('first one')
+    // ...while the automatic one takes both, because both block.
+    const auto = buildAutoFixTurnPrompt(task)
+    expect(auto).toContain('first one')
+    expect(auto).toContain('second one')
   })
 })

@@ -29,6 +29,7 @@ import {
   onStoreUnreadable,
   readTaskChecks,
   readTaskEvents,
+  readTaskJournal,
   removeTaskDir,
   resetJournalCursors,
   resetStoreReports,
@@ -326,6 +327,86 @@ describe('appendTaskEvent / readTaskEvents', () => {
   test('malformed id: read returns empty, append throws loudly', () => {
     expect(readTaskEvents(cwd, '../oops')).toEqual([])
     expect(() => appendTaskEvent(cwd, '../oops', { type: 'message', data: {} })).toThrow()
+  })
+})
+
+describe('readTaskJournal: what the read could NOT establish', () => {
+  let record: TaskRecord
+
+  beforeEach(() => {
+    record = createTask(cwd, input)
+  })
+
+  afterEach(() => {
+    setJournalReader(null)
+  })
+
+  test('an ABSENT journal is empty, not unreadable — that is the answer zero', () => {
+    // A task that never journalled anything genuinely has no events, and a
+    // caller deriving a count from it is entitled to read that as zero.
+    const read = readTaskJournal(cwd, record.id)
+    expect(read).toEqual({ events: [], unreadable: false, dropped: 0 })
+  })
+
+  test('a journal that EXISTS and cannot be read is unreadable, not empty', () => {
+    // EACCES after a chmod, EMFILE under a descriptor storm, EIO on a failing
+    // disk: the events are unknown, and `[]` would mean the opposite. This is
+    // the distinction the fix loop's bound rests on — a budget nobody could
+    // count is never a full one.
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    setJournalReader(() => null)
+    const read = readTaskJournal(cwd, record.id)
+    expect(read.unreadable).toBe(true)
+    expect(read.events).toEqual([])
+    // ...and the plain reader still answers `[]`, so every existing caller is
+    // untouched by the distinction it does not need.
+    expect(readTaskEvents(cwd, record.id)).toEqual([])
+  })
+
+  test('the REAL reader tells the two apart by errno, not by guesswork', () => {
+    // No seam here: the shipped `defaultJournalReader` must make the call, or
+    // a real EACCES/EIO in production reads as a fresh, empty journal. The
+    // fault used is EISDIR rather than a chmod, because a chmod says nothing
+    // when the suite happens to run as root.
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    expect(readTaskJournal(cwd, record.id).unreadable).toBe(false) // ENOENT
+    mkdirSync(journal)
+    try {
+      expect(readTaskJournal(cwd, record.id).unreadable).toBe(true) // EISDIR
+    } finally {
+      rmSync(journal, { recursive: true })
+    }
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    expect(readTaskJournal(cwd, record.id).unreadable).toBe(false)
+  })
+
+  test('a malformed id is a refusal to look, so it reads as unreadable', () => {
+    expect(readTaskJournal(cwd, '../oops')).toEqual({
+      events: [],
+      unreadable: true,
+      dropped: 0,
+    })
+  })
+
+  test('lines that did not parse are COUNTED, not merely skipped', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    appendFileSync(journal, '{"seq":2,"at":"2026-08-2\nnot json at all\n')
+    const read = readTaskJournal(cwd, record.id)
+    expect(read.unreadable).toBe(false)
+    expect(read.events).toHaveLength(1)
+    // Two unusable lines: a caller counting events knows its count may be
+    // short instead of acting on a number a corruption moved, in silence.
+    expect(read.dropped).toBe(2)
+    // Blank lines are not damage.
+    appendFileSync(journal, '\n\n')
+    expect(readTaskJournal(cwd, record.id).dropped).toBe(2)
+  })
+
+  test('an intact journal drops nothing', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'hi' } })
+    expect(readTaskJournal(cwd, record.id).dropped).toBe(0)
   })
 })
 

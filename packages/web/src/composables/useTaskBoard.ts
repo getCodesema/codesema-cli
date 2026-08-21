@@ -120,21 +120,23 @@ export function queuePhraseKey(
   return status === 'queued' && waitingForSlot ? 'workspace.phaseQueuedMachine' : null
 }
 
+type StatusKeys = { phrase: MessageKey; label: MessageKey }
+
 /**
  * The `review_ko` reasons that need their OWN sentences, because the default
  * ones ("Review blocked" / "review blocked — findings to fix") are FALSE for
  * them: the review itself was GREEN and something beside it blocked.
  *
- * T3.1 added `checks_failed`; T3.2 adds `criteria_unmet` — a branch the
+ * T3.1 added `checks_failed`; T3.2 added `criteria_unmet` — a branch the
  * reviewer approved whose acceptance criteria are not all met. Kept as ONE
  * table read by both helpers below, rather than a branch in each: the pair
  * drifted apart once already, and a code wired into the phrase but not into
  * the label reads "Review blocked · review blocked — criteria not met".
  *
- * Any other code (a real `review_blocked`, an unknown one from a newer
- * server) falls through to the default, which is correct for it.
+ * Any other code (a real `review_blocked`, an unknown one from a newer server)
+ * falls through to the status default, which is correct for it.
  */
-const REVIEW_KO_KEYS: Record<string, { phrase: MessageKey; label: MessageKey }> = {
+const REVIEW_KO_KEYS: Record<string, StatusKeys> = {
   checks_failed: { phrase: 'workspace.phaseChecksFailed', label: 'workspace.statusChecksFailed' },
   criteria_unmet: {
     phrase: 'workspace.phaseCriteriaUnmet',
@@ -142,13 +144,51 @@ const REVIEW_KO_KEYS: Record<string, { phrase: MessageKey; label: MessageKey }> 
   },
 }
 
-function reviewKoKeys(
-  record: Pick<TaskRecord, 'status' | 'reason'>,
-): { phrase: MessageKey; label: MessageKey } | undefined {
-  if (record.status !== 'review_ko' || !record.reason) {
+/**
+ * The `waiting_for_you` reasons that need their own sentences — a SECOND table,
+ * per status, and the separation is the point rather than an accident.
+ *
+ * T3.3's bounded fix loop hands a task back on `waiting_for_you` carrying the
+ * same `review_blocked`/`criteria_unmet` codes the reviewer uses on
+ * `review_ko`. The two must NOT read alike, because they do not offer the same
+ * thing: a `review_ko` is a verdict a human may still assume and ship, while a
+ * task the loop gave up on is parked — the ship refuses it — and what moves it
+ * is an answer. A single shared table rendered both as "Review blocked ·
+ * review blocked — findings to fix", so the board showed a capability the task
+ * no longer had.
+ *
+ * The phrase also carries the one thing a human cannot deduce from the status:
+ * their own reply restarts the automatic budget from zero, so the Fix button
+ * is not a way to spend a round that no longer exists.
+ *
+ * Safe on `waiting_for_you` precisely because a reason never outlives the turn
+ * that posed it: the runner clears `reason` the moment a turn starts
+ * (task-runner.ts's runTurn), so a task parked on a question can never still
+ * be carrying an earlier turn's `review_blocked`. A code outside this table —
+ * a question with no reason at all, `checks_failed`, an unknown code from a
+ * newer server — falls through to `phaseWaiting`, which is right for it.
+ */
+const WAITING_FIX_LOOP_KEYS: Record<string, StatusKeys> = {
+  review_blocked: {
+    phrase: 'workspace.phaseFixLoopStopped',
+    label: 'workspace.statusFixLoopStopped',
+  },
+  criteria_unmet: {
+    phrase: 'workspace.phaseFixLoopStoppedCriteria',
+    label: 'workspace.statusFixLoopStopped',
+  },
+}
+
+const REASON_KEYS_BY_STATUS: Partial<Record<TaskStatus, Record<string, StatusKeys>>> = {
+  review_ko: REVIEW_KO_KEYS,
+  waiting_for_you: WAITING_FIX_LOOP_KEYS,
+}
+
+function reviewKoKeys(record: Pick<TaskRecord, 'status' | 'reason'>): StatusKeys | undefined {
+  if (!record.reason) {
     return undefined
   }
-  return REVIEW_KO_KEYS[record.reason.code]
+  return REASON_KEYS_BY_STATUS[record.status]?.[record.reason.code]
 }
 
 /**

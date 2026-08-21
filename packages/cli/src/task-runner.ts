@@ -2497,11 +2497,25 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       //
       // 1. abandon() — re-READS after the await. It is the only one that must,
       //    because a ship can legitimately settle inside its window.
-      // 2. launch(), this chain — valid by EXCLUSION: `active` holds this id
-      //    from before the first await (set above, deleted only after the turn
-      //    has settled on disk), so start/reply/resume/interrupt/abandon all
-      //    409, and ship one layer up only accepts 'review_ok'/'review_ko' —
-      //    statuses a task in `active` cannot be in.
+      // 2. launch(), this chain — valid by EXCLUSION, but by TWO guards in
+      //    sequence rather than one. `active` holds this id from before the
+      //    first await, and it is dropped the instant the AGENT PROCESS ends:
+      //    in runTurn's own `.then()`, BEFORE finishTurn — see the
+      //    `active.delete(record.id)` sitting right above the `finishTurn`
+      //    call. So `active` covers the agent half of the window; what covers
+      //    the rest is the STATUS on disk, which still says 'running' until
+      //    finishTurn writes the outcome: reply/resume accept only
+      //    waiting_for_you/interrupted/review_ok/review_ko, interrupt and
+      //    abandon have their own in-flight guards, and ship one layer up only
+      //    accepts 'review_ok'/'review_ko'.
+      //
+      //    That ordering is not incidental — it is what makes T3.3's automatic
+      //    fix loop possible at all. `onTurnDone` is invoked from INSIDE
+      //    finishTurn, i.e. after `active.delete`, so the `reply()` the loop
+      //    issues from that hook is accepted instead of being refused with
+      //    'task is running'. Whoever moves `active.delete` after finishTurn
+      //    turns the whole loop into a silent no-op, so the dependency is
+      //    pinned by a test of its own rather than by this paragraph.
       // 3. ship() in task-server.ts — valid by exclusion too: `ctx.shipping`
       //    holds the id across the push, and reply/resume/abandon consult it.
       // 4. The reviewer's captured record (task-review.ts) — valid by exclusion:

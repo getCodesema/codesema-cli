@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { EXECUTION_STATUS } from '../execution-status'
 import type { TaskEvent, TaskEventType, TaskRecord, TaskStatus } from '../types'
 import {
   agentCounts,
@@ -165,6 +166,72 @@ describe('statusPhraseKey / statusLabelKey (T3.1 checks_failed)', () => {
     })
     expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseReviewKo')
     expect(statusLabelKey(blocked)).toBe('workspace.statusReviewKo')
+  })
+
+  // T3.3: the bounded fix loop hands a task back on `waiting_for_you` carrying
+  // the very same codes. The default phrase for that status is "paused —
+  // waiting for your answer", and nobody asked a question: the card would be
+  // wrong, not merely vague.
+  test('a waiting_for_you the fix loop gave up on reads DIFFERENTLY from a review_ko', () => {
+    const findings = record({
+      status: 'waiting_for_you',
+      reason: {
+        code: 'review_blocked',
+        detail:
+          'a.ts:3 leaks a descriptor — the automatic fix loop stopped after 2 round(s) without clearing what blocks this task',
+      },
+    })
+    expect(statusPhraseKey(findings, false)).toBe('workspace.phaseFixLoopStopped')
+    expect(statusLabelKey(findings)).toBe('workspace.statusFixLoopStopped')
+    const criteria = record({
+      status: 'waiting_for_you',
+      reason: {
+        code: 'criteria_unmet',
+        detail: '1 of 3 acceptance criteria are not satisfied — the automatic fix loop stopped',
+      },
+    })
+    expect(statusPhraseKey(criteria, false)).toBe('workspace.phaseFixLoopStoppedCriteria')
+    expect(statusLabelKey(criteria)).toBe('workspace.statusFixLoopStopped')
+    // ...and none of them is the generic "waiting for your answer".
+    expect([findings, criteria].map((r) => statusPhraseKey(r, false))).not.toContain(
+      'workspace.phaseWaiting',
+    )
+    // The point of the split: the SAME code on `review_ko` is a verdict a
+    // human can still assume and ship, while this one is a parked task whose
+    // ship refuses. Rendering them alike showed a capability that is gone.
+    const blockedReview = record({
+      status: 'review_ko',
+      reason: { code: 'review_blocked', detail: 'a.ts:3 leaks a descriptor' },
+    })
+    expect(statusLabelKey(blockedReview)).not.toBe(statusLabelKey(findings))
+    expect(statusPhraseKey(blockedReview, false)).not.toBe(statusPhraseKey(findings, false))
+  })
+
+  test('an ordinary waiting_for_you — a question, no reason — is untouched', () => {
+    const asking = record({ status: 'waiting_for_you' })
+    expect(statusPhraseKey(asking, false)).toBe('workspace.phaseWaiting')
+    expect(statusLabelKey(asking)).toBe('workspace.statusWaiting')
+  })
+
+  test('a code neither table knows falls through to the status default', () => {
+    // The clause the comment on these tables claims and nothing asserted: a
+    // reason code from a NEWER server must not blank the card or throw, on
+    // either of the two statuses that carry a per-reason sentence.
+    for (const status of ['review_ko', 'waiting_for_you'] as const) {
+      const unknown = record({
+        status,
+        reason: { code: 'from_a_newer_server', detail: 'something new' },
+      })
+      expect(statusPhraseKey(unknown, false)).toBe(EXECUTION_STATUS[status].phraseKey)
+      expect(statusLabelKey(unknown)).toBe(EXECUTION_STATUS[status].labelKey)
+    }
+    // And a code this table knows on a status it does NOT cover stays default:
+    // `checks_failed` never reaches `waiting_for_you` through the fix loop.
+    const checks = record({
+      status: 'waiting_for_you',
+      reason: { code: 'checks_failed', detail: 'bun test failed' },
+    })
+    expect(statusPhraseKey(checks, false)).toBe('workspace.phaseWaiting')
   })
 })
 
