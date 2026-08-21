@@ -1,6 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2023",
+    // Type-checking is incremental: tsc reuses the previous run's graph instead
+    // of re-checking three packages from scratch every time. Each package names
+    // its own buildinfo under node_modules/ (already ignored) — the default
+    // would drop a tsconfig.tsbuildinfo next to each tsconfig, in the repo.
+    "incremental": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,

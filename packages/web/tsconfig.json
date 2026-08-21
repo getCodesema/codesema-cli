@@ -4,7 +4,8 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "jsx": "preserve",
     "types": ["bun"],
-    "noEmit": true
+    "noEmit": true,
+    "tsBuildInfoFile": "../../node_modules/.cache/tsc/web.tsbuildinfo"
   },
   "include": ["src", "env.d.ts"]
 }
