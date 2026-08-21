@@ -39,6 +39,13 @@ import {
   type ConversationNode,
 } from '../composables/useProjects'
 import { agentCounts, matchesQuery, oldestWaiting } from '../composables/useTaskBoard'
+import {
+  createPlanRequests,
+  planRequestBody,
+  retargetDraft,
+  type DraftPlan,
+  type PlanComposerInput,
+} from '../composables/useTaskPlan'
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
@@ -84,6 +91,7 @@ const {
   discoverCandidates,
   workspace,
   loadProjects,
+  preview,
 } = useTasks(props.token)
 
 const agents = ref<AgentOption[]>([])
@@ -275,10 +283,59 @@ function runOf(projectId: string, draft: DraftTarget): DraftRun {
   return draftRuns.get(draftColumnKey(projectId, draft)) ?? { creating: false, error: null }
 }
 
+// ── T2.6: the plan of what a draft WOULD create ───────────────────────────
+//
+// The machinery (debounce, per-column run token, the states themselves) lives
+// in useTaskPlan.ts: this component cannot be mounted in a test — its setup
+// builds `useTasks` — so a rule kept HERE is a rule nothing exercises. All
+// that is left in the view is the mapping from a column to its key.
+const planRequests = createPlanRequests((body) => preview(body))
+
+function planOf(projectId: string, draft: DraftTarget): DraftPlan {
+  return planRequests.planOf(draftColumnKey(projectId, draft))
+}
+
+/**
+ * Asks the server what this draft would create. NEVER a creation: the route
+ * it calls writes nothing at all, so a human typing in the composer costs
+ * reads and nothing else.
+ */
+function onPlanInput(projectId: string, draft: DraftTarget, input: PlanComposerInput): void {
+  planRequests.request(
+    draftColumnKey(projectId, draft),
+    planRequestBody(projectId, draft, input),
+    input.prompt,
+  )
+}
+
+/**
+ * The plan made correctable: the target branch is the DRAFT itself, so a
+ * correction swaps that draft in place (same slot, same FIFO age) exactly as
+ * the fork/work-on toggle does. No task is created, and the composer's prompt
+ * is carried over since the new column key remounts it.
+ */
+function onDraftRetarget(
+  projectId: string,
+  draft: DraftTarget,
+  branch: string,
+  prompt: string,
+): void {
+  const next = retargetDraft(draft, branch)
+  if (next === draft) {
+    return
+  }
+  const from = draftColumnKey(projectId, draft)
+  planRequests.forget(from)
+  draftRuns.delete(from)
+  deck.value = deckSwapDraft(deck.value, projectId, draft, next)
+  planRequests.carry(draftColumnKey(projectId, next), prompt)
+}
+
 function openDraft(projectId: string, draft: DraftTarget): void {
   deck.value = deckOpenDraft(deck.value, projectId, draft)
   reviewRecord.value = null
   draftRuns.delete(draftColumnKey(projectId, draft))
+  planRequests.forget(draftColumnKey(projectId, draft))
 }
 
 /** The draft's mode switch: work-on <-> fork-from, same column slot. When
@@ -295,11 +352,13 @@ function toggleDraftMode(projectId: string, draft: DraftTarget): void {
       : forkDraft(branch)
   deck.value = deckSwapDraft(deck.value, projectId, draft, other)
   draftRuns.delete(draftColumnKey(projectId, draft))
+  planRequests.forget(draftColumnKey(projectId, draft))
 }
 
 function closeDraft(projectId: string, draft: DraftTarget): void {
   deck.value = deckCloseDraft(deck.value, projectId, draft)
   draftRuns.delete(draftColumnKey(projectId, draft))
+  planRequests.forget(draftColumnKey(projectId, draft))
 }
 
 /** Every branch/MR click of the projects column routes through the pure
@@ -348,6 +407,7 @@ async function onDraftCreate(
     return
   }
   draftRuns.delete(key)
+  planRequests.forget(key)
   deck.value = deckPromoteDraft(deck.value, projectId, draft, result.record.id)
   void hydrate(projectId, result.record.id)
 }
@@ -633,7 +693,17 @@ async function onRemoveProject(id: string): Promise<void> {
                     isolationForProject(entry.projectId, projects, workspace)?.isolation_default ??
                     null
                   "
+                  :draft="entry.draft"
+                  :plan="planOf(entry.projectId, entry.draft).plan"
+                  :plan-error="planOf(entry.projectId, entry.draft).error"
+                  :plan-pending="planOf(entry.projectId, entry.draft).pending"
+                  :initial-prompt="planRequests.promptOf(entry.key)"
                   @create="(input) => onDraftCreate(entry.projectId, entry.draft, input)"
+                  @plan-input="(input) => onPlanInput(entry.projectId, entry.draft, input)"
+                  @retarget="
+                    (branch, prompt) =>
+                      onDraftRetarget(entry.projectId, entry.draft, branch, prompt)
+                  "
                 />
               </div>
             </div>

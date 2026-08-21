@@ -18,9 +18,12 @@ import {
   BranchInUseError,
   createTaskWorktree,
   detectTaskBase,
+  plannedTaskBranch,
   removeTaskWorktree,
   renameTaskBranch,
+  resolveForkBase,
   taskWorktreePath,
+  taskWorktreesDir,
 } from './task-worktree.js'
 import { acquireWorktreeLock, worktreeLockPath } from './worktree-lock.js'
 
@@ -785,5 +788,104 @@ describe('worktree operations are serialized per repository', () => {
     const repo = makeRepo('main')
     await createTaskWorktree(repo, 'aaaabbbbcccc', 'no lock leak')
     expect(tryGit(['status', '--porcelain'], repo)).toBe('')
+  })
+})
+
+// T2.6. The dry-run preview announces a branch, a base and a worktree location
+// BEFORE anything is created, and the whole ticket rests on that announcement
+// being the one the real materialization then honours. These tests hold the
+// two halves against each other on a real repo: the read-only primitives on
+// one side, `createTaskWorktree` on the other. They fail the moment the
+// materialization stops going through them.
+describe('T2.6 the plan primitives and the materialization agree', () => {
+  test('plannedTaskBranch names the branch a fork actually gets', async () => {
+    const repo = makeRepo()
+    const planned = plannedTaskBranch(repo, 'Fix flaky cleanup')
+    expect(planned).toEqual({
+      branch: 'codesema/task-fix-flaky-cleanup',
+      collisions_exhausted: false,
+    })
+
+    const wt = await createTaskWorktree(repo, 'aaaaaaaaaaaa', 'Fix flaky cleanup')
+    expect(wt.branch).toBe(planned.branch)
+  })
+
+  test('a planned name is READ-ONLY: asking twice never consumes a suffix', () => {
+    const repo = makeRepo()
+    const first = plannedTaskBranch(repo, 'Same title')
+    const second = plannedTaskBranch(repo, 'Same title')
+    expect(second).toEqual(first)
+    expect(refExists(`refs/heads/${first.branch}`, repo)).toBe(false)
+  })
+
+  test('the collision suffix is resolved identically on both sides', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'codesema/task-fix-flaky-cleanup'], { cwd: repo })
+    const planned = plannedTaskBranch(repo, 'Fix flaky cleanup')
+    expect(planned.branch).toBe('codesema/task-fix-flaky-cleanup-2')
+
+    const wt = await createTaskWorktree(repo, 'bbbbbbbbbbbb', 'Fix flaky cleanup')
+    expect(wt.branch).toBe(planned.branch)
+  })
+
+  test('past 99 suffixes the name is NOT promised: the id the plan cannot know decides', async () => {
+    const repo = makeRepo()
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo }).toString().trim()
+    const refs = [
+      `create refs/heads/codesema/task-crowded ${head}`,
+      ...Array.from(
+        { length: 98 },
+        (_, n) => `create refs/heads/codesema/task-crowded-${n + 2} ${head}`,
+      ),
+    ].join('\n')
+    execFileSync('git', ['update-ref', '--stdin'], { cwd: repo, input: `${refs}\n` })
+
+    const planned = plannedTaskBranch(repo, 'crowded')
+    expect(planned.collisions_exhausted).toBe(true)
+    // The family, NOT the branch: announcing `planned.branch` as the name
+    // would be a claim the creation contradicts on the very next line.
+    expect(planned.branch).toBe('codesema/task-crowded')
+    const wt = await createTaskWorktree(repo, 'cccccccccccc', 'crowded')
+    expect(wt.branch).toBe('codesema/task-crowded-cccccccccccc')
+  })
+
+  test('resolveForkBase names the base a fork records, detected and explicit alike', async () => {
+    const repo = makeRepo()
+    execFileSync('git', ['branch', 'feature'], { cwd: repo })
+
+    expect(resolveForkBase(repo).base).toBe('main')
+    expect(resolveForkBase(repo, 'feature').base).toBe('feature')
+    // 'origin/x' and 'x' are one identity on both sides.
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/feature', 'feature'], { cwd: repo })
+    expect(resolveForkBase(repo, 'origin/feature').base).toBe('feature')
+
+    const detected = await createTaskWorktree(repo, 'dddddddddddd', 'auto base')
+    expect(detected.base).toBe(resolveForkBase(repo).base)
+    const explicit = await createTaskWorktree(repo, 'eeeeeeeeeeee', 'explicit base', {
+      base: 'feature',
+    })
+    expect(explicit.base).toBe('feature')
+  })
+
+  test('resolveForkBase refuses an unknown base with the words the creation uses', async () => {
+    const repo = makeRepo()
+    expect(() => resolveForkBase(repo, 'nope')).toThrow(/nope/)
+    await expect(
+      createTaskWorktree(repo, 'ffffffffffff', 'bad base', { base: 'nope' }),
+    ).rejects.toThrow(/nope/)
+    // Refused before anything is CREATED: no branch, no checkout. (The
+    // worktrees/ directory itself is the repo lock's home — `acquireWorktreeLock`
+    // makes it before the base is even looked at — so its existence says
+    // nothing about the refused creation.)
+    expect(tryGit(['branch', '--list', 'codesema/task-bad-base'], repo)?.trim()).toBe('')
+    expect(existsSync(taskWorktreePath(repo, 'ffffffffffff'))).toBe(false)
+  })
+
+  test('taskWorktreesDir is the directory the materialized worktree lands in', async () => {
+    const repo = makeRepo()
+    const wt = await createTaskWorktree(repo, '111111111111', 'where do I live')
+    expect(taskWorktreePath(repo, '111111111111')).toBe(wt.worktree)
+    expect(wt.worktree.startsWith(`${taskWorktreesDir(repo)}/`)).toBe(true)
+    expect(join(taskWorktreesDir(repo), '111111111111')).toBe(wt.worktree)
   })
 })

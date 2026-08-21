@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { listWorktrees } from './branches.js'
-import { ensureWorkDir } from './config.js'
+import { ensureWorkDir, taskWorktreesDir } from './config.js'
 import { git, refExists, tryGit } from './git.js'
 import { t } from './i18n.js'
 import { resolveRef, targetFromOriginHead } from './prep.js'
@@ -49,8 +49,18 @@ export function resolveBranchRef(cwd: string, name: string): string | null {
   return null
 }
 
+/**
+ * Where a task's worktree would live, WITHOUT the task-id half — that id is
+ * minted by `createTask` and does not exist while a task is only being
+ * previewed, which is why the dry-run plan announces the parent directory
+ * (T2.6). Re-exported from config.ts, its home since the worktree LOCK turned
+ * out to need the same directory and could not import this module (a cycle:
+ * this one imports the lock).
+ */
+export { taskWorktreesDir }
+
 export function taskWorktreePath(cwd: string, taskId: string): string {
-  return join(cwd, '.codesema', 'worktrees', taskId)
+  return join(taskWorktreesDir(cwd), taskId)
 }
 
 const SLUG_MAX = 40
@@ -98,23 +108,84 @@ export function detectTaskBase(cwd: string): string {
   throw new Error(t('task.noBase'))
 }
 
+/** How many `-n` collision suffixes are tried before the task id is used. */
+const BRANCH_SUFFIX_MAX = 99
+
+/** The branch name a fork WOULD take, and whether that name can be promised. */
+export type PlannedBranch = {
+  /** codesema/task-<slug>, suffixed -2, -3… past a collision. */
+  branch: string
+  /**
+   * True when every `-2`…`-99` suffix is already taken, so `freeBranchName`
+   * falls back to appending the task's own id — an id a dry-run cannot know.
+   * `branch` is then the family the real branch will belong to, NOT the branch:
+   * a caller that ANNOUNCES it must say so rather than promise a name it
+   * cannot back.
+   */
+  collisions_exhausted: boolean
+}
+
+/**
+ * READ-ONLY name resolution for a forked task branch: enumerates the existing
+ * refs, creates none. This is the one place the collision rule lives, called
+ * by `freeBranchName` on the materialization path and by the dry-run plan
+ * (T2.6) — so "same input, same branch" is a property of construction rather
+ * than two implementations that happen to agree today.
+ */
+export function plannedTaskBranch(cwd: string, title: string): PlannedBranch {
+  const wanted = `${TASK_BRANCH_PREFIX}${slug(title)}`
+  if (!refExists(`refs/heads/${wanted}`, cwd)) {
+    return { branch: wanted, collisions_exhausted: false }
+  }
+  for (let n = 2; n <= BRANCH_SUFFIX_MAX; n++) {
+    const candidate = `${wanted}-${n}`
+    if (!refExists(`refs/heads/${candidate}`, cwd)) {
+      return { branch: candidate, collisions_exhausted: false }
+    }
+  }
+  return { branch: wanted, collisions_exhausted: true }
+}
+
 /**
  * codesema/task-<slug>, suffixed -2, -3… when an earlier task already took the
  * name (the branch outlives its task until shipped or abandoned). The task id
  * is the unconditionally-unique last resort.
  */
 function freeBranchName(cwd: string, taskId: string, title: string): string {
-  const wanted = `${TASK_BRANCH_PREFIX}${slug(title)}`
-  if (!refExists(`refs/heads/${wanted}`, cwd)) {
-    return wanted
+  const planned = plannedTaskBranch(cwd, title)
+  return planned.collisions_exhausted ? `${planned.branch}-${taskId}` : planned.branch
+}
+
+/**
+ * Base a FORK starts from, resolved without creating anything: the caller's
+ * explicit base when it names an existing branch (local OR origin — same
+ * identity), otherwise the detected trunk. Throws exactly what
+ * `createForkWorktree` throws, and for the same reason: a typo must leave the
+ * repo untouched and be reported before any directory or ref exists.
+ *
+ * Shared by the materialization and by the dry-run plan (T2.6) so the two can
+ * never disagree on where a task branches from.
+ */
+export function resolveForkBase(cwd: string, base?: string): { base: string; startPoint: string } {
+  // 'origin/x' and 'x' are ONE branch; the full-ref qualification inside
+  // `resolveBranchRef` also neutralizes option-lookalike names ('-evil').
+  //
+  // ONE existence check, not two. `createForkWorktree` used to test the
+  // explicit base first and the resolved start point again afterwards, with
+  // the directory creation between them — the first check was what kept a
+  // typo from conjuring `.codesema/worktrees` under the repo. Nothing is
+  // created here, so the two tests are the same test on the same string
+  // (measured: mutating the first one away leaves the whole suite green,
+  // because the second catches it identically). Keeping both would be a guard
+  // no behaviour depends on, which is the kind of line a later refactor
+  // deletes without ever learning what it was for.
+  const explicitBase = base !== undefined ? shortBranchName(base) : undefined
+  const resolved = explicitBase ?? detectTaskBase(cwd)
+  const startPoint = resolveBranchRef(cwd, resolved)
+  if (startPoint === null) {
+    throw new Error(t('task.unknownBase', { base: resolved }))
   }
-  for (let n = 2; n <= 99; n++) {
-    const candidate = `${wanted}-${n}`
-    if (!refExists(`refs/heads/${candidate}`, cwd)) {
-      return candidate
-    }
-  }
-  return `${wanted}-${taskId}`
+  return { base: resolved, startPoint }
 }
 
 /**
@@ -290,7 +361,7 @@ function createWorkOnWorktree(cwd: string, taskId: string, branch: string): Mate
   }
   // .codesema/ must exist self-gitignored before git materializes anything in it.
   ensureWorkDir(cwd)
-  mkdirSync(join(cwd, '.codesema', 'worktrees'), { recursive: true })
+  mkdirSync(taskWorktreesDir(cwd), { recursive: true })
   // Resolved BEFORE the checkout exists: the conversation's anchor is where
   // the branch stood when it took it over, and nothing that happens next can
   // move that fact.
@@ -315,22 +386,13 @@ function createForkWorktree(
   title: string,
   base?: string,
 ): MaterializedWorktree {
-  // An explicit base must name an existing branch (local OR origin — same
-  // identity) BEFORE any directory or ref is created: a typo must leave the
-  // repo untouched. The full-ref qualification also neutralizes
-  // option-lookalike names ('-evil').
-  const explicitBase = base !== undefined ? shortBranchName(base) : undefined
-  if (explicitBase !== undefined && resolveBranchRef(cwd, explicitBase) === null) {
-    throw new Error(t('task.unknownBase', { base: explicitBase }))
-  }
+  // Base and start point are resolved BEFORE any directory or ref is created:
+  // a typo (or a repo with no trunk at all) must leave the repo untouched.
+  // Same call the dry-run plan makes, so the two can never disagree.
+  const { base: resolvedBase, startPoint } = resolveForkBase(cwd, base)
   // .codesema/ must exist self-gitignored before git materializes anything in it.
   ensureWorkDir(cwd)
-  mkdirSync(join(cwd, '.codesema', 'worktrees'), { recursive: true })
-  const resolvedBase = explicitBase ?? detectTaskBase(cwd)
-  const startPoint = resolveBranchRef(cwd, resolvedBase)
-  if (startPoint === null) {
-    throw new Error(t('task.unknownBase', { base: resolvedBase }))
-  }
+  mkdirSync(taskWorktreesDir(cwd), { recursive: true })
   const branch = freeBranchName(cwd, taskId, title)
   const worktree = taskWorktreePath(cwd, taskId)
   // Unconditional, for the same reason as the work-on path: a crashed run may

@@ -21,7 +21,7 @@
 import { randomBytes } from 'node:crypto'
 import { linkSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ensureWorkDir } from './config.js'
+import { ensureWorkDir, taskWorktreesDir } from './config.js'
 import type { ReasonCode } from './contract.js'
 import { t } from './i18n.js'
 
@@ -32,7 +32,7 @@ export type WorktreeLock = {
 }
 
 export function worktreeLockPath(cwd: string): string {
-  return join(cwd, '.codesema', 'worktrees', '.lock')
+  return join(taskWorktreesDir(cwd), '.lock')
 }
 
 /**
@@ -318,7 +318,7 @@ export async function acquireWorktreeLock(
   // '*' .gitignore ensureWorkDir writes) must exist before the file does, or
   // the lock would show up as an untracked file of the very repo it guards.
   ensureWorkDir(cwd)
-  mkdirSync(join(cwd, '.codesema', 'worktrees'), { recursive: true })
+  mkdirSync(taskWorktreesDir(cwd), { recursive: true })
 
   const deadline = now() + timeoutMs
   // Carried out of the loop: the degradation belongs to the acquisition that

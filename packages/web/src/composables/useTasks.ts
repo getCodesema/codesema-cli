@@ -22,6 +22,7 @@ import type {
   TaskChecks,
   TaskEnvelope,
   TaskEvent,
+  TaskPlan,
   TaskRecord,
   WorkspaceInfo,
 } from '../types'
@@ -46,6 +47,7 @@ import {
   streamsLiveText,
   type LiveMessage,
 } from './useTaskBoard'
+import { parseTaskPlan } from './useTaskPlan'
 
 export type TaskState = {
   /** Registry id of the repo this task lives in. */
@@ -487,6 +489,36 @@ async function createTask(
   }
 }
 
+export type PreviewTaskResult =
+  { ok: true; plan: TaskPlan } | { ok: false; status: number; error: string }
+
+/**
+ * T2.6 dry-run. Same route posture as the creation it previews (CSRF token,
+ * JSON body) and NO effect at all — nothing lands in the store, precisely
+ * because nothing was created. The answer is re-parsed rather than trusted:
+ * an older CLI answering a narrower plan degrades into a refusal here instead
+ * of half-rendering a panel.
+ */
+async function previewTask(
+  token: string,
+  body: Record<string, unknown>,
+): Promise<PreviewTaskResult> {
+  try {
+    const res = await fetch('/api/tasks/preview', {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: await errorFrom(res) }
+    }
+    const plan = parseTaskPlan(await res.json())
+    return plan ? { ok: true, plan } : { ok: false, status: res.status, error: 'unreadable plan' }
+  } catch (e) {
+    return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 /** Scoped mutation path: every task route carries its project id. */
 const actionPath = (projectId: string, id: string, action: string): string =>
   `/api/tasks/${encodeURIComponent(id)}/${action}?project=${encodeURIComponent(projectId)}`
@@ -717,6 +749,9 @@ export function useTasks(token: string) {
     hydrate: (projectId: string, id: string) => hydrateStore(store, projectId, id),
     create: (projectId: string, input: CreateTaskInput) =>
       createTask(token, store, projectId, input),
+    // T2.6: the plan a create with this very body WOULD produce. Read-only on
+    // both sides — the server writes nothing, and neither does this.
+    preview: (body: Record<string, unknown>) => previewTask(token, body),
     reply: (projectId: string, id: string, message: string) =>
       postAction(token, actionPath(projectId, id, 'reply'), { message }),
     interrupt: (projectId: string, id: string) =>

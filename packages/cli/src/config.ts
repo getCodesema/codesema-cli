@@ -519,6 +519,22 @@ export function trustRepoAgent(repoRoot: string, command: string): void {
   writeFileSync(trustStorePath(), `${JSON.stringify(store, null, 2)}\n`)
 }
 
+/**
+ * Directory EVERY task worktree of `repoRoot` is materialized under, and the
+ * one the per-repository worktree lock lives in.
+ *
+ * Here rather than in task-worktree.ts, which is where it started (T2.6):
+ * worktree-lock.ts needs it too — it mkdir's that very directory before
+ * taking the lock, and names its lockfile inside it — and it cannot import
+ * task-worktree.ts, which imports IT. The two spelled the literal out by hand
+ * instead, which is exactly the drift a shared helper exists to prevent.
+ * config.ts already owns the .codesema/ layout (`ensureWorkDir` below), and
+ * both modules already import it.
+ */
+export function taskWorktreesDir(repoRoot: string): string {
+  return join(repoRoot, '.codesema', 'worktrees')
+}
+
 /** Creates .codesema/ with its own auto .gitignore (no impact on the host repo). */
 export function ensureWorkDir(repoRoot: string): string {
   const dir = join(repoRoot, '.codesema')

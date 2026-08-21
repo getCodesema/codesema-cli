@@ -26,8 +26,6 @@ import {
 } from './config.js'
 import {
   isActiveTaskStatus,
-  TASK_AGENT_MAX,
-  TASK_BASE_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
   type ReasonCode,
@@ -50,12 +48,10 @@ import { readChecksConfig } from './repo-config.js'
 import { runChecks } from './task-checks.js'
 import {
   agentHomeVolume,
-  cageableCommand,
   isolationDefaults,
   isolationDomainsFor,
   overlayIsolationProbe,
   releaseAgentHome,
-  resolveTaskIsolation,
   sweepOrphanedHomeVolumes,
   UNPROBED_ISOLATION,
   type HomeVolumeSweepOutcome,
@@ -72,6 +68,7 @@ import {
   validateIssueRef,
   type IssueReconcile,
 } from './task-issue.js'
+import { resolveTaskPlan, type TaskPlanDeps, type TaskPreviewResult } from './task-plan.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import {
   applyTaskRetention,
@@ -96,12 +93,6 @@ import {
 } from './task-runner.js'
 import { shipTask, type ShipOutcome } from './task-ship.js'
 import {
-  branchCheckoutPath,
-  detectTaskBase,
-  resolveBranchRef,
-  shortBranchName,
-} from './task-worktree.js'
-import {
   appendTaskEvent,
   createTask,
   listTasks,
@@ -116,7 +107,6 @@ import {
   writeTaskChecks,
   type AppendTaskEventInput,
 } from './tasks-store.js'
-import { resolveKnownAgentCommand } from './wizard.js'
 
 /**
  * Everything a subscriber (the SSE stream) receives. 'task' carries the full
@@ -271,6 +261,22 @@ export type TaskManager = {
    * awaits anything and settles on the very tick it is called, so its
    * observable ordering relative to sibling calls is unchanged.
    */
+  /**
+   * T2.6 dry-run (`POST /api/tasks/preview`): the plan a `create` with this
+   * very input WOULD produce — branch, worktree location, base/target,
+   * isolation and its reason, agent, rank in the line, ticket — and the
+   * refusal it would give instead, verbatim.
+   *
+   * Writes NOTHING: no record, no journal line, no branch, no worktree, no
+   * queue entry, no frozen `issue_snapshot`. Async for the same reason
+   * `create` is: previewing from an issue reads that issue off the forge.
+   *
+   * The plan is INDICATIVE (design.md D-c). Reserving anything would itself be
+   * a side effect, so the queue can move and a branch can appear between the
+   * preview and the click; `create` decides again, and refuses in the same
+   * words when it now must.
+   */
+  preview: (projectId: string, input: CreateTaskManagerInput) => Promise<TaskPreviewResult>
   create: (projectId: string, input: CreateTaskManagerInput) => Promise<TaskCreateResult>
   reply: (projectId: string, id: string, message: string) => TaskActionResult
   /**
@@ -1279,6 +1285,23 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       isolationMode: config.isolation ?? probe.configured,
       warnings,
       agentWarning: agent.warning,
+    }
+  }
+
+  /**
+   * Everything `resolveTaskPlan` (T2.6) reads, for one project. Built here so
+   * the real creation and the dry-run preview cannot be handed different
+   * inputs — in particular the per-project runtime snapshot (T1.4), never the
+   * launch repo's, and a queue view that only ever READS.
+   */
+  const planDeps = (project: Project): TaskPlanDeps => {
+    const runtime = projectRuntime(project.path)
+    return {
+      cwd: project.path,
+      runtime: { command: runtime.command, isolationMode: runtime.isolationMode },
+      probe,
+      tasks: () => listTasks(project.path),
+      admission: () => queueFor(project).projectedAdmission(),
     }
   }
 
@@ -2522,6 +2545,52 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
     },
 
+    async preview(projectId, input) {
+      // Deliberately NOT `context(projectId)`: building a project context
+      // reconciles its store, rebuilds `queue.json` and constructs a runner —
+      // every one of them a write, and every one of them forbidden here. The
+      // registry lookup is the same one `list`/`get` make, and it produces the
+      // same 404.
+      const project = registered().find((candidate) => candidate.id === projectId)
+      if (!project) {
+        return unknownProject
+      }
+      // Reads the issue exactly as `create` does — `admitIssue` never writes —
+      // and then throws the snapshot away: D-d, previewing is not launching, so
+      // nothing dates the ticket of a task that does not exist.
+      const origin = input.issue
+        ? await resolveIssueOrigin(project.path, input.issue, opts.issueExecFn)
+        : resolveTitlePromptOrigin(input)
+      if (!origin.ok) {
+        return origin.refusal
+      }
+      const resolution = resolveTaskPlan(planDeps(project), {
+        title: origin.title,
+        autoShip: input.autoShip,
+        ...(input.base !== undefined ? { base: input.base } : {}),
+        ...(input.branch !== undefined ? { branch: input.branch } : {}),
+        ...(input.target !== undefined ? { target: input.target } : {}),
+        ...(input.agent !== undefined ? { agent: input.agent } : {}),
+        issue: origin.issue,
+      })
+      if (!resolution.ok) {
+        return resolution
+      }
+      if (!resolution.admission.admissible) {
+        // The refusal `create` ends up returning from `runner.start()` — same
+        // 503, same `resource_busy`, same words, since both read them off
+        // `enqueue`'s own QUEUE_FULL. There is no record to settle here: a
+        // preview never wrote one.
+        return {
+          ok: false,
+          code: 503,
+          error: resolution.admission.reason,
+          reason_code: 'resource_busy',
+        }
+      }
+      return { ok: true, plan: resolution.plan }
+    },
+
     async create(projectId, input) {
       const ctx = context(projectId)
       if (!ctx) {
@@ -2536,92 +2605,14 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         return origin.refusal
       }
       const { title, prompt, issue: issueRef, issueSnapshot, coverageGap } = origin
-      // Optional explicit base: must be an existing LOCAL branch, checked now
-      // so the caller gets a synchronous 400 instead of a task that fails at
-      // launch. Blank means absent (auto-detection at launch, as before).
-      // 'origin/x' and 'x' are the SAME branch: identity is the short name.
-      const base = shortBranchName((input.base ?? '').trim())
-      const branch = shortBranchName((input.branch ?? '').trim())
-      // `branch` (work-on) and `base` (fork) are two different creation modes:
-      // both at once is a caller bug, not something to guess a priority for.
-      if (branch && base) {
-        return { ok: false, code: 400, error: "'branch' and 'base' are mutually exclusive" }
-      }
-      if (base) {
-        if (base.length > TASK_BASE_MAX) {
-          return { ok: false, code: 400, error: `base too long (max ${TASK_BASE_MAX})` }
-        }
-        if (base.startsWith('-')) {
-          // Never let a branch name masquerade as a git option.
-          return { ok: false, code: 400, error: `invalid base branch name '${base}'` }
-        }
-        if (resolveBranchRef(ctx.project.path, base) === null) {
-          return { ok: false, code: 400, error: `base branch '${base}' does not exist` }
-        }
-      }
-      // Work-on mode: the record's branch IS the existing branch, fixed at
-      // creation. Every guard runs now, synchronously, so a refusal leaves
-      // nothing behind — no record, no worktree, no ref.
-      let recordBase = base
-      if (branch) {
-        if (branch.length > TASK_BASE_MAX) {
-          return { ok: false, code: 400, error: `branch too long (max ${TASK_BASE_MAX})` }
-        }
-        if (branch.startsWith('-')) {
-          return { ok: false, code: 400, error: `invalid branch name '${branch}'` }
-        }
-        if (resolveBranchRef(ctx.project.path, branch) === null) {
-          return { ok: false, code: 400, error: `branch '${branch}' does not exist` }
-        }
-        // ONE active conversation per branch. Only work-on creations need the
-        // guard: fork branches are minted at launch from the free refs/heads
-        // namespace, and every active task's branch keeps a live ref, so a
-        // fork can never collide with an active conversation's branch.
-        const existing = listTasks(ctx.project.path).find(
-          (task) => task.branch === branch && isActiveTaskStatus(task.status),
-        )
-        if (existing) {
-          return {
-            ok: false,
-            code: 409,
-            error: `a conversation is already active on branch '${branch}'`,
-            existing_task_id: existing.id,
-          }
-        }
-        // A branch checked out anywhere (the MAIN worktree counts) cannot be
-        // checked out again: refuse now rather than failing the first turn.
-        const takenBy = branchCheckoutPath(ctx.project.path, branch)
-        if (takenBy) {
-          return {
-            ok: false,
-            code: 409,
-            error: `branch '${branch}' is already checked out in another worktree (${takenBy})`,
-          }
-        }
-        // The record's base is the MR target: the caller's `target` when it
-        // resolves (an MR target may only exist on origin), otherwise the same
-        // trunk auto-detection as fork mode — an unresolvable target is never
-        // a 400.
-        const target = shortBranchName((input.target ?? '').trim())
-        const targetResolves =
-          target && !target.startsWith('-') && resolveBranchRef(ctx.project.path, target) !== null
-        if (targetResolves) {
-          recordBase = target
-        } else {
-          try {
-            recordBase = detectTaskBase(ctx.project.path)
-          } catch (err) {
-            // No trunk anywhere: the MR target of a work-on conversation
-            // cannot be determined, and unlike fork mode there is no later
-            // launch step to surface it — refuse synchronously.
-            return {
-              ok: false,
-              code: 400,
-              error: err instanceof Error ? err.message : String(err),
-            }
-          }
-        }
-      }
+      // Every guard below — base/branch exclusivity and shape, the work-on
+      // uniqueness and checked-out-elsewhere 409s, the agent, the isolation
+      // refusal — and every DECISION the record carries now live in
+      // `resolveTaskPlan` (T2.6), which reads and creates nothing. The dry-run
+      // preview calls the very same function, so "same input, same branch, same
+      // refusal" is a property of construction rather than two implementations
+      // that happen to agree today.
+      //
       // branch/worktree stay empty here (fork mode): the runner creates the
       // worktree when the task actually launches (so a queued task costs
       // nothing). A non-empty base on a never-materialized record is the
@@ -2635,47 +2626,32 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // projectRuntime snapshot — not the runner's frozen boot command — so
       // a per-task pick, and a session-default PUT, cage the CLI that will
       // actually run. Stored on the record so later turns keep the same CLI.
-      const runtime = projectRuntime(ctx.project.path)
-      let taskCommand = runtime.command
-      if (input.agent !== undefined) {
-        const trimmed = input.agent.trim()
-        if (trimmed.length > TASK_AGENT_MAX) {
-          return { ok: false, code: 400, error: `agent too long (max ${TASK_AGENT_MAX})` }
-        }
-        const resolvedAgent = resolveKnownAgentCommand(trimmed)
-        if (!resolvedAgent) {
-          return { ok: false, code: 400, error: `unknown agent '${trimmed}'` }
-        }
-        taskCommand = resolvedAgent
-      }
-      const projectProbe = overlayIsolationProbe(probe, {
-        configured: runtime.isolationMode,
-        command: taskCommand,
+      const resolution = resolveTaskPlan(planDeps(ctx.project), {
+        title,
+        autoShip: input.autoShip,
+        ...(input.base !== undefined ? { base: input.base } : {}),
+        ...(input.branch !== undefined ? { branch: input.branch } : {}),
+        ...(input.target !== undefined ? { target: input.target } : {}),
+        ...(input.agent !== undefined ? { agent: input.agent } : {}),
+        issue: issueRef,
       })
-      const resolved = resolveTaskIsolation(projectProbe, taskCommand)
-      if (!resolved) {
-        // 400: config will never succeed by waiting — a non-cageable agent, or
-        // opencode under policy (a host run is unsafe). 409: a cageable agent
-        // blocked by a missing/unreachable runtime (claude AND opencode).
-        const agentCannotCage = !cageableCommand(taskCommand)
-        const configRefusal = agentCannotCage || projectProbe.configured === 'policy'
-        return {
-          ok: false,
-          code: configRefusal ? 400 : 409,
-          error: t('isolation.unavailable', { reason: projectProbe.reason }),
-          ...(configRefusal ? {} : { reason_code: 'resource_busy' as const }),
-        }
+      if (!resolution.ok) {
+        return resolution
       }
+      // The queue's read-only verdict is deliberately NOT acted on here: a
+      // creation the line refuses must still leave a settled record behind
+      // (the 503 below, from `runner.start()`), never nothing at all.
+      const planned = resolution.record
       const record = createTask(ctx.project.path, {
         title,
         prompt,
         autoShip: input.autoShip,
-        base: recordBase,
-        branch,
+        base: planned.base,
+        branch: planned.branch,
         worktree: '',
-        workOn: branch !== '',
-        isolation: resolved.isolation,
-        agent: taskCommand,
+        workOn: planned.workOn,
+        isolation: planned.isolation,
+        agent: planned.agent,
         // Always given together (TaskOrigin pairs them by construction, see
         // resolveIssueOrigin/resolveTitlePromptOrigin) — one guard, not two,
         // so a future drift here cannot silently split the pair.
@@ -2685,7 +2661,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // back to policy must be able to say so, months later, from the record.
       const isolationEvent = appendTaskEvent(ctx.project.path, record.id, {
         type: 'isolation',
-        data: { isolation: resolved.isolation, reason: resolved.reason },
+        data: { isolation: planned.isolation, reason: planned.isolationReason },
       })
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
       emit({

@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -12,7 +13,7 @@ import {
 } from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import { writeJsonAtomic } from './atomic-write.js'
@@ -29,6 +30,7 @@ import {
   type Verdict,
 } from './contract.js'
 import type { ForgeCli, ForgeCliOutcome, ForgeIssuesExecFn } from './forge-issues.js'
+import { t as translate } from './i18n.js'
 import { createLoadCap } from './load-cap.js'
 import { addProject, listProjects, projectsPath, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
@@ -36,13 +38,16 @@ import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
 import type { RunChecksOptions } from './task-checks.js'
 import type { HomeVolumeSweepOutcome } from './task-isolation.js'
+import type { TaskPlan } from './task-plan.js'
 import {
   activeTask,
+  claimActive,
   corruptQueuePath,
   QUEUE_ENTRIES_MAX,
   QUEUE_UNREADABLE,
   queuePath,
   readQueue,
+  releaseActive,
   resetActiveClaims,
   resetQueueDegradedReports,
 } from './task-queue.js'
@@ -3781,6 +3786,11 @@ describe('task routes without a task manager', () => {
       expect(
         (await rawRequest(started.port, '/api/tasks', { method: 'POST', body: '{}' })).status,
       ).toBe(501)
+      // T2.6: the dry-run answers 501 like its twin, and for the same reason.
+      expect(
+        (await rawRequest(started.port, '/api/tasks/preview', { method: 'POST', body: '{}' }))
+          .status,
+      ).toBe(501)
       expect(
         (
           await rawRequest(started.port, '/api/tasks/aaaaaaaaaaaa/reply?project=deadbeef', {
@@ -3825,9 +3835,27 @@ describe('task routes with a stub manager', () => {
     const listeners = new Set<(envelope: TaskEnvelope) => void>()
     const record = seedTask(project.path, 'stubbed task', 'stub work')
     let sessionAgent = 'claude -p'
+    const stubPlan: TaskPlan = {
+      mode: 'fork',
+      repo: project.path,
+      title: 'stubbed task',
+      branch: 'codesema/task-stubbed-task',
+      branch_certain: true,
+      worktree_root: `${project.path}/.codesema/worktrees`,
+      base: 'main',
+      target: 'main',
+      isolation: 'policy',
+      isolation_reason: 'stub',
+      agent: 'claude -p',
+      queue_position: null,
+      issue: null,
+      auto_ship: false,
+    }
     const calls = {
       creates: [] as string[],
       createInputs: [] as unknown[],
+      previews: [] as string[],
+      previewInputs: [] as unknown[],
       replies: [] as { project: string; id: string; message: string }[],
       ships: [] as string[],
       abandons: [] as string[],
@@ -3842,6 +3870,14 @@ describe('task routes with a stub manager', () => {
       listAll: () => [{ project, records: [record] }],
       get: (projectId, id) =>
         known(projectId) && id === record.id ? { record, events: [] } : null,
+      preview: async (projectId, input) => {
+        if (!known(projectId)) {
+          return { ok: false, code: 404, error: 'unknown project' }
+        }
+        calls.previews.push(projectId)
+        calls.previewInputs.push(input)
+        return { ok: true, plan: stubPlan }
+      },
       create: async (projectId, input) => {
         if (!known(projectId)) {
           return { ok: false, code: 404, error: 'unknown project' }
@@ -7269,5 +7305,915 @@ describe('manager.applyRetention', () => {
 
     expect(ran).toEqual([projectA.path, projectB.path])
     expect(notices.some((line) => line.includes('disk full'))).toBe(true)
+  })
+})
+
+// ── T2.6 · POST /api/tasks/preview ─────────────────────────────────────────
+//
+// The property this whole ticket rests on is the ABSENCE of effects, and the
+// spec names how it must be proven: a fingerprint of the tree around the call,
+// `.codesema/tasks/` and `queue.json` included, plus the repo's refs and
+// worktrees. Not a spy on the seams we happened to think of — a preview that
+// wrote through a path nobody mocked would sail past that.
+
+/** Every path under `dir`, with size and mtime. */
+function treeFingerprint(dir: string): string[] {
+  const out: string[] = []
+  const walk = (current: string): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true }).toSorted((a, b) =>
+      a.name < b.name ? -1 : 1,
+    )) {
+      const full = join(current, entry.name)
+      if (entry.isDirectory()) {
+        out.push(`d ${relative(dir, full)}`)
+        walk(full)
+        continue
+      }
+      out.push(`f ${relative(dir, full)} ${statSync(full).size} ${statSync(full).mtimeMs}`)
+    }
+  }
+  walk(dir)
+  return out
+}
+
+const gitOut = (repo: string, args: string[]): string =>
+  execFileSync('git', args, { cwd: repo }).toString().trim()
+
+describe('T2.6 manager.preview', () => {
+  const previewInput = { title: 'Fix flaky cleanup', prompt: 'do it', autoShip: false }
+
+  test('an unregistered project is the SAME 404 create gives', async () => {
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    expect(await manager.preview('deadbeef', previewInput)).toEqual({
+      ok: false,
+      code: 404,
+      error: 'unknown project',
+    })
+    // The very same refusal object the creation route would answer with.
+    expect(await manager.preview('deadbeef', previewInput)).toEqual(
+      (await manager.create('deadbeef', previewInput)) as never,
+    )
+  })
+
+  test('the tree, the refs and the worktrees are IDENTICAL before and after', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    execFileSync('git', ['branch', 'fix/x'], { cwd: repo })
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    // A real, launched task first, so `.codesema/tasks/`, `queue.json` and the
+    // project context all exist before the fingerprint is taken: previewing
+    // into a pristine repo would prove far less.
+    expect(
+      (await manager.create(project.id, { title: 'seed', prompt: 'p', autoShip: false })).ok,
+    ).toBe(true)
+    const tasksBefore = manager.list(project.id)?.map((r) => r.id)
+    const queueBefore = existsSync(queuePath(repo)) ? readFileSync(queuePath(repo), 'utf8') : null
+    const treeBefore = treeFingerprint(repo)
+    const refsBefore = gitOut(repo, ['for-each-ref', '--format=%(refname) %(objectname)'])
+    const worktreesBefore = gitOut(repo, ['worktree', 'list', '--porcelain'])
+
+    for (let n = 0; n < 3; n++) {
+      expect((await manager.preview(project.id, previewInput)).ok).toBe(true)
+      expect((await manager.preview(project.id, { ...previewInput, branch: 'fix/x' })).ok).toBe(
+        true,
+      )
+    }
+
+    expect(treeFingerprint(repo)).toEqual(treeBefore)
+    expect(gitOut(repo, ['for-each-ref', '--format=%(refname) %(objectname)'])).toBe(refsBefore)
+    expect(gitOut(repo, ['worktree', 'list', '--porcelain'])).toBe(worktreesBefore)
+    // Named explicitly, because these are the two the spec calls out.
+    expect(existsSync(queuePath(repo)) ? readFileSync(queuePath(repo), 'utf8') : null).toBe(
+      queueBefore,
+    )
+    expect(manager.list(project.id)?.map((r) => r.id)).toEqual(tasksBefore)
+    // No branch of ours, no journal line anywhere.
+    expect(gitOut(repo, ['branch', '--list', 'codesema/task-fix-flaky-cleanup'])).toBe('')
+    for (const id of tasksBefore ?? []) {
+      expect(readTaskEvents(repo, id).some((e) => e.data?.message === 'preview')).toBe(false)
+    }
+  })
+
+  // The case above previews into a project whose CONTEXT already exists (the
+  // seed create built it). That hides the write this ticket most has to avoid:
+  // building a context RECONCILES the project's store and rebuilds its
+  // queue.json, and a context is built exactly once — so previewing into a
+  // project this session has never touched is where a `context()` call would
+  // finally show. Measured: without this case, routing `preview` through
+  // `context()` leaves the fingerprint above untouched.
+  test('previewing a project this session never touched builds no context, and writes nothing', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    // Seeded AFTER the boot pass: a 'queued' record in a repo with no
+    // queue.json is exactly what a reconciliation rewrites (to 'interrupted',
+    // with a journal line). Nothing but a context build can reach it now.
+    const orphan = seedTask(repo, 'queued by a session that died')
+    const treeBefore = treeFingerprint(repo)
+
+    const previewed = await manager.preview(project.id, previewInput)
+    expect(previewed.ok).toBe(true)
+
+    expect(treeFingerprint(repo)).toEqual(treeBefore)
+    expect(loadTask(repo, orphan.id)?.status).toBe('queued')
+    expect(readTaskEvents(repo, orphan.id)).toEqual([])
+    expect(existsSync(queuePath(repo))).toBe(false)
+  })
+
+  test('two identical previews carry the identical plan: nothing is consumed', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const first = await manager.preview(project.id, previewInput)
+    const second = await manager.preview(project.id, previewInput)
+    expect(first.ok).toBe(true)
+    expect(second).toEqual(first)
+  })
+
+  test('an idle project announces no rank at all: the task would start at once', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const previewed = await manager.preview(project.id, previewInput)
+    // Null, not 0 — the same "absence means not waiting" `create` answers with.
+    expect(previewed.ok && previewed.plan.queue_position).toBeNull()
+  })
+
+  test('the announced rank follows the line, and the line does not move', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    // The manager is built BEFORE the line is laid out: its boot pass
+    // reconciles every registered project, and this test is about a queue it
+    // must not touch afterwards.
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const running = seedTask(repo, 'running one')
+    running.status = 'running'
+    saveTask(repo, running)
+    expect(claimActive(project.id, running.id)).toBe(true)
+    const queued = [seedTask(repo, 'first'), seedTask(repo, 'second')]
+    writeJsonAtomic(queuePath(repo), {
+      version: 1,
+      entries: queued.map((task) => ({
+        id: task.id,
+        enqueued_at: '2026-01-01T00:00:00.000Z',
+      })),
+    })
+    const queueBefore = readFileSync(queuePath(repo), 'utf8')
+    const orderBefore = readQueue(repo).entries.map((e) => e.id)
+
+    const previewed = await manager.preview(project.id, previewInput)
+    expect(previewed.ok && previewed.plan.queue_position).toBe(3)
+    // Byte for byte, and in the same order.
+    expect(readFileSync(queuePath(repo), 'utf8')).toBe(queueBefore)
+    expect(readQueue(repo).entries.map((e) => e.id)).toEqual(orderBefore)
+    // Not admitted: the project's own slot is still the running task's.
+    expect(activeTask(project.id)).toBe(running.id)
+  })
+
+  // Review round 1, m1: this used to build a line of a thousand ids no record
+  // backed, never call `create`, and assert a 503 — and in that very repo
+  // `create` answers 201, because the admission path reconciles the ghosts
+  // away first. Both halves are exercised now, on a line that is genuinely
+  // full, and the two refusals are compared word for word.
+  test('a full line is the SAME 503 create ends up returning, minus the record', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seed = seedTask(repo, 'the line')
+    const line = Array.from({ length: QUEUE_ENTRIES_MAX }, (_, n) =>
+      (n + 1).toString(16).padStart(12, '0'),
+    )
+    for (const taskId of line) {
+      saveTask(repo, { ...seed, id: taskId, title: `waiting ${taskId}` })
+    }
+    // The project's own slot is held, so the line cannot drain under the test
+    // and nothing is ever launched.
+    const running = seedTask(repo, 'running one')
+    running.status = 'running'
+    saveTask(repo, running)
+    expect(claimActive(project.id, running.id)).toBe(true)
+    writeJsonAtomic(queuePath(repo), {
+      version: 1,
+      entries: line.map((taskId) => ({ id: taskId, enqueued_at: '2026-01-01T00:00:00.000Z' })),
+    })
+    // The REAL runner: `create`'s 503 comes from `runner.start()` meeting the
+    // same `enqueue` this projection projects, and a fake runner never gets
+    // near it.
+    const manager = createTaskManager({ ...managerOpts, runAgentFn: () => Promise.resolve('') })
+    const before = manager.list(project.id)?.length ?? 0
+    const queueBefore = readFileSync(queuePath(repo), 'utf8')
+
+    const previewed = await manager.preview(project.id, previewInput)
+    expect(previewed).toMatchObject({ ok: false, code: 503, reason_code: 'resource_busy' })
+    expect(previewed.ok ? '' : previewed.error).toContain(`${QUEUE_ENTRIES_MAX} tasks`)
+    // A refusal leaves NOTHING behind — the line is untouched, and no record
+    // appeared to be settled.
+    expect(manager.list(project.id)?.length).toBe(before)
+    expect(readFileSync(queuePath(repo), 'utf8')).toBe(queueBefore)
+
+    // …and now the half the name always promised. Same code, same words, same
+    // reason_code, because both read them off `enqueue`'s own QUEUE_FULL.
+    const created = await manager.create(project.id, previewInput)
+    expect(created).toMatchObject({
+      ok: false,
+      code: 503,
+      reason_code: 'resource_busy',
+      error: previewed.ok ? '' : previewed.error,
+    })
+    // The one difference, and the reason the name says "minus the record":
+    // `create` has a record on disk it must settle rather than abandon on
+    // 'queued'; a preview never wrote one.
+    const settled = manager.list(project.id)?.filter((task) => task.status === 'failed') ?? []
+    expect(settled).toHaveLength(1)
+    expect(manager.list(project.id)?.length).toBe(before + 1)
+    releaseActive(project.id, running.id)
+  })
+
+  test('the agent and the isolation announced are THIS project’s, not the launch repo’s', async () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, { isolation: 'container', agent: 'claude -p --model opus' })
+    saveRepoConfig(repoB, { isolation: 'policy' })
+    trustRepoAgent(repoA, 'claude -p --model opus')
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      command: 'claude -p',
+      launchRepoPath: repoA,
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'podman is available',
+        configured: 'auto',
+        runtime: 'podman',
+      },
+    })
+
+    const a = await manager.preview(projectA.id, previewInput)
+    const b = await manager.preview(projectB.id, previewInput)
+    expect(a.ok && a.plan.agent).toBe('claude -p --model opus')
+    expect(a.ok && a.plan.isolation).toBe('container')
+    expect(a.ok && a.plan.repo).toBe(repoA)
+    // The workspace was LAUNCHED from A: B must not inherit either.
+    expect(b.ok && b.plan.agent).toBe('claude -p')
+    expect(b.ok && b.plan.isolation).toBe('policy')
+    expect(b.ok && b.plan.isolation_reason).toBe(translate('isolation.reasonConfigured'))
+    expect(b.ok && b.plan.repo).toBe(repoB)
+  })
+
+  test('an issue is READ into the plan and never frozen: no snapshot, no record', async () => {
+    const project = register(makeRepoWithRemote())
+    const { execFn } = ghIssueRig(conformingTicketBody(), 'Bind the ticket')
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    const previewed = await manager.preview(project.id, {
+      autoShip: false,
+      issue: VALID_ISSUE_REF,
+    })
+    expect(previewed.ok).toBe(true)
+    if (!previewed.ok) {
+      return
+    }
+    expect(previewed.plan.issue).toEqual(VALID_ISSUE_REF)
+    // The issue's OWN title drives the branch, exactly as create would.
+    expect(previewed.plan.title).toBe('Bind the ticket')
+    expect(previewed.plan.branch).toBe('codesema/task-bind-the-ticket')
+    // D-d: previewing is not launching. Nothing dates the ticket, and nothing
+    // of the snapshot's shape (`body_hash`, `taken_at`) reaches the plan.
+    expect(manager.list(project.id)).toEqual([])
+    expect(JSON.stringify(previewed.plan)).not.toContain('taken_at')
+    expect(JSON.stringify(previewed.plan)).not.toContain('body_hash')
+  })
+
+  test('a malformed issue reference is refused exactly as create refuses it', async () => {
+    const project = register(makeRepoWithRemote())
+    const { execFn } = ghIssueRig(conformingTicketBody())
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner(), issueExecFn: execFn })
+    const bad = { ...VALID_ISSUE_REF, iid: 'forty-two' }
+    expect(await manager.preview(project.id, { autoShip: false, issue: bad })).toEqual(
+      (await manager.create(project.id, { autoShip: false, issue: bad })) as never,
+    )
+    expect(manager.list(project.id)).toEqual([])
+  })
+})
+
+// Review round 1, MAJEUR 1 and MAJEUR 2 — two failures of the SAME choice:
+// consulting the queue through the path built for real operations.
+//
+//  - reading it WROTE. A degraded read reports through the sink, and the sink
+//    stamps an `error` event in the journal of every task in the line (and
+//    mkdirs its directory on the way). A dry run journaled three tasks it was
+//    only supposed to look at, and ate the once-per-reason warning that the
+//    next real `create` was owed.
+//  - reading it RAW answered about a line that no longer existed. The
+//    admission path reconciles (`recover()` → `reconcile()`) BEFORE it
+//    enqueues, so entries a dead session left behind hold no rank — while the
+//    projection counted them, and refused what `create` accepts.
+//
+// The fingerprints of the existing suite could not see either one: they only
+// ever previewed against a HEALTHY, already-reconciled queue.json.
+/** A queue.json cut mid-write: legible as bytes, unusable as JSON. */
+function truncateQueue(repo: string): void {
+  mkdirSync(join(repo, '.codesema'), { recursive: true })
+  writeFileSync(queuePath(repo), '{"version":1,"entries":[{"id"')
+}
+
+describe('T2.6 preview against a queue.json nobody has reconciled', () => {
+  const previewInput = { title: 'Fix flaky cleanup', prompt: 'do it', autoShip: false }
+
+  /** The REAL runner, so `create` meets the real `enqueue`; its agent never runs. */
+  const realManager = (notices: string[] = []) =>
+    createTaskManager({
+      ...managerOpts,
+      runAgentFn: () => Promise.resolve(''),
+      onNotice: (message: string) => notices.push(message),
+    })
+
+  /** Holds the project's admission slot, so no line drains under a test. */
+  const holdSlot = (project: Project): TaskRecord => {
+    const running = seedTask(project.path, 'running one')
+    running.status = 'running'
+    saveTask(project.path, running)
+    expect(claimActive(project.id, running.id)).toBe(true)
+    return running
+  }
+
+  test('an unreadable queue.json is previewed against without one journal line', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message: string) => notices.push(message),
+    })
+    // Seeded AFTER the boot pass, and the file broken after it too: nothing
+    // in this session has reconciled either.
+    const queued = [seedTask(repo, 'one'), seedTask(repo, 'two'), seedTask(repo, 'three')]
+    truncateQueue(repo)
+    const treeBefore = treeFingerprint(repo)
+    notices.length = 0
+
+    const previewed = await manager.preview(project.id, previewInput)
+    expect(previewed.ok).toBe(true)
+    // Refusing to REPORT is not refusing to answer: the rank is the rebuilt
+    // line's, the three waiting tasks included.
+    expect(previewed.ok && previewed.plan.queue_position).toBe(4)
+
+    // The whole failure of round 1, in one assertion.
+    for (const task of queued) {
+      expect(readTaskEvents(repo, task.id)).toEqual([])
+    }
+    // …and nothing else moved either: no repair, no evidence copy, no file.
+    expect(treeFingerprint(repo)).toEqual(treeBefore)
+    expect(existsSync(corruptQueuePath(repo))).toBe(false)
+    expect(notices).toEqual([])
+
+    // The report is once-per-reason and PROCESS-WIDE. Had the preview
+    // consumed it, this listing would be silent and the degradation would
+    // reach nobody at all — which is what makes the silence above a property
+    // of the projection rather than of this rig.
+    manager.list(project.id)
+    expect(notices.some((line) => line.includes(QUEUE_UNREADABLE))).toBe(true)
+    for (const task of queued) {
+      expect(readTaskEvents(repo, task.id).map((event) => event.type)).toEqual(['error'])
+    }
+  })
+
+  // The sink's OTHER hazard, on a real filesystem: `appendTaskEvent` mkdirs
+  // its way to the journal, so it writes into a task whose record this pass
+  // could not even parse — one the rebuild keeps precisely because "could not
+  // read it" must never be read as "gone". (A directory that is outright GONE
+  // needs the record seam; that one is pinned in task-queue.test.ts.)
+  test('a task whose record will not parse is not written into by a preview', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const unreadable = seedTask(repo, 'unparseable')
+    const events = join(taskDir(repo, unreadable.id), 'events.jsonl')
+    writeFileSync(join(taskDir(repo, unreadable.id), 'task.json'), '{"version":1,"id"')
+    // Legible entry, then one nothing can make sense of: the file parses, so
+    // the good entry is KEPT, and the loss makes the read degraded.
+    mkdirSync(join(repo, '.codesema'), { recursive: true })
+    writeFileSync(
+      queuePath(repo),
+      `{"version":1,"entries":[{"id":"${unreadable.id}","enqueued_at":"2026-01-01T00:00:00.000Z"},"NOT-AN-ID!!"]}`,
+    )
+    const treeBefore = treeFingerprint(repo)
+
+    const previewed = await manager.preview(project.id, previewInput)
+    // Kept in the line: it is on disk, it merely would not parse.
+    expect(previewed.ok && previewed.plan.queue_position).toBe(2)
+    expect(existsSync(events)).toBe(false)
+    expect(treeFingerprint(repo)).toEqual(treeBefore)
+
+    // Control: a real read of the very same queue does write into it.
+    manager.list(project.id)
+    expect(existsSync(events)).toBe(true)
+  })
+
+  test('three previews in a row still leave the warning owed, and the journals empty', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message: string) => notices.push(message),
+    })
+    const queued = [seedTask(repo, 'one'), seedTask(repo, 'two')]
+    truncateQueue(repo)
+    notices.length = 0
+
+    for (let n = 0; n < 3; n++) {
+      expect((await manager.preview(project.id, previewInput)).ok).toBe(true)
+    }
+    expect(notices).toEqual([])
+    expect(queued.map((task) => readTaskEvents(repo, task.id).length)).toEqual([0, 0])
+
+    manager.list(project.id)
+    expect(queued.map((task) => readTaskEvents(repo, task.id).length)).toEqual([1, 1])
+  })
+
+  test('entries a dead session left behind hold no rank — and create agrees, exactly', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const manager = realManager()
+    // Three tasks this workspace already shipped, still named by the
+    // queue.json of the session that died. Raw, the file says three are
+    // waiting; reconciled — which is what `create` meets — the line is empty.
+    const shipped = ['one', 'two', 'three'].map((title) => {
+      const record = seedTask(repo, title)
+      record.status = 'shipped'
+      saveTask(repo, record)
+      return record
+    })
+    const running = holdSlot(project)
+    writeJsonAtomic(queuePath(repo), {
+      version: 1,
+      entries: shipped.map((record) => ({
+        id: record.id,
+        enqueued_at: '2026-01-01T00:00:00.000Z',
+      })),
+    })
+
+    const treeBefore = treeFingerprint(repo)
+    const previewed = await manager.preview(project.id, previewInput)
+    // 1, not 4: the task waits on the project's own slot and on nothing else.
+    expect(previewed.ok && previewed.plan.queue_position).toBe(1)
+    // And reading the stale line did not repair it either: reconciling in
+    // MEMORY is what keeps the projection free of effects.
+    expect(treeFingerprint(repo)).toEqual(treeBefore)
+    expect(readQueue(repo).entries.map((entry) => entry.id)).toEqual(
+      shipped.map((record) => record.id),
+    )
+
+    const created = await manager.create(project.id, previewInput)
+    expect(created.ok).toBe(true)
+    expect(created.ok ? (created.record.queue_position ?? null) : 'refused').toBe(
+      previewed.ok ? previewed.plan.queue_position : 'no plan',
+    )
+    releaseActive(project.id, running.id)
+  })
+
+  test('a thousand entries no record backs is an EMPTY line, not a full one', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const manager = realManager()
+    const running = holdSlot(project)
+    writeJsonAtomic(queuePath(repo), {
+      version: 1,
+      entries: Array.from({ length: QUEUE_ENTRIES_MAX }, (_, n) => ({
+        id: (n + 1).toString(16).padStart(12, '0'),
+        enqueued_at: '2026-01-01T00:00:00.000Z',
+      })),
+    })
+
+    // It used to be a 503 `resource_busy` here and a 201 one line below.
+    const previewed = await manager.preview(project.id, previewInput)
+    expect(previewed.ok).toBe(true)
+    expect(previewed.ok && previewed.plan.queue_position).toBe(1)
+
+    const created = await manager.create(project.id, previewInput)
+    expect(created.ok).toBe(true)
+    expect(created.ok ? (created.record.queue_position ?? null) : 'refused').toBe(
+      previewed.ok ? previewed.plan.queue_position : 'no plan',
+    )
+    releaseActive(project.id, running.id)
+  })
+
+  test('a queued record the file never knew about is counted, exactly as create counts it', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const manager = realManager()
+    const running = holdSlot(project)
+    // One entry in the file, one 'queued' record it never knew about: the
+    // rebuild appends the orphan at the END, so the newcomer lands third.
+    const inFile = seedTask(repo, 'in the file')
+    seedTask(repo, 'orphan the file never knew')
+    writeJsonAtomic(queuePath(repo), {
+      version: 1,
+      entries: [{ id: inFile.id, enqueued_at: '2026-01-01T00:00:00.000Z' }],
+    })
+
+    const previewed = await manager.preview(project.id, previewInput)
+    expect(previewed.ok && previewed.plan.queue_position).toBe(3)
+
+    const created = await manager.create(project.id, previewInput)
+    expect(created.ok && created.record.queue_position).toBe(3)
+    releaseActive(project.id, running.id)
+  })
+})
+
+describe('T2.6 POST /api/tasks/preview — transport posture and refusal parity', () => {
+  test('the route carries the same guards as the creation it previews', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    execFileSync('git', ['branch', 'fix/x'], { cwd: repo })
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5271,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const headers = { 'x-codesema-tasks-token': token }
+      const body = JSON.stringify({
+        project_id: project.id,
+        title: 'Fix flaky cleanup',
+        prompt: 'p',
+      })
+
+      // No token, wrong token: 403, and nothing is computed.
+      expect(
+        (await rawRequest(started.port, '/api/tasks/preview', { method: 'POST', body })).status,
+      ).toBe(403)
+      expect(
+        (
+          await rawRequest(started.port, '/api/tasks/preview', {
+            method: 'POST',
+            headers: { 'x-codesema-tasks-token': 'wrong' },
+            body,
+          })
+        ).status,
+      ).toBe(403)
+
+      // Past the body cap: the read is cut short and the answer is a 400.
+      // The padding is a field the schema IGNORES, on purpose: an oversized
+      // `prompt` would 400 on its own length whatever the cap is, so it cannot
+      // tell a cap that works from one that does not. Everything the schema
+      // looks at here is valid — only the SIZE is not.
+      const huge = JSON.stringify({
+        project_id: project.id,
+        title: 'Fix flaky cleanup',
+        prompt: 'p',
+        padding: 'x'.repeat(70 * 1024),
+      })
+      expect(
+        (
+          await rawRequest(started.port, '/api/tasks/preview', {
+            method: 'POST',
+            headers,
+            body: huge,
+          })
+        ).status,
+      ).toBe(400)
+      // Same body under the cap: accepted, which is what makes the assertion
+      // above about the CAP and not about the payload.
+      expect(
+        (
+          await rawRequest(started.port, '/api/tasks/preview', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              project_id: project.id,
+              title: 'Fix flaky cleanup',
+              prompt: 'p',
+              padding: 'x'.repeat(1024),
+            }),
+          })
+        ).status,
+      ).toBe(200)
+
+      // Invalid JSON, and a valid JSON with the wrong shape.
+      expect(
+        (
+          await rawRequest(started.port, '/api/tasks/preview', {
+            method: 'POST',
+            headers,
+            body: '{not json',
+          })
+        ).status,
+      ).toBe(400)
+      for (const bad of [
+        { project_id: project.id, title: 42, prompt: 'p' },
+        { project_id: project.id, title: 't', prompt: 'p', autoShip: 'yes' },
+        { project_id: project.id, title: 't', prompt: 'p', base: 42 },
+        { project_id: project.id, title: 't', prompt: 'p', branch: 42 },
+        { project_id: project.id, title: 't', prompt: 'p', target: 42 },
+        { project_id: project.id, title: 't', prompt: 'p', agent: 42 },
+        { title: 't', prompt: 'p' },
+      ]) {
+        expect(
+          (
+            await rawRequest(started.port, '/api/tasks/preview', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(bad),
+            })
+          ).status,
+        ).toBe(400)
+      }
+
+      // A rebound host is refused before the route is even reached.
+      expect(
+        (
+          await rawRequest(started.port, '/api/tasks/preview', {
+            method: 'POST',
+            headers: { ...headers, host: 'evil.example.com' },
+            body,
+          })
+        ).status,
+      ).toBe(403)
+
+      // The nominal answer is a 200 (nothing was created) carrying the plan.
+      const ok = await rawRequest(started.port, '/api/tasks/preview', {
+        method: 'POST',
+        headers,
+        body,
+      })
+      expect(ok.status).toBe(200)
+      expect(JSON.parse(ok.body)).toMatchObject({
+        mode: 'fork',
+        repo,
+        branch: 'codesema/task-fix-flaky-cleanup',
+        branch_certain: true,
+        worktree_root: join(repo, '.codesema', 'worktrees'),
+        base: 'main',
+        target: 'main',
+        isolation: 'policy',
+        agent: 'claude -p',
+        queue_position: null,
+        issue: null,
+      })
+      expect(typeof (JSON.parse(ok.body) as { isolation_reason: string }).isolation_reason).toBe(
+        'string',
+      )
+      // …and still nothing on disk.
+      expect(manager.list(project.id)).toEqual([])
+
+      // Every refusal reaches the client in exactly the shape and the words
+      // the real creation would have used. Compared route against route, not
+      // against a constant this file owns.
+      const both = async (payload: unknown) => {
+        const p = await rawRequest(started.port, '/api/tasks/preview', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        })
+        const c = await rawRequest(started.port, '/api/tasks', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        })
+        return { preview: p, create: c }
+      }
+      const ghost = await both({ project_id: 'ffffffff', title: 't', prompt: 'p' })
+      expect(ghost.preview.status).toBe(404)
+      expect(ghost.preview).toEqual(ghost.create)
+
+      const noBranch = await both({
+        project_id: project.id,
+        title: 't',
+        prompt: 'p',
+        branch: 'ghost',
+      })
+      expect(noBranch.preview.status).toBe(400)
+      expect(noBranch.preview).toEqual(noBranch.create)
+
+      const bothModes = await both({
+        project_id: project.id,
+        title: 't',
+        prompt: 'p',
+        branch: 'fix/x',
+        base: 'main',
+      })
+      expect(bothModes.preview.status).toBe(400)
+      expect(bothModes.preview).toEqual(bothModes.create)
+
+      // The main worktree holds 'main': a work-on preview of it is the 409
+      // naming the worktree, identical on both routes.
+      const busy = await both({ project_id: project.id, title: 't', prompt: 'p', branch: 'main' })
+      expect(busy.preview.status).toBe(409)
+      expect(busy.preview.body).toContain(repo)
+      expect(busy.preview).toEqual(busy.create)
+
+      expect(manager.list(project.id)).toEqual([])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('the 409 existing_task_id is reproduced in work-on mode and absent in fork mode', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    execFileSync('git', ['branch', 'fix/x'], { cwd: repo })
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const live = seedTask(repo, 'already on fix/x')
+    live.status = 'running'
+    live.branch = 'fix/x'
+    live.work_on = true
+    saveTask(repo, live)
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5272,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const headers = { 'x-codesema-tasks-token': await tasksToken(started.port) }
+      const conflict = await rawRequest(started.port, '/api/tasks/preview', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project_id: project.id, title: 't', prompt: 'p', branch: 'fix/x' }),
+      })
+      expect(conflict.status).toBe(409)
+      expect(JSON.parse(conflict.body)).toEqual({
+        error: "a conversation is already active on branch 'fix/x'",
+        existing_task_id: live.id,
+      })
+
+      // Fork mode is minted in a free namespace: the guard never applies there.
+      const fork = await rawRequest(started.port, '/api/tasks/preview', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project_id: project.id, title: 'fix x', prompt: 'p' }),
+      })
+      expect(fork.status).toBe(200)
+      expect(JSON.parse(fork.body)).not.toHaveProperty('existing_task_id')
+      // Only the record seeded by hand is there — the preview added none.
+      expect(manager.list(project.id)?.map((r) => r.id)).toEqual([live.id])
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('a container-configured project with no runtime is the same 409 on both routes', async () => {
+    const repo = makeRepo()
+    saveRepoConfig(repo, { isolation: 'container' })
+    const project = register(repo)
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      isolation: {
+        available: false,
+        mode: 'policy',
+        reason: 'no container runtime found (install docker or podman)',
+        configured: 'container',
+        runtime: null,
+      },
+    })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5273,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const headers = { 'x-codesema-tasks-token': await tasksToken(started.port) }
+      const body = JSON.stringify({ project_id: project.id, title: 't', prompt: 'p' })
+      const previewed = await rawRequest(started.port, '/api/tasks/preview', {
+        method: 'POST',
+        headers,
+        body,
+      })
+      expect(previewed.status).toBe(409)
+      expect(JSON.parse(previewed.body)).toMatchObject({ reason_code: 'resource_busy' })
+      // No plan is announced at all: the refusal replaces it.
+      expect(JSON.parse(previewed.body)).not.toHaveProperty('isolation')
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body,
+      })
+      expect(previewed).toEqual(created)
+      expect(manager.list(project.id)).toEqual([])
+    } finally {
+      await started.stop()
+    }
+  })
+})
+
+describe('T2.6 preview ↔ launch coherence', () => {
+  /** Same shape as the end-to-end suite's: an injected agent that says it is done. */
+  const claudeStream = (response: string) =>
+    `${[
+      { type: 'system', subtype: 'init', session_id: 'sess-t26' },
+      { type: 'result', result: response },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n')}\n`
+
+  test('the branch, the base and the worktree the task really gets are the ones announced', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    // The name the title slugs to is already taken: the collision resolution
+    // is the half most likely to drift between the two paths.
+    execFileSync('git', ['branch', 'codesema/task-fix-flaky-cleanup'], { cwd: repo })
+    const runAgentFn = (): Promise<string> => Promise.resolve(claudeStream('all done'))
+    const manager = createTaskManager({ command: 'claude -p', timeoutMs: 5000, runAgentFn })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5274,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const headers = { 'x-codesema-tasks-token': await tasksToken(started.port) }
+      const body = JSON.stringify({
+        project_id: project.id,
+        title: 'Fix flaky cleanup',
+        prompt: 'work',
+      })
+      const previewed = await rawRequest(started.port, '/api/tasks/preview', {
+        method: 'POST',
+        headers,
+        body,
+      })
+      expect(previewed.status).toBe(200)
+      const plan = JSON.parse(previewed.body) as TaskPlan
+      expect(plan.branch).toBe('codesema/task-fix-flaky-cleanup-2')
+
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body,
+      })
+      expect(created.status).toBe(201)
+      const record = JSON.parse(created.body) as TaskRecord
+
+      // The branch of a fork is minted at LAUNCH, so the comparison that
+      // matters is against the materialized record, not the created one.
+      await until(() => (loadTask(repo, record.id)?.branch ?? '') !== '')
+      const launched = loadTask(repo, record.id)
+      expect(launched?.branch).toBe(plan.branch)
+      expect(launched?.base).toBe(plan.target)
+      expect(launched?.worktree).toBe(join(plan.worktree_root, record.id))
+      expect(launched?.isolation).toBe(plan.isolation)
+      expect(launched?.agent).toBe(plan.agent)
+      expect(launched?.title).toBe(plan.title)
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('work-on: the branch, the MR target and the isolation announced are the ones recorded', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    run(['branch', 'fix/x'])
+    run(['branch', 'release'])
+    const runAgentFn = (): Promise<string> => Promise.resolve(claudeStream('all done'))
+    const manager = createTaskManager({ command: 'claude -p', timeoutMs: 5000, runAgentFn })
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 5275,
+      taskManager: manager,
+      currentProjectId: project.id,
+    })
+    try {
+      const headers = { 'x-codesema-tasks-token': await tasksToken(started.port) }
+      const body = JSON.stringify({
+        project_id: project.id,
+        title: 'work on it',
+        prompt: 'work',
+        branch: 'fix/x',
+        target: 'release',
+      })
+      const previewed = await rawRequest(started.port, '/api/tasks/preview', {
+        method: 'POST',
+        headers,
+        body,
+      })
+      expect(previewed.status).toBe(200)
+      const plan = JSON.parse(previewed.body) as TaskPlan
+      expect(plan).toMatchObject({ mode: 'work_on', branch: 'fix/x', base: '', target: 'release' })
+
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers,
+        body,
+      })
+      expect(created.status).toBe(201)
+      const record = JSON.parse(created.body) as TaskRecord
+      expect(record.branch).toBe(plan.branch)
+      expect(record.base).toBe(plan.target)
+      await until(() => (loadTask(repo, record.id)?.worktree ?? '') !== '')
+      const launched = loadTask(repo, record.id)
+      expect(launched?.worktree).toBe(join(plan.worktree_root, record.id))
+      expect(launched?.base).toBe(plan.target)
+    } finally {
+      await started.stop()
+    }
   })
 })

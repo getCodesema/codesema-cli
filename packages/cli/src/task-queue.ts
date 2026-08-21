@@ -120,6 +120,28 @@ export type QueueReconcile = {
 export type EnqueueResult = { ok: true; position: number } | { ok: false; reason: string }
 
 /**
+ * What a task that is NOT in the queue would get if it were admitted right
+ * now (T2.6). A projection, never a reservation: producing one enqueues
+ * nothing, claims nothing and writes nothing, so the answer can go stale the
+ * instant it is read — which is precisely why the preview that serves it
+ * calls the plan INDICATIVE and lets `create` re-decide.
+ */
+export type QueueProjection =
+  | {
+      admissible: true
+      /**
+       * 1-based rank the task would wait at — `null` when nothing is ahead of
+       * it and the project has no active task, i.e. it would start at once.
+       * Same "absence means not waiting" convention as `position()` and as the
+       * `queue_position` `TaskManager.create` puts on its answer, rather than
+       * a `0` no other reader of this codebase would know how to spell.
+       */
+      position: number | null
+    }
+  /** `enqueue` would refuse, with the reason it would give. */
+  | { admissible: false; reason: string }
+
+/**
  * A queue longer than this is not a queue, it is a runaway loop or a mangled
  * file. Past it, `enqueue` REFUSES (loudly, so the creation fails with a
  * reason) instead of accepting an entry the file would then drop.
@@ -435,6 +457,24 @@ export type TaskQueue = {
   /** 1-based position in the queue, or null when the id is not waiting. */
   position: (taskId: string) => number | null
   /**
+   * READ-ONLY projection of `enqueue` + the pump that follows it, for a task
+   * that is not in the file — the one question `position()` cannot answer,
+   * since it only speaks about ids already waiting (T2.6).
+   *
+   * Answers about the RECONCILED line, not about the bytes: the admission
+   * path reconciles (`recover()` → `reconcile()`) before it ever enqueues, so
+   * a projection that counted the file's raw entries would answer for a line
+   * that no longer exists.
+   *
+   * Reads the file, the records and the process-wide admission claim; writes
+   * nothing, enqueues nothing, claims nothing, and — unlike every other read
+   * of this queue — REPORTS nothing: no journal line, no notice, and no
+   * consumption of the once-per-reason degradation report. An evaluation that
+   * reserved or announced anything would make the preview an effect, which is
+   * exactly what its no-side-effect property forbids.
+   */
+  projectedAdmission: () => QueueProjection
+  /**
    * Boot: re-hydrates the file and reconciles it with the project's records —
    * an id that is terminal or has no record at all is dropped, and a 'queued'
    * record missing from the file is appended AT THE END.
@@ -595,6 +635,35 @@ function reconciledEntries(
     unplaceable:
       disk.degraded === null ? [] : disk.idsOnDisk().filter((taskId) => !accounted.has(taskId)),
   }
+}
+
+/**
+ * The rank a task NOT in the line would get, given the line as it would be
+ * RECONCILED and the project's admission claim. Pure, and module-level rather
+ * than inline in `projectedAdmission`, so the arithmetic can be exercised on
+ * the boundary the queue's own fixtures kept stepping over: a line of exactly
+ * ONE entry, where "appended at the end" (2) and "starts at once" (null) sit
+ * a single entry apart.
+ */
+function projectionOf(
+  entries: readonly QueueEntry[],
+  activeTaskId: string | null,
+): QueueProjection {
+  // Same cap, same words as `enqueue`'s own refusal: a preview that announced
+  // a plan here would promise a creation the very next call refuses with 503.
+  if (entries.length >= QUEUE_ENTRIES_MAX) {
+    return { admissible: false, reason: QUEUE_FULL }
+  }
+  if (entries.length > 0) {
+    // Appended at the END, exactly like `enqueue`.
+    return { admissible: true, position: entries.length + 1 }
+  }
+  // Empty line: the pump that follows the enqueue launches the task unless the
+  // project's admission claim is already taken by another task, in which case
+  // it waits at rank 1. The claim is the authority here, not the file —
+  // `launch()` reads admission off the claim for the same reason (an entry
+  // only leaves queue.json once the worktree is there).
+  return { admissible: true, position: activeTaskId === null ? null : 1 }
 }
 
 /** True when the two lists name the same ids in the same order. */
@@ -820,6 +889,45 @@ export function createTaskQueue(opts: CreateTaskQueueOptions): TaskQueue {
     position(taskId) {
       const index = read().findIndex((entry) => entry.id === taskId)
       return index === -1 ? null : index + 1
+    },
+
+    projectedAdmission() {
+      // Deliberately NOT `read()`, for two independent reasons — each of them
+      // a bug this projection shipped with (T2.6 review round 1, majeurs 1
+      // and 2).
+      //
+      // 1. `read()` REPORTS. Its degraded path calls `reportDegraded`, whose
+      //    sink stamps an `error` event in the JOURNAL of every task the
+      //    rebuilt line holds — and `appendTaskEvent` mkdir's the task's
+      //    directory on the way there, so a task whose directory had vanished
+      //    is RESURRECTED by a dry run. The report is also once-per-reason
+      //    and process-wide, so a projection that consumed it would swallow
+      //    the warning owed to the next real `create` or listing. A
+      //    projection is what the preview reads, and the preview writes
+      //    nothing and consumes nothing: the degradation is left intact, for
+      //    the first caller that is allowed to act on it to announce.
+      //
+      // 2. `read()` on a HEALTHY file hands back the file's RAW entries, and
+      //    the raw entries are not the line. The admission path reaches
+      //    `enqueue` through `context()` → `recover()` → `reconcile()`, which
+      //    reconciles against the records on disk first: a queue.json left by
+      //    a dead session, still naming three shipped tasks, made this
+      //    promise rank 4 for a task `create` starts at once, and a thousand
+      //    ghost entries made it answer 503 where `create` answered 201. That
+      //    is the "progressive divergence between the two paths" the design
+      //    names as this ticket's main risk, and the fix is to share the
+      //    reconciliation rather than to re-count: same pure function the
+      //    boot and the degraded read both go through, run in memory and
+      //    thrown away.
+      //
+      // Reading every task.json is the price of that parity. It is paid on a
+      // debounced dry run, not on a keystroke, and `create` reads far more.
+      const { entries, degraded } = readQueue(opts.cwd, io)
+      const { next } = reconciledEntries(entries, readRecords(), recordExists, {
+        degraded,
+        idsOnDisk,
+      })
+      return projectionOf(next, activeTask(opts.projectId))
     },
 
     reconcile(records) {

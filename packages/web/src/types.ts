@@ -515,6 +515,50 @@ export type TaskRecord = {
   updated_at: string
 }
 
+// Mirrors packages/cli/src/task-plan.ts (T2.6): the dry-run answer of
+// POST /api/tasks/preview — what a conversation WOULD be if it were launched
+// now. Never persisted anywhere, so it carries no `version`: the server
+// computes it fresh on every call and the client re-parses it tolerantly
+// (`parseTaskPlan`, composables/useTaskPlan.ts) rather than trusting the wire.
+
+export type TaskPlan = {
+  /** 'fork': a new codesema/task-* branch. 'work_on': the caller's own branch. */
+  mode: 'fork' | 'work_on'
+  /** Repo root the conversation would run in — the PROJECT's, not the launch repo's. */
+  repo: string
+  /** Title the task would carry (the issue's own title when created from a ticket). */
+  title: string
+  /** Branch the conversation would run on. */
+  branch: string
+  /**
+   * False when `branch` could not be predicted: every -2…-99 suffix is taken
+   * and the real creation appends the task's own id, which does not exist yet.
+   * `branch` is then the family, not the name — say so, never promise it.
+   */
+  branch_certain: boolean
+  /**
+   * Directory the worktree would be created under: the checkout lands in
+   * `<worktree_root>/<task id>`, and that id is minted at creation.
+   */
+  worktree_root: string
+  /** Branch a fork starts from. Empty in work-on mode: nothing is branched. */
+  base: string
+  /** Branch the eventual MR would target. */
+  target: string
+  /** Set when no trunk could be detected — the gap is stated, not hidden. */
+  base_note?: string
+  isolation: TaskIsolation
+  /** Why that isolation, in the server's own words: a degradation is never silent. */
+  isolation_reason: string
+  /** Agent command resolved for this project (or the one the composer picked). */
+  agent: string
+  /** Rank the task would wait at; null = it would start at once. */
+  queue_position: number | null
+  /** Issue the conversation would be bound to. Read, never frozen. */
+  issue: TaskIssueRef | null
+  auto_ship: boolean
+}
+
 // Mirrors the checks contract (packages/contract) and the
 // /api/tasks/:id/checks endpoints: sandboxed typecheck/tests/lint runs
 // executed by codesema in an ephemeral container mounted on the worktree.
