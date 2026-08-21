@@ -189,6 +189,25 @@ export type TaskEventType =
    * resolves itself.
    */
   | 'criteria'
+  /**
+   * T3.6/D12: the DOMAIN of the merge gate — the four conditions of an
+   * automatic merge, one line each, and what the gate then did. `data.name`
+   * names the incident (`condition_met`, `condition_unmet`,
+   * `condition_consented`, `refused`, `policy_human`, `merged`, `failed`,
+   * `config_degraded`), same grammar as `criteria` and `issue`.
+   *
+   * No existing type could carry it, and the reasons are the ones DP15 already
+   * recorded: `message` is rendered as an agent bubble and overwritten by the
+   * turn's own response, so a merge fact routed through it is INVISIBLE;
+   * `error` would paint a satisfied condition red on every green task;
+   * `branch` is defined as the type for facts that stop nothing and carry no
+   * D2 code, which is the exact opposite of a refusal that hands the task back
+   * to a human with `checks_unavailable` on it; and `shipped` is a settled
+   * success whose payload is an MR url. A merge REFUSAL is neither an error
+   * nor a neutral aside — it is its own domain, and it is the only one of the
+   * five that answers "may this branch land".
+   */
+  | 'merge'
 
 /**
  * How a task's agent turns are contained.
@@ -581,6 +600,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'issue',
   'prep',
   'criteria',
+  'merge',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])

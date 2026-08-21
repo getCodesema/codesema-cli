@@ -46,7 +46,16 @@ export function fixCommandFor(command: string): string {
   return command
 }
 
-function isFixable(finding: Finding): boolean {
+/**
+ * Whether a finding asks for a code change at all: a `praise`/`why` note never
+ * does, and an `info`-severity remark is a remark. EXPORTED since T3.3 because
+ * it is the ONE bar three call sites have to agree on — what this runner
+ * offers a human, what `taskReviewVerdict` calls actionable, and what the
+ * automatic fix loop retries on. Two copies of this predicate would let a
+ * review block on a finding the fix prompt then omits, which is exactly the
+ * shape of a loop that spends its whole budget changing nothing.
+ */
+export function isFixable(finding: Finding): boolean {
   if (finding.kind === 'praise' || finding.kind === 'why') {
     return false
   }

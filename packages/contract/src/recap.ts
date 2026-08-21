@@ -15,6 +15,7 @@ import { TASK_PATH_MAX, type CostBasis, type TaskCheckStatus } from './tasks.js'
 import {
   CRITERION_VERDICT_EVIDENCE_MAX,
   cutCodePoints,
+  NON_BLANK,
   sanitizeCriterionVerdict,
   TICKET_CRITERIA_MAX,
   TICKET_CRITERION_TEXT_MAX,
@@ -375,15 +376,17 @@ export function sanitizeRecap(raw: unknown): RecapRecord | null {
  * ticket's top long-run risk: schema and sanitizer cannot drift into
  * DISAGREEMENT about what a recap is, only about how many spaces it has.
  */
-// Round 4, majeur 3: `minLength: 1` alone lets a whitespace-only string
-// (`'   '`) through — `sanitizeStringList`/`str`/`line` all TRIM before
-// checking for emptiness, so such a string is schema-valid yet silently
-// dropped (an array item), OMITTED (`mr_url`, `criteria[].text`/`.evidence`)
-// or NULLS THE WHOLE RECORD (`branch`) on the way back through the one
-// sanctioned reader. `NON_BLANK` requires a non-whitespace first AND last
-// character, which subsumes `minLength: 1` (an empty string cannot match) —
-// it replaces that keyword rather than sitting beside it.
-const NON_BLANK = '^\\S(?:[\\s\\S]*\\S)?$'
+// `NON_BLANK` (imported from ticket.ts) is what every string below that the
+// sanitizer refuses to emit empty OR whitespace-only carries, in place of a
+// bare `minLength: 1` — round 4, majeur 3: `sanitizeStringList`/`str`/`line`
+// all TRIM before checking for emptiness, so `'   '` was schema-valid yet
+// silently dropped (an array item), OMITTED (`mr_url`, `criteria[].text` /
+// `.evidence`) or NULLING THE WHOLE RECORD (`branch`) on the way back through
+// the one sanctioned reader.
+//
+// T3.2 round 2, mineur 3: it moved to ticket.ts rather than staying local
+// here, because `reviewRecordSchema` publishes the same `criterionVerdict`
+// and had drifted to exactly that bare `minLength: 1`. One fact, one spelling.
 
 // Round 4, majeur 1: the mono-line counterpart of NON_BLANK, for the five
 // fields `line()` (above) now bounds — `branch`, `mr_url`, `files[]` items,

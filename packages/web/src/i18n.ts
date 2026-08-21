@@ -218,6 +218,19 @@ const en = {
   'workspace.statusReviewOk': 'Review passed',
   'workspace.statusReviewKo': 'Review blocked',
   'workspace.statusChecksFailed': 'Checks failed',
+  'workspace.statusCriteriaUnmet': 'Criteria not met',
+  'workspace.statusFixLoopStopped': 'Auto-fix gave up',
+  'workspace.statusChecksUnavailable': 'Checks unavailable',
+  'workspace.statusCriteriaMissing': 'Criteria missing',
+  // T3.6, the four remaining exits of the merge gate. The card shows the FLAG
+  // and nothing else, so each one names its own blocker rather than sharing a
+  // generic "merge held" nobody could act on at a glance — except the checks
+  // one, whose only honest short label would be indistinguishable from the
+  // `review_ko` "Checks failed" it must not be confused with.
+  'workspace.statusMergeConflict': 'Merge conflict',
+  'workspace.statusForgeUnreachable': 'Forge unreachable',
+  'workspace.statusBranchDiverged': 'Branch not up to date',
+  'workspace.statusMergeHeld': 'Merge held',
   'workspace.statusShipped': 'Shipped',
   'workspace.statusFailed': 'Failed',
   'workspace.statusInterrupted': 'Interrupted',
@@ -305,6 +318,33 @@ const en = {
     'The frozen ticket could not be read back: edits to this ticket are no longer detected',
   'workspace.evIssueUnreachable':
     'The forge could not be read: this ticket was not compared, the conversation carries on on its frozen copy',
+  // T3.5: publishing the recap on the ticket. Each line names what happened
+  // AND where the recap now is, because "nothing was posted" on its own reads
+  // as "the recap is lost" — which it never is.
+  'workspace.evIssueRecapPosted': 'Recap posted on the ticket',
+  'workspace.evIssueRecapAlreadyPosted':
+    'The recap was already on the ticket: nothing was posted a second time',
+  'workspace.evIssueRecapMissing':
+    'No recap could be produced for this conversation: nothing was posted on the ticket',
+  'workspace.evIssueRecapBlockedSecrets':
+    'Recap held back: it looks like it carries a secret. Nothing was sent to the forge, the recap stays on this machine',
+  'workspace.evIssueRecapUnreachable':
+    'The recap could not be posted on the ticket: it stays on this machine',
+  // T3.5, round 2 majeur 2: the three things a ship has to say about the recap
+  // it did NOT carry. Each one names the state of the recap, not only that the
+  // branch shipped — "Shipped" alone was what made a withheld secret look
+  // exactly like a posted recap.
+  'workspace.evShippedRecapMissing':
+    'Shipped without a recap: none could be produced for this branch',
+  'workspace.evShippedRecapBlocked':
+    'Shipped, recap held back: it looks like it carries a secret. Nothing was sent to the forge, the recap stays on this machine',
+  'workspace.evShippedRecapUnscanned':
+    'Shipped, recap held back: the check that clears it of secrets could not run, so nothing was sent to the forge',
+  'workspace.evIssueClosed': 'Ticket closed on the forge',
+  'workspace.evIssueCloseUnreachable':
+    'The ticket carries its recap but could not be closed on the forge',
+  'workspace.evIssueLabelNotPosed':
+    'The cycle label could not be written on the forge: the ticket there still shows the previous state, and nothing else changed',
   'workspace.evIssueNone': 'none',
   'workspace.evIssueSectionsUnknown': 'unknown (this snapshot has no per-section breakdown)',
   'workspace.evIssueSectionContext': 'context',
@@ -314,7 +354,29 @@ const en = {
   'workspace.evCriteria': 'Criteria',
   'workspace.evCriteriaDraftUnparsed':
     'The criteria draft was unreadable: the task continues without criteria',
+  'workspace.evCriteriaDraftProposed':
+    'The agent proposed acceptance criteria: they count for nothing until you validate them',
   'workspace.evCriteriaValidated': 'Acceptance criteria validated',
+  'workspace.evCriteriaGateBlocked':
+    'Acceptance criteria not satisfied: this task is not ready to merge',
+  'workspace.evCriteriaGatePassed': 'Every acceptance criterion is satisfied, evidence in the diff',
+
+  // --- merge gate (T3.6, D12) ---
+  'workspace.evMerge': 'Merge',
+  'workspace.evMergeConditionMet': 'Merge condition satisfied',
+  'workspace.evMergeConditionUnmet': 'Merge condition not satisfied',
+  'workspace.evMergeConditionConsented': 'Merge condition waived by your explicit consent',
+  'workspace.evMergeCondReview': 'code review',
+  'workspace.evMergeCondChecks': 'repository checks',
+  'workspace.evMergeCondCriteria': 'acceptance criteria',
+  'workspace.evMergeCondBranch': 'branch up to date with its target',
+  'workspace.evMergeMerged': 'Branch merged into its target',
+  'workspace.evMergeRefused': 'Automatic merge refused: a condition is missing',
+  'workspace.evMergePolicyHuman':
+    'Conditions checked, the merge is left to you (mergePolicy: human)',
+  'workspace.evMergeFailed': 'The forge refused the merge',
+  'workspace.evMergeConfigDegraded':
+    'An unusable merge setting was ignored and its default applied',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -381,6 +443,17 @@ const en = {
   'workspace.phaseReviewOk': 'review OK — ready to ship',
   'workspace.phaseReviewKo': 'review blocked — findings to fix',
   'workspace.phaseChecksFailed': 'review blocked — checks failed',
+  'workspace.phaseCriteriaUnmet': 'review blocked — acceptance criteria not met',
+  'workspace.phaseFixLoopStopped':
+    'automatic fixes stopped — findings still to fix; your reply starts a fresh fix budget',
+  'workspace.phaseFixLoopStoppedCriteria':
+    'automatic fixes stopped — acceptance criteria still not met; your reply starts a fresh fix budget',
+  'workspace.phaseChecksUnavailable': 'merge held — the checks could not be run',
+  'workspace.phaseCriteriaMissing': 'merge held — no validated acceptance criteria',
+  'workspace.phaseMergeConflict': 'merge held — the branch conflicts with its target',
+  'workspace.phaseForgeUnreachable': 'merge held — the forge did not perform the merge',
+  'workspace.phaseBranchDiverged': 'merge held — the branch is not up to date with its target',
+  'workspace.phaseMergeChecksFailed': 'merge held — the repository checks failed',
   'workspace.phaseShipped': 'shipped',
   'workspace.phaseFailed': 'failed',
   'workspace.phaseInterrupted': 'interrupted',
@@ -746,6 +819,14 @@ const fr: Record<MessageKey, string> = {
   'workspace.statusReviewOk': 'Review OK',
   'workspace.statusReviewKo': 'Review bloquée',
   'workspace.statusChecksFailed': 'Checks en échec',
+  'workspace.statusCriteriaUnmet': 'Critères non satisfaits',
+  'workspace.statusFixLoopStopped': 'Correction auto arrêtée',
+  'workspace.statusChecksUnavailable': 'Checks indisponibles',
+  'workspace.statusCriteriaMissing': 'Critères manquants',
+  'workspace.statusMergeConflict': 'Conflit de fusion',
+  'workspace.statusForgeUnreachable': 'Forge injoignable',
+  'workspace.statusBranchDiverged': 'Branche pas à jour',
+  'workspace.statusMergeHeld': 'Fusion suspendue',
   'workspace.statusShipped': 'Publiée',
   'workspace.statusFailed': 'Échouée',
   'workspace.statusInterrupted': 'Interrompue',
@@ -827,6 +908,26 @@ const fr: Record<MessageKey, string> = {
     'Le ticket figé est illisible : les éditions de ce ticket ne sont plus détectées',
   'workspace.evIssueUnreachable':
     "La forge n'a pas pu être lue : ce ticket n'a pas été comparé, la conversation continue sur sa copie figée",
+  'workspace.evIssueRecapPosted': 'Récapitulatif posté sur le ticket',
+  'workspace.evIssueRecapAlreadyPosted':
+    'Le récapitulatif était déjà sur le ticket : rien n’a été posté une seconde fois',
+  'workspace.evIssueRecapMissing':
+    'Aucun récapitulatif n’a pu être produit pour cette conversation : rien n’a été posté sur le ticket',
+  'workspace.evIssueRecapBlockedSecrets':
+    'Récapitulatif retenu : il semble porter un secret. Rien n’a été envoyé à la forge, le récapitulatif reste sur cette machine',
+  'workspace.evIssueRecapUnreachable':
+    'Le récapitulatif n’a pas pu être posté sur le ticket : il reste sur cette machine',
+  'workspace.evShippedRecapMissing':
+    'Publiée sans récapitulatif : aucun n’a pu être produit pour cette branche',
+  'workspace.evShippedRecapBlocked':
+    'Publiée, récapitulatif retenu : il semble porter un secret. Rien n’a été envoyé à la forge, le récapitulatif reste sur cette machine',
+  'workspace.evShippedRecapUnscanned':
+    'Publiée, récapitulatif retenu : le contrôle qui le déclare exempt de secret n’a pas pu s’exécuter, rien n’a donc été envoyé à la forge',
+  'workspace.evIssueClosed': 'Ticket fermé sur la forge',
+  'workspace.evIssueCloseUnreachable':
+    'Le ticket porte son récapitulatif mais n’a pas pu être fermé sur la forge',
+  'workspace.evIssueLabelNotPosed':
+    "Le label de cycle n'a pas pu être écrit sur la forge : le ticket y affiche encore l'état précédent, et rien d'autre n'a changé",
   'workspace.evIssueNone': 'aucun',
   'workspace.evIssueSectionsUnknown': 'inconnues (ce snapshot ne ventile pas par section)',
   'workspace.evIssueSectionContext': 'contexte',
@@ -836,7 +937,31 @@ const fr: Record<MessageKey, string> = {
   'workspace.evCriteria': 'Critères',
   'workspace.evCriteriaDraftUnparsed':
     "Le brouillon de critères n'était pas lisible : la tâche continue sans critères",
+  'workspace.evCriteriaDraftProposed':
+    "L'agent a proposé des critères d'acceptation : ils ne comptent pas tant que vous ne les avez pas validés",
   'workspace.evCriteriaValidated': "Critères d'acceptation validés",
+  'workspace.evCriteriaGateBlocked':
+    "Critères d'acceptation non satisfaits : cette tâche n'est pas prête à merger",
+  'workspace.evCriteriaGatePassed':
+    "Tous les critères d'acceptation sont satisfaits, preuve à l'appui dans le diff",
+
+  // --- merge gate (T3.6, D12) ---
+  'workspace.evMerge': 'Fusion',
+  'workspace.evMergeConditionMet': 'Condition de fusion remplie',
+  'workspace.evMergeConditionUnmet': 'Condition de fusion non remplie',
+  'workspace.evMergeConditionConsented':
+    'Condition de fusion levée par votre consentement explicite',
+  'workspace.evMergeCondReview': 'review de code',
+  'workspace.evMergeCondChecks': 'checks du dépôt',
+  'workspace.evMergeCondCriteria': "critères d'acceptation",
+  'workspace.evMergeCondBranch': 'branche à jour avec sa cible',
+  'workspace.evMergeMerged': 'Branche fusionnée dans sa cible',
+  'workspace.evMergeRefused': 'Fusion automatique refusée : une condition manque',
+  'workspace.evMergePolicyHuman':
+    'Conditions vérifiées, la fusion vous revient (mergePolicy : human)',
+  'workspace.evMergeFailed': 'La forge a refusé la fusion',
+  'workspace.evMergeConfigDegraded':
+    'Un réglage de fusion inutilisable a été ignoré et son défaut appliqué',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',
@@ -905,6 +1030,17 @@ const fr: Record<MessageKey, string> = {
   'workspace.phaseReviewOk': 'review OK — prêt à shipper',
   'workspace.phaseReviewKo': 'review bloquée — findings à corriger',
   'workspace.phaseChecksFailed': 'review bloquée — checks en échec',
+  'workspace.phaseCriteriaUnmet': "review bloquée — critères d'acceptation non satisfaits",
+  'workspace.phaseFixLoopStopped':
+    'corrections automatiques arrêtées — findings encore à corriger ; votre réponse repart avec un budget de correction complet',
+  'workspace.phaseFixLoopStoppedCriteria':
+    "corrections automatiques arrêtées — critères d'acceptation encore non satisfaits ; votre réponse repart avec un budget de correction complet",
+  'workspace.phaseChecksUnavailable': "fusion suspendue — les checks n'ont pas pu être exécutés",
+  'workspace.phaseCriteriaMissing': "fusion suspendue — aucun critère d'acceptation validé",
+  'workspace.phaseMergeConflict': 'fusion suspendue — la branche est en conflit avec sa cible',
+  'workspace.phaseForgeUnreachable': "fusion suspendue — la forge n'a pas effectué la fusion",
+  'workspace.phaseBranchDiverged': "fusion suspendue — la branche n'est pas à jour avec sa cible",
+  'workspace.phaseMergeChecksFailed': 'fusion suspendue — les checks du dépôt ont échoué',
   'workspace.phaseShipped': 'shippée',
   'workspace.phaseFailed': 'échouée',
   'workspace.phaseInterrupted': 'interrompue',

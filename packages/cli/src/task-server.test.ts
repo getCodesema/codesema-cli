@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -19,14 +20,18 @@ import type { AgentRunOptions } from './agent.js'
 import { writeJsonAtomic } from './atomic-write.js'
 import { loadGlobalConfig, saveGlobalConfig, saveRepoConfig, trustRepoAgent } from './config.js'
 import {
+  acceptanceCriterionId,
   isTerminalReason,
   TICKET_BODY_HASH_TAG,
+  type CriterionVerdict,
+  type Finding,
   type ReviewRecord,
   type TaskChecks,
   type TaskEvent,
   type TaskIssueRef,
   type TaskIssueSnapshot,
   type TaskRecord,
+  type TaskStatus,
   type Verdict,
 } from './contract.js'
 import type { ForgeCli, ForgeCliOutcome, ForgeIssuesExecFn } from './forge-issues.js'
@@ -37,6 +42,14 @@ import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
 import type { RunChecksOptions } from './task-checks.js'
+import {
+  AUTO_FIX_EXHAUSTED_NAME,
+  AUTO_FIX_JOURNAL_DAMAGED_NAME,
+  AUTO_FIX_NOT_QUEUED_NAME,
+  AUTO_FIX_NOT_STARTED_NAME,
+  AUTO_FIX_ROUND_NAME,
+  autoFixRoundsUsed,
+} from './task-fix-loop.js'
 import type { HomeVolumeSweepOutcome } from './task-isolation.js'
 import type { TaskPlan } from './task-plan.js'
 import {
@@ -51,9 +64,17 @@ import {
   resetActiveClaims,
   resetQueueDegradedReports,
 } from './task-queue.js'
+import { RECAP_MARKER_PREFIX } from './task-recap-publish.js'
+import { writeTaskRecap } from './task-recap.js'
 import type { TaskRetentionOutcome } from './task-retention.js'
 import { readTaskReview, type CreateTaskReviewerOptions } from './task-review.js'
-import { pendingResumeTurn, type TaskRunner, type TaskRunnerOptions } from './task-runner.js'
+import {
+  pendingResumeTurn,
+  type TaskActionResult,
+  type TaskRunner,
+  type TaskRunnerOptions,
+  type TaskTurnIo,
+} from './task-runner.js'
 import {
   BOOT_ISSUE_RECONCILE_CONCURRENCY,
   createTaskManager,
@@ -73,8 +94,10 @@ import {
   readTaskEvents,
   resetStoreReports,
   saveTask,
+  setJournalReader,
   STORE_UNLISTABLE,
   taskDir,
+  taskReason,
   taskRecordExists,
   writeTaskChecks,
 } from './tasks-store.js'
@@ -202,8 +225,21 @@ type FakeRunnerRig = {
   abandoning: Set<string>
 }
 
-/** Captures the manager→runner seam without ever launching an agent. */
-function fakeRunner(): FakeRunnerRig {
+/**
+ * Captures the manager→runner seam without ever launching an agent.
+ *
+ * `replyResult` (T3.3) is what `reply()` answers. The default stays the 409 it
+ * has always been — a manager test that only wants to SEE the call must not
+ * have to think about it — and a caller that drives the automatic fix loop
+ * passes `{ ok: true }`, which is what the real runner answers on a task its
+ * review just settled.
+ */
+function fakeRunner(opts: { replyResult?: TaskActionResult } = {}): FakeRunnerRig {
+  const replyResult: TaskActionResult = opts.replyResult ?? {
+    ok: false,
+    code: 409,
+    error: 'task is not waiting for a reply',
+  }
   const rig: FakeRunnerRig = {
     allRunnerOptions: [],
     starts: [],
@@ -228,7 +264,7 @@ function fakeRunner(): FakeRunnerRig {
         },
         reply: (id, message) => {
           rig.replies.push({ id, message })
-          return { ok: false, code: 409, error: 'task is not waiting for a reply' }
+          return replyResult
         },
         resume: (id) => {
           rig.resumes.push(id)
@@ -738,6 +774,34 @@ describe('createTaskManager', () => {
     expect(byCwd.get(repoA)?.timeoutMs).toBe(30_000)
     expect(byCwd.get(repoB)?.command).toBe(managerOpts.command)
     expect(byCwd.get(repoB)?.timeoutMs).toBe(managerOpts.timeoutMs)
+  })
+
+  // T3.2: `mode` used to be omitted at this call site, so `createTaskReviewer`
+  // fell through to its own implicit 'simple' — a project that had asked for
+  // 'dual' got a simple review and nothing said so. Deleting `mode` from the
+  // manager's `createTaskReviewer({…})` call is what this turns red.
+  test('the reviewer is built with the review mode THAT project resolved (T3.2)', () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, { reviewMode: 'dual' })
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const seen: CreateTaskReviewerOptions[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: fakeRunner().createRunnerFn,
+      createReviewerFn: (options) => {
+        seen.push(options)
+        return async () => {}
+      },
+    })
+    manager.checks(projectA.id, 'aaaaaaaaaaaa')
+    manager.checks(projectB.id, 'aaaaaaaaaaaa')
+    const byCwd = new Map(seen.map((options) => [options.cwd, options]))
+    expect(byCwd.get(repoA)?.mode).toBe('dual')
+    // Explicit, not absent: a project that declares nothing still gets the
+    // value named at the call site.
+    expect(byCwd.get(repoB)?.mode).toBe('simple')
   })
 
   // J2 (adversarial review, mineur): proposing a checks configuration is a
@@ -1934,6 +1998,48 @@ describe('manager.ship', () => {
     expect(loadTask(cwd, record.id)?.reason).toEqual({ code: 'forge_unreachable', detail: note })
     // Shipped all the same: the branch IS on origin.
     expect(loadTask(cwd, record.id)?.status).toBe('shipped')
+  })
+
+  // MAJEUR 2, the wiring half. `data.note` is raw English no component reads,
+  // and `SUMMARY_KEYS.shipped` probes 'url'/'branch' — neither of which this
+  // payload carries — so all three of these used to render as the same green
+  // 'Publiée' line as a nominal ship. `data.name` is the rendered half.
+  test('a ship that landed short of its recap NAMES it on the shipped event', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const note =
+      'recap withheld from the merge request: it looks like it carries a secret (recap.md: an AWS access key id)'
+    const stub = shipStub({
+      pushed: true,
+      mrUrl: 'https://github.com/o/r/pull/9',
+      note,
+      recapState: 'recap_blocked_secrets',
+    })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(readTaskEvents(cwd, record.id)).toMatchObject([
+      {
+        type: 'shipped',
+        data: { mr_url: 'https://github.com/o/r/pull/9', note, name: 'recap_blocked_secrets' },
+      },
+    ])
+    // Still a ship: the branch IS on origin and the MR IS open. The name says
+    // what did not ride along, it never turns the ship into a failure.
+    expect(loadTask(cwd, record.id)?.status).toBe('shipped')
+    expect(readTaskEvents(cwd, record.id)[0]).not.toHaveProperty('reason_code')
+  })
+
+  test('a ship that carried its recap names nothing: no badge on the ordinary case', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(readTaskEvents(cwd, record.id)[0]?.data).not.toHaveProperty('name')
   })
 
   test('a ship that opened its MR clears any reason the task was carrying', async () => {
@@ -6657,7 +6763,353 @@ describe('workspace server end to end', () => {
       { type: 'criteria', data: { name: 'draft_unparsed' } },
       { type: 'message' },
       { type: 'shipped', data: { mr_url: 'https://github.com/o/r/pull/3' } },
+      // T3.6: the merge step chains on the ship and journals D12's four
+      // conditions ONE BY ONE, satisfied or not — which is the whole point:
+      // "checked and it passed" has to be distinguishable from "never
+      // checked". This manager carries no `mergeSettings`, so the default
+      // `human` policy applies and NOTHING is merged, whatever the verdicts.
+      { type: 'merge', data: { name: 'condition_unmet', condition: 'review' } },
+      { type: 'merge', data: { name: 'condition_unmet', condition: 'checks', detail: 'no_run' } },
+      {
+        type: 'merge',
+        data: { name: 'condition_unmet', condition: 'criteria', detail: 'absent' },
+      },
+      { type: 'merge', data: { name: 'condition_met', condition: 'branch' } },
+      { type: 'merge', data: { name: 'policy_human', ready: false } },
     ])
+    // ...and the default policy moved no status: the task is `shipped`, not
+    // handed back to a human over a merge nobody asked for.
+    expect(loadTask(repo, created.record.id)?.status).toBe('shipped')
+    expect(loadTask(repo, created.record.id)?.reason).toBeUndefined()
+  })
+
+  test('T3.6: mergePolicy auto merges a green task, and the status stays shipped', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const mergeCalls: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () =>
+        Promise.resolve({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      // The gate itself is proven in task-merge.test.ts; what this test proves
+      // is the WIRING — that the step runs after the ship, on the record as it
+      // stands on DISK, and that a landed merge moves no status.
+      mergeTaskFn: (options) => {
+        mergeCalls.push(options.task.id)
+        expect(options.task.status).toBe('shipped')
+        expect(options.settings.policy).toBe('auto')
+        return Promise.resolve({
+          kind: 'merged',
+          cli: 'gh',
+          url: 'https://github.com/o/r/pull/9',
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge', data: { name: 'merged', cli: 'gh' } }],
+        })
+      },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some((event) => event.type === 'merge'),
+    )
+    expect(mergeCalls).toEqual([created.record.id])
+    const record = loadTask(repo, created.record.id)
+    expect(record?.status).toBe('shipped')
+    expect(record?.reason).toBeUndefined()
+  })
+
+  test('T3.6: a refused merge hands the task back with its reason, and the 409 says why', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      // The REAL gate under `auto`: this task has no criteria and no archived
+      // review, so it is refused long before any forge CLI is reached — which
+      // is exactly why no exec seam is needed here.
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // Waited on the merge gate's own line, not on the status: a wait on the
+    // status turns every regression of the transition below into a TIMEOUT,
+    // which is indistinguishable from a slow machine. The `refused` line is
+    // written first and unconditionally, so what follows is an assertion.
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some(
+        (event) => event.type === 'merge' && event.data.name === 'refused',
+      ),
+    )
+    const record = loadTask(repo, created.record.id)
+    expect(record?.status).toBe('waiting_for_you')
+    expect(record?.reason?.code).toBe('review_blocked')
+    expect(isTerminalReason(record!.reason!.code)).toBe(true)
+    const names = readTaskEvents(repo, created.record.id)
+      .filter((event) => event.type === 'merge')
+      .map((event) => event.data.name)
+    // Four conditions, one line each, then the refusal.
+    expect(names).toEqual([
+      'condition_unmet',
+      'condition_unmet',
+      'condition_unmet',
+      'condition_met',
+      'refused',
+    ])
+    // ...and the dead end T3.3 left behind is closed: the 409 names WHY.
+    const refusal = await manager.ship(project.id, created.record.id)
+    expect(refusal.ok).toBe(false)
+    expect(refusal.ok === false && refusal.code).toBe(409)
+    expect(refusal.ok === false && refusal.error).toContain('no end-of-turn review is archived')
+    expect(refusal.ok === false && refusal.reason_code).toBe('review_blocked')
+  })
+
+  // T3.6 adversarial review, MAJEUR 3. `specs/auto-merge/spec.md` requires it
+  // in those words — "Conflit de merge sans résolution automatique — DOIT
+  // produire la raison `merge_conflict` et faire passer la tâche en attente
+  // humaine" — and NOTHING held it: deleting `|| outcome.kind === 'failed'`
+  // from `runMergeStep`'s transition left 3 069 tests green. task-merge.test.ts
+  // proves the gate returns `failed`/`merge_conflict`; the STATUS is
+  // task-server.ts's own work, and the only server test under `auto` either
+  // returned `merged` or went through the real refusal path.
+  //
+  // With the mutant, a conflict leaves the task on `shipped`, with no reason
+  // and no "needs you" — the most consequential failure mode of the ticket,
+  // entirely unguarded.
+  test('T3.6: a merge the FORGE refused hands the task back on waiting_for_you', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const CONFLICT =
+      'gh: not mergeable — resolve the overlap on the branch; nothing was rebased, reset or deleted'
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () =>
+        Promise.resolve({ pushed: true, mrUrl: 'https://github.com/o/r/pull/7', note: null }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      // The four conditions HELD — this is the forge refusing afterwards,
+      // which is `failed`, not `refused`. The two land on the same status by
+      // design: nothing failed on our side, and what is needed is a person.
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'failed',
+          reason: { code: 'merge_conflict', detail: CONFLICT },
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [
+            {
+              type: 'merge',
+              data: { name: 'failed', cli: 'gh', message: CONFLICT },
+              reason_code: 'merge_conflict',
+            },
+          ],
+        }),
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // Waited on the JOURNAL line, not on the status: a wait on the status
+    // turns the regression this test exists for into a timeout, which is
+    // indistinguishable from a slow machine.
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some(
+        (event) => event.type === 'merge' && event.data.name === 'failed',
+      ),
+    )
+    const record = loadTask(repo, created.record.id)
+    expect(record?.status).toBe('waiting_for_you')
+    expect(record?.reason?.code).toBe('merge_conflict')
+    expect(record?.reason?.detail).toBe(CONFLICT)
+    // Never `failed`, and never left on `shipped`: the branch and the merge
+    // request are intact, and what is missing is a human.
+    expect(record?.status).not.toBe('shipped')
+    expect(record?.status).not.toBe('failed')
+    expect(isTerminalReason(record!.reason!.code)).toBe(true)
+  })
+
+  // The mutation this kills: deleting the `record.status !== 'shipped'` guard
+  // from `runMergeStep`. It is the ONLY thing standing between a ship that
+  // FAILED to push (502, status left on `review_ok`) and a `gh pr merge` on a
+  // branch that was never pushed — the auto-ship path calls the merge step
+  // straight after the ship, whatever the ship answered.
+  test('T3.6: a ship that never pushed is never merged', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const mergeCalls: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () =>
+        Promise.resolve({ pushed: false, error: 'push refused: no upstream configured' }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: (options) => {
+        mergeCalls.push(options.task.id)
+        return Promise.resolve({
+          kind: 'held',
+          readiness: { ready: false, conditions: [], blockers: [] },
+          events: [],
+        })
+      },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // The ship's own failure line: written before the merge step is even
+    // reached, so waiting on it is waiting past the decision under test.
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some((event) => event.type === 'error'),
+    )
+    // Give a wrongly-chained merge a beat to show up before asserting it never came.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(mergeCalls).toEqual([])
+    // ...and the record is exactly where the failed ship left it: retryable,
+    // branch and worktree intact.
+    expect(loadTask(repo, created.record.id)?.status).toBe('review_ok')
+    expect(readTaskEvents(repo, created.record.id).some((event) => event.type === 'merge')).toBe(
+      false,
+    )
+  })
+
+  // The mutation this kills: `await runMergeStep(...)` → `void
+  // runMergeStep(...)` in the auto-ship path. The site's own comment carries
+  // the whole argument — "AWAITED and not fired off … A dangling promise would
+  // let this hook return … while every gate stays green" — and a comment is
+  // not a test.
+  //
+  // The observable is the project's ADMISSION CLAIM, which the runner holds
+  // for the whole active window of a task and gives back in the turn promise's
+  // `finally`, after `onTurnDone` resolves. Fired off, the hook returns while
+  // the merge is still in flight and the claim goes back immediately.
+  test('T3.6: the merge step is awaited — the project stays claimed until it lands', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    let entered = false
+    let releaseMerge: () => void = () => {}
+    const inFlight = new Promise<void>((resolve) => {
+      releaseMerge = resolve
+    })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: async () => {
+        entered = true
+        await inFlight
+        return {
+          kind: 'held',
+          readiness: { ready: false, conditions: [], blockers: [] },
+          events: [],
+        }
+      },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    await until(() => entered)
+    // A fired-off merge step returns from the hook on this very tick; the
+    // claim would already be back. The wait is one-sided: awaited, the claim
+    // is held for as long as this test cares to look.
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(activeTask(project.id)).toBe(created.record.id)
+    releaseMerge()
+    // ...and it IS given back once the step lands — the assertion above is a
+    // real hold, not a leak.
+    await until(() => activeTask(project.id) === null)
+    expect(loadTask(repo, created.record.id)?.status).toBe('shipped')
   })
 
   test('auto_ship never fires on a review_ko: the KO waits for the human', async () => {
@@ -8234,5 +8686,1726 @@ describe('T2.6 preview ↔ launch coherence', () => {
     } finally {
       await started.stop()
     }
+  })
+})
+
+// --- the bounded automatic fix loop (T3.3, D14) ---------------------------
+
+describe('automatic fix loop (T3.3)', () => {
+  const AC1 = {
+    id: acceptanceCriterionId('WHEN it ships THE SYSTEM SHALL recap'),
+    text: 'WHEN it ships THE SYSTEM SHALL recap',
+  }
+  const AC2 = {
+    id: acceptanceCriterionId('WHEN checks fail THE SYSTEM SHALL block'),
+    text: 'WHEN checks fail THE SYSTEM SHALL block',
+  }
+  const MAJOR: Finding = { file: 'a.ts', line: 3, severity: 'major', message: 'leaks a descriptor' }
+
+  type ReviewSpec = {
+    verdict?: Verdict
+    findings?: Finding[]
+    criteria?: CriterionVerdict[]
+    /** What the reviewer settles the record on. Absent means a clean review_ok. */
+    blocked?: { code: 'review_blocked' | 'criteria_unmet'; detail: string }
+    /** A review that never produced an archive (agent crash, timeout). */
+    crashed?: boolean
+  }
+
+  function turnIo(cwd: string, record: TaskRecord, written?: TaskStatus[]) {
+    return {
+      emit: (input: Parameters<typeof appendTaskEvent>[2]) =>
+        appendTaskEvent(cwd, record.id, input),
+      persist: () => {
+        written?.push(record.status)
+        saveTask(cwd, record)
+      },
+      text: () => {},
+      signal: new AbortController().signal,
+    }
+  }
+
+  /**
+   * A reviewer stub that behaves like the real one where it matters here: it
+   * ARCHIVES a review record and emits `review_done` before settling, which is
+   * exactly what the loop reads to know it has something to work from.
+   */
+  function stubReviewer(cwd: string, plan: (n: number) => ReviewSpec) {
+    let n = 0
+    return async (record: TaskRecord, io: TaskTurnIo): Promise<void> => {
+      const spec = plan(n)
+      n += 1
+      io.emit({ type: 'review_started', data: { turn: record.turns.length, mode: 'simple' } })
+      if (spec.crashed) {
+        io.emit({
+          type: 'error',
+          data: { message: 'review failed: the review agent died' },
+          reason_code: 'review_blocked',
+        })
+        record.status = 'review_ko'
+        record.reason = taskReason('review_blocked', 'review failed: the review agent died')
+        io.persist()
+        return
+      }
+      const verdict = spec.verdict ?? 'request_changes'
+      const base = fakeReviewRecord(verdict, 'a summary')
+      const review: ReviewRecord = {
+        ...base,
+        review: {
+          ...base.review,
+          findings: spec.findings ?? [],
+          ...(spec.criteria ? { criteria: spec.criteria } : {}),
+        },
+      }
+      record.review_ref = archiveRecord(review, cwd)
+      io.emit({
+        type: 'review_done',
+        data: {
+          verdict,
+          findings_count: review.review.findings.length,
+          ref: record.review_ref,
+        },
+      })
+      if (spec.blocked) {
+        record.status = 'review_ko'
+        record.reason = taskReason(spec.blocked.code, spec.blocked.detail)
+      } else {
+        record.status = 'review_ok'
+        delete record.reason
+      }
+      io.persist()
+    }
+  }
+
+  type LoopRig = {
+    project: Project
+    record: TaskRecord
+    rig: FakeRunnerRig
+    written: TaskStatus[]
+    /** Runs end-of-turn cycles until the loop stops asking for another one. */
+    drive: (maxCycles?: number) => Promise<number>
+  }
+
+  function loopRig(opts: { plan: (n: number) => ReviewSpec; criteria?: (typeof AC1)[] }): LoopRig {
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, opts.plan),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    if (opts.criteria) {
+      record.criteria = opts.criteria
+      saveTask(project.path, record)
+    }
+    const written: TaskStatus[] = []
+    const io = turnIo(project.path, record, written)
+    const drive = async (maxCycles = 8): Promise<number> => {
+      let cycles = 0
+      for (let i = 0; i < maxCycles; i++) {
+        const before = rig.replies.length
+        record.status = 'reviewing' as TaskStatus
+        await rig.runnerOptions().onTurnDone!(record, io)
+        cycles += 1
+        if (rig.replies.length === before) {
+          return cycles
+        }
+        // What the runner does with an accepted reply: it appends the turn and
+        // emits `turn_started` when the turn actually begins.
+        record.turns.push({
+          prompt: String(rig.replies.at(-1)?.message ?? ''),
+          response: null,
+          question: null,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+        })
+        appendTaskEvent(project.path, record.id, {
+          type: 'turn_started',
+          data: { turn: record.turns.length, prompt: 'fix' },
+        })
+      }
+      throw new Error(`the loop never stopped: ${maxCycles} cycles and still going`)
+    }
+    return { project, record, rig, written, drive }
+  }
+
+  const blockedByFindings = {
+    findings: [MAJOR],
+    blocked: { code: 'review_blocked' as const, detail: 'a.ts:3 leaks a descriptor' },
+  }
+
+  const markers = (project: Project, record: TaskRecord) =>
+    readTaskEvents(project.path, record.id).filter((e) => e.data.name === AUTO_FIX_ROUND_NAME)
+
+  test('AC: review_ko + a major finding starts a fix turn WITHOUT a human click', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    // Exactly one end-of-turn cycle, no gesture from anyone.
+    const before = loop.rig.replies.length
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies.length).toBe(before + 1)
+    // ...and it is the FIX prompt, built from the review this turn archived.
+    const message = String(loop.rig.replies.at(-1)?.message)
+    expect(message).toContain('leaks a descriptor')
+    expect(message).toContain('applying code review fixes')
+    // The runner commits, never the agent: the prompt says so, unchanged.
+    expect(message).toContain('Do NOT commit')
+    // Said out loud, and numbered.
+    const marker = markers(loop.project, loop.record).at(-1)
+    expect(marker?.type).toBe('message')
+    expect(marker?.data.round).toBe(1)
+    expect(marker?.data.max).toBe(2)
+    expect(String(marker?.data.text)).toContain('a.ts:3 leaks a descriptor')
+  })
+
+  test('AC: criteria unmet with a review_ok verdict ENTERS the loop too', async () => {
+    const loop = loopRig({
+      criteria: [AC1, AC2],
+      plan: () => ({
+        verdict: 'approve',
+        criteria: [
+          { criterion_id: AC1.id, status: 'met' },
+          { criterion_id: AC2.id, status: 'unmet' },
+        ],
+        blocked: { code: 'criteria_unmet', detail: '1 of 2 acceptance criteria are not satisfied' },
+      }),
+    })
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies).toHaveLength(1)
+    const message = String(loop.rig.replies[0]?.message)
+    // The criterion's own TEXT travels, not just its id: an id is a join key.
+    expect(message).toContain(AC2.id)
+    expect(message).toContain('WHEN checks fail THE SYSTEM SHALL block')
+    // The satisfied one is not re-asked for.
+    expect(message).not.toContain(AC1.id)
+  })
+
+  test('AC: two blocked rounds at the default bound, then the loop hands it back', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    const cycles = await loop.drive()
+    // Three end-of-turn cycles: the original turn plus TWO fix rounds.
+    expect(cycles).toBe(3)
+    expect(loop.rig.replies).toHaveLength(2)
+    expect(markers(loop.project, loop.record).map((e) => e.data.round)).toEqual([1, 2])
+    expect(loop.record.status).toBe('waiting_for_you')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    // The code is ADDED to what the reviewer said, never a replacement.
+    expect(loop.record.reason?.detail).toContain('a.ts:3 leaks a descriptor')
+    expect(loop.record.reason?.detail).toContain('automatic fix loop stopped after 2')
+    expect(loadTask(loop.project.path, loop.record.id)?.status).toBe('waiting_for_you')
+    // Journal + API, both (invariant n° 2).
+    const said = readTaskEvents(loop.project.path, loop.record.id).find(
+      (e) => e.data.name === AUTO_FIX_EXHAUSTED_NAME,
+    )
+    expect(said?.reason_code).toBe('review_blocked')
+    expect(String(said?.data.text)).toContain('stopped after 2')
+  })
+
+  test('AC: an agent that fixes NOTHING still terminates — the bound is the whole guarantee', async () => {
+    // The stub never changes its verdict, whatever the fix turn did: the only
+    // thing that can stop this is the bound.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await expect(loop.drive(8)).resolves.toBe(3)
+  })
+
+  test('AC: a criteria-blocked exit carries criteria_unmet, not review_blocked', async () => {
+    const loop = loopRig({
+      criteria: [AC1, AC2],
+      plan: () => ({
+        verdict: 'approve',
+        criteria: [
+          { criterion_id: AC1.id, status: 'met' },
+          { criterion_id: AC2.id, status: 'unmet' },
+        ],
+        blocked: { code: 'criteria_unmet', detail: '1 of 2 acceptance criteria are not satisfied' },
+      }),
+    })
+    await loop.drive()
+    expect(loop.record.status).toBe('waiting_for_you')
+    expect(loop.record.reason?.code).toBe('criteria_unmet')
+    expect(loop.record.reason?.detail).toContain('1 of 2 acceptance criteria')
+  })
+
+  test('the exit is written by the SINGLE owner: the disk never shows review_ko first', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    // Only the last cycle's writes matter — the two retries legitimately
+    // persist 'review_ko' before their fix turn is queued.
+    await loop.drive()
+    loop.written.length = 0
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(
+      loop.record,
+      turnIo(loop.project.path, loop.record, loop.written),
+    )
+    // The reviewer's own settle() and the hook's belt-and-braces write both
+    // land on the FINAL status: the loop's decision is folded INTO the
+    // transition, never applied as a second write after it.
+    expect([...new Set(loop.written)]).toEqual(['waiting_for_you'])
+  })
+
+  test('the bound is configurable: 1 allows one round, 3 allows three', async () => {
+    for (const [max, expected] of [
+      [1, 1],
+      [3, 3],
+    ] as const) {
+      const project = register(makeRepo())
+      saveRepoConfig(project.path, { maxAutoFixRounds: max })
+      const rig = fakeRunner({ replyResult: { ok: true } })
+      const manager = createTaskManager({
+        ...managerOpts,
+        createRunnerFn: rig.createRunnerFn,
+        reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+      })
+      manager.checks(project.id, 'aaaaaaaaaaaa')
+      const { record } = seedCommittedTask(project.path)
+      const io = turnIo(project.path, record)
+      for (let i = 0; i < expected + 2; i++) {
+        const before = rig.replies.length
+        record.status = 'reviewing'
+        await rig.runnerOptions().onTurnDone!(record, io)
+        if (rig.replies.length === before) {
+          break
+        }
+        record.turns.push({
+          prompt: 'fix',
+          response: null,
+          question: null,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+        })
+        appendTaskEvent(project.path, record.id, {
+          type: 'turn_started',
+          data: { turn: record.turns.length },
+        })
+      }
+      expect(rig.replies).toHaveLength(expected)
+      expect(record.status).toBe('waiting_for_you')
+    }
+  })
+
+  test('the count survives a restart: it is read off the journal, not off memory', async () => {
+    const project = register(makeRepo())
+    const { record } = seedCommittedTask(project.path)
+    // A previous session already ran ONE automatic round and died. Nothing in
+    // memory carries that over — only these two journal lines do.
+    appendTaskEvent(project.path, record.id, {
+      type: 'message',
+      data: { text: 'starting automatic fix round 1 of 2', name: AUTO_FIX_ROUND_NAME },
+    })
+    appendTaskEvent(project.path, record.id, { type: 'turn_started', data: { turn: 2 } })
+
+    // A brand-new manager, a brand-new runner: this process has never seen
+    // this task before.
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const io = turnIo(project.path, record)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, io)
+    // Round 2 of 2, not round 1: the previous session's round counted.
+    expect(rig.replies).toHaveLength(1)
+    expect(markers(project, record).at(-1)?.data.round).toBe(2)
+    record.turns.push({
+      prompt: 'fix',
+      response: null,
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    appendTaskEvent(project.path, record.id, { type: 'turn_started', data: { turn: 3 } })
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, io)
+    expect(rig.replies).toHaveLength(1)
+    expect(record.status).toBe('waiting_for_you')
+  })
+
+  test('a human reply renews the budget, so a task never loses the loop for good', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await loop.drive()
+    expect(loop.record.status).toBe('waiting_for_you')
+    // The human answers by hand: a turn with no marker in front of it.
+    loop.record.turns.push({
+      prompt: 'try the other approach',
+      response: null,
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    appendTaskEvent(loop.project.path, loop.record.id, {
+      type: 'turn_started',
+      data: { turn: loop.record.turns.length, prompt: 'try the other approach' },
+    })
+    const before = loop.rig.replies.length
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies.length).toBe(before + 1)
+    expect(markers(loop.project, loop.record).at(-1)?.data.round).toBe(1)
+  })
+
+  test('a broken review STAYS review_ko: no round spent, no capability taken away', async () => {
+    // MAJOR 1. A review nobody could archive is not a review whose budget was
+    // spent, and the two must not end in the same place. This ticket's own
+    // spec says a review breakdown stays `review_ko` + an `error` event, and
+    // `review_ko` is the status on which a human may still assume the KO and
+    // ship — the exact capability parking the task would silently remove,
+    // for a round that was never spent.
+    const loop = loopRig({ plan: () => ({ crashed: true }) })
+    const cycles = await loop.drive()
+    expect(cycles).toBe(1)
+    expect(loop.rig.replies).toHaveLength(0)
+    expect(markers(loop.project, loop.record)).toHaveLength(0)
+    expect(loop.record.status).toBe('review_ko')
+    expect(loadTask(loop.project.path, loop.record.id)?.status).toBe('review_ko')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    // The honest sentence: nothing was tried, as opposed to "tried twice".
+    expect(loop.record.reason?.detail).toContain('no automatic fix round was started')
+    expect(loop.record.reason?.detail).not.toContain('stopped after')
+    // The reviewer's own failure message is still there, in front of it.
+    expect(loop.record.reason?.detail).toContain('the review agent died')
+    // Said in the journal too, under its OWN name — "could not begin" and
+    // "gave up after two rounds" are different facts on the timeline.
+    const events = readTaskEvents(loop.project.path, loop.record.id)
+    const stood = events.find((e) => e.data.name === AUTO_FIX_NOT_STARTED_NAME)
+    expect(stood?.reason_code).toBe('review_blocked')
+    expect(String(stood?.data.text)).toContain('no automatic fix round was started')
+    expect(events.find((e) => e.data.name === AUTO_FIX_EXHAUSTED_NAME)).toBeUndefined()
+    // The `error` event the spec requires of a review breakdown is untouched.
+    expect(events.some((e) => e.type === 'error')).toBe(true)
+  })
+
+  test('a broken review can still be SHIPPED by a human assuming the KO', async () => {
+    // The half of MAJOR 1 no status assertion can catch: `shipRefusal` lets a
+    // `review_ko` through and refuses a `waiting_for_you`, so parking the task
+    // deleted the force ship without a word. This is that capability, pinned.
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const ship = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1', note: null })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => ({ crashed: true })),
+      shipTaskFn: ship.fn,
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    expect(record.status).toBe('review_ko')
+    // A branch is the ship's other precondition and has nothing to do with
+    // the loop; give it one so the gate under test is the STATUS gate.
+    record.branch = 'codesema/task-broken'
+    saveTask(project.path, record)
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(ship.calls).toHaveLength(1)
+  })
+
+  test('the ship refusal of a HANDED-BACK task names the way out (DP1)', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const ship = shipStub({ pushed: true, mrUrl: null, note: null })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+      shipTaskFn: ship.fn,
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    const io = turnIo(project.path, record)
+    for (let i = 0; i < 3; i++) {
+      record.status = 'reviewing' as TaskStatus
+      await rig.runnerOptions().onTurnDone!(record, io)
+      record.turns.push({
+        prompt: 'fix',
+        response: null,
+        question: null,
+        started_at: new Date().toISOString(),
+        ended_at: null,
+      })
+      appendTaskEvent(project.path, record.id, {
+        type: 'turn_started',
+        data: { turn: record.turns.length },
+      })
+    }
+    expect(record.status).toBe('waiting_for_you')
+    const refused = await manager.ship(project.id, record.id)
+    expect(refused).toMatchObject({ ok: false, code: 409, reason_code: 'review_blocked' })
+    // `task is waiting_for_you` alone describes a task nobody asked anything
+    // about and leaves the reader with no idea what unblocks the ship.
+    const message = String((refused as { error: string }).error)
+    expect(message).toContain('automatic fix loop')
+    expect(message).toContain('Reply to it')
+    expect(message).toContain('restarts the automatic fix budget')
+    expect(ship.calls).toHaveLength(0)
+  })
+
+  test('a crashed review never sends the agent back at the PREVIOUS turn’s archive', async () => {
+    // The discriminating shape: the task ALREADY has an archive on disk — the
+    // first turn produced one — and `record.review_ref` still points at it.
+    // The second turn's review then dies before archiving anything, so it
+    // settles review_ko/review_blocked with a stale `review_ref` in place.
+    // Reading that archive would produce a perfectly well-formed fix prompt
+    // about findings from a turn that has already been worked on: a round
+    // spent re-fixing what may be fixed, and a lie about which review it
+    // answers. The loop must decline instead, on THIS turn's evidence.
+    const loop = loopRig({ plan: (n) => (n === 0 ? blockedByFindings : { crashed: true }) })
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    expect(loop.rig.replies).toHaveLength(1)
+    const staleRef = loop.record.review_ref
+    expect(staleRef).toBeTruthy()
+    // The fix turn the first round queued runs and finishes.
+    loop.record.turns.push({
+      prompt: String(loop.rig.replies.at(-1)?.message ?? ''),
+      response: null,
+      question: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    })
+    appendTaskEvent(loop.project.path, loop.record.id, {
+      type: 'turn_started',
+      data: { turn: loop.record.turns.length, prompt: 'fix' },
+    })
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    // No second round: the crashed review left nothing to work from.
+    expect(loop.rig.replies).toHaveLength(1)
+    expect(markers(loop.project, loop.record).map((e) => e.data.round)).toEqual([1])
+    // ...and the stale archive is still sitting there, unused — which is what
+    // makes this an abstention rather than an absence.
+    expect(loop.record.review_ref).toBe(staleRef)
+    // Still `review_ko`: one round WAS spent here, but the loop's refusal to
+    // spend a second is an abstention, not an exhausted budget.
+    expect(loop.record.status).toBe('review_ko')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    expect(loop.record.reason?.detail).toContain('no automatic fix round was started')
+    expect(loop.record.reason?.detail).not.toContain('stopped after')
+    expect(loop.record.reason?.detail).toContain('the review agent died')
+  })
+
+  test('a round the runner refuses is said, and never charged to the next reply', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner() // its reply() answers 409, like a drain would
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => blockedByFindings),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    const events = readTaskEvents(project.path, record.id)
+    const refused = events.find((e) => e.data.name === AUTO_FIX_NOT_QUEUED_NAME)
+    expect(refused?.type).toBe('error')
+    expect(String(refused?.data.message)).toContain('could not be queued')
+    // The announced round is retracted, so a later human reply keeps its two.
+    expect(autoFixRoundsUsed(events)).toBe(0)
+  })
+
+  test('non-regression: a clean review is untouched — no round, no marker, no reply', async () => {
+    const loop = loopRig({ plan: () => ({ verdict: 'approve' }) })
+    const cycles = await loop.drive()
+    expect(cycles).toBe(1)
+    expect(loop.record.status).toBe('review_ok')
+    expect(loop.record.reason).toBeUndefined()
+    expect(loop.rig.replies).toHaveLength(0)
+    expect(markers(loop.project, loop.record)).toHaveLength(0)
+  })
+
+  test('non-regression: a red checks run is NOT the loop’s business', async () => {
+    const project = register(makeRepo())
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: rig.createRunnerFn,
+      reviewTurnFn: stubReviewer(project.path, () => ({ verdict: 'approve' })),
+      runChecksFn: () =>
+        Promise.resolve(
+          finishedChecks({
+            status: 'failed',
+            checks: [
+              { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'boom' },
+            ],
+          }),
+        ),
+    })
+    manager.checks(project.id, 'aaaaaaaaaaaa')
+    const { record } = seedCommittedTask(project.path)
+    record.status = 'reviewing' as TaskStatus
+    await rig.runnerOptions().onTurnDone!(record, turnIo(project.path, record))
+    // T3.1's verdict stands, exactly as before: no fix turn is guessed at.
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('checks_failed')
+    expect(rig.replies).toHaveLength(0)
+  })
+
+  test('an UNREADABLE journal grants no round at all, and never a full budget', async () => {
+    // MAJOR 2, at the boundary the loop actually crosses. `readTaskJournal`
+    // used to answer `[]` for "there is nothing" and for "I could not read
+    // it" alike; the second read as a budget nobody had spent, so every turn
+    // renewed it and the loop had no bound left. Here the journal EXISTS and
+    // the reader refuses it (EACCES / EMFILE / EIO), and the discriminating
+    // outcome is: no reply queued, and no marker written either.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    setJournalReader(() => null)
+    try {
+      loop.record.status = 'reviewing' as TaskStatus
+      await loop.rig.runnerOptions().onTurnDone!(
+        loop.record,
+        turnIo(loop.project.path, loop.record),
+      )
+    } finally {
+      setJournalReader(null)
+    }
+    expect(loop.rig.replies).toHaveLength(0)
+    expect(markers(loop.project, loop.record)).toHaveLength(0)
+    // And no round is charged either: the task keeps the review_ko a human
+    // can still act on, rather than being parked on a budget nobody counted.
+    expect(loop.record.status).toBe('review_ko')
+    expect(loop.record.reason?.code).toBe('review_blocked')
+    expect(loop.record.reason?.detail).toContain('journal could not be read')
+    // Invariant n° 2: a refused budget without a word is a silent degradation.
+    const stood = readTaskEvents(loop.project.path, loop.record.id).find(
+      (e) => e.data.name === AUTO_FIX_NOT_STARTED_NAME,
+    )
+    expect(String(stood?.data.text)).toContain('unknown budget is never a full one')
+  })
+
+  test('an ABSENT journal is not an unreadable one: the first round still runs', async () => {
+    // The other half of the same distinction, and the one that would make the
+    // fix a regression if it were wrong: a task with no journal file at all
+    // has genuinely spent no round, and must still get its first.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    setJournalReader(() => '')
+    try {
+      loop.record.status = 'reviewing' as TaskStatus
+      await loop.rig.runnerOptions().onTurnDone!(
+        loop.record,
+        turnIo(loop.project.path, loop.record),
+      )
+    } finally {
+      setJournalReader(null)
+    }
+    expect(loop.rig.replies).toHaveLength(1)
+    expect(loop.record.status).toBe('review_ko')
+  })
+
+  test('a journal that LOST a line still counts, but never in silence', async () => {
+    // The count is derived from journal lines, so a line that does not parse
+    // moves the budget — bounded (the loop still stops at `max` from wherever
+    // the count resumed), never fatal, but never silent either.
+    const loop = loopRig({ plan: () => blockedByFindings })
+    appendFileSync(join(taskDir(loop.project.path, loop.record.id), 'events.jsonl'), '{"seq":\n')
+    loop.record.status = 'reviewing' as TaskStatus
+    await loop.rig.runnerOptions().onTurnDone!(loop.record, turnIo(loop.project.path, loop.record))
+    const damaged = readTaskEvents(loop.project.path, loop.record.id).find(
+      (e) => e.data.name === AUTO_FIX_JOURNAL_DAMAGED_NAME,
+    )
+    expect(damaged?.type).toBe('error')
+    expect(String(damaged?.data.message)).toContain('could not be read')
+    expect(damaged?.data.dropped).toBe(1)
+    // ...and the round it qualifies did happen: this names a degradation, it
+    // does not cancel the loop.
+    expect(loop.rig.replies).toHaveLength(1)
+  })
+
+  test('an intact journal says nothing about damage', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await loop.drive()
+    expect(
+      readTaskEvents(loop.project.path, loop.record.id).filter(
+        (e) => e.data.name === AUTO_FIX_JOURNAL_DAMAGED_NAME,
+      ),
+    ).toHaveLength(0)
+  })
+
+  test('the record NEVER grows a field for the counter', async () => {
+    const loop = loopRig({ plan: () => blockedByFindings })
+    await loop.drive()
+    const persisted = loadTask(loop.project.path, loop.record.id)
+    expect(persisted).not.toBeNull()
+    const keys = Object.keys(persisted as TaskRecord)
+    expect(keys.filter((key) => /round|cycle|fix/i.test(key))).toEqual([])
+    expect(persisted?.version).toBe(1)
+  })
+})
+
+// --- the fix loop, end to end on the REAL runner (T3.3) -------------------
+
+describe('automatic fix loop, end to end (T3.3)', () => {
+  const MAJOR: Finding = { file: 'feature.txt', line: 1, severity: 'major', message: 'still wrong' }
+
+  /** Fake claude that edits the worktree, so the RUNNER has something to commit. */
+  function writingAgent(
+    seen: { prompt: string; capOccupied: number }[],
+    cap: ReturnType<typeof createLoadCap>,
+  ) {
+    let n = 0
+    return (options: AgentRunOptions): Promise<string> => {
+      n += 1
+      seen.push({ prompt: options.prompt, capOccupied: cap.snapshot().occupied })
+      writeFileSync(join(options.cwd, 'feature.txt'), `revision ${n}\n`)
+      const raw = `${JSON.stringify({ type: 'result', result: `revision ${n}` })}\n`
+      options.onText?.(raw)
+      return Promise.resolve(raw)
+    }
+  }
+
+  /**
+   * The e2e's own bound on the loop under test — a COUNTER, never a delay.
+   *
+   * Every temporal guard in this file (`until`'s timeout, bun's
+   * `--timeout`) is a macro-task, and a fix loop that has lost its bound
+   * chains its turns in micro-tasks: it starves the timer queue and none of
+   * those guards is ever served. A broken loop therefore HANGS the run
+   * instead of reddening it, which on a merge queue is a stuck job rather
+   * than a failure — the one shape of red that reports nothing.
+   *
+   * So the reviewer counts its own cycles and, past the cap, stops blocking:
+   * the loop has nothing left to retry, the event loop breathes again, and
+   * `assert()` turns the runaway into the same clean red the unit rig's
+   * `drive()` produces. The cap is generously above the real bound (2 rounds
+   * = 3 cycles), so it can only fire on a loop that has genuinely lost it.
+   */
+  function cycleCap(max = 6) {
+    let cycles = 0
+    return {
+      /** Counts one review cycle; false once the cap is blown. */
+      spend(): boolean {
+        cycles += 1
+        return cycles <= max
+      },
+      get runaway(): boolean {
+        return cycles > max
+      },
+      assert(): void {
+        if (cycles > max) {
+          throw new Error(`the loop never stopped: ${max} review cycles and still going`)
+        }
+      },
+    }
+  }
+
+  /**
+   * A review that always blocks on the same major finding, archive included —
+   * until the cycle cap says the loop has run away, at which point it approves
+   * so the run can end and report.
+   */
+  function alwaysBlocks(
+    cwd: string,
+    guard: ReturnType<typeof cycleCap>,
+    before?: () => Promise<void>,
+  ) {
+    return async (record: TaskRecord, io: TaskTurnIo): Promise<void> => {
+      await before?.()
+      const base = fakeReviewRecord('request_changes', 'still not there')
+      record.review_ref = archiveRecord(
+        { ...base, review: { ...base.review, findings: [MAJOR] } },
+        cwd,
+      )
+      io.emit({
+        type: 'review_done',
+        data: { verdict: 'request_changes', findings_count: 1, ref: record.review_ref },
+      })
+      if (!guard.spend()) {
+        // Past the cap: stop feeding the loop so the process can finish and
+        // the assertion below can speak. This is not the behaviour under
+        // test — reaching it IS the failure.
+        record.status = 'review_ok'
+        delete record.reason
+        io.persist()
+        return
+      }
+      record.status = 'review_ko'
+      record.reason = taskReason('review_blocked', 'feature.txt:1 still wrong')
+      io.persist()
+    }
+  }
+
+  test('the fix turns really run: bounded, committed by the runner, under the machine cap', async () => {
+    const project = register(makeRepo())
+    const cap = createLoadCap(2)
+    const seen: { prompt: string; capOccupied: number }[] = []
+    const guard = cycleCap()
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: writingAgent(seen, cap),
+      reviewTurnFn: alwaysBlocks(project.path, guard),
+    })
+    const created = await manager.create(project.id, {
+      title: 'looped',
+      prompt: 'p',
+      autoShip: false,
+    })
+    if (!created.ok) {
+      throw new Error('task was not created')
+    }
+    const id = created.record.id
+    // Shut the manager down on EVERY exit, assertion failures included: a real
+    // runner left alive holds a queue, a load-cap subscription and an in-flight
+    // promise, and the whole `bun test` process then hangs on them instead of
+    // reporting the failure.
+    try {
+      // `guard.runaway` FIRST, and it is what makes this wait finite: a loop
+      // that lost its bound never lets the timeout fire (see `cycleCap`), so
+      // the only exit from a runaway is the counter the reviewer keeps.
+      await until(
+        () => guard.runaway || loadTask(project.path, id)?.status === 'waiting_for_you',
+        15000,
+      )
+    } finally {
+      await manager.shutdown()
+    }
+    guard.assert()
+
+    // One human turn plus exactly TWO automatic rounds, then it stops.
+    expect(seen).toHaveLength(3)
+    expect(seen[0]?.prompt).toContain('p')
+    for (const round of [1, 2]) {
+      expect(seen[round]?.prompt).toContain('still wrong')
+      expect(seen[round]?.prompt).toContain('applying code review fixes')
+    }
+    // Every turn — the automatic ones included — held a slot of the machine
+    // cap while it ran. A fix turn wired around `launch()` would show 0 here.
+    expect(seen.map((s) => s.capOccupied >= 1)).toEqual([true, true, true])
+
+    const record = loadTask(project.path, id)
+    expect(record?.status).toBe('waiting_for_you')
+    expect(record?.reason?.code).toBe('review_blocked')
+    expect(record?.turns).toHaveLength(3)
+    const events = readTaskEvents(project.path, id)
+    // The commit of each fix turn comes from the RUNNER at the end of turn —
+    // the agent stub above never runs git at all.
+    expect(events.filter((e) => e.type === 'commit')).toHaveLength(3)
+    expect(events.filter((e) => e.type === 'turn_started')).toHaveLength(3)
+    expect(autoFixRoundsUsed(events)).toBe(2)
+    // Nothing leaked: every slot taken by a turn or a round came back.
+    expect(cap.snapshot().occupied).toBe(0)
+  })
+
+  test('a BLIND journal bounds the loop instead of feeding it a fresh budget', async () => {
+    // MAJOR 2, end to end on the real runner. The journal keeps being WRITTEN
+    // — appends are untouched — but every read of it fails (EACCES, EMFILE
+    // under a descriptor storm, EIO). The count the bound rests on is derived
+    // from that journal, so a read that answers "nothing" instead of "I could
+    // not tell" hands the loop a full budget on every single turn, and the
+    // only thing left stopping it is whatever the test rig runs out of first.
+    //
+    // The discriminating number is the AGENT TURN COUNT: 1 here, 9-and-going
+    // before the fix. The cycle cap is what makes the difference visible as a
+    // red rather than as a hang.
+    const project = register(makeRepo())
+    const cap = createLoadCap(2)
+    const seen: { prompt: string; capOccupied: number }[] = []
+    const guard = cycleCap()
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: writingAgent(seen, cap),
+      reviewTurnFn: alwaysBlocks(project.path, guard),
+    })
+    const created = await manager.create(project.id, {
+      title: 'blind',
+      prompt: 'p',
+      autoShip: false,
+    })
+    if (!created.ok) {
+      throw new Error('task was not created')
+    }
+    const id = created.record.id
+    try {
+      // Blinded only AFTER the task exists, so the failure under test is the
+      // journal read and not the creation.
+      setJournalReader(() => null)
+      await until(
+        () => guard.runaway || (loadTask(project.path, id)?.turns.length ?? 0) >= 1,
+        15000,
+      )
+      // Let any round the loop might still be chaining land.
+      await until(() => guard.runaway || seen.length > 1, 1000).catch(() => {})
+    } finally {
+      setJournalReader(null)
+      await manager.shutdown()
+    }
+    guard.assert()
+    // The human's own turn ran; NO automatic round followed it, because the
+    // budget could not be counted and an uncounted budget is never a full one.
+    expect(seen).toHaveLength(1)
+    const record = loadTask(project.path, id)
+    // And the task is left where a human can still act on it — review_ko, not
+    // parked: nothing was tried, so nothing was exhausted.
+    expect(record?.status).toBe('review_ko')
+    expect(record?.reason?.detail).toContain('journal could not be read')
+  })
+
+  test('a fix turn QUEUES for its machine slot — it never short-circuits the cap, and never deadlocks', async () => {
+    const project = register(makeRepo())
+    const cap = createLoadCap(1)
+    const seen: { prompt: string; capOccupied: number }[] = []
+    const guard = cycleCap()
+    const slot: { release: (() => void) | null } = { release: null }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      loadCap: cap,
+      runAgentFn: writingAgent(seen, cap),
+      // The FIRST review takes the machine's only slot and keeps it: the fix
+      // round the loop is about to queue has nowhere to run yet.
+      reviewTurnFn: alwaysBlocks(project.path, guard, async () => {
+        slot.release ??= await cap.acquire('review')
+      }),
+    })
+    const created = await manager.create(project.id, {
+      title: 'starved',
+      prompt: 'p',
+      autoShip: false,
+    })
+    if (!created.ok) {
+      throw new Error('task was not created')
+    }
+    const id = created.record.id
+
+    try {
+      // The end-of-turn hook RESOLVED even though the machine is full — it
+      // never waits on the round it queued — and the round is parked, named.
+      await until(
+        () =>
+          readTaskEvents(project.path, id).some(
+            (e) => e.type === 'queue' && e.data.name === 'machine_busy',
+          ),
+        15000,
+      )
+      const waiting = loadTask(project.path, id)
+      expect(waiting?.status).toBe('queued')
+      expect(waiting?.reason?.code).toBe('resource_busy')
+      // Nothing ran on the stolen slot: still just the first turn's agent.
+      expect(seen).toHaveLength(1)
+
+      // The slot comes back; the parked round starts on its own.
+      slot.release?.()
+      await until(
+        () => guard.runaway || loadTask(project.path, id)?.status === 'waiting_for_you',
+        15000,
+      )
+      guard.assert()
+      expect(seen.length).toBeGreaterThanOrEqual(2)
+      expect(seen[1]?.prompt).toContain('still wrong')
+      expect(cap.snapshot().occupied).toBe(0)
+    } finally {
+      // Same reason as the test above — plus the held slot itself, which an
+      // early failure would otherwise leave taken for the rest of the file.
+      slot.release?.()
+      await manager.shutdown()
+    }
+  })
+})
+
+// --- T3.7 × T3.6 × T3.5: the cycle mirrored onto the ticket ----------------
+//
+// These tests are about the WIRE, not the mechanisms: `syncCycleLabel`,
+// `cycleLabelEvent` and `publishTaskRecap` are each proven in their own file,
+// and all three used to have no production caller at all — deleting them from
+// this module left every suite green. What is asserted here is therefore, in
+// every case, an argv or a journal line that only the CALL SITE can produce.
+describe('cycle labels and the recap, wired onto a real run', () => {
+  const jsonl = (events: unknown[]) => `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+  const claudeStream = (response: string) =>
+    jsonl([
+      { type: 'system', subtype: 'init', session_id: 'sess-cycle' },
+      { type: 'result', result: response },
+    ])
+
+  const SET_LABELS = '--raw-field=labels[]='
+
+  /**
+   * One forge, stateful about the issue's labels, recording only the WRITES.
+   * Reads are noise here (admission, snapshot reconciliation and every pose
+   * spend one each); what the wiring is judged on is what it wrote, and in
+   * which order.
+   */
+  function cycleForge(
+    opts: {
+      body: string
+      labels?: string[]
+      catalog?: string[]
+      comments?: string[]
+      failLabelWrite?: boolean
+      /** Refuses the FIRST write of this label only; every later one lands. */
+      failLabelWriteOnce?: string
+      failClose?: boolean
+    } = { body: '' },
+  ) {
+    /** Write operations, in the order the forge saw them. */
+    const writes: string[] = []
+    const refusedOnce = new Set<string>()
+    const labels = [...(opts.labels ?? [])]
+    const issueJson = () =>
+      JSON.stringify({
+        number: 42,
+        title: 'Fix flaky worktree cleanup',
+        body: opts.body,
+        state: 'OPEN',
+        labels: labels.map((name) => ({ name })),
+        author: { id: 'u1', is_bot: false, login: 'octocat', name: 'The Octocat' },
+        createdAt: '2026-07-20T09:00:00Z',
+        updatedAt: '2026-07-28T10:00:00Z',
+        url: 'https://github.com/acme/repo/issues/42',
+      })
+    const rig = forgeRig((call) => {
+      const [verb, sub] = call.args
+      if (verb === 'issue' && sub === 'view') {
+        // `--json comments` is `listIssueComments`; anything else is `getIssue`
+        // (the label pose's read, the admission's, the reconciliation's).
+        if (call.args.includes('comments')) {
+          return {
+            kind: 'ok',
+            stdout: JSON.stringify({
+              comments: (opts.comments ?? []).map((body) => ({
+                body,
+                author: { login: 'octocat' },
+                createdAt: '2026-08-01T09:00:00Z',
+              })),
+            }),
+          }
+        }
+        return { kind: 'ok', stdout: issueJson() }
+      }
+      if (verb === 'label' && sub === 'list') {
+        return {
+          kind: 'ok',
+          stdout: JSON.stringify((opts.catalog ?? []).map((name) => ({ name }))),
+        }
+      }
+      if (verb === 'label' && sub === 'create') {
+        writes.push(`label create ${String(call.args[2])}`)
+        return { kind: 'ok', stdout: '' }
+      }
+      if (verb === 'api') {
+        const next = call.args
+          .filter((arg) => arg.startsWith(SET_LABELS))
+          .map((arg) => arg.slice(SET_LABELS.length))
+        writes.push(`labels ${next.join(',')}`)
+        const once = opts.failLabelWriteOnce
+        if (once !== undefined && next.includes(once) && !refusedOnce.has(once)) {
+          refusedOnce.add(once)
+          return { kind: 'error', message: 'gh: HTTP 502 Bad Gateway (labels)' }
+        }
+        if (opts.failLabelWrite) {
+          return { kind: 'error', message: 'gh: HTTP 502 Bad Gateway (labels)' }
+        }
+        labels.splice(0, labels.length, ...next)
+        return { kind: 'ok', stdout: '' }
+      }
+      if (verb === 'issue' && sub === 'comment') {
+        writes.push('comment')
+        return { kind: 'ok', stdout: '' }
+      }
+      if (verb === 'issue' && sub === 'close') {
+        writes.push('close')
+        return opts.failClose
+          ? { kind: 'error', message: 'gh: HTTP 502 Bad Gateway (close)' }
+          : { kind: 'ok', stdout: '' }
+      }
+      return { kind: 'error', message: `unexpected argv: ${call.args.join(' ')}` }
+    })
+    return { ...rig, writes, currentLabels: () => [...labels] }
+  }
+
+  /** Every cycle label this run wrote, in order — the pose trace on its own. */
+  const posed = (writes: readonly string[]): string[] =>
+    writes.filter((op) => op.startsWith('labels ')).map((op) => op.slice('labels '.length))
+
+  type RunOpts = {
+    /** The project's `.codesema/config.json` opt-in. Absent means never declared. */
+    cycleLabels?: boolean
+    /** What the merge step answers. Absent means the default `human` policy: no merge. */
+    merged?: boolean
+    /** Whether the ship writes a recap.json — the document `publishTaskRecap` reads. */
+    recap?: boolean
+    forge: ReturnType<typeof cycleForge>
+    /** Skips `manager.create({issue})`: a task with no ticket at all. */
+    ticketless?: boolean
+  }
+
+  /**
+   * One whole nominal run — create, turn, review OK, auto-ship, merge step —
+   * awaited to its end through `shutdown()`, which drains the poses started
+   * from hooks that have nothing to await them with.
+   */
+  async function runCycle(opts: RunOpts) {
+    const project = register(makeRepoWithRemote())
+    if (opts.cycleLabels !== undefined) {
+      saveRepoConfig(project.path, { forgeCycleLabels: opts.cycleLabels })
+    }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        if (opts.recap) {
+          // What the real ship leaves behind, and the only document
+          // `publishTaskRecap` will agree to publish.
+          writeTaskRecap(options.cwd, options.task.id, {
+            version: 1,
+            summary: 'Rewired the worktree cleanup.',
+            changes: ['worktree: prune before delete'],
+            decisions: [],
+            files: ['src/task-worktree.ts'],
+            tests: [{ command: 'bun test', status: 'passed' }],
+            branch: options.task.branch,
+          })
+        }
+        return Promise.resolve({
+          pushed: true,
+          mrUrl: 'https://github.com/acme/repo/pull/9',
+          note: null,
+        })
+      },
+      issueExecFn: opts.forge.execFn,
+      ...(opts.merged
+        ? {
+            mergeSettings: {
+              policy: 'auto' as const,
+              deleteBranch: false,
+              allowMergeWithoutChecks: false,
+            },
+            mergeTaskFn: () =>
+              Promise.resolve({
+                kind: 'merged' as const,
+                cli: 'gh' as const,
+                url: 'https://github.com/acme/repo/pull/9',
+                readiness: { ready: true, conditions: [], blockers: [] },
+                events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+              }),
+          }
+        : {}),
+    })
+    const created = await manager.create(project.id, {
+      autoShip: true,
+      ...(opts.ticketless
+        ? { title: 'No ticket at all', prompt: 'do it' }
+        : { issue: VALID_ISSUE_REF }),
+    })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    const id = created.record.id
+    // Bounded on a COUNT of journal lines, never on a duration: the merge step
+    // writes its own line unconditionally, so this is a wait for a fact the
+    // run always produces — a regression turns into an assertion below, not
+    // into a timeout that reads the same as a slow machine.
+    await until(() => readTaskEvents(project.path, id).some((e) => e.type === 'merge'))
+    // Drains the poses `onTask` / `create()` / `ship()` could not await: after
+    // this, everything this run will ever write to the forge is written.
+    await manager.shutdown()
+    return { project, manager, id, events: () => readTaskEvents(project.path, id) }
+  }
+
+  test('a project that never opted in writes no cycle label at all — and still gets its recap', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, merged: true, recap: true })
+
+    // The opt-in half: not one label write, not even a catalog read, across
+    // admission → running → reviewing → shipped → merged. `disabled` leaves
+    // `syncCycleLabel` before a single forge argv is BUILT, and the wiring is
+    // what has to preserve that.
+    expect(posed(forge.writes)).toEqual([])
+    expect(forge.calls.some((c) => c.args[0] === 'label')).toBe(false)
+    expect(forge.calls.some((c) => c.args[0] === 'api')).toBe(false)
+    // ...and the recap publication is NOT behind that opt-in: a merge that
+    // landed still comments and still closes. The two are wired together and
+    // gated apart, which is the whole point of asserting them in one test.
+    expect(forge.writes).toEqual(['comment', 'close'])
+    expect(run.events().some((e) => e.type === 'issue' && e.data.name === 'recap_posted')).toBe(
+      true,
+    )
+    expect(run.events().some((e) => e.type === 'issue' && e.data.name === 'closed')).toBe(true)
+  })
+
+  test('an opted-in run poses one label per transition, then comment → codesema:merged → close', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+
+    // ONE label per transition, and only where the label actually changes:
+    // 'review_ok' and 'shipped' both mean `codesema:reviewing`, so the three
+    // transitions that share it cost one write, not three.
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:merged',
+    ])
+    // Lazily created, once each, and only the ones this run actually needed:
+    // `codesema:blocked` never appears in a repo whose tasks never block.
+    expect(forge.writes.filter((op) => op.startsWith('label create'))).toEqual([
+      'label create codesema:queued',
+      'label create codesema:in-progress',
+      'label create codesema:reviewing',
+      'label create codesema:merged',
+    ])
+    // THE order T3.5's decision 3 fixes, asserted as an order and not as a
+    // set: the recap comment, then the label, then the closure. Reversing any
+    // two of them is what this reads.
+    const at = (op: string) => forge.writes.indexOf(op)
+    expect(at('comment')).toBeGreaterThanOrEqual(0)
+    expect(at('comment')).toBeLessThan(at('labels codesema:merged'))
+    expect(at('labels codesema:merged')).toBeLessThan(at('close'))
+    // The issue is left carrying exactly one cycle label, and it is the one
+    // no STATUS maps to.
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+    // A landed merge moves no status (T3.6) and a pose is not news: no
+    // 'label_not_posed' line on a run where everything landed.
+    expect(loadTask(run.project.path, run.id)?.status).toBe('shipped')
+    expect(loadTask(run.project.path, run.id)?.reason).toBeUndefined()
+    expect(run.events().some((e) => e.data.name === 'label_not_posed')).toBe(false)
+    // SIX issue reads for the whole run, and the exact figure is the point:
+    // one for the admission, one for the pre-review snapshot reconciliation,
+    // and ONE PER POSE — four, not six. `review_ok` and `shipped` are
+    // transitions that say nothing new about the ticket, and the wiring
+    // recognises that BEFORE spending a round trip on `syncCycleLabel`'s own
+    // `unchanged`. It is the same guard that keeps a heartbeat — which lands
+    // on `onTask` exactly like a transition does — from reading the issue
+    // every thirty seconds for the length of a turn.
+    expect(
+      forge.calls.filter(
+        (c) => c.args[0] === 'issue' && c.args[1] === 'view' && !c.args.includes('comments'),
+      ).length,
+    ).toBe(6)
+  })
+
+  test('a merge the gate refuses hands the task back AND says so on the ticket', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      issueExecFn: forge.execFn,
+      // The REAL gate under `auto`: no archived review, no criteria verdicts —
+      // refused long before any merge command is built.
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+    })
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() =>
+      readTaskEvents(project.path, created.record.id).some(
+        (e) => e.type === 'merge' && e.data.name === 'refused',
+      ),
+    )
+    await manager.shutdown()
+
+    expect(loadTask(project.path, created.record.id)?.status).toBe('waiting_for_you')
+    // The hand-back is a transition like any other, and the ticket says it:
+    // the four statuses that stop needing the machine and start needing a
+    // person all read `codesema:blocked` from the outside.
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:blocked',
+    ])
+    // A refused merge is not a merge: no recap comment, no closure, and no
+    // `codesema:merged` anywhere near this ticket.
+    expect(forge.writes).not.toContain('comment')
+    expect(forge.writes).not.toContain('close')
+    expect(forge.currentLabels()).toEqual(['codesema:blocked'])
+  })
+
+  test('a HUMAN ship out of a review_ko moves the ticket off codesema:blocked', async () => {
+    // The one transition that never reaches `onTask`: `ship()` persists and
+    // broadcasts on its own, so this label is mirrored from the ship's own
+    // call site or from nowhere. The auto-ship path cannot show it — `shipped`
+    // shares `codesema:reviewing` with the `review_ok` it chains from — so the
+    // discriminating input is a ship the human clicks on a KO review, where
+    // the ticket really does move from `codesema:blocked`.
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ko'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      issueExecFn: forge.execFn,
+    })
+    const created = await manager.create(project.id, { autoShip: false, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() => loadTask(project.path, created.record.id)?.status === 'review_ko')
+    expect(await manager.ship(project.id, created.record.id)).toEqual({ ok: true })
+    await manager.shutdown()
+
+    expect(loadTask(project.path, created.record.id)?.status).toBe('shipped')
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:blocked',
+      'codesema:reviewing',
+    ])
+    expect(forge.currentLabels()).toEqual(['codesema:reviewing'])
+  })
+
+  test('the turn does not end until the ticket has been written: no background publication', async () => {
+    // TRAP N° 1 OF THIS BATCH, and the one no assertion on a finished run can
+    // see: turning `await publishMergedOutcome(...)` into `void
+    // publishMergedOutcome(...)` leaves every outcome of every other test in
+    // this file identical, because a rig that answers instantly finishes the
+    // publication before anyone looks. What the shortcut actually breaks is a
+    // promise about TIME — the end of a turn releases the project's claim, and
+    // a claim released with the comment still in flight lets the NEXT task of
+    // that project start on a ticket this one has not finished writing (and,
+    // on a Ctrl-C, lets the process drain out from under it).
+    //
+    // So the assertion is an ORDER between two independent facts: the issue is
+    // closed, and the next task's agent starts. One forge answer is held open
+    // to make the two separable at all.
+    const log: string[] = []
+    /** A holder, not a bare `let`: the assignment happens inside a callback. */
+    const gate: { release: (() => void) | null } = { release: null }
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 10_000,
+      runAgentFn: (options: AgentRunOptions) => {
+        log.push(options.prompt.includes('wait your turn') ? 'agent:next' : 'agent:first')
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        writeTaskRecap(options.cwd, options.task.id, {
+          version: 1,
+          summary: 'Rewired the worktree cleanup.',
+          changes: [],
+          decisions: [],
+          files: [],
+          tests: [],
+          branch: options.task.branch,
+        })
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+      issueExecFn: ((cli, args, cwd) => {
+        if (args[0] === 'issue' && args[1] === 'comment') {
+          log.push('comment-asked')
+          // Held OPEN: the publication cannot finish until this is released.
+          return new Promise((resolve) => {
+            gate.release = () => {
+              resolve(forge.execFn(cli, args, cwd))
+            }
+          })
+        }
+        if (args[0] === 'issue' && args[1] === 'close') {
+          log.push('closed')
+        }
+        return forge.execFn(cli, args, cwd)
+      }) as ForgeIssuesExecFn,
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }),
+    })
+    const first = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    const second = await manager.create(project.id, {
+      autoShip: false,
+      title: 'next',
+      prompt: 'wait your turn',
+    })
+    if (!first.ok || !second.ok) {
+      throw new Error('create refused')
+    }
+    try {
+      await until(() => log.includes('comment-asked'))
+      // A COUNTER, never a clock: the answer is released as soon as the second
+      // task's agent has started — which, if the publication is properly
+      // awaited, never happens — and otherwise after a bounded number of
+      // polls, so a correct build finishes instead of hanging on a promise
+      // nobody will keep.
+      for (let poll = 0; poll < 200 && !log.includes('agent:next'); poll += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      gate.release?.()
+      await until(() => log.includes('closed') && log.includes('agent:next'), 10_000)
+      // The whole assertion: the ticket was finished BEFORE the project moved on.
+      expect(log.indexOf('closed')).toBeLessThan(log.indexOf('agent:next'))
+    } finally {
+      gate.release?.()
+      await manager.shutdown()
+    }
+  })
+
+  test('a pose that failed is retried by the next transition that wants the same label', async () => {
+    // The discriminating input is the ONE case a run where everything fails
+    // cannot show: a single refused write, followed by a LATER transition
+    // asking for the SAME label. `reviewing`, `review_ok` and `shipped` all
+    // mean `codesema:reviewing`, so the second of them is the retry — but only
+    // if the failure was not remembered as a pose. Remember it and the ticket
+    // stays on `codesema:in-progress` for good, silently, under a journal line
+    // that promised a correction which never comes.
+    const forge = cycleForge({
+      body: conformingTicketBody(),
+      catalog: [],
+      failLabelWriteOnce: 'codesema:reviewing',
+    })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: async (record, io) => {
+        // Held until the 'reviewing' pose has actually FAILED and said so, so
+        // the transition below is a later one and not a concurrent one — two
+        // poses of the same label in flight together are meant to collapse
+        // into one, which is a different rule and not the one under test.
+        // A COUNTER, not a clock: a build that never journals the failure
+        // falls out of the loop and fails the assertion below instead of
+        // hanging on a condition that will not come.
+        for (
+          let poll = 0;
+          poll < 300 &&
+          !readTaskEvents(project.path, record.id).some((e) => e.data.name === 'label_not_posed');
+          poll += 1
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        record.status = 'review_ok'
+        io.persist()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      issueExecFn: forge.execFn,
+    })
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() => loadTask(project.path, created.record.id)?.status === 'shipped', 10_000)
+    await manager.shutdown()
+
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:reviewing',
+    ])
+    // The retry landed: the ticket ends up telling the truth.
+    expect(forge.currentLabels()).toEqual(['codesema:reviewing'])
+    // ...and the one failure was still named, exactly once.
+    expect(
+      readTaskEvents(project.path, created.record.id).filter(
+        (e) => e.type === 'issue' && e.data.name === 'label_not_posed',
+      ),
+    ).toHaveLength(1)
+  })
+
+  test('every degradation of this wiring reaches the bus, not only the journal', async () => {
+    // Invariant 2 has THREE legs — a readable reason, a journal line, and the
+    // API surfacing that journal — and the third is the one a `readTaskEvents`
+    // assertion cannot see: `publishTaskRecap` appends its own lines to disk,
+    // so a caller that forgets to broadcast them leaves every on-disk
+    // assertion green while no live workspace ever learns what happened.
+    const envelopes: TaskEnvelope[] = []
+    const forge = cycleForge({
+      body: conformingTicketBody(),
+      catalog: [],
+      failLabelWrite: true,
+      failClose: true,
+    })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        writeTaskRecap(options.cwd, options.task.id, {
+          version: 1,
+          summary: 'Rewired the worktree cleanup.',
+          changes: [],
+          decisions: [],
+          files: [],
+          tests: [],
+          branch: options.task.branch,
+        })
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+      issueExecFn: forge.execFn,
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }),
+    })
+    manager.subscribe((envelope) => envelopes.push(envelope))
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() =>
+      readTaskEvents(project.path, created.record.id).some((e) => e.type === 'merge'),
+    )
+    await manager.shutdown()
+
+    const broadcast = envelopes
+      .filter((e) => e.event.name === 'task_event')
+      .map((e) => e.event.data as TaskEvent)
+      .filter((event) => event.type === 'issue')
+      .map((event) => event.data.name)
+    // T3.5's own lines, appended by `publishTaskRecap` and broadcast by its
+    // caller...
+    expect(broadcast).toContain('recap_posted')
+    expect(broadcast).toContain('close_unreachable')
+    // ...and T3.7's, appended and broadcast by the pose's call site.
+    expect(broadcast).toContain('label_not_posed')
+  })
+
+  test('abandoning a merged task never walks the ticket back off codesema:merged', async () => {
+    // `codesema:merged` is the one label NO status maps to, and 'shipped' is a
+    // status the record keeps for good. An abandon — the ordinary way a human
+    // reclaims a landed task's worktree — re-persists that very 'shipped',
+    // which reaches `onTask` like any transition would. Mirroring it would
+    // relabel the ticket `codesema:reviewing` and undo, on the forge, the one
+    // thing the whole merge chain exists to say.
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+    const before = forge.writes.length
+
+    expect(await run.manager.abandon(run.project.id, run.id)).toMatchObject({ ok: true })
+    await run.manager.shutdown()
+
+    // Not one more forge write, and the ticket still says what happened.
+    expect(forge.writes).toHaveLength(before)
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+  })
+
+  test('a task with no ticket asks the forge nothing, opt-in or not', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    await runCycle({ forge, cycleLabels: true, merged: true, recap: true, ticketless: true })
+    expect(forge.calls).toEqual([])
+  })
+
+  test('a label write the forge refuses changes no status, and says so in the journal', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [], failLabelWrite: true })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+
+    // 1. The status is IDENTICAL to the nominal run: a label is an effect of
+    //    the transition, never a condition of it, and nothing in this module
+    //    lets a forge failure reach `saveTask`.
+    const record = loadTask(run.project.path, run.id)
+    expect(record?.status).toBe('shipped')
+    expect(record?.reason).toBeUndefined()
+    // 2. The merge's own work still happened, in its order: a label that would
+    //    not be written must not cost the ticket its recap or its closure.
+    expect(forge.writes.filter((op) => !op.startsWith('label'))).toEqual(['comment', 'close'])
+    // 3. And it is NOT silent: one readable line per failed pose, on the
+    //    'issue' domain, with the D2 code ADDED beside the message.
+    const failures = run
+      .events()
+      .filter((e) => e.type === 'issue' && e.data.name === 'label_not_posed')
+    expect(failures.length).toBeGreaterThanOrEqual(4)
+    expect(failures.map((e) => e.data.label)).toContain('codesema:merged')
+    expect(failures.every((e) => e.reason_code === 'forge_unreachable')).toBe(true)
+    expect(failures.every((e) => e.data.step === 'write')).toBe(true)
+    expect(String(failures[0]?.data.message)).toContain("the task's status is unaffected")
+  })
+
+  test('a failed pose is retried at the next transition, never remembered as posed', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [], failLabelWrite: true })
+    await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+    // Every transition tried, none of them believed the ticket already said
+    // what it never said: the claim staked before the round trip is dropped on
+    // a failure, which is exactly what `cycleLabelEvent`'s own message
+    // promises ("to be corrected at the next transition").
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:merged',
+    ])
+  })
+
+  test('a merge whose recap never made it still poses codesema:merged, and never closes the issue', async () => {
+    // No recap.json on disk: the publication is refused LOCALLY, the forge is
+    // perfectly healthy, and the merge is still a fact about the branch.
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: false })
+
+    expect(forge.writes).not.toContain('comment')
+    // An issue closed without its recap is a ticket closed without a trace.
+    expect(forge.writes).not.toContain('close')
+    expect(run.events().some((e) => e.type === 'issue' && e.data.name === 'recap_missing')).toBe(
+      true,
+    )
+    // ...and the label is posed all the same, LAST, because the merge happened.
+    expect(posed(forge.writes).at(-1)).toBe('codesema:merged')
+  })
+
+  test('a closure the forge refuses is named, and still leaves the label posed', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [], failClose: true })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+
+    const closeFailed = run
+      .events()
+      .find((e) => e.type === 'issue' && e.data.name === 'close_unreachable')
+    expect(closeFailed).toBeDefined()
+    expect(closeFailed?.reason_code).toBe('forge_unreachable')
+    expect(String(closeFailed?.data.message)).toContain('carries the recap but could not be closed')
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+    // Still no status moved by any of it.
+    expect(loadTask(run.project.path, run.id)?.status).toBe('shipped')
+  })
+
+  test('a recap already on the ticket is not sent twice, and the issue is still closed', async () => {
+    const marker = `<!-- ${RECAP_MARKER_PREFIX}`
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    // The idempotence guard needs the TASK's own id, which only exists once
+    // the task does — so the marker is planted from the ship stub, on the very
+    // task about to be published.
+    const seen: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        seen.push(`${marker}${options.task.id} -->`)
+        writeTaskRecap(options.cwd, options.task.id, {
+          version: 1,
+          summary: 'Rewired the worktree cleanup.',
+          changes: [],
+          decisions: [],
+          files: [],
+          tests: [],
+          branch: options.task.branch,
+        })
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+      issueExecFn: ((cli, args, cwd) => {
+        if (args[0] === 'issue' && args[1] === 'view' && args.includes('comments')) {
+          return Promise.resolve({
+            kind: 'ok' as const,
+            stdout: JSON.stringify({
+              comments: seen.map((body) => ({
+                body,
+                author: { login: 'octocat' },
+                createdAt: '2026-08-01T09:00:00Z',
+              })),
+            }),
+          })
+        }
+        return forge.execFn(cli, args, cwd)
+      }) as ForgeIssuesExecFn,
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }),
+    })
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() =>
+      readTaskEvents(project.path, created.record.id).some((e) => e.type === 'merge'),
+    )
+    await manager.shutdown()
+
+    const events = readTaskEvents(project.path, created.record.id)
+    expect(events.some((e) => e.type === 'issue' && e.data.name === 'recap_already_posted')).toBe(
+      true,
+    )
+    expect(forge.writes).not.toContain('comment')
+    // Posted by an earlier run IS posted: the closure goes ahead, and the
+    // label still sits between the two.
+    const at = (op: string) => forge.writes.indexOf(op)
+    expect(at('labels codesema:merged')).toBeGreaterThanOrEqual(0)
+    expect(at('labels codesema:merged')).toBeLessThan(at('close'))
   })
 })

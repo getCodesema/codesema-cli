@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import TaskEventLine from './components/task-events/TaskEventLine.vue'
+import TaskEventMessage from './components/task-events/TaskEventMessage.vue'
 import { TASK_EVENT_COMPONENTS } from './task-event-registry'
 
 // TASK_EVENT_COMPONENTS is exhaustive by CONSTRUCTION (a Record<TaskEventType,
@@ -39,5 +40,15 @@ describe('TASK_EVENT_COMPONENTS', () => {
 
   test("'criteria' (T2.5) routes to the generic neutral line, not a bespoke renderer", () => {
     expect(TASK_EVENT_COMPONENTS.criteria).toBe(TaskEventLine)
+  })
+
+  // T3.6. Same claim, and the same failure mode to keep out: routing the merge
+  // gate through TaskEventMessage would let `fullTextBySeq` overwrite each of
+  // D12's four condition lines with the turn's own response (DP15), so a task
+  // refused for `checks_unavailable` would show the agent's reply four times
+  // and never say what blocked it.
+  test("'merge' (T3.6) routes to the generic neutral line, not a message bubble", () => {
+    expect(TASK_EVENT_COMPONENTS.merge).toBe(TaskEventLine)
+    expect(TASK_EVENT_COMPONENTS.merge).not.toBe(TaskEventMessage)
   })
 })

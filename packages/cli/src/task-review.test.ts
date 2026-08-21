@@ -3,24 +3,37 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
-import type {
-  Finding,
-  ReviewRecord,
-  TaskChecks,
-  TaskRecord,
-  TaskStatus,
-  Verdict,
+import {
+  acceptanceCriterionId,
+  type AcceptanceCriterion,
+  type CriterionVerdict,
+  type Finding,
+  type ReviewRecord,
+  type TaskChecks,
+  type TaskRecord,
+  type TaskStatus,
+  type Verdict,
 } from './contract.js'
 import { createLoadCap } from './load-cap.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview } from './record.js'
-import type { runSimpleFlow, SimpleOutcome } from './review.js'
 import {
+  buildFullReviewPrompt,
+  type DualOutcome,
+  type runDualFlow,
+  type runSimpleFlow,
+  type SimpleOutcome,
+} from './review.js'
+import {
+  actionableFindingIds,
   applyChecksGate,
+  blockingFindingsDetail,
+  buildAutoFixTurnPrompt,
   buildFixTurnPrompt,
   checksBlockReady,
   checksFailedDetail,
   createTaskReviewer,
+  hasBlockingFindings,
   readTaskReview,
   taskReviewVerdict,
   terminalChecksResult,
@@ -311,6 +324,15 @@ describe('checksBlockReady / applyChecksGate (T3.1)', () => {
     applyChecksGate(ko, checksOf({ status: 'failed' }))
     expect(ko.status).toBe('review_ko')
     expect(ko.reason?.code).toBe('review_blocked')
+
+    // T3.2: the criteria gate settles BEFORE the wrapped persist runs the
+    // checks gate, so a criteria KO must keep its own code — while still
+    // getting the checks status stamped on the record.
+    const blockedByCriteria = recordAt('review_ko')
+    blockedByCriteria.reason = { code: 'criteria_unmet', detail: '1 of 3 …' }
+    applyChecksGate(blockedByCriteria, checksOf({ status: 'failed' }))
+    expect(blockedByCriteria.reason?.code).toBe('criteria_unmet')
+    expect(blockedByCriteria.checks_status).toBe('failed')
   })
 
   test('terminalChecksResult drops running and keeps every finished status', () => {
@@ -1216,5 +1238,679 @@ describe('task runner with the reviewer hooked on onTurnDone', () => {
     await until(() => loadTask(repo, task.id)?.status === 'waiting_for_you')
     expect(flow.calls).toHaveLength(0)
     expect(readTaskEvents(repo, task.id).map((e) => e.type)).not.toContain('review_started')
+  })
+})
+
+// --- T3.2: the acceptance-criteria gate ------------------------------------
+
+function criterionOf(text: string): AcceptanceCriterion {
+  return { id: acceptanceCriterionId(text), text }
+}
+
+const GC1 = criterionOf('WHEN a task ships THE SYSTEM SHALL write a recap')
+const GC2 = criterionOf('WHEN checks fail THE SYSTEM SHALL block the merge')
+const GC3 = criterionOf('WHEN a criterion is unclear THE SYSTEM SHALL refuse to merge')
+
+/** A diff whose `feature.txt` hunk really starts at new-file line 1. */
+const GATE_DIFF = [
+  'diff --git a/feature.txt b/feature.txt',
+  'new file mode 100644',
+  '--- /dev/null',
+  '+++ b/feature.txt',
+  '@@ -0,0 +1,2 @@',
+  '+content of feature.txt',
+  '+second line',
+].join('\n')
+
+const ANCHOR = 'feature.txt:1 — the feature lands here'
+
+/** The review record a flow would produce, carrying a real diff to ground against. */
+function fakeReviewWithCriteria(
+  verdict: Verdict,
+  criteria: CriterionVerdict[] | undefined,
+): ReviewRecord {
+  const base = fakeReview(verdict)
+  return {
+    ...base,
+    diff: GATE_DIFF,
+    review: { ...base.review, ...(criteria ? { criteria } : {}) },
+  }
+}
+
+/** A task whose acceptance criteria were validated by a human (T2.5). */
+async function makeTaskWithCriteria(repo: string, title: string): Promise<TaskRecord> {
+  const record = await makeTaskWithWorktree(repo, title)
+  record.criteria = [GC1, GC2, GC3]
+  saveTask(repo, record)
+  return record
+}
+
+type DualFlowOptions = Parameters<typeof runDualFlow>[0]
+
+function fakeDualFlow(outcome: DualOutcome) {
+  const calls: DualFlowOptions[] = []
+  const fn = (options: DualFlowOptions): Promise<DualOutcome> => {
+    calls.push(options)
+    return Promise.resolve(outcome)
+  }
+  return { calls, fn }
+}
+
+describe('createTaskReviewer: the criteria chapter (T3.2)', () => {
+  test('a task with criteria gets a chapter naming every stable id, one per line', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'ticketed task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithCriteria('approve', [
+        { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+        { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+        { criterion_id: GC3.id, status: 'met', evidence: ANCHOR },
+      ]),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    for (const criterion of [GC1, GC2, GC3]) {
+      const lines = prompt.split('\n').filter((line) => line.includes(criterion.id))
+      expect(lines).toHaveLength(1)
+    }
+  })
+
+  test('a task with NO criteria gets a prompt byte-identical to the one without the chapter', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'plain task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).not.toContain('Acceptance criteria — MANDATORY chapter')
+    expect(prompt).toBe(buildFullReviewPrompt(flow.calls[0]?.input as never))
+    expect(record.status).toBe('review_ok')
+    expect(rig.events.some((event) => event.type === 'criteria')).toBe(false)
+  })
+
+  test('an empty diff short-circuits BEFORE any chapter is built and any model is called', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'idle ticketed task')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'must not be called' })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls).toHaveLength(0)
+    expect(record.status).toBe('review_ok')
+    expect(rig.events).toEqual([{ type: 'message', data: { text: 'no changes' } }])
+  })
+
+  test('criteria frozen from a forge issue drive the chapter too, not just a validated list', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'issue-driven task')
+    // T2.4's frozen snapshot, with NO top-level list: the precedence lives in
+    // taskCriteria(), and reading record.criteria alone would judge nothing.
+    record.issue_snapshot = {
+      body_hash: 'sha256:t2:abc',
+      criteria: [GC1, GC2, GC3],
+      taken_at: '2026-08-20T09:00:00.000Z',
+    }
+    saveTask(repo, record)
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithCriteria('approve', undefined),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    for (const criterion of [GC1, GC2, GC3]) {
+      expect(flow.calls[0]?.prompt).toContain(criterion.id)
+    }
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('criteria_unmet')
+  })
+
+  test('the chapter is judged on the baseline range, like the rest of the review', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'anchored ticketed task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithCriteria('approve', undefined),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls[0]?.input.baseline).toBe(String(record.baseline_sha))
+  })
+})
+
+describe('createTaskReviewer: the hard gate (T3.2)', () => {
+  const allMet: CriterionVerdict[] = [
+    { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+    { criterion_id: GC2.id, status: 'met', evidence: 'feature.txt:2 — and here' },
+    { criterion_id: GC3.id, status: 'met', evidence: ANCHOR },
+  ]
+
+  async function runGate(
+    criteria: CriterionVerdict[] | undefined,
+    verdict: Verdict = 'approve',
+  ): Promise<{ record: TaskRecord; rig: IoRig; repo: string }> {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'gated task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithCriteria(verdict, criteria),
+      reportLines: [],
+    })
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+    return { record, rig, repo }
+  }
+
+  test('every criterion met and anchored: the gate does not block', async () => {
+    const { record, rig } = await runGate(allMet)
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    const gate = rig.events.find((event) => event.type === 'criteria')
+    // No `unknown_ids`, no `diff_unreadable`: those keys appear only when the
+    // thing they name actually happened.
+    expect(gate?.data).toEqual({ name: 'gate_passed', met: 3, unmet: 0, unclear: 0 })
+    expect(gate?.reason_code).toBeUndefined()
+  })
+
+  test('a single unmet blocks with criteria_unmet, message and journal line', async () => {
+    const { record, rig } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC2.id, status: 'unmet' },
+      { criterion_id: GC3.id, status: 'met', evidence: ANCHOR },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('criteria_unmet')
+    expect(record.reason?.detail).toContain(GC2.id)
+    expect(record.reason?.detail).toContain('unmet')
+    const gate = rig.events.find((event) => event.type === 'criteria')
+    expect(gate?.data.name).toBe('gate_blocked')
+    expect(gate?.reason_code).toBe('criteria_unmet')
+    // Never an 'error': the review itself worked, the WORK is what falls short.
+    expect(rig.events.some((event) => event.type === 'error')).toBe(false)
+  })
+
+  test('a single unclear blocks exactly as hard, and says so', async () => {
+    const { record, rig } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC3.id, status: 'unclear' },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('criteria_unmet')
+    expect(record.reason?.detail).toContain('1 unclear')
+    expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
+      name: 'gate_blocked',
+      met: 2,
+      unmet: 0,
+      unclear: 1,
+    })
+  })
+
+  test('a criterion the model skipped blocks: silence is never a pass', async () => {
+    const { record } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.detail).toContain(GC3.id)
+  })
+
+  test('a model that says nothing at all about criteria blocks all of them', async () => {
+    const { record, rig } = await runGate(undefined)
+    expect(record.status).toBe('review_ko')
+    // Round 2, majeur 1(b): `unjudged` rides on the SAME line as the counts.
+    // Without it this payload was byte-identical to the one a reviewer that
+    // weighed the work and doubted produces (the test just below), and the
+    // journal claimed "the reviewer is unsure" where the truth was "nothing
+    // usable came back at all".
+    expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
+      name: 'gate_blocked',
+      met: 0,
+      unmet: 0,
+      unclear: 3,
+      unjudged: 3,
+    })
+    expect(record.reason?.detail).toContain('no verdict back from the reviewer')
+  })
+
+  test('…and a reviewer that judged all three and doubted says something ELSE', async () => {
+    // The discriminator for the line above: identical tally, different fact.
+    const { record, rig } = await runGate([
+      { criterion_id: GC1.id, status: 'unclear' },
+      { criterion_id: GC2.id, status: 'unclear' },
+      { criterion_id: GC3.id, status: 'unclear' },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
+      name: 'gate_blocked',
+      met: 0,
+      unmet: 0,
+      unclear: 3,
+    })
+    expect(record.reason?.detail).not.toContain('no verdict back from the reviewer')
+  })
+
+  test('an evidence the diff cannot carry is journaled as such, not as a doubt', async () => {
+    const { record, rig } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: 'src/ghost.ts:9 — not in this diff' },
+      { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC3.id, status: 'met', evidence: ANCHOR },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
+      name: 'gate_blocked',
+      met: 2,
+      unmet: 0,
+      unclear: 1,
+      dropped_evidence: 1,
+      demoted: 1,
+    })
+    expect(record.reason?.detail).toContain('pointed at a line this diff does not carry')
+  })
+
+  test('a proof the model wrapped in backticks satisfies the gate exactly like a bare one', async () => {
+    // Round 2, majeur 1(a), end to end: the SAME criteria with the SAME proofs,
+    // decorated. This used to settle `review_ko` with three `unclear`.
+    const { record, rig } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: `\`${ANCHOR}\`` },
+      { criterion_id: GC2.id, status: 'met', evidence: `\`${ANCHOR}\`` },
+      { criterion_id: GC3.id, status: 'met', evidence: `\`${ANCHOR}\`` },
+    ])
+    expect(record.status).toBe('review_ok')
+    expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
+      name: 'gate_passed',
+      met: 3,
+      unmet: 0,
+      unclear: 0,
+    })
+  })
+
+  test('an approve whose criteria are met and anchored is NOT downgraded', async () => {
+    // The discriminator against "the gate blocks whenever it runs": same
+    // reviewer verdict, same task, only the statuses differ.
+    const { record } = await runGate(allMet)
+    expect(record.status).toBe('review_ok')
+  })
+
+  test('a met whose evidence points outside the diff does not survive the gate', async () => {
+    const { record } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: 'src/ghost.ts:9 — not in this diff' },
+      { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC3.id, status: 'met', evidence: ANCHOR },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.detail).toContain(`${GC1.id}: unclear`)
+  })
+
+  test('an id the model invented is discarded and cannot fill a criterion', async () => {
+    const invented = acceptanceCriterionId('WHEN nothing THE SYSTEM SHALL nothing')
+    const { record, rig } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: invented, status: 'met', evidence: ANCHOR },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.detail).toContain(`${GC3.id}: unclear`)
+    expect(record.reason?.detail).not.toContain(invented)
+    // …and the drift is SAID: the entry was discarded, not absorbed.
+    expect(rig.events.find((event) => event.type === 'criteria')?.data.unknown_ids).toBe(1)
+  })
+
+  test('a review that already blocks keeps ITS reason: criteria never relabel a KO', async () => {
+    const { record } = await runGate(
+      [
+        { criterion_id: GC1.id, status: 'unmet' },
+        { criterion_id: GC2.id, status: 'unmet' },
+        { criterion_id: GC3.id, status: 'unmet' },
+      ],
+      'request_changes',
+    )
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('review_blocked')
+  })
+
+  test('the normalized statuses land in the ARCHIVE, readable at a later boot', async () => {
+    const { record, repo } = await runGate([
+      { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC2.id, status: 'unmet' },
+    ])
+    saveTask(repo, record)
+    // What the API serves is the PERSISTED record, not the in-memory one the
+    // reviewer mutated: `criteria_unmet` has to survive the round-trip.
+    expect(loadTask(repo, record.id)?.reason?.code).toBe('criteria_unmet')
+    expect(loadTask(repo, record.id)?.reason?.detail).toContain(GC2.id)
+    // Read back exactly the way T3.6 will: off disk, through sanitizeRecord's
+    // strict whitelist, in a process that knows nothing of this review.
+    const archived = readTaskReview(repo, record.id)
+    expect(archived?.review.criteria).toEqual([
+      { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC2.id, status: 'unmet' },
+      { criterion_id: GC3.id, status: 'unclear' },
+    ])
+  })
+
+  test('a diff the grounding cannot index blocks AND says it could not check anything', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'blind gate')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const blind = fakeReviewWithCriteria('approve', [
+      { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+      { criterion_id: GC3.id, status: 'met', evidence: ANCHOR },
+    ])
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: { ...blind, diff: 'this is not a unified diff' },
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('criteria_unmet')
+    // The tally alone ("3 unclear") would read as "the reviewer was unsure",
+    // which is not what happened: nothing could be checked at all.
+    expect(record.reason?.detail).toContain('could not be indexed')
+    expect(rig.events.find((event) => event.type === 'criteria')?.data.diff_unreadable).toBe(true)
+  })
+
+  test('a review failure on a ticketed task is still review_ko + error, never a failed task', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'broken review')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: false, failure: 'run', message: 'agent crashed' })
+
+    await expect(
+      reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io),
+    ).resolves.toBeUndefined()
+
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('review_blocked')
+    expect(rig.events.some((event) => event.type === 'error')).toBe(true)
+    // No criteria line at all: nothing was judged, so nothing is claimed.
+    expect(rig.events.some((event) => event.type === 'criteria')).toBe(false)
+  })
+})
+
+describe('createTaskReviewer: explicit review mode (T3.2)', () => {
+  test("mode 'simple' runs the simple flow and never the dual one", async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'simple mode')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const simple = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithCriteria('approve', undefined),
+      reportLines: [],
+    })
+    const dual = fakeDualFlow({ ok: false, failure: 'run', message: 'must not be called' })
+
+    await reviewer(repo, {
+      mode: 'simple',
+      runSimpleFlowFn: simple.fn,
+      runDualFlowFn: dual.fn,
+    })(record, rig.io)
+
+    expect(simple.calls).toHaveLength(1)
+    expect(dual.calls).toHaveLength(0)
+    expect(rig.events.find((event) => event.type === 'review_started')?.data.mode).toBe('simple')
+  })
+
+  test("mode 'dual' runs the dual flow, chapter included, and never the simple one", async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'dual mode')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const simple = fakeSimpleFlow({ ok: false, failure: 'run', message: 'must not be called' })
+    const dual = fakeDualFlow({
+      ok: true,
+      record: fakeReviewWithCriteria('approve', [
+        { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+        { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+        { criterion_id: GC3.id, status: 'met', evidence: ANCHOR },
+      ]),
+      reportLines: [],
+    })
+
+    await reviewer(repo, {
+      mode: 'dual',
+      runSimpleFlowFn: simple.fn,
+      runDualFlowFn: dual.fn,
+    })(record, rig.io)
+
+    expect(simple.calls).toHaveLength(0)
+    expect(dual.calls).toHaveLength(1)
+    // The chapter reaches BOTH lanes' prompts through this one argument: a
+    // dual review that never saw the criteria would judge none and block the
+    // task forever.
+    const chapter = dual.calls[0]?.criteriaChapter ?? ''
+    for (const criterion of [GC1, GC2, GC3]) {
+      expect(chapter).toContain(criterion.id)
+    }
+    expect(rig.events.find((event) => event.type === 'review_started')?.data.mode).toBe('dual')
+    expect(record.status).toBe('review_ok')
+  })
+
+  test('a task without criteria hands the dual flow no chapter at all', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'dual, no ticket')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const dual = fakeDualFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { mode: 'dual', runDualFlowFn: dual.fn })(record, rig.io)
+
+    expect(dual.calls[0]?.criteriaChapter).toBeUndefined()
+  })
+})
+
+// --- the deterministic guard-rail (T3.3) ----------------------------------
+
+describe('hasBlockingFindings', () => {
+  const critical: Finding = { file: 'a.ts', severity: 'critical', message: 'auth bypass' }
+  const major: Finding = { file: 'a.ts', severity: 'major', message: 'leaks a descriptor' }
+  const minor: Finding = { file: 'a.ts', severity: 'minor', message: 'rename this' }
+  const info: Finding = { file: 'a.ts', severity: 'info', message: 'nit' }
+  const praised: Finding = { file: 'a.ts', severity: 'critical', kind: 'praise', message: 'nice' }
+  const why: Finding = { file: 'a.ts', severity: 'major', kind: 'why', message: 'context' }
+
+  test('critical and major block, whatever the model concluded', () => {
+    for (const verdict of ['approve', 'comment', 'request_changes'] as Verdict[]) {
+      expect(hasBlockingFindings(fakeReview(verdict, [critical]))).toBe(true)
+      expect(hasBlockingFindings(fakeReview(verdict, [major]))).toBe(true)
+    }
+  })
+
+  test('minor, info, praise and why do not', () => {
+    expect(hasBlockingFindings(fakeReview('approve', []))).toBe(false)
+    expect(hasBlockingFindings(fakeReview('approve', [minor, info]))).toBe(false)
+    // Severity alone is not the bar: a praise or a "why" note never asks for a
+    // change, so it never blocks however loudly it is graded.
+    expect(hasBlockingFindings(fakeReview('approve', [praised, why]))).toBe(false)
+  })
+
+  test('the detail names the exact tally, so a human knows what is left', () => {
+    const detail = blockingFindingsDetail(fakeReview('approve', [critical, major, major, info]))
+    expect(detail).toContain('1 critical')
+    expect(detail).toContain('2 major')
+    expect(detail).toContain("verdict was 'approve'")
+  })
+
+  test('actionableFindingIds is the set the fix prompt is asked for', () => {
+    const review = fakeReview('comment', [praised, major, info, minor])
+    expect(actionableFindingIds(review)).toEqual([1, 3])
+  })
+})
+
+describe('createTaskReviewer: an approve never releases a blocking finding (T3.3)', () => {
+  async function runVerdict(
+    verdict: Verdict,
+    findings: Finding[],
+  ): Promise<{ record: TaskRecord; rig: IoRig; repo: string }> {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'guarded task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReview(verdict, findings),
+      reportLines: [],
+    })
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+    return { record, rig, repo }
+  }
+
+  test('approve + an unresolved MAJOR finding: the task stays blocked', async () => {
+    // `groundReview` escalates approve+critical, never approve+major: this is
+    // the gap the CLI-side guard-rail closes.
+    const { record, rig } = await runVerdict('approve', [
+      { file: 'feature.txt', severity: 'major', message: 'leaks a descriptor' },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.code).toBe('review_blocked')
+    expect(record.reason?.detail).toContain('1 major')
+    // Said out loud, beside the review_done line that still quotes the model's
+    // own 'approve': without it the journal would show an approval next to a
+    // blocked task and nothing bridging the two.
+    const said = rig.events.find((event) => event.data.name === 'review_verdict_overridden')
+    expect(said?.type).toBe('message')
+    expect(said?.reason_code).toBe('review_blocked')
+    expect(String(said?.data.text)).toContain('1 major')
+    // The model's own verdict is still reported untouched.
+    expect(rig.events.find((event) => event.type === 'review_done')?.data.verdict).toBe('approve')
+  })
+
+  test('approve + a CRITICAL the grounding could not escalate: still blocked', async () => {
+    // An empty/unindexable diff makes groundReview a no-op, so the escalation
+    // it normally performs never runs — and the record still must not ship.
+    const { record } = await runVerdict('approve', [
+      { file: 'feature.txt', severity: 'critical', message: 'auth bypass' },
+    ])
+    expect(record.status).toBe('review_ko')
+    expect(record.reason?.detail).toContain('1 critical')
+  })
+
+  test('non-regression: an approve with only info/praise findings still releases', async () => {
+    const { record, rig } = await runVerdict('approve', [
+      { file: 'feature.txt', severity: 'info', message: 'nit' },
+      { file: 'feature.txt', severity: 'critical', kind: 'praise', message: 'nice' },
+    ])
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    expect(rig.events.some((event) => event.data.name === 'review_verdict_overridden')).toBe(false)
+  })
+
+  test('a plain approve with no finding at all is untouched', async () => {
+    const { record } = await runVerdict('approve', [])
+    expect(record.status).toBe('review_ok')
+  })
+})
+
+describe('buildAutoFixTurnPrompt (T3.3)', () => {
+  test('asks for every actionable finding, and never for the notes', () => {
+    const repo = makeRepo()
+    const saved = archiveRecord(
+      fakeReview('request_changes', [
+        { file: 'a.ts', severity: 'info', message: 'a nit nobody must chase' },
+        { file: 'a.ts', line: 3, severity: 'major', message: 'off by one' },
+      ]),
+      repo,
+    )
+    const prompt = buildAutoFixTurnPrompt({ review_ref: saved, turns: [] } as unknown as TaskRecord)
+    expect(prompt).toContain('off by one')
+    expect(prompt).not.toContain('a nit nobody must chase')
+    // It IS the manual path's prompt: same builder, same rules.
+    expect(prompt).toContain('applying code review fixes')
+    // The agent is told not to commit — the runner commits at the end of turn.
+    expect(prompt).toContain('Do NOT commit')
+  })
+
+  test('a review that approved the code still gets a prompt when criteria block', () => {
+    const repo = makeRepo()
+    const saved = archiveRecord(
+      {
+        ...fakeReview('approve', []),
+        review: {
+          ...fakeReview('approve', []).review,
+          criteria: [
+            { criterion_id: GC1.id, status: 'met' as const, evidence: ANCHOR },
+            { criterion_id: GC2.id, status: 'unmet' as const },
+            { criterion_id: GC3.id, status: 'unclear' as const },
+          ],
+        },
+      },
+      repo,
+    )
+    const prompt = buildAutoFixTurnPrompt({
+      review_ref: saved,
+      criteria: [GC1, GC2, GC3],
+      turns: [],
+    } as unknown as TaskRecord)
+    expect(prompt).toContain(GC2.id)
+    expect(prompt).toContain('WHEN checks fail')
+    expect(prompt).toContain(GC3.id)
+    // The satisfied one is not re-asked for.
+    expect(prompt).not.toContain(GC1.id)
+  })
+
+  test('null when there is nothing concrete to ask for', () => {
+    const repo = makeRepo()
+    // An archive with no actionable finding and no criteria: a round spent on
+    // this would name no work at all.
+    const empty = archiveRecord(
+      fakeReview('comment', [{ file: 'a.ts', severity: 'info', message: 'nit' }]),
+      repo,
+    )
+    expect(buildAutoFixTurnPrompt({ review_ref: empty, turns: [] } as unknown as TaskRecord)).toBe(
+      null,
+    )
+    expect(buildAutoFixTurnPrompt({ review_ref: null, turns: [] } as unknown as TaskRecord)).toBe(
+      null,
+    )
+    expect(
+      buildAutoFixTurnPrompt({
+        review_ref: join(repo, 'gone.json'),
+        turns: [],
+      } as unknown as TaskRecord),
+    ).toBe(null)
+  })
+
+  test('non-regression: the MANUAL path still honours the human’s own selection', () => {
+    const repo = makeRepo()
+    const saved = archiveRecord(
+      fakeReview('request_changes', [
+        { file: 'a.ts', severity: 'major', message: 'first one' },
+        { file: 'b.ts', severity: 'major', message: 'second one' },
+      ]),
+      repo,
+    )
+    const task = { review_ref: saved, turns: [] } as unknown as TaskRecord
+    const manual = buildFixTurnPrompt(task, [1])
+    expect(manual).toContain('second one')
+    expect(manual).not.toContain('first one')
+    // ...while the automatic one takes both, because both block.
+    const auto = buildAutoFixTurnPrompt(task)
+    expect(auto).toContain('first one')
+    expect(auto).toContain('second one')
   })
 })

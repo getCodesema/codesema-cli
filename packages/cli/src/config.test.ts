@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_MERGE_SETTINGS,
   globalConfigPath,
   hasInvalidPositiveIntKey,
+  invalidMergeKeys,
   isRepoAgentTrusted,
   loadConfig,
   loadGlobalConfig,
@@ -12,8 +14,11 @@ import {
   presentRepoGlobalOnlyKeys,
   repoConfigPath,
   repoGlobalOnlyIgnoredNotices,
+  resolveMaxAutoFixRounds,
+  resolveMergeSettings,
   resolveProjectAgentCommand,
   resolveProjectConfig,
+  resolveReviewMode,
   resolveWatchdogBudgets,
   saveGlobalConfig,
   saveRepoConfig,
@@ -498,6 +503,24 @@ describe('resolveProjectConfig (T1.4)', () => {
     expect(resolved.config.timeout).toBe(60)
   })
 
+  // T3.7/D15. A boolean opt-in has a failure mode a number does not: `false`
+  // is the value a project uses to REFUSE what the machine turned on, and a
+  // parse that keeps values by truthiness drops it — handing the project
+  // straight back to the global `true` it had just declined.
+  test('the cycle-label opt-in defaults to off, and a repo false beats a global true', () => {
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBeUndefined()
+    saveGlobalConfig({ forgeCycleLabels: true })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(true)
+    saveRepoConfig(repoDir, { forgeCycleLabels: false })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(false)
+    // And it is repo-settable in the other direction too, unlike the
+    // global-only keys next door.
+    saveGlobalConfig({})
+    saveRepoConfig(repoDir, { forgeCycleLabels: true })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(true)
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual([])
+  })
+
   test('outside any repo, only the global file (and flags) apply', () => {
     saveGlobalConfig({ timeout: 900, isolation: 'policy' })
     saveRepoConfig(repoDir, { timeout: 300, isolation: 'container' })
@@ -512,6 +535,104 @@ describe('resolveProjectConfig (T1.4)', () => {
     expect(resolved.config.maxConcurrentAgents).toBe(4)
     expect(resolved.warnings.some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
     expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual(['maxConcurrentAgents'])
+  })
+
+  test('the review mode a project declares is what resolves (T3.2)', () => {
+    saveRepoConfig(repoDir, { reviewMode: 'dual' })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBe('dual')
+    expect(resolveReviewMode(resolved.config)).toBe('dual')
+  })
+
+  test('a repo review mode wins over the global one, like every repo-settable key', () => {
+    saveGlobalConfig({ reviewMode: 'dual' })
+    saveRepoConfig(repoDir, { reviewMode: 'simple' })
+    expect(resolveReviewMode(resolveProjectConfig(repoDir).config)).toBe('simple')
+  })
+
+  test('no review mode declared anywhere resolves to simple (non-regression)', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBeUndefined()
+    expect(resolveReviewMode(resolved.config)).toBe('simple')
+  })
+
+  test('a review mode outside the enum is dropped without throwing, and simple stands', () => {
+    // Written through saveRepoConfig so the directory exists, then hand-mangled
+    // the way a human editing the file would.
+    saveRepoConfig(repoDir, { timeout: 300 })
+    writeFileSync(
+      repoConfigPath(repoDir),
+      JSON.stringify({ timeout: 300, reviewMode: 'triple' }),
+      'utf8',
+    )
+    expect(() => resolveProjectConfig(repoDir)).not.toThrow()
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBeUndefined()
+    expect(resolveReviewMode(resolved.config)).toBe('simple')
+  })
+
+  // --- T3.3 (D14): the bound of the automatic fix loop --------------------
+
+  test('resolveMaxAutoFixRounds answers on its OWN bar, not on the parser’s', () => {
+    // Hand-built configs, deliberately: `parseConfig` drops an unusable value
+    // before the resolver sees it, so going through `resolveProjectConfig`
+    // cannot tell whether this function has a bar of its own. It must, because
+    // it is exported and read by callers that never opened a config file.
+    expect(resolveMaxAutoFixRounds({})).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: undefined })).toBe(2)
+    // `0` has no meaning this ticket specified — it is an unusable bound like
+    // any other, NOT a switch that turns the loop off.
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 0 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: -3 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 2.5 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: Number.NaN })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: '3' as unknown as number })).toBe(2)
+    // ...and a usable one is honoured verbatim.
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 1 })).toBe(1)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 7 })).toBe(7)
+  })
+
+  test('the fix-loop bound a project declares is what resolves (T3.3/D14)', () => {
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 3 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxAutoFixRounds).toBe(3)
+    expect(resolveMaxAutoFixRounds(resolved.config)).toBe(3)
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 1 })
+    expect(resolveMaxAutoFixRounds(resolveProjectConfig(repoDir).config)).toBe(1)
+  })
+
+  test('a repo bound wins over the global one, like every repo-settable key', () => {
+    saveGlobalConfig({ maxAutoFixRounds: 5 })
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 1 })
+    expect(resolveMaxAutoFixRounds(resolveProjectConfig(repoDir).config)).toBe(1)
+  })
+
+  test('no bound declared anywhere answers the D14 default of 2', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxAutoFixRounds).toBeUndefined()
+    expect(resolveMaxAutoFixRounds(resolved.config)).toBe(2)
+  })
+
+  test('an unusable bound falls back on the default without throwing', () => {
+    saveRepoConfig(repoDir, { timeout: 300 })
+    // `0` is in this list on purpose: this ticket does NOT give it the
+    // meaning "switch the loop off", so it is an unusable bound like any
+    // other and the D14 default stands.
+    for (const bad of [0, -1, 2.5, '3', null, [], { rounds: 2 }] as unknown[]) {
+      writeFileSync(
+        repoConfigPath(repoDir),
+        JSON.stringify({ timeout: 300, maxAutoFixRounds: bad }),
+        'utf8',
+      )
+      expect(() => resolveProjectConfig(repoDir)).not.toThrow()
+      const resolved = resolveProjectConfig(repoDir)
+      expect(resolved.config.maxAutoFixRounds).toBeUndefined()
+      expect(resolveMaxAutoFixRounds(resolved.config)).toBe(2)
+    }
   })
 
   test('the deprecated alias in a repo file is named the same way', () => {
@@ -559,5 +680,114 @@ describe('resolveProjectConfig (T1.4)', () => {
     const resolved = resolveProjectAgentCommand(repoDir, {}, 'fallback')
     expect(resolved.command).toBe('codex exec -')
     expect(resolved.warning).toContain('claude -p --model opus')
+  })
+})
+
+describe('merge settings (T3.6, D12/D13/DP1)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-merge-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-merge-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('a config with no merge key merges nothing, picks nothing, consents to nothing', () => {
+    expect(resolveMergeSettings({})).toEqual({
+      policy: 'human',
+      deleteBranch: false,
+      allowMergeWithoutChecks: false,
+    })
+    // The absent strategy is a VALUE, not a gap: it is what makes the argv
+    // carry no strategy option at all (D13).
+    expect('strategy' in resolveMergeSettings({})).toBe(false)
+    expect(resolveMergeSettings({})).toEqual(DEFAULT_MERGE_SETTINGS)
+  })
+
+  test('the four keys are read from the global file and applied', () => {
+    saveGlobalConfig({
+      mergePolicy: 'auto',
+      mergeStrategy: 'squash',
+      deleteBranchAfterMerge: true,
+      allowMergeWithoutChecks: true,
+    })
+    expect(resolveMergeSettings(loadGlobalConfig())).toEqual({
+      policy: 'auto',
+      strategy: 'squash',
+      deleteBranch: true,
+      allowMergeWithoutChecks: true,
+    })
+  })
+
+  test('an unknown value degrades to the default without throwing, and never to auto', () => {
+    writeFileSync(
+      globalConfigPath(),
+      JSON.stringify({
+        mergePolicy: 'Auto',
+        mergeStrategy: 'fast-forward',
+        deleteBranchAfterMerge: 'yes',
+        allowMergeWithoutChecks: 1,
+      }),
+    )
+    const config = loadGlobalConfig()
+    expect(config.mergePolicy).toBeUndefined()
+    expect(config.mergeStrategy).toBeUndefined()
+    expect(config.deleteBranchAfterMerge).toBeUndefined()
+    expect(config.allowMergeWithoutChecks).toBeUndefined()
+    expect(resolveMergeSettings(config)).toEqual(DEFAULT_MERGE_SETTINGS)
+  })
+
+  test('a value present but unusable is NAMED, not merely dropped', () => {
+    writeFileSync(globalConfigPath(), JSON.stringify({ mergePolicy: 'Auto', mergeStrategy: 42 }))
+    expect(invalidMergeKeys(globalConfigPath())).toEqual(['mergePolicy', 'mergeStrategy'])
+    // Absent, or present and usable, is nothing to warn about.
+    saveGlobalConfig({ mergePolicy: 'auto' })
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+    saveGlobalConfig({})
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+  })
+
+  test('unreadable or missing JSON is nothing to warn about, and never throws', () => {
+    expect(invalidMergeKeys(join(configDir, 'nope.json'))).toEqual([])
+    writeFileSync(globalConfigPath(), '{ not json')
+    expect(() => invalidMergeKeys(globalConfigPath())).not.toThrow()
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+  })
+
+  test('the four keys are GLOBAL-ONLY: a cloned repo cannot consent on your behalf', () => {
+    saveGlobalConfig({ mergePolicy: 'human' })
+    saveRepoConfig(repoDir, {
+      mergePolicy: 'auto',
+      mergeStrategy: 'rebase',
+      deleteBranchAfterMerge: true,
+      allowMergeWithoutChecks: true,
+    })
+    expect(loadRepoConfig(repoDir).mergePolicy).toBeUndefined()
+    expect(loadRepoConfig(repoDir).allowMergeWithoutChecks).toBeUndefined()
+    // What `workspace()` actually feeds `createTaskManager`.
+    expect(resolveMergeSettings(loadConfig(repoDir))).toEqual(DEFAULT_MERGE_SETTINGS)
+    // ...and it is NAMED, never dropped in silence (invariant n° 2).
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual([
+      'mergePolicy',
+      'mergeStrategy',
+      'deleteBranchAfterMerge',
+      'allowMergeWithoutChecks',
+    ])
+    const notices = repoGlobalOnlyIgnoredNotices(repoDir)
+    for (const key of ['mergePolicy', 'allowMergeWithoutChecks']) {
+      expect(notices.some((line) => line.includes(key))).toBe(true)
+    }
   })
 })

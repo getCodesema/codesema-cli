@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { EXECUTION_STATUS } from '../execution-status'
 import type { TaskEvent, TaskEventType, TaskRecord, TaskStatus } from '../types'
 import {
   agentCounts,
@@ -23,6 +24,7 @@ import {
   queuePhraseKey,
   queueRankHintKey,
   queueSectionOf,
+  reasonDetailText,
   replyModeOf,
   resumeStateOf,
   reviewRefOf,
@@ -134,6 +136,210 @@ describe('statusPhraseKey / statusLabelKey (T3.1 checks_failed)', () => {
     })
     expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseReviewKo')
     expect(statusLabelKey(blocked)).toBe('workspace.statusReviewKo')
+  })
+
+  // T3.2: the criteria gate blocks a review the reviewer APPROVED, so
+  // "findings to fix" is exactly as false here as it was for red checks.
+  test('review_ko from the criteria gate gets its own phrase AND its own label', () => {
+    const blocked = record({
+      status: 'review_ko',
+      reason: {
+        code: 'criteria_unmet',
+        detail: '1 of 3 acceptance criteria are not satisfied (1 unmet) — ac-000000000001: unmet',
+      },
+    })
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseCriteriaUnmet')
+    expect(statusLabelKey(blocked)).toBe('workspace.statusCriteriaUnmet')
+    // The three review_ko phrasings stay pairwise distinct: a code wired into
+    // one helper and not the other reads "Review blocked · criteria not met".
+    const fromChecks = record({ status: 'review_ko', reason: { code: 'checks_failed' } })
+    const fromReview = record({ status: 'review_ko', reason: { code: 'review_blocked' } })
+    expect(new Set([blocked, fromChecks, fromReview].map((r) => statusLabelKey(r))).size).toBe(3)
+    expect(
+      new Set([blocked, fromChecks, fromReview].map((r) => statusPhraseKey(r, false))).size,
+    ).toBe(3)
+  })
+
+  test('a review_ko whose reason code this build does not know keeps the default', () => {
+    const blocked = record({
+      status: 'review_ko',
+      reason: { code: 'something_future' as never },
+    })
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseReviewKo')
+    expect(statusLabelKey(blocked)).toBe('workspace.statusReviewKo')
+  })
+
+  // T3.3: the bounded fix loop hands a task back on `waiting_for_you` carrying
+  // the very same codes. The default phrase for that status is "paused —
+  // waiting for your answer", and nobody asked a question: the card would be
+  // wrong, not merely vague.
+  test('a waiting_for_you the fix loop gave up on reads DIFFERENTLY from a review_ko', () => {
+    const findings = record({
+      status: 'waiting_for_you',
+      reason: {
+        code: 'review_blocked',
+        detail:
+          'a.ts:3 leaks a descriptor — the automatic fix loop stopped after 2 round(s) without clearing what blocks this task',
+      },
+    })
+    expect(statusPhraseKey(findings, false)).toBe('workspace.phaseFixLoopStopped')
+    expect(statusLabelKey(findings)).toBe('workspace.statusFixLoopStopped')
+    const criteria = record({
+      status: 'waiting_for_you',
+      reason: {
+        code: 'criteria_unmet',
+        detail: '1 of 3 acceptance criteria are not satisfied — the automatic fix loop stopped',
+      },
+    })
+    expect(statusPhraseKey(criteria, false)).toBe('workspace.phaseFixLoopStoppedCriteria')
+    expect(statusLabelKey(criteria)).toBe('workspace.statusFixLoopStopped')
+    // ...and none of them is the generic "waiting for your answer".
+    expect([findings, criteria].map((r) => statusPhraseKey(r, false))).not.toContain(
+      'workspace.phaseWaiting',
+    )
+    // The point of the split: the SAME code on `review_ko` is a verdict a
+    // human can still assume and ship, while this one is a parked task whose
+    // ship refuses. Rendering them alike showed a capability that is gone.
+    const blockedReview = record({
+      status: 'review_ko',
+      reason: { code: 'review_blocked', detail: 'a.ts:3 leaks a descriptor' },
+    })
+    expect(statusLabelKey(blockedReview)).not.toBe(statusLabelKey(findings))
+    expect(statusPhraseKey(blockedReview, false)).not.toBe(statusPhraseKey(findings, false))
+  })
+
+  test('an ordinary waiting_for_you — a question, no reason — is untouched', () => {
+    const asking = record({ status: 'waiting_for_you' })
+    expect(statusPhraseKey(asking, false)).toBe('workspace.phaseWaiting')
+    expect(statusLabelKey(asking)).toBe('workspace.statusWaiting')
+  })
+
+  test('a code neither table knows falls through to the status default', () => {
+    // The clause the comment on these tables claims and nothing asserted: a
+    // reason code from a NEWER server must not blank the card or throw, on
+    // either of the two statuses that carry a per-reason sentence.
+    for (const status of ['review_ko', 'waiting_for_you'] as const) {
+      const unknown = record({
+        status,
+        reason: { code: 'from_a_newer_server', detail: 'something new' },
+      })
+      expect(statusPhraseKey(unknown, false)).toBe(EXECUTION_STATUS[status].phraseKey)
+      expect(statusLabelKey(unknown)).toBe(EXECUTION_STATUS[status].labelKey)
+    }
+  })
+
+  // T3.6 adversarial review, MAJEUR 1. `runMergeStep` can park a task on
+  // `waiting_for_you` with any of SIX codes; the ticket wired two. The four
+  // below all read "Needs you · paused — waiting for your answer" while
+  // nobody had asked anything — and `branch_diverged` is, per the ticket's own
+  // design note, the most frequent refusal on an active repository.
+  //
+  // The mutation each of these kills: deleting its entry from
+  // `WAITING_FIX_LOOP_KEYS`. Nothing else in the suite would notice.
+  test('every exit of the merge gate names itself on waiting_for_you', () => {
+    const cases = [
+      {
+        code: 'merge_conflict',
+        phrase: 'workspace.phaseMergeConflict',
+        label: 'workspace.statusMergeConflict',
+      },
+      {
+        code: 'forge_unreachable',
+        phrase: 'workspace.phaseForgeUnreachable',
+        label: 'workspace.statusForgeUnreachable',
+      },
+      {
+        code: 'branch_diverged',
+        phrase: 'workspace.phaseBranchDiverged',
+        label: 'workspace.statusBranchDiverged',
+      },
+      {
+        code: 'checks_failed',
+        phrase: 'workspace.phaseMergeChecksFailed',
+        label: 'workspace.statusMergeHeld',
+      },
+    ] as const
+    for (const one of cases) {
+      const parked = record({
+        status: 'waiting_for_you',
+        reason: { code: one.code, detail: 'the sentence the server wrote' },
+      })
+      expect(statusPhraseKey(parked, false)).toBe(one.phrase)
+      expect(statusLabelKey(parked)).toBe(one.label)
+      // The defect itself, stated once per code: none of them is the generic
+      // "paused — waiting for your answer" / "Needs you" pair.
+      expect(statusPhraseKey(parked, false)).not.toBe('workspace.phaseWaiting')
+      expect(statusLabelKey(parked)).not.toBe('workspace.statusWaiting')
+    }
+    // All six merge-gate exits stay pairwise distinct by PHRASE: a card that
+    // said "the checks could not be run" for a merge conflict would be as
+    // false as saying nothing.
+    const phrases = [...cases.map((one) => one.code), 'checks_unavailable', 'criteria_missing'].map(
+      (code) => statusPhraseKey(record({ status: 'waiting_for_you', reason: { code } }), false),
+    )
+    expect(new Set(phrases).size).toBe(6)
+  })
+
+  // The half of MAJEUR 1 the two tables cannot carry: `checks_failed` on
+  // `waiting_for_you` is the merge gate holding a merge, NOT the reviewer
+  // blocking a branch, and "review blocked — checks failed" would name the
+  // wrong gate. Same code, two statuses, two sentences.
+  test('checks_failed reads as a held MERGE on waiting_for_you and as a blocked REVIEW on review_ko', () => {
+    const held = record({
+      status: 'waiting_for_you',
+      reason: { code: 'checks_failed', detail: 'repository checks failed (bun test)' },
+    })
+    const blocked = record({
+      status: 'review_ko',
+      reason: { code: 'checks_failed', detail: 'repository checks failed (bun test)' },
+    })
+    expect(statusPhraseKey(held, false)).not.toBe(statusPhraseKey(blocked, false))
+    expect(statusLabelKey(held)).not.toBe(statusLabelKey(blocked))
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseChecksFailed')
+  })
+})
+
+// T3.6 adversarial review, MAJEUR 1, second half. The i18n phrase names the
+// blocker; only `reason.detail` names the way OUT (DP1) — and nothing in the
+// web rendered that field at all, on any component, for any status.
+describe('reasonDetailText (the refusal says how to get out of it)', () => {
+  test('a merge-gate park carries the server sentence', () => {
+    const conflict = record({
+      status: 'waiting_for_you',
+      reason: {
+        code: 'merge_conflict',
+        detail: 'gh: not mergeable — resolve the overlap on the branch',
+      },
+    })
+    expect(reasonDetailText(conflict)).toBe('gh: not mergeable — resolve the overlap on the branch')
+  })
+
+  test('a code with no per-reason phrase never leaks raw server English', () => {
+    // The gate is the TABLE, not the presence of a detail: a machine-cap wait
+    // and an unknown code from a newer server both carry a detail, and neither
+    // has a translated sentence beside it to make it readable.
+    const busy = record({
+      status: 'queued',
+      reason: { code: 'resource_busy', detail: 'the machine-wide load cap has no free slot' },
+    })
+    expect(reasonDetailText(busy)).toBeNull()
+    const future = record({
+      status: 'waiting_for_you',
+      reason: { code: 'from_a_newer_server', detail: 'something new' },
+    })
+    expect(reasonDetailText(future)).toBeNull()
+  })
+
+  test('a question, a missing detail and an empty one all read as nothing to add', () => {
+    expect(reasonDetailText(record({ status: 'waiting_for_you' }))).toBeNull()
+    expect(
+      reasonDetailText(record({ status: 'waiting_for_you', reason: { code: 'merge_conflict' } })),
+    ).toBeNull()
+    expect(
+      reasonDetailText(
+        record({ status: 'waiting_for_you', reason: { code: 'merge_conflict', detail: '   ' } }),
+      ),
+    ).toBeNull()
   })
 })
 
@@ -440,7 +646,7 @@ describe('eventSummary', () => {
       expect(summary).not.toContain('issue_snapshot')
     })
 
-    test('each of the seven data.names gets its OWN text, never the shared label', () => {
+    test('each of the eight data.names gets its OWN text, never the shared label', () => {
       const summaries = (
         [
           'bound',
@@ -454,12 +660,16 @@ describe('eventSummary', () => {
           // French journal read the server's English sentence, on every
           // ticketed task, at every boot without gh/glab.
           'unreachable',
+          // T3.7: a cycle label that could not be written on the forge. Same
+          // trap, same guard — task-labels.ts poses an English `data.message`
+          // for the API, and the journal must not be the one showing it.
+          'label_not_posed',
         ] as const
       ).map((name) => eventSummary(event({ type: 'issue', data: { name, message: 'ENGLISH' } })))
-      // Seven distinct lines: routing them all to the same key (or to the
+      // Eight distinct lines: routing them all to the same key (or to the
       // plain 'Ticket' label) collapses this set — and pointing any ONE of
       // them at a sibling's key collapses it by one.
-      expect(new Set(summaries).size).toBe(7)
+      expect(new Set(summaries).size).toBe(8)
       for (const summary of summaries) {
         expect(summary).not.toBe('Ticket')
         expect(summary).not.toContain('ENGLISH')
@@ -526,6 +736,114 @@ describe('eventSummary', () => {
       ).toBe('Ticket')
       expect(eventSummary(event({ type: 'issue', data: {} }))).toBe('Ticket')
     })
+
+    // T3.5 posts the recap on the ticket and journals seven more causes here.
+    // Same trap as the six above: `issueEventText` reads `data.name` only, so
+    // a name nobody wired shows the bare 'Ticket' label with the server's
+    // English sentence nowhere in sight — and nothing else would notice.
+    describe('recap publication (T3.5)', () => {
+      const publishMessage =
+        'the recap could not be posted on issue #42 (no-cli: no forge CLI) — it stays in .codesema'
+      const publishNames = [
+        'recap_posted',
+        'recap_already_posted',
+        'recap_missing',
+        'recap_blocked_secrets',
+        'recap_unreachable',
+        'closed',
+        'close_unreachable',
+      ] as const
+
+      test('each of the seven gets its OWN text, never the shared label', () => {
+        const summaries = publishNames.map((name) =>
+          eventSummary(event({ type: 'issue', data: { name, message: publishMessage } })),
+        )
+        expect(new Set(summaries).size).toBe(publishNames.length)
+        for (const summary of summaries) {
+          expect(summary).not.toBe('Ticket')
+          expect(summary).not.toContain('.codesema')
+          expect(summary).not.toContain('no forge CLI')
+        }
+      })
+
+      test('a publication failure never reuses the ticket-freshness line of T2.4', () => {
+        const publish = eventSummary(
+          event({ type: 'issue', data: { name: 'recap_unreachable', message: publishMessage } }),
+        )
+        const compare = eventSummary(
+          event({ type: 'issue', data: { name: 'unreachable', message: publishMessage } }),
+        )
+        expect(publish).not.toBe(compare)
+        expect(publish).not.toContain('compared')
+      })
+
+      test('a held-back recap says both halves: what was found and where it now is', () => {
+        const blocked = eventSummary(
+          event({ type: 'issue', data: { name: 'recap_blocked_secrets' } }),
+        )
+        expect(blocked).toContain('secret')
+        expect(blocked).toContain('machine')
+      })
+    })
+  })
+
+  describe("'shipped' (T3.5, round 2)", () => {
+    const shipNote =
+      'recap withheld from the merge request: it looks like it carries a secret (recap.md: an AWS access key id)'
+    const shipNames = ['recap_missing', 'recap_blocked_secrets', 'recap_unscanned'] as const
+
+    test('each of the three gets its OWN text, never the shared label', () => {
+      const summaries = shipNames.map((name) =>
+        eventSummary(
+          event({ type: 'shipped', data: { mr_url: 'https://x/1', note: shipNote, name } }),
+        ),
+      )
+      expect(new Set(summaries).size).toBe(shipNames.length)
+      for (const summary of summaries) {
+        expect(summary).not.toBe('Shipped')
+        // The server's own English sentence never reaches the screen.
+        expect(summary).not.toContain('withheld from the merge request')
+        expect(summary).not.toContain('recap.md')
+      }
+    })
+
+    test('a held-back recap says both halves: what happened and where the recap is', () => {
+      const blocked = eventSummary(
+        event({ type: 'shipped', data: { name: 'recap_blocked_secrets' } }),
+      )
+      expect(blocked).toContain('secret')
+      expect(blocked).toContain('machine')
+      // Distinguishable from the nominal ship, which is the whole point.
+      expect(blocked).not.toBe(eventSummary(event({ type: 'shipped', data: {} })))
+    })
+
+    // The §6-quater trap, one type over: `data.note` is an ENGLISH sentence
+    // the server builds (task-ship.ts), and it is present on EVERY degraded
+    // ship — the push-only one, the one whose forge CLI failed. Probing it
+    // would put that sentence, verbatim, in a French journal.
+    test('a note without a name renders the label, never the server sentence', () => {
+      const note =
+        'no forge CLI (gh or glab) available — branch pushed, open the merge request manually'
+      expect(eventSummary(event({ type: 'shipped', data: { mr_url: null, note } }))).toBe('Shipped')
+      expect(
+        eventSummary(
+          event({ type: 'shipped', data: { note: 'gh failed: API rate limit exceeded' } }),
+        ),
+      ).toBe('Shipped')
+    })
+
+    test('the ordinary ship is untouched: the plain label, or its probed keys', () => {
+      expect(eventSummary(event({ type: 'shipped', data: { mr_url: 'https://x/1' } }))).toBe(
+        'Shipped',
+      )
+      expect(eventSummary(event({ type: 'shipped', data: { url: 'https://x/1' } }))).toBe(
+        'https://x/1',
+      )
+      // An unknown name degrades the same way, never to a raw wire token.
+      expect(eventSummary(event({ type: 'shipped', data: { name: 'something_future' } }))).toBe(
+        'Shipped',
+      )
+    })
   })
 
   describe("'criteria' (T2.5)", () => {
@@ -572,6 +890,32 @@ describe('eventSummary', () => {
       ).toBe('Criteria')
       expect(eventSummary(event({ type: 'criteria', data: {} }))).toBe('Criteria')
     })
+
+    // T3.2. The three names added by the criteria gate go through the SAME
+    // `data.name` branch — `eventSummary` never reads `data.message` for a
+    // 'criteria' event, which is exactly why the server stops putting a
+    // sentence in there for these.
+    test('the gate and the draft proposal each render their own text, never the label', () => {
+      const blocked = eventSummary(
+        event({
+          type: 'criteria',
+          data: { name: 'gate_blocked', met: 2, unmet: 1, unclear: 0 },
+        }),
+      )
+      const passed = eventSummary(
+        event({ type: 'criteria', data: { name: 'gate_passed', met: 3, unmet: 0, unclear: 0 } }),
+      )
+      const proposed = eventSummary(
+        event({ type: 'criteria', data: { name: 'draft_proposed', count: 3 } }),
+      )
+      for (const line of [blocked, passed, proposed]) {
+        expect(line).not.toBe('Criteria')
+      }
+      expect(new Set([blocked, passed, proposed]).size).toBe(3)
+      expect(blocked).toContain('not satisfied')
+      expect(passed).toContain('satisfied')
+      expect(proposed).toContain('validate')
+    })
   })
 })
 
@@ -606,12 +950,56 @@ describe('eventTone', () => {
     expect(eventTone(event({ type: 'issue', data: { name: 'something_future' } }))).toBe('idle')
   })
 
+  // MAJEUR 2 (round 2). A ship whose recap was held back for carrying a
+  // secret used to be a GREEN 'Shipped' line, byte-identical to a nominal
+  // one: the story lived in `data.note`, which nothing renders.
+  test('a ship that landed short of its recap is amber, a nominal one stays green', () => {
+    for (const name of ['recap_missing', 'recap_blocked_secrets', 'recap_unscanned']) {
+      expect(eventTone(event({ type: 'shipped', data: { name } }))).toBe('check')
+    }
+    // The push landed and the MR is open: amber, never red.
+    for (const name of ['recap_missing', 'recap_blocked_secrets', 'recap_unscanned']) {
+      expect(eventTone(event({ type: 'shipped', data: { name } }))).not.toBe('stop')
+    }
+    expect(eventTone(event({ type: 'shipped', data: { mr_url: 'https://x/1' } }))).toBe('go')
+    // A name this bundle does not know keeps the ROUTINE tone: a future
+    // addition must not be painted amber before anyone decided it should be.
+    expect(eventTone(event({ type: 'shipped', data: { name: 'something_future' } }))).toBe('go')
+  })
+
+  test("T3.5's publication names split the same way: landed is neutral, held back is amber", () => {
+    for (const name of ['recap_posted', 'recap_already_posted', 'closed']) {
+      expect(eventTone(event({ type: 'issue', data: { name } }))).toBe('idle')
+    }
+    for (const name of [
+      'recap_missing',
+      'recap_blocked_secrets',
+      'recap_unreachable',
+      'close_unreachable',
+    ]) {
+      // Amber, never red: the task shipped and its recap is safe on disk.
+      expect(eventTone(event({ type: 'issue', data: { name } }))).toBe('check')
+    }
+  })
+
   test("'criteria' events are neutral, never red — an unreadable draft does not fail the task", () => {
     expect(eventTone(event({ type: 'criteria', data: { name: 'draft_unparsed' } }))).toBe('idle')
     expect(eventTone(event({ type: 'criteria', data: { name: 'validated' } }))).toBe('idle')
     expect(eventTone(event({ type: 'criteria', data: { name: 'draft_unparsed' } }))).not.toBe(
       'stop',
     )
+  })
+
+  test("'criteria' reads its tone from data.name too: only a blocked gate is amber (T3.2)", () => {
+    // The task is waiting on a person — meet the criteria or assume the KO —
+    // which is the same amber as an edited ticket, and never the red of a
+    // failure: the review itself worked and the work is committed.
+    expect(eventTone(event({ type: 'criteria', data: { name: 'gate_blocked' } }))).toBe('check')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'gate_blocked' } }))).not.toBe('stop')
+    // Everything else stays routine, including a name a newer server invents.
+    expect(eventTone(event({ type: 'criteria', data: { name: 'gate_passed' } }))).toBe('idle')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'draft_proposed' } }))).toBe('idle')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'something_future' } }))).toBe('idle')
   })
 
   test('branch facts are neutral: none of them is a failure of the work', () => {

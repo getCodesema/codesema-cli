@@ -21,12 +21,15 @@ import { knownAgent, type WatchdogBudgets } from './agent.js'
 import {
   globalConfigPath,
   hasInvalidPositiveIntKey,
+  invalidGlobalMergeKeys,
   loadConfig,
   loadGlobalConfig,
   repoGlobalOnlyIgnoredNotices,
+  resolveMergeSettings,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveWatchdogBudgets,
+  type MergeSettings,
   type ProjectConfigFlags,
 } from './config.js'
 import { probeForgeCli } from './degraded-mode.js'
@@ -148,6 +151,20 @@ export function invalidLoadCapKeyNotice(repoRoot: string | null): string | null 
 }
 
 /**
+ * A boot line per merge key (T3.6) that is PRESENT in the GLOBAL config but
+ * not usable — `mergePolicy: "Auto"`, `allowMergeWithoutChecks: 1`. Same
+ * argument as `invalidLoadCapKeyNotice`, and a sharper one here: when a typo
+ * on one of these four is dropped, the SAFE default stays in place, so
+ * nothing breaks and nothing is said — and someone who believed they had
+ * authorized automatic merging would watch a workspace that never merges,
+ * with no idea why. Empty when every merge key on the global file is absent
+ * or usable.
+ */
+export function invalidMergeKeyNotices(): string[] {
+  return invalidGlobalMergeKeys().map((key) => t('workspace.invalidMergeKey', { key }))
+}
+
+/**
  * Every boot line this ticket's config surface produces, in the order the
  * terminal shows them: the deprecation of `maxParallelTasks`, then the
  * unusable-value warning. Empty when there is nothing to say.
@@ -169,6 +186,7 @@ export function bootNotices(
   return [
     maxParallelNotice(config.maxParallelTasks),
     invalidLoadCapKeyNotice(repoRoot),
+    ...invalidMergeKeyNotices(),
     ...repoGlobalOnlyIgnoredNotices(repoRoot),
   ].filter((line): line is string => line !== null)
 }
@@ -221,6 +239,14 @@ export function workspaceTaskManagerOptions(
     maxParallelTasks?: number | undefined
     maxConcurrentAgents?: number | undefined
     taskRetentionCount?: number | undefined
+    // T3.6: the four merge keys, resolved HERE and handed over as one settled
+    // value. They are global by construction — a consent belongs to whoever
+    // runs the workspace, not to a repository — so the manager receives them
+    // once instead of resolving them per project.
+    mergePolicy?: MergeSettings['policy'] | undefined
+    mergeStrategy?: MergeSettings['strategy'] | undefined
+    deleteBranchAfterMerge?: boolean | undefined
+    allowMergeWithoutChecks?: boolean | undefined
   },
   draining: AbortController,
   /**
@@ -252,6 +278,11 @@ export function workspaceTaskManagerOptions(
     ...(config.taskRetentionCount !== undefined
       ? { taskRetention: config.taskRetentionCount }
       : {}),
+    mergeSettings: resolveMergeSettings(config),
+    // Named on the task's journal too, not only on the boot line: a user who
+    // typed `mergePolicy: "Auto"` scrolled past the terminal long ago by the
+    // time a task reaches its merge step.
+    ...(invalidGlobalMergeKeys().length > 0 ? { degradedMergeKeys: invalidGlobalMergeKeys() } : {}),
     shutdownSignal: draining.signal,
   }
 }

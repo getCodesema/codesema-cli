@@ -19,8 +19,11 @@
 // | getIssue         | `issue view N --json …`        | `issue view N --output json`        |
 // | createIssue      | `issue create --title=…`       | `… --no-editor --yes`               |
 // | commentIssue     | `issue comment N --body=…`     | `issue note N --message=…`          |
+// | listIssueComments| `issue view N --json comments` | `issue view N --comments -F json`   |
 // | closeIssue       | `issue close N`                | `issue close N`                     |
 // | setLabels        | `api …/labels -X PUT`          | `api …/issues/N -X PUT`             |
+// | listLabels       | `label list --json name`       | `label list --page/--per-page`      |
+// | createLabel      | `label create <name>`          | `label create --name=<name>`        |
 // | linkChildIssue   | `api …/sub_issues -X POST`     | `api graphql` (workItemUpdate)      |
 // | unlinkChildIssue | `api …/sub_issue -X DELETE`    | `api graphql` (workItemUpdate)      |
 // | listChildIssues  | `api …/sub_issues` (paged)     | `api graphql` (hierarchyWidget)     |
@@ -40,6 +43,11 @@
 // The asymmetries are documented, not smoothed over (D8):
 //   - a comment is a `comment` on GitHub and a `note` on GitLab, and its text
 //     rides `--body` there, `--message` here;
+//   - reading those comments BACK (T3.5) is `--json comments` on gh, which
+//     answers `{comments:[…]}` and pages internally, against
+//     `--comments --output json` on glab, which answers the issue payload plus
+//     a capitalised `Notes` array — system notes included — and pages with
+//     GitLab's own `--page`/`--per-page`;
 //   - the state filter is `--state open|closed|all` on gh and a pair of
 //     boolean flags (`--closed`, `--all`) on glab;
 //   - gh paginates internally behind one `--limit`, glab exposes GitLab's
@@ -69,6 +77,7 @@ import {
   isIssueNumber,
   oversizedArg,
   parseGhIssue,
+  parseGhIssueComments,
   parseGhIssueList,
   parseGhSubIssueList,
   parseGlabHierarchyChildren,
@@ -77,16 +86,19 @@ import {
   parseGlabHierarchyParent,
   parseGlabIssue,
   parseGlabIssueList,
+  parseGlabIssueNotes,
+  parseLabelNames,
   sanitizeIssueBody,
   sanitizeIssueLabels,
   sanitizeIssueTitle,
   type ForgeIssue,
+  type ForgeIssueComment,
   type ForgeIssueState,
 } from './forge-issues-parse.js'
 import { detectForgeHint, subprocessEnv, tryGit } from './git.js'
 import { taskReason } from './tasks-store.js'
 
-export type { ForgeIssue, ForgeIssueState } from './forge-issues-parse.js'
+export type { ForgeIssue, ForgeIssueComment, ForgeIssueState } from './forge-issues-parse.js'
 
 /** Same budget as forge-mrs: one forge call must never hold the event loop for long. */
 export const FORGE_ISSUE_TIMEOUT_MS = 8000
@@ -118,6 +130,21 @@ export const ISSUE_LIST_MAX = 200
  */
 const GLAB_PAGE_SIZE = 100
 const GLAB_MAX_PAGES = Math.ceil((ISSUE_LIST_MAX + 1) / GLAB_PAGE_SIZE)
+/**
+ * Hard cap on one `listIssueComments` answer (T3.5). Same size and the same
+ * reason as `ISSUE_LIST_MAX`, but the CONSEQUENCE of hitting it differs and is
+ * the caller's to handle: this read exists to prove a marker ABSENT before
+ * writing, and a capped list can only prove it absent from the part that was
+ * read. `truncated: true` is therefore not a cosmetic detail here — see
+ * `publishTaskRecap` (task-recap-publish.ts), which refuses to write on it.
+ *
+ * It bites on REAL comments only: `capComments` filters GitLab's system notes
+ * out BEFORE it counts, so a ticket cannot be pushed past the cap by label
+ * churn alone. See `commentsOnly` for why that matters more here than
+ * anywhere else — the refusal this cap produces never lifts.
+ */
+export const ISSUE_COMMENT_LIST_MAX = 200
+const GLAB_MAX_COMMENT_PAGES = Math.ceil((ISSUE_COMMENT_LIST_MAX + 1) / GLAB_PAGE_SIZE)
 /** Pre-rendered argv values: the argv is data, and building it must not read as arithmetic. */
 const GH_LIST_LIMIT = String(ISSUE_LIST_MAX + 1)
 const GLAB_PER_PAGE = String(GLAB_PAGE_SIZE)
@@ -172,7 +199,34 @@ export type ForgeUnavailable = { available: false; reason: ForgeIssueReason; det
  */
 export type ForgeIssuesResult =
   { available: true; issues: ForgeIssue[]; truncated: boolean } | ForgeUnavailable
-export type ForgeIssueResult = { available: true; issue: ForgeIssue } | ForgeUnavailable
+/**
+ * `answeredBy` names WHICH forge actually produced this issue, and it is what
+ * makes a read-recompose-write triple safe on a repository whose remote names
+ * neither forge (T3.7 MAJEUR 2): `setLabels` REPLACES an issue's whole label
+ * set, so a set read from GitLab and re-emitted onto GitHub is not a
+ * degradation, it is a destruction of whatever GitHub's copy of that issue
+ * carried. A caller that reads then writes threads this straight into the
+ * write's `pin` — see `poseCycleLabel` in task-labels.ts, exactly as
+ * `linkChildIssue` here threads its guard's own pin.
+ */
+export type ForgeIssueResult =
+  { available: true; issue: ForgeIssue; answeredBy?: ForgeCli | undefined } | ForgeUnavailable
+
+/**
+ * A call bound to the ONE forge a preceding read actually answered from, or
+ * `null`/absent for a call that stands on its own and may pick for itself.
+ * Threaded into `askPinned`, which narrows the ladder to that single binary.
+ */
+export type ForgePinned = { pin?: ForgeCli | null | undefined }
+
+/**
+ * `truncated` is never optional here either, and for a sharper reason than on
+ * `ForgeIssuesResult`: the one caller of this read uses it to decide whether a
+ * marker is ABSENT, and "absent from the 200 comments I could read" is not
+ * "absent". A reader that ignores this flag posts duplicates.
+ */
+export type ForgeIssueCommentsResult =
+  { available: true; comments: ForgeIssueComment[]; truncated: boolean } | ForgeUnavailable
 /** createIssue: both porcelains print the created issue's URL, but neither promises to. */
 export type ForgeIssueRefResult = { available: true; url: string | null } | ForgeUnavailable
 export type ForgeWriteResult = { available: true } | ForgeUnavailable
@@ -499,12 +553,21 @@ function ask<T>(
 }
 
 /**
- * Same ladder as `ask`, but PINNED to one forge (MAJEUR 3): used only by
- * `linkChildIssue`'s write, once `guardOneLevel` has named which forge its
- * own reads actually verified. Takes `gh`/`glab` pre-bundled into one object
- * rather than as two separate parameters, only to stay under this file's
- * `max-params` budget (4) once `pin` is added — `ask` above is called far
- * more often and stays plain.
+ * Same ladder as `ask`, but PINNED to one forge: `pin` narrows the candidate
+ * list to that single binary, so a call cannot fall through to a forge whose
+ * state nothing verified.
+ *
+ * Two callers, one rule. `linkChildIssue`'s write pins to the forge
+ * `guardOneLevel` actually read from (T2.2 MAJEUR 3). `getIssue` →
+ * `listLabels`/`createLabel`/`setLabels` pins the whole T3.7 triple to the
+ * forge that supplied the label set being recomposed (MAJEUR 2) — without it,
+ * a self-hosted remote where `gh` fails the read and succeeds the write PUTs
+ * GitLab's label set onto GitHub, which `setLabels` being a TOTAL replacement
+ * turns into a destruction rather than a degradation.
+ *
+ * Takes `gh`/`glab` pre-bundled into one object rather than as two separate
+ * parameters, only to stay under this file's `max-params` budget (4) once
+ * `pin` is added — `ask` above is called far more often and stays plain.
  */
 function askPinned<T>(
   opts: ForgeIssuesOptions,
@@ -650,7 +713,151 @@ export async function getIssue(
     oneCall('gh', ['issue', 'view', id, '--json', GH_ISSUE_JSON_FIELDS], parseGhIssue),
     oneCall('glab', ['issue', 'view', id, '--output', 'json'], parseGlabIssue),
   )
-  return result.available ? { available: true, issue: result.value } : result
+  // `answeredBy` rides along so a caller that will WRITE back what it read can
+  // pin that write to the same forge (MAJEUR 2). It is dropped rather than set
+  // to `undefined` so `toEqual` on a plain result keeps working.
+  return result.available
+    ? {
+        available: true,
+        issue: result.value,
+        ...(result.answeredBy ? { answeredBy: result.answeredBy } : {}),
+      }
+    : result
+}
+
+// --- Comments, read side (T3.5) ----------------------------------------------
+
+type CommentPage = { comments: ForgeIssueComment[]; truncated: boolean }
+
+/**
+ * Every note that CAN carry a marker — i.e. every note a person or a bot
+ * actually wrote. GitLab's system notes ("added ~bug", "changed the
+ * description", "mentioned in merge request !12", "closed") are generated by
+ * the server from an activity, never from a body anyone supplied, so no
+ * codesema comment can ever be one: counting them is free of information and
+ * costly in function.
+ *
+ * Costly how, concretely: `capComments` refuses to answer past
+ * `ISSUE_COMMENT_LIST_MAX`, `publishTaskRecap` refuses to write on a refusal
+ * to answer, and nothing ever lowers that count again — so a lively ticket
+ * whose 200th note happens to be a label change loses its recap PERMANENTLY,
+ * behind a `forge_unreachable` that reads transitory and invites a retry that
+ * cannot ever succeed. GitLab mints one such note per label, assignment,
+ * milestone, state change, cross-reference and description edit, and T3.7 —
+ * the next ticket in this very chain — WRITES LABELS. The guard now bites on
+ * the volume of real comments, which is the volume the marker could hide in.
+ *
+ * glab's `--system-logs` flag is NOT this filter and cannot be used as one:
+ * it gates the text RENDERING only (`if note.System && !opts.ShowSystemLogs
+ * { continue }`, commands/issuable/view/issuable_view.go, glab 1.53.0), while
+ * `--output json` marshals `IssueWithNotes{*Issue, Notes}` whole — system
+ * notes included — read off the source rather than recalled.
+ */
+function commentsOnly(all: readonly ForgeIssueComment[]): ForgeIssueComment[] {
+  return all.filter((comment) => !comment.system)
+}
+
+/**
+ * One comment past the cap is what proves there are more; the extra one is
+ * never returned. `forceTruncated` is for the caller who KNOWS more notes
+ * exist beyond what it read but can no longer prove it from a length — see
+ * `glabCommentsCandidate`, where the system filter can turn 300 fetched notes
+ * into 0 comments and make a page walk that stopped short look complete. Same
+ * escape hatch, and the same reason, as `capPage`'s.
+ */
+function capComments(all: readonly ForgeIssueComment[], forceTruncated = false): CommentPage {
+  const comments = commentsOnly(all)
+  return {
+    comments: comments.slice(0, ISSUE_COMMENT_LIST_MAX),
+    truncated: forceTruncated || comments.length > ISSUE_COMMENT_LIST_MAX,
+  }
+}
+
+/**
+ * gh paginates the comments connection internally behind `--json comments`:
+ * one call, and `truncated` can only ever report OUR cap being exceeded. What
+ * gh itself decided to stop fetching is not observable from the payload — a
+ * limit named here rather than left implied, since this read's whole job is to
+ * prove an absence.
+ */
+function ghCommentsCandidate(id: string): Candidate<CommentPage> {
+  return oneCall('gh', ['issue', 'view', id, '--json', 'comments'], (stdout) => {
+    const comments = parseGhIssueComments(stdout)
+    return comments === null ? null : capComments(comments)
+  })
+}
+
+/**
+ * glab cannot: `issue view --comments` pages the notes with GitLab's own
+ * `--page`/`--per-page` (default 20), clamped at 100 server-side — so the
+ * pages are walked exactly like `glabListCandidate` walks the issue list, and
+ * for the same reason: a default `--per-page` would truncate in silence.
+ */
+function glabCommentsCandidate(id: string): Candidate<CommentPage> {
+  return {
+    cli: 'glab',
+    run: async (execFn, cwd) => {
+      const all: ForgeIssueComment[] = []
+      for (let page = 1; page <= GLAB_MAX_COMMENT_PAGES; page += 1) {
+        // prettier-ignore
+        const args = ['issue', 'view', id, '--comments', '--output', 'json', '--per-page', GLAB_PER_PAGE, '--page', String(page)]
+        const outcome = await execFn('glab', args, cwd)
+        if (outcome.kind !== 'ok') {
+          return outcome
+        }
+        const batch = parseGlabIssueNotes(outcome.stdout)
+        if (batch === null) {
+          return { kind: 'error', message: UNREADABLE }
+        }
+        all.push(...batch)
+        if (batch.length < GLAB_PAGE_SIZE) {
+          // A short page is the end of the notes — but the pages before it can
+          // already have overshot the cap, so the cap applies HERE too.
+          return { kind: 'ok', value: capComments(all) }
+        }
+        // No in-loop cap check, deliberately: `GLAB_MAX_COMMENT_PAGES` IS the
+        // cap, being sized from it (3 × 100 > 200), so a `break` on the count
+        // could only ever fire on the last iteration — one statement before
+        // the loop bound ends it anyway. `glabListCandidate` still carries
+        // that dead break; here it was removed rather than kept for symmetry,
+        // because a statement no input can make matter is a statement no test
+        // can hold in place.
+      }
+      // Every page came back full and the walk ran out of pages: notes exist
+      // past the last one read, and after the system filter no length can say
+      // so any more — 300 fetched system notes leave 0 comments, which would
+      // otherwise read as a complete, empty answer and let a duplicate recap
+      // through. Same "a full page proves nothing" rule the issue hierarchy
+      // walk already applies.
+      return { kind: 'ok', value: capComments(all, true) }
+    },
+  }
+}
+
+/**
+ * The existing comments of an issue, for the recap publication's marker search
+ * (T3.5). A READ: it may walk the whole ladder, and a failure on one CLI costs
+ * nothing to retry on the other.
+ *
+ * GitLab's SYSTEM notes are not in the answer and are not counted against the
+ * cap (`commentsOnly`); GitHub's payload never carried any. The asymmetry is
+ * named rather than smoothed over (D8): the two forges do hand back different
+ * things here, `parseGlabIssueNotes` still reports `system` faithfully for
+ * anyone who needs the activity trail, and this ONE reader drops them because
+ * its ONE question — "is our marker already on this issue?" — is a question
+ * no system note can answer.
+ */
+export async function listIssueComments(
+  opts: ForgeIssuesOptions & { number: number },
+): Promise<ForgeIssueCommentsResult> {
+  if (!isIssueNumber(opts.number)) {
+    return refuse(`invalid issue number: ${String(opts.number)}`)
+  }
+  const id = String(opts.number)
+  const result = await ask(opts, 'read', ghCommentsCandidate(id), glabCommentsCandidate(id))
+  return result.available
+    ? { available: true, comments: result.value.comments, truncated: result.value.truncated }
+    : result
 }
 
 export async function createIssue(
@@ -749,7 +956,7 @@ export async function closeIssue(
  * DELETE; GitLab's takes the comma-separated string and clears on ''.
  */
 export async function setLabels(
-  opts: ForgeIssuesOptions & { number: number; labels: string[] },
+  opts: ForgeIssuesOptions & ForgePinned & { number: number; labels: string[] },
 ): Promise<ForgeWriteResult> {
   if (!isIssueNumber(opts.number)) {
     return refuse(`invalid issue number: ${String(opts.number)}`)
@@ -777,11 +984,171 @@ export async function setLabels(
     'PUT',
     `--raw-field=labels=${labels.labels.join(',')}`,
   ]
-  const result = await ask(
+  // `pin`, when the caller read the current set first, is what forbids this
+  // TOTAL replacement from landing on a forge that never supplied that set
+  // (MAJEUR 2). Absent, the ordinary write ladder applies.
+  const result = await askPinned(
     opts,
     'write',
-    oneCall('gh', ghArgs, done),
-    oneCall('glab', glabArgs, done),
+    { gh: oneCall('gh', ghArgs, done), glab: oneCall('glab', glabArgs, done) },
+    opts.pin ?? null,
+  )
+  return result.available ? { available: true } : result
+}
+
+// --- Repo label catalog: read it, then create only what is missing (T3.7) ----
+//
+// The two operations the lazy, idempotent creation of the cycle labels needs,
+// and the only two in this file that go through the LABEL porcelain rather
+// than `api`: D5 says porcelain wherever it covers the operation, and both
+// CLIs cover `label list` and `label create` (`gh label list --help` /
+// `glab label list --help`, gh 2.46.0 and glab 1.53.0). The asymmetries are
+// documented, not smoothed over (D8):
+//   - gh takes the new label's name POSITIONALLY (`gh label create <name>`),
+//     glab takes it as a flag (`--name`). That is why `createLabel` refuses a
+//     name starting with `-` before any spawn — on gh, and on gh alone, such a
+//     name would be read by the binary as a flag;
+//   - the colour is BARE hex on gh (`--color E99695`) and `#`-prefixed on
+//     glab, whose own default is written `#428BCA`;
+//   - gh paginates internally behind one `--limit`, glab exposes GitLab's
+//     `--page`/`--per-page` and clamps a page at 100 — the same split
+//     `listIssues` already lives with.
+
+/**
+ * Hard cap on one `listLabels` answer, and the same doctrine as
+ * `ISSUE_LIST_MAX`: what the cap leaves out is REPORTED (`truncated: true`),
+ * never dropped in silence. The number matters less than the honesty — a
+ * caller holding a capped catalog must not conclude "this label does not
+ * exist" from a name it cannot see.
+ */
+export const LABEL_LIST_MAX = 200
+const GH_LABEL_LIMIT = String(LABEL_LIST_MAX + 1)
+const GLAB_MAX_LABEL_PAGES = Math.ceil((LABEL_LIST_MAX + 1) / GLAB_PAGE_SIZE)
+
+/** Six hex digits, bare: `#` is added for glab and never for gh (see above). */
+export const FORGE_LABEL_COLOR = '5B4B8A'
+
+type LabelPage = { labels: string[]; truncated: boolean }
+
+/** One label past the cap is what proves there are more; the extra is never returned. */
+function capLabels(all: string[]): LabelPage {
+  return { labels: all.slice(0, LABEL_LIST_MAX), truncated: all.length > LABEL_LIST_MAX }
+}
+
+function ghLabelListCandidate(): Candidate<LabelPage> {
+  const args = ['label', 'list', '--limit', GH_LABEL_LIMIT, '--json', 'name']
+  return oneCall('gh', args, (stdout) => {
+    const names = parseLabelNames(stdout)
+    return names === null ? null : capLabels(names)
+  })
+}
+
+function glabLabelListCandidate(): Candidate<LabelPage> {
+  return {
+    cli: 'glab',
+    run: async (execFn, cwd) => {
+      const all: string[] = []
+      for (let page = 1; page <= GLAB_MAX_LABEL_PAGES; page += 1) {
+        const args = [
+          'label',
+          'list',
+          '--per-page',
+          GLAB_PER_PAGE,
+          '--page',
+          String(page),
+          '--output',
+          'json',
+        ]
+        const outcome = await execFn('glab', args, cwd)
+        if (outcome.kind !== 'ok') {
+          return outcome
+        }
+        const batch = parseLabelNames(outcome.stdout)
+        if (batch === null) {
+          return { kind: 'error', message: UNREADABLE }
+        }
+        all.push(...batch)
+        if (batch.length < GLAB_PAGE_SIZE) {
+          // A short page ends the list — but the pages before it may already
+          // have overshot the cap, so it is applied here too (listIssues'
+          // lesson: skipping it returned 250 names with truncated:false).
+          return { kind: 'ok', value: capLabels(all) }
+        }
+        if (all.length > LABEL_LIST_MAX) {
+          break
+        }
+      }
+      return { kind: 'ok', value: capLabels(all) }
+    },
+  }
+}
+
+/**
+ * `truncated` is never optional, for the same reason it is not on
+ * `listIssues`: a caller cannot hold a capped catalog without being handed the
+ * fact that it is capped (invariant 2). Here it is load-bearing rather than
+ * merely honest — see `ensureCycleLabel` in task-labels.ts, which declines to
+ * create anything at all while it cannot prove a name absent.
+ */
+export type ForgeLabelsResult =
+  { available: true; labels: string[]; truncated: boolean } | ForgeUnavailable
+
+export async function listLabels(
+  opts: ForgeIssuesOptions & ForgePinned,
+): Promise<ForgeLabelsResult> {
+  // Pinned by the same caller and for the same reason as `createLabel` below:
+  // GitHub's catalog answers nothing about GitLab's, so a triple that read an
+  // issue on one forge asks that forge — and only it — what it already holds.
+  const result = await askPinned(
+    opts,
+    'read',
+    { gh: ghLabelListCandidate(), glab: glabLabelListCandidate() },
+    opts.pin ?? null,
+  )
+  return result.available
+    ? { available: true, labels: result.value.labels, truncated: result.value.truncated }
+    : result
+}
+
+/**
+ * Creates ONE label. Deliberately NOT idempotent by itself — neither forge
+ * offers an idempotent create (`gh label create --force` UPDATES the colour
+ * and description of an existing label, which is a mutation of somebody
+ * else's label, not a no-op) — so idempotence is the CALLER's, built on
+ * `listLabels`: ask first, create only what is provably missing.
+ *
+ * The name goes through `sanitizeIssueLabels`, the very check `setLabels`
+ * applies, so a name that could never be WRITTEN back onto an issue is
+ * refused before it is created; and a leading `-` is refused on top of it,
+ * because gh's name is positional and its binary would read such a name as a
+ * flag. Both refusals are `invalid-input`: nothing was launched, so this is
+ * our input and not the forge's health.
+ */
+export async function createLabel(
+  opts: ForgeIssuesOptions & ForgePinned & { name: string; description?: string | undefined },
+): Promise<ForgeWriteResult> {
+  const checked = sanitizeIssueLabels([opts.name])
+  if (!checked.ok) {
+    return refuse(checked.detail)
+  }
+  const name = checked.labels[0] ?? ''
+  if (name.startsWith('-')) {
+    return refuse(`label ${JSON.stringify(name)} refused: a leading "-" would be read as a flag`)
+  }
+  const description = sanitizeIssueTitle(opts.description)
+  const said = description ? [`--description=${description}`] : []
+  const result = await askPinned(
+    opts,
+    'write',
+    {
+      gh: oneCall('gh', ['label', 'create', name, `--color=${FORGE_LABEL_COLOR}`, ...said], done),
+      glab: oneCall(
+        'glab',
+        ['label', 'create', `--name=${name}`, `--color=#${FORGE_LABEL_COLOR}`, ...said],
+        done,
+      ),
+    },
+    opts.pin ?? null,
   )
   return result.available ? { available: true } : result
 }

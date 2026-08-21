@@ -33,8 +33,15 @@ export type ReasonCodeEntry = {
 }
 
 /**
- * The ten codes of decision D2, and nothing else. Order is documentation, not
- * semantics: the five terminal ones first, then the five retryable ones.
+ * The ten codes of decision D2, plus the two the automatic merge gate needed
+ * and could not honestly borrow (T3.6, decisions DP1 and DP2). Order is
+ * documentation, not semantics: the terminal ones first, then the retryable
+ * ones.
+ *
+ * The extension path this table always declared is exercised HERE for the
+ * first time — two codes ADDED, none renamed, none repurposed — so every
+ * record, journal line and HTTP body written before this build still names a
+ * code this build knows.
  */
 export const REASON_CODES = [
   // --- Terminal: the work on the branch has to change ------------------------
@@ -73,6 +80,40 @@ export const REASON_CODES = [
     // catches up by itself, it is rebased or merged — an action on the work,
     // not a delay.
     code: 'branch_diverged',
+    terminal: true,
+  },
+  {
+    // T3.6 / DP1: the checks condition of the automatic merge could not be
+    // EVALUATED — the repository configures none ('unconfigured'), the
+    // container runtime is absent or the engine failed ('runtime_error'), or
+    // no finished run exists for this branch at all ('no_run'). Deliberately
+    // NOT `checks_failed`: a condition that was never evaluated is not a
+    // condition that failed, and telling a user their checks are red when
+    // they never ran is the exact silent-lie invariant n° 2 forbids. The
+    // `TaskReason.detail` keeps the producer's own sentence; the discriminant
+    // above travels beside it, on the journal line.
+    //
+    // Terminal: waiting configures no checks and repairs no container
+    // runtime. What the code asks for is a human — configure the repo's
+    // checks, decide the merge by hand (`mergePolicy: 'human'`), or consent
+    // in advance for a repo that legitimately has none
+    // (`allowMergeWithoutChecks`, which covers 'unconfigured' only).
+    code: 'checks_unavailable',
+    terminal: true,
+  },
+  {
+    // T3.6 / DP2: the automatic merge was refused because the task has no
+    // acceptance criteria to be judged against — none was ever written
+    // ('absent'), or a draft was proposed and never validated
+    // ('pending_validation'). "All criteria are met" is vacuously true of an
+    // empty list, and that is precisely the reasoning a merge must not make:
+    // a task nobody wrote criteria for is a task a human still owes a word
+    // on (D6). `criteria_unmet` stays RESERVED for negative verdicts the
+    // T3.2 gate actually returned on criteria that exist.
+    //
+    // Terminal: waiting writes no criteria either. The expected action is
+    // human — validate a list, or merge by hand.
+    code: 'criteria_missing',
     terminal: true,
   },
   // --- Retryable: the run or its environment has to change -------------------
@@ -138,6 +179,27 @@ export type TaskReason = {
   /** The producer's own message, verbatim, truncated to TASK_REASON_DETAIL_MAX. */
   detail?: string
 }
+
+/**
+ * Which of the three unevaluable cases a `checks_unavailable` names (DP1).
+ * A DISCRIMINANT, not a label: it travels as a scalar on the journal line
+ * beside the readable sentence, and it is never rendered to a human as-is.
+ *
+ * `no_run` is the one DP1 did not enumerate and this contract adds anyway: a
+ * branch whose checks simply never ran is neither "this repo has no checks"
+ * nor "the engine broke", and folding it into either would either let the
+ * consent valve merge a branch nothing ever checked, or blame a runtime that
+ * is perfectly healthy.
+ */
+export type ChecksUnavailableDetail = 'unconfigured' | 'runtime_error' | 'no_run'
+
+/**
+ * Which of the two absences a `criteria_missing` names (DP2): no criterion was
+ * ever written for this task, or a turn-1 draft was proposed and no human ever
+ * validated it. Same doctrine as `ChecksUnavailableDetail` — a discriminant on
+ * the journal line, never a label.
+ */
+export type CriteriaMissingDetail = 'absent' | 'pending_validation'
 
 const TERMINAL_BY_CODE: ReadonlyMap<string, boolean> = new Map(
   REASON_CODES.map((entry) => [entry.code, entry.terminal]),

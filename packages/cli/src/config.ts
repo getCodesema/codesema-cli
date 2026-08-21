@@ -77,14 +77,216 @@ export type CodesemaConfig = {
   isolation?: IsolationMode | undefined
   /** Domains the caged agent may reach through the egress proxy (CONNECT only). */
   isolationAllowedDomains?: string[] | undefined
+  /**
+   * T3.7 / decision D15: whether this project mirrors the cycle of its tasks
+   * onto the forge issues they are bound to, as `codesema:*` labels.
+   *
+   * OPT-IN, and the honest default is OFF — absence means "write nothing".
+   * Posting labels into someone else's repository without being asked is a
+   * pollution, and a native monitoring channel is not worth that price by
+   * default: a user who merely upgrades the CLI must not find five new labels
+   * in a shared repo.
+   *
+   * Repo-settable on purpose, like `isolation` and `checks`, and for a
+   * stronger reason than either: the price of the pollution is paid in ONE
+   * repository, so that repository is the right place to accept it. A cloned
+   * repo that sets this can only ever cause writes to ITS OWN issues, under
+   * the `codesema:` prefix and nothing else (task-labels.ts) — it widens no
+   * trust, reaches no sibling project, and carries no credential of its own
+   * (the authentication stays whatever `gh auth`/`glab auth` set up, D5).
+   *
+   * Read through `resolveProjectConfig`, so a repo `false` DEFEATS a global
+   * `true`. That is why the parse below tests the TYPE and not the value:
+   * dropping a `false` would silently promote the global opt-in back onto a
+   * project that had just refused it.
+   */
+  forgeCycleLabels?: boolean | undefined
   /** UI and review language (ISO 639-1). */
   language?: SupportedLanguage | undefined
+  /**
+   * Which flow the END-OF-TURN review of a workspace task runs (T3.2):
+   * 'simple' (one reviewer) or 'dual' (two independent reviewers plus a
+   * judge). Absent means 'simple', which is exactly what every task ran
+   * before this key existed — the observed behaviour of an unconfigured
+   * project is unchanged.
+   *
+   * Repo-settable on purpose, like `isolation` and `checks`: how thoroughly a
+   * repository wants its own branches reviewed is a property of that
+   * repository. What it costs is bounded by the machine-wide load cap (D4),
+   * which a repo cannot raise — `dual` doubles the review turns, so it
+   * queues, it does not oversubscribe.
+   */
+  reviewMode?: ReviewMode | undefined
+  /**
+   * How many AUTOMATIC fix turns a task may chain after a blocking end-of-turn
+   * review before the loop gives up and hands it back to a human (T3.3,
+   * decision D14). Absent means DEFAULT_MAX_AUTO_FIX_ROUNDS (2).
+   *
+   * Repo-settable, same argument as `reviewMode`: how many times a repository
+   * wants its own branches re-worked without a human is a property of that
+   * repository, and what those turns cost in parallelism is bounded by the
+   * machine-wide load cap (D4), which a repo cannot raise.
+   */
+  maxAutoFixRounds?: number | undefined
+  /**
+   * Whether the workspace merges a task's branch on its own once D12's four
+   * conditions hold (T3.6): `'auto'`, or `'human'` — the DEFAULT — which
+   * evaluates and journals the same four conditions and then stops before the
+   * call. Nobody who merely updated the CLI wakes up to a workspace merging
+   * for them.
+   *
+   * GLOBAL-ONLY, and this one is not about a machine resource: "may this tool
+   * merge without me" is a statement its OWNER makes, and a cloned repo whose
+   * `.codesema/config.json` could turn it on would be making it for them. A
+   * repo file that sets it is stripped here and NAMED by
+   * `repoGlobalOnlyIgnoredNotices` — never dropped in silence.
+   */
+  mergePolicy?: MergePolicy | undefined
+  /**
+   * Merge strategy passed to the forge CLI (D13). ABSENT means the forge's
+   * own convention: no strategy option is added to the argv at all, which is
+   * more honest than picking one on the project's behalf — how a repository
+   * merges belongs to that repository. GLOBAL-ONLY, like `mergePolicy`.
+   */
+  mergeStrategy?: MergeStrategy | undefined
+  /**
+   * Whether the branch is deleted on the forge once the merge lands (D13).
+   * DEFAULT `false`: a branch is a deliverable, not processing waste (T1.6),
+   * and deleting one is an explicit choice. GLOBAL-ONLY, like `mergePolicy`.
+   */
+  deleteBranchAfterMerge?: boolean | undefined
+  /**
+   * Explicit, prior consent to merge automatically on a repository that
+   * legitimately configures NO checks (DP1). DEFAULT `false`.
+   *
+   * It covers `unconfigured` and nothing else: "I know this repo has no
+   * checks" is a statement a person can make, "I consent in advance to my
+   * checks runtime breaking" is not. GLOBAL-ONLY, like `mergePolicy` — and
+   * for the same reason: it is a consent, and a consent is given by whoever
+   * owns the machine, not by a repository they cloned.
+   */
+  allowMergeWithoutChecks?: boolean | undefined
   /** Cloud sync (codesema.com): base URL override and workspace credentials. */
   syncUrl?: string | undefined
   syncWorkspaceId?: string | undefined
   syncSecret?: string | undefined
   /** Explicit opt-in for pushing every completed review; credentials alone never auto-push. */
   syncAutoPush?: boolean | undefined
+}
+
+/**
+ * Which review flow a task's end-of-turn review runs (see
+ * CodesemaConfig.reviewMode). Declared HERE and not in task-review.ts, which
+ * imports this module: `TaskReviewMode` is an alias of this type, so the
+ * config layer and the reviewer can never end up with two enums to keep in
+ * step.
+ */
+export type ReviewMode = 'simple' | 'dual'
+
+const REVIEW_MODES: ReadonlySet<string> = new Set(['simple', 'dual'])
+
+export function isReviewMode(value: unknown): value is ReviewMode {
+  return typeof value === 'string' && REVIEW_MODES.has(value)
+}
+
+/**
+ * The review flow a resolved config selects. `undefined` — the key absent, or
+ * present with a value outside the enum, which `parseConfig` already dropped —
+ * means 'simple': the pre-T3.2 behaviour, never an error and never 'dual',
+ * which would silently double a project's review cost.
+ */
+export function resolveReviewMode(config: CodesemaConfig): ReviewMode {
+  return config.reviewMode ?? 'simple'
+}
+
+/**
+ * D14, answered: TWO automatic fix turns after a blocking review, then the
+ * task goes back to a human. Declared HERE, beside the key it defaults, for
+ * the same reason `ReviewMode` is: the config layer and the loop must never
+ * end up with two numbers to keep in step.
+ */
+export const DEFAULT_MAX_AUTO_FIX_ROUNDS = 2
+
+/**
+ * The bound a resolved config selects for the automatic fix loop. Absent,
+ * malformed, zero or negative all land on the D14 default, and NONE of them
+ * throws — a repository must never lose its reviewer to a typo.
+ *
+ * `0` is deliberately NOT a switch that turns the loop off: giving that value
+ * its own meaning is an arbitrage this ticket does not carry (design decision
+ * 4's own non-binding note), so it is treated exactly like `-1` or `"two"` —
+ * an unusable bound, and the default applies. The day `0` is specified, it
+ * becomes ONE branch here rather than a behaviour that was never decided.
+ */
+export function resolveMaxAutoFixRounds(config: CodesemaConfig): number {
+  const value = config.maxAutoFixRounds
+  return Number.isInteger(value) && (value as number) >= 1
+    ? (value as number)
+    : DEFAULT_MAX_AUTO_FIX_ROUNDS
+}
+
+// --- Merge policy (T3.6, D12 / D13 / DP1) ---------------------------------
+//
+// Declared HERE and not in task-merge.ts, which imports this module, for the
+// same reason `ReviewMode` is: the config layer and the merge gate must never
+// end up with two enums to keep in step.
+
+/** Whether the workspace ever merges by itself (see CodesemaConfig.mergePolicy). */
+export type MergePolicy = 'auto' | 'human'
+
+/** Merge strategy asked of the forge CLI (see CodesemaConfig.mergeStrategy). */
+export type MergeStrategy = 'merge' | 'squash' | 'rebase'
+
+const MERGE_POLICIES: ReadonlySet<string> = new Set(['auto', 'human'])
+const MERGE_STRATEGIES: ReadonlySet<string> = new Set(['merge', 'squash', 'rebase'])
+
+export function isMergePolicy(value: unknown): value is MergePolicy {
+  return typeof value === 'string' && MERGE_POLICIES.has(value)
+}
+
+export function isMergeStrategy(value: unknown): value is MergeStrategy {
+  return typeof value === 'string' && MERGE_STRATEGIES.has(value)
+}
+
+/**
+ * The four merge settings in force, resolved from a config. An ABSENT
+ * `strategy` is meaningful and is therefore kept absent rather than defaulted:
+ * it is what makes the argv carry no strategy option at all (D13).
+ */
+export type MergeSettings = {
+  policy: MergePolicy
+  strategy?: MergeStrategy
+  deleteBranch: boolean
+  allowMergeWithoutChecks: boolean
+}
+
+/**
+ * What an unconfigured workspace does: it does not merge, it does not pick a
+ * strategy for the repository, it does not delete the branch, and it consents
+ * to nothing. Every one of the four defaults is the inert one, because the
+ * merge is the single irreversible action this product takes.
+ */
+export const DEFAULT_MERGE_SETTINGS: MergeSettings = {
+  policy: 'human',
+  deleteBranch: false,
+  allowMergeWithoutChecks: false,
+}
+
+/**
+ * The merge settings a resolved config selects. A key that is absent — or was
+ * present with a value outside its enum, which `parseConfig` already dropped —
+ * lands on `DEFAULT_MERGE_SETTINGS`. Never throws: a typo in a config file
+ * must not be able to stop a workspace, and it must certainly not be able to
+ * turn merging ON.
+ */
+export function resolveMergeSettings(config: CodesemaConfig): MergeSettings {
+  return {
+    policy: config.mergePolicy ?? DEFAULT_MERGE_SETTINGS.policy,
+    ...(config.mergeStrategy ? { strategy: config.mergeStrategy } : {}),
+    deleteBranch: config.deleteBranchAfterMerge ?? DEFAULT_MERGE_SETTINGS.deleteBranch,
+    allowMergeWithoutChecks:
+      config.allowMergeWithoutChecks ?? DEFAULT_MERGE_SETTINGS.allowMergeWithoutChecks,
+  }
 }
 
 /** Configured isolation policy for workspace tasks (see CodesemaConfig.isolation). */
@@ -210,6 +412,44 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       // rights, since the host path is the policy fallback either way.
       ...(isIsolationMode(raw.isolation) ? { isolation: raw.isolation } : {}),
       ...(allowedDomains !== undefined ? { isolationAllowedDomains: allowedDomains } : {}),
+      // T3.2, repo-settable: a value outside 'simple' | 'dual' is DROPPED
+      // here, so `resolveReviewMode` falls back to 'simple' — a typo must
+      // never leave a project with no reviewer, nor promote it to the flow
+      // that costs twice as much.
+      ...(isReviewMode(raw.reviewMode) ? { reviewMode: raw.reviewMode } : {}),
+      // T3.3 (D14), repo-settable: only an integer >= 1 is kept, so a typo, a
+      // negative and a `0` alike are DROPPED here and
+      // `resolveMaxAutoFixRounds` answers with the D14 default. Never a throw
+      // (invariant n° 1), and never a bound of zero nobody specified.
+      ...(Number.isInteger(raw.maxAutoFixRounds) && (raw.maxAutoFixRounds as number) >= 1
+        ? { maxAutoFixRounds: raw.maxAutoFixRounds as number }
+        : {}),
+      // T3.6, GLOBAL-ONLY: whether this workspace merges without asking, how,
+      // what happens to the branch, and whether a repo without checks was
+      // consented to. All four are stripped from a repo file (and NAMED by
+      // `repoGlobalOnlyIgnoredNotices`), and a value outside its enum or type
+      // is DROPPED here so `resolveMergeSettings` answers with the inert
+      // default — a typo never throws, and never turns merging on.
+      ...(scope === 'global' && isMergePolicy(raw.mergePolicy)
+        ? { mergePolicy: raw.mergePolicy }
+        : {}),
+      ...(scope === 'global' && isMergeStrategy(raw.mergeStrategy)
+        ? { mergeStrategy: raw.mergeStrategy }
+        : {}),
+      ...(scope === 'global' && typeof raw.deleteBranchAfterMerge === 'boolean'
+        ? { deleteBranchAfterMerge: raw.deleteBranchAfterMerge }
+        : {}),
+      ...(scope === 'global' && typeof raw.allowMergeWithoutChecks === 'boolean'
+        ? { allowMergeWithoutChecks: raw.allowMergeWithoutChecks }
+        : {}),
+      // Repo-settable (T3.7/D15, see the field's own comment), and kept on the
+      // TYPE rather than on the value: `forgeCycleLabels: false` in a repo file
+      // is a project SAYING NO, and it only outranks a global `true` if it
+      // survives this parse as a present `false`. `raw.x ? … : {}` here would
+      // drop it and hand the project straight back to the global opt-in.
+      ...(typeof raw.forgeCycleLabels === 'boolean'
+        ? { forgeCycleLabels: raw.forgeCycleLabels }
+        : {}),
     }
   } catch {
     return {}
@@ -246,6 +486,51 @@ export function hasInvalidPositiveIntKey(
   } catch {
     return false
   }
+}
+
+/**
+ * The four merge keys, each with the predicate that makes a value USABLE. One
+ * table so the parser's guards above and the boot warning below can never
+ * describe different sets of values as valid (T3.6).
+ */
+const MERGE_KEY_VALIDATORS = {
+  mergePolicy: isMergePolicy,
+  mergeStrategy: isMergeStrategy,
+  deleteBranchAfterMerge: (v: unknown) => typeof v === 'boolean',
+  allowMergeWithoutChecks: (v: unknown) => typeof v === 'boolean',
+} as const satisfies Record<string, (value: unknown) => boolean>
+
+export type MergeConfigKey = keyof typeof MERGE_KEY_VALIDATORS
+
+/**
+ * Merge keys PRESENT in the raw JSON at `path` but not usable — `"Auto"`, `1`,
+ * `"yes"` — as opposed to simply absent. `parseConfig` drops such a value in
+ * silence, the doctrine every other malformed key gets; these four are
+ * surfaced instead, for the reason `hasInvalidPositiveIntKey` exists: a user
+ * who typed `mergePolicy: "Auto"` meant to authorize automatic merging, and
+ * silently NOT getting it is exactly the kind of silence invariant n° 2
+ * forbids. Never throws — unreadable or unparsable JSON reads as "nothing to
+ * warn about", since `parseConfig`'s own catch already degraded that case.
+ */
+export function invalidMergeKeys(path: string): MergeConfigKey[] {
+  if (!existsSync(path)) {
+    return []
+  }
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return []
+    }
+    const keys = Object.keys(MERGE_KEY_VALIDATORS) as MergeConfigKey[]
+    return keys.filter((key) => raw[key] !== undefined && !MERGE_KEY_VALIDATORS[key](raw[key]))
+  } catch {
+    return []
+  }
+}
+
+/** The same reading, on the GLOBAL file — the only one these four keys are read from. */
+export function invalidGlobalMergeKeys(): MergeConfigKey[] {
+  return invalidMergeKeys(globalConfigPath())
 }
 
 function writeConfig(path: string, config: CodesemaConfig, options?: { mode: number }): string {
@@ -342,6 +627,18 @@ const REPO_IGNORED_GLOBAL_ONLY_KEYS = [
   'maxConcurrentAgents',
   'maxParallelTasks',
   'taskRetentionCount',
+  // T3.6: the four merge settings. They join the list under a DIFFERENT
+  // argument from the three above — nothing about them is a machine resource.
+  // What they govern is whether this tool performs the one irreversible
+  // action it knows, and on whose say-so; a cloned repository that could turn
+  // `mergePolicy: "auto"` on, or open `allowMergeWithoutChecks`, would be
+  // giving a consent on behalf of the person running the workspace. Ignored,
+  // and NAMED — a repo that meant something real has to be told it did not
+  // happen.
+  'mergePolicy',
+  'mergeStrategy',
+  'deleteBranchAfterMerge',
+  'allowMergeWithoutChecks',
 ] as const
 
 /**
@@ -377,6 +674,9 @@ export function repoGlobalOnlyIgnoredNotices(repoRoot: string | null): string[] 
 /**
  * Per-project configuration (T1.4). Precedence is the documented one:
  * CLI flags > repo `.codesema/config.json` > `~/.config/codesema/config.json`.
+ * `reviewMode` (T3.2) rides the repo > global merge like every other
+ * repo-settable key; it has no flag layer, for the same reason `agentId` /
+ * `model` / `effort` have none — no CLI flag produces it.
  * `maxConcurrentAgents` / `maxParallelTasks` / `taskRetentionCount` never come
  * from the repo file (stripped in parseConfig); if they were written there,
  * `warnings` names each of them.

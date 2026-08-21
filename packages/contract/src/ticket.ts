@@ -147,6 +147,27 @@ export const TICKET_CRITERIA_MIN = 3
 export const CRITERION_VERDICT_EVIDENCE_MAX = 1_000
 
 /**
+ * JSON Schema `pattern` for a string that is neither empty NOR whitespace-only:
+ * a non-whitespace first AND last character. It SUBSUMES `minLength: 1` (an
+ * empty string cannot match it), so it replaces that keyword rather than
+ * sitting beside it.
+ *
+ * It lives here, beside `CriterionVerdict` itself, for the DP12 reason the type
+ * does: `recapRecordSchema` and `reviewRecordSchema` both publish the SAME
+ * `criterionVerdict.evidence`, and round 2 of T3.2 landed with recap using this
+ * pattern and review using a bare `minLength: 1` — two spellings of one fact,
+ * the looser of which accepted `'   '` that no sanitizer ever produces
+ * (`sanitizeCriterionVerdict` trims BEFORE it checks for emptiness, and omits
+ * the key rather than storing a blank). A schema looser than its own sanitizer
+ * is the drift `recap.ts` names as risk n° 1; sharing the constant is what
+ * stops the two from drifting again.
+ *
+ * `ticket.ts` imports nothing, so both schema modules can read it without a
+ * cycle.
+ */
+export const NON_BLANK = '^\\S(?:[\\s\\S]*\\S)?$'
+
+/**
  * Bound of the readable reason `formatTicketProblems` renders. Deliberately the
  * same 2 000 as `TASK_REASON_DETAIL_MAX` (reasons.ts) — a refusal is carried by
  * a `TaskReason.detail`, a flat journal payload and an HTTP body, all bounded

@@ -83,12 +83,28 @@ describe('T2.4 issue journal labels', () => {
     'workspace.evIssueNotTicket',
     'workspace.evIssueSnapshotUnreadable',
     'workspace.evIssueUnreachable',
+    'workspace.evIssueLabelNotPosed',
     'workspace.evIssueNone',
     'workspace.evIssueSectionsUnknown',
     'workspace.evIssueSectionContext',
     'workspace.evIssueSectionGoal',
     'workspace.evIssueSectionScope',
     'workspace.evIssueSectionOutOfScope',
+    // T3.5: seven more lines on the same 'issue' type, and the same trap —
+    // the server's English `data.message` is never what the journal shows.
+    'workspace.evIssueRecapPosted',
+    'workspace.evIssueRecapAlreadyPosted',
+    'workspace.evIssueRecapMissing',
+    'workspace.evIssueRecapBlockedSecrets',
+    'workspace.evIssueRecapUnreachable',
+    'workspace.evIssueClosed',
+    'workspace.evIssueCloseUnreachable',
+    // T3.5 round 2, majeur 2: the same trap one type over — a 'shipped' line
+    // whose recap was held back must not read as the plain green label, and
+    // must not read the server's English `data.note` either.
+    'workspace.evShippedRecapMissing',
+    'workspace.evShippedRecapBlocked',
+    'workspace.evShippedRecapUnscanned',
   ] as const
 
   test('each one is actually translated in French, never left on its English text', () => {
@@ -107,6 +123,13 @@ describe('T2.5 criteria journal labels', () => {
     'workspace.evCriteria',
     'workspace.evCriteriaDraftUnparsed',
     'workspace.evCriteriaValidated',
+    // T3.2's own five: the gate's two journal outcomes, the proposal line,
+    // and the two status labels a criteria-blocked review reads under.
+    'workspace.evCriteriaDraftProposed',
+    'workspace.evCriteriaGateBlocked',
+    'workspace.evCriteriaGatePassed',
+    'workspace.statusCriteriaUnmet',
+    'workspace.phaseCriteriaUnmet',
   ] as const
 
   test('each one is actually translated in French, never left on its English text', () => {
@@ -117,6 +140,53 @@ describe('T2.5 criteria journal labels', () => {
       expect(fr[key]?.trim()).toBeTruthy()
       expect(fr[key]).not.toBe(en[key])
     }
+  })
+})
+
+// T3.6. Same reason as the two blocks above: catalog parity only proves the
+// KEY exists in French — a copy of the English value satisfies it perfectly.
+// These are the merge gate's own, and they are the ONLY French a user reads
+// when the workspace refuses to merge for them.
+describe('T3.6 merge journal and status labels', () => {
+  const mergeKeys = [
+    'workspace.evMerge',
+    'workspace.evMergeConditionMet',
+    'workspace.evMergeConditionUnmet',
+    'workspace.evMergeConditionConsented',
+    'workspace.evMergeCondReview',
+    'workspace.evMergeCondChecks',
+    'workspace.evMergeCondCriteria',
+    'workspace.evMergeCondBranch',
+    'workspace.evMergeMerged',
+    'workspace.evMergeRefused',
+    'workspace.evMergePolicyHuman',
+    'workspace.evMergeFailed',
+    'workspace.evMergeConfigDegraded',
+    'workspace.statusChecksUnavailable',
+    'workspace.phaseChecksUnavailable',
+    'workspace.statusCriteriaMissing',
+    'workspace.phaseCriteriaMissing',
+  ] as const
+
+  test('each one is actually translated in French, never left on its English text', () => {
+    const en = (catalogs.en ?? {}) as Record<string, string>
+    const fr = (catalogs.fr ?? {}) as Record<string, string>
+    for (const key of mergeKeys) {
+      expect(en[key]?.trim()).toBeTruthy()
+      expect(fr[key]?.trim()).toBeTruthy()
+      expect(fr[key]).not.toBe(en[key])
+    }
+  })
+
+  test("the two new codes do not reuse their neighbours' sentences", () => {
+    // DP1/DP2 minted separate codes precisely because "checks failed" and
+    // "checks could not be run" are opposite statements; sharing a string here
+    // would undo that at the last step.
+    const fr = (catalogs.fr ?? {}) as Record<string, string>
+    expect(fr['workspace.statusChecksUnavailable']).not.toBe(fr['workspace.statusChecksFailed'])
+    expect(fr['workspace.phaseChecksUnavailable']).not.toBe(fr['workspace.phaseChecksFailed'])
+    expect(fr['workspace.statusCriteriaMissing']).not.toBe(fr['workspace.statusCriteriaUnmet'])
+    expect(fr['workspace.phaseCriteriaMissing']).not.toBe(fr['workspace.phaseCriteriaUnmet'])
   })
 })
 

@@ -984,6 +984,16 @@ describe('sanitizeTaskEvent', () => {
     expect(sanitizeTaskEvent({ ...validEvent, type: undefined })).toBeNull()
   })
 
+  test("'merge' (T3.6) is a KNOWN type: its four condition lines are never dropped", () => {
+    // The half of the union nothing else can see: a member declared on
+    // `TaskEventType` but missing from `TASK_EVENT_TYPES` compiles fine and
+    // makes `appendTaskEvent` throw on every merge line — D12's whole
+    // "journaled one by one" promise, gone, with the CLI suite reporting only
+    // a timeout somewhere downstream.
+    const line = { ...validEvent, type: 'merge' as const, data: { name: 'condition_unmet' } }
+    expect(sanitizeTaskEvent(structuredClone(line))).toEqual(line)
+  })
+
   test('all valid types are kept', () => {
     const types = [
       'turn_started',

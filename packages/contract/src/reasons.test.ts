@@ -28,8 +28,37 @@ const D2_CODES = [
   'forge_unreachable',
 ] as const
 
-/** The arbitration this ticket committed to, code by code. */
-const D2_TERMINAL: Record<(typeof D2_CODES)[number], boolean> = {
+/**
+ * What T3.6 ADDED to D2's ten (DP1 / DP2), kept as its own literal rather than
+ * appended to `D2_CODES`: D2's roster is a historical fact that no later
+ * ticket rewrites, and the by-NAME lock below has to keep asserting exactly
+ * those ten. An extension shows up here, next to the ticket that made it.
+ */
+const T3_6_CODES = ['checks_unavailable', 'criteria_missing'] as const
+
+/**
+ * The whole table as it stands today, in DECLARATION order — which is not
+ * `[...D2_CODES, ...T3_6_CODES]`: the table groups the terminal codes first,
+ * so T3.6's two land in the middle, after `branch_diverged`. Spelled out so
+ * the snapshot below really is a snapshot.
+ */
+const EXPECTED_CODES = [
+  'checks_failed',
+  'review_blocked',
+  'criteria_unmet',
+  'merge_conflict',
+  'branch_diverged',
+  'checks_unavailable',
+  'criteria_missing',
+  'agent_error',
+  'inactivity_timeout',
+  'interrupted_by_user',
+  'resource_busy',
+  'forge_unreachable',
+] as const
+
+/** The arbitration each ticket committed to, code by code. */
+const EXPECTED_TERMINAL: Record<(typeof EXPECTED_CODES)[number], boolean> = {
   checks_failed: true,
   review_blocked: true,
   criteria_unmet: true,
@@ -40,15 +69,30 @@ const D2_TERMINAL: Record<(typeof D2_CODES)[number], boolean> = {
   interrupted_by_user: false,
   resource_busy: false,
   forge_unreachable: false,
+  // DP1 / DP2: waiting configures no checks and writes no criteria — what
+  // both ask for is a person, so both are terminal.
+  checks_unavailable: true,
+  criteria_missing: true,
 }
 
 describe('REASON_CODES', () => {
   test('locks every D2 code by NAME: adding a code passes, renaming one breaks', () => {
-    // Membership, not equality: an eleventh code leaves this assertion green
-    // (the contract is extensible) while dropping or renaming any of the ten
-    // makes it red (the contract is never renamed).
+    // Membership, not equality: T3.6's eleventh and twelfth codes left this
+    // assertion green (the contract is extensible) while dropping or renaming
+    // any of the ten makes it red (the contract is never renamed). That is not
+    // a claim about the future any more — it is what actually happened when
+    // `checks_unavailable` and `criteria_missing` were added.
     const names = REASON_CODES.map((entry) => entry.code)
     for (const code of D2_CODES) {
+      expect(names).toContain(code)
+    }
+  })
+
+  test('locks the codes T3.6 added by NAME too, on the same terms', () => {
+    // Same doctrine applied to the extension itself: once minted, a code is
+    // never renamed either — records and journals quote it verbatim.
+    const names = REASON_CODES.map((entry) => entry.code)
+    for (const code of T3_6_CODES) {
       expect(names).toContain(code)
     }
   })
@@ -64,20 +108,20 @@ describe('REASON_CODES', () => {
     }
   })
 
-  test('today the table is exactly D2: the ten codes, no more, no less', () => {
-    // The snapshot of the CURRENT roster. Only a deliberate extension of D2
-    // touches this line — never a rename, which the lock test above catches
-    // first.
-    expect(REASON_CODES.map((entry) => entry.code)).toEqual([...D2_CODES])
-    expect(REASON_CODES).toHaveLength(10)
+  test('today the table is D2 plus T3.6: twelve codes, no more, no less', () => {
+    // The snapshot of the CURRENT roster. Only a deliberate extension touches
+    // this line — never a rename, which the two lock tests above catch first.
+    expect(REASON_CODES.map((entry) => entry.code)).toEqual([...EXPECTED_CODES])
+    expect(REASON_CODES).toHaveLength(12)
   })
 
   test('each code is classified the way this contract documents it', () => {
     for (const entry of REASON_CODES) {
-      expect(entry.terminal).toBe(D2_TERMINAL[entry.code])
+      expect(entry.terminal).toBe(EXPECTED_TERMINAL[entry.code])
     }
-    // Five of each: the work-must-change half and the run-must-change half.
-    expect(REASON_CODES.filter((entry) => entry.terminal)).toHaveLength(5)
+    // Seven terminal since T3.6 (D2's five plus `checks_unavailable` and
+    // `criteria_missing`); the retryable half is untouched at five.
+    expect(REASON_CODES.filter((entry) => entry.terminal)).toHaveLength(7)
     expect(REASON_CODES.filter((entry) => !entry.terminal)).toHaveLength(5)
   })
 })
@@ -92,6 +136,16 @@ describe('isTerminalReason', () => {
   test('a blocked review is terminal, an interrupted task is not', () => {
     expect(isTerminalReason('review_blocked')).toBe(true)
     expect(isTerminalReason('interrupted_by_user')).toBe(false)
+  })
+
+  test("T3.6's two codes are terminal: waiting configures no checks and writes no criteria", () => {
+    // DP1 / DP2 spelled out as an assertion rather than left to the
+    // table-wide loop above: these two are the ONLY codes of the vocabulary
+    // whose classification a reader would plausibly guess wrong — nothing is
+    // broken on the branch, so "retryable" looks tempting until you ask the
+    // table's own question, "does waiting change anything?".
+    expect(isTerminalReason('checks_unavailable')).toBe(true)
+    expect(isTerminalReason('criteria_missing')).toBe(true)
   })
 
   test('an unknown code never claims to be terminal', () => {
@@ -191,6 +245,29 @@ describe('sanitizeTaskReason', () => {
     // TASK_REASON_DETAIL_MAX is declared in reasons.ts to keep that module
     // dependency-free; this locks it to the value it mirrors.
     expect(TASK_REASON_DETAIL_MAX).toBe(TASK_EVENT_DATA_STRING_MAX)
+  })
+
+  test("T3.6's codes survive sanitisation and keep the merge gate's own sentence", () => {
+    // The whole point of DP1's "the code is ADDED to the message": the
+    // discriminant ('unconfigured') rides the journal line, while the reason
+    // a human reads keeps naming the way out.
+    expect(
+      sanitizeTaskReason({
+        code: 'checks_unavailable',
+        detail:
+          "this repository configures no checks — configure them, set mergePolicy to 'human', or allow merging without checks",
+      }),
+    ).toEqual({
+      code: 'checks_unavailable',
+      detail:
+        "this repository configures no checks — configure them, set mergePolicy to 'human', or allow merging without checks",
+    })
+    const bounded = sanitizeTaskReason({
+      code: 'criteria_missing',
+      detail: 'y'.repeat(TASK_REASON_DETAIL_MAX + 1),
+    })
+    expect(bounded?.code).toBe('criteria_missing')
+    expect(bounded?.detail).toHaveLength(TASK_REASON_DETAIL_MAX)
   })
 
   test('an empty or blank detail is dropped rather than carried as noise', () => {

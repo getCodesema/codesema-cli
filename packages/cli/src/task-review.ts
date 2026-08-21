@@ -10,15 +10,16 @@
 // open the review of ANY of its turns, not just the last one.
 
 import { join, resolve, sep } from 'node:path'
-import { ensureWorkDir } from './config.js'
+import { ensureWorkDir, type ReviewMode } from './config.js'
 import {
   sanitizeRecord,
   type Finding,
   type ReviewRecord,
   type TaskChecks,
+  type TaskReason,
   type TaskRecord,
 } from './contract.js'
-import { buildAgentFixPrompt } from './fix.js'
+import { buildAgentFixPrompt, isFixable } from './fix.js'
 import { isAncestor, refExists, tryGit } from './git.js'
 import { createLoadCap, DEFAULT_MAX_CONCURRENT_AGENTS, type LoadCap } from './load-cap.js'
 import { prep } from './prep.js'
@@ -31,11 +32,28 @@ import {
   type SimpleOutcome,
 } from './review.js'
 import { createSession } from './serve.js'
-import { REVIEW_CUT_DETAIL, type TaskTurnIo, type TaskTurnReviewFn } from './task-runner.js'
+import {
+  buildCriteriaChapter,
+  criteriaUnmetDetail,
+  resolveCriteria,
+  unmetCriteriaFixChapter,
+  type CriteriaOutcome,
+} from './task-criteria-gate.js'
+import {
+  REVIEW_CUT_DETAIL,
+  taskCriteria,
+  type TaskTurnIo,
+  type TaskTurnReviewFn,
+} from './task-runner.js'
 import { loadTask, taskReason } from './tasks-store.js'
 import { progressLabel } from './ui.js'
 
-export type TaskReviewMode = 'simple' | 'dual'
+/**
+ * Alias, not a second declaration: the enum lives in config.ts, which is where
+ * the value is resolved from (T3.2). Kept exported under this name because it
+ * is what `CreateTaskReviewerOptions` and serve.ts's session speak.
+ */
+export type TaskReviewMode = ReviewMode
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
@@ -52,10 +70,68 @@ export function taskReviewVerdict(record: ReviewRecord): 'review_ok' | 'review_k
   if (verdict === 'request_changes') {
     return 'review_ko'
   }
-  const actionable = findings.some(
-    (f) => f.kind !== 'praise' && f.kind !== 'why' && f.severity !== 'info',
-  )
-  return actionable ? 'review_ko' : 'review_ok'
+  // `isFixable` (fix.ts) rather than a second copy of the same predicate: the
+  // bar that makes a 'comment' block has to be the bar the fix prompt then
+  // carries, or a task blocks on a finding nobody is ever asked to fix.
+  return findings.some(isFixable) ? 'review_ko' : 'review_ok'
+}
+
+/**
+ * Severities that make a finding BLOCKING whatever the model concluded — the
+ * deterministic half of T3.3's guard-rail (invariant n° 4). `critical` is
+ * already escalated by the contract's `groundReview`, but only when the diff
+ * could be indexed; `major` never was.
+ */
+const BLOCKING_SEVERITIES = ['critical', 'major'] as const
+
+/**
+ * Whether a review still carries a finding no `approve` may override: a
+ * `critical` or `major` one that asks for a code change (T3.3). "Unresolved"
+ * needs no bookkeeping — a finding a later review no longer raises is
+ * resolved, so the LAST archive is the whole state.
+ *
+ * Composed, deliberately, from the two bricks that already exist — `isFixable`
+ * for "does this ask for a change" and `findingSeverityCounts` for the tally —
+ * rather than a second severity scale of its own: two definitions of
+ * "blocking" drift in silence, and the merge gate downstream (T3.6) reads
+ * THIS one.
+ */
+export function hasBlockingFindings(record: ReviewRecord): boolean {
+  const counts = findingSeverityCounts(record.review.findings.filter(isFixable))
+  return BLOCKING_SEVERITIES.some((severity) => (counts[`severity_${severity}`] ?? 0) > 0)
+}
+
+/**
+ * Why an `approve` was not enough, with the exact tally beside it. ADDED to
+ * what the reviewer itself said, never a replacement for it (invariant n° 2).
+ */
+export function blockingFindingsDetail(record: ReviewRecord): string {
+  const counts = findingSeverityCounts(record.review.findings.filter(isFixable))
+  const named = BLOCKING_SEVERITIES.filter(
+    (severity) => (counts[`severity_${severity}`] ?? 0) > 0,
+  ).map((severity) => `${counts[`severity_${severity}`] as number} ${severity}`)
+  return `the review verdict was '${record.review.verdict}' but the review still carries blocking findings (${named.join(', ')}): a model verdict never releases an unresolved critical or major finding`
+}
+
+/**
+ * Indices of the findings a fix turn is asked to apply, in the archive's own
+ * order — the same bar `taskReviewVerdict` blocks on, so an automatic round
+ * never asks for less than what blocked it.
+ */
+export function actionableFindingIds(record: ReviewRecord): number[] {
+  return record.review.findings.flatMap((finding, index) => (isFixable(finding) ? [index] : []))
+}
+
+/** The archived review a task's `review_ref` points at, or null on every miss. */
+function readReviewRef(task: TaskRecord): ReviewRecord | null {
+  if (!task.review_ref) {
+    return null
+  }
+  try {
+    return sanitizeRecord(readJson(task.review_ref))
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -66,15 +142,37 @@ export function taskReviewVerdict(record: ReviewRecord): 'review_ok' | 'review_k
  * turns that into a 4xx, never a crash.
  */
 export function buildFixTurnPrompt(task: TaskRecord, findingIds: number[]): string | null {
-  if (!task.review_ref) {
+  const review = readReviewRef(task)
+  return review ? buildAgentFixPrompt(review, findingIds) : null
+}
+
+/**
+ * The prompt of an AUTOMATIC fix turn (T3.3). It IS the manual path's prompt —
+ * `buildAgentFixPrompt` on the same archive, through the same helper the click
+ * uses — with the two differences that automating it requires:
+ *
+ *  - the findings are not a human's selection but every ACTIONABLE one, which
+ *    is exactly the set that made the review block. Asking for less would
+ *    guarantee the next review blocks on the remainder and burns a round;
+ *  - a criteria chapter is appended when the acceptance-criteria gate is what
+ *    blocks, because a review that approved the code raises no finding at all.
+ *
+ * Null when there is nothing concrete to ask for — no archive, an unreadable
+ * one, or an archive carrying neither an actionable finding nor an unsatisfied
+ * criterion. That null is a REFUSAL to spend a round, never an empty prompt.
+ */
+export function buildAutoFixTurnPrompt(task: TaskRecord): string | null {
+  const review = readReviewRef(task)
+  if (!review) {
     return null
   }
-  try {
-    const review = sanitizeRecord(readJson(task.review_ref))
-    return review ? buildAgentFixPrompt(review, findingIds) : null
-  } catch {
+  const ids = actionableFindingIds(review)
+  const chapter = unmetCriteriaFixChapter(taskCriteria(task), review.review.criteria)
+  if (ids.length === 0 && !chapter) {
     return null
   }
+  const base = buildAgentFixPrompt(review, ids)
+  return chapter ? `${base}\n\n${chapter}` : base
 }
 
 /**
@@ -205,10 +303,17 @@ export function applyChecksGate(record: TaskRecord, checks: TaskChecks | null | 
 }
 
 /**
- * Final transition of the automatic review. A KO states WHY in the record —
- * the code plus the producer's own message in `detail` — while an OK clears
- * any reason a previous turn left behind: a record that passed its review must
- * not keep claiming the one that blocked it.
+ * Final transition of the automatic review, and its ONLY owner. A KO states
+ * WHY in the record — the code plus the producer's own message in `detail` —
+ * while an OK clears any reason a previous turn left behind: a record that
+ * passed its review must not keep claiming the one that blocked it.
+ *
+ * `code` is what the KO is called. `review_blocked` is the reviewer's own
+ * verdict or its own failure; `criteria_unmet` (T3.2) is the acceptance-criteria
+ * gate, which blocks a review the reviewer itself approved — routing it
+ * through this same function is what keeps a single writer of the final
+ * transition, rather than a second one that would have to re-decide the
+ * persist.
  *
  * The persist the caller wraps (task-server's onTurnDone) folds the checks
  * gate into THIS write, so a red run never becomes `review_ok` even for a
@@ -218,11 +323,12 @@ const settle = (
   record: TaskRecord,
   io: TaskTurnIo,
   status: 'review_ok' | 'review_ko',
-  reason?: string,
+  /** Why a KO blocks; defaults to a bare `review_blocked`. Ignored on an OK. */
+  blocked?: TaskReason,
 ): void => {
   record.status = status
   if (status === 'review_ko') {
-    record.reason = taskReason('review_blocked', reason)
+    record.reason = blocked ?? taskReason('review_blocked')
   } else {
     delete record.reason
   }
@@ -256,6 +362,53 @@ export function baselineFallbackReason(record: TaskRecord): string | null {
 }
 
 /**
+ * The journal line of the acceptance-criteria gate (T3.2), on the DP9 pattern
+ * the `criteria` type already follows: the TYPE names the domain, `data.name`
+ * names the incident. Two of them, and both are said out loud — a gate that
+ * only spoke when it blocked would leave a human unable to tell "every
+ * criterion was met" from "no gate ever ran".
+ *
+ * `criteria_unmet` rides on the BLOCKING one only, in its own `reason_code`
+ * field, beside the counts rather than instead of them (invariant n° 2: the
+ * code is ADDED to the readable payload, and the record's `reason.detail`
+ * repeats the same sentence the human reads).
+ *
+ * No message string is put in `data`: this event's summary is rendered from
+ * `data.name` through the web's own translated key, so a sentence built here
+ * would either be ignored or served to a French UI in English.
+ */
+const emitCriteriaGate = (io: TaskTurnIo, gate: CriteriaOutcome): void => {
+  io.emit({
+    type: 'criteria',
+    data: {
+      name: gate.satisfied ? 'gate_passed' : 'gate_blocked',
+      met: gate.counts.met,
+      unmet: gate.counts.unmet,
+      unclear: gate.counts.unclear,
+      // Only when it is TRUE: an extra key on every ordinary line would be
+      // noise, and its absence already reads as "the diff was indexed".
+      ...(gate.report.diff_unreadable ? { diff_unreadable: true } : {}),
+      // Same rule: only when it happened. A reviewer that judged criteria this
+      // ticket does not carry is a drift between the prompt and the record,
+      // and those entries were discarded — said, never absorbed.
+      ...(gate.unknown_ids > 0 ? { unknown_ids: gate.unknown_ids } : {}),
+      // Round 2, majeur 1(b): the four facts that make one `unclear` tally
+      // mean four different things. The gate measured them from the start and
+      // journaled none of them, so a human reading "3 unclear" could not tell
+      // a reviewer that weighed the work and doubted from a reviewer whose
+      // whole answer was unreadable. Same rule again — a key per fact, and
+      // only when the fact happened, so an ordinary passing line stays four
+      // keys wide.
+      ...(gate.unjudged > 0 ? { unjudged: gate.unjudged } : {}),
+      ...(gate.dropped_evidence > 0 ? { dropped_evidence: gate.dropped_evidence } : {}),
+      ...(gate.demoted > 0 ? { demoted: gate.demoted } : {}),
+      ...(gate.overflowed ? { overflowed: true } : {}),
+    },
+    ...(gate.satisfied ? {} : { reason_code: 'criteria_unmet' as const }),
+  })
+}
+
+/**
  * The workspace is going down mid-review. That is NOT a blocked review — the
  * reviewer never got to say anything — so it must not settle on 'review_ko',
  * which claims a verdict and carries the terminal-ish `review_blocked` code.
@@ -285,7 +438,14 @@ export type CreateTaskReviewerOptions = {
    */
   resolveCommand?: (record: TaskRecord) => string
   timeoutMs: number
-  /** 'simple' (default) or 'dual'; per-task selection is deferred (see plan T4 notes). */
+  /**
+   * Which review flow runs (T3.2). The workspace ALWAYS passes it explicitly,
+   * resolved per project by `resolveReviewMode(resolveProjectConfig(...))` —
+   * this is not a default it falls through. It stays optional so a direct
+   * caller (a test, a one-off script) is not forced to name a mode it has no
+   * opinion about, and `'simple'` is the honest fallback for that case: it is
+   * what every task ran before the key existed.
+   */
   mode?: TaskReviewMode
   /** Test seams — the defaults run real git/agents. */
   prepFn?: typeof prep
@@ -317,6 +477,8 @@ type FlowRunner = (
   opts: CreateTaskReviewerOptions,
   input: Awaited<ReturnType<typeof prep>>,
   io: TaskTurnIo,
+  /** T3.2's acceptance-criteria chapter, or null when the task carries none. */
+  criteriaChapter: string | null,
 ) => Promise<SimpleOutcome | DualOutcome>
 
 /**
@@ -326,7 +488,7 @@ type FlowRunner = (
  * task_text SSE channel — the persisted journal only gets the bounded
  * review_started/review_done/error events.
  */
-const runReviewFlow: FlowRunner = async (opts, input, io) => {
+const runReviewFlow: FlowRunner = async (opts, input, io, criteriaChapter) => {
   const mode: TaskReviewMode = opts.mode ?? 'simple'
   const runSimple = opts.runSimpleFlowFn ?? runSimpleFlow
   const runDual = opts.runDualFlowFn ?? runDualFlow
@@ -356,6 +518,7 @@ const runReviewFlow: FlowRunner = async (opts, input, io) => {
           timeoutMs: opts.timeoutMs,
           session,
           spinner: { update: (status) => io.text(status) },
+          ...(criteriaChapter ? { criteriaChapter } : {}),
           signal: io.signal,
         })
       : await runSimple({
@@ -364,7 +527,7 @@ const runReviewFlow: FlowRunner = async (opts, input, io) => {
           dir,
           timeoutMs: opts.timeoutMs,
           session,
-          prompt: buildFullReviewPrompt(input),
+          prompt: buildFullReviewPrompt(input, criteriaChapter ?? undefined),
           incremental: false,
           signal: io.signal,
         })
@@ -430,6 +593,12 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         return
       }
 
+      // T3.2: built AFTER the empty-diff short-circuit above, on purpose —
+      // a task whose turn changed nothing gets no chapter and no model call,
+      // exactly as before this ticket.
+      const criteria = taskCriteria(record)
+      const criteriaChapter = criteria.length > 0 ? buildCriteriaChapter(criteria) : null
+
       io.emit({ type: 'review_started', data: { turn: record.turns.length, mode } })
       const input = await prepFn({
         branch: record.branch,
@@ -483,6 +652,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           },
           input,
           io,
+          criteriaChapter,
         )
       } finally {
         release()
@@ -499,10 +669,23 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         // the record repeats that same message in reason.detail.
         const message = `review failed: ${outcome.message}`
         io.emit({ type: 'error', data: { message }, reason_code: 'review_blocked' })
-        settle(record, io, 'review_ko', message)
+        settle(record, io, 'review_ko', taskReason('review_blocked', message))
         return
       }
 
+      // T3.2, and BEFORE the archive on purpose: the normalized per-criterion
+      // statuses are what T3.6 reads back — possibly at a later boot — so they
+      // have to be part of the record that lands on disk, not a structure that
+      // dies with this process. `resolveCriteria` is the whole gate: it joins
+      // on the ticket's stable ids, discards what the model invented, grounds
+      // each evidence in the diff and forces one status per criterion.
+      const gate =
+        criteria.length > 0
+          ? resolveCriteria(criteria, outcome.record.review.criteria, outcome.record.diff)
+          : null
+      if (gate) {
+        outcome.record.review.criteria = gate.verdicts
+      }
       // Archived in the MAIN repo, never the worktree (same rule as the MR
       // review runner): `codesema show` and buildFixTurnPrompt read archives
       // from the repo the server was started in, and the worktree is
@@ -523,7 +706,41 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           ...findingSeverityCounts(outcome.record.review.findings),
         },
       })
-      settle(record, io, taskReviewVerdict(outcome.record))
+      if (gate) {
+        emitCriteriaGate(io, gate)
+      }
+      const verdict = taskReviewVerdict(outcome.record)
+      // T3.3, and BEFORE the criteria gate: the deterministic guard-rail.
+      // `groundReview` already escalates an `approve` that carries a
+      // `critical` — but only when it could index the diff — and it has never
+      // covered `major` at all. Here the CLI decides, on the findings that
+      // survived grounding: an unresolved critical or major keeps the task
+      // blocked whatever the model concluded (invariant n° 4). It only turns
+      // an OK into a KO, same discipline as the criteria gate below, and it
+      // runs FIRST because "there are still blocking findings" is the more
+      // actionable of the two reasons.
+      if (verdict === 'review_ok' && hasBlockingFindings(outcome.record)) {
+        const detail = blockingFindingsDetail(outcome.record)
+        // Said out loud (invariant n° 2): the `review_done` line above states
+        // the model's own verdict, so without this the journal would show an
+        // `approve` beside a blocked task and nothing explaining the gap.
+        io.emit({
+          type: 'message',
+          data: { text: detail, name: 'review_verdict_overridden' },
+          reason_code: 'review_blocked',
+        })
+        settle(record, io, 'review_ko', taskReason('review_blocked', detail))
+        return
+      }
+      // The HARD gate (D11): one criterion that is not `met` blocks "ready to
+      // merge", with no weighting and no exception. It only ever turns an OK
+      // into a KO — a review that already blocks keeps its own, more
+      // actionable reason rather than being relabelled.
+      if (gate && !gate.satisfied && verdict === 'review_ok') {
+        settle(record, io, 'review_ko', taskReason('criteria_unmet', criteriaUnmetDetail(gate)))
+        return
+      }
+      settle(record, io, verdict)
     } catch (err) {
       if (io.signal.aborted) {
         // The rejection IS the abort (a killed agent, an interrupted prep):
@@ -534,7 +751,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       }
       const message = `review failed: ${errorMessage(err)}`
       io.emit({ type: 'error', data: { message }, reason_code: 'review_blocked' })
-      settle(record, io, 'review_ko', message)
+      settle(record, io, 'review_ko', taskReason('review_blocked', message))
     }
   }
 }
