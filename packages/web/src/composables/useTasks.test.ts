@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { ref } from 'vue'
-import type { TaskRecord } from '../types'
+import type { TaskPlan, TaskRecord } from '../types'
 import {
   applyTaskMetaFrame,
   taskKey,
   taskStreamHandlers,
   upsertRecord,
+  useTasks,
+  type PreviewTaskResult,
   type TaskState,
   type TaskStore,
 } from './useTasks'
@@ -205,5 +207,98 @@ describe('taskStreamHandlers (the stream wiring itself)', () => {
       frame({ project_id: 'p1', task_id: 'x', event: { name: 'task_checks', data: null } }),
     )
     expect(state.checks).toBeNull()
+  })
+})
+
+// T2.6 — the client half of the dry-run. What matters here is that it hits
+// the PREVIEW route (never the creation one), carries the CSRF token, and
+// leaves the store untouched whatever comes back.
+describe('useTasks().preview', () => {
+  type Call = { url: string; init: RequestInit }
+
+  async function withFetch<T>(
+    reply: (call: Call) => { status: number; body: unknown },
+    run: (preview: (body: Record<string, unknown>) => Promise<PreviewTaskResult>) => Promise<T>,
+  ): Promise<{ result: T; calls: Call[]; store: TaskStore }> {
+    const calls: Call[] = []
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      const { status, body } = reply({ url, init })
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    try {
+      const tasks = useTasks('tok-123')
+      const result = await run(tasks.preview)
+      return { result, calls, store: tasks.store }
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+
+  const PLAN: TaskPlan = {
+    mode: 'fork',
+    repo: '/repo',
+    title: 'Fix it',
+    branch: 'codesema/task-fix-it',
+    branch_certain: true,
+    worktree_root: '/repo/.codesema/worktrees',
+    base: 'main',
+    target: 'main',
+    isolation: 'policy',
+    isolation_reason: 'no runtime',
+    agent: 'claude -p',
+    queue_position: null,
+    issue: null,
+    auto_ship: false,
+  }
+
+  test('posts to the preview route with the tasks token, and stores nothing', async () => {
+    const { result, calls, store } = await withFetch(
+      () => ({ status: 200, body: PLAN }),
+      (preview) => preview({ project_id: 'p1', title: 'Fix it', prompt: 'do it' }),
+    )
+    expect(calls).toHaveLength(1)
+    const call = calls[0]
+    if (!call) {
+      throw new Error('no request was made')
+    }
+    // The creation route is never touched by a preview.
+    expect(call.url).toBe('/api/tasks/preview')
+    expect(call.init.method).toBe('POST')
+    expect((call.init.headers as Record<string, string>)['x-codesema-tasks-token']).toBe('tok-123')
+    expect(JSON.parse(call.init.body as string)).toEqual({
+      project_id: 'p1',
+      title: 'Fix it',
+      prompt: 'do it',
+    })
+    expect(result).toEqual({ ok: true, plan: PLAN })
+    // No conversation appears anywhere: nothing was created to appear.
+    expect(store.size).toBe(0)
+  })
+
+  test('a refusal comes back with its status and the server’s own words', async () => {
+    const { result, store } = await withFetch(
+      () => ({ status: 409, body: { error: 'a conversation is already active on branch fix/x' } }),
+      (preview) => preview({ project_id: 'p1', title: 't', prompt: 'p', branch: 'fix/x' }),
+    )
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: 'a conversation is already active on branch fix/x',
+    })
+    expect(store.size).toBe(0)
+  })
+
+  test('an unreadable plan is a refusal, never a half-rendered panel', async () => {
+    const { result } = await withFetch(
+      () => ({ status: 200, body: { mode: 'fork' } }),
+      (preview) => preview({ project_id: 'p1', title: 't', prompt: 'p' }),
+    )
+    expect(result).toMatchObject({ ok: false })
   })
 })

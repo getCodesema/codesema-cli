@@ -56,6 +56,7 @@
 
 import { execFile, type ExecException } from 'node:child_process'
 import type { TaskReason } from './contract.js'
+import { forgeCandidates, forgeReasonDetail } from './degraded-mode.js'
 import {
   extractIssueUrl,
   ghIssueDatabaseId,
@@ -468,15 +469,14 @@ function candidatesFor<T>(
   glab: Candidate<T>,
   pin?: ForgeCli,
 ): Candidate<T>[] {
-  const hint = detectForgeHint(cwd)
-  const candidates: Candidate<T>[] = []
-  if (hint !== 'gitlab' && pin !== 'glab') {
-    candidates.push(gh)
-  }
-  if (hint !== 'github' && pin !== 'gh') {
-    candidates.push(glab)
-  }
-  return candidates
+  // The hint rule itself lives in degraded-mode.ts (T2.7 round-2, majeur 3):
+  // the workspace header announces availability by asking which CLIs could
+  // serve THIS repo, and two copies of that rule drifting apart is exactly
+  // how the header came to promise a forge the ladder below never launches.
+  const byCli: Record<ForgeCli, Candidate<T>> = { gh, glab }
+  return forgeCandidates(detectForgeHint(cwd))
+    .filter((cli) => pin === undefined || cli === pin)
+    .map((cli) => byCli[cli])
 }
 
 /**
@@ -544,10 +544,9 @@ export function forgeIssueReason(result: ForgeUnavailable): TaskReason | null {
   if (result.reason === 'invalid-input' || result.reason === 'unsupported') {
     return null
   }
-  return taskReason(
-    'forge_unreachable',
-    result.detail ? `${result.reason}: ${result.detail}` : result.reason,
-  )
+  // The composition lives in degraded-mode.ts, the one place D9's rule is
+  // written: the motif first and verbatim, the producer's own words after.
+  return taskReason('forge_unreachable', forgeReasonDetail(result.reason, result.detail))
 }
 
 // --- Operations --------------------------------------------------------------

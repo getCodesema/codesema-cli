@@ -458,6 +458,12 @@ describe('reconcileIssueSnapshot', () => {
       // Invariant 2: the code is ADDED to the refusal's own words, never
       // substituted for them.
       expect(outcome.reason.detail).toContain('invalid issue number: 0')
+      // T2.7 round-2 adversarial review, mineur 6: and it is composed the ONE
+      // way every `forge_unreachable` detail is (degraded-mode.ts) — the
+      // motif FIRST and verbatim, the sentence after. This site used to lead
+      // with the English sentence, so a reader taking the motif off the front
+      // of a detail could not tell whether this one carried one at all.
+      expect(outcome.reason.detail?.startsWith('invalid-input: ')).toBe(true)
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }

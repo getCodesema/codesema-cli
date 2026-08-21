@@ -38,7 +38,7 @@ import {
   resetQueueDegradedReports,
   type TaskQueueIo,
 } from './task-queue.js'
-import { createTask, resetStoreReports, taskDir } from './tasks-store.js'
+import { appendTaskEvent, createTask, resetStoreReports, taskDir } from './tasks-store.js'
 
 const cleanups: string[] = []
 
@@ -1157,5 +1157,286 @@ describe('the vocabulary of degradations, anchored to literals', () => {
     // The literals above hardcode 1000 on purpose; this is what keeps them
     // honest if the constant ever moves.
     expect(QUEUE_ENTRIES_MAX).toBe(1000)
+  })
+})
+
+// T2.6. `position()` only speaks about ids ALREADY waiting; the preview needs
+// the rank a task that does not exist yet would take. The whole point is that
+// asking costs nothing: no entry, no claim, not one byte of queue.json — and
+// (review round 1, majeur 1) not one line of anybody's journal either.
+/** `n` waiting records, so the reconciliation a projection runs keeps them. */
+const waiting = (n: number): TaskRecord[] =>
+  Array.from({ length: n }, (_, i) =>
+    record(id(i + 1), 'queued', `2026-01-${(i + 1).toString().padStart(2, '0')}T00:00:00.000Z`),
+  )
+
+/** A queue whose records are exactly `records` — nothing else is on disk. */
+const lineQueue = (repo: string, projectId: string, records: readonly TaskRecord[]) =>
+  createTaskQueue({
+    cwd: repo,
+    projectId,
+    records: () => [...records],
+    recordExists: (taskId) => records.some((candidate) => candidate.id === taskId),
+  })
+
+/** Writes `ids` as the file's line, without going through the queue. */
+const writeLine = (repo: string, ids: readonly string[]): void => {
+  writeJsonAtomic(queuePath(repo), {
+    version: 1,
+    entries: ids.map((entryId) => ({ id: entryId, enqueued_at: '2026-01-01T00:00:00.000Z' })),
+  })
+}
+
+/** A queue.json cut mid-write: legible as bytes, unusable as JSON. */
+const truncatedQueue = (repo: string): void => {
+  mkdirSync(join(repo, '.codesema'), { recursive: true })
+  writeFileSync(queuePath(repo), '{"version":1,"entries":[{"id"')
+}
+
+/** `lineQueue`, plus the degradation sink the workspace wires in. */
+const reportingQueue = (
+  repo: string,
+  records: readonly TaskRecord[],
+  onDegraded: (reason: string, ids: readonly string[]) => void,
+) =>
+  createTaskQueue({
+    cwd: repo,
+    projectId: 'degraded',
+    records: () => [...records],
+    recordExists: (taskId) => records.some((candidate) => candidate.id === taskId),
+    onDegraded,
+  })
+
+describe('projectedAdmission — the rank a NOT-YET-ADMITTED task would take', () => {
+  test('an idle project would start the task at once: no rank, the same null create answers with', () => {
+    const repo = makeRepo()
+    const queue = makeQueue(repo)
+    expect(queue.projectedAdmission()).toEqual({ admissible: true, position: null })
+  })
+
+  test('a project whose slot is taken would make it wait at 1, even on an empty file', () => {
+    const repo = makeRepo()
+    const queue = makeQueue(repo, 'busyproj')
+    expect(claimActive('busyproj', id(7))).toBe(true)
+    expect(queue.projectedAdmission()).toEqual({ admissible: true, position: 1 })
+    releaseActive('busyproj', id(7))
+    expect(queue.projectedAdmission()).toEqual({ admissible: true, position: null })
+  })
+
+  test('the rank FOLLOWS everything already waiting', () => {
+    const repo = makeRepo()
+    const records = waiting(2)
+    writeLine(
+      repo,
+      records.map((r) => r.id),
+    )
+    expect(lineQueue(repo, 'deadbeef', records).projectedAdmission()).toEqual({
+      admissible: true,
+      position: 3,
+    })
+  })
+
+  // The boundary between "waits behind someone" and "starts at once" is ONE
+  // entry wide, and every other fixture in this file steps straight over it
+  // (0, 2, 3, 1000). Mutating `entries.length > 0` to `> 1` used to leave the
+  // whole suite green while a task that would wait behind exactly one other
+  // was announced as starting immediately.
+  test('a line of exactly ONE entry is still a line: rank 2, not “starts at once”', () => {
+    const repo = makeRepo()
+    const records = waiting(1)
+    writeLine(repo, [id(1)])
+    expect(lineQueue(repo, 'oneentry', records).projectedAdmission()).toEqual({
+      admissible: true,
+      position: 2,
+    })
+    // …and it is genuinely the entry that decides, not the claim: nothing is
+    // running, so an EMPTY line in the same project answers null.
+    expect(activeTask('oneentry')).toBeNull()
+    writeLine(repo, [])
+    expect(lineQueue(repo, 'oneentry', []).projectedAdmission()).toEqual({
+      admissible: true,
+      position: null,
+    })
+  })
+
+  test('a full queue projects the very refusal enqueue would give', () => {
+    const repo = makeRepo()
+    const records = waiting(QUEUE_ENTRIES_MAX)
+    writeLine(
+      repo,
+      records.map((r) => r.id),
+    )
+    const queue = lineQueue(repo, 'deadbeef', records)
+    expect(queue.projectedAdmission()).toEqual({ admissible: false, reason: QUEUE_FULL })
+    // Same words the real refusal uses — the preview's 503 and create's 503
+    // are the same sentence because they read the same constant.
+    expect(queue.enqueue(id(QUEUE_ENTRIES_MAX + 1))).toEqual({ ok: false, reason: QUEUE_FULL })
+  })
+
+  test('projecting mutates NOTHING: queue.json is byte-identical and no claim is taken', () => {
+    const repo = makeRepo()
+    const records = waiting(3)
+    writeLine(
+      repo,
+      records.map((r) => r.id),
+    )
+    const queue = lineQueue(repo, 'readonly', records)
+    const before = readFileSync(queuePath(repo), 'utf8')
+
+    expect(queue.projectedAdmission()).toEqual({ admissible: true, position: 4 })
+    expect(queue.projectedAdmission()).toEqual({ admissible: true, position: 4 })
+
+    expect(readFileSync(queuePath(repo), 'utf8')).toBe(before)
+    expect(queue.list().map((entry) => entry.id)).toEqual([id(1), id(2), id(3)])
+    // Not admitted, not reserved: the guard is still free for whoever asks next.
+    expect(activeTask('readonly')).toBeNull()
+    expect(queue.claimActive(id(9))).toBe(true)
+    releaseActive('readonly', id(9))
+  })
+
+  test('a project with no queue.json at all is not given one by a projection', () => {
+    const repo = makeRepo()
+    const queue = makeQueue(repo)
+    expect(existsSync(queuePath(repo))).toBe(false)
+    expect(queue.projectedAdmission()).toEqual({ admissible: true, position: null })
+    expect(existsSync(queuePath(repo))).toBe(false)
+  })
+
+  // Review round 1, MAJEUR 2. The admission path reaches `enqueue` through
+  // `recover()` → `reconcile()`, so what `create` meets is the RECONCILED
+  // line. A projection that counted the file's raw entries answered about a
+  // line that no longer exists — and the two answers were not "slightly off",
+  // they were opposite verdicts on the same repo.
+  describe('the projection answers about the RECONCILED line, never about the bytes', () => {
+    test('entries whose records are already shipped hold no rank at all', () => {
+      const repo = makeRepo()
+      const shipped = Array.from({ length: 3 }, (_, i) =>
+        record(id(i + 1), 'shipped', '2026-01-01T00:00:00.000Z'),
+      )
+      writeLine(
+        repo,
+        shipped.map((r) => r.id),
+      )
+      // Raw, the file says three are waiting — and it used to answer 4.
+      expect(readQueue(repo).entries).toHaveLength(3)
+      expect(lineQueue(repo, 'stale', shipped).projectedAdmission()).toEqual({
+        admissible: true,
+        position: null,
+      })
+    })
+
+    test('a thousand entries no record backs is not a full queue, it is an empty one', () => {
+      const repo = makeRepo()
+      writeLine(
+        repo,
+        Array.from({ length: QUEUE_ENTRIES_MAX }, (_, i) => id(i + 1)),
+      )
+      // Not a 503: `create` would reconcile every one of them away and admit
+      // the task at once, so a preview that refused it refused a creation
+      // that succeeds.
+      expect(lineQueue(repo, 'ghosts', []).projectedAdmission()).toEqual({
+        admissible: true,
+        position: null,
+      })
+    })
+
+    test('a queued record the file never knew about is counted, exactly as reconcile counts it', () => {
+      const repo = makeRepo()
+      const records = waiting(2)
+      // The file names only the first; the second is an orphan the rebuild
+      // appends at the end — so the newcomer lands third, not second.
+      writeLine(repo, [id(1)])
+      expect(lineQueue(repo, 'orphan', records).projectedAdmission()).toEqual({
+        admissible: true,
+        position: 3,
+      })
+    })
+  })
+
+  // Review round 1, MAJEUR 1. Every other read of this queue REPORTS a
+  // degradation through the sink, and the sink writes: a journal line per task
+  // in the line, and `appendTaskEvent`'s own recursive mkdir under each of
+  // them. A projection is what a dry run reads, and a dry run writes nothing.
+  describe('a projection never reports, and never consumes the report', () => {
+    const collecting = (repo: string, records: readonly TaskRecord[], seen: string[][]) =>
+      reportingQueue(repo, records, (reason, ids) => seen.push([reason, ...ids]))
+
+    test('an unreadable queue.json is projected against WITHOUT a single sink call', () => {
+      const repo = makeRepo()
+      truncatedQueue(repo)
+      const records = waiting(3)
+      const seen: string[][] = []
+
+      // The rank is still the reconciled one: refusing to report is not
+      // refusing to answer.
+      expect(collecting(repo, records, seen).projectedAdmission()).toEqual({
+        admissible: true,
+        position: 4,
+      })
+      expect(seen).toEqual([])
+      // And the bad bytes are still exactly where they were: no repair, no
+      // evidence copy, no queue.json conjured beside them.
+      expect(readFileSync(queuePath(repo), 'utf8')).toBe('{"version":1,"entries":[{"id"')
+      expect(existsSync(corruptQueuePath(repo))).toBe(false)
+    })
+
+    // DP9's own premise, from the other side: `appendTaskEvent` mkdirs the
+    // task's directory on its way to the journal, so the sink RESURRECTS a
+    // task whose directory retention deleted. The control at the end is what
+    // makes the assertion above a fact about the projection rather than about
+    // this rig: the same queue, read for real, does resurrect it.
+    test('a task whose directory is GONE is not brought back by a projection', () => {
+      const repo = makeRepo()
+      truncatedQueue(repo)
+      const ghost = record(id(1), 'queued', '2026-01-01T00:00:00.000Z')
+      const seen: string[] = []
+      const queue = createTaskQueue({
+        cwd: repo,
+        projectId: 'ghosted',
+        records: () => [ghost],
+        recordExists: () => true,
+        // The workspace's real sink, in miniature (task-server.ts).
+        onDegraded: (reason, ids) => {
+          seen.push(reason)
+          for (const taskId of ids) {
+            appendTaskEvent(repo, taskId, { type: 'error', data: { message: reason } })
+          }
+        },
+      })
+      expect(existsSync(taskDir(repo, id(1)))).toBe(false)
+
+      expect(queue.projectedAdmission()).toEqual({ admissible: true, position: 2 })
+      expect(seen).toEqual([])
+      expect(existsSync(taskDir(repo, id(1)))).toBe(false)
+
+      // Control: a real read of the very same queue goes through the sink…
+      queue.list()
+      expect(seen).toHaveLength(1)
+      // …and that is what a directory coming back looks like.
+      expect(existsSync(taskDir(repo, id(1)))).toBe(true)
+    })
+
+    test('the warning owed to the next REAL read is still owed after a projection', () => {
+      const repo = makeRepo()
+      truncatedQueue(repo)
+      const records = waiting(2)
+      const seen: string[][] = []
+
+      // Three dry runs in a row…
+      for (let n = 0; n < 3; n++) {
+        expect(collecting(repo, records, seen).projectedAdmission()).toMatchObject({
+          admissible: true,
+        })
+      }
+      expect(seen).toEqual([])
+
+      // …and the first listing still gets the whole warning. The report is
+      // once-per-reason and process-wide: had a projection consumed it, this
+      // would be silence, and the degradation would reach nobody.
+      expect(collecting(repo, records, seen).list()).toHaveLength(2)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]?.[0]).toContain(QUEUE_UNREADABLE)
+      expect(seen[0]?.slice(1)).toEqual([id(1), id(2)])
+    })
   })
 })

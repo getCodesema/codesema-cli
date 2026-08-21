@@ -245,6 +245,7 @@ function unusedTaskManager(): TaskManager {
     list: () => null,
     listAll: () => [],
     get: () => null,
+    preview: async () => refused,
     create: async () => refused,
     reply: () => refused,
     resume: () => refused,

@@ -95,6 +95,28 @@ The review subprocess is locked down. The prompt already contains everything the
 
 Workspace tasks are the opposite case — they exist to edit code — so they are contained instead: in a container when one is available, and otherwise on the host with `--strict-mcp-config --setting-sources user`, so a turn that writes a `.claude/settings.json` or `.mcp.json` into its own worktree cannot have it loaded by the next turn. A custom agent command gets none of this and says so at startup.
 
+## Without a forge
+
+**Decision D9, and this is where it is answered** — the same answer applies to a repo that has no remote at setup (D37). Without an `origin` remote, without `gh`/`glab`, or offline, codesema keeps working; it simply stops pretending it can do the things that need a forge, and **names** each one it cannot.
+
+**Still available**
+
+- Creating a conversation from a **title and a prompt** — the whole 0.12 path, unchanged. It reads no forge, and a repo with no remote is not a degraded repo for it.
+- Running that conversation: turns, replies, interrupt/resume, checks, the local review, the diff — none of it involves a forge.
+- A conversation **already bound to a ticket** carries on. Its ticket body and acceptance criteria were frozen in `issue_snapshot` when it was created, and that frozen copy is the **only** local cache of the degraded mode: it is read, never rewritten, and no other issue cache is written anywhere. The task is never blocked because the issue could not be re-read.
+- The workspace **says so**: the header shows "Forge unavailable" with the reason — no origin remote, no `gh`/`glab` installed **that this repo could use**, or the CLI you have did not answer. The answer is about _this_ repo: a machine with only `gh` is "no forge CLI" for a GitLab origin, because that is the CLI codesema would actually have to launch there.
+
+**Not available, and refused rather than faked**
+
+- **Binding an issue.** Creating a conversation _from_ an issue is refused with its reason, and leaves nothing behind: no record, no branch, no worktree, no queue entry.
+- **Posting a recap.** Shipping a conversation is refused outright when there is no remote to push to. When a remote exists but the machine cannot reach it — DNS, a refused or timed-out connection — the push is refused and named `offline`. When a remote exists, the push lands, and no forge CLI can open the merge request, the branch is still pushed and the answer says the merge request has to be opened by hand — it is never reported as opened.
+- **Merging.** There is nothing offline about the merge: it does not happen.
+- **Nothing is queued for later.** codesema keeps no pending write to replay when the forge comes back — a deferred write is a promise it cannot keep. And nothing restarts on its own when the forge answers again: the next step is always a human's.
+
+Each refusal carries the reason code `forge_unreachable` next to the readable message it already produced (never in its place), with the motif verbatim: `no-remote`, `no-cli`, `cli-error` — or `offline` for a push that never reached the host. `no-cli` ("install `gh` or `glab`") and `cli-error` ("the one installed here failed") stay distinct all the way to the UI. The rule itself lives in one place in the code, `packages/cli/src/degraded-mode.ts`, so it cannot quietly drift.
+
+What is **not** coded is just as deliberate. `forge_unreachable` is a _retryable_ reason, so it is claimed only for failures where nothing on the other side answered: the recognised phrases are the ones libcurl and OpenSSH print (`Could not resolve host`, `Failed to connect to`, `Connection refused`, `Connection timed out`), never git's own wrapper — git translates its sentences, and `unable to access …` covers an HTTP 403 just as much as a dead network. A push rejected non-fast-forward, refused by a hook, or turned away by authentication keeps git's own message and carries **no** reason code: a wrong code is worse than none, because that is what a resume decision is read from. Likewise, a repo codesema could not read at all (no `git`, an unreadable path) is reported as _unknown_, never as "no remote".
+
 ## Requirements
 
 - Node.js ≥ 20 and `git`

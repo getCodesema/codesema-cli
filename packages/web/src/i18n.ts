@@ -406,6 +406,34 @@ const en = {
     'Removes the worktree checkout only — the branch itself is yours and stays.',
   'workspace.draftWorkonHint': 'The conversation will work directly on {branch}',
   'workspace.draftTargetHint': 'Merge target: {target}',
+
+  // --- T2.6 the plan a conversation would run under, before it is launched ---
+  'workspace.planTitle': 'What will be created',
+  'workspace.planLoading': 'Working out the plan…',
+  'workspace.planError': 'Could not work out the plan ({error})',
+  'workspace.planNone': 'none',
+  'workspace.planRepo': 'Repo',
+  'workspace.planBranch': 'Branch',
+  'workspace.planWorktree': 'Worktree',
+  'workspace.planBase': 'Starts from',
+  'workspace.planTarget': 'Merges into',
+  'workspace.planIsolation': 'Isolation',
+  'workspace.planAgent': 'Agent',
+  'workspace.planQueue': 'Queue',
+  'workspace.planIssue': 'Ticket',
+  'workspace.planBranchUncertain': '{branch}-… (the exact name is picked at launch)',
+  'workspace.planBranchDerived': 'Derived from the first line of your prompt.',
+  'workspace.planWorktreeValue': '{root}/<task id>',
+  'workspace.planBaseUnknown': 'undetermined — {reason}',
+  'workspace.planQueueNow': 'starts right away',
+  'workspace.planQueueAt': 'waits at position {n}',
+  'workspace.planIsolationContainer': 'container',
+  'workspace.planIsolationPolicy': 'host, hardened',
+  'workspace.planBaseLabel': 'Branch to start from',
+  'workspace.planBranchLabel': 'Branch to work on',
+  'workspace.planRetarget': 'Apply',
+  'workspace.planIndicative':
+    'Checked again when you launch: the queue and the branches can move meanwhile.',
   'workspace.toggleConversations': 'Show or hide the conversations',
 
   // --- sandboxed checks (Checks tab / journal / queue badge) ---
@@ -485,6 +513,19 @@ const en = {
     'New conversations fall back to policy isolation ({reason}). With a container runtime installed (Podman or Docker), each task runs in its own box and the agent gets a full shell safely.',
   'workspace.isolationUpgradeLink': 'Improve the isolation',
   'workspace.isolationUpgradeDismiss': 'Dismiss',
+  // D9 (T2.7): the workspace says out loud that it cannot reach a forge, and
+  // WHY. Three motifs, three different things to do about it — never one
+  // vague sentence, and never a silence a user would read as "all fine".
+  'workspace.forgeUnavailable': 'Forge unavailable',
+  'workspace.forgeReasonNoRemote': 'this repo has no origin remote',
+  'workspace.forgeReasonNoCli': 'neither gh nor glab is installed',
+  'workspace.forgeReasonCliError': 'the forge CLI installed here did not answer',
+  // The server said "unavailable" and named no motif — an older CLI, or one
+  // that could not tell. Saying so is the honest answer; inventing the most
+  // likely motif would be the "right call, wrong announcement" mistake.
+  'workspace.forgeReasonUnknown': 'for a reason this workspace could not name',
+  'workspace.forgeUnavailableHint':
+    'Conversations still run: a task can be created from a title and a prompt, and a task already bound to a ticket carries on with the copy it froze. What is off: binding a new issue, posting a recap on a merge request, and merging.',
 }
 
 export type MessageKey = keyof typeof en
@@ -889,6 +930,34 @@ const fr: Record<MessageKey, string> = {
     'Supprime seulement le worktree — la branche t’appartient et reste.',
   'workspace.draftWorkonHint': 'La conversation travaillera directement sur {branch}',
   'workspace.draftTargetHint': 'Cible de merge : {target}',
+
+  // --- T2.6 le plan de la conversation, avant son lancement ---
+  'workspace.planTitle': 'Ce qui va être créé',
+  'workspace.planLoading': 'Calcul du plan…',
+  'workspace.planError': 'Impossible de calculer le plan ({error})',
+  'workspace.planNone': 'aucun',
+  'workspace.planRepo': 'Dépôt',
+  'workspace.planBranch': 'Branche',
+  'workspace.planWorktree': 'Worktree',
+  'workspace.planBase': 'Part de',
+  'workspace.planTarget': 'Fusionne dans',
+  'workspace.planIsolation': 'Isolation',
+  'workspace.planAgent': 'Agent',
+  'workspace.planQueue': 'File',
+  'workspace.planIssue': 'Ticket',
+  'workspace.planBranchUncertain': '{branch}-… (le nom exact est choisi au lancement)',
+  'workspace.planBranchDerived': 'Dérivée de la première ligne de ton prompt.',
+  'workspace.planWorktreeValue': '{root}/<id de tâche>',
+  'workspace.planBaseUnknown': 'indéterminée — {reason}',
+  'workspace.planQueueNow': 'démarre tout de suite',
+  'workspace.planQueueAt': 'attend en position {n}',
+  'workspace.planIsolationContainer': 'container',
+  'workspace.planIsolationPolicy': 'hôte, durci',
+  'workspace.planBaseLabel': 'Branche de départ',
+  'workspace.planBranchLabel': 'Branche de travail',
+  'workspace.planRetarget': 'Appliquer',
+  'workspace.planIndicative':
+    'Revérifié au lancement : la file et les branches peuvent bouger d’ici là.',
   'workspace.toggleConversations': 'Afficher ou masquer les conversations',
 
   // --- sandboxed checks (Checks tab / journal / queue badge) ---
@@ -970,6 +1039,13 @@ const fr: Record<MessageKey, string> = {
     "Les nouvelles conversations retombent sur l'isolation policy ({reason}). Avec un runtime de containers installé (Podman ou Docker), chaque tâche tourne dans sa propre boîte et l'agent y retrouve un shell complet en sécurité.",
   'workspace.isolationUpgradeLink': "Améliorer l'isolation",
   'workspace.isolationUpgradeDismiss': 'Masquer',
+  'workspace.forgeUnavailable': 'Forge indisponible',
+  'workspace.forgeReasonNoRemote': "ce dépôt n'a pas de remote origin",
+  'workspace.forgeReasonNoCli': "ni gh ni glab n'est installé",
+  'workspace.forgeReasonCliError': "le CLI de forge installé ici n'a pas répondu",
+  'workspace.forgeReasonUnknown': "pour une raison que ce workspace n'a pas su nommer",
+  'workspace.forgeUnavailableHint':
+    "Les conversations continuent : on peut créer une tâche à partir d'un titre et d'un prompt, et une tâche déjà rattachée à un ticket poursuit sur la copie qu'elle a figée. Ce qui est coupé : rattacher une nouvelle issue, poster un récap sur une merge request, et merger.",
 }
 
 /**

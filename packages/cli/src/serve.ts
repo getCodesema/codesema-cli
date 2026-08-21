@@ -30,7 +30,7 @@ import {
 } from './repo-config.js'
 import { applyTaskCriteria } from './task-criteria.js'
 import type { TaskActionResult } from './task-runner.js'
-import type { TaskEnvelope, TaskManager } from './task-server.js'
+import type { CreateTaskManagerInput, TaskEnvelope, TaskManager } from './task-server.js'
 import {
   AGENT_DEFS,
   composeCommand,
@@ -719,27 +719,43 @@ export function resolveProjectCwd(
   return { cwd: project.path }
 }
 
+/** A parsed task-creation request, ready for either the real create or its dry-run. */
+type TaskCreateRequest = {
+  tasks: TasksEndpoint
+  projectId: string
+  input: CreateTaskManagerInput
+}
+
 /**
  * The task routes drive agents that EDIT worktrees of the repo, so every
  * mutation carries the same per-server CSRF token mechanic as /api/fix (see
  * handleFixStart): x-codesema-tasks-token, injected into the served page.
+ *
+ * ONE parser for BOTH `/api/tasks` and `/api/tasks/preview` (T2.6): a dry-run
+ * that validated a different schema from the creation it previews would refuse
+ * — or accept — bodies the real route does not, which is the one thing a
+ * preview must never do. It answers the refusal itself and returns null; the
+ * caller has nothing left to do.
  */
-async function handleTaskCreate(
+async function readTaskCreateRequest(
   req: IncomingMessage,
   res: ServerResponse,
   tasks: TasksEndpoint | undefined,
-): Promise<void> {
+): Promise<TaskCreateRequest | null> {
   if (!tasks) {
-    return sendJson(res, 501, { error: 'task manager unavailable' })
+    sendJson(res, 501, { error: 'task manager unavailable' })
+    return null
   }
   if (req.headers['x-codesema-tasks-token'] !== tasks.token) {
-    return sendText(res, 403, 'forbidden')
+    sendText(res, 403, 'forbidden')
+    return null
   }
   let body: unknown
   try {
     body = await readJsonBody(req, MAX_TASK_BODY_BYTES)
   } catch {
-    return sendText(res, 400, 'bad request')
+    sendText(res, 400, 'bad request')
+    return null
   }
   const b = body as {
     project_id?: unknown
@@ -772,13 +788,15 @@ async function handleTaskCreate(
     (b.target !== undefined && typeof b.target !== 'string') ||
     (b.agent !== undefined && typeof b.agent !== 'string')
   ) {
-    return sendText(res, 400, 'bad request')
+    sendText(res, 400, 'bad request')
+    return null
   }
   let resolvedAgent: string | undefined
   if (typeof b.agent === 'string') {
     const resolved = resolveKnownAgentCommand(b.agent)
     if (!resolved || resolved.length > TASK_AGENT_MAX) {
-      return sendText(res, 400, 'bad request')
+      sendText(res, 400, 'bad request')
+      return null
     }
     resolvedAgent = resolved
   }
@@ -787,39 +805,90 @@ async function handleTaskCreate(
   // existence → 400, base/branch exclusivity → 400, active-conversation and
   // checked-out-elsewhere guards → 409). Same for `issue`: forge/project/iid/url
   // are handed through as `unknown` and validated by task-issue.ts.
-  const created = await tasks.manager.create(b.project_id.trim(), {
-    ...(typeof b.title === 'string' ? { title: b.title } : {}),
-    ...(typeof b.prompt === 'string' ? { prompt: b.prompt } : {}),
-    autoShip: b.autoShip ?? false,
-    ...(typeof b.base === 'string' ? { base: b.base } : {}),
-    ...(typeof b.branch === 'string' ? { branch: b.branch } : {}),
-    ...(typeof b.target === 'string' ? { target: b.target } : {}),
-    ...(resolvedAgent ? { agent: resolvedAgent } : {}),
-    ...(issue
-      ? {
-          issue: {
-            forge: issue.forge,
-            project: issue.project,
-            iid: issue.iid,
-            url: issue.url,
-          },
-        }
-      : {}),
-  })
-  if (!created.ok) {
-    // existing_task_id rides along on the uniqueness 409: the web client
-    // opens that conversation instead of showing a dead-end error. reason_code
-    // rides along the same way, verbatim: the readable error stays the message,
-    // the code is what a machine can branch on.
-    return sendJson(res, created.code, {
-      error: created.error,
-      ...(created.existing_task_id !== undefined
-        ? { existing_task_id: created.existing_task_id }
+  return {
+    tasks,
+    projectId: b.project_id.trim(),
+    input: {
+      ...(typeof b.title === 'string' ? { title: b.title } : {}),
+      ...(typeof b.prompt === 'string' ? { prompt: b.prompt } : {}),
+      autoShip: b.autoShip ?? false,
+      ...(typeof b.base === 'string' ? { base: b.base } : {}),
+      ...(typeof b.branch === 'string' ? { branch: b.branch } : {}),
+      ...(typeof b.target === 'string' ? { target: b.target } : {}),
+      ...(resolvedAgent ? { agent: resolvedAgent } : {}),
+      ...(issue
+        ? {
+            issue: {
+              forge: issue.forge,
+              project: issue.project,
+              iid: issue.iid,
+              url: issue.url,
+            },
+          }
         : {}),
-      ...(created.reason_code !== undefined ? { reason_code: created.reason_code } : {}),
-    })
+    },
+  }
+}
+
+/**
+ * A creation refusal, on the wire. existing_task_id rides along on the
+ * uniqueness 409: the web client opens that conversation instead of showing a
+ * dead-end error. reason_code rides along the same way, verbatim: the readable
+ * error stays the message, the code is what a machine can branch on.
+ *
+ * Shared with the preview so a dry-run refusal reaches the client in exactly
+ * the shape the real refusal would (T2.6).
+ */
+function sendTaskRefusal(
+  res: ServerResponse,
+  refusal: { code: number; error: string; existing_task_id?: string; reason_code?: string },
+): void {
+  sendJson(res, refusal.code, {
+    error: refusal.error,
+    ...(refusal.existing_task_id !== undefined
+      ? { existing_task_id: refusal.existing_task_id }
+      : {}),
+    ...(refusal.reason_code !== undefined ? { reason_code: refusal.reason_code } : {}),
+  })
+}
+
+async function handleTaskCreate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  const parsed = await readTaskCreateRequest(req, res, tasks)
+  if (!parsed) {
+    return
+  }
+  const created = await parsed.tasks.manager.create(parsed.projectId, parsed.input)
+  if (!created.ok) {
+    return sendTaskRefusal(res, created)
   }
   return sendJson(res, 201, created.record)
+}
+
+/**
+ * T2.6 dry-run. Same posture as the creation it previews — loopback + Host
+ * guard (the request handler), CSRF token, `MAX_TASK_BODY_BYTES`, the same
+ * body schema, the same refusals — and no effect at all: the manager's
+ * `preview` writes no record, no journal line, no branch, no worktree and no
+ * queue entry. 200 rather than 201 for the same reason: nothing was created.
+ */
+async function handleTaskPreview(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  const parsed = await readTaskCreateRequest(req, res, tasks)
+  if (!parsed) {
+    return
+  }
+  const previewed = await parsed.tasks.manager.preview(parsed.projectId, parsed.input)
+  if (!previewed.ok) {
+    return sendTaskRefusal(res, previewed)
+  }
+  return sendJson(res, 200, previewed.plan)
 }
 
 type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume' | 'criteria'
@@ -1188,6 +1257,13 @@ function createRequestHandler(handlerOpts: {
       }
       if (pathname === '/api/tasks') {
         return void handleTaskCreate(req, res, tasks)
+      }
+      // T2.6: the dry-run twin of the route right above. A dedicated path
+      // rather than a `dry_run` flag on /api/tasks — the absence of effects is
+      // then structural, not conditional on a boolean in the body of the most
+      // destructive route of this server (design.md D-e).
+      if (pathname === '/api/tasks/preview') {
+        return void handleTaskPreview(req, res, tasks)
       }
       if (pathname === '/api/projects') {
         return void handleProjectAdd(req, res, tasks)

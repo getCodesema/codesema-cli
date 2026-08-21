@@ -146,9 +146,18 @@ export type ForgeMr = {
   url: string
 }
 
+/**
+ * The three motifs of "the forge could not be reached" — mirrors
+ * `FORGE_DEGRADATIONS` (packages/cli/src/degraded-mode.ts, D9). Named once
+ * here because two payloads carry it: the MR list's own result, and the
+ * workspace's `forge_reason` (see `WorkspaceInfo`). `no-cli` and `cli-error`
+ * are kept apart all the way to the UI on purpose — one says "install a forge
+ * CLI", the other says "the one you have failed".
+ */
+export type ForgeUnavailableReason = 'no-remote' | 'no-cli' | 'cli-error'
+
 export type ForgeMrsResult =
-  | { available: true; mrs: ForgeMr[] }
-  | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
+  { available: true; mrs: ForgeMr[] } | { available: false; reason: ForgeUnavailableReason }
 
 // Mirrors packages/cli/src/mr-review-runner.ts and the /api/mrs/review endpoints.
 
@@ -515,6 +524,50 @@ export type TaskRecord = {
   updated_at: string
 }
 
+// Mirrors packages/cli/src/task-plan.ts (T2.6): the dry-run answer of
+// POST /api/tasks/preview — what a conversation WOULD be if it were launched
+// now. Never persisted anywhere, so it carries no `version`: the server
+// computes it fresh on every call and the client re-parses it tolerantly
+// (`parseTaskPlan`, composables/useTaskPlan.ts) rather than trusting the wire.
+
+export type TaskPlan = {
+  /** 'fork': a new codesema/task-* branch. 'work_on': the caller's own branch. */
+  mode: 'fork' | 'work_on'
+  /** Repo root the conversation would run in — the PROJECT's, not the launch repo's. */
+  repo: string
+  /** Title the task would carry (the issue's own title when created from a ticket). */
+  title: string
+  /** Branch the conversation would run on. */
+  branch: string
+  /**
+   * False when `branch` could not be predicted: every -2…-99 suffix is taken
+   * and the real creation appends the task's own id, which does not exist yet.
+   * `branch` is then the family, not the name — say so, never promise it.
+   */
+  branch_certain: boolean
+  /**
+   * Directory the worktree would be created under: the checkout lands in
+   * `<worktree_root>/<task id>`, and that id is minted at creation.
+   */
+  worktree_root: string
+  /** Branch a fork starts from. Empty in work-on mode: nothing is branched. */
+  base: string
+  /** Branch the eventual MR would target. */
+  target: string
+  /** Set when no trunk could be detected — the gap is stated, not hidden. */
+  base_note?: string
+  isolation: TaskIsolation
+  /** Why that isolation, in the server's own words: a degradation is never silent. */
+  isolation_reason: string
+  /** Agent command resolved for this project (or the one the composer picked). */
+  agent: string
+  /** Rank the task would wait at; null = it would start at once. */
+  queue_position: number | null
+  /** Issue the conversation would be bound to. Read, never frozen. */
+  issue: TaskIssueRef | null
+  auto_ship: boolean
+}
+
 // Mirrors the checks contract (packages/contract) and the
 // /api/tasks/:id/checks endpoints: sandboxed typecheck/tests/lint runs
 // executed by codesema in an ephemeral container mounted on the worktree.
@@ -723,6 +776,24 @@ export type WorkspaceInfo = {
    * OPTIONAL: older CLIs omit it; the composer then falls back to GET /api/config.
    */
   agent?: string
+  /**
+   * D9 (T2.7): can this workspace reach a forge at all — a `gh`/`glab` that
+   * runs, and an `origin` on this project's repo.
+   *
+   * OPTIONAL, and its ABSENCE MEANS "UNKNOWN", never "the forge is
+   * available": an older CLI, or a workspace that never probed, says nothing
+   * here, and a UI that read silence as availability would put the
+   * degradation back in the dark. Same doctrine as `isolation_configured`
+   * right above.
+   */
+  forge_available?: boolean
+  /**
+   * Why not — the forge client's own motif, verbatim. Present only alongside
+   * `forge_available: false`. Never a sentence: the UI translates it (an
+   * English message built by the server and rendered as is would come out in
+   * English in a French workspace).
+   */
+  forge_reason?: ForgeUnavailableReason
 }
 
 export type ProjectsResponse = {

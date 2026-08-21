@@ -5,9 +5,19 @@
 // origin-hint rule as the MR list (forge-mrs.ts). A missing forge CLI degrades
 // the ship to "push only" instead of failing it: the push DID succeed, the MR
 // is one manual step away, and the note says so explicitly.
+//
+// The degraded outcomes below are D9's "no recap posted" half, and the rule
+// they answer to is written once, in degraded-mode.ts. Each one carries
+// `forge_unreachable` BESIDE the note it already produced (never instead of
+// it) plus the motif verbatim in `detail` — `no-remote`, `no-cli`,
+// `cli-error`, `offline` — so a reader can tell "install a CLI" from "the
+// CLI failed" from "there is no remote at all" from "this machine never
+// reached the host". Everything the remote ANSWERED (a rejected push, a
+// declining hook, a refused credential) stays deliberately uncoded.
 
 import { execFile } from 'node:child_process'
 import { sanitizeRecord, type ReasonCode, type ReviewRecord, type TaskRecord } from './contract.js'
+import type { ForgeDegradation } from './degraded-mode.js'
 import { detectForgeHint, subprocessEnv } from './git.js'
 import { t } from './i18n.js'
 import { readJson } from './record.js'
@@ -26,7 +36,19 @@ const SHIP_ERROR_MAX = 500
  * text, which forge-mrs discards but the ship's error events need.
  */
 export type ShipCliOutcome =
-  { kind: 'ok'; stdout: string } | { kind: 'missing' } | { kind: 'error'; message: string }
+  | { kind: 'ok'; stdout: string }
+  | { kind: 'missing' }
+  /**
+   * The command RAN and failed. `status` is its exit code when there was one
+   * (a spawn that never produced a process has none), and it is the only
+   * dependable way to tell git's own failures apart: git LOCALISES its
+   * messages — `git remote get-url origin` on a repo without one answers
+   * "error: Pas de serveur remote 'origin'" on a French box (measured, git
+   * 2.53.0) — while the exit code is the same everywhere. OPTIONAL: a caller
+   * that does not care keeps working, and an outcome without it is read as
+   * "which failure this was is unknown", never as a particular one.
+   */
+  | { kind: 'error'; message: string; status?: number }
 
 export type ShipGitExecFn = (args: string[], cwd: string) => Promise<ShipCliOutcome>
 export type ShipForgeExecFn = (
@@ -55,7 +77,13 @@ function execCli(cmd: string, args: string[], cwd: string): Promise<ShipCliOutco
             return
           }
           const message = (stderr.trim() || err.message).slice(0, SHIP_ERROR_MAX)
-          resolve({ kind: 'error', message })
+          // execFile reports the exit code in `code` for a process that RAN,
+          // and a string errno (ENOENT, E2BIG…) for one that never started.
+          resolve({
+            kind: 'error',
+            message,
+            ...(typeof err.code === 'number' ? { status: err.code } : {}),
+          })
           return
         }
         resolve({ kind: 'ok', stdout })
@@ -142,8 +170,25 @@ export type ShipTaskOptions = {
   execForge?: ShipForgeExecFn
 }
 
+/**
+ * The motif of a degradation, VERBATIM as the vocabulary names it
+ * (degraded-mode.ts) — never a reworded sentence. It travels next to
+ * `reasonCode`, and the caller composes the reason's `detail` from the two so
+ * `no-cli` can never be read as `cli-error`. OPTIONAL everywhere: an outcome
+ * that names no degradation carries neither field.
+ */
+type ShipDegradation = { reasonCode?: ReasonCode; detail?: ShipMotif }
+
+/**
+ * The motifs a ship can name. The three the forge client itself produces,
+ * plus `offline` — the one D9's title lists that no forge client can ever
+ * answer, because the push dies before any forge is asked (see
+ * `transportFailure` below).
+ */
+type ShipMotif = ForgeDegradation | 'offline'
+
 export type ShipOutcome =
-  | {
+  | ({
       pushed: true
       mrUrl: string | null
       note: string | null
@@ -152,9 +197,15 @@ export type ShipOutcome =
        * a ship that opened its merge request has nothing to name, and the
        * `note` stays the readable half of the story either way.
        */
-      reasonCode?: ReasonCode
-    }
-  | { pushed: false; error: string }
+    } & ShipDegradation)
+  /**
+   * Nothing shipped. `error` is the readable half and has always been there;
+   * the two optional fields name it when the cause is a forge codesema could
+   * not reach, and stay absent for every other push failure — a rejected
+   * non-fast-forward, a hook, a credential prompt — which `forge_unreachable`
+   * would misname.
+   */
+  | ({ pushed: false; error: string } & ShipDegradation)
 
 type ForgeCandidate = { cli: 'gh' | 'glab'; args: string[] }
 
@@ -223,11 +274,23 @@ async function createMr(opts: ShipTaskOptions, execForge: ShipForgeExecFn): Prom
     }
   }
   if (note !== null) {
-    // A forge CLI DID run and failed: its own message is the honest note.
-    // Deliberately left uncoded here — the forge answered, so
-    // 'forge_unreachable' would misname it, and no other D2 code fits a
-    // per-CLI failure. T1.1 codes the reachability degradation only.
-    return { pushed: true, mrUrl: null, note }
+    // A forge CLI DID run and failed: its own message stays the honest note.
+    //
+    // This used to be left UNCODED, on the argument that "the forge answered,
+    // so forge_unreachable would misname it". T2.7 overturns that: D2 defines
+    // `forge_unreachable` as "the forge could not be reached: no gh/glab
+    // available, no network, an API that refused" (contract/src/reasons.ts),
+    // and a `gh` that exits non-zero on `pr create` IS an API that refused.
+    // The three DP14 questions all answer yes — it qualifies a refusal (no MR
+    // was opened), terminal-vs-retryable is meaningful (retryable: the same
+    // call can succeed later), and a machine reads it (T3.6 will not merge
+    // without an MR). Leaving it uncoded made the ONE forge degradation a
+    // human is most likely to hit the only one no machine could see.
+    //
+    // `detail: 'cli-error'` is what keeps it distinguishable from the
+    // `no-cli` case below, which shares the code and means the opposite
+    // thing for what the user must do about it.
+    return { pushed: true, mrUrl: null, note, reasonCode: 'forge_unreachable', detail: 'cli-error' }
   }
   return {
     pushed: true,
@@ -236,7 +299,91 @@ async function createMr(opts: ShipTaskOptions, execForge: ShipForgeExecFn): Prom
     // The push DID land: the work is safe on origin and the MR is one manual
     // (or one retried) step away — a retryable degradation, not a failure.
     reasonCode: 'forge_unreachable',
+    detail: 'no-cli',
   }
+}
+
+/**
+ * Journal note, not UI copy: raw English like every other payload in this file.
+ * Deliberately NOT exported: a test that imported it would compare the message
+ * to the constant that produces it and prove nothing. What the tests pin is
+ * the pair (readable message, coded motif) at the surface where a human and a
+ * machine actually read it.
+ */
+const SHIP_NO_REMOTE_ERROR =
+  'no origin remote is configured for this repo — there is nothing to push the branch to, and no merge request can be opened'
+
+/** Exit code git uses for "there is no remote by that name" (git 2.53.0). */
+const GIT_NO_SUCH_REMOTE = 2
+
+/**
+ * Is there an `origin` to push to? Asked through the SAME injected git seam as
+ * the push itself, so a test that stubs git stubs this too and no test ever
+ * needs a real remote.
+ *
+ * TRI-state, and that is the whole point (round-2 adversarial review, majeur
+ * 1). `false` is claimed only when git ANSWERED that there is no such remote —
+ * exit code 2, the same signal `probeOriginRemote` reads, and the only one
+ * that survives a localised git. Everything else (git not installed, a `cwd`
+ * that is not a repo or cannot be read, a timeout) is `null`: "I could not
+ * ask". Collapsing those into `false` is how a repo that HAS an origin got
+ * refused with "no origin remote is configured for this repo" the moment git
+ * went missing — the exact "right decision, wrong announcement" mistake this
+ * module writes down and then made.
+ *
+ * A remote whose URL is blank is `false`, not `null`: git answered, and the
+ * answer is nothing to push to. `probeOriginRemote` says the same, so the
+ * header and the refusal cannot disagree about one repo.
+ */
+async function originRemote(execGit: ShipGitExecFn, cwd: string): Promise<boolean | null> {
+  const outcome = await execGit(['remote', 'get-url', 'origin'], cwd)
+  if (outcome.kind === 'ok') {
+    return outcome.stdout.trim() !== ''
+  }
+  return outcome.kind === 'error' && outcome.status === GIT_NO_SUCH_REMOTE ? false : null
+}
+
+/**
+ * Does this push failure mean the remote host was never reached?
+ *
+ * The list is SHORT on purpose, and every entry is a phrase libcurl or
+ * OpenSSH prints — never one of git's own. That is what makes them usable:
+ * git translates its own wrapper (`fatal: unable to access …` comes out
+ * `fatal: impossible d'accéder à …` on a French box, measured on git 2.53.0)
+ * while the library's half stays in English whatever the locale is. A rule
+ * written on git's wrapper would code a failure in one language and nothing
+ * at all in another.
+ *
+ * Deliberately NOT in the list, each for a measured reason:
+ *
+ *  - `unable to access` — the wrapper libcurl's message hangs off. It also
+ *    wraps `The requested URL returned error: 403` (measured against a local
+ *    403), and a forge that ANSWERED 403 refused us, it was not unreachable.
+ *    `forge_unreachable` is a RETRYABLE code: pinning it on a permission
+ *    problem tells a machine to keep trying something that will never work.
+ *  - `Could not read from remote repository` — ssh's epilogue, printed just
+ *    as much for a rejected key as for a dead network.
+ *  - a rejected push (non-fast-forward, a hook, a protected branch) carries
+ *    none of these and stays UNCODED, which is the point of a short list: a
+ *    wrong code is worse than no code, because D2 is what a resume decision
+ *    is made on.
+ */
+const TRANSPORT_FAILURES: readonly string[] = [
+  // libcurl "Could not resolve host: <h>", and ssh's "Could not resolve
+  // hostname <h>: <why>" by the same prefix. Both measured.
+  'could not resolve host',
+  // libcurl "Failed to connect to <h> port <p> after <n> ms: <why>" — which
+  // is also where an ENETUNREACH surfaces on the https transport. Measured.
+  'failed to connect to',
+  // ssh "connect to host <h> port <p>: Connection refused". Measured.
+  'connection refused',
+  // Both transports print exactly this. Measured on ssh.
+  'connection timed out',
+]
+
+function transportFailure(message: string): boolean {
+  const said = message.toLowerCase()
+  return TRANSPORT_FAILURES.some((phrase) => said.includes(phrase))
 }
 
 /**
@@ -247,12 +394,38 @@ async function createMr(opts: ShipTaskOptions, execForge: ShipForgeExecFn): Prom
  */
 export async function shipTask(opts: ShipTaskOptions): Promise<ShipOutcome> {
   const execGit = opts.execGit ?? defaultExecGit
+  // D9 (degraded-mode.ts): no remote, no ship — REFUSED, and named. Without
+  // this gate the push still failed, but with git's own words and no
+  // `reason_code` at all: the one degradation D9 is most about ("a repo with
+  // no remote") was the one the product could not name. Checked before the
+  // push rather than after, so the refusal is not a network error message.
+  //
+  // `null` — could not ask — deliberately falls THROUGH to the push instead
+  // of refusing: we have nothing honest to announce, so we let the push
+  // happen and git's own words be the answer. That is also what keeps the
+  // "git not found" branch below reachable.
+  if ((await originRemote(execGit, opts.cwd)) === false) {
+    return {
+      pushed: false,
+      error: SHIP_NO_REMOTE_ERROR,
+      reasonCode: 'forge_unreachable',
+      detail: 'no-remote',
+    }
+  }
   const push = await execGit(['push', '-u', 'origin', opts.task.branch], opts.cwd)
   if (push.kind === 'missing') {
     return { pushed: false, error: 'git push failed: git not found' }
   }
   if (push.kind === 'error') {
-    return { pushed: false, error: `git push failed: ${push.message}` }
+    const error = `git push failed: ${push.message}`
+    // D9's third motif, and the most common of the three: the repo has a
+    // remote and a forge CLI, and the machine simply cannot reach the host.
+    // The push dies before any forge is asked anything, so nothing else in
+    // this file would ever have named it. Everything the short list above
+    // does not recognise stays uncoded, on purpose.
+    return transportFailure(push.message)
+      ? { pushed: false, error, reasonCode: 'forge_unreachable', detail: 'offline' }
+      : { pushed: false, error }
   }
   return createMr(opts, opts.execForge ?? defaultExecForge)
 }

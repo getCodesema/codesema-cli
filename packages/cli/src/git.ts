@@ -181,9 +181,17 @@ export function revListCount(range: string, cwd: string): number | null {
 
 export type ForgeHint = 'github' | 'gitlab' | 'unknown'
 
-/** Best-effort forge guess from the origin remote URL, used to skip an irrelevant CLI probe. */
-export function detectForgeHint(cwd: string): ForgeHint {
-  const remote = (tryGit(['remote', 'get-url', 'origin'], cwd) ?? '').toLowerCase()
+/**
+ * The hint rule itself, on a URL that has ALREADY been read. Split out of
+ * `detectForgeHint` (T2.7 round-2, majeur 3) because a caller that already
+ * holds the origin URL — the workspace probe reads it to answer "is there an
+ * origin at all" — must not spawn a second `git remote get-url` to learn the
+ * same thing, and must not re-implement the rule either: two ladders that
+ * disagree about which CLI a repo needs is exactly the drift the header was
+ * announcing.
+ */
+export function forgeHintOfUrl(url: string): ForgeHint {
+  const remote = url.toLowerCase()
   if (remote.includes('github')) {
     return 'github'
   }
@@ -191,4 +199,9 @@ export function detectForgeHint(cwd: string): ForgeHint {
     return 'gitlab'
   }
   return 'unknown'
+}
+
+/** Best-effort forge guess from the origin remote URL, used to skip an irrelevant CLI probe. */
+export function detectForgeHint(cwd: string): ForgeHint {
+  return forgeHintOfUrl(tryGit(['remote', 'get-url', 'origin'], cwd) ?? '')
 }

@@ -1496,6 +1496,19 @@ describe('workspace() boot wiring, by source shape (T1.4 round 6)', () => {
     ).toBe(true)
   })
 
+  // T2.7/D9. The forge probe has the same shape as the isolation one and the
+  // same failure mode: `workspaceInfo()` is synchronous and `GET /api/projects`
+  // calls it N+1 times per request, so the CLI presence MUST be probed once at
+  // boot and carried on the manager. Dropping `forge:` from this literal costs
+  // nothing at compile time (the option is optional, as invariant 1 requires)
+  // and nothing at runtime except the truth: every workspace then answers
+  // "unknown" forever, and the header D9 exists for never appears.
+  test('the forge probe is asked ONCE at boot and reaches the manager', () => {
+    const source = code()
+    expect(source.match(/probeForgeCliFn \?\? probeForgeCli\)\(/g) ?? []).toHaveLength(1)
+    expect(/forge: forgeProbe/.test(managerBootArgument(source))).toBe(true)
+  })
+
   // L4 / L5. Without `flags`, `--agent`/`--timeout` stop applying to every
   // registered project (they would only reach the launch repo's own boot
   // values); without `launchRepoPath`, context() repeats on the launch repo

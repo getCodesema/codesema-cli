@@ -41,6 +41,7 @@ import {
   type TaskReason,
   type TicketBody,
 } from './contract.js'
+import { forgeReasonDetail } from './degraded-mode.js'
 import {
   forgeIssueReason,
   getIssue,
@@ -365,7 +366,16 @@ export async function reconcileIssueSnapshot(opts: {
     // used to accept, which reads as unreachable to a task that is not
     // creating anything new.
     const reason =
-      forgeIssueReason(result) ?? taskReason('forge_unreachable', issueUnavailableMessage(result))
+      forgeIssueReason(result) ??
+      // Composed through the ONE composer (degraded-mode.ts) like every other
+      // `forge_unreachable` detail: the motif first — here `invalid-input` or
+      // `unsupported`, the two the forge client codes on its own — then the
+      // readable sentence. A detail that led with the sentence left a reader
+      // parsing details unable to tell whether this one HAD a motif.
+      taskReason(
+        'forge_unreachable',
+        forgeReasonDetail(result.reason, issueUnavailableMessage(result)),
+      )
     return { kind: 'unreachable', reason }
   }
   const lint = lintTicketBody(result.issue.body)
