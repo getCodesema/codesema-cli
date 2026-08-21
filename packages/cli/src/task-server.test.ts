@@ -9140,7 +9140,7 @@ describe('automatic fix loop (T3.3)', () => {
     const message = String((refused as { error: string }).error)
     expect(message).toContain('automatic fix loop')
     expect(message).toContain('Reply to it')
-    expect(message).toContain('restarts the fix budget')
+    expect(message).toContain('restarts the automatic fix budget')
     expect(ship.calls).toHaveLength(0)
   })
 

@@ -872,35 +872,34 @@ function shipRefusal(record: TaskRecord): TaskActionResult | null {
     // `waiting_for_you`: T3.3's exhausted fix loop and T3.6's refused merge.
     // "task is waiting_for_you" told the caller nothing about WHY it is
     // waiting or what would unblock it — precisely the cul-de-sac DP1 forbids
-    // — while the record was carrying the answer all along. What is added is
+    // — while the record was carrying the answer all along. The reason is
     // ADDED to the message, never a replacement for it (invariant n° 2), and
-    // the code travels beside it so a machine can read it too.
+    // the code travels beside it so a machine can read it too. A record with
+    // no reason keeps the message it always had.
     //
-    // The fix loop gets its own sentence rather than the generic one below,
-    // because the way OUT is the half no `detail` can carry: the ship is
-    // refused, so the only move is a reply — and a reply restarts the budget
-    // from zero, which is exactly what a human staring at a Fix button cannot
-    // deduce. The generic clause underneath covers every other dead end,
-    // T3.6's `checks_unavailable` / `criteria_missing` included.
-    const code = record.reason?.code
-    if (
-      record.status === 'waiting_for_you' &&
-      (code === 'review_blocked' || code === 'criteria_unmet')
-    ) {
-      return {
-        ok: false,
-        code: 409,
-        error: `task is waiting_for_you: the automatic fix loop spent its rounds and handed it back (${code}). Reply to it — your turn restarts the fix budget from zero — and ship once the review that follows has settled`,
-        reason_code: code,
-      }
-    }
-    // A record with no reason keeps the message it always had.
+    // The way OUT is appended for `waiting_for_you` alone, and it is the half
+    // no `detail` can carry: the ship is refused there, so the only move is a
+    // reply — and a reply carries no fix-loop marker, so it restarts the
+    // automatic budget from zero. A human staring at a greyed-out ship and a
+    // live Fix button cannot deduce either fact.
+    //
+    // It is deliberately NOT phrased as "the fix loop spent its rounds": BOTH
+    // gates park on this status with the same `review_blocked` code, so a
+    // sentence naming one of them is false half the time. What each gate did
+    // is already in its own `detail`, in its own words — the fix loop's says
+    // it stopped after N rounds, the merge gate's says which of D12's four
+    // conditions could not be checked.
+    const said = record.reason?.detail
+      ? `task is ${record.status}: ${record.reason.detail}`
+      : `task is ${record.status}`
+    const wayOut =
+      record.status === 'waiting_for_you'
+        ? ' Reply to it — your turn restarts the automatic fix budget from zero — and ship once the review that follows has settled.'
+        : ''
     return {
       ok: false,
       code: 409,
-      error: record.reason?.detail
-        ? `task is ${record.status}: ${record.reason.detail}`
-        : `task is ${record.status}`,
+      error: `${said}${wayOut}`,
       ...(record.reason ? { reason_code: record.reason.code } : {}),
     }
   }
