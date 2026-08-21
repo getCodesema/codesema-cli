@@ -432,3 +432,195 @@ describe('the T3.3 fix-loop exit, read in French', () => {
     }
   })
 })
+
+async function renderMergeInFrench(
+  events: readonly TaskEventData[],
+): Promise<{ summary: string; tone: string }[]> {
+  const modulePath = join(import.meta.dir, 'useTaskBoard.ts')
+  const script = [
+    `globalThis.window = { __CODESEMA_LOCALE__: 'fr' }`,
+    `const board = await import(${JSON.stringify(modulePath)})`,
+    `const data = ${JSON.stringify(events)}`,
+    `const lines = data.map((d) => {`,
+    `  const event = { seq: 1, at: '2026-08-21T09:00:00.000Z', type: 'merge', data: d }`,
+    `  return { summary: board.eventSummary(event), tone: board.eventTone(event) }`,
+    `})`,
+    `process.stdout.write(JSON.stringify(lines))`,
+  ].join('\n')
+  const child = Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'pipe' })
+  const [stdout, stderr] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  await child.exited
+  if (!stdout.trim()) {
+    throw new Error(`the French render never produced anything: ${stderr}`)
+  }
+  return JSON.parse(stdout) as { summary: string; tone: string }[]
+}
+
+describe('the T3.6 merge journal, read in French', () => {
+  // Every merge line carries `data.message` — the server's English refusal
+  // sentence, the one that names the way out. That field is exactly the trap
+  // §6 quater describes: probed by SUMMARY_KEYS, it would be served verbatim
+  // to a French journal and make the translated labels unreachable.
+  const SERVER_MESSAGE =
+    "this repository configures no checks, so the merge condition could not be evaluated — configure checks for this repository, set mergePolicy to 'human' and merge this branch yourself, or set allowMergeWithoutChecks to true if this repository legitimately has none"
+
+  test('the four conditions read as four DISTINCT French lines, naming which one', async () => {
+    const lines = await renderMergeInFrench([
+      { name: 'condition_met', condition: 'review', satisfied: true },
+      {
+        name: 'condition_unmet',
+        condition: 'checks',
+        satisfied: false,
+        detail: 'unconfigured',
+        message: SERVER_MESSAGE,
+      },
+      { name: 'condition_unmet', condition: 'criteria', satisfied: false, detail: 'absent' },
+      { name: 'condition_met', condition: 'branch', satisfied: true },
+    ])
+    expect(lines[0]?.summary).toBe('Condition de fusion remplie · review de code')
+    expect(lines[1]?.summary).toBe('Condition de fusion non remplie · checks du dépôt')
+    expect(lines[2]?.summary).toBe("Condition de fusion non remplie · critères d'acceptation")
+    expect(lines[3]?.summary).toBe('Condition de fusion remplie · branche à jour avec sa cible')
+    // Four lines, four distinct sentences: "checked and it passed" is legible
+    // as a different thing from "checked and it failed", and from each other.
+    expect(new Set(lines.map((line) => line.summary)).size).toBe(4)
+    // Not one word of the server's English gets through.
+    for (const line of lines) {
+      expect(line.summary).not.toContain('allowMergeWithoutChecks')
+      expect(line.summary).not.toContain('mergePolicy')
+      expect(line.summary).not.toBe('Fusion')
+    }
+  })
+
+  test('every merge incident reads in French, and only the ones waiting on you are amber', async () => {
+    const names = [
+      'condition_met',
+      'condition_unmet',
+      'condition_consented',
+      'merged',
+      'refused',
+      'policy_human',
+      'failed',
+      'config_degraded',
+    ] as const
+    const lines = await renderMergeInFrench(
+      names.map((name) => ({ name, message: 'ENGLISH SENTENCE' })),
+    )
+    expect(lines).toHaveLength(names.length)
+    for (const line of lines) {
+      // 'Fusion' is the plain type label — reaching it means an unwired name.
+      expect(line.summary).not.toBe('Fusion')
+      expect(line.summary).not.toContain('ENGLISH SENTENCE')
+      // Never red: the work is committed, the merge request is open, and what
+      // is missing is a decision or a fix.
+      expect(line.tone).not.toBe('stop')
+    }
+    expect(new Set(lines.map((line) => line.summary)).size).toBe(names.length)
+    const tone = Object.fromEntries(names.map((name, i) => [name, lines[i]?.tone]))
+    expect(tone.condition_unmet).toBe('check')
+    expect(tone.refused).toBe('check')
+    expect(tone.failed).toBe('check')
+    expect(tone.merged).toBe('go')
+    expect(tone.condition_met).toBe('idle')
+    expect(tone.condition_consented).toBe('idle')
+  })
+
+  test("an unknown incident from a newer server degrades to the label, never to the server's English", async () => {
+    const [unknown] = await renderMergeInFrench([
+      { name: 'a_fifth_outcome', message: 'ENGLISH SENTENCE' },
+    ])
+    expect(unknown?.summary).toBe('Fusion')
+    expect(unknown?.tone).toBe('idle')
+  })
+})
+
+describe('the T3.6 merge refusal, read in French on the card', () => {
+  test('a merge-blocked task names its blocker, never "waiting for your answer"', async () => {
+    const [unavailable, missing, asking] = await renderStatusInFrench([
+      {
+        status: 'waiting_for_you',
+        reason: {
+          code: 'checks_unavailable',
+          detail:
+            'this repository configures no checks, so the merge condition could not be evaluated',
+        },
+      },
+      {
+        status: 'waiting_for_you',
+        reason: {
+          code: 'criteria_missing',
+          detail: 'no acceptance criterion was ever written for this task',
+        },
+      },
+      { status: 'waiting_for_you' },
+    ])
+    expect(unavailable?.label).toBe('Checks indisponibles')
+    expect(unavailable?.phrase).toBe("fusion suspendue — les checks n'ont pas pu être exécutés")
+    expect(missing?.label).toBe('Critères manquants')
+    expect(missing?.phrase).toBe("fusion suspendue — aucun critère d'acceptation validé")
+    // The two codes DP1/DP2 minted precisely so they would not be confused
+    // with their neighbours: "checks failed" and "criteria not met" are the
+    // opposite statements, and neither may be shown here.
+    expect(unavailable?.label).not.toBe('Checks en échec')
+    expect(missing?.label).not.toBe('Critères non satisfaits')
+    for (const line of [unavailable, missing]) {
+      expect(line?.phrase).not.toBe('en pause — attend votre réponse')
+      expect(line?.phrase).not.toContain('repository')
+      expect(line?.phrase).not.toContain('acceptance criterion')
+    }
+    expect(asking?.phrase).toBe('en pause — attend votre réponse')
+  })
+
+  // Adversarial review of T3.6, MAJEUR 1: the gate posts SIX codes on
+  // `waiting_for_you` and the ticket translated two. In a French workspace the
+  // other four read "Besoin de toi · en pause — attend votre réponse" — a card
+  // announcing a question nobody asked, for the refusal the design note calls
+  // the most frequent one on an active repository (`branch_diverged`).
+  test('the four exits the ticket left behind read in French too', async () => {
+    const [conflict, forge, diverged, checks] = await renderStatusInFrench([
+      {
+        status: 'waiting_for_you',
+        reason: {
+          code: 'merge_conflict',
+          detail: 'gh: not mergeable — resolve the overlap on the branch',
+        },
+      },
+      {
+        status: 'waiting_for_you',
+        reason: { code: 'forge_unreachable', detail: 'no forge CLI (gh or glab) available' },
+      },
+      {
+        status: 'waiting_for_you',
+        reason: {
+          code: 'branch_diverged',
+          detail: "this branch is behind its target 'origin/main'",
+        },
+      },
+      {
+        status: 'waiting_for_you',
+        reason: { code: 'checks_failed', detail: 'repository checks failed (bun test)' },
+      },
+    ])
+    expect(conflict?.label).toBe('Conflit de fusion')
+    expect(conflict?.phrase).toBe('fusion suspendue — la branche est en conflit avec sa cible')
+    expect(forge?.label).toBe('Forge injoignable')
+    expect(forge?.phrase).toBe("fusion suspendue — la forge n'a pas effectué la fusion")
+    expect(diverged?.label).toBe('Branche pas à jour')
+    expect(diverged?.phrase).toBe("fusion suspendue — la branche n'est pas à jour avec sa cible")
+    // Same code as a blocked review, and deliberately NOT its sentence: the
+    // review passed, it is the merge that is held.
+    expect(checks?.label).toBe('Fusion suspendue')
+    expect(checks?.phrase).toBe('fusion suspendue — les checks du dépôt ont échoué')
+    expect(checks?.phrase).not.toBe('review bloquée — checks en échec')
+    for (const line of [conflict, forge, diverged, checks]) {
+      expect(line?.phrase).not.toBe('en pause — attend votre réponse')
+      expect(line?.label).not.toBe('Besoin de toi')
+      // Real French, not the English catalog leaking through a missing key.
+      expect(line?.phrase).not.toContain('merge held')
+      expect(line?.label).not.toMatch(/^workspace\./)
+    }
+  })
+})

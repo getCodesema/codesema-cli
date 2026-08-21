@@ -18,12 +18,14 @@ import {
   type ChecksSetupState,
 } from './checks-setup.js'
 import {
+  DEFAULT_MERGE_SETTINGS,
   resolveMaxAutoFixRounds,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveReviewMode,
   resolveWatchdogBudgets,
   type IsolationMode,
+  type MergeSettings,
   type ProjectConfigFlags,
 } from './config.js'
 import {
@@ -91,6 +93,7 @@ import {
   validateIssueRef,
   type IssueReconcile,
 } from './task-issue.js'
+import { mergeTask, type MergeOutcome } from './task-merge.js'
 import { resolveTaskPlan, type TaskPlanDeps, type TaskPreviewResult } from './task-plan.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import {
@@ -593,6 +596,26 @@ export type CreateTaskManagerOptions = {
    * generously, for every workspace.
    */
   bootIssueReconcileDeadlineMs?: number
+  /**
+   * T3.6: the four merge settings in force for this WORKSPACE. Global by
+   * construction (they are read from the global config file only), so they are
+   * handed to the manager once at boot rather than resolved per project —
+   * `mergePolicy` is a consent the person running the workspace gives, not a
+   * property of a repository.
+   *
+   * Absent means `DEFAULT_MERGE_SETTINGS`: policy `human`, no strategy, no
+   * branch deletion, no consent. That is what a plain server (tests,
+   * `codesema review`) honestly offers, and it never merges anything.
+   */
+  mergeSettings?: MergeSettings
+  /**
+   * T3.6: merge keys found on the global config file, present but unusable.
+   * Passed through so the degradation is named on the TASK's journal too, not
+   * only on the boot line a user may have scrolled past.
+   */
+  degradedMergeKeys?: readonly string[]
+  /** Test seam: the default evaluates the four conditions for real and drives gh/glab. */
+  mergeTaskFn?: typeof mergeTask
 }
 
 /** One project whose persisted queue was resumed, for the boot announcement. */
@@ -845,6 +868,20 @@ function shipRefusal(record: TaskRecord): TaskActionResult | null {
     return { ok: false, code: 409, error: 'task is already shipped' }
   }
   if (record.status !== 'review_ok' && record.status !== 'review_ko') {
+    // The status ALONE is a dead end, and two gates now land tasks here on
+    // `waiting_for_you`: T3.3's exhausted fix loop and T3.6's refused merge.
+    // "task is waiting_for_you" told the caller nothing about WHY it is
+    // waiting or what would unblock it — precisely the cul-de-sac DP1 forbids
+    // — while the record was carrying the answer all along. What is added is
+    // ADDED to the message, never a replacement for it (invariant n° 2), and
+    // the code travels beside it so a machine can read it too.
+    //
+    // The fix loop gets its own sentence rather than the generic one below,
+    // because the way OUT is the half no `detail` can carry: the ship is
+    // refused, so the only move is a reply — and a reply restarts the budget
+    // from zero, which is exactly what a human staring at a Fix button cannot
+    // deduce. The generic clause underneath covers every other dead end,
+    // T3.6's `checks_unavailable` / `criteria_missing` included.
     const code = record.reason?.code
     if (
       record.status === 'waiting_for_you' &&
@@ -857,7 +894,15 @@ function shipRefusal(record: TaskRecord): TaskActionResult | null {
         reason_code: code,
       }
     }
-    return { ok: false, code: 409, error: `task is ${record.status}` }
+    // A record with no reason keeps the message it always had.
+    return {
+      ok: false,
+      code: 409,
+      error: record.reason?.detail
+        ? `task is ${record.status}: ${record.reason.detail}`
+        : `task is ${record.status}`,
+      ...(record.reason ? { reason_code: record.reason.code } : {}),
+    }
   }
   if (!record.branch) {
     return { ok: false, code: 409, error: 'task has no branch to ship' }
@@ -1580,6 +1625,81 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   /**
+   * T3.6 (D12): the merge step. Chained after a SUCCESSFUL ship, inside
+   * `onTurnDone`, so it only ever runs when there is a merge request to merge.
+   *
+   * It re-reads the record from DISK on purpose: `ship()` wrote its own copy,
+   * so whatever this hook still holds in memory is a turn old by now.
+   *
+   * WHAT MOVES A STATUS, and what does not:
+   *
+   *  - `mergePolicy: 'human'` (the default) NEVER moves one. The four
+   *    conditions are evaluated and journaled, and that is the whole gesture:
+   *    turning a shipped task into "needs you" over a merge nobody asked for
+   *    would be a refusal invented on the user's behalf, and it would change
+   *    what every workspace does on a plain update of the CLI;
+   *  - under `'auto'`, anything short of a completed merge lands the task on
+   *    `waiting_for_you` with its reason — the first missing condition, a
+   *    conflict, or a forge that would not answer. Never `failed`: nothing
+   *    failed, the branch and the merge request are intact and what is needed
+   *    is a person;
+   *  - a merge that LANDED leaves the status on `shipped`. D12 asked for no
+   *    new terminal state and the journal carries the outcome (design.md's own
+   *    open risk); inventing one here would be a contract change nobody
+   *    decided.
+   *
+   * ORDER FOR THE TICKETS THAT FOLLOW — T3.5's recap comment and issue
+   * closing, and T3.7's `codesema:merged` label — is: recap comment, then the
+   * label, then `closeIssue`, and ALL THREE only on `outcome.kind === 'merged'`
+   * (a closed issue can refuse a label; never the other way round). The
+   * insertion point is right below, where this function returns the outcome.
+   *
+   * Never rejects: a merge module that threw would strand the end of a turn.
+   */
+  const runMergeStep = async (ctx: ProjectContext, id: string): Promise<MergeOutcome | null> => {
+    const cwd = ctx.project.path
+    const projectId = ctx.project.id
+    const record = loadTask(cwd, id)
+    if (!record || record.status !== 'shipped') {
+      return null
+    }
+    const settings = opts.mergeSettings ?? DEFAULT_MERGE_SETTINGS
+    const run = opts.mergeTaskFn ?? mergeTask
+    let outcome: MergeOutcome
+    try {
+      outcome = await run({
+        cwd,
+        task: record,
+        settings,
+        ...(opts.degradedMergeKeys && opts.degradedMergeKeys.length > 0
+          ? { degradedKeys: opts.degradedMergeKeys }
+          : {}),
+      })
+    } catch (err) {
+      const event = appendTaskEvent(cwd, id, {
+        type: 'error',
+        data: {
+          message: `the merge step failed: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      })
+      emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+      return null
+    }
+    for (const input of outcome.events) {
+      const event = appendTaskEvent(cwd, id, input)
+      emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+    }
+    if (outcome.kind === 'refused' || outcome.kind === 'failed') {
+      record.status = 'waiting_for_you'
+      record.reason = outcome.reason
+      record.updated_at = new Date().toISOString()
+      saveTask(cwd, record)
+      emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+    }
+    return outcome
+  }
+
+  /**
    * Same wording as the runner's machine-cap wait (task-runner.ts
    * `MACHINE_LOAD_DETAIL`). Copied: T3.1 must not edit that file. The web
    * discriminates the two `resource_busy` motifs on this exact string.
@@ -2003,6 +2123,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       io.persist()
       if (record.auto_ship && record.status === 'review_ok') {
         await ship(ctx, record.id)
+        // T3.6, AWAITED and not fired off: the spec promises that a missing
+        // condition emits no merge command and that the task lands on
+        // `waiting_for_you`. A dangling promise would let this hook return —
+        // and the runner release the project's claim — before either was
+        // true, which makes both promises false by construction while every
+        // gate stays green.
+        await runMergeStep(ctx, record.id)
       }
       // T3.3, LAST and outside the transition: the loop's own action. It runs
       // after the write above because the record on disk is what `reply()`

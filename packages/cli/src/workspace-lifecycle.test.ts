@@ -13,7 +13,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import { loadConfig, saveGlobalConfig, saveRepoConfig } from './config.js'
+import {
+  globalConfigPath,
+  loadConfig,
+  loadGlobalConfig,
+  saveGlobalConfig,
+  saveRepoConfig,
+} from './config.js'
 import type { TaskRecord, TaskStatus } from './contract.js'
 import { tryGit } from './git.js'
 import { projectIdFor } from './projects.js'
@@ -1224,6 +1230,38 @@ describe('workspaceTaskManagerOptions (the whole createTaskManager argument)', (
     expect(opts.maxParallel).toBe(2)
   })
 
+  // T3.6. The mutant this kills: dropping `mergeSettings` from the returned
+  // literal. Nothing else would notice — `createTaskManager` falls back to
+  // DEFAULT_MERGE_SETTINGS, so the whole suite stays green while a workspace
+  // configured `mergePolicy: 'auto'` silently stops merging for good.
+  test('the merge settings reach the manager, resolved, not raw', () => {
+    const opts = workspaceTaskManagerOptions(
+      {
+        mergePolicy: 'auto',
+        mergeStrategy: 'squash',
+        deleteBranchAfterMerge: true,
+        allowMergeWithoutChecks: true,
+      },
+      new AbortController(),
+      boot(),
+    )
+    expect(opts.mergeSettings).toEqual({
+      policy: 'auto',
+      strategy: 'squash',
+      deleteBranch: true,
+      allowMergeWithoutChecks: true,
+    })
+  })
+
+  test('no merge key configured: the manager gets the inert defaults, never undefined', () => {
+    const opts = workspaceTaskManagerOptions({}, new AbortController(), boot())
+    expect(opts.mergeSettings).toEqual({
+      policy: 'human',
+      deleteBranch: false,
+      allowMergeWithoutChecks: false,
+    })
+  })
+
   // A SOURCE-SHAPE assertion, deliberately, and the only kind available for
   // this one fact. `workspace()` cannot be called from a test (it listens on
   // a port, takes the global workspace lock, probes container runtimes and
@@ -1324,6 +1362,70 @@ describe('workspaceBootFallbacks (what EVERY project inherits)', () => {
       timeoutMs: 30_000,
       allowedDomains: ['proxy.internal'],
     })
+  })
+})
+
+// T3.6 adversarial review, M50. `mergeSettings` on the returned literal has a
+// dedicated test right above, carrying a "The mutant this kills…" comment —
+// and its twin one line below, `degradedMergeKeys`, had none: deleting it left
+// the whole suite green while `config_degraded` — the journal line invariant
+// n° 2 exists for, the one that tells a user who typed `mergePolicy: "Auto"`
+// why their workspace never merges — stopped being emitted in production
+// entirely. `mergeTask` only ever writes that line when the manager hands it
+// the keys, and this function is the only place production ever does.
+describe('the unusable merge keys reach the manager too (T3.6, M50)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    if (configDir) {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  /** A GLOBAL config file written RAW: the invalid values could not survive a typed save. */
+  function withGlobalJson(raw: Record<string, unknown>): void {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-degraded-merge-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    writeFileSync(globalConfigPath(), `${JSON.stringify(raw, null, 2)}\n`)
+  }
+
+  const boot = () => ({
+    command: 'claude -p',
+    timeoutMs: 900_000,
+    isolation: {
+      available: false,
+      mode: 'policy' as const,
+      reason: 'container isolation was not probed',
+      configured: 'policy' as const,
+      runtime: null,
+    },
+  })
+
+  test('a merge key present and unusable travels to the manager, named', () => {
+    withGlobalJson({ mergePolicy: 'Auto', allowMergeWithoutChecks: 1 })
+    const opts = workspaceTaskManagerOptions(loadGlobalConfig(), new AbortController(), boot())
+    expect(opts.degradedMergeKeys).toEqual(['mergePolicy', 'allowMergeWithoutChecks'])
+    // ...and the safe default still applies: the key was dropped, not honoured.
+    expect(opts.mergeSettings).toEqual({
+      policy: 'human',
+      deleteBranch: false,
+      allowMergeWithoutChecks: false,
+    })
+  })
+
+  test('nothing unusable means no key at all, never an empty array', () => {
+    // The optional-spread half: `degradedKeys: []` would make `mergeTask`
+    // journal an empty "config_degraded" line on every task.
+    withGlobalJson({ mergePolicy: 'auto' })
+    const opts = workspaceTaskManagerOptions(loadGlobalConfig(), new AbortController(), boot())
+    expect('degradedMergeKeys' in opts).toBe(false)
+    expect(opts.mergeSettings?.policy).toBe('auto')
   })
 })
 
@@ -1621,6 +1723,36 @@ describe('invalidLoadCapKeyNotice', () => {
       withConfigDir()
       repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
       expect(bootNotices({ maxParallelTasks: 4 }, repoDir)).toEqual([maxParallelNotice(4)!])
+    })
+
+    // T3.6. Three of the four merge keys degrade to a SAFE default when they
+    // are unusable, so nothing breaks and nothing would be said: someone who
+    // believed they had authorized automatic merging would watch a workspace
+    // that never merges, with no idea why. The line is what closes that.
+    test('an unusable merge key is one boot line, naming the key', () => {
+      withConfigDir()
+      repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
+      writeFileSync(
+        globalConfigPath(),
+        JSON.stringify({ mergePolicy: 'Auto', allowMergeWithoutChecks: 'yes' }),
+      )
+      const lines = bootNotices({}, repoDir)
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toContain('mergePolicy')
+      expect(lines[1]).toContain('allowMergeWithoutChecks')
+      // A usable value says nothing at all.
+      saveGlobalConfig({ mergePolicy: 'auto', allowMergeWithoutChecks: true })
+      expect(bootNotices({}, repoDir)).toEqual([])
+    })
+
+    test('a merge key set in a REPO file is named as ignored, not as unusable', () => {
+      withConfigDir()
+      repoDir = mkdtempSync(join(tmpdir(), 'codesema-boot-notices-repo-'))
+      saveRepoConfig(repoDir, { mergePolicy: 'auto' })
+      const lines = bootNotices({}, repoDir)
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain('mergePolicy')
+      expect(lines[0]).toMatch(/ignored|global/i)
     })
 
     // A SOURCE-SHAPE assertion, same kind and for the same reason as

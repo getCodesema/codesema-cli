@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_MERGE_SETTINGS,
   globalConfigPath,
   hasInvalidPositiveIntKey,
+  invalidMergeKeys,
   isRepoAgentTrusted,
   loadConfig,
   loadGlobalConfig,
@@ -13,6 +15,7 @@ import {
   repoConfigPath,
   repoGlobalOnlyIgnoredNotices,
   resolveMaxAutoFixRounds,
+  resolveMergeSettings,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveReviewMode,
@@ -659,5 +662,114 @@ describe('resolveProjectConfig (T1.4)', () => {
     const resolved = resolveProjectAgentCommand(repoDir, {}, 'fallback')
     expect(resolved.command).toBe('codex exec -')
     expect(resolved.warning).toContain('claude -p --model opus')
+  })
+})
+
+describe('merge settings (T3.6, D12/D13/DP1)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-merge-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-merge-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('a config with no merge key merges nothing, picks nothing, consents to nothing', () => {
+    expect(resolveMergeSettings({})).toEqual({
+      policy: 'human',
+      deleteBranch: false,
+      allowMergeWithoutChecks: false,
+    })
+    // The absent strategy is a VALUE, not a gap: it is what makes the argv
+    // carry no strategy option at all (D13).
+    expect('strategy' in resolveMergeSettings({})).toBe(false)
+    expect(resolveMergeSettings({})).toEqual(DEFAULT_MERGE_SETTINGS)
+  })
+
+  test('the four keys are read from the global file and applied', () => {
+    saveGlobalConfig({
+      mergePolicy: 'auto',
+      mergeStrategy: 'squash',
+      deleteBranchAfterMerge: true,
+      allowMergeWithoutChecks: true,
+    })
+    expect(resolveMergeSettings(loadGlobalConfig())).toEqual({
+      policy: 'auto',
+      strategy: 'squash',
+      deleteBranch: true,
+      allowMergeWithoutChecks: true,
+    })
+  })
+
+  test('an unknown value degrades to the default without throwing, and never to auto', () => {
+    writeFileSync(
+      globalConfigPath(),
+      JSON.stringify({
+        mergePolicy: 'Auto',
+        mergeStrategy: 'fast-forward',
+        deleteBranchAfterMerge: 'yes',
+        allowMergeWithoutChecks: 1,
+      }),
+    )
+    const config = loadGlobalConfig()
+    expect(config.mergePolicy).toBeUndefined()
+    expect(config.mergeStrategy).toBeUndefined()
+    expect(config.deleteBranchAfterMerge).toBeUndefined()
+    expect(config.allowMergeWithoutChecks).toBeUndefined()
+    expect(resolveMergeSettings(config)).toEqual(DEFAULT_MERGE_SETTINGS)
+  })
+
+  test('a value present but unusable is NAMED, not merely dropped', () => {
+    writeFileSync(globalConfigPath(), JSON.stringify({ mergePolicy: 'Auto', mergeStrategy: 42 }))
+    expect(invalidMergeKeys(globalConfigPath())).toEqual(['mergePolicy', 'mergeStrategy'])
+    // Absent, or present and usable, is nothing to warn about.
+    saveGlobalConfig({ mergePolicy: 'auto' })
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+    saveGlobalConfig({})
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+  })
+
+  test('unreadable or missing JSON is nothing to warn about, and never throws', () => {
+    expect(invalidMergeKeys(join(configDir, 'nope.json'))).toEqual([])
+    writeFileSync(globalConfigPath(), '{ not json')
+    expect(() => invalidMergeKeys(globalConfigPath())).not.toThrow()
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+  })
+
+  test('the four keys are GLOBAL-ONLY: a cloned repo cannot consent on your behalf', () => {
+    saveGlobalConfig({ mergePolicy: 'human' })
+    saveRepoConfig(repoDir, {
+      mergePolicy: 'auto',
+      mergeStrategy: 'rebase',
+      deleteBranchAfterMerge: true,
+      allowMergeWithoutChecks: true,
+    })
+    expect(loadRepoConfig(repoDir).mergePolicy).toBeUndefined()
+    expect(loadRepoConfig(repoDir).allowMergeWithoutChecks).toBeUndefined()
+    // What `workspace()` actually feeds `createTaskManager`.
+    expect(resolveMergeSettings(loadConfig(repoDir))).toEqual(DEFAULT_MERGE_SETTINGS)
+    // ...and it is NAMED, never dropped in silence (invariant n° 2).
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual([
+      'mergePolicy',
+      'mergeStrategy',
+      'deleteBranchAfterMerge',
+      'allowMergeWithoutChecks',
+    ])
+    const notices = repoGlobalOnlyIgnoredNotices(repoDir)
+    for (const key of ['mergePolicy', 'allowMergeWithoutChecks']) {
+      expect(notices.some((line) => line.includes(key))).toBe(true)
+    }
   })
 })

@@ -142,6 +142,53 @@ describe('T2.5 criteria journal labels', () => {
   })
 })
 
+// T3.6. Same reason as the two blocks above: catalog parity only proves the
+// KEY exists in French — a copy of the English value satisfies it perfectly.
+// These are the merge gate's own, and they are the ONLY French a user reads
+// when the workspace refuses to merge for them.
+describe('T3.6 merge journal and status labels', () => {
+  const mergeKeys = [
+    'workspace.evMerge',
+    'workspace.evMergeConditionMet',
+    'workspace.evMergeConditionUnmet',
+    'workspace.evMergeConditionConsented',
+    'workspace.evMergeCondReview',
+    'workspace.evMergeCondChecks',
+    'workspace.evMergeCondCriteria',
+    'workspace.evMergeCondBranch',
+    'workspace.evMergeMerged',
+    'workspace.evMergeRefused',
+    'workspace.evMergePolicyHuman',
+    'workspace.evMergeFailed',
+    'workspace.evMergeConfigDegraded',
+    'workspace.statusChecksUnavailable',
+    'workspace.phaseChecksUnavailable',
+    'workspace.statusCriteriaMissing',
+    'workspace.phaseCriteriaMissing',
+  ] as const
+
+  test('each one is actually translated in French, never left on its English text', () => {
+    const en = (catalogs.en ?? {}) as Record<string, string>
+    const fr = (catalogs.fr ?? {}) as Record<string, string>
+    for (const key of mergeKeys) {
+      expect(en[key]?.trim()).toBeTruthy()
+      expect(fr[key]?.trim()).toBeTruthy()
+      expect(fr[key]).not.toBe(en[key])
+    }
+  })
+
+  test("the two new codes do not reuse their neighbours' sentences", () => {
+    // DP1/DP2 minted separate codes precisely because "checks failed" and
+    // "checks could not be run" are opposite statements; sharing a string here
+    // would undo that at the last step.
+    const fr = (catalogs.fr ?? {}) as Record<string, string>
+    expect(fr['workspace.statusChecksUnavailable']).not.toBe(fr['workspace.statusChecksFailed'])
+    expect(fr['workspace.phaseChecksUnavailable']).not.toBe(fr['workspace.phaseChecksFailed'])
+    expect(fr['workspace.statusCriteriaMissing']).not.toBe(fr['workspace.statusCriteriaUnmet'])
+    expect(fr['workspace.phaseCriteriaMissing']).not.toBe(fr['workspace.phaseCriteriaUnmet'])
+  })
+})
+
 describe('t', () => {
   test('interpolates params and picks plural forms (no window: English)', () => {
     expect(t('header.copyPrompt', { n: 3 })).toBe('Copy for agent (3)')

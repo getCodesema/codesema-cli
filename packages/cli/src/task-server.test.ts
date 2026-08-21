@@ -6761,7 +6761,353 @@ describe('workspace server end to end', () => {
       { type: 'criteria', data: { name: 'draft_unparsed' } },
       { type: 'message' },
       { type: 'shipped', data: { mr_url: 'https://github.com/o/r/pull/3' } },
+      // T3.6: the merge step chains on the ship and journals D12's four
+      // conditions ONE BY ONE, satisfied or not — which is the whole point:
+      // "checked and it passed" has to be distinguishable from "never
+      // checked". This manager carries no `mergeSettings`, so the default
+      // `human` policy applies and NOTHING is merged, whatever the verdicts.
+      { type: 'merge', data: { name: 'condition_unmet', condition: 'review' } },
+      { type: 'merge', data: { name: 'condition_unmet', condition: 'checks', detail: 'no_run' } },
+      {
+        type: 'merge',
+        data: { name: 'condition_unmet', condition: 'criteria', detail: 'absent' },
+      },
+      { type: 'merge', data: { name: 'condition_met', condition: 'branch' } },
+      { type: 'merge', data: { name: 'policy_human', ready: false } },
     ])
+    // ...and the default policy moved no status: the task is `shipped`, not
+    // handed back to a human over a merge nobody asked for.
+    expect(loadTask(repo, created.record.id)?.status).toBe('shipped')
+    expect(loadTask(repo, created.record.id)?.reason).toBeUndefined()
+  })
+
+  test('T3.6: mergePolicy auto merges a green task, and the status stays shipped', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const mergeCalls: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () =>
+        Promise.resolve({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      // The gate itself is proven in task-merge.test.ts; what this test proves
+      // is the WIRING — that the step runs after the ship, on the record as it
+      // stands on DISK, and that a landed merge moves no status.
+      mergeTaskFn: (options) => {
+        mergeCalls.push(options.task.id)
+        expect(options.task.status).toBe('shipped')
+        expect(options.settings.policy).toBe('auto')
+        return Promise.resolve({
+          kind: 'merged',
+          cli: 'gh',
+          url: 'https://github.com/o/r/pull/9',
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge', data: { name: 'merged', cli: 'gh' } }],
+        })
+      },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some((event) => event.type === 'merge'),
+    )
+    expect(mergeCalls).toEqual([created.record.id])
+    const record = loadTask(repo, created.record.id)
+    expect(record?.status).toBe('shipped')
+    expect(record?.reason).toBeUndefined()
+  })
+
+  test('T3.6: a refused merge hands the task back with its reason, and the 409 says why', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      // The REAL gate under `auto`: this task has no criteria and no archived
+      // review, so it is refused long before any forge CLI is reached — which
+      // is exactly why no exec seam is needed here.
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // Waited on the merge gate's own line, not on the status: a wait on the
+    // status turns every regression of the transition below into a TIMEOUT,
+    // which is indistinguishable from a slow machine. The `refused` line is
+    // written first and unconditionally, so what follows is an assertion.
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some(
+        (event) => event.type === 'merge' && event.data.name === 'refused',
+      ),
+    )
+    const record = loadTask(repo, created.record.id)
+    expect(record?.status).toBe('waiting_for_you')
+    expect(record?.reason?.code).toBe('review_blocked')
+    expect(isTerminalReason(record!.reason!.code)).toBe(true)
+    const names = readTaskEvents(repo, created.record.id)
+      .filter((event) => event.type === 'merge')
+      .map((event) => event.data.name)
+    // Four conditions, one line each, then the refusal.
+    expect(names).toEqual([
+      'condition_unmet',
+      'condition_unmet',
+      'condition_unmet',
+      'condition_met',
+      'refused',
+    ])
+    // ...and the dead end T3.3 left behind is closed: the 409 names WHY.
+    const refusal = await manager.ship(project.id, created.record.id)
+    expect(refusal.ok).toBe(false)
+    expect(refusal.ok === false && refusal.code).toBe(409)
+    expect(refusal.ok === false && refusal.error).toContain('no end-of-turn review is archived')
+    expect(refusal.ok === false && refusal.reason_code).toBe('review_blocked')
+  })
+
+  // T3.6 adversarial review, MAJEUR 3. `specs/auto-merge/spec.md` requires it
+  // in those words — "Conflit de merge sans résolution automatique — DOIT
+  // produire la raison `merge_conflict` et faire passer la tâche en attente
+  // humaine" — and NOTHING held it: deleting `|| outcome.kind === 'failed'`
+  // from `runMergeStep`'s transition left 3 069 tests green. task-merge.test.ts
+  // proves the gate returns `failed`/`merge_conflict`; the STATUS is
+  // task-server.ts's own work, and the only server test under `auto` either
+  // returned `merged` or went through the real refusal path.
+  //
+  // With the mutant, a conflict leaves the task on `shipped`, with no reason
+  // and no "needs you" — the most consequential failure mode of the ticket,
+  // entirely unguarded.
+  test('T3.6: a merge the FORGE refused hands the task back on waiting_for_you', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const CONFLICT =
+      'gh: not mergeable — resolve the overlap on the branch; nothing was rebased, reset or deleted'
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () =>
+        Promise.resolve({ pushed: true, mrUrl: 'https://github.com/o/r/pull/7', note: null }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      // The four conditions HELD — this is the forge refusing afterwards,
+      // which is `failed`, not `refused`. The two land on the same status by
+      // design: nothing failed on our side, and what is needed is a person.
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'failed',
+          reason: { code: 'merge_conflict', detail: CONFLICT },
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [
+            {
+              type: 'merge',
+              data: { name: 'failed', cli: 'gh', message: CONFLICT },
+              reason_code: 'merge_conflict',
+            },
+          ],
+        }),
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // Waited on the JOURNAL line, not on the status: a wait on the status
+    // turns the regression this test exists for into a timeout, which is
+    // indistinguishable from a slow machine.
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some(
+        (event) => event.type === 'merge' && event.data.name === 'failed',
+      ),
+    )
+    const record = loadTask(repo, created.record.id)
+    expect(record?.status).toBe('waiting_for_you')
+    expect(record?.reason?.code).toBe('merge_conflict')
+    expect(record?.reason?.detail).toBe(CONFLICT)
+    // Never `failed`, and never left on `shipped`: the branch and the merge
+    // request are intact, and what is missing is a human.
+    expect(record?.status).not.toBe('shipped')
+    expect(record?.status).not.toBe('failed')
+    expect(isTerminalReason(record!.reason!.code)).toBe(true)
+  })
+
+  // The mutation this kills: deleting the `record.status !== 'shipped'` guard
+  // from `runMergeStep`. It is the ONLY thing standing between a ship that
+  // FAILED to push (502, status left on `review_ok`) and a `gh pr merge` on a
+  // branch that was never pushed — the auto-ship path calls the merge step
+  // straight after the ship, whatever the ship answered.
+  test('T3.6: a ship that never pushed is never merged', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    const mergeCalls: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () =>
+        Promise.resolve({ pushed: false, error: 'push refused: no upstream configured' }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: (options) => {
+        mergeCalls.push(options.task.id)
+        return Promise.resolve({
+          kind: 'held',
+          readiness: { ready: false, conditions: [], blockers: [] },
+          events: [],
+        })
+      },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    // The ship's own failure line: written before the merge step is even
+    // reached, so waiting on it is waiting past the decision under test.
+    await until(() =>
+      readTaskEvents(repo, created.record.id).some((event) => event.type === 'error'),
+    )
+    // Give a wrongly-chained merge a beat to show up before asserting it never came.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(mergeCalls).toEqual([])
+    // ...and the record is exactly where the failed ship left it: retryable,
+    // branch and worktree intact.
+    expect(loadTask(repo, created.record.id)?.status).toBe('review_ok')
+    expect(readTaskEvents(repo, created.record.id).some((event) => event.type === 'merge')).toBe(
+      false,
+    )
+  })
+
+  // The mutation this kills: `await runMergeStep(...)` → `void
+  // runMergeStep(...)` in the auto-ship path. The site's own comment carries
+  // the whole argument — "AWAITED and not fired off … A dangling promise would
+  // let this hook return … while every gate stays green" — and a comment is
+  // not a test.
+  //
+  // The observable is the project's ADMISSION CLAIM, which the runner holds
+  // for the whole active window of a task and gives back in the turn promise's
+  // `finally`, after `onTurnDone` resolves. Fired off, the hook returns while
+  // the merge is still in flight and the claim goes back immediately.
+  test('T3.6: the merge step is awaited — the project stays claimed until it lands', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const runAgentFn = async (options: AgentRunOptions): Promise<string> => {
+      const raw = claudeStream('all done')
+      options.onText?.(raw)
+      return raw
+    }
+    let entered = false
+    let releaseMerge: () => void = () => {}
+    const inFlight = new Promise<void>((resolve) => {
+      releaseMerge = resolve
+    })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn,
+      reviewTurnFn: async (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: async () => {
+        entered = true
+        await inFlight
+        return {
+          kind: 'held',
+          readiness: { ready: false, conditions: [], blockers: [] },
+          events: [],
+        }
+      },
+    })
+
+    const created = await manager.create(project.id, {
+      title: 'Night shift',
+      prompt: 'do it while I sleep',
+      autoShip: true,
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) {
+      return
+    }
+    await until(() => entered)
+    // A fired-off merge step returns from the hook on this very tick; the
+    // claim would already be back. The wait is one-sided: awaited, the claim
+    // is held for as long as this test cares to look.
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(activeTask(project.id)).toBe(created.record.id)
+    releaseMerge()
+    // ...and it IS given back once the step lands — the assertion above is a
+    // real hold, not a leak.
+    await until(() => activeTask(project.id) === null)
+    expect(loadTask(repo, created.record.id)?.status).toBe('shipped')
   })
 
   test('auto_ship never fires on a review_ko: the KO waits for the human', async () => {

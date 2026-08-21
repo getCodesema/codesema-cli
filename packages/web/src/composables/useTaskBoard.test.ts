@@ -24,6 +24,7 @@ import {
   queuePhraseKey,
   queueRankHintKey,
   queueSectionOf,
+  reasonDetailText,
   replyModeOf,
   resumeStateOf,
   reviewRefOf,
@@ -225,13 +226,120 @@ describe('statusPhraseKey / statusLabelKey (T3.1 checks_failed)', () => {
       expect(statusPhraseKey(unknown, false)).toBe(EXECUTION_STATUS[status].phraseKey)
       expect(statusLabelKey(unknown)).toBe(EXECUTION_STATUS[status].labelKey)
     }
-    // And a code this table knows on a status it does NOT cover stays default:
-    // `checks_failed` never reaches `waiting_for_you` through the fix loop.
-    const checks = record({
+  })
+
+  // T3.6 adversarial review, MAJEUR 1. `runMergeStep` can park a task on
+  // `waiting_for_you` with any of SIX codes; the ticket wired two. The four
+  // below all read "Needs you · paused — waiting for your answer" while
+  // nobody had asked anything — and `branch_diverged` is, per the ticket's own
+  // design note, the most frequent refusal on an active repository.
+  //
+  // The mutation each of these kills: deleting its entry from
+  // `WAITING_FIX_LOOP_KEYS`. Nothing else in the suite would notice.
+  test('every exit of the merge gate names itself on waiting_for_you', () => {
+    const cases = [
+      {
+        code: 'merge_conflict',
+        phrase: 'workspace.phaseMergeConflict',
+        label: 'workspace.statusMergeConflict',
+      },
+      {
+        code: 'forge_unreachable',
+        phrase: 'workspace.phaseForgeUnreachable',
+        label: 'workspace.statusForgeUnreachable',
+      },
+      {
+        code: 'branch_diverged',
+        phrase: 'workspace.phaseBranchDiverged',
+        label: 'workspace.statusBranchDiverged',
+      },
+      {
+        code: 'checks_failed',
+        phrase: 'workspace.phaseMergeChecksFailed',
+        label: 'workspace.statusMergeHeld',
+      },
+    ] as const
+    for (const one of cases) {
+      const parked = record({
+        status: 'waiting_for_you',
+        reason: { code: one.code, detail: 'the sentence the server wrote' },
+      })
+      expect(statusPhraseKey(parked, false)).toBe(one.phrase)
+      expect(statusLabelKey(parked)).toBe(one.label)
+      // The defect itself, stated once per code: none of them is the generic
+      // "paused — waiting for your answer" / "Needs you" pair.
+      expect(statusPhraseKey(parked, false)).not.toBe('workspace.phaseWaiting')
+      expect(statusLabelKey(parked)).not.toBe('workspace.statusWaiting')
+    }
+    // All six merge-gate exits stay pairwise distinct by PHRASE: a card that
+    // said "the checks could not be run" for a merge conflict would be as
+    // false as saying nothing.
+    const phrases = [...cases.map((one) => one.code), 'checks_unavailable', 'criteria_missing'].map(
+      (code) => statusPhraseKey(record({ status: 'waiting_for_you', reason: { code } }), false),
+    )
+    expect(new Set(phrases).size).toBe(6)
+  })
+
+  // The half of MAJEUR 1 the two tables cannot carry: `checks_failed` on
+  // `waiting_for_you` is the merge gate holding a merge, NOT the reviewer
+  // blocking a branch, and "review blocked — checks failed" would name the
+  // wrong gate. Same code, two statuses, two sentences.
+  test('checks_failed reads as a held MERGE on waiting_for_you and as a blocked REVIEW on review_ko', () => {
+    const held = record({
       status: 'waiting_for_you',
-      reason: { code: 'checks_failed', detail: 'bun test failed' },
+      reason: { code: 'checks_failed', detail: 'repository checks failed (bun test)' },
     })
-    expect(statusPhraseKey(checks, false)).toBe('workspace.phaseWaiting')
+    const blocked = record({
+      status: 'review_ko',
+      reason: { code: 'checks_failed', detail: 'repository checks failed (bun test)' },
+    })
+    expect(statusPhraseKey(held, false)).not.toBe(statusPhraseKey(blocked, false))
+    expect(statusLabelKey(held)).not.toBe(statusLabelKey(blocked))
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseChecksFailed')
+  })
+})
+
+// T3.6 adversarial review, MAJEUR 1, second half. The i18n phrase names the
+// blocker; only `reason.detail` names the way OUT (DP1) — and nothing in the
+// web rendered that field at all, on any component, for any status.
+describe('reasonDetailText (the refusal says how to get out of it)', () => {
+  test('a merge-gate park carries the server sentence', () => {
+    const conflict = record({
+      status: 'waiting_for_you',
+      reason: {
+        code: 'merge_conflict',
+        detail: 'gh: not mergeable — resolve the overlap on the branch',
+      },
+    })
+    expect(reasonDetailText(conflict)).toBe('gh: not mergeable — resolve the overlap on the branch')
+  })
+
+  test('a code with no per-reason phrase never leaks raw server English', () => {
+    // The gate is the TABLE, not the presence of a detail: a machine-cap wait
+    // and an unknown code from a newer server both carry a detail, and neither
+    // has a translated sentence beside it to make it readable.
+    const busy = record({
+      status: 'queued',
+      reason: { code: 'resource_busy', detail: 'the machine-wide load cap has no free slot' },
+    })
+    expect(reasonDetailText(busy)).toBeNull()
+    const future = record({
+      status: 'waiting_for_you',
+      reason: { code: 'from_a_newer_server', detail: 'something new' },
+    })
+    expect(reasonDetailText(future)).toBeNull()
+  })
+
+  test('a question, a missing detail and an empty one all read as nothing to add', () => {
+    expect(reasonDetailText(record({ status: 'waiting_for_you' }))).toBeNull()
+    expect(
+      reasonDetailText(record({ status: 'waiting_for_you', reason: { code: 'merge_conflict' } })),
+    ).toBeNull()
+    expect(
+      reasonDetailText(
+        record({ status: 'waiting_for_you', reason: { code: 'merge_conflict', detail: '   ' } }),
+      ),
+    ).toBeNull()
   })
 })
 

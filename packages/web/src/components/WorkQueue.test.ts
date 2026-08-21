@@ -289,4 +289,101 @@ describe('WorkQueue renders the checks_failed flag (T3.1)', () => {
     expect(html).toContain(t('workspace.statusReviewKo'))
     expect(html).not.toContain(t('workspace.statusChecksFailed'))
   })
+
+  // T3.6. The merge gate hands a task back on `waiting_for_you`, whose own
+  // label is "Needs you" — true of every question ever asked and useless
+  // here. These two prove the card reaches the CARD, not just the map: the
+  // two codes DP1/DP2 minted are shown, and their nearest neighbours (whose
+  // sentences say the opposite) are not.
+  function merged(reason: NonNullable<TaskRecord['reason']>): TaskState {
+    const s = state(reason, 0)
+    s.record.status = 'waiting_for_you'
+    delete s.record.queue_position
+    s.record.title = 'merge held'
+    return s
+  }
+
+  test('a merge refused for unavailable checks is not labelled "checks failed"', async () => {
+    const html = await renderQueue([
+      merged({ code: 'checks_unavailable', detail: 'this repository configures no checks' }),
+    ])
+    // The card's FLAG, not the section header (which legitimately reads
+    // "Needs you" for every conversation in this zone).
+    expect(html).toContain(`<span class="wq-flag">${t('workspace.statusChecksUnavailable')}</span>`)
+    expect(html).not.toContain(t('workspace.statusChecksFailed'))
+  })
+
+  test('a merge refused for missing criteria is not labelled "criteria not met"', async () => {
+    const html = await renderQueue([
+      merged({ code: 'criteria_missing', detail: 'no acceptance criterion was ever written' }),
+    ])
+    expect(html).toContain(`<span class="wq-flag">${t('workspace.statusCriteriaMissing')}</span>`)
+    expect(html).not.toContain(t('workspace.statusCriteriaUnmet'))
+  })
+
+  // T3.6 adversarial review, MAJEUR 1. Six codes reach this card and the
+  // ticket wired two: the four below all rendered the plain `waiting_for_you`
+  // flag — "Needs you", true of every question ever asked — while the card
+  // showed nothing at all about the merge that was held. `branch_diverged` is
+  // the ticket's own "most frequent refusal on an active repository".
+  //
+  // On the CARD, not on the map: `statusLabelKey` had unit coverage for the
+  // codes it knew, and what nothing pinned was that WorkQueue.vue reads it for
+  // these records at all.
+  const MERGE_EXITS = [
+    { code: 'merge_conflict', flag: 'workspace.statusMergeConflict' },
+    { code: 'forge_unreachable', flag: 'workspace.statusForgeUnreachable' },
+    { code: 'branch_diverged', flag: 'workspace.statusBranchDiverged' },
+    { code: 'checks_failed', flag: 'workspace.statusMergeHeld' },
+  ] as const
+
+  for (const exit of MERGE_EXITS) {
+    test(`a merge held by ${exit.code} says so on the card, not "Needs you"`, async () => {
+      const html = await renderQueue([merged({ code: exit.code, detail: 'the way out' })])
+      expect(html).toContain(`<span class="wq-flag">${t(exit.flag)}</span>`)
+      expect(html).not.toContain(`<span class="wq-flag">${t('workspace.statusWaiting')}</span>`)
+    })
+  }
+
+  // The OTHER half of MAJEUR 1: the flag names the blocker, and only
+  // `reason.detail` names the way out of it (DP1). Measured absent — no
+  // component rendered that field, on any status — so the sentence the server
+  // composes for exactly this purpose reached no screen at all.
+  //
+  // The mutation this kills: dropping the `wq-reason` span from WorkQueue.vue.
+  // Every label test above stays green without it.
+  test('the refusal spells out the way OUT, not just the blocker', async () => {
+    const detail =
+      "this branch is behind its target 'origin/main': merge or rebase the target into it"
+    const html = await renderQueue([merged({ code: 'branch_diverged', detail })])
+    // Vue's SSR escapes text nodes with the same escapes as an attribute
+    // value (@vue/shared's escapeHtml), apostrophes included.
+    expect(html).toContain(inAttribute(detail))
+  })
+
+  // The precedence rule, and why it is not "question first": `lastQuestion`
+  // scans the WHOLE journal, so a conversation that asked something three
+  // turns ago and is now parked by the merge gate would show that answered
+  // question as if it were what the card waits on.
+  const QUESTION = 'should I use bun or node?'
+  const asked = [
+    { seq: 1, at: '2026-08-13T09:00:00.000Z', type: 'question' as const, data: { text: QUESTION } },
+  ]
+
+  test('a stale question never stands in for the blocker that actually parked the task', async () => {
+    const parked = merged({ code: 'merge_conflict', detail: 'resolve the overlap on the branch' })
+    parked.events = asked
+    const html = await renderQueue([parked])
+    expect(html).toContain('resolve the overlap on the branch')
+    expect(html).not.toContain(QUESTION)
+  })
+
+  // ...and an ordinary wait is untouched: a real question still shows.
+  test('a conversation parked on a question still shows the question', async () => {
+    const asking = merged({ code: 'merge_conflict', detail: 'x' })
+    delete asking.record.reason
+    asking.events = asked
+    const html = await renderQueue([asking])
+    expect(html).toContain(QUESTION)
+  })
 })

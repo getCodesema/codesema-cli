@@ -74,7 +74,19 @@ export type ShipForgeExecFn = (
   cwd: string,
 ) => Promise<ShipCliOutcome>
 
-function execCli(cmd: string, args: string[], cwd: string): Promise<ShipCliOutcome> {
+/**
+ * The exec pattern of every forge call this workspace makes — argv only (no
+ * host-side shell interpolation), `SHIP_EXEC_TIMEOUT_MS`, and
+ * `GIT_TERMINAL_PROMPT=0` so a remote that wants credentials fails FAST with
+ * a readable error instead of hanging until the timeout.
+ *
+ * EXPORTED (T3.6) rather than copied into the merge module: the merge has
+ * exactly the same I/O profile as the ship — a forge CLI that talks to the
+ * network, a need to fail fast on a credentials prompt, and a
+ * `missing` / `error` distinction that must not blur. A second copy would be
+ * two paths meant to behave identically, drifting the first time one is fixed.
+ */
+export function execCli(cmd: string, args: string[], cwd: string): Promise<ShipCliOutcome> {
   return new Promise((resolve) => {
     execFile(
       cmd,

@@ -154,8 +154,16 @@ export function currentBranch(cwd: string): string {
   return git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
 }
 
-export function refExists(ref: string, cwd: string): boolean {
-  return tryGit(['rev-parse', '--verify', '--quiet', ref], cwd) !== null
+/**
+ * `opts` exists for the UNATTENDED callers `GitCallOptions` was written for
+ * (T3.6): the merge gate reads three refs per auto-shipped turn from inside
+ * the workspace process, where an unbounded `execFileSync` on a repository
+ * sitting on a suspended network mount freezes the event loop — SSE, HTTP and
+ * every other project with it — for as long as the mount stays down. Default
+ * unchanged (no bound) for the interactive callers.
+ */
+export function refExists(ref: string, cwd: string, opts: GitCallOptions = {}): boolean {
+  return tryGit(['rev-parse', '--verify', '--quiet', ref], cwd, opts) !== null
 }
 
 export function mergeBase(a: string, b: string, cwd: string): string | null {
@@ -166,8 +174,9 @@ export function headSha(cwd: string, ref = 'HEAD'): string {
   return git(['rev-parse', ref], cwd)
 }
 
-export function isAncestor(a: string, b: string, cwd: string): boolean {
-  return tryGit(['merge-base', '--is-ancestor', a, b], cwd) !== null
+/** Same `opts` contract as `refExists` above: bounded on demand, unbounded by default. */
+export function isAncestor(a: string, b: string, cwd: string, opts: GitCallOptions = {}): boolean {
+  return tryGit(['merge-base', '--is-ancestor', a, b], cwd, opts) !== null
 }
 
 export function revListCount(range: string, cwd: string): number | null {
@@ -201,7 +210,12 @@ export function forgeHintOfUrl(url: string): ForgeHint {
   return 'unknown'
 }
 
-/** Best-effort forge guess from the origin remote URL, used to skip an irrelevant CLI probe. */
-export function detectForgeHint(cwd: string): ForgeHint {
-  return forgeHintOfUrl(tryGit(['remote', 'get-url', 'origin'], cwd) ?? '')
+/**
+ * Best-effort forge guess from the origin remote URL, used to skip an
+ * irrelevant CLI probe. `opts` for the same reason as `refExists`: the merge
+ * gate calls this from the workspace process, and a read that cannot return is
+ * a workspace that cannot answer.
+ */
+export function detectForgeHint(cwd: string, opts: GitCallOptions = {}): ForgeHint {
+  return forgeHintOfUrl(tryGit(['remote', 'get-url', 'origin'], cwd, opts) ?? '')
 }

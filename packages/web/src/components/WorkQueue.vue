@@ -30,6 +30,7 @@ import {
   groupQueue,
   lastQuestion,
   queueRankHintKey,
+  reasonDetailText,
   resumeStateOf,
   statusLabelKey,
   waitingSince,
@@ -117,6 +118,18 @@ function pausedFor(state: TaskState): string | null {
 }
 
 const excerptOf = (state: TaskState): string | null => lastQuestion(state.events)
+
+/**
+ * The blocker's own sentence, when the card's flag names a machine verdict
+ * rather than a question (T3.6 adversarial review, MAJEUR 1). It takes
+ * PRECEDENCE over the question excerpt on purpose: `lastQuestion` scans the
+ * whole journal, so a conversation that asked something three turns ago and is
+ * now parked by the merge gate would otherwise show that stale question as if
+ * it were what the card is waiting on — while the thing to actually do (fetch
+ * the target, resolve the overlap, validate the criteria list) went unsaid.
+ * Null for every ordinary wait, which keeps showing the question.
+ */
+const reasonOf = (state: TaskState): string | null => reasonDetailText(state.record)
 
 /** T8: what a stopped conversation offers — only 'ready' earns a button. */
 const resumeOf = (state: TaskState) => resumeStateOf(state.record)
@@ -257,7 +270,8 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
             />
             <span class="wq-flag">{{ t(statusLabelKey(state.record)) }}</span>
           </span>
-          <span v-if="excerptOf(state)" class="wq-question">« {{ excerptOf(state) }} »</span>
+          <span v-if="reasonOf(state)" class="wq-reason">{{ reasonOf(state) }}</span>
+          <span v-else-if="excerptOf(state)" class="wq-question">« {{ excerptOf(state) }} »</span>
           <span class="wq-meta">
             {{ projectName(state) }}
             <template v-if="pausedFor(state)">
@@ -711,6 +725,19 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--cs-amber-text);
+  background: var(--cs-inset);
+  border-radius: 6px;
+  padding: 6px 9px;
+  overflow-wrap: anywhere;
+}
+
+/* The blocker's own sentence: same block as a question excerpt, without the
+   quotation marks and in the muted voice — this is the machine explaining
+   itself, not somebody asking. */
+.wq-reason {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--cs-muted);
   background: var(--cs-inset);
   border-radius: 6px;
   padding: 6px 9px;

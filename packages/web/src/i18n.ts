@@ -220,6 +220,17 @@ const en = {
   'workspace.statusChecksFailed': 'Checks failed',
   'workspace.statusCriteriaUnmet': 'Criteria not met',
   'workspace.statusFixLoopStopped': 'Auto-fix gave up',
+  'workspace.statusChecksUnavailable': 'Checks unavailable',
+  'workspace.statusCriteriaMissing': 'Criteria missing',
+  // T3.6, the four remaining exits of the merge gate. The card shows the FLAG
+  // and nothing else, so each one names its own blocker rather than sharing a
+  // generic "merge held" nobody could act on at a glance — except the checks
+  // one, whose only honest short label would be indistinguishable from the
+  // `review_ko` "Checks failed" it must not be confused with.
+  'workspace.statusMergeConflict': 'Merge conflict',
+  'workspace.statusForgeUnreachable': 'Forge unreachable',
+  'workspace.statusBranchDiverged': 'Branch not up to date',
+  'workspace.statusMergeHeld': 'Merge held',
   'workspace.statusShipped': 'Shipped',
   'workspace.statusFailed': 'Failed',
   'workspace.statusInterrupted': 'Interrupted',
@@ -348,6 +359,23 @@ const en = {
     'Acceptance criteria not satisfied: this task is not ready to merge',
   'workspace.evCriteriaGatePassed': 'Every acceptance criterion is satisfied, evidence in the diff',
 
+  // --- merge gate (T3.6, D12) ---
+  'workspace.evMerge': 'Merge',
+  'workspace.evMergeConditionMet': 'Merge condition satisfied',
+  'workspace.evMergeConditionUnmet': 'Merge condition not satisfied',
+  'workspace.evMergeConditionConsented': 'Merge condition waived by your explicit consent',
+  'workspace.evMergeCondReview': 'code review',
+  'workspace.evMergeCondChecks': 'repository checks',
+  'workspace.evMergeCondCriteria': 'acceptance criteria',
+  'workspace.evMergeCondBranch': 'branch up to date with its target',
+  'workspace.evMergeMerged': 'Branch merged into its target',
+  'workspace.evMergeRefused': 'Automatic merge refused: a condition is missing',
+  'workspace.evMergePolicyHuman':
+    'Conditions checked, the merge is left to you (mergePolicy: human)',
+  'workspace.evMergeFailed': 'The forge refused the merge',
+  'workspace.evMergeConfigDegraded':
+    'An unusable merge setting was ignored and its default applied',
+
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
   'workspace.addProject': 'Add a project',
@@ -418,6 +446,12 @@ const en = {
     'automatic fixes stopped — findings still to fix; your reply starts a fresh fix budget',
   'workspace.phaseFixLoopStoppedCriteria':
     'automatic fixes stopped — acceptance criteria still not met; your reply starts a fresh fix budget',
+  'workspace.phaseChecksUnavailable': 'merge held — the checks could not be run',
+  'workspace.phaseCriteriaMissing': 'merge held — no validated acceptance criteria',
+  'workspace.phaseMergeConflict': 'merge held — the branch conflicts with its target',
+  'workspace.phaseForgeUnreachable': 'merge held — the forge did not perform the merge',
+  'workspace.phaseBranchDiverged': 'merge held — the branch is not up to date with its target',
+  'workspace.phaseMergeChecksFailed': 'merge held — the repository checks failed',
   'workspace.phaseShipped': 'shipped',
   'workspace.phaseFailed': 'failed',
   'workspace.phaseInterrupted': 'interrupted',
@@ -785,6 +819,12 @@ const fr: Record<MessageKey, string> = {
   'workspace.statusChecksFailed': 'Checks en échec',
   'workspace.statusCriteriaUnmet': 'Critères non satisfaits',
   'workspace.statusFixLoopStopped': 'Correction auto arrêtée',
+  'workspace.statusChecksUnavailable': 'Checks indisponibles',
+  'workspace.statusCriteriaMissing': 'Critères manquants',
+  'workspace.statusMergeConflict': 'Conflit de fusion',
+  'workspace.statusForgeUnreachable': 'Forge injoignable',
+  'workspace.statusBranchDiverged': 'Branche pas à jour',
+  'workspace.statusMergeHeld': 'Fusion suspendue',
   'workspace.statusShipped': 'Publiée',
   'workspace.statusFailed': 'Échouée',
   'workspace.statusInterrupted': 'Interrompue',
@@ -901,6 +941,24 @@ const fr: Record<MessageKey, string> = {
   'workspace.evCriteriaGatePassed':
     "Tous les critères d'acceptation sont satisfaits, preuve à l'appui dans le diff",
 
+  // --- merge gate (T3.6, D12) ---
+  'workspace.evMerge': 'Fusion',
+  'workspace.evMergeConditionMet': 'Condition de fusion remplie',
+  'workspace.evMergeConditionUnmet': 'Condition de fusion non remplie',
+  'workspace.evMergeConditionConsented':
+    'Condition de fusion levée par votre consentement explicite',
+  'workspace.evMergeCondReview': 'review de code',
+  'workspace.evMergeCondChecks': 'checks du dépôt',
+  'workspace.evMergeCondCriteria': "critères d'acceptation",
+  'workspace.evMergeCondBranch': 'branche à jour avec sa cible',
+  'workspace.evMergeMerged': 'Branche fusionnée dans sa cible',
+  'workspace.evMergeRefused': 'Fusion automatique refusée : une condition manque',
+  'workspace.evMergePolicyHuman':
+    'Conditions vérifiées, la fusion vous revient (mergePolicy : human)',
+  'workspace.evMergeFailed': 'La forge a refusé la fusion',
+  'workspace.evMergeConfigDegraded':
+    'Un réglage de fusion inutilisable a été ignoré et son défaut appliqué',
+
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',
   'workspace.addProject': 'Ajouter un projet',
@@ -973,6 +1031,12 @@ const fr: Record<MessageKey, string> = {
     'corrections automatiques arrêtées — findings encore à corriger ; votre réponse repart avec un budget de correction complet',
   'workspace.phaseFixLoopStoppedCriteria':
     "corrections automatiques arrêtées — critères d'acceptation encore non satisfaits ; votre réponse repart avec un budget de correction complet",
+  'workspace.phaseChecksUnavailable': "fusion suspendue — les checks n'ont pas pu être exécutés",
+  'workspace.phaseCriteriaMissing': "fusion suspendue — aucun critère d'acceptation validé",
+  'workspace.phaseMergeConflict': 'fusion suspendue — la branche est en conflit avec sa cible',
+  'workspace.phaseForgeUnreachable': "fusion suspendue — la forge n'a pas effectué la fusion",
+  'workspace.phaseBranchDiverged': "fusion suspendue — la branche n'est pas à jour avec sa cible",
+  'workspace.phaseMergeChecksFailed': 'fusion suspendue — les checks du dépôt ont échoué',
   'workspace.phaseShipped': 'shippée',
   'workspace.phaseFailed': 'échouée',
   'workspace.phaseInterrupted': 'interrompue',

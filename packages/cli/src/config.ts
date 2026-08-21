@@ -104,6 +104,44 @@ export type CodesemaConfig = {
    * machine-wide load cap (D4), which a repo cannot raise.
    */
   maxAutoFixRounds?: number | undefined
+  /**
+   * Whether the workspace merges a task's branch on its own once D12's four
+   * conditions hold (T3.6): `'auto'`, or `'human'` — the DEFAULT — which
+   * evaluates and journals the same four conditions and then stops before the
+   * call. Nobody who merely updated the CLI wakes up to a workspace merging
+   * for them.
+   *
+   * GLOBAL-ONLY, and this one is not about a machine resource: "may this tool
+   * merge without me" is a statement its OWNER makes, and a cloned repo whose
+   * `.codesema/config.json` could turn it on would be making it for them. A
+   * repo file that sets it is stripped here and NAMED by
+   * `repoGlobalOnlyIgnoredNotices` — never dropped in silence.
+   */
+  mergePolicy?: MergePolicy | undefined
+  /**
+   * Merge strategy passed to the forge CLI (D13). ABSENT means the forge's
+   * own convention: no strategy option is added to the argv at all, which is
+   * more honest than picking one on the project's behalf — how a repository
+   * merges belongs to that repository. GLOBAL-ONLY, like `mergePolicy`.
+   */
+  mergeStrategy?: MergeStrategy | undefined
+  /**
+   * Whether the branch is deleted on the forge once the merge lands (D13).
+   * DEFAULT `false`: a branch is a deliverable, not processing waste (T1.6),
+   * and deleting one is an explicit choice. GLOBAL-ONLY, like `mergePolicy`.
+   */
+  deleteBranchAfterMerge?: boolean | undefined
+  /**
+   * Explicit, prior consent to merge automatically on a repository that
+   * legitimately configures NO checks (DP1). DEFAULT `false`.
+   *
+   * It covers `unconfigured` and nothing else: "I know this repo has no
+   * checks" is a statement a person can make, "I consent in advance to my
+   * checks runtime breaking" is not. GLOBAL-ONLY, like `mergePolicy` — and
+   * for the same reason: it is a consent, and a consent is given by whoever
+   * owns the machine, not by a repository they cloned.
+   */
+  allowMergeWithoutChecks?: boolean | undefined
   /** Cloud sync (codesema.com): base URL override and workspace credentials. */
   syncUrl?: string | undefined
   syncWorkspaceId?: string | undefined
@@ -161,6 +199,70 @@ export function resolveMaxAutoFixRounds(config: CodesemaConfig): number {
   return Number.isInteger(value) && (value as number) >= 1
     ? (value as number)
     : DEFAULT_MAX_AUTO_FIX_ROUNDS
+}
+
+// --- Merge policy (T3.6, D12 / D13 / DP1) ---------------------------------
+//
+// Declared HERE and not in task-merge.ts, which imports this module, for the
+// same reason `ReviewMode` is: the config layer and the merge gate must never
+// end up with two enums to keep in step.
+
+/** Whether the workspace ever merges by itself (see CodesemaConfig.mergePolicy). */
+export type MergePolicy = 'auto' | 'human'
+
+/** Merge strategy asked of the forge CLI (see CodesemaConfig.mergeStrategy). */
+export type MergeStrategy = 'merge' | 'squash' | 'rebase'
+
+const MERGE_POLICIES: ReadonlySet<string> = new Set(['auto', 'human'])
+const MERGE_STRATEGIES: ReadonlySet<string> = new Set(['merge', 'squash', 'rebase'])
+
+export function isMergePolicy(value: unknown): value is MergePolicy {
+  return typeof value === 'string' && MERGE_POLICIES.has(value)
+}
+
+export function isMergeStrategy(value: unknown): value is MergeStrategy {
+  return typeof value === 'string' && MERGE_STRATEGIES.has(value)
+}
+
+/**
+ * The four merge settings in force, resolved from a config. An ABSENT
+ * `strategy` is meaningful and is therefore kept absent rather than defaulted:
+ * it is what makes the argv carry no strategy option at all (D13).
+ */
+export type MergeSettings = {
+  policy: MergePolicy
+  strategy?: MergeStrategy
+  deleteBranch: boolean
+  allowMergeWithoutChecks: boolean
+}
+
+/**
+ * What an unconfigured workspace does: it does not merge, it does not pick a
+ * strategy for the repository, it does not delete the branch, and it consents
+ * to nothing. Every one of the four defaults is the inert one, because the
+ * merge is the single irreversible action this product takes.
+ */
+export const DEFAULT_MERGE_SETTINGS: MergeSettings = {
+  policy: 'human',
+  deleteBranch: false,
+  allowMergeWithoutChecks: false,
+}
+
+/**
+ * The merge settings a resolved config selects. A key that is absent — or was
+ * present with a value outside its enum, which `parseConfig` already dropped —
+ * lands on `DEFAULT_MERGE_SETTINGS`. Never throws: a typo in a config file
+ * must not be able to stop a workspace, and it must certainly not be able to
+ * turn merging ON.
+ */
+export function resolveMergeSettings(config: CodesemaConfig): MergeSettings {
+  return {
+    policy: config.mergePolicy ?? DEFAULT_MERGE_SETTINGS.policy,
+    ...(config.mergeStrategy ? { strategy: config.mergeStrategy } : {}),
+    deleteBranch: config.deleteBranchAfterMerge ?? DEFAULT_MERGE_SETTINGS.deleteBranch,
+    allowMergeWithoutChecks:
+      config.allowMergeWithoutChecks ?? DEFAULT_MERGE_SETTINGS.allowMergeWithoutChecks,
+  }
 }
 
 /** Configured isolation policy for workspace tasks (see CodesemaConfig.isolation). */
@@ -298,6 +400,24 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       ...(Number.isInteger(raw.maxAutoFixRounds) && (raw.maxAutoFixRounds as number) >= 1
         ? { maxAutoFixRounds: raw.maxAutoFixRounds as number }
         : {}),
+      // T3.6, GLOBAL-ONLY: whether this workspace merges without asking, how,
+      // what happens to the branch, and whether a repo without checks was
+      // consented to. All four are stripped from a repo file (and NAMED by
+      // `repoGlobalOnlyIgnoredNotices`), and a value outside its enum or type
+      // is DROPPED here so `resolveMergeSettings` answers with the inert
+      // default — a typo never throws, and never turns merging on.
+      ...(scope === 'global' && isMergePolicy(raw.mergePolicy)
+        ? { mergePolicy: raw.mergePolicy }
+        : {}),
+      ...(scope === 'global' && isMergeStrategy(raw.mergeStrategy)
+        ? { mergeStrategy: raw.mergeStrategy }
+        : {}),
+      ...(scope === 'global' && typeof raw.deleteBranchAfterMerge === 'boolean'
+        ? { deleteBranchAfterMerge: raw.deleteBranchAfterMerge }
+        : {}),
+      ...(scope === 'global' && typeof raw.allowMergeWithoutChecks === 'boolean'
+        ? { allowMergeWithoutChecks: raw.allowMergeWithoutChecks }
+        : {}),
     }
   } catch {
     return {}
@@ -334,6 +454,51 @@ export function hasInvalidPositiveIntKey(
   } catch {
     return false
   }
+}
+
+/**
+ * The four merge keys, each with the predicate that makes a value USABLE. One
+ * table so the parser's guards above and the boot warning below can never
+ * describe different sets of values as valid (T3.6).
+ */
+const MERGE_KEY_VALIDATORS = {
+  mergePolicy: isMergePolicy,
+  mergeStrategy: isMergeStrategy,
+  deleteBranchAfterMerge: (v: unknown) => typeof v === 'boolean',
+  allowMergeWithoutChecks: (v: unknown) => typeof v === 'boolean',
+} as const satisfies Record<string, (value: unknown) => boolean>
+
+export type MergeConfigKey = keyof typeof MERGE_KEY_VALIDATORS
+
+/**
+ * Merge keys PRESENT in the raw JSON at `path` but not usable — `"Auto"`, `1`,
+ * `"yes"` — as opposed to simply absent. `parseConfig` drops such a value in
+ * silence, the doctrine every other malformed key gets; these four are
+ * surfaced instead, for the reason `hasInvalidPositiveIntKey` exists: a user
+ * who typed `mergePolicy: "Auto"` meant to authorize automatic merging, and
+ * silently NOT getting it is exactly the kind of silence invariant n° 2
+ * forbids. Never throws — unreadable or unparsable JSON reads as "nothing to
+ * warn about", since `parseConfig`'s own catch already degraded that case.
+ */
+export function invalidMergeKeys(path: string): MergeConfigKey[] {
+  if (!existsSync(path)) {
+    return []
+  }
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return []
+    }
+    const keys = Object.keys(MERGE_KEY_VALIDATORS) as MergeConfigKey[]
+    return keys.filter((key) => raw[key] !== undefined && !MERGE_KEY_VALIDATORS[key](raw[key]))
+  } catch {
+    return []
+  }
+}
+
+/** The same reading, on the GLOBAL file — the only one these four keys are read from. */
+export function invalidGlobalMergeKeys(): MergeConfigKey[] {
+  return invalidMergeKeys(globalConfigPath())
 }
 
 function writeConfig(path: string, config: CodesemaConfig, options?: { mode: number }): string {
@@ -430,6 +595,18 @@ const REPO_IGNORED_GLOBAL_ONLY_KEYS = [
   'maxConcurrentAgents',
   'maxParallelTasks',
   'taskRetentionCount',
+  // T3.6: the four merge settings. They join the list under a DIFFERENT
+  // argument from the three above — nothing about them is a machine resource.
+  // What they govern is whether this tool performs the one irreversible
+  // action it knows, and on whose say-so; a cloned repository that could turn
+  // `mergePolicy: "auto"` on, or open `allowMergeWithoutChecks`, would be
+  // giving a consent on behalf of the person running the workspace. Ignored,
+  // and NAMED — a repo that meant something real has to be told it did not
+  // happen.
+  'mergePolicy',
+  'mergeStrategy',
+  'deleteBranchAfterMerge',
+  'allowMergeWithoutChecks',
 ] as const
 
 /**

@@ -344,6 +344,14 @@ export type TaskEventType =
    * tickets append without a rebase fight (mirrors packages/contract/src/tasks.ts).
    */
   | 'criteria'
+  /**
+   * T3.6/D12: the DOMAIN of the merge gate — D12's four conditions, one line
+   * each, then what the gate did. `data.name` names the incident
+   * (`condition_met`, `condition_unmet`, `condition_consented`, `refused`,
+   * `policy_human`, `merged`, `failed`, `config_degraded`). Kept on its own
+   * last line, same rebase courtesy as `criteria`.
+   */
+  | 'merge'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
@@ -362,6 +370,29 @@ export type ReasonCode =
   | 'interrupted_by_user'
   | 'resource_busy'
   | 'forge_unreachable'
+  /**
+   * T3.6 / DP1: the automatic merge could not EVALUATE the checks condition —
+   * the repo configures none, the container runtime is absent, or no finished
+   * run exists for the branch. Never `checks_failed`, which would claim red
+   * checks that never ran.
+   */
+  | 'checks_unavailable'
+  /**
+   * T3.6 / DP2: the automatic merge was refused because the task carries no
+   * acceptance criteria to be judged against. `criteria_unmet` stays reserved
+   * for negative verdicts the gate actually returned.
+   */
+  | 'criteria_missing'
+
+/**
+ * Which unevaluable case a `checks_unavailable` names, and which absence a
+ * `criteria_missing` names (mirrors packages/contract/src/reasons.ts).
+ * DISCRIMINANTS carried as a scalar on the journal line, never labels: the
+ * sentence a human reads is the reason's own `detail`, and the journal wording
+ * comes from the i18n catalog.
+ */
+export type ChecksUnavailableDetail = 'unconfigured' | 'runtime_error' | 'no_run'
+export type CriteriaMissingDetail = 'absent' | 'pending_validation'
 
 /** A degradation, fully stated: the code plus the producer's own message. */
 export type TaskReason = {

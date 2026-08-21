@@ -183,6 +183,42 @@ describe('TaskConversation renders the header phrase (AC-12)', () => {
     expect(html).toContain(t('workspace.phaseReviewKo'))
     expect(html).not.toContain(t('workspace.phaseChecksFailed'))
   })
+
+  // T3.6 adversarial review, MAJEUR 1. `runMergeStep` parks a task on
+  // `waiting_for_you` with one of six codes; the ticket phrased two, so a
+  // merge held by a conflict, an unreachable forge or a diverged branch said
+  // "paused — waiting for your answer" while nobody had asked anything.
+  test('a merge the gate refused names its blocker in the header', async () => {
+    for (const code of ['merge_conflict', 'forge_unreachable', 'branch_diverged'] as const) {
+      const html = await renderConversation({
+        record: { status: 'waiting_for_you', reason: { code, detail: 'the way out' } },
+      })
+      expect(html).not.toContain(t('workspace.phaseWaiting'))
+    }
+  })
+
+  // The half no component did at all: `reason.detail` is where the server
+  // writes what to DO about the refusal (DP1), and nothing rendered it. The
+  // mutation this kills: dropping the `cv-reason` paragraph from the template.
+  test('the refusal sentence itself reaches the screen, not just its label', async () => {
+    const detail =
+      'this branch could not be compared with its target locally, so it could not be proven up to date'
+    const html = await renderConversation({
+      record: { status: 'waiting_for_you', reason: { code: 'branch_diverged', detail } },
+    })
+    expect(html).toContain(detail)
+  })
+
+  // ...and the gate on it: an English server sentence with no translated
+  // phrase beside it is never poured into the header (the doctrine
+  // `SUMMARY_KEYS` applies to journal lines, applied here to reasons).
+  test('a reason this build has no phrase for shows no raw server English', async () => {
+    const detail = 'the machine-wide load cap has no free slot for a turn'
+    const html = await renderConversation({
+      record: { status: 'queued', reason: { code: 'resource_busy', detail } },
+    })
+    expect(html).not.toContain(detail)
+  })
 })
 
 describe('TaskConversation renders the checks bar', () => {
