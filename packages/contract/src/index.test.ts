@@ -992,6 +992,36 @@ describe('parseEvidenceAnchors', () => {
     const many = Array.from({ length: 200 }, (_, i) => `a.ts:${i + 1}`).join(' ')
     expect(parseEvidenceAnchors(many).length).toBeLessThanOrEqual(32)
   })
+
+  test('prose punctuation is stripped off both ends of the path', () => {
+    expect(parseEvidenceAnchors('(src/a.ts:1), [b.ts:2]; *c.ts:3*')).toEqual([
+      { file: 'src/a.ts', line: 1 },
+      { file: 'b.ts', line: 2 },
+      { file: 'c.ts', line: 3 },
+    ])
+    // `.` and `_` are paths, not prose: stripping them would break both of these.
+    expect(parseEvidenceAnchors('./src/a.ts:1 and _internal/b.ts:2')).toEqual([
+      { file: './src/a.ts', line: 1 },
+      { file: '_internal/b.ts', line: 2 },
+    ])
+    // A path that is punctuation and nothing else is no path at all.
+    expect(parseEvidenceAnchors('):1')).toEqual([])
+  })
+
+  test('a long run of closing parens is stripped in one pass, not quadratically', () => {
+    // The guard on the shape of the stripper, not on the machine it runs on.
+    // `/[,;)\]}>*~]+$/` walked the whole run again from every position: 10 000
+    // parens took 72 ms, 20 000 took 276 ms, 40 000 took 1 094 ms. The 200 000
+    // below would have taken ~28 s. The scan that replaced it is under a
+    // millisecond, so a full second still leaves a hundredfold margin under the
+    // load of a parallel suite.
+    const evidence = `${')'.repeat(200_000)}a.ts:12`
+    const started = performance.now()
+    const anchors = parseEvidenceAnchors(evidence)
+    expect(performance.now() - started).toBeLessThan(1_000)
+    expect(anchors).toHaveLength(1)
+    expect(anchors[0]?.line).toBe(12)
+  })
 })
 
 // --- The published review schema, checked against its own sanitizer ---------
