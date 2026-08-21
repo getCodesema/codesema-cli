@@ -12,11 +12,14 @@
     "build:web": "bun run --cwd packages/web build",
     "build:cli": "bun run --cwd packages/cli build",
     "lint": "oxlint",
-    "typecheck": "bun run build:contract && bun run --cwd packages/contract typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/web typecheck",
-    "test": "bun run build:contract && bun test packages/cli packages/web packages/contract",
+    "typecheck": "bun run build:contract && bun run typecheck:only",
+    "typecheck:only": "bun run --cwd packages/contract typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/web typecheck",
+    "test": "bun run build:contract && bun run test:only",
+    "test:only": "bun test --parallel packages/cli packages/web packages/contract",
+    "verify": "bun run build:contract && bun run typecheck:only && bun run test:only",
     "prepare": "lefthook install || echo 'WARNING: lefthook install failed — git hooks are NOT active (no gitleaks secret scan, no format/lint on commit). Run `bun run prepare` again once git and lefthook are available.'",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "prettier --write . --cache",
+    "format:check": "prettier --check . --cache"
   },
   "engines": {
     "node": ">=20"

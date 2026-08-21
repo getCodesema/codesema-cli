@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["node", "bun"],
-    "noEmit": true
+    "noEmit": true,
+    "tsBuildInfoFile": "../../node_modules/.cache/tsc/contract.tsbuildinfo"
   },
   "include": ["src"]
 }
