@@ -31,10 +31,18 @@ cached (`node_modules/.cache/prettier/`). Both caches live under
 `node_modules/`, so **each worktree has its own** — the first run in a new
 worktree pays full price, every run after is fast.
 
-The suite runs on **half the cores**, computed at run time. One worker per core
-sounds better and is not: each worker spawns real `git` subprocesses, so the
-real load runs well past the core count, and tests start failing on their
-timeout rather than on their assertions.
+The suite runs in parallel **locally only**, on half the cores, computed at run
+time — about 8s instead of 30s. One worker per core sounds better and is not:
+each worker spawns real `git` subprocesses, so the real load runs well past the
+core count, and tests start failing on their timeout rather than on their
+assertions.
+
+On CI it runs sequentially, because `--parallel` implies `--isolate` — one
+worker process per file — and a worker that keeps a handle open never gives the
+runner back. It is intermittent: the same commit passed in a minute on its pull
+request and then hung for twenty on the merge queue's branch. Locally a person
+is watching and can interrupt; on CI nobody is, and a job that hangs costs far
+more than the twenty seconds it saved.
 
 ## Hooks
 
