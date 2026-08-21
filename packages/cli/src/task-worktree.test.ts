@@ -121,6 +121,24 @@ describe('createTaskWorktree', () => {
     expect(wt.branch).toBe('codesema/task-reponds-moi-ou-est-l-ete')
   })
 
+  test('a title ending in a period yields a branch git accepts', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(
+      repo,
+      'aaaabbbbcccc',
+      'donne moi des idees pour faire mon jeu.',
+    )
+    expect(wt.branch).toBe('codesema/task-donne-moi-des-idees-pour-faire-mon-jeu')
+  })
+
+  test('dots git refuses in a ref never reach the branch name', async () => {
+    const repo = makeRepo('main')
+    const wt = await createTaskWorktree(repo, 'aaaabbbbcccc', 'ship it ...')
+    expect(wt.branch).toBe('codesema/task-ship-it')
+    const wt2 = await createTaskWorktree(repo, 'ddddeeeeffff', 'bump v1..2 to v1.lock')
+    expect(wt2.branch).toBe('codesema/task-bump-v1.2-to-v1')
+  })
+
   test('a long title is capped on a word boundary', async () => {
     const repo = makeRepo('main')
     const wt = await createTaskWorktree(

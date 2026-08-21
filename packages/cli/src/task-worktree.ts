@@ -68,15 +68,32 @@ const SLUG_MAX = 40
 /** Every branch this tool FORKS for a task starts with it; work-on branches never do. */
 export const TASK_BRANCH_PREFIX = 'codesema/task-'
 
+/**
+ * The dots and dashes a slug may carry, trimmed to what git accepts in a ref
+ * component (git check-ref-format): no leading dot or dash, no '..' run, and
+ * no trailing dot, dash or '.lock'. A title ending in a period — "donne-moi
+ * des idees pour mon jeu." — otherwise built a branch name git refused
+ * outright, failing `git worktree add` before the task ever started.
+ */
+function refSafeEnds(s: string): string {
+  let out = s.replace(/\.{2,}/g, '.').replace(/^[.-]+/, '')
+  // Each pass shortens `out`, so this terminates (worst case, on '').
+  while (/[.-]$/.test(out) || out.endsWith('.lock')) {
+    out = out.replace(/[.-]+$|\.lock$/, '')
+  }
+  return out
+}
+
 /** Same slugging as review archive names (record.ts), with 'task' as last resort. */
 export function slug(s: string): string {
-  const full = s
-    // NFKD + strip combining marks: "Réponds" → "reponds", not "r-ponds".
-    .normalize('NFKD')
-    .replace(/\p{M}+/gu, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+  const full = refSafeEnds(
+    s
+      // NFKD + strip combining marks: "Réponds" → "reponds", not "r-ponds".
+      .normalize('NFKD')
+      .replace(/\p{M}+/gu, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-'),
+  )
   if (full.length <= SLUG_MAX) {
     return full || 'task'
   }
@@ -84,7 +101,7 @@ export function slug(s: string): string {
   // fits, mid-word for a single overlong token.
   const cut = full.slice(0, SLUG_MAX + 1)
   const atDash = cut.lastIndexOf('-')
-  return (atDash > 0 ? cut.slice(0, atDash) : full.slice(0, SLUG_MAX)).replace(/-+$/g, '')
+  return refSafeEnds(atDash > 0 ? cut.slice(0, atDash) : full.slice(0, SLUG_MAX)) || 'task'
 }
 
 /**
