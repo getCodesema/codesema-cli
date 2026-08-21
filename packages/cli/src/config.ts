@@ -79,12 +79,51 @@ export type CodesemaConfig = {
   isolationAllowedDomains?: string[] | undefined
   /** UI and review language (ISO 639-1). */
   language?: SupportedLanguage | undefined
+  /**
+   * Which flow the END-OF-TURN review of a workspace task runs (T3.2):
+   * 'simple' (one reviewer) or 'dual' (two independent reviewers plus a
+   * judge). Absent means 'simple', which is exactly what every task ran
+   * before this key existed — the observed behaviour of an unconfigured
+   * project is unchanged.
+   *
+   * Repo-settable on purpose, like `isolation` and `checks`: how thoroughly a
+   * repository wants its own branches reviewed is a property of that
+   * repository. What it costs is bounded by the machine-wide load cap (D4),
+   * which a repo cannot raise — `dual` doubles the review turns, so it
+   * queues, it does not oversubscribe.
+   */
+  reviewMode?: ReviewMode | undefined
   /** Cloud sync (codesema.com): base URL override and workspace credentials. */
   syncUrl?: string | undefined
   syncWorkspaceId?: string | undefined
   syncSecret?: string | undefined
   /** Explicit opt-in for pushing every completed review; credentials alone never auto-push. */
   syncAutoPush?: boolean | undefined
+}
+
+/**
+ * Which review flow a task's end-of-turn review runs (see
+ * CodesemaConfig.reviewMode). Declared HERE and not in task-review.ts, which
+ * imports this module: `TaskReviewMode` is an alias of this type, so the
+ * config layer and the reviewer can never end up with two enums to keep in
+ * step.
+ */
+export type ReviewMode = 'simple' | 'dual'
+
+const REVIEW_MODES: ReadonlySet<string> = new Set(['simple', 'dual'])
+
+export function isReviewMode(value: unknown): value is ReviewMode {
+  return typeof value === 'string' && REVIEW_MODES.has(value)
+}
+
+/**
+ * The review flow a resolved config selects. `undefined` — the key absent, or
+ * present with a value outside the enum, which `parseConfig` already dropped —
+ * means 'simple': the pre-T3.2 behaviour, never an error and never 'dual',
+ * which would silently double a project's review cost.
+ */
+export function resolveReviewMode(config: CodesemaConfig): ReviewMode {
+  return config.reviewMode ?? 'simple'
 }
 
 /** Configured isolation policy for workspace tasks (see CodesemaConfig.isolation). */
@@ -210,6 +249,11 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       // rights, since the host path is the policy fallback either way.
       ...(isIsolationMode(raw.isolation) ? { isolation: raw.isolation } : {}),
       ...(allowedDomains !== undefined ? { isolationAllowedDomains: allowedDomains } : {}),
+      // T3.2, repo-settable: a value outside 'simple' | 'dual' is DROPPED
+      // here, so `resolveReviewMode` falls back to 'simple' — a typo must
+      // never leave a project with no reviewer, nor promote it to the flow
+      // that costs twice as much.
+      ...(isReviewMode(raw.reviewMode) ? { reviewMode: raw.reviewMode } : {}),
     }
   } catch {
     return {}
@@ -377,6 +421,9 @@ export function repoGlobalOnlyIgnoredNotices(repoRoot: string | null): string[] 
 /**
  * Per-project configuration (T1.4). Precedence is the documented one:
  * CLI flags > repo `.codesema/config.json` > `~/.config/codesema/config.json`.
+ * `reviewMode` (T3.2) rides the repo > global merge like every other
+ * repo-settable key; it has no flag layer, for the same reason `agentId` /
+ * `model` / `effort` have none — no CLI flag produces it.
  * `maxConcurrentAgents` / `maxParallelTasks` / `taskRetentionCount` never come
  * from the repo file (stripped in parseConfig); if they were written there,
  * `warnings` names each of them.

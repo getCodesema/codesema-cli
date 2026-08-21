@@ -14,6 +14,7 @@ import {
   repoGlobalOnlyIgnoredNotices,
   resolveProjectAgentCommand,
   resolveProjectConfig,
+  resolveReviewMode,
   resolveWatchdogBudgets,
   saveGlobalConfig,
   saveRepoConfig,
@@ -512,6 +513,42 @@ describe('resolveProjectConfig (T1.4)', () => {
     expect(resolved.config.maxConcurrentAgents).toBe(4)
     expect(resolved.warnings.some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
     expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual(['maxConcurrentAgents'])
+  })
+
+  test('the review mode a project declares is what resolves (T3.2)', () => {
+    saveRepoConfig(repoDir, { reviewMode: 'dual' })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBe('dual')
+    expect(resolveReviewMode(resolved.config)).toBe('dual')
+  })
+
+  test('a repo review mode wins over the global one, like every repo-settable key', () => {
+    saveGlobalConfig({ reviewMode: 'dual' })
+    saveRepoConfig(repoDir, { reviewMode: 'simple' })
+    expect(resolveReviewMode(resolveProjectConfig(repoDir).config)).toBe('simple')
+  })
+
+  test('no review mode declared anywhere resolves to simple (non-regression)', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBeUndefined()
+    expect(resolveReviewMode(resolved.config)).toBe('simple')
+  })
+
+  test('a review mode outside the enum is dropped without throwing, and simple stands', () => {
+    // Written through saveRepoConfig so the directory exists, then hand-mangled
+    // the way a human editing the file would.
+    saveRepoConfig(repoDir, { timeout: 300 })
+    writeFileSync(
+      repoConfigPath(repoDir),
+      JSON.stringify({ timeout: 300, reviewMode: 'triple' }),
+      'utf8',
+    )
+    expect(() => resolveProjectConfig(repoDir)).not.toThrow()
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBeUndefined()
+    expect(resolveReviewMode(resolved.config)).toBe('simple')
   })
 
   test('the deprecated alias in a repo file is named the same way', () => {

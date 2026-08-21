@@ -145,4 +145,32 @@ describe('the T2.5 criteria journal, read in French', () => {
     expect(unparsed?.tone).not.toBe('stop')
     expect(validated?.tone).not.toBe('stop')
   })
+
+  // T3.2: the gate is the ticket's whole point, and what a French user reads
+  // when it blocks is the half that keeps being forgotten. The server puts no
+  // sentence in `data` for these three at all, so a missing key here would
+  // surface as the bare 'Critères' label, not as English.
+  test('the gate lines and the draft proposal all read in French, and only the block is amber', async () => {
+    const [blocked, passed, proposed] = await renderCriteriaInFrench([
+      { name: 'gate_blocked', met: 2, unmet: 1, unclear: 0 },
+      { name: 'gate_passed', met: 3, unmet: 0, unclear: 0 },
+      { name: 'draft_proposed', count: 3 },
+    ])
+    expect(blocked?.summary).toBe(
+      "Critères d'acceptation non satisfaits : cette tâche n'est pas prête à merger",
+    )
+    expect(passed?.summary).toBe(
+      "Tous les critères d'acceptation sont satisfaits, preuve à l'appui dans le diff",
+    )
+    expect(proposed?.summary).toBe(
+      "L'agent a proposé des critères d'acceptation : ils ne comptent pas tant que vous ne les avez pas validés",
+    )
+    for (const line of [blocked, passed, proposed]) {
+      // 'Critères' is the plain type label: reaching it means an unwired name.
+      expect(line?.summary).not.toBe('Critères')
+      expect(line?.tone).not.toBe('stop')
+    }
+    expect(blocked?.tone).toBe('check')
+    expect(passed?.tone).toBe('idle')
+  })
 })

@@ -121,10 +121,41 @@ export function queuePhraseKey(
 }
 
 /**
- * Header phrase for a conversation. T3.1: `review_ko` with `checks_failed`
- * must not reuse "findings to fix" — that sentence is a lie when the review
- * was green and the checks were red. Same shape as `queuePhraseKey`: a
- * neighbour helper whose premise this ticket invalidated.
+ * The `review_ko` reasons that need their OWN sentences, because the default
+ * ones ("Review blocked" / "review blocked — findings to fix") are FALSE for
+ * them: the review itself was GREEN and something beside it blocked.
+ *
+ * T3.1 added `checks_failed`; T3.2 adds `criteria_unmet` — a branch the
+ * reviewer approved whose acceptance criteria are not all met. Kept as ONE
+ * table read by both helpers below, rather than a branch in each: the pair
+ * drifted apart once already, and a code wired into the phrase but not into
+ * the label reads "Review blocked · review blocked — criteria not met".
+ *
+ * Any other code (a real `review_blocked`, an unknown one from a newer
+ * server) falls through to the default, which is correct for it.
+ */
+const REVIEW_KO_KEYS: Record<string, { phrase: MessageKey; label: MessageKey }> = {
+  checks_failed: { phrase: 'workspace.phaseChecksFailed', label: 'workspace.statusChecksFailed' },
+  criteria_unmet: {
+    phrase: 'workspace.phaseCriteriaUnmet',
+    label: 'workspace.statusCriteriaUnmet',
+  },
+}
+
+function reviewKoKeys(
+  record: Pick<TaskRecord, 'status' | 'reason'>,
+): { phrase: MessageKey; label: MessageKey } | undefined {
+  if (record.status !== 'review_ko' || !record.reason) {
+    return undefined
+  }
+  return REVIEW_KO_KEYS[record.reason.code]
+}
+
+/**
+ * Header phrase for a conversation. See `REVIEW_KO_KEYS`: a `review_ko` that
+ * the review itself did not cause must not reuse "findings to fix". Same
+ * shape as `queuePhraseKey` — a neighbour helper whose premise these tickets
+ * invalidated.
  */
 export function statusPhraseKey(
   record: Pick<TaskRecord, 'status' | 'reason'>,
@@ -134,18 +165,12 @@ export function statusPhraseKey(
   if (queued) {
     return queued
   }
-  if (record.status === 'review_ko' && record.reason?.code === 'checks_failed') {
-    return 'workspace.phaseChecksFailed'
-  }
-  return EXECUTION_STATUS[record.status].phraseKey
+  return reviewKoKeys(record)?.phrase ?? EXECUTION_STATUS[record.status].phraseKey
 }
 
 /** Queue-card flag: same split as `statusPhraseKey`, for the short label. */
 export function statusLabelKey(record: Pick<TaskRecord, 'status' | 'reason'>): MessageKey {
-  if (record.status === 'review_ko' && record.reason?.code === 'checks_failed') {
-    return 'workspace.statusChecksFailed'
-  }
-  return EXECUTION_STATUS[record.status].labelKey
+  return reviewKoKeys(record)?.label ?? EXECUTION_STATUS[record.status].labelKey
 }
 
 export type QueueGroups<T> = Record<QueueSection, T[]>
@@ -612,10 +637,27 @@ const ISSUE_EVENT_TONE: Record<string, EventTone> = {
  * (waiting on a human), the rest are neutral. Takes the whole event rather
  * than the bare type for exactly this one case.
  */
+/**
+ * Same per-name refinement as ISSUE_EVENT_TONE, for the one 'criteria' name
+ * that is NOT a settled fact: a blocked gate (T3.2) is a task waiting on a
+ * person — the criteria have to be met, or the human has to assume the KO —
+ * so it reads amber like `edited`/`not_ticket`, not grey like a validation.
+ * Never red: the work is committed and the review itself said what it had to
+ * say. Every other name falls back to `EVENT_TONE.criteria`, so an unknown
+ * one from a newer server stays routine rather than being painted amber
+ * before anyone decided it should be.
+ */
+const CRITERIA_EVENT_TONE: Record<string, EventTone> = {
+  gate_blocked: 'check',
+}
+
 export function eventTone(event: Pick<TaskEvent, 'type' | 'data'>): EventTone {
+  const name = typeof event.data.name === 'string' ? event.data.name : ''
   if (event.type === 'issue') {
-    const name = typeof event.data.name === 'string' ? event.data.name : ''
     return ISSUE_EVENT_TONE[name] ?? EVENT_TONE.issue
+  }
+  if (event.type === 'criteria') {
+    return CRITERIA_EVENT_TONE[name] ?? EVENT_TONE.criteria
   }
   return EVENT_TONE[event.type]
 }
@@ -816,7 +858,10 @@ function issueEventText(data: TaskEventData): string {
  */
 const CRITERIA_NAME_KEY: Record<string, MessageKey> = {
   draft_unparsed: 'workspace.evCriteriaDraftUnparsed',
+  draft_proposed: 'workspace.evCriteriaDraftProposed',
   validated: 'workspace.evCriteriaValidated',
+  gate_blocked: 'workspace.evCriteriaGateBlocked',
+  gate_passed: 'workspace.evCriteriaGatePassed',
 }
 
 function criteriaEventText(data: TaskEventData): string {

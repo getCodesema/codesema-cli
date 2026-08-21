@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'bun:test'
@@ -377,6 +377,157 @@ describe('runDualFlow', () => {
   // a dual review measured 120 s instead of 202 ms, whole suite green. Dual
   // mode is opt-in, so this is a latent hole rather than a live bug; it is
   // also, word for word, the defect just fixed on the sibling path.
+  // T3.2: the criteria chapter has to reach BOTH lanes, and the per-criterion
+  // verdicts have to come back out — `assembleDualReview` arbitrates findings
+  // only, so a list left to it is dropped silently, and a dropped list reads
+  // downstream as "nothing was judged", which blocks the task forever.
+  test('the criteria chapter reaches both lanes and their verdicts survive the assembly', async () => {
+    const criterionId = 'ac-0123456789ab'
+    const payload =
+      `{"verdict":"approve","summary":"ok","findings":[],` +
+      `"criteria":[{"criterion_id":"${criterionId}","status":"met","evidence":"a.ts:1 the new line"}]}`
+    const fixture = setupDualRepo(payload)
+    // One file per spawn, created atomically: the two lanes run concurrently,
+    // so appending to a shared file interleaves their bytes.
+    const promptsDir = join(fixture.repo, 'prompts')
+    mkdirSync(promptsDir)
+    writeFileSync(
+      fixture.agentScript,
+      [
+        '#!/bin/sh',
+        `f=$(mktemp "${promptsDir}/p.XXXXXX")`,
+        'cat > "$f"',
+        `printf '%s' '${payload}'`,
+        '',
+      ].join('\n'),
+    )
+
+    const outcome = await runDualFlow({
+      ...flowOpts(fixture),
+      criteriaChapter: `Acceptance criteria — MANDATORY chapter:\n- [${criterionId}] it works`,
+    })
+
+    // Zero findings means no judge is spawned: exactly the two lanes.
+    const lanes = readdirSync(promptsDir).map((name) =>
+      readFileSync(join(promptsDir, name), 'utf8'),
+    )
+    expect(lanes).toHaveLength(2)
+    for (const lane of lanes) {
+      expect(lane).toContain(criterionId)
+    }
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    expect(outcome.record.review.criteria).toEqual([
+      { criterion_id: criterionId, status: 'met', evidence: 'a.ts:1 the new line' },
+    ])
+  }, 20000)
+
+  // --- T3.2 round 2, majeur 2: the two dual branches nothing was guarding ---
+  //
+  // The dual criteria path had ONE integration test, and it drove BOTH lanes
+  // with the SAME agent script — so lane B's list was byte-identical to lane
+  // A's and the fixture could not tell a reconciliation from a
+  // non-reconciliation. Two mutants lived there, both green on the whole
+  // suite: dropping `criteria` from the surviving lane when the other dies,
+  // and replacing lane B's list with `undefined` in the merge.
+  //
+  // The script below BRANCHES on the `prosecutor` marker that only lane B's
+  // prompt carries, which is what makes the two lanes discriminable at all.
+
+  /** An agent that answers one payload as lane A and another as the prosecutor. */
+  function twoLaneAgent(
+    fixture: ReturnType<typeof setupDualRepo>,
+    laneA: string,
+    laneB: string,
+  ): void {
+    writeFileSync(
+      fixture.agentScript,
+      [
+        '#!/bin/sh',
+        'prompt=$(cat)',
+        'case "$prompt" in',
+        `  *prosecutor*) printf '%s' '${laneB}' ;;`,
+        `  *) printf '%s' '${laneA}' ;;`,
+        'esac',
+        '',
+      ].join('\n'),
+    )
+  }
+
+  const CRITERION = 'ac-0123456789ab'
+  /** Both lanes answer with zero findings, so no judge is ever spawned. */
+  const laneReview = (criteria: string): string =>
+    `{"verdict":"approve","summary":"ok","findings":[],"criteria":[${criteria}]}`
+
+  test('a lane that dies does not take the surviving lane’s criteria with it', async () => {
+    // Blast radius of the unguarded branch: a timeout or an unreadable answer
+    // on ONE lane made the record carry no `criteria` at all, the gate read
+    // that as "nothing was judged", and every ticketed task in dual mode
+    // blocked forever. It is, word for word, the failure mode this ticket
+    // claims to have closed on the simple path.
+    const fixture = setupDualRepo(REVIEW)
+    twoLaneAgent(
+      fixture,
+      laneReview(`{"criterion_id":"${CRITERION}","status":"met","evidence":"a.ts:1 the new line"}`),
+      'not a review at all',
+    )
+
+    const outcome = await runDualFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    // The prosecutor really did die — otherwise this proves nothing.
+    expect(outcome.reportLines.some((line) => line.includes('reviewer'))).toBe(true)
+    expect(outcome.record.review.criteria).toEqual([
+      { criterion_id: CRITERION, status: 'met', evidence: 'a.ts:1 the new line' },
+    ])
+  }, 30000)
+
+  test('lane a says met, lane b says unmet: the record says unmet', async () => {
+    // The reconciliation is CLI-side and pessimistic; the judge only ever
+    // arbitrates findings. With lane B's list dropped from the merge, this
+    // record reads `met` and the task ships on one reviewer's word.
+    const fixture = setupDualRepo(REVIEW)
+    twoLaneAgent(
+      fixture,
+      laneReview(`{"criterion_id":"${CRITERION}","status":"met","evidence":"a.ts:1 the new line"}`),
+      laneReview(`{"criterion_id":"${CRITERION}","status":"unmet"}`),
+    )
+
+    const outcome = await runDualFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    expect(outcome.record.review.criteria).toEqual([{ criterion_id: CRITERION, status: 'unmet' }])
+  }, 30000)
+
+  test('…and symmetrically: lane b alone can also be the one that proves it', async () => {
+    // The mirror image, so neither lane's list can be dropped unnoticed: only
+    // the PROSECUTOR judged this criterion, on a surviving anchor, and that
+    // verdict has to reach the record.
+    const fixture = setupDualRepo(REVIEW)
+    twoLaneAgent(
+      fixture,
+      laneReview(`{"criterion_id":"${CRITERION}","status":"unmet"}`),
+      laneReview(`{"criterion_id":"${CRITERION}","status":"met","evidence":"a.ts:1 the new line"}`),
+    )
+
+    const outcome = await runDualFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    // Pessimistic: the named failure still wins over the proven success.
+    expect(outcome.record.review.criteria).toEqual([{ criterion_id: CRITERION, status: 'unmet' }])
+  }, 30000)
+
   test('an aborted signal cuts the dual LANES, not just the simple flow', async () => {
     const fixture = setupDualRepo(REVIEW)
     // Lanes that would hold the review for a full minute if left alone.
@@ -521,6 +672,34 @@ describe('runSimpleFlow', () => {
     }
     expect(outcome.record.review.verdict).toBe('approve')
     expect(readFileSync(join(fixture.workDir, 'review.json'), 'utf8')).toContain('"verdict"')
+  }, 20000)
+
+  // T3.2: the whole path from the model's JSON to the archived record —
+  // extract, sanitize, ground, resolveRecord — has to carry `criteria`. It is
+  // what T3.6 reads back off disk.
+  test('per-criterion verdicts survive the parse-ground-record pipeline', async () => {
+    const criterionId = 'ac-0123456789ab'
+    const payload =
+      `{"verdict":"approve","summary":"ok","findings":[],` +
+      `"criteria":[{"criterion_id":"${criterionId}","status":"met","evidence":"a.ts:1 the new line"}]}`
+    const fixture = setupSimpleRepo(payload)
+
+    const outcome = await runSimpleFlow({
+      ...flowOpts(fixture),
+      prompt: buildFullReviewPrompt(fixture.input, `- [${criterionId}] it works`),
+    })
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    expect(outcome.record.review.criteria).toEqual([
+      { criterion_id: criterionId, status: 'met', evidence: 'a.ts:1 the new line' },
+    ])
+    // …and the chapter really did travel in the prompt handed to the agent.
+    expect(buildFullReviewPrompt(fixture.input, `- [${criterionId}] it works`)).toContain(
+      criterionId,
+    )
   }, 20000)
 
   test('reports a coverage gap line when files_reviewed omits a diffed file', async () => {

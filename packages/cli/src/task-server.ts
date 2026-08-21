@@ -20,6 +20,7 @@ import {
 import {
   resolveProjectAgentCommand,
   resolveProjectConfig,
+  resolveReviewMode,
   resolveWatchdogBudgets,
   type IsolationMode,
   type ProjectConfigFlags,
@@ -1313,6 +1314,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const pinned = config.isolationAllowedDomains
     return {
       command: agent.command,
+      // T3.2: the end-of-turn reviewer no longer falls through to its own
+      // implicit 'simple'. The value is resolved here, with the repo > global
+      // precedence every other project key gets, and passed EXPLICITLY at the
+      // call site below.
+      reviewMode: resolveReviewMode(config),
       timeoutMs: config.timeout !== undefined ? config.timeout * 1000 : opts.timeoutMs,
       watchdog:
         config.watchdogInactivitySeconds !== undefined ||
@@ -1801,7 +1807,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const cwd = project.path
     const runtime = projectRuntime(cwd)
     noticeProjectConfig(cwd, runtime)
-    const { command, timeoutMs, watchdog, allowedDomains, pinAllowedDomains } = runtime
+    const { command, timeoutMs, watchdog, allowedDomains, pinAllowedDomains, reviewMode } = runtime
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict. The reviewer is built with the project's command as a
     // fallback; resolveCommand picks the task's own CLI (`record.agent`) so
@@ -1818,6 +1824,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         command,
         resolveCommand: (record) => commandForTask(record, command),
         timeoutMs,
+        // T3.2: EXPLICIT, never the reviewer's own fallback — a project that
+        // configured `reviewMode: "dual"` got a simple review before this,
+        // silently. `createReviewerFn` above is what lets a test see this
+        // exact argument list.
+        mode: reviewMode,
         loadCap,
       })
     // T5: auto-ship chains on the review verdict, INSIDE the onTurnDone hook

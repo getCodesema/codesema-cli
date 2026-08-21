@@ -61,6 +61,13 @@ export type ReviewRecord = {
     summary: string
     findings: Finding[]
     narrative: ReviewNarrative | null
+    /**
+     * DP12 / T3.2: the per-criterion verdicts this review reached. Absent on
+     * every archive written before the field existed, and on every task with
+     * no ticket — absence means "this review judged no criteria", never
+     * "every criterion failed". Never `[]`.
+     */
+    criteria?: CriterionVerdict[]
   }
 }
 

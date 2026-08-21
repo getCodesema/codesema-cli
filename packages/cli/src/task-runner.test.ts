@@ -1439,6 +1439,49 @@ describe('criteria prompting at runtime (T2.5)', () => {
     expect(onDisk.criteria).toBeUndefined()
   })
 
+  // T3.2: a READABLE draft used to leave no trace at all — the list lived in
+  // the reply and nowhere else. Downstream (the merge gate) has to tell
+  // "no criterion was ever written" apart from "some were proposed and never
+  // validated", and nothing persisted said which.
+  test('a parseable draft is journaled too, with how many criteria it carried', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'drafted and journaled', 'do the thing')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => earsDraft).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const events = readTaskEvents(repo, task.id)
+    const proposed = events.find((e) => e.type === 'criteria' && e.data.name === 'draft_proposed')
+    expect(proposed).toBeDefined()
+    expect(proposed?.data.count).toBe(3)
+    // The two draft outcomes stay distinct: this one is NOT the failure line.
+    expect(events.some((e) => e.type === 'criteria' && e.data.name === 'draft_unparsed')).toBe(
+      false,
+    )
+    // …and it still writes nothing to disk: validation remains the only path.
+    expect(loadTask(repo, task.id)?.criteria).toBeUndefined()
+  })
+
+  test('a task that already has criteria drafts nothing and journals nothing', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'already ticketed', 'do the thing')
+    task.criteria = sampleCriteria()
+    saveTask(repo, task)
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => earsDraft).run,
+    })
+    runner.start(task)
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(readTaskEvents(repo, task.id).some((e) => e.type === 'criteria')).toBe(false)
+  })
+
   test('an unreadable draft continues the task, journals the reason, and does not replace the reply', async () => {
     const repo = makeRepo()
     const task = makeTask(repo, 'unreadable', 'do the thing')

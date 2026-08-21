@@ -107,6 +107,13 @@ describe('T2.5 criteria journal labels', () => {
     'workspace.evCriteria',
     'workspace.evCriteriaDraftUnparsed',
     'workspace.evCriteriaValidated',
+    // T3.2's own five: the gate's two journal outcomes, the proposal line,
+    // and the two status labels a criteria-blocked review reads under.
+    'workspace.evCriteriaDraftProposed',
+    'workspace.evCriteriaGateBlocked',
+    'workspace.evCriteriaGatePassed',
+    'workspace.statusCriteriaUnmet',
+    'workspace.phaseCriteriaUnmet',
   ] as const
 
   test('each one is actually translated in French, never left on its English text', () => {

@@ -135,6 +135,37 @@ describe('statusPhraseKey / statusLabelKey (T3.1 checks_failed)', () => {
     expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseReviewKo')
     expect(statusLabelKey(blocked)).toBe('workspace.statusReviewKo')
   })
+
+  // T3.2: the criteria gate blocks a review the reviewer APPROVED, so
+  // "findings to fix" is exactly as false here as it was for red checks.
+  test('review_ko from the criteria gate gets its own phrase AND its own label', () => {
+    const blocked = record({
+      status: 'review_ko',
+      reason: {
+        code: 'criteria_unmet',
+        detail: '1 of 3 acceptance criteria are not satisfied (1 unmet) — ac-000000000001: unmet',
+      },
+    })
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseCriteriaUnmet')
+    expect(statusLabelKey(blocked)).toBe('workspace.statusCriteriaUnmet')
+    // The three review_ko phrasings stay pairwise distinct: a code wired into
+    // one helper and not the other reads "Review blocked · criteria not met".
+    const fromChecks = record({ status: 'review_ko', reason: { code: 'checks_failed' } })
+    const fromReview = record({ status: 'review_ko', reason: { code: 'review_blocked' } })
+    expect(new Set([blocked, fromChecks, fromReview].map((r) => statusLabelKey(r))).size).toBe(3)
+    expect(
+      new Set([blocked, fromChecks, fromReview].map((r) => statusPhraseKey(r, false))).size,
+    ).toBe(3)
+  })
+
+  test('a review_ko whose reason code this build does not know keeps the default', () => {
+    const blocked = record({
+      status: 'review_ko',
+      reason: { code: 'something_future' as never },
+    })
+    expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseReviewKo')
+    expect(statusLabelKey(blocked)).toBe('workspace.statusReviewKo')
+  })
 })
 
 describe('sectionOf', () => {
@@ -572,6 +603,32 @@ describe('eventSummary', () => {
       ).toBe('Criteria')
       expect(eventSummary(event({ type: 'criteria', data: {} }))).toBe('Criteria')
     })
+
+    // T3.2. The three names added by the criteria gate go through the SAME
+    // `data.name` branch — `eventSummary` never reads `data.message` for a
+    // 'criteria' event, which is exactly why the server stops putting a
+    // sentence in there for these.
+    test('the gate and the draft proposal each render their own text, never the label', () => {
+      const blocked = eventSummary(
+        event({
+          type: 'criteria',
+          data: { name: 'gate_blocked', met: 2, unmet: 1, unclear: 0 },
+        }),
+      )
+      const passed = eventSummary(
+        event({ type: 'criteria', data: { name: 'gate_passed', met: 3, unmet: 0, unclear: 0 } }),
+      )
+      const proposed = eventSummary(
+        event({ type: 'criteria', data: { name: 'draft_proposed', count: 3 } }),
+      )
+      for (const line of [blocked, passed, proposed]) {
+        expect(line).not.toBe('Criteria')
+      }
+      expect(new Set([blocked, passed, proposed]).size).toBe(3)
+      expect(blocked).toContain('not satisfied')
+      expect(passed).toContain('satisfied')
+      expect(proposed).toContain('validate')
+    })
   })
 })
 
@@ -612,6 +669,18 @@ describe('eventTone', () => {
     expect(eventTone(event({ type: 'criteria', data: { name: 'draft_unparsed' } }))).not.toBe(
       'stop',
     )
+  })
+
+  test("'criteria' reads its tone from data.name too: only a blocked gate is amber (T3.2)", () => {
+    // The task is waiting on a person — meet the criteria or assume the KO —
+    // which is the same amber as an edited ticket, and never the red of a
+    // failure: the review itself worked and the work is committed.
+    expect(eventTone(event({ type: 'criteria', data: { name: 'gate_blocked' } }))).toBe('check')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'gate_blocked' } }))).not.toBe('stop')
+    // Everything else stays routine, including a name a newer server invents.
+    expect(eventTone(event({ type: 'criteria', data: { name: 'gate_passed' } }))).toBe('idle')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'draft_proposed' } }))).toBe('idle')
+    expect(eventTone(event({ type: 'criteria', data: { name: 'something_future' } }))).toBe('idle')
   })
 
   test('branch facts are neutral: none of them is a failure of the work', () => {

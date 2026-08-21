@@ -740,6 +740,34 @@ describe('createTaskManager', () => {
     expect(byCwd.get(repoB)?.timeoutMs).toBe(managerOpts.timeoutMs)
   })
 
+  // T3.2: `mode` used to be omitted at this call site, so `createTaskReviewer`
+  // fell through to its own implicit 'simple' — a project that had asked for
+  // 'dual' got a simple review and nothing said so. Deleting `mode` from the
+  // manager's `createTaskReviewer({…})` call is what this turns red.
+  test('the reviewer is built with the review mode THAT project resolved (T3.2)', () => {
+    const repoA = makeRepo()
+    const repoB = makeRepo()
+    saveRepoConfig(repoA, { reviewMode: 'dual' })
+    const projectA = register(repoA)
+    const projectB = register(repoB)
+    const seen: CreateTaskReviewerOptions[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      createRunnerFn: fakeRunner().createRunnerFn,
+      createReviewerFn: (options) => {
+        seen.push(options)
+        return async () => {}
+      },
+    })
+    manager.checks(projectA.id, 'aaaaaaaaaaaa')
+    manager.checks(projectB.id, 'aaaaaaaaaaaa')
+    const byCwd = new Map(seen.map((options) => [options.cwd, options]))
+    expect(byCwd.get(repoA)?.mode).toBe('dual')
+    // Explicit, not absent: a project that declares nothing still gets the
+    // value named at the call site.
+    expect(byCwd.get(repoB)?.mode).toBe('simple')
+  })
+
   // J2 (adversarial review, mineur): proposing a checks configuration is a
   // third agent run, and its `resolveCommand` seam was branched in production
   // with nothing red in either direction — a proposal for B would have been

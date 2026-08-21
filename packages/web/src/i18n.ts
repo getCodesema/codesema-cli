@@ -218,6 +218,7 @@ const en = {
   'workspace.statusReviewOk': 'Review passed',
   'workspace.statusReviewKo': 'Review blocked',
   'workspace.statusChecksFailed': 'Checks failed',
+  'workspace.statusCriteriaUnmet': 'Criteria not met',
   'workspace.statusShipped': 'Shipped',
   'workspace.statusFailed': 'Failed',
   'workspace.statusInterrupted': 'Interrupted',
@@ -314,7 +315,12 @@ const en = {
   'workspace.evCriteria': 'Criteria',
   'workspace.evCriteriaDraftUnparsed':
     'The criteria draft was unreadable: the task continues without criteria',
+  'workspace.evCriteriaDraftProposed':
+    'The agent proposed acceptance criteria: they count for nothing until you validate them',
   'workspace.evCriteriaValidated': 'Acceptance criteria validated',
+  'workspace.evCriteriaGateBlocked':
+    'Acceptance criteria not satisfied: this task is not ready to merge',
+  'workspace.evCriteriaGatePassed': 'Every acceptance criterion is satisfied, evidence in the diff',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -381,6 +387,7 @@ const en = {
   'workspace.phaseReviewOk': 'review OK — ready to ship',
   'workspace.phaseReviewKo': 'review blocked — findings to fix',
   'workspace.phaseChecksFailed': 'review blocked — checks failed',
+  'workspace.phaseCriteriaUnmet': 'review blocked — acceptance criteria not met',
   'workspace.phaseShipped': 'shipped',
   'workspace.phaseFailed': 'failed',
   'workspace.phaseInterrupted': 'interrupted',
@@ -746,6 +753,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.statusReviewOk': 'Review OK',
   'workspace.statusReviewKo': 'Review bloquée',
   'workspace.statusChecksFailed': 'Checks en échec',
+  'workspace.statusCriteriaUnmet': 'Critères non satisfaits',
   'workspace.statusShipped': 'Publiée',
   'workspace.statusFailed': 'Échouée',
   'workspace.statusInterrupted': 'Interrompue',
@@ -836,7 +844,13 @@ const fr: Record<MessageKey, string> = {
   'workspace.evCriteria': 'Critères',
   'workspace.evCriteriaDraftUnparsed':
     "Le brouillon de critères n'était pas lisible : la tâche continue sans critères",
+  'workspace.evCriteriaDraftProposed':
+    "L'agent a proposé des critères d'acceptation : ils ne comptent pas tant que vous ne les avez pas validés",
   'workspace.evCriteriaValidated': "Critères d'acceptation validés",
+  'workspace.evCriteriaGateBlocked':
+    "Critères d'acceptation non satisfaits : cette tâche n'est pas prête à merger",
+  'workspace.evCriteriaGatePassed':
+    "Tous les critères d'acceptation sont satisfaits, preuve à l'appui dans le diff",
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',
@@ -905,6 +919,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.phaseReviewOk': 'review OK — prêt à shipper',
   'workspace.phaseReviewKo': 'review bloquée — findings à corriger',
   'workspace.phaseChecksFailed': 'review bloquée — checks en échec',
+  'workspace.phaseCriteriaUnmet': "review bloquée — critères d'acceptation non satisfaits",
   'workspace.phaseShipped': 'shippée',
   'workspace.phaseFailed': 'échouée',
   'workspace.phaseInterrupted': 'interrompue',

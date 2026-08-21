@@ -768,11 +768,22 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   // record — POST /api/tasks/:id/criteria is the only path onto disk. An
   // unreadable draft does not block: the turn continues, the reason is
   // journaled next to the agent's own message, never instead of it.
+  //
+  // BOTH outcomes are journaled (T3.2). A readable draft used to leave no
+  // trace at all: the list lived in the reply and nowhere else, so nothing
+  // persisted could tell "no criterion was ever written" apart from "some
+  // were proposed and never validated" — and that is exactly the distinction
+  // the merge gate downstream has to make. `count` is a scalar in the flat
+  // payload, like the `validated` line's own.
   const wantsDraft = opts.task.turns.length <= 1 && taskCriteria(opts.task).length === 0
   if (wantsDraft) {
     const draft = parseCriteriaProposal(response)
     if (draft) {
       response = draft.rest
+      opts.onEvent({
+        type: 'criteria',
+        data: { name: 'draft_proposed', count: draft.texts.length },
+      })
     } else {
       opts.onEvent({
         type: 'criteria',
