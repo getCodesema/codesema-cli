@@ -30,6 +30,12 @@ HERE="$(git rev-parse --show-toplevel)"
 
 merged() { git branch --merged "$BASE" --format='%(refname:short)' | grep -qx "$1"; }
 
+# Drop registrations whose directory is already gone, BEFORE anything else: git
+# refuses to delete a branch that is checked out in a worktree, and a stale
+# registration counts. Pruning last (as this script first did) left exactly
+# those branches behind — the ones with nothing holding them but a dead entry.
+$APPLY && git worktree prune
+
 removed=0
 kept=0
 while read -r path branch; do
@@ -38,11 +44,9 @@ while read -r path branch; do
     "$MAIN"|"$HERE") echo "skip  $short — current or main worktree"; kept=$((kept+1)); continue ;;
   esac
   if [ ! -d "$path" ]; then
-    # The directory is gone but the registration survives (a /tmp worktree the
-    # OS cleared, a folder deleted by hand). `git worktree prune` at the end is
-    # what actually drops it; the branch is ours to delete here.
-    echo "stale $short — directory is gone, will be pruned"
-    $APPLY && git branch -d "$short" >/dev/null 2>&1 || true
+    # Dry run only — the prune above already removed these when applying, so
+    # the branch falls to the branch-only pass below and is deleted there.
+    echo "stale $short — directory is gone, would be pruned"
     removed=$((removed+1)); continue
   fi
   if [ -n "$(git -C "$path" status --porcelain)" ]; then
@@ -73,6 +77,5 @@ while read -r short; do
 done < <(git branch --merged "$BASE" --format='%(refname:short)' \
          | grep -vxF -f <(git worktree list --porcelain | awk '/^branch /{sub("refs/heads/","",$2); print $2}') || true)
 
-$APPLY && git worktree prune
 echo
 echo "$( $APPLY && echo removed || echo removable ): $removed   kept: $kept"
