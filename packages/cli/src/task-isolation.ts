@@ -729,7 +729,7 @@ export function agentImageTag(
   agent = 'claude',
 ): string {
   const hash = createHash('sha256')
-    .update(`${agent} ${baseRef} ${dockerfile} ${claudeVersion}`)
+    .update(`${agent}\u0000${baseRef}\u0000${dockerfile}\u0000${claudeVersion}`)
     .digest('hex')
     .slice(0, 12)
   return `codesema-agent:${hash}`
@@ -794,7 +794,7 @@ export async function buildAgentImage(opts: BuildAgentImageOptions): Promise<str
     const dockerfile = opts.base.dockerfile ?? ''
     const context = opts.base.context ?? '.'
     const hash = createHash('sha256')
-      .update(`${opts.worktree} ${dockerfile}`)
+      .update(`${opts.worktree}\u0000${dockerfile}`)
       .digest('hex')
       .slice(0, 12)
     baseTag = `codesema-base:${hash}`

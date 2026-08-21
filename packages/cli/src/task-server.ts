@@ -1570,7 +1570,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    */
   const CYCLE_LABEL_DRAIN_ROUNDS = 3
 
-  const cycleLabelKey = (cwd: string, id: string): string => `${cwd} ${id}`
+  const cycleLabelKey = (cwd: string, id: string): string => `${cwd}\u0000${id}`
 
   /**
    * One pose, named explicitly, plus the memo and the journal line that go
