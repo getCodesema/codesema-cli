@@ -146,9 +146,18 @@ export type ForgeMr = {
   url: string
 }
 
+/**
+ * The three motifs of "the forge could not be reached" — mirrors
+ * `FORGE_DEGRADATIONS` (packages/cli/src/degraded-mode.ts, D9). Named once
+ * here because two payloads carry it: the MR list's own result, and the
+ * workspace's `forge_reason` (see `WorkspaceInfo`). `no-cli` and `cli-error`
+ * are kept apart all the way to the UI on purpose — one says "install a forge
+ * CLI", the other says "the one you have failed".
+ */
+export type ForgeUnavailableReason = 'no-remote' | 'no-cli' | 'cli-error'
+
 export type ForgeMrsResult =
-  | { available: true; mrs: ForgeMr[] }
-  | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
+  { available: true; mrs: ForgeMr[] } | { available: false; reason: ForgeUnavailableReason }
 
 // Mirrors packages/cli/src/mr-review-runner.ts and the /api/mrs/review endpoints.
 
@@ -767,6 +776,24 @@ export type WorkspaceInfo = {
    * OPTIONAL: older CLIs omit it; the composer then falls back to GET /api/config.
    */
   agent?: string
+  /**
+   * D9 (T2.7): can this workspace reach a forge at all — a `gh`/`glab` that
+   * runs, and an `origin` on this project's repo.
+   *
+   * OPTIONAL, and its ABSENCE MEANS "UNKNOWN", never "the forge is
+   * available": an older CLI, or a workspace that never probed, says nothing
+   * here, and a UI that read silence as availability would put the
+   * degradation back in the dark. Same doctrine as `isolation_configured`
+   * right above.
+   */
+  forge_available?: boolean
+  /**
+   * Why not — the forge client's own motif, verbatim. Present only alongside
+   * `forge_available: false`. Never a sentence: the UI translates it (an
+   * English message built by the server and rendered as is would come out in
+   * English in a French workspace).
+   */
+  forge_reason?: ForgeUnavailableReason
 }
 
 export type ProjectsResponse = {

@@ -29,7 +29,9 @@ import {
   resolveWatchdogBudgets,
   type ProjectConfigFlags,
 } from './config.js'
+import { probeForgeCli } from './degraded-mode.js'
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
+import { runForgeCli } from './forge-issues.js'
 import { tryGit } from './git.js'
 import { t, uiLocale } from './i18n.js'
 import { createMrReviewRunner } from './mr-review-runner.js'
@@ -234,6 +236,7 @@ export function workspaceTaskManagerOptions(
     | 'timeoutMs'
     | 'watchdog'
     | 'isolation'
+    | 'forge'
     | 'allowedDomains'
     | 'flags'
     | 'globalOnlyNoticeShown'
@@ -397,6 +400,14 @@ export type WorkspaceSeams = {
    * the boot used to pay for it even when the answer was thrown away.
    */
   detectAgentsFn?: typeof detectAgents
+  /**
+   * The forge-CLI probe (T2.7/D9). Injected for the same reason as the two
+   * above: it spawns `gh --version` then `glab --version`, and a boot test
+   * must neither pay for that nor depend on what the machine happens to have
+   * installed. Its answer is machine-wide and is cached on the manager —
+   * `workspaceInfo()` is synchronous and must never spawn anything.
+   */
+  probeForgeCliFn?: typeof probeForgeCli
 }
 
 export async function workspace(
@@ -458,6 +469,14 @@ export async function workspace(
     configured: launchConfig.isolation ?? 'auto',
     command: launchAgent.command,
   })
+  // D9 (degraded-mode.ts): probed ONCE, here, and handed to the manager —
+  // never re-asked per request. `--version` only: booting must not phone a
+  // forge, and the answer to "can a forge CLI run at all" is the machine's,
+  // not one repo's. The per-repo half (`origin`) is asked per project.
+  const forgeProbe = await (opts.probeForgeCliFn ?? probeForgeCli)(
+    runForgeCli,
+    repoRoot ?? opts.cwd,
+  )
 
   // The lock must be held BEFORE the manager touches any task store: its boot
   // recovery would mark another live workspace's running tasks as orphans.
@@ -497,6 +516,7 @@ export async function workspace(
         timeoutMs: fallbacks.timeoutMs,
         watchdog: fallbacks.watchdog,
         isolation: probe,
+        forge: forgeProbe,
         allowedDomains: fallbacks.allowedDomains,
         flags,
         ...(repoRoot !== null

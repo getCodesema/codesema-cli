@@ -39,6 +39,16 @@ import {
   type TaskRecord,
   type TaskStatus,
 } from './contract.js'
+import {
+  FORGE_ORIGIN_UNKNOWN,
+  forgeReasonDetail,
+  forgeWorkspaceFacts,
+  probeOriginRemote,
+  UNPROBED_FORGE,
+  type ForgeProbe,
+  type ForgeRemoteProbeFn,
+  type ForgeWorkspaceFacts,
+} from './degraded-mode.js'
 import type { ForgeIssuesExecFn } from './forge-issues.js'
 import { refExists, tryGit, tryGitAsync } from './git.js'
 import { t } from './i18n.js'
@@ -331,7 +341,7 @@ export type TaskManager = {
    * project's resolved mode and agent (T1.4); otherwise with the process-wide
    * fallback (global config + flags). Exposed on GET /api/projects.
    */
-  workspaceInfo: (projectId?: string | null) => {
+  workspaceInfo: (projectId?: string | null) => ForgeWorkspaceFacts & {
     isolation_available: boolean
     isolation_default: TaskIsolation
     /** Why — always present, so a policy fallback is never silent in the UI either. */
@@ -474,6 +484,26 @@ export type CreateTaskManagerOptions = {
    * which is what a plain server (tests, `codesema review`) honestly offers.
    */
   isolation?: IsolationProbe
+  /**
+   * Result of the boot FORGE probe (workspace.ts, T2.7/D9): is `gh` or `glab`
+   * installed on this machine, and does it run. Machine-wide, probed once and
+   * cached here for the same reason `isolation` is — `workspaceInfo()` is
+   * synchronous and `GET /api/projects` calls it N+1 times, so the CLI
+   * presence must never be an `execFile` on that path. Absent means "nothing
+   * probed", which `forgeWorkspaceFacts` reports as UNKNOWN, never as
+   * available (degraded-mode.ts).
+   */
+  forge?: ForgeProbe
+  /**
+   * Per-REPO half of the same fact: does this project have an `origin`, and
+   * which forge does it point at. Injectable so no test needs a real remote;
+   * the default asks git — ONE bounded read per project (a `.git/config`
+   * lookup, `FORGE_REMOTE_PROBE_TIMEOUT_MS`) on a route that already reads
+   * that project's config from disk — and this is the only half that can
+   * legitimately change without restarting the workspace
+   * (`git remote add origin …`).
+   */
+  forgeRemoteFn?: ForgeRemoteProbeFn
   /** Egress allowlist of the cage; the isolation module's default applies when absent. */
   allowedDomains?: readonly string[] | undefined
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
@@ -1218,6 +1248,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   const probe = opts.isolation ?? UNPROBED_ISOLATION
+  const forgeProbe = opts.forge ?? UNPROBED_FORGE
+  const forgeRemote = opts.forgeRemoteFn ?? probeOriginRemote
+  /**
+   * D9: the machine-wide probe bound to ONE repo. Without a project there is
+   * no repo to ask about, and the answer is UNKNOWN (no field at all), never
+   * an optimistic "available" nor the launch repo's answer handed out for
+   * everyone.
+   */
+  const forgeFacts = (project: Project | null): ForgeWorkspaceFacts =>
+    forgeWorkspaceFacts(forgeProbe, project ? forgeRemote(project.path) : FORGE_ORIGIN_UNKNOWN)
   const createRunner = opts.createRunnerFn ?? createTaskRunner
   /**
    * T2.4 round-4 adversarial review, majeur 3 — "never start a turn on a
@@ -1427,13 +1467,26 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         outcome = { pushed: false, error: err instanceof Error ? err.message : String(err) }
       }
       if (!outcome.pushed) {
+        // D9: a ship refused because the forge could not be reached (no
+        // origin remote) is NAMED — the code rides beside the message that
+        // was always there, in the journal AND in the answer, so a machine
+        // reading either can tell it from a rejected push. Deliberately
+        // WITHOUT touching `record.reason`: nothing shipped, the task stays
+        // exactly where it was, and a reason on an untouched record would
+        // claim an arrest that did not happen.
         const event = appendTaskEvent(cwd, id, {
           type: 'error',
           data: { message: outcome.error },
+          ...(outcome.reasonCode ? { reason_code: outcome.reasonCode } : {}),
         })
         emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
         // 502: the failure is on the remote/CLI side, not in the request.
-        return { ok: false, code: 502, error: outcome.error }
+        return {
+          ok: false,
+          code: 502,
+          error: outcome.error,
+          ...(outcome.reasonCode ? { reason_code: outcome.reasonCode } : {}),
+        }
       }
       const event = appendTaskEvent(cwd, id, {
         type: 'shipped',
@@ -1445,7 +1498,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // A ship that stopped short of an MR says so on the record too; a clean
       // one clears whatever reason an earlier degradation had left there.
       if (outcome.reasonCode) {
-        record.reason = taskReason(outcome.reasonCode, outcome.note ?? undefined)
+        // The motif VERBATIM first, then the note that was already produced —
+        // the one composition degraded-mode.ts defines, shared with
+        // `forgeIssueReason`, so `no-cli` and `cli-error` stay tellable apart
+        // on the record and not just in an English sentence.
+        record.reason = taskReason(
+          outcome.reasonCode,
+          outcome.detail
+            ? forgeReasonDetail(outcome.detail, outcome.note)
+            : (outcome.note ?? undefined),
+        )
       } else {
         delete record.reason
       }
@@ -2134,6 +2196,19 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     opts.bootIssueReconcileDeadlineMs ?? DEFAULT_BOOT_ISSUE_RECONCILE_DEADLINE_MS
 
   /**
+   * The `detail` of the deadline degradation, composed like every other
+   * `forge_unreachable` detail in the repo (degraded-mode.ts): the MOTIF
+   * first, then the words. `timed-out` and not `cli-error`: we stopped
+   * waiting, which says nothing about the forge's health — and a reader
+   * taking the motif off the front of a detail must never have to guess
+   * whether this one has a motif at all.
+   */
+  const DEADLINE_DETAIL = forgeReasonDetail(
+    'timed-out',
+    `boot reconciliation deadline (${BOOT_ISSUE_RECONCILE_DEADLINE_MS / 1000}s) exceeded`,
+  )
+
+  /**
    * Says, once per boot pass, that a task naming a forge issue has no readable
    * frozen snapshot to compare against — a journal line on the task itself and
    * a workspace notice (invariant 2's two reachable legs; the third, the API,
@@ -2268,7 +2343,10 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         applyUnreachableAt(
           target.project,
           target.record,
-          taskReason('forge_unreachable', 'no-remote'),
+          // Through the shared composer (degraded-mode.ts) rather than a
+          // hand-typed slug: the motif's spelling has exactly one home, and
+          // this site and `forgeIssueReason` can no longer drift apart.
+          taskReason('forge_unreachable', forgeReasonDetail('no-remote')),
         )
         continue
       }
@@ -2291,14 +2369,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           const remaining = deadlineAt - Date.now()
           if (remaining <= 0) {
             deadlineHit = true
-            applyUnreachableAt(
-              project,
-              record,
-              taskReason(
-                'forge_unreachable',
-                `boot reconciliation deadline (${BOOT_ISSUE_RECONCILE_DEADLINE_MS / 1000}s) exceeded`,
-              ),
-            )
+            applyUnreachableAt(project, record, taskReason('forge_unreachable', DEADLINE_DETAIL))
             return
           }
           const outcome = await Promise.race([
@@ -2313,10 +2384,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
                 deadlineHit = true
                 resolve({
                   kind: 'unreachable',
-                  reason: taskReason(
-                    'forge_unreachable',
-                    `boot reconciliation deadline (${BOOT_ISSUE_RECONCILE_DEADLINE_MS / 1000}s) exceeded`,
-                  ),
+                  reason: taskReason('forge_unreachable', DEADLINE_DETAIL),
                 })
               }, remaining)
               timer.unref?.()
@@ -2822,8 +2890,14 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           probe.configured,
         command: agent,
       })
+      // D9: the forge's availability is the same GENRE of fact as the cage's
+      // — process-wide, needed before the UI can label anything honestly — so
+      // it rides the same payload rather than a route of its own the UI would
+      // have to correlate. `no-remote` is per project and wins over the
+      // machine probe, exactly as the forge client's own ladder decides it.
       return {
         ...isolationDefaults(overlaid),
+        ...forgeFacts(project),
         isolation_reason: overlaid.reason,
         isolation_configured: overlaid.configured,
         agent,

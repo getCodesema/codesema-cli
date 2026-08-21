@@ -513,6 +513,19 @@ const en = {
     'New conversations fall back to policy isolation ({reason}). With a container runtime installed (Podman or Docker), each task runs in its own box and the agent gets a full shell safely.',
   'workspace.isolationUpgradeLink': 'Improve the isolation',
   'workspace.isolationUpgradeDismiss': 'Dismiss',
+  // D9 (T2.7): the workspace says out loud that it cannot reach a forge, and
+  // WHY. Three motifs, three different things to do about it — never one
+  // vague sentence, and never a silence a user would read as "all fine".
+  'workspace.forgeUnavailable': 'Forge unavailable',
+  'workspace.forgeReasonNoRemote': 'this repo has no origin remote',
+  'workspace.forgeReasonNoCli': 'neither gh nor glab is installed',
+  'workspace.forgeReasonCliError': 'the forge CLI installed here did not answer',
+  // The server said "unavailable" and named no motif — an older CLI, or one
+  // that could not tell. Saying so is the honest answer; inventing the most
+  // likely motif would be the "right call, wrong announcement" mistake.
+  'workspace.forgeReasonUnknown': 'for a reason this workspace could not name',
+  'workspace.forgeUnavailableHint':
+    'Conversations still run: a task can be created from a title and a prompt, and a task already bound to a ticket carries on with the copy it froze. What is off: binding a new issue, posting a recap on a merge request, and merging.',
 }
 
 export type MessageKey = keyof typeof en
@@ -1026,6 +1039,13 @@ const fr: Record<MessageKey, string> = {
     "Les nouvelles conversations retombent sur l'isolation policy ({reason}). Avec un runtime de containers installé (Podman ou Docker), chaque tâche tourne dans sa propre boîte et l'agent y retrouve un shell complet en sécurité.",
   'workspace.isolationUpgradeLink': "Améliorer l'isolation",
   'workspace.isolationUpgradeDismiss': 'Masquer',
+  'workspace.forgeUnavailable': 'Forge indisponible',
+  'workspace.forgeReasonNoRemote': "ce dépôt n'a pas de remote origin",
+  'workspace.forgeReasonNoCli': "ni gh ni glab n'est installé",
+  'workspace.forgeReasonCliError': "le CLI de forge installé ici n'a pas répondu",
+  'workspace.forgeReasonUnknown': "pour une raison que ce workspace n'a pas su nommer",
+  'workspace.forgeUnavailableHint':
+    "Les conversations continuent : on peut créer une tâche à partir d'un titre et d'un prompt, et une tâche déjà rattachée à un ticket poursuit sur la copie qu'elle a figée. Ce qui est coupé : rattacher une nouvelle issue, poster un récap sur une merge request, et merger.",
 }
 
 /**

@@ -177,6 +177,17 @@ const scopedStates = computed(() =>
 const query = ref('')
 const counters = computed(() => agentCounts(scopedStates.value))
 
+/**
+ * The workspace facts of the world the header describes — the filtered
+ * project's own, or the process-wide blob under "All projects". Follows the
+ * filter for the same reason the isolation badge follows the compose target:
+ * `no-remote` is a fact about ONE repo, and reading it off the launch repo
+ * would hide a degraded sibling behind a healthy blob.
+ */
+const headerWorkspace = computed(() =>
+  isolationForProject(filter.value, projects.value, workspace.value),
+)
+
 /** The queue additionally filters by the header search (title or branch). */
 const queueStates = computed(() =>
   scopedStates.value.filter((state) => matchesQuery(state.record, query.value)),
@@ -524,6 +535,7 @@ async function onRemoveProject(id: string): Promise<void> {
       :needs-you="counters.needsYou"
       :agents="counters.agents"
       :settings-open="showSettings"
+      :workspace="headerWorkspace"
       @open-oldest-waiting="openOldestWaiting"
       @settings="toggleSettings"
     />

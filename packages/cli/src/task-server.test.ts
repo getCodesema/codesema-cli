@@ -3397,6 +3397,14 @@ describe('boot — issue reconciliation (T2.4/D7)', () => {
     expect(calls).toHaveLength(0)
     expect(loadTask(noRemote.path, a.id)?.reason?.code).toBe('forge_unreachable')
     expect(loadTask(noRemote.path, b.id)?.reason?.code).toBe('forge_unreachable')
+    // T2.7 round-2 adversarial review, surviving mutant M34: only the CODE
+    // was ever pinned here, so the motif on this very line — the one T2.7
+    // rewrote through the shared composer, with "this site and
+    // forgeIssueReason can no longer drift apart" in its comment — could be
+    // changed to any other slug with the whole suite still green. The comment
+    // was standing in for the proof.
+    expect(loadTask(noRemote.path, a.id)?.reason?.detail).toBe('no-remote')
+    expect(loadTask(noRemote.path, b.id)?.reason?.detail).toBe('no-remote')
   })
 
   /**
@@ -3527,6 +3535,10 @@ describe('boot — issue reconciliation (T2.4/D7)', () => {
     const second = loadTask(project.path, record.id)?.reason
     expect(second?.code).toBe('forge_unreachable')
     expect(second?.detail).toContain('deadline')
+    // T2.7 round-2 adversarial review, mineur 6: the motif leads, here as
+    // everywhere else. `timed-out` and not `cli-error`: we stopped waiting,
+    // which says nothing about the forge's own health.
+    expect(second?.detail?.startsWith('timed-out: ')).toBe(true)
     // The stale cause is gone from the persisted record, not merely shadowed.
     expect(second?.detail).not.toContain('no-cli')
   })
@@ -4807,6 +4819,11 @@ describe('project routes', () => {
 
       const initial = await rawRequest(started.port, '/api/projects')
       expect(initial.status).toBe(200)
+      // `makeRepo()` builds a repo with NO remote, so both blobs carry D9's
+      // forge verdict for it — and, since nothing probed a forge CLI here,
+      // `no-remote` is the motif either way (it wins over the machine probe,
+      // like the forge client's own ladder decides it).
+      const forgeFacts = { forge_available: false, forge_reason: 'no-remote' }
       expect(JSON.parse(initial.body)).toEqual({
         current: current.id,
         workspace: {
@@ -4815,6 +4832,7 @@ describe('project routes', () => {
           isolation_reason: 'container isolation was not probed',
           isolation_configured: 'policy',
           agent: 'claude -p',
+          ...forgeFacts,
         },
         projects: [
           {
@@ -4828,6 +4846,7 @@ describe('project routes', () => {
               isolation_reason: 'container isolation was not probed',
               isolation_configured: 'policy',
               agent: 'claude -p',
+              ...forgeFacts,
             },
           },
         ],

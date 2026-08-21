@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { saveGlobalConfig } from './config.js'
+import { UNPROBED_FORGE } from './degraded-mode.js'
 import type { LiveSession } from './serve.js'
 import type { IsolationProbe } from './task-isolation.js'
 import { createTaskManager, type CreateTaskManagerOptions } from './task-server.js'
@@ -97,6 +98,8 @@ type Boot = {
   probed: boolean
   /** Whether the boot asked the (injected) agent-binary probe at all. */
   detected: boolean
+  /** Whether the boot asked the (injected) forge-CLI probe at all. */
+  forgeProbed: boolean
 }
 
 /**
@@ -111,6 +114,7 @@ async function boot(cwd: string, agents: AgentDef[] = []): Promise<Boot> {
   let served = false
   let probed = false
   let detected = false
+  let forgeProbed = false
   // installShutdownHandlers registers process-wide SIGINT/SIGTERM listeners;
   // a test must not leave them behind for the rest of the file.
   const beforeSigint = process.listeners('SIGINT')
@@ -128,6 +132,15 @@ async function boot(cwd: string, agents: AgentDef[] = []): Promise<Boot> {
       detectAgentsFn: () => {
         detected = true
         return Promise.resolve(agents)
+      },
+      // T2.7/D9: the third boot probe, injected for the same reason as the two
+      // above. Left out, every `boot()` in this file really launches
+      // `gh --version` (7 of them, measured at the PATH) — the workspace test
+      // would pay for a subprocess and, worse, its answer would depend on
+      // what the machine running CI happens to have installed.
+      probeForgeCliFn: () => {
+        forgeProbed = true
+        return Promise.resolve(UNPROBED_FORGE)
       },
       createTaskManagerFn: (options) => {
         managerOptions = options
@@ -169,7 +182,7 @@ async function boot(cwd: string, agents: AgentDef[] = []): Promise<Boot> {
   if (!managerOptions) {
     throw new Error('the boot never built a task manager')
   }
-  return { managerOptions, passes, served, probed, detected }
+  return { managerOptions, passes, served, probed, detected, forgeProbed }
 }
 
 describe('workspace() boot housekeeping', () => {
@@ -211,7 +224,7 @@ describe('workspace() boot housekeeping', () => {
     expect(outcome.managerOptions.taskRetention).toBeUndefined()
   })
 
-  // The two seams below are what makes this file hermetic. Each is asserted
+  // The three seams below are what makes this file hermetic. Each is asserted
   // rather than assumed: drop the seam from workspace() and the boot reaches
   // the real probe, which is exactly the ~1s-per-boot this suite must not pay.
   test('the runtime probe is the injected one — a policy config does NOT keep the boot off it', async () => {
@@ -228,6 +241,19 @@ describe('workspace() boot housekeeping', () => {
     const outcome = await boot(makeRepo())
 
     expect(outcome.detected).toBe(false)
+  })
+
+  // T2.7/D9, round-2 adversarial review (mineur 8). Without this seam wired,
+  // every boot() above spawned a REAL `gh --version` — 7 of them, counted at
+  // the PATH — which is both a cost the workspace suite must not pay and a
+  // dependency on what the machine happens to have installed, the two things
+  // `probeForgeCliFn` was added to prevent.
+  test('the forge probe is the injected one too: no boot here spawns gh or glab', async () => {
+    saveGlobalConfig({ agent: 'claude', isolation: 'policy' })
+
+    const outcome = await boot(makeRepo())
+
+    expect(outcome.forgeProbed).toBe(true)
   })
 
   // The mirror image, and the reason the skip above is a skip and not a

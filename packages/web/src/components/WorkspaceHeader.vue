@@ -5,17 +5,34 @@
 // only when N > 0, clicking it opens the conversation that has waited the
 // longest) and the "● N agents" counter (running + reviewing, amber glowing
 // dot while at least one run is live). No avatar, per the maquette.
-import { onMounted, onUnmounted, ref } from 'vue'
+//
+// Plus, since T2.7/D9, the one place the workspace says it cannot reach a
+// forge. It sits HERE and not next to a list, because the fact is about the
+// workspace, not about one panel: a silent header with an empty issue list
+// underneath is exactly the ambiguity D9 exists to remove.
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { forgeUnavailableKey } from '../composables/useProjects'
 import { t } from '../i18n'
+import type { WorkspaceInfo } from '../types'
 
-defineProps<{
+const props = defineProps<{
   /** Conversations blocked on the human (bell badge count). */
   needsYou: number
   /** Agents currently working: running + reviewing. */
   agents: number
   /** Settings overlay is open: the button reads as back. */
   settingsOpen?: boolean
+  /**
+   * Workspace facts of the card being looked at (GET /api/projects). Null
+   * while they have not been fetched — which is UNKNOWN, not "the forge is
+   * fine": the badge below stays away in both cases, and only an explicit
+   * `forge_available: false` makes it appear.
+   */
+  workspace?: WorkspaceInfo | null
 }>()
+
+/** Null when the forge answers, and null when nothing is known about it. */
+const forgeReasonKey = computed(() => forgeUnavailableKey(props.workspace ?? null))
 
 const query = defineModel<string>('query', { default: '' })
 
@@ -57,6 +74,20 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
     </div>
 
     <div class="wh-right">
+      <!--
+        Never a silence: when the server says the forge is unreachable, the
+        header names it AND names why, with the hint spelling out what still
+        works and what does not (D9's two lists).
+      -->
+      <span
+        v-if="forgeReasonKey"
+        class="wh-forge"
+        role="status"
+        :title="t('workspace.forgeUnavailableHint')"
+      >
+        <span aria-hidden="true">⚠</span>
+        {{ t('workspace.forgeUnavailable') }} — {{ t(forgeReasonKey) }}
+      </span>
       <button class="wh-settings" type="button" @click="emit('settings')">
         {{ settingsOpen ? t('workspace.back') : t('nav.settings') }}
       </button>
@@ -177,6 +208,21 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 
 .wh-settings:hover {
   border-color: var(--cs-line-2);
+}
+
+/* A degraded capability, not an error: stated in amber like the bell, never red. */
+.wh-forge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--cs-amber-line);
+  border-radius: 7px;
+  background: var(--cs-amber-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--cs-amber-text);
+  cursor: help;
 }
 
 /* The bell is a STATE: amber means the human is the bottleneck right now. */

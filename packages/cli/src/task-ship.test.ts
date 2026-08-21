@@ -92,13 +92,22 @@ function fakeReview(verdict: Verdict, findings: Finding[] = []): ReviewRecord {
 type GitCall = { args: string[]; cwd: string }
 type ForgeCall = { cli: 'gh' | 'glab'; args: string[]; cwd: string }
 
-function gitExec(outcome: ShipCliOutcome): { calls: GitCall[]; fn: ShipGitExecFn } {
+/**
+ * `outcome` answers the PUSH; `remote` answers the `remote get-url origin`
+ * probe the ship runs before it (D9). They are separate because collapsing
+ * them would turn every push-failure test into a no-remote test, and the two
+ * refusals are exactly what T2.7 makes distinguishable.
+ */
+function gitExec(
+  outcome: ShipCliOutcome,
+  remote: ShipCliOutcome = { kind: 'ok', stdout: 'git@github.com:o/r.git\n' },
+): { calls: GitCall[]; fn: ShipGitExecFn } {
   const calls: GitCall[] = []
   return {
     calls,
     fn: (args, cwd) => {
       calls.push({ args, cwd })
-      return Promise.resolve(outcome)
+      return Promise.resolve(args[0] === 'remote' ? remote : outcome)
     },
   }
 }
@@ -244,7 +253,50 @@ describe('shipTask', () => {
     const forge = forgeExec({})
     const task = makeTask()
     await shipTask({ cwd, task, execGit: git.fn, execForge: forge.fn })
-    expect(git.calls).toEqual([{ args: ['push', '-u', 'origin', task.branch], cwd }])
+    expect(git.calls).toEqual([
+      // D9: the remote is confirmed BEFORE the push, so "no remote" is a named
+      // refusal rather than whatever words git puts on a failed push.
+      { args: ['remote', 'get-url', 'origin'], cwd },
+      { args: ['push', '-u', 'origin', task.branch], cwd },
+    ])
+  })
+
+  test('no origin remote: the ship is REFUSED and named, and git is never asked to push', async () => {
+    const cwd = makeDir()
+    const git = gitExec(
+      { kind: 'ok', stdout: '' },
+      // Exit code 2 is what "there is no remote by that name" IS: git's own
+      // sentence is localised, the code is not (measured, git 2.53.0).
+      { kind: 'error', message: "no such remote 'origin'", status: 2 },
+    )
+    const forge = forgeExec({ gh: { kind: 'ok', stdout: 'https://github.com/o/r/pull/1' } })
+    const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    expect(outcome.pushed).toBe(false)
+    if (outcome.pushed) {
+      return
+    }
+    expect(outcome.reasonCode).toBe('forge_unreachable')
+    // The motif verbatim, never a reworded sentence, and never confusable
+    // with the two CLI motifs.
+    expect(outcome.detail).toBe('no-remote')
+    // The readable half is still there, and it says what is missing.
+    expect(outcome.error).toContain('origin remote')
+    // Nothing was pushed and no forge CLI was launched.
+    expect(git.calls.map((c) => c.args[0])).toEqual(['remote'])
+    expect(forge.calls).toHaveLength(0)
+  })
+
+  test('an EMPTY origin URL is no remote either, not a silent success', async () => {
+    const cwd = makeDir()
+    const git = gitExec({ kind: 'ok', stdout: '' }, { kind: 'ok', stdout: '  \n' })
+    const outcome = await shipTask({
+      cwd,
+      task: makeTask(),
+      execGit: git.fn,
+      execForge: forgeExec({}).fn,
+    })
+    expect(outcome.pushed).toBe(false)
+    expect(outcome.pushed === false && outcome.detail).toBe('no-remote')
   })
 
   test('push failure aborts the ship with the git error, no forge CLI touched', async () => {
@@ -252,6 +304,9 @@ describe('shipTask', () => {
     const git = gitExec({ kind: 'error', message: 'remote: permission denied' })
     const forge = forgeExec({ gh: { kind: 'ok', stdout: 'https://github.com/o/r/pull/1' } })
     const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    // A push that was REFUSED by the remote is not a forge codesema could not
+    // reach: no code, no motif — that separation is the whole point of the
+    // pre-push probe.
     expect(outcome).toEqual({ pushed: false, error: 'git push failed: remote: permission denied' })
     expect(forge.calls).toHaveLength(0)
   })
@@ -304,10 +359,11 @@ describe('shipTask', () => {
     }
     // The code is ADDED to the note, which keeps saying the same thing in words.
     expect(outcome.reasonCode).toBe('forge_unreachable')
+    expect(outcome.detail).toBe('no-cli')
     expect(outcome.note).toContain('no forge CLI')
   })
 
-  test('a forge CLI that ran and failed is not named unreachable', async () => {
+  test('a forge CLI that ran and failed is named too — cli-error, never no-cli', async () => {
     const cwd = makeDir()
     const git = gitExec({ kind: 'ok', stdout: '' })
     const forge = forgeExec({ gh: { kind: 'error', message: 'API rate limit exceeded' } })
@@ -316,8 +372,15 @@ describe('shipTask', () => {
     if (!outcome.pushed) {
       return
     }
-    // The forge answered: no D2 code fits, and a wrong code is worse than none.
-    expect(outcome.reasonCode).toBeUndefined()
+    // T2.7 overturns "the forge answered, so it is not unreachable": D2 spells
+    // out `forge_unreachable` as covering "an API that refused", and leaving
+    // this one uncoded made the likeliest forge degradation the only one no
+    // machine could see.
+    expect(outcome.reasonCode).toBe('forge_unreachable')
+    // ...and the motif is what keeps it from being read as a missing binary.
+    expect(outcome.detail).toBe('cli-error')
+    expect(outcome.detail).not.toBe('no-cli')
+    // The CLI's own words are untouched.
     expect(outcome.note).toBe('gh failed: API rate limit exceeded')
   })
 
@@ -357,6 +420,8 @@ describe('shipTask', () => {
       pushed: true,
       mrUrl: null,
       note: 'gh failed: API rate limit exceeded',
+      reasonCode: 'forge_unreachable',
+      detail: 'cli-error',
     })
   })
 
