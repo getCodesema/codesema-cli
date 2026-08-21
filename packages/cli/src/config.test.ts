@@ -503,6 +503,24 @@ describe('resolveProjectConfig (T1.4)', () => {
     expect(resolved.config.timeout).toBe(60)
   })
 
+  // T3.7/D15. A boolean opt-in has a failure mode a number does not: `false`
+  // is the value a project uses to REFUSE what the machine turned on, and a
+  // parse that keeps values by truthiness drops it — handing the project
+  // straight back to the global `true` it had just declined.
+  test('the cycle-label opt-in defaults to off, and a repo false beats a global true', () => {
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBeUndefined()
+    saveGlobalConfig({ forgeCycleLabels: true })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(true)
+    saveRepoConfig(repoDir, { forgeCycleLabels: false })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(false)
+    // And it is repo-settable in the other direction too, unlike the
+    // global-only keys next door.
+    saveGlobalConfig({})
+    saveRepoConfig(repoDir, { forgeCycleLabels: true })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(true)
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual([])
+  })
+
   test('outside any repo, only the global file (and flags) apply', () => {
     saveGlobalConfig({ timeout: 900, isolation: 'policy' })
     saveRepoConfig(repoDir, { timeout: 300, isolation: 'container' })

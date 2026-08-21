@@ -343,6 +343,8 @@ const en = {
   'workspace.evIssueClosed': 'Ticket closed on the forge',
   'workspace.evIssueCloseUnreachable':
     'The ticket carries its recap but could not be closed on the forge',
+  'workspace.evIssueLabelNotPosed':
+    'The cycle label could not be written on the forge: the ticket there still shows the previous state, and nothing else changed',
   'workspace.evIssueNone': 'none',
   'workspace.evIssueSectionsUnknown': 'unknown (this snapshot has no per-section breakdown)',
   'workspace.evIssueSectionContext': 'context',
@@ -924,6 +926,8 @@ const fr: Record<MessageKey, string> = {
   'workspace.evIssueClosed': 'Ticket fermé sur la forge',
   'workspace.evIssueCloseUnreachable':
     'Le ticket porte son récapitulatif mais n’a pas pu être fermé sur la forge',
+  'workspace.evIssueLabelNotPosed':
+    "Le label de cycle n'a pas pu être écrit sur la forge : le ticket y affiche encore l'état précédent, et rien d'autre n'a changé",
   'workspace.evIssueNone': 'aucun',
   'workspace.evIssueSectionsUnknown': 'inconnues (ce snapshot ne ventile pas par section)',
   'workspace.evIssueSectionContext': 'contexte',

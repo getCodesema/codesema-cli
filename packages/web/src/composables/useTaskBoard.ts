@@ -1018,6 +1018,12 @@ const ISSUE_NAME_KEY: Record<string, MessageKey> = {
   recap_unreachable: 'workspace.evIssueRecapUnreachable',
   closed: 'workspace.evIssueClosed',
   close_unreachable: 'workspace.evIssueCloseUnreachable',
+  // T3.7: a cycle label that could not be written. NOT routed through
+  // ISSUE_EVENT_TONE, on purpose — its routine 'idle' fallback is the right
+  // tone and stating it again here would only add an entry no mutation could
+  // distinguish from the default. A stale label refuses nothing and asks
+  // nothing of anyone; the next transition rewrites it.
+  label_not_posed: 'workspace.evIssueLabelNotPosed',
 }
 
 const ISSUE_SECTION_KEY: Record<string, MessageKey> = {

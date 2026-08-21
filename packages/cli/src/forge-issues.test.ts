@@ -8,16 +8,20 @@ import {
   closeIssue,
   commentIssue,
   createIssue,
+  createLabel,
+  FORGE_LABEL_COLOR,
   forgeIssueReason,
   getIssue,
   GLAB_HIERARCHY_CLEAR_PARENT,
   GLAB_HIERARCHY_SET_PARENT,
   ISSUE_COMMENT_LIST_MAX,
   ISSUE_LIST_MAX,
+  LABEL_LIST_MAX,
   linkChildIssue,
   listChildIssues,
   listIssueComments,
   listIssues,
+  listLabels,
   runForgeCli,
   setLabels,
   unlinkChildIssue,
@@ -422,7 +426,13 @@ describe('unavailability reasons', () => {
         await commentIssue({ cwd: repo, execFn, number: 42, body: 'hi' }),
         await closeIssue({ cwd: repo, execFn, number: 42 }),
         await setLabels({ cwd: repo, execFn, number: 42, labels: ['bug'] }),
+        // T3.7's two: the catalog read and the lazy creation are operations of
+        // this module like any other, and a repo with no `origin` owes them
+        // the same answer.
+        await listLabels({ cwd: repo, execFn }),
+        await createLabel({ cwd: repo, execFn, name: 'codesema:queued' }),
       ]
+      expect(results).toHaveLength(8)
       for (const result of results) {
         expect(result).toMatchObject({ available: false, reason: 'no-remote' })
       }
@@ -432,12 +442,31 @@ describe('unavailability reasons', () => {
 
   test('every forge binary missing is no-cli', async () => {
     await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
-      const r = rig(missing)
-      expect(await listIssues({ cwd: repo, execFn: r.execFn })).toEqual({
-        available: false,
-        reason: 'no-cli',
-      })
-      expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'glab'])
+      // One fresh rig per operation, so `no-cli` is asserted against the TWO
+      // probes that operation made and not against a running total. A binary
+      // that is merely absent never ran, so a WRITE walks the ladder here too.
+      const operations: Record<string, (execFn: ForgeIssuesExecFn) => Promise<unknown>> = {
+        listIssues: (execFn) => listIssues({ cwd: repo, execFn }),
+        getIssue: (execFn) => getIssue({ cwd: repo, execFn, number: 42 }),
+        createIssue: (execFn) => createIssue({ cwd: repo, execFn, title: 'T', body: 'B' }),
+        commentIssue: (execFn) => commentIssue({ cwd: repo, execFn, number: 42, body: 'hi' }),
+        closeIssue: (execFn) => closeIssue({ cwd: repo, execFn, number: 42 }),
+        setLabels: (execFn) => setLabels({ cwd: repo, execFn, number: 42, labels: ['bug'] }),
+        listLabels: (execFn) => listLabels({ cwd: repo, execFn }),
+        createLabel: (execFn) => createLabel({ cwd: repo, execFn, name: 'codesema:queued' }),
+      }
+      expect(Object.keys(operations)).toHaveLength(8)
+      for (const [name, run] of Object.entries(operations)) {
+        const r = rig(missing)
+        expect({ name, result: await run(r.execFn) }).toEqual({
+          name,
+          result: { available: false, reason: 'no-cli' },
+        })
+        expect({ name, probed: r.calls.map((c) => c.cli) }).toEqual({
+          name,
+          probed: ['gh', 'glab'],
+        })
+      }
     })
   })
 
@@ -475,7 +504,10 @@ describe('unavailability reasons', () => {
         await commentIssue({ cwd: repo, execFn, number: 42, body: 'hi' }),
         await closeIssue({ cwd: repo, execFn, number: 42 }),
         await setLabels({ cwd: repo, execFn, number: 42, labels: ['bug'] }),
+        await listLabels({ cwd: repo, execFn }),
+        await createLabel({ cwd: repo, execFn, name: 'codesema:queued' }),
       ]
+      expect(results).toHaveLength(8)
       for (const result of results) {
         expect(result.available).toBe(false)
         expect('reason' in result && result.reason).toBe('cli-error')
@@ -708,6 +740,7 @@ describe('argv per operation', () => {
       expect(await getIssue({ cwd: repo, execFn: r.execFn, number: 42 })).toEqual({
         available: true,
         issue: GH_ISSUE_PARSED,
+        answeredBy: 'gh',
       })
       expect(r.calls[0]?.args).toEqual(['issue', 'view', '42', '--json', GH_FIELDS])
     })
@@ -716,6 +749,7 @@ describe('argv per operation', () => {
       expect(await getIssue({ cwd: repo, execFn: r.execFn, number: 7 })).toEqual({
         available: true,
         issue: GLAB_ISSUE_PARSED,
+        answeredBy: 'glab',
       })
       expect(r.calls[0]?.args).toEqual(['issue', 'view', '7', '--output', 'json'])
     })
@@ -1136,6 +1170,211 @@ describe('argv per operation', () => {
     })
   })
 
+  // T3.7: the label CATALOG — read it, then create only what is provably
+  // missing. Both operations go through the label porcelain (D5), and both
+  // diverge between the forges in ways that are documented, not smoothed over.
+  describe('label catalog (T3.7)', () => {
+    const catalog = (names: string[]) => JSON.stringify(names.map((name) => ({ name })))
+
+    test('gh asks one page past the cap; glab walks GitLab own pages', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(ok(catalog(['bug', 'codesema:queued'])))
+        expect(await listLabels({ cwd: repo, execFn: r.execFn })).toEqual({
+          available: true,
+          labels: ['bug', 'codesema:queued'],
+          truncated: false,
+        })
+        expect(r.calls[0]?.args).toEqual([
+          'label',
+          'list',
+          '--limit',
+          String(LABEL_LIST_MAX + 1),
+          '--json',
+          'name',
+        ])
+      })
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const full = Array.from({ length: 100 }, (_, i) => `l${String(i)}`)
+        const r = rig((call) =>
+          call.args.includes('1')
+            ? { kind: 'ok', stdout: catalog(full) }
+            : { kind: 'ok', stdout: catalog(['tail']) },
+        )
+        const answer = await listLabels({ cwd: repo, execFn: r.execFn })
+        expect(answer).toMatchObject({ available: true, truncated: false })
+        expect(answer.available && answer.labels).toHaveLength(101)
+        expect(r.calls).toHaveLength(2)
+        expect(r.calls[0]?.args).toEqual([
+          'label',
+          'list',
+          '--per-page',
+          GLAB_PAGE,
+          '--page',
+          '1',
+          '--output',
+          'json',
+        ])
+      })
+    })
+
+    test('a catalog past the cap says so instead of passing for complete', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const many = Array.from({ length: LABEL_LIST_MAX + 1 }, (_, i) => `l${String(i)}`)
+        const r = rig(ok(catalog(many)))
+        const answer = await listLabels({ cwd: repo, execFn: r.execFn })
+        expect(answer).toMatchObject({ available: true, truncated: true })
+        expect(answer.available && answer.labels).toHaveLength(LABEL_LIST_MAX)
+      })
+    })
+
+    test('the cap bound is EXACT: a repo with exactly the cap is complete', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const exactly = Array.from({ length: LABEL_LIST_MAX }, (_, i) => `l${String(i)}`)
+        const answer = await listLabels({ cwd: repo, execFn: rig(ok(catalog(exactly))).execFn })
+        // `>=` instead of `>` here would be invisible on every other input and
+        // would mean a repository sitting on exactly 200 labels could never
+        // prove a name absent again — so `ensureCycleLabel` would decline to
+        // create anything for it, for good.
+        expect(answer).toMatchObject({ available: true, truncated: false })
+        expect(answer.available && answer.labels).toHaveLength(LABEL_LIST_MAX)
+        expect(answer.available && answer.labels.at(-1)).toBe(`l${String(LABEL_LIST_MAX - 1)}`)
+      })
+    })
+
+    test('the cap applies to the page that ENDS the glab walk, not only to a full one', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        // Two full pages then a short one: 250 names in, and the walk exits
+        // through the SHORT-page return. `listIssues` shipped exactly this bug
+        // once (250 names handed back with truncated:false), which is the
+        // regression the comment in `glabLabelListCandidate` names.
+        const page = (n: number, count: number) =>
+          catalog(Array.from({ length: count }, (_, i) => `p${String(n)}-l${String(i)}`))
+        const r = rig((call) => {
+          const at = call.args[call.args.indexOf('--page') + 1]
+          return { kind: 'ok', stdout: page(Number(at), at === '3' ? 50 : 100) }
+        })
+        const answer = await listLabels({ cwd: repo, execFn: r.execFn })
+        expect(r.calls).toHaveLength(3)
+        expect(answer).toMatchObject({ available: true, truncated: true })
+        expect(answer.available && answer.labels).toHaveLength(LABEL_LIST_MAX)
+      })
+    })
+
+    test('a catalog that is not an array at all is unreadable, never an EMPTY one', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        // The distinction this pins is the whole of `ensureCycleLabel`'s
+        // safety: an empty catalog is a positive claim ("this repo has no
+        // labels"), and it reads as "the cycle label is missing" — so a
+        // payload that says nothing of the sort must never degrade INTO one.
+        for (const stdout of ['{}', '{"labels":[]}', 'null', '"bug"', '17']) {
+          expect({
+            stdout,
+            answer: await listLabels({ cwd: repo, execFn: rig(ok(stdout)).execFn }),
+          }).toEqual({
+            stdout,
+            answer: { available: false, reason: 'cli-error', detail: 'gh: unreadable output' },
+          })
+        }
+      })
+    })
+
+    test('glab answering bare strings is read, and read as the same catalog', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        // `glab label list --output json` is not pinned by a schema this repo
+        // controls, and the tolerance for the bare-string shape was declared
+        // in a comment and asserted nowhere. Both shapes answer the one
+        // question a catalog is asked — "is this name already taken" — so both
+        // are accepted, and they are accepted IDENTICALLY.
+        const bare = JSON.stringify(['bug', 'codesema:queued'])
+        const objects = catalog(['bug', 'codesema:queued'])
+        const answers = []
+        for (const stdout of [bare, objects]) {
+          answers.push(await listLabels({ cwd: repo, execFn: rig(ok(stdout)).execFn }))
+        }
+        expect(answers[0]).toEqual({
+          available: true,
+          labels: ['bug', 'codesema:queued'],
+          truncated: false,
+        })
+        expect(answers[0]).toEqual(answers[1])
+      })
+    })
+
+    test('one EMPTY name still rejects the whole catalog, in either shape', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        for (const stdout of [
+          JSON.stringify(['bug', '']),
+          JSON.stringify([{ name: 'bug' }, { name: '' }]),
+          JSON.stringify(['bug', 42]),
+        ]) {
+          expect({
+            stdout,
+            answer: await listLabels({ cwd: repo, execFn: rig(ok(stdout)).execFn }),
+          }).toMatchObject({ stdout, answer: { available: false, reason: 'cli-error' } })
+        }
+      })
+    })
+
+    test('one unreadable entry rejects the WHOLE catalog, never a partial one', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(ok(JSON.stringify([{ name: 'bug' }, { colour: 'red' }])))
+        // A partial catalog reads as "this label does not exist yet" and
+        // provokes a creation that cannot succeed.
+        expect(await listLabels({ cwd: repo, execFn: r.execFn })).toMatchObject({
+          available: false,
+          reason: 'cli-error',
+        })
+      })
+    })
+
+    test('createLabel: a positional name on gh, a flag on glab, and the colour differs', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(ok(''))
+        expect(
+          await createLabel({
+            cwd: repo,
+            execFn: r.execFn,
+            name: 'codesema:queued',
+            description: 'Cycle',
+          }),
+        ).toEqual({ available: true })
+        expect(r.calls[0]?.args).toEqual([
+          'label',
+          'create',
+          'codesema:queued',
+          `--color=${FORGE_LABEL_COLOR}`,
+          '--description=Cycle',
+        ])
+      })
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig(ok(''))
+        await createLabel({ cwd: repo, execFn: r.execFn, name: 'codesema:queued' })
+        expect(r.calls[0]?.args).toEqual([
+          'label',
+          'create',
+          '--name=codesema:queued',
+          `--color=#${FORGE_LABEL_COLOR}`,
+        ])
+      })
+    })
+
+    test('a name that would be read as a flag is refused before any spawn', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(ok(''))
+        // gh takes the name POSITIONALLY, so this one — and this one alone —
+        // could reach the binary as an option.
+        const refused = await createLabel({ cwd: repo, execFn: r.execFn, name: '--force' })
+        expect(refused).toMatchObject({ available: false, reason: 'invalid-input' })
+        // And the check `setLabels` applies still applies here: a name that
+        // could never be written back onto an issue is not worth creating.
+        expect(
+          await createLabel({ cwd: repo, execFn: r.execFn, name: 'needs, triage' }),
+        ).toMatchObject({ available: false, reason: 'invalid-input' })
+        expect(r.calls).toEqual([])
+      })
+    })
+  })
+
   test('no operation ever hands a credential to the forge CLI', async () => {
     await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
       const r = rig(missing)
@@ -1146,7 +1385,11 @@ describe('argv per operation', () => {
       await commentIssue({ cwd: repo, execFn, number: 1, body: 'B' })
       await closeIssue({ cwd: repo, execFn, number: 1 })
       await setLabels({ cwd: repo, execFn, number: 1, labels: ['bug'] })
-      expect(r.calls.length).toBe(12)
+      await listLabels({ cwd: repo, execFn })
+      await createLabel({ cwd: repo, execFn, name: 'codesema:queued' })
+      // Eight operations, two probes each (every binary missing): an operation
+      // dropped from this list would show up here before it showed up below.
+      expect(r.calls.length).toBe(16)
       for (const call of r.calls) {
         expect(['gh', 'glab']).toContain(call.cli)
         // argv only, never a shell string, and nothing that smells like a secret.
@@ -1202,7 +1445,100 @@ describe('a write is never replayed', () => {
       await commentIssue({ cwd: repo, execFn, number: 1, body: 'hi' })
       await closeIssue({ cwd: repo, execFn, number: 1 })
       await setLabels({ cwd: repo, execFn, number: 1, labels: ['bug'] })
-      expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'gh', 'gh'])
+      // T3.7's creation is a WRITE: `gh label create` may have created the
+      // label before exiting non-zero, and replaying it on glab is a second
+      // creation on a second forge. The scale is the whole guard — a
+      // `createLabel` asking on the read scale would walk on to glab here.
+      await createLabel({ cwd: repo, execFn, name: 'codesema:queued' })
+      expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'gh', 'gh', 'gh'])
+      // And its READ sibling is the counter-proof, on the same rig and the
+      // same failure: `listLabels` DOES walk on to glab. Reading a catalog
+      // twice costs a round trip and nothing else. Asserting both here is what
+      // makes the two scales discriminable — each of them alone would survive
+      // being swapped for the other.
+      await listLabels({ cwd: repo, execFn })
+      expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'gh', 'gh', 'gh', 'gh', 'glab'])
+    })
+  })
+})
+
+describe('a read that will be written back pins the write to its own forge (T3.7 MAJEUR 2)', () => {
+  test('getIssue names the forge that answered, on either binary', async () => {
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const onGh = await getIssue({
+        cwd: repo,
+        execFn: rig(ok(JSON.stringify(GH_ISSUE))).execFn,
+        number: 42,
+      })
+      expect(onGh).toEqual({ available: true, issue: GH_ISSUE_PARSED, answeredBy: 'gh' })
+      // gh unreachable, glab answers: the SAME payload, a different provenance.
+      const fellThrough = await getIssue({
+        cwd: repo,
+        execFn: rig((call) =>
+          call.cli === 'gh' ? failing('HTTP 502')() : ok(JSON.stringify(GLAB_ISSUE))(),
+        ).execFn,
+        number: 7,
+      })
+      expect(fellThrough).toEqual({
+        available: true,
+        issue: GLAB_ISSUE_PARSED,
+        answeredBy: 'glab',
+      })
+    })
+  })
+
+  test('a pinned setLabels never PUTs one forge label set onto the other', async () => {
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      // The reproduction, verbatim: a self-hosted remote (both candidates are
+      // probed), gh failing the read and answering the write. Unpinned, the
+      // set read on GitLab is replayed as a TOTAL PUT on GitHub — `setLabels`
+      // replaces, so that is a destruction of GitHub's own labels, not a
+      // degradation.
+      const r = rig((call) => (call.cli === 'gh' ? failing('HTTP 502')() : ok('')()))
+      const read = await getIssue({
+        cwd: repo,
+        execFn: rig((call) =>
+          call.cli === 'gh' ? failing('HTTP 502')() : ok(JSON.stringify(GLAB_ISSUE))(),
+        ).execFn,
+        number: 7,
+      })
+      expect(read.available && read.answeredBy).toBe('glab')
+      const written = await setLabels({
+        cwd: repo,
+        execFn: r.execFn,
+        number: 7,
+        labels: ['bug', 'ui'],
+        pin: read.available ? read.answeredBy : null,
+      })
+      expect(written).toEqual({ available: true })
+      // ONE call, on the forge the set came from. gh is never even asked.
+      expect(r.calls.map((c) => c.cli)).toEqual(['glab'])
+      expect(r.calls[0]?.args[0]).toBe('api')
+    })
+  })
+
+  test('the catalog and the creation are pinned by the same read', async () => {
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.cli === 'gh' ? failing('HTTP 502')() : ok(JSON.stringify(['bug']))(),
+      )
+      expect(await listLabels({ cwd: repo, execFn: r.execFn, pin: 'glab' })).toEqual({
+        available: true,
+        labels: ['bug'],
+        truncated: false,
+      })
+      await createLabel({ cwd: repo, execFn: r.execFn, name: 'codesema:queued', pin: 'glab' })
+      // GitHub's catalog answers nothing about GitLab's, and a label created
+      // on the wrong forge is a label the write will not find.
+      expect(r.calls.map((c) => c.cli)).toEqual(['glab', 'glab'])
+    })
+  })
+
+  test('no pin means the ordinary ladder, unchanged', async () => {
+    await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+      const r = rig(missing)
+      await setLabels({ cwd: repo, execFn: r.execFn, number: 1, labels: ['bug'], pin: null })
+      expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'glab'])
     })
   })
 })

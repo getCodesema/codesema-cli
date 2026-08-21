@@ -364,6 +364,37 @@ export function parseGlabIssueList(raw: string): ForgeIssue[] | null {
   return parseIssueList(raw, glabIssueFrom)
 }
 
+/**
+ * The repository's own label CATALOG — `gh label list --json name` and
+ * `glab label list --output json` — reduced to plain names (T3.7). The one
+ * read where the two forges do NOT diverge: both print an array of objects
+ * carrying a `name`, unlike an issue payload, where GitHub's labels are
+ * objects and GitLab's are bare strings (`ghLabelNames` / `glabLabelNames`
+ * above). A bare string is accepted all the same, for that exact reason: this
+ * catalog answers ONE question — "is this name already taken" — and a forge
+ * that answers it in the simpler shape answers it correctly.
+ *
+ * Null on anything else, and one bad entry rejects the WHOLE array like every
+ * other list here. A PARTIAL catalog is worse than none: a name missing from
+ * it reads as "this label does not exist yet" and provokes a creation that
+ * cannot succeed.
+ */
+export function parseLabelNames(raw: string): string[] | null {
+  const data = parseJson(raw)
+  if (!Array.isArray(data)) {
+    return null
+  }
+  const names: string[] = []
+  for (const entry of data) {
+    const name = typeof entry === 'string' ? entry : readNested(entry, 'name')
+    if (!isNonEmptyString(name)) {
+      return null
+    }
+    names.push(name)
+  }
+  return names
+}
+
 export function parseGhIssue(raw: string): ForgeIssue | null {
   return ghIssueFrom(parseJson(raw))
 }

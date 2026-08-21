@@ -79,6 +79,35 @@ describe('the T2.4 issue journal, read in French', () => {
     expect(unreachable?.tone).not.toBe('stop')
   })
 
+  // T3.7, the same guard for the cycle labels. `cycleLabelEvent`
+  // (task-labels.ts) poses this exact English sentence in `data.message` for
+  // the API and CLI readers; SUMMARY_KEYS.issue is empty precisely so it never
+  // reaches a journal, and this is what proves it.
+  test('a cycle label that could not be written reads in French, and is not painted red', async () => {
+    const LABEL_MESSAGE =
+      "the codesema:in-progress cycle label could not be posed on the forge (cli-error: gh: HTTP 502); the task's status is unaffected and the label is left as it was, to be corrected at the next transition"
+    const [notPosed, unreachable] = await renderInFrench([
+      {
+        name: 'label_not_posed',
+        label: 'codesema:in-progress',
+        step: 'write',
+        message: SERVER_MESSAGE,
+      },
+      { name: 'unreachable', message: 'ENGLISH' },
+    ])
+    expect(notPosed?.summary).toBe(
+      "Le label de cycle n'a pas pu être écrit sur la forge : le ticket y affiche encore l'état précédent, et rien d'autre n'a changé",
+    )
+    expect(notPosed?.summary).not.toContain(LABEL_MESSAGE)
+    expect(notPosed?.summary).not.toContain('HTTP 502')
+    expect(notPosed?.summary).not.toContain('codesema:in-progress')
+    // Its own line, not the forge-unreachable one it sits next to.
+    expect(notPosed?.summary).not.toBe(unreachable?.summary)
+    // Neutral, not amber and certainly not red: the task is untouched and the
+    // next transition rewrites the label (DP9's cry-wolf).
+    expect(notPosed?.tone).toBe('idle')
+  })
+
   test('every issue cause reads in French, none of them falling back to the bare label', async () => {
     const names = [
       'bound',
@@ -87,6 +116,7 @@ describe('the T2.4 issue journal, read in French', () => {
       'not_ticket',
       'snapshot_unreadable',
       'unreachable',
+      'label_not_posed',
     ] as const
     const lines = await renderInFrench(names.map((name) => ({ name, message: 'ENGLISH SENTENCE' })))
     expect(lines).toHaveLength(names.length)

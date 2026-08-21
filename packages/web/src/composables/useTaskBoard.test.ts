@@ -646,7 +646,7 @@ describe('eventSummary', () => {
       expect(summary).not.toContain('issue_snapshot')
     })
 
-    test('each of the seven data.names gets its OWN text, never the shared label', () => {
+    test('each of the eight data.names gets its OWN text, never the shared label', () => {
       const summaries = (
         [
           'bound',
@@ -660,12 +660,16 @@ describe('eventSummary', () => {
           // French journal read the server's English sentence, on every
           // ticketed task, at every boot without gh/glab.
           'unreachable',
+          // T3.7: a cycle label that could not be written on the forge. Same
+          // trap, same guard — task-labels.ts poses an English `data.message`
+          // for the API, and the journal must not be the one showing it.
+          'label_not_posed',
         ] as const
       ).map((name) => eventSummary(event({ type: 'issue', data: { name, message: 'ENGLISH' } })))
-      // Seven distinct lines: routing them all to the same key (or to the
+      // Eight distinct lines: routing them all to the same key (or to the
       // plain 'Ticket' label) collapses this set — and pointing any ONE of
       // them at a sibling's key collapses it by one.
-      expect(new Set(summaries).size).toBe(7)
+      expect(new Set(summaries).size).toBe(8)
       for (const summary of summaries) {
         expect(summary).not.toBe('Ticket')
         expect(summary).not.toContain('ENGLISH')

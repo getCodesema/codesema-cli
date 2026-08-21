@@ -77,6 +77,30 @@ export type CodesemaConfig = {
   isolation?: IsolationMode | undefined
   /** Domains the caged agent may reach through the egress proxy (CONNECT only). */
   isolationAllowedDomains?: string[] | undefined
+  /**
+   * T3.7 / decision D15: whether this project mirrors the cycle of its tasks
+   * onto the forge issues they are bound to, as `codesema:*` labels.
+   *
+   * OPT-IN, and the honest default is OFF — absence means "write nothing".
+   * Posting labels into someone else's repository without being asked is a
+   * pollution, and a native monitoring channel is not worth that price by
+   * default: a user who merely upgrades the CLI must not find five new labels
+   * in a shared repo.
+   *
+   * Repo-settable on purpose, like `isolation` and `checks`, and for a
+   * stronger reason than either: the price of the pollution is paid in ONE
+   * repository, so that repository is the right place to accept it. A cloned
+   * repo that sets this can only ever cause writes to ITS OWN issues, under
+   * the `codesema:` prefix and nothing else (task-labels.ts) — it widens no
+   * trust, reaches no sibling project, and carries no credential of its own
+   * (the authentication stays whatever `gh auth`/`glab auth` set up, D5).
+   *
+   * Read through `resolveProjectConfig`, so a repo `false` DEFEATS a global
+   * `true`. That is why the parse below tests the TYPE and not the value:
+   * dropping a `false` would silently promote the global opt-in back onto a
+   * project that had just refused it.
+   */
+  forgeCycleLabels?: boolean | undefined
   /** UI and review language (ISO 639-1). */
   language?: SupportedLanguage | undefined
   /**
@@ -417,6 +441,14 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
         : {}),
       ...(scope === 'global' && typeof raw.allowMergeWithoutChecks === 'boolean'
         ? { allowMergeWithoutChecks: raw.allowMergeWithoutChecks }
+        : {}),
+      // Repo-settable (T3.7/D15, see the field's own comment), and kept on the
+      // TYPE rather than on the value: `forgeCycleLabels: false` in a repo file
+      // is a project SAYING NO, and it only outranks a global `true` if it
+      // survives this parse as a present `false`. `raw.x ? … : {}` here would
+      // drop it and hand the project straight back to the global opt-in.
+      ...(typeof raw.forgeCycleLabels === 'boolean'
+        ? { forgeCycleLabels: raw.forgeCycleLabels }
         : {}),
     }
   } catch {

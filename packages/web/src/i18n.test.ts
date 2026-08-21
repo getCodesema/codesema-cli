@@ -83,6 +83,7 @@ describe('T2.4 issue journal labels', () => {
     'workspace.evIssueNotTicket',
     'workspace.evIssueSnapshotUnreadable',
     'workspace.evIssueUnreachable',
+    'workspace.evIssueLabelNotPosed',
     'workspace.evIssueNone',
     'workspace.evIssueSectionsUnknown',
     'workspace.evIssueSectionContext',
