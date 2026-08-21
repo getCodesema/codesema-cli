@@ -11,6 +11,7 @@ import {
   glabIssueRestRef,
   isIssueNumber,
   parseGhIssue,
+  parseGhIssueComments,
   parseGhIssueList,
   parseGhSubIssueList,
   parseGlabHierarchyChildren,
@@ -19,6 +20,7 @@ import {
   parseGlabHierarchyParent,
   parseGlabIssue,
   parseGlabIssueList,
+  parseGlabIssueNotes,
   sanitizeIssueBody,
   sanitizeIssueLabels,
   sanitizeIssueTitle,
@@ -852,5 +854,68 @@ describe('hierarchy query constants (T2.2)', () => {
     expect(GLAB_HIERARCHY_PARENT_QUERY).toContain('parent { iid }')
     expect(GLAB_HIERARCHY_HAS_CHILDREN_QUERY).toContain('workItem(id: $id)')
     expect(GLAB_HIERARCHY_HAS_CHILDREN_QUERY).toContain('children(first: 1)')
+  })
+})
+
+// T3.5: the marker search reads these, and a marker missed is a duplicate
+// comment on someone's ticket — so `body` is the one field that rejects.
+describe('comment payloads (T3.5)', () => {
+  test('gh reads author.login and createdAt off the comments field', () => {
+    const raw = JSON.stringify({
+      comments: [
+        { id: 'IC_1', author: { login: 'octocat' }, body: 'hi', createdAt: '2026-07-21T09:00:00Z' },
+      ],
+    })
+    expect(parseGhIssueComments(raw)).toEqual([
+      { body: 'hi', author: 'octocat', createdAt: '2026-07-21T09:00:00Z', system: false },
+    ])
+  })
+
+  test('glab reads author.username and created_at off the capitalised Notes array', () => {
+    const raw = JSON.stringify({
+      iid: 7,
+      Notes: [
+        { id: 1, author: { username: 'jdoe' }, body: 'hi', created_at: '2026-07-21T09:30:00Z' },
+      ],
+    })
+    expect(parseGlabIssueNotes(raw)).toEqual([
+      { body: 'hi', author: 'jdoe', createdAt: '2026-07-21T09:30:00Z', system: false },
+    ])
+  })
+
+  test("glab's system notes are kept and flagged, never silently dropped", () => {
+    const raw = JSON.stringify({
+      Notes: [
+        { body: 'a real comment', author: { username: 'jdoe' }, system: false },
+        { body: 'changed the description', author: { username: 'jdoe' }, system: true },
+      ],
+    })
+    expect(parseGlabIssueNotes(raw)?.map((c) => c.system)).toEqual([false, true])
+  })
+
+  test('an issue with no Notes key at all is an empty list, not an unreadable answer', () => {
+    expect(parseGlabIssueNotes(JSON.stringify({ iid: 7, title: 'x' }))).toEqual([])
+    expect(parseGlabIssueNotes(JSON.stringify({ iid: 7, Notes: null }))).toEqual([])
+  })
+
+  test('an entry without a readable body rejects the WHOLE array', () => {
+    const gh = JSON.stringify({ comments: [{ body: 'ok' }, { author: { login: 'x' } }] })
+    expect(parseGhIssueComments(gh)).toBeNull()
+    const glab = JSON.stringify({ Notes: [{ body: 'ok' }, { body: 42 }] })
+    expect(parseGlabIssueNotes(glab)).toBeNull()
+  })
+
+  test('an empty body is a comment, and the author/date degrade to empty rather than reject', () => {
+    expect(parseGhIssueComments(JSON.stringify({ comments: [{ body: '' }] }))).toEqual([
+      { body: '', author: '', createdAt: '', system: false },
+    ])
+  })
+
+  test('a truncated or non-object payload is null, never a throw', () => {
+    expect(parseGhIssueComments('{"comments":[')).toBeNull()
+    expect(parseGhIssueComments('[]')).toBeNull()
+    expect(parseGhIssueComments('null')).toBeNull()
+    expect(parseGlabIssueNotes('not json')).toBeNull()
+    expect(parseGhIssueComments(JSON.stringify({ comments: 'nope' }))).toBeNull()
   })
 })

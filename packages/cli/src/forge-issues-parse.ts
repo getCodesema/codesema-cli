@@ -372,6 +372,131 @@ export function parseGlabIssue(raw: string): ForgeIssue | null {
   return glabIssueFrom(parseJson(raw))
 }
 
+// --- Comments (T3.5) ----------------------------------------------------------
+//
+// Read-only, and read for ONE reason: the recap publication searches the
+// existing comments of an issue for its own provenance marker before writing
+// (idempotence, design decision 4). The two forges disagree on everything but
+// the field that matters:
+//
+//   | gh 2.46.0                        | glab 1.53.0                          |
+//   |----------------------------------|--------------------------------------|
+//   | `issue view N --json comments`   | `issue view N --comments -F json`    |
+//   | `{ "comments": [ … ] }`          | `{ …issue…, "Notes": [ … ] }`        |
+//   | `author.login`, `createdAt`      | `author.username`, `created_at`      |
+//   | no system notes in the payload   | system notes ARE in the payload      |
+//
+// `Notes` is capitalised because glab marshals a Go struct with NO json tag
+// on that field (`IssueWithNotes{*gitlab.Issue; Notes []*gitlab.Note}`,
+// commands/issuable/view/issuable_view.go, v1.53.0) — verified against the
+// source, not recalled.
+//
+// `system` is REPORTED here and filtered one layer up (`commentsOnly`,
+// forge-issues.ts): GitLab's "changed the description" / "added a label"
+// lines ARE notes, this parser's job is to say what the forge sent, and
+// naming the asymmetry rather than erasing it is D8's rule. The reader that
+// searches for a provenance marker drops them, because a note the server
+// generated from an activity carries no body anyone supplied and so can never
+// hold one — and, more sharply, because counting them would let label churn
+// alone push an issue past `ISSUE_COMMENT_LIST_MAX` and cost it its recap for
+// good. GitHub has no equivalent in this payload, so it always reads false —
+// an honest constant, not a guess.
+
+/**
+ * One existing comment of an issue, in the only shape the marker search
+ * needs. `body` is the RAW markdown the forge stores, never a rendering: an
+ * HTML-comment marker is invisible once rendered and present here.
+ */
+export type ForgeIssueComment = {
+  body: string
+  /** Login (gh) / username (glab); '' when the payload names nobody. */
+  author: string
+  /** ISO timestamp; '' when the payload carries none or an unusable one. */
+  createdAt: string
+  /** GitLab system note (label change, state change…). Always false on GitHub. */
+  system: boolean
+}
+
+/**
+ * `body` is the ONLY field that decides: an entry without a readable body
+ * rejects the whole array (the file's rule 2), because a marker search over a
+ * PARTIAL list would answer "absent" for a marker it never looked at and post
+ * a duplicate. Everything else degrades to '' — a comment with no author is
+ * still a comment whose body must be searched.
+ */
+function commentFrom(
+  entry: unknown,
+  loginKey: string,
+  createdKey: string,
+): ForgeIssueComment | null {
+  if (typeof entry !== 'object' || entry === null) {
+    return null
+  }
+  const e = entry as Record<string, unknown>
+  const body = readRecordProp(e, 'body')
+  if (typeof body !== 'string') {
+    return null
+  }
+  // Both forges nest the author under `author`; gh names the handle `login`,
+  // GitLab `username`.
+  const author = readNested(readRecordProp(e, 'author'), loginKey)
+  const createdAt = readRecordProp(e, createdKey)
+  return {
+    body,
+    author: typeof author === 'string' ? author : '',
+    createdAt: typeof createdAt === 'string' ? createdAt : '',
+    system: readRecordProp(e, 'system') === true,
+  }
+}
+
+function parseCommentList(
+  entries: unknown,
+  from: (entry: unknown) => ForgeIssueComment | null,
+): ForgeIssueComment[] | null {
+  if (!Array.isArray(entries)) {
+    return null
+  }
+  const comments: ForgeIssueComment[] = []
+  for (const entry of entries) {
+    const comment = from(entry)
+    if (comment === null) {
+      return null
+    }
+    comments.push(comment)
+  }
+  return comments
+}
+
+/** `gh issue view N --json comments` → `{ "comments": [ … ] }`. */
+export function parseGhIssueComments(raw: string): ForgeIssueComment[] | null {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+  return parseCommentList(readRecordProp(data as Record<string, unknown>, 'comments'), (entry) =>
+    commentFrom(entry, 'login', 'createdAt'),
+  )
+}
+
+/**
+ * `glab issue view N --comments --output json` → the issue's own fields plus
+ * `Notes`. An issue payload WITHOUT `Notes` is not an unreadable answer: it is
+ * what glab prints when the issue has no note at all, so it reads as the empty
+ * list it means rather than rejecting the call (and sending a duplicate
+ * comment on the next replay would be the cost of getting that wrong).
+ */
+export function parseGlabIssueNotes(raw: string): ForgeIssueComment[] | null {
+  const data = parseJson(raw)
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+  const notes = readRecordProp(data as Record<string, unknown>, 'Notes')
+  if (notes === undefined || notes === null) {
+    return []
+  }
+  return parseCommentList(notes, (entry) => commentFrom(entry, 'username', 'created_at'))
+}
+
 // --- Hierarchy (T2.2, D8) -----------------------------------------------------
 //
 // GitHub's sub-issues answer through `gh api` (REST) rather than the

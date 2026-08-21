@@ -1534,7 +1534,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
       const event = appendTaskEvent(cwd, id, {
         type: 'shipped',
-        data: { mr_url: outcome.mrUrl, ...(outcome.note !== null ? { note: outcome.note } : {}) },
+        data: {
+          mr_url: outcome.mrUrl,
+          ...(outcome.note !== null ? { note: outcome.note } : {}),
+          // `name` is the RENDERED half. `note` is raw English no component
+          // reads, and `SUMMARY_KEYS.shipped` probes 'url'/'branch', so a ship
+          // whose recap was held back for carrying a secret used to render as
+          // the same green "Publiée" line as a nominal one — the whole story
+          // present in the payload and absent from the screen.
+          ...(outcome.recapState ? { name: outcome.recapState } : {}),
+        },
         // Added beside the note, which keeps saying the same thing in words.
         ...(outcome.reasonCode ? { reason_code: outcome.reasonCode } : {}),
       })

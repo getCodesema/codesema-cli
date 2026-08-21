@@ -1998,6 +1998,48 @@ describe('manager.ship', () => {
     expect(loadTask(cwd, record.id)?.status).toBe('shipped')
   })
 
+  // MAJEUR 2, the wiring half. `data.note` is raw English no component reads,
+  // and `SUMMARY_KEYS.shipped` probes 'url'/'branch' — neither of which this
+  // payload carries — so all three of these used to render as the same green
+  // 'Publiée' line as a nominal ship. `data.name` is the rendered half.
+  test('a ship that landed short of its recap NAMES it on the shipped event', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const note =
+      'recap withheld from the merge request: it looks like it carries a secret (recap.md: an AWS access key id)'
+    const stub = shipStub({
+      pushed: true,
+      mrUrl: 'https://github.com/o/r/pull/9',
+      note,
+      recapState: 'recap_blocked_secrets',
+    })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(readTaskEvents(cwd, record.id)).toMatchObject([
+      {
+        type: 'shipped',
+        data: { mr_url: 'https://github.com/o/r/pull/9', note, name: 'recap_blocked_secrets' },
+      },
+    ])
+    // Still a ship: the branch IS on origin and the MR IS open. The name says
+    // what did not ride along, it never turns the ship into a failure.
+    expect(loadTask(cwd, record.id)?.status).toBe('shipped')
+    expect(readTaskEvents(cwd, record.id)[0]).not.toHaveProperty('reason_code')
+  })
+
+  test('a ship that carried its recap names nothing: no badge on the ordinary case', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(readTaskEvents(cwd, record.id)[0]?.data).not.toHaveProperty('name')
+  })
+
   test('a ship that opened its MR clears any reason the task was carrying', async () => {
     const project = register(makeRepo())
     const cwd = project.path

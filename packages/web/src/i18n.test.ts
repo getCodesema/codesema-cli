@@ -89,6 +89,21 @@ describe('T2.4 issue journal labels', () => {
     'workspace.evIssueSectionGoal',
     'workspace.evIssueSectionScope',
     'workspace.evIssueSectionOutOfScope',
+    // T3.5: seven more lines on the same 'issue' type, and the same trap —
+    // the server's English `data.message` is never what the journal shows.
+    'workspace.evIssueRecapPosted',
+    'workspace.evIssueRecapAlreadyPosted',
+    'workspace.evIssueRecapMissing',
+    'workspace.evIssueRecapBlockedSecrets',
+    'workspace.evIssueRecapUnreachable',
+    'workspace.evIssueClosed',
+    'workspace.evIssueCloseUnreachable',
+    // T3.5 round 2, majeur 2: the same trap one type over — a 'shipped' line
+    // whose recap was held back must not read as the plain green label, and
+    // must not read the server's English `data.note` either.
+    'workspace.evShippedRecapMissing',
+    'workspace.evShippedRecapBlocked',
+    'workspace.evShippedRecapUnscanned',
   ] as const
 
   test('each one is actually translated in French, never left on its English text', () => {

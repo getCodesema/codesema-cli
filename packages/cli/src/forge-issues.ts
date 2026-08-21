@@ -19,6 +19,7 @@
 // | getIssue         | `issue view N --json …`        | `issue view N --output json`        |
 // | createIssue      | `issue create --title=…`       | `… --no-editor --yes`               |
 // | commentIssue     | `issue comment N --body=…`     | `issue note N --message=…`          |
+// | listIssueComments| `issue view N --json comments` | `issue view N --comments -F json`   |
 // | closeIssue       | `issue close N`                | `issue close N`                     |
 // | setLabels        | `api …/labels -X PUT`          | `api …/issues/N -X PUT`             |
 // | linkChildIssue   | `api …/sub_issues -X POST`     | `api graphql` (workItemUpdate)      |
@@ -40,6 +41,11 @@
 // The asymmetries are documented, not smoothed over (D8):
 //   - a comment is a `comment` on GitHub and a `note` on GitLab, and its text
 //     rides `--body` there, `--message` here;
+//   - reading those comments BACK (T3.5) is `--json comments` on gh, which
+//     answers `{comments:[…]}` and pages internally, against
+//     `--comments --output json` on glab, which answers the issue payload plus
+//     a capitalised `Notes` array — system notes included — and pages with
+//     GitLab's own `--page`/`--per-page`;
 //   - the state filter is `--state open|closed|all` on gh and a pair of
 //     boolean flags (`--closed`, `--all`) on glab;
 //   - gh paginates internally behind one `--limit`, glab exposes GitLab's
@@ -69,6 +75,7 @@ import {
   isIssueNumber,
   oversizedArg,
   parseGhIssue,
+  parseGhIssueComments,
   parseGhIssueList,
   parseGhSubIssueList,
   parseGlabHierarchyChildren,
@@ -77,16 +84,18 @@ import {
   parseGlabHierarchyParent,
   parseGlabIssue,
   parseGlabIssueList,
+  parseGlabIssueNotes,
   sanitizeIssueBody,
   sanitizeIssueLabels,
   sanitizeIssueTitle,
   type ForgeIssue,
+  type ForgeIssueComment,
   type ForgeIssueState,
 } from './forge-issues-parse.js'
 import { detectForgeHint, subprocessEnv, tryGit } from './git.js'
 import { taskReason } from './tasks-store.js'
 
-export type { ForgeIssue, ForgeIssueState } from './forge-issues-parse.js'
+export type { ForgeIssue, ForgeIssueComment, ForgeIssueState } from './forge-issues-parse.js'
 
 /** Same budget as forge-mrs: one forge call must never hold the event loop for long. */
 export const FORGE_ISSUE_TIMEOUT_MS = 8000
@@ -118,6 +127,21 @@ export const ISSUE_LIST_MAX = 200
  */
 const GLAB_PAGE_SIZE = 100
 const GLAB_MAX_PAGES = Math.ceil((ISSUE_LIST_MAX + 1) / GLAB_PAGE_SIZE)
+/**
+ * Hard cap on one `listIssueComments` answer (T3.5). Same size and the same
+ * reason as `ISSUE_LIST_MAX`, but the CONSEQUENCE of hitting it differs and is
+ * the caller's to handle: this read exists to prove a marker ABSENT before
+ * writing, and a capped list can only prove it absent from the part that was
+ * read. `truncated: true` is therefore not a cosmetic detail here — see
+ * `publishTaskRecap` (task-recap-publish.ts), which refuses to write on it.
+ *
+ * It bites on REAL comments only: `capComments` filters GitLab's system notes
+ * out BEFORE it counts, so a ticket cannot be pushed past the cap by label
+ * churn alone. See `commentsOnly` for why that matters more here than
+ * anywhere else — the refusal this cap produces never lifts.
+ */
+export const ISSUE_COMMENT_LIST_MAX = 200
+const GLAB_MAX_COMMENT_PAGES = Math.ceil((ISSUE_COMMENT_LIST_MAX + 1) / GLAB_PAGE_SIZE)
 /** Pre-rendered argv values: the argv is data, and building it must not read as arithmetic. */
 const GH_LIST_LIMIT = String(ISSUE_LIST_MAX + 1)
 const GLAB_PER_PAGE = String(GLAB_PAGE_SIZE)
@@ -173,6 +197,14 @@ export type ForgeUnavailable = { available: false; reason: ForgeIssueReason; det
 export type ForgeIssuesResult =
   { available: true; issues: ForgeIssue[]; truncated: boolean } | ForgeUnavailable
 export type ForgeIssueResult = { available: true; issue: ForgeIssue } | ForgeUnavailable
+/**
+ * `truncated` is never optional here either, and for a sharper reason than on
+ * `ForgeIssuesResult`: the one caller of this read uses it to decide whether a
+ * marker is ABSENT, and "absent from the 200 comments I could read" is not
+ * "absent". A reader that ignores this flag posts duplicates.
+ */
+export type ForgeIssueCommentsResult =
+  { available: true; comments: ForgeIssueComment[]; truncated: boolean } | ForgeUnavailable
 /** createIssue: both porcelains print the created issue's URL, but neither promises to. */
 export type ForgeIssueRefResult = { available: true; url: string | null } | ForgeUnavailable
 export type ForgeWriteResult = { available: true } | ForgeUnavailable
@@ -651,6 +683,141 @@ export async function getIssue(
     oneCall('glab', ['issue', 'view', id, '--output', 'json'], parseGlabIssue),
   )
   return result.available ? { available: true, issue: result.value } : result
+}
+
+// --- Comments, read side (T3.5) ----------------------------------------------
+
+type CommentPage = { comments: ForgeIssueComment[]; truncated: boolean }
+
+/**
+ * Every note that CAN carry a marker — i.e. every note a person or a bot
+ * actually wrote. GitLab's system notes ("added ~bug", "changed the
+ * description", "mentioned in merge request !12", "closed") are generated by
+ * the server from an activity, never from a body anyone supplied, so no
+ * codesema comment can ever be one: counting them is free of information and
+ * costly in function.
+ *
+ * Costly how, concretely: `capComments` refuses to answer past
+ * `ISSUE_COMMENT_LIST_MAX`, `publishTaskRecap` refuses to write on a refusal
+ * to answer, and nothing ever lowers that count again — so a lively ticket
+ * whose 200th note happens to be a label change loses its recap PERMANENTLY,
+ * behind a `forge_unreachable` that reads transitory and invites a retry that
+ * cannot ever succeed. GitLab mints one such note per label, assignment,
+ * milestone, state change, cross-reference and description edit, and T3.7 —
+ * the next ticket in this very chain — WRITES LABELS. The guard now bites on
+ * the volume of real comments, which is the volume the marker could hide in.
+ *
+ * glab's `--system-logs` flag is NOT this filter and cannot be used as one:
+ * it gates the text RENDERING only (`if note.System && !opts.ShowSystemLogs
+ * { continue }`, commands/issuable/view/issuable_view.go, glab 1.53.0), while
+ * `--output json` marshals `IssueWithNotes{*Issue, Notes}` whole — system
+ * notes included — read off the source rather than recalled.
+ */
+function commentsOnly(all: readonly ForgeIssueComment[]): ForgeIssueComment[] {
+  return all.filter((comment) => !comment.system)
+}
+
+/**
+ * One comment past the cap is what proves there are more; the extra one is
+ * never returned. `forceTruncated` is for the caller who KNOWS more notes
+ * exist beyond what it read but can no longer prove it from a length — see
+ * `glabCommentsCandidate`, where the system filter can turn 300 fetched notes
+ * into 0 comments and make a page walk that stopped short look complete. Same
+ * escape hatch, and the same reason, as `capPage`'s.
+ */
+function capComments(all: readonly ForgeIssueComment[], forceTruncated = false): CommentPage {
+  const comments = commentsOnly(all)
+  return {
+    comments: comments.slice(0, ISSUE_COMMENT_LIST_MAX),
+    truncated: forceTruncated || comments.length > ISSUE_COMMENT_LIST_MAX,
+  }
+}
+
+/**
+ * gh paginates the comments connection internally behind `--json comments`:
+ * one call, and `truncated` can only ever report OUR cap being exceeded. What
+ * gh itself decided to stop fetching is not observable from the payload — a
+ * limit named here rather than left implied, since this read's whole job is to
+ * prove an absence.
+ */
+function ghCommentsCandidate(id: string): Candidate<CommentPage> {
+  return oneCall('gh', ['issue', 'view', id, '--json', 'comments'], (stdout) => {
+    const comments = parseGhIssueComments(stdout)
+    return comments === null ? null : capComments(comments)
+  })
+}
+
+/**
+ * glab cannot: `issue view --comments` pages the notes with GitLab's own
+ * `--page`/`--per-page` (default 20), clamped at 100 server-side — so the
+ * pages are walked exactly like `glabListCandidate` walks the issue list, and
+ * for the same reason: a default `--per-page` would truncate in silence.
+ */
+function glabCommentsCandidate(id: string): Candidate<CommentPage> {
+  return {
+    cli: 'glab',
+    run: async (execFn, cwd) => {
+      const all: ForgeIssueComment[] = []
+      for (let page = 1; page <= GLAB_MAX_COMMENT_PAGES; page += 1) {
+        // prettier-ignore
+        const args = ['issue', 'view', id, '--comments', '--output', 'json', '--per-page', GLAB_PER_PAGE, '--page', String(page)]
+        const outcome = await execFn('glab', args, cwd)
+        if (outcome.kind !== 'ok') {
+          return outcome
+        }
+        const batch = parseGlabIssueNotes(outcome.stdout)
+        if (batch === null) {
+          return { kind: 'error', message: UNREADABLE }
+        }
+        all.push(...batch)
+        if (batch.length < GLAB_PAGE_SIZE) {
+          // A short page is the end of the notes — but the pages before it can
+          // already have overshot the cap, so the cap applies HERE too.
+          return { kind: 'ok', value: capComments(all) }
+        }
+        // No in-loop cap check, deliberately: `GLAB_MAX_COMMENT_PAGES` IS the
+        // cap, being sized from it (3 × 100 > 200), so a `break` on the count
+        // could only ever fire on the last iteration — one statement before
+        // the loop bound ends it anyway. `glabListCandidate` still carries
+        // that dead break; here it was removed rather than kept for symmetry,
+        // because a statement no input can make matter is a statement no test
+        // can hold in place.
+      }
+      // Every page came back full and the walk ran out of pages: notes exist
+      // past the last one read, and after the system filter no length can say
+      // so any more — 300 fetched system notes leave 0 comments, which would
+      // otherwise read as a complete, empty answer and let a duplicate recap
+      // through. Same "a full page proves nothing" rule the issue hierarchy
+      // walk already applies.
+      return { kind: 'ok', value: capComments(all, true) }
+    },
+  }
+}
+
+/**
+ * The existing comments of an issue, for the recap publication's marker search
+ * (T3.5). A READ: it may walk the whole ladder, and a failure on one CLI costs
+ * nothing to retry on the other.
+ *
+ * GitLab's SYSTEM notes are not in the answer and are not counted against the
+ * cap (`commentsOnly`); GitHub's payload never carried any. The asymmetry is
+ * named rather than smoothed over (D8): the two forges do hand back different
+ * things here, `parseGlabIssueNotes` still reports `system` faithfully for
+ * anyone who needs the activity trail, and this ONE reader drops them because
+ * its ONE question — "is our marker already on this issue?" — is a question
+ * no system note can answer.
+ */
+export async function listIssueComments(
+  opts: ForgeIssuesOptions & { number: number },
+): Promise<ForgeIssueCommentsResult> {
+  if (!isIssueNumber(opts.number)) {
+    return refuse(`invalid issue number: ${String(opts.number)}`)
+  }
+  const id = String(opts.number)
+  const result = await ask(opts, 'read', ghCommentsCandidate(id), glabCommentsCandidate(id))
+  return result.available
+    ? { available: true, comments: result.value.comments, truncated: result.value.truncated }
+    : result
 }
 
 export async function createIssue(

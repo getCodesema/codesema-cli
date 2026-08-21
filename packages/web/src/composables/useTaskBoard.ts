@@ -669,13 +669,41 @@ const ISSUE_EVENT_TONE: Record<string, EventTone> = {
   bound: 'idle',
   coverage_gap: 'idle',
   cosmetic: 'idle',
+  // T3.5. The split is the same axis as above: a publication that landed (or
+  // that correctly did nothing) is a settled fact; one that was held back or
+  // could not reach the forge waits on a person — amber, never red, since the
+  // task itself shipped and its recap is safe on disk either way.
+  recap_posted: 'idle',
+  recap_already_posted: 'idle',
+  closed: 'idle',
+  recap_missing: 'check',
+  recap_blocked_secrets: 'check',
+  recap_unreachable: 'check',
+  close_unreachable: 'check',
 }
 
 /**
- * `event.type` decides the tone for every domain but 'issue' (DP9), whose
- * `data.name` carries the actual cause — `edited`/`not_ticket` are amber
- * (waiting on a human), the rest are neutral. Takes the whole event rather
- * than the bare type for exactly this one case.
+ * `data.name` of a 'shipped' event, when the ship landed short of the recap it
+ * was meant to carry (T3.5, round 2 majeur 2). Amber, never red and never
+ * green: the push DID land and the merge request IS open — the ship itself
+ * succeeded — but a document was withheld or never produced, and a person has
+ * to decide what to do about it.
+ *
+ * A nominal ship poses NO name and keeps `EVENT_TONE.shipped` ('go'), which
+ * is why this table has three entries and not four: a badge on every ship
+ * would say nothing.
+ */
+const SHIPPED_EVENT_TONE: Record<string, EventTone> = {
+  recap_missing: 'check',
+  recap_blocked_secrets: 'check',
+  recap_unscanned: 'check',
+}
+
+/**
+ * `event.type` decides the tone for every domain but 'issue' and 'shipped'
+ * (DP9), whose `data.name` carries the actual cause — `edited`/`not_ticket`
+ * are amber (waiting on a human), the rest are neutral. Takes the whole event
+ * rather than the bare type for exactly those two cases.
  */
 /**
  * Same per-name refinement as ISSUE_EVENT_TONE, for the one 'criteria' name
@@ -698,6 +726,12 @@ export function eventTone(event: Pick<TaskEvent, 'type' | 'data'>): EventTone {
   }
   if (event.type === 'criteria') {
     return CRITERIA_EVENT_TONE[name] ?? EVENT_TONE.criteria
+  }
+  if (event.type === 'shipped') {
+    // Unknown name (a newer server) falls back to the ROUTINE tone, the same
+    // rule ISSUE_EVENT_TONE follows: a future addition must not be painted
+    // amber before anyone decided it should be.
+    return SHIPPED_EVENT_TONE[name] ?? EVENT_TONE.shipped
   }
   return EVENT_TONE[event.type]
 }
@@ -731,6 +765,8 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   review_done: [],
   // Rendered by its own component (TaskEventChecks): no probed key.
   checks: [],
+  // Probed only when the event carries no `data.name` (see shippedEventText):
+  // an older journal line, or the nominal ship, which has nothing to name.
   shipped: ['url', 'branch'],
   error: ['message', 'error', 'summary'],
   interrupted: ['message', 'summary'],
@@ -841,6 +877,20 @@ const ISSUE_NAME_KEY: Record<string, MessageKey> = {
   not_ticket: 'workspace.evIssueNotTicket',
   snapshot_unreadable: 'workspace.evIssueSnapshotUnreadable',
   unreachable: 'workspace.evIssueUnreachable',
+  // T3.5, publishing the recap on the ticket. Seven distinct outcomes, seven
+  // distinct lines: they differ by what a human would have to DO about them
+  // (nothing, look at the secret, retry the forge), so folding any two onto
+  // one key would tell the reader less than the server knows. `unreachable`
+  // above is NOT reused for the two forge failures here: it says "this
+  // ticket's freshness was not compared", which is a different fact and would
+  // be a false one on this path.
+  recap_posted: 'workspace.evIssueRecapPosted',
+  recap_already_posted: 'workspace.evIssueRecapAlreadyPosted',
+  recap_missing: 'workspace.evIssueRecapMissing',
+  recap_blocked_secrets: 'workspace.evIssueRecapBlockedSecrets',
+  recap_unreachable: 'workspace.evIssueRecapUnreachable',
+  closed: 'workspace.evIssueClosed',
+  close_unreachable: 'workspace.evIssueCloseUnreachable',
 }
 
 const ISSUE_SECTION_KEY: Record<string, MessageKey> = {
@@ -911,6 +961,37 @@ function criteriaEventText(data: TaskEventData): string {
 }
 
 /**
+ * `data.name` of a 'shipped' event → its own translated line (T3.5, round 2
+ * majeur 2). Posed ONLY when the ship landed short of the recap it was meant
+ * to carry, so the ordinary ship keeps reading as the plain 'Shipped' label.
+ *
+ * Before this table, all three of those ships rendered IDENTICALLY to a
+ * nominal one — green, one word — because the whole story sat in `data.note`,
+ * a raw English sentence nothing renders, and `SUMMARY_KEYS.shipped` probes
+ * 'url'/'branch', which the payload does not carry. A recap withheld for
+ * carrying a secret was indistinguishable, on screen, from a recap posted.
+ */
+const SHIPPED_NAME_KEY: Record<string, MessageKey> = {
+  recap_missing: 'workspace.evShippedRecapMissing',
+  recap_blocked_secrets: 'workspace.evShippedRecapBlocked',
+  recap_unscanned: 'workspace.evShippedRecapUnscanned',
+}
+
+/**
+ * The journal line of a 'shipped' event. `data.note` is NEVER read: it is the
+ * server's own English sentence (task-ship.ts), the same trap 'queue',
+ * 'issue', 'resource' and 'criteria' each closed in turn — a French workspace
+ * must not read `recap withheld from the merge request: …` verbatim.
+ * Degrades to the probed summary keys, then to the plain label, for a name
+ * this bundle does not know.
+ */
+function shippedEventText(data: TaskEventData, label: string): string {
+  const name = firstString(data, ['name'])
+  const key = name ? SHIPPED_NAME_KEY[name] : undefined
+  return key ? t(key) : (firstString(data, SUMMARY_KEYS.shipped) ?? label)
+}
+
+/**
  * What a review_started line says beyond its label: which turn is under
  * review, and which flow reviews it. Empty when the payload carries neither
  * (older journals), so the line degrades to the plain label.
@@ -968,6 +1049,9 @@ export function eventSummary(event: TaskEvent): string {
   }
   if (event.type === 'criteria') {
     return clip(criteriaEventText(event.data))
+  }
+  if (event.type === 'shipped') {
+    return clip(shippedEventText(event.data, label))
   }
   const details = summaryDetails(event)
   if (details.length > 0) {

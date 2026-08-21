@@ -307,6 +307,31 @@ const en = {
     'The frozen ticket could not be read back: edits to this ticket are no longer detected',
   'workspace.evIssueUnreachable':
     'The forge could not be read: this ticket was not compared, the conversation carries on on its frozen copy',
+  // T3.5: publishing the recap on the ticket. Each line names what happened
+  // AND where the recap now is, because "nothing was posted" on its own reads
+  // as "the recap is lost" — which it never is.
+  'workspace.evIssueRecapPosted': 'Recap posted on the ticket',
+  'workspace.evIssueRecapAlreadyPosted':
+    'The recap was already on the ticket: nothing was posted a second time',
+  'workspace.evIssueRecapMissing':
+    'No recap could be produced for this conversation: nothing was posted on the ticket',
+  'workspace.evIssueRecapBlockedSecrets':
+    'Recap held back: it looks like it carries a secret. Nothing was sent to the forge, the recap stays on this machine',
+  'workspace.evIssueRecapUnreachable':
+    'The recap could not be posted on the ticket: it stays on this machine',
+  // T3.5, round 2 majeur 2: the three things a ship has to say about the recap
+  // it did NOT carry. Each one names the state of the recap, not only that the
+  // branch shipped — "Shipped" alone was what made a withheld secret look
+  // exactly like a posted recap.
+  'workspace.evShippedRecapMissing':
+    'Shipped without a recap: none could be produced for this branch',
+  'workspace.evShippedRecapBlocked':
+    'Shipped, recap held back: it looks like it carries a secret. Nothing was sent to the forge, the recap stays on this machine',
+  'workspace.evShippedRecapUnscanned':
+    'Shipped, recap held back: the check that clears it of secrets could not run, so nothing was sent to the forge',
+  'workspace.evIssueClosed': 'Ticket closed on the forge',
+  'workspace.evIssueCloseUnreachable':
+    'The ticket carries its recap but could not be closed on the forge',
   'workspace.evIssueNone': 'none',
   'workspace.evIssueSectionsUnknown': 'unknown (this snapshot has no per-section breakdown)',
   'workspace.evIssueSectionContext': 'context',
@@ -841,6 +866,24 @@ const fr: Record<MessageKey, string> = {
     'Le ticket figé est illisible : les éditions de ce ticket ne sont plus détectées',
   'workspace.evIssueUnreachable':
     "La forge n'a pas pu être lue : ce ticket n'a pas été comparé, la conversation continue sur sa copie figée",
+  'workspace.evIssueRecapPosted': 'Récapitulatif posté sur le ticket',
+  'workspace.evIssueRecapAlreadyPosted':
+    'Le récapitulatif était déjà sur le ticket : rien n’a été posté une seconde fois',
+  'workspace.evIssueRecapMissing':
+    'Aucun récapitulatif n’a pu être produit pour cette conversation : rien n’a été posté sur le ticket',
+  'workspace.evIssueRecapBlockedSecrets':
+    'Récapitulatif retenu : il semble porter un secret. Rien n’a été envoyé à la forge, le récapitulatif reste sur cette machine',
+  'workspace.evIssueRecapUnreachable':
+    'Le récapitulatif n’a pas pu être posté sur le ticket : il reste sur cette machine',
+  'workspace.evShippedRecapMissing':
+    'Publiée sans récapitulatif : aucun n’a pu être produit pour cette branche',
+  'workspace.evShippedRecapBlocked':
+    'Publiée, récapitulatif retenu : il semble porter un secret. Rien n’a été envoyé à la forge, le récapitulatif reste sur cette machine',
+  'workspace.evShippedRecapUnscanned':
+    'Publiée, récapitulatif retenu : le contrôle qui le déclare exempt de secret n’a pas pu s’exécuter, rien n’a donc été envoyé à la forge',
+  'workspace.evIssueClosed': 'Ticket fermé sur la forge',
+  'workspace.evIssueCloseUnreachable':
+    'Le ticket porte son récapitulatif mais n’a pas pu être fermé sur la forge',
   'workspace.evIssueNone': 'aucun',
   'workspace.evIssueSectionsUnknown': 'inconnues (ce snapshot ne ventile pas par section)',
   'workspace.evIssueSectionContext': 'contexte',

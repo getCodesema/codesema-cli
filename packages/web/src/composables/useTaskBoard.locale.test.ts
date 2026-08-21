@@ -101,6 +101,163 @@ describe('the T2.4 issue journal, read in French', () => {
   })
 })
 
+/**
+ * T3.5 posts the recap on the ticket, and journals seven new causes on the
+ * very same 'issue' type. `issueEventText` reads `data.name` and NEVER
+ * `data.message`, so a name left out of `ISSUE_NAME_KEY` does not fail the
+ * build, does not fail key parity, and shows a French reader the bare word
+ * 'Ticket' — the exact hole T2.4 fell into.
+ */
+describe('the T3.5 recap-publication journal, read in French', () => {
+  const SERVER_MESSAGE =
+    'recap held back: it looks like it carries a secret (recap.md: an AWS access key id) — nothing was sent to the forge, the recap stays in .codesema'
+
+  test('every publication cause reads in French, each with its own line and its own tone', async () => {
+    const names = [
+      'recap_posted',
+      'recap_already_posted',
+      'recap_missing',
+      'recap_blocked_secrets',
+      'recap_unreachable',
+      'closed',
+      'close_unreachable',
+    ] as const
+    const lines = await renderInFrench(names.map((name) => ({ name, message: SERVER_MESSAGE })))
+    expect(lines).toHaveLength(names.length)
+    for (const line of lines) {
+      expect(line.summary).not.toBe('Ticket')
+      expect(line.summary).not.toContain(SERVER_MESSAGE)
+      expect(line.summary).not.toContain('recap held back')
+      // Nothing here ever fails the task: amber at worst, never red.
+      expect(line.tone).not.toBe('stop')
+    }
+    expect(new Set(lines.map((line) => line.summary)).size).toBe(names.length)
+    // A settled fact stays neutral; a degradation asks for a look.
+    expect(lines.map((line) => line.tone)).toEqual([
+      'idle',
+      'idle',
+      'check',
+      'check',
+      'check',
+      'idle',
+      'check',
+    ])
+  })
+
+  test('the blocked line says where the recap is, not only that nothing was posted', async () => {
+    const [blocked] = await renderInFrench([
+      { name: 'recap_blocked_secrets', message: SERVER_MESSAGE },
+    ])
+    expect(blocked?.summary).toContain('secret')
+    expect(blocked?.summary).toContain('machine')
+  })
+
+  test('a publication failure never borrows the ticket-freshness line of T2.4', async () => {
+    const [publish, compare] = await renderInFrench([
+      { name: 'recap_unreachable', message: SERVER_MESSAGE },
+      { name: 'unreachable', message: SERVER_MESSAGE },
+    ])
+    expect(publish?.summary).not.toBe(compare?.summary)
+    // The T2.4 line claims the ticket was not COMPARED, which says nothing
+    // about a recap and would be false on this path.
+    expect(publish?.summary).not.toContain('comparé')
+  })
+})
+
+/**
+ * MAJEUR 2 (round 2), the chain proven end to end: `task-server.ts` writes
+ * `data.name` on the 'shipped' event, `useTaskBoard` renders it, and a French
+ * workspace reads a French sentence — not the server's English `data.note`,
+ * and not the same green 'Publiée' as a ship that carried its recap.
+ */
+async function renderShippedInFrench(
+  events: readonly TaskEventData[],
+): Promise<{ summary: string; tone: string }[]> {
+  const modulePath = join(import.meta.dir, 'useTaskBoard.ts')
+  const script = [
+    `globalThis.window = { __CODESEMA_LOCALE__: 'fr' }`,
+    `const board = await import(${JSON.stringify(modulePath)})`,
+    `const data = ${JSON.stringify(events)}`,
+    `const lines = data.map((d) => {`,
+    `  const event = { seq: 1, at: '2026-08-20T09:00:00.000Z', type: 'shipped', data: d }`,
+    `  return { summary: board.eventSummary(event), tone: board.eventTone(event) }`,
+    `})`,
+    `process.stdout.write(JSON.stringify(lines))`,
+  ].join('\n')
+  const child = Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'pipe' })
+  const [stdout, stderr] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  await child.exited
+  if (!stdout.trim()) {
+    throw new Error(`the French render never produced anything: ${stderr}`)
+  }
+  return JSON.parse(stdout) as { summary: string; tone: string }[]
+}
+
+describe('a ship that landed short of its recap, read in French', () => {
+  /** Verbatim what task-ship.ts puts in `data.note` on this path. */
+  const SERVER_NOTE =
+    'recap withheld from the merge request: it looks like it carries a secret (recap.md: an AWS access key id)'
+
+  const MR = 'https://github.com/o/r/pull/9'
+
+  test('a withheld recap is no longer indistinguishable from a nominal ship', async () => {
+    // This is the defect, in the exact terms it was measured in: same type,
+    // same payload shape, one green word for both.
+    const [blocked, nominal] = await renderShippedInFrench([
+      { mr_url: MR, note: SERVER_NOTE, name: 'recap_blocked_secrets' },
+      { mr_url: MR },
+    ])
+    expect(nominal).toEqual({ summary: 'Publiée', tone: 'go' })
+    expect(blocked).toEqual({
+      summary:
+        'Publiée, récapitulatif retenu : il semble porter un secret. Rien n’a été envoyé à la forge, le récapitulatif reste sur cette machine',
+      // Amber, never red: the push landed and the merge request is open.
+      tone: 'check',
+    })
+  })
+
+  test('not one word of the server sentence reaches a French reader', async () => {
+    const [blocked] = await renderShippedInFrench([
+      { mr_url: MR, note: SERVER_NOTE, name: 'recap_blocked_secrets' },
+    ])
+    const summary = blocked?.summary ?? ''
+    expect(summary).not.toContain(SERVER_NOTE)
+    expect(summary).not.toContain('withheld')
+    expect(summary).not.toContain('recap.md')
+    expect(summary).not.toContain(MR)
+  })
+
+  test('the three ways of landing short each read in French, each on its own line', async () => {
+    const names = ['recap_missing', 'recap_blocked_secrets', 'recap_unscanned'] as const
+    const lines = await renderShippedInFrench(names.map((name) => ({ name, note: SERVER_NOTE })))
+    expect(lines).toHaveLength(names.length)
+    for (const line of lines) {
+      expect(line.summary).not.toBe('Publiée')
+      expect(line.summary).not.toContain(SERVER_NOTE)
+      expect(line.tone).toBe('check')
+    }
+    expect(new Set(lines.map((line) => line.summary)).size).toBe(names.length)
+  })
+
+  test('a degraded ship with only a note reads the French label, never the English note', async () => {
+    const PUSH_ONLY =
+      'no forge CLI (gh or glab) available — branch pushed, open the merge request manually'
+    const [pushOnly] = await renderShippedInFrench([{ mr_url: null, note: PUSH_ONLY }])
+    expect(pushOnly?.summary).toBe('Publiée')
+    expect(pushOnly?.summary).not.toContain('no forge CLI')
+    expect(pushOnly?.summary).not.toContain(PUSH_ONLY)
+  })
+
+  test('a name this bundle does not know degrades to the plain French label, never a raw token', async () => {
+    const [unknown] = await renderShippedInFrench([{ name: 'shipped_from_the_future' }])
+    expect(unknown?.summary).toBe('Publiée')
+    expect(unknown?.tone).toBe('go')
+  })
+})
+
 async function renderCriteriaInFrench(
   events: readonly TaskEventData[],
 ): Promise<{ summary: string; tone: string }[]> {

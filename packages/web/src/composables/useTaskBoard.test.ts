@@ -624,6 +624,114 @@ describe('eventSummary', () => {
       ).toBe('Ticket')
       expect(eventSummary(event({ type: 'issue', data: {} }))).toBe('Ticket')
     })
+
+    // T3.5 posts the recap on the ticket and journals seven more causes here.
+    // Same trap as the six above: `issueEventText` reads `data.name` only, so
+    // a name nobody wired shows the bare 'Ticket' label with the server's
+    // English sentence nowhere in sight — and nothing else would notice.
+    describe('recap publication (T3.5)', () => {
+      const publishMessage =
+        'the recap could not be posted on issue #42 (no-cli: no forge CLI) — it stays in .codesema'
+      const publishNames = [
+        'recap_posted',
+        'recap_already_posted',
+        'recap_missing',
+        'recap_blocked_secrets',
+        'recap_unreachable',
+        'closed',
+        'close_unreachable',
+      ] as const
+
+      test('each of the seven gets its OWN text, never the shared label', () => {
+        const summaries = publishNames.map((name) =>
+          eventSummary(event({ type: 'issue', data: { name, message: publishMessage } })),
+        )
+        expect(new Set(summaries).size).toBe(publishNames.length)
+        for (const summary of summaries) {
+          expect(summary).not.toBe('Ticket')
+          expect(summary).not.toContain('.codesema')
+          expect(summary).not.toContain('no forge CLI')
+        }
+      })
+
+      test('a publication failure never reuses the ticket-freshness line of T2.4', () => {
+        const publish = eventSummary(
+          event({ type: 'issue', data: { name: 'recap_unreachable', message: publishMessage } }),
+        )
+        const compare = eventSummary(
+          event({ type: 'issue', data: { name: 'unreachable', message: publishMessage } }),
+        )
+        expect(publish).not.toBe(compare)
+        expect(publish).not.toContain('compared')
+      })
+
+      test('a held-back recap says both halves: what was found and where it now is', () => {
+        const blocked = eventSummary(
+          event({ type: 'issue', data: { name: 'recap_blocked_secrets' } }),
+        )
+        expect(blocked).toContain('secret')
+        expect(blocked).toContain('machine')
+      })
+    })
+  })
+
+  describe("'shipped' (T3.5, round 2)", () => {
+    const shipNote =
+      'recap withheld from the merge request: it looks like it carries a secret (recap.md: an AWS access key id)'
+    const shipNames = ['recap_missing', 'recap_blocked_secrets', 'recap_unscanned'] as const
+
+    test('each of the three gets its OWN text, never the shared label', () => {
+      const summaries = shipNames.map((name) =>
+        eventSummary(
+          event({ type: 'shipped', data: { mr_url: 'https://x/1', note: shipNote, name } }),
+        ),
+      )
+      expect(new Set(summaries).size).toBe(shipNames.length)
+      for (const summary of summaries) {
+        expect(summary).not.toBe('Shipped')
+        // The server's own English sentence never reaches the screen.
+        expect(summary).not.toContain('withheld from the merge request')
+        expect(summary).not.toContain('recap.md')
+      }
+    })
+
+    test('a held-back recap says both halves: what happened and where the recap is', () => {
+      const blocked = eventSummary(
+        event({ type: 'shipped', data: { name: 'recap_blocked_secrets' } }),
+      )
+      expect(blocked).toContain('secret')
+      expect(blocked).toContain('machine')
+      // Distinguishable from the nominal ship, which is the whole point.
+      expect(blocked).not.toBe(eventSummary(event({ type: 'shipped', data: {} })))
+    })
+
+    // The §6-quater trap, one type over: `data.note` is an ENGLISH sentence
+    // the server builds (task-ship.ts), and it is present on EVERY degraded
+    // ship — the push-only one, the one whose forge CLI failed. Probing it
+    // would put that sentence, verbatim, in a French journal.
+    test('a note without a name renders the label, never the server sentence', () => {
+      const note =
+        'no forge CLI (gh or glab) available — branch pushed, open the merge request manually'
+      expect(eventSummary(event({ type: 'shipped', data: { mr_url: null, note } }))).toBe('Shipped')
+      expect(
+        eventSummary(
+          event({ type: 'shipped', data: { note: 'gh failed: API rate limit exceeded' } }),
+        ),
+      ).toBe('Shipped')
+    })
+
+    test('the ordinary ship is untouched: the plain label, or its probed keys', () => {
+      expect(eventSummary(event({ type: 'shipped', data: { mr_url: 'https://x/1' } }))).toBe(
+        'Shipped',
+      )
+      expect(eventSummary(event({ type: 'shipped', data: { url: 'https://x/1' } }))).toBe(
+        'https://x/1',
+      )
+      // An unknown name degrades the same way, never to a raw wire token.
+      expect(eventSummary(event({ type: 'shipped', data: { name: 'something_future' } }))).toBe(
+        'Shipped',
+      )
+    })
   })
 
   describe("'criteria' (T2.5)", () => {
@@ -728,6 +836,38 @@ describe('eventTone', () => {
     expect(eventTone(event({ type: 'issue', data: { name: 'bound' } }))).toBe('idle')
     // An unknown name (a newer server) defaults to the routine tone, never amber.
     expect(eventTone(event({ type: 'issue', data: { name: 'something_future' } }))).toBe('idle')
+  })
+
+  // MAJEUR 2 (round 2). A ship whose recap was held back for carrying a
+  // secret used to be a GREEN 'Shipped' line, byte-identical to a nominal
+  // one: the story lived in `data.note`, which nothing renders.
+  test('a ship that landed short of its recap is amber, a nominal one stays green', () => {
+    for (const name of ['recap_missing', 'recap_blocked_secrets', 'recap_unscanned']) {
+      expect(eventTone(event({ type: 'shipped', data: { name } }))).toBe('check')
+    }
+    // The push landed and the MR is open: amber, never red.
+    for (const name of ['recap_missing', 'recap_blocked_secrets', 'recap_unscanned']) {
+      expect(eventTone(event({ type: 'shipped', data: { name } }))).not.toBe('stop')
+    }
+    expect(eventTone(event({ type: 'shipped', data: { mr_url: 'https://x/1' } }))).toBe('go')
+    // A name this bundle does not know keeps the ROUTINE tone: a future
+    // addition must not be painted amber before anyone decided it should be.
+    expect(eventTone(event({ type: 'shipped', data: { name: 'something_future' } }))).toBe('go')
+  })
+
+  test("T3.5's publication names split the same way: landed is neutral, held back is amber", () => {
+    for (const name of ['recap_posted', 'recap_already_posted', 'closed']) {
+      expect(eventTone(event({ type: 'issue', data: { name } }))).toBe('idle')
+    }
+    for (const name of [
+      'recap_missing',
+      'recap_blocked_secrets',
+      'recap_unreachable',
+      'close_unreachable',
+    ]) {
+      // Amber, never red: the task shipped and its recap is safe on disk.
+      expect(eventTone(event({ type: 'issue', data: { name } }))).toBe('check')
+    }
   })
 
   test("'criteria' events are neutral, never red — an unreadable draft does not fail the task", () => {

@@ -59,7 +59,7 @@ export type RecapModelContribution = {
  */
 export type RecapDegradation = {
   field: 'files' | 'tests' | 'summary' | 'branch'
-  /** Readable reason. This generator has no caller yet (see `generateRecap`'s doc): journaling and API surfacing are for whoever wires one up. */
+  /** Readable reason. Returned, never journaled from here — see `generateRecap`'s doc for who does what with it. */
   reason: string
 }
 
@@ -275,16 +275,21 @@ function buildModelFields(opts: GenerateRecapOptions): {
  * ONE source (see module doc); the model contributes only prose. NEVER
  * throws.
  *
- * This generator has NO CALLER yet (T3.4 lands ahead of T3.2's per-criterion
- * verdicts and of any route/turn that would invoke it): `degradations` is
- * therefore only RETURNED, never journaled or pushed onto an API surface from
- * here. That is deliberate, not an omission — the same rule this project
- * applies whenever a module has no consumer yet: the reason for a
- * degradation belongs in the return value, and the journal-event and
- * API-surfacing legs of invariant 2 are the responsibility of whichever
- * caller wires this generator into the task pipeline. Adding a journal event
- * type today, for a path nothing exercises, would be a sixth enum member
- * nobody can yet observe firing correctly.
+ * `degradations` is only RETURNED, never journaled or pushed onto an API
+ * surface from here: the reason for a degradation belongs in the return
+ * value, and the journal-event and API-surfacing legs of invariant 2 belong
+ * to whoever wires this generator into the task pipeline.
+ *
+ * T3.5 is that caller (`prepareRecap`, task-ship.ts): the ship generates and
+ * persists the recap just before it composes the merge-request description
+ * from it. It surfaces the two TERMINAL outcomes — a refusal (`recap: null`)
+ * and a persistence failure — on the ship's own note, and deliberately not
+ * the ordinary per-field degradations: `tests` is empty on every repo with no
+ * checks.json and `files` degrades on every task with no baseline, so putting
+ * them on the ship's note would print a warning on almost every ship, which
+ * is the cry-wolf DP13 refuses. The recap's own markdown says what is missing
+ * where it matters — an empty section renders as `_None._`, never as a
+ * silence.
  */
 export function generateRecap(opts: GenerateRecapOptions): GenerateRecapResult {
   const degradations: RecapDegradation[] = []

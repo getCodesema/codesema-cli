@@ -12,9 +12,11 @@ import {
   getIssue,
   GLAB_HIERARCHY_CLEAR_PARENT,
   GLAB_HIERARCHY_SET_PARENT,
+  ISSUE_COMMENT_LIST_MAX,
   ISSUE_LIST_MAX,
   linkChildIssue,
   listChildIssues,
+  listIssueComments,
   listIssues,
   runForgeCli,
   setLabels,
@@ -29,6 +31,8 @@ import { subprocessEnv } from './git.js'
 const GH_FIELDS = 'number,title,body,state,labels,author,createdAt,updatedAt,url'
 const GH_LIMIT = String(ISSUE_LIST_MAX + 1)
 const GLAB_PAGE = '100'
+/** GitLab clamps `per_page` at 100 server-side; the fixtures below page against that. */
+const GLAB_PAGE_SIZE = 100
 
 const GH_ISSUE = {
   number: 42,
@@ -77,6 +81,50 @@ const GLAB_ISSUE_PARSED: ForgeIssue = {
   updatedAt: '2026-07-28T09:30:00.123Z',
   url: 'https://gitlab.com/acme/repo/-/issues/7',
 }
+
+// T3.5 comment fixtures. gh answers `{comments:[…]}` with `author.login` and
+// `createdAt`; glab answers the ISSUE payload plus a capitalised `Notes`,
+// `author.username`, `created_at`, and system notes mixed in with real ones.
+function ghComment(body: string) {
+  return {
+    id: 'IC_kwDO',
+    author: { login: 'octocat' },
+    authorAssociation: 'MEMBER',
+    body,
+    createdAt: '2026-07-21T09:00:00Z',
+    includesCreatedEdit: false,
+    isMinimized: false,
+    reactionGroups: [],
+    url: 'https://github.com/acme/repo/issues/42#issuecomment-1',
+    viewerDidAuthor: false,
+  }
+}
+
+function glabNote(body: string) {
+  return {
+    id: 1,
+    body,
+    author: { id: 1, username: 'jdoe', name: 'Jane Doe' },
+    created_at: '2026-07-21T09:30:00Z',
+    system: false,
+  }
+}
+
+function glabSystemNote() {
+  return { ...glabNote('changed the description'), id: 2, system: true }
+}
+
+function glabNotes(n: number) {
+  return Array.from({ length: n }, (_, i) => ({ ...glabNote(`note ${i}`), id: i + 1 }))
+}
+
+/** n system notes — a label change, a state change, a cross-reference: no body anyone typed. */
+function glabSystemNotes(n: number, from = 1000) {
+  return Array.from({ length: n }, (_, i) => ({ ...glabSystemNote(), id: from + i }))
+}
+
+/** A full glab notes page: `--per-page` is clamped at 100 server-side. */
+const glabPage = (notes: unknown[]) => JSON.stringify({ ...GLAB_ISSUE, Notes: notes })
 
 /** n distinct valid issues, to exercise the cap without hand-writing 201 of them. */
 function ghIssues(n: number, from = 1): string {
@@ -773,6 +821,266 @@ describe('argv per operation', () => {
       const r = rig(ok(''))
       await closeIssue({ cwd: repo, execFn: r.execFn, number: 7 })
       expect(r.calls[0]?.args).toEqual(['issue', 'close', '7'])
+    })
+  })
+
+  // T3.5: the read the recap publication needs before it writes. The argv is
+  // the assertion — no gh/glab runs, nothing touches the network.
+  describe('listIssueComments', () => {
+    test('gh asks the porcelain for the comments json field', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(ok(JSON.stringify({ comments: [ghComment('hello'), ghComment('bye')] })))
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 42 })).toEqual({
+          available: true,
+          truncated: false,
+          comments: [
+            { body: 'hello', author: 'octocat', createdAt: '2026-07-21T09:00:00Z', system: false },
+            { body: 'bye', author: 'octocat', createdAt: '2026-07-21T09:00:00Z', system: false },
+          ],
+        })
+        expect(r.calls).toHaveLength(1)
+        expect(r.calls[0]?.args).toEqual(['issue', 'view', '42', '--json', 'comments'])
+      })
+    })
+
+    test('glab asks its own view for notes, paged explicitly, and drops the system ones', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig(
+          ok(JSON.stringify({ ...GLAB_ISSUE, Notes: [glabNote('hello'), glabSystemNote()] })),
+        )
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })).toEqual({
+          available: true,
+          truncated: false,
+          // The system note is GONE, not merely flagged: a note GitLab minted
+          // from an activity carries no body anyone supplied, so it can never
+          // hold the marker this read exists to look for.
+          comments: [
+            { body: 'hello', author: 'jdoe', createdAt: '2026-07-21T09:30:00Z', system: false },
+          ],
+        })
+        // prettier-ignore
+        expect(r.calls[0]?.args).toEqual(['issue', 'view', '7', '--comments', '--output', 'json', '--per-page', GLAB_PAGE, '--page', '1'])
+      })
+    })
+
+    // MAJEUR 3. Verified against glab 1.53.0's own source: `--system-logs`
+    // gates the TEXT rendering only (`if note.System && !opts.ShowSystemLogs
+    // { continue }`, commands/issuable/view/issuable_view.go) — the JSON
+    // marshals `IssueWithNotes{*Issue, Notes}` whole. So the filter has to be
+    // here, and it has to run BEFORE the cap: GitLab mints a system note per
+    // label, assignment, milestone, state change, cross-reference and
+    // description edit, `publishTaskRecap` refuses to write on a capped read,
+    // and nothing ever lowers that count again — the recap would be lost for
+    // GOOD, behind a `forge_unreachable` that reads transitory. T3.7, the next
+    // ticket in this chain, writes labels.
+    test('202 notes of which 201 are system read as ONE comment, and the guard stays open', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const page = (n: number) =>
+          n === 1
+            ? [glabNote('the only thing anyone typed'), ...glabSystemNotes(99, 2000)]
+            : glabSystemNotes(n === 2 ? GLAB_PAGE_SIZE : 2, n * 1000)
+        const r = rig((call) => ({ kind: 'ok', stdout: glabPage(page(Number(call.args.at(-1)))) }))
+        const result = await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })
+        expect(result).toEqual({
+          available: true,
+          truncated: false,
+          comments: [
+            {
+              body: 'the only thing anyone typed',
+              author: 'jdoe',
+              createdAt: '2026-07-21T09:30:00Z',
+              system: false,
+            },
+          ],
+        })
+        // The walk went on past a full page of pure churn instead of stopping
+        // at a cap it had not reached.
+        expect(r.calls.map((c) => c.args.at(-1))).toEqual(['1', '2', '3'])
+      })
+    })
+
+    // The other half of the same filter: dropping system notes must never let
+    // an INCOMPLETE walk look complete. Three full pages of 100 leave 0
+    // comments once filtered, and `0 > 200` is false — length alone would then
+    // answer "no comments at all, nothing was cut", which is exactly the proof
+    // of absence `publishTaskRecap` writes a comment on.
+    test('a page walk that ran out of pages is truncated even when the filter empties it', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig(ok(glabPage(glabSystemNotes(GLAB_PAGE_SIZE))))
+        const result = await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })
+        expect(result).toMatchObject({ available: true, truncated: true })
+        expect(result.available && result.comments).toEqual([])
+        expect(r.calls).toHaveLength(3)
+      })
+    })
+
+    // m6: the GitLab TWIN of the truncation guard the whole idempotence rests
+    // on. Its gh side was asserted; this side had nothing at all.
+    test('glab past the cap says so instead of looking complete, and stops paging there', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig(ok(glabPage(glabNotes(GLAB_PAGE_SIZE))))
+        const result = await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })
+        expect(result).toMatchObject({ available: true, truncated: true })
+        expect(result.available && result.comments).toHaveLength(ISSUE_COMMENT_LIST_MAX)
+        // 100 + 100 + 1 past the cap: the third page is where it stops.
+        expect(r.calls.map((c) => c.args.at(-1))).toEqual(['1', '2', '3'])
+      })
+    })
+
+    // The other exit of the same walk, and the one the gh side has no
+    // equivalent of: the notes END on a short page, but the FULL pages before
+    // it already overshot the cap. 100 + 100 + 50 = 250 real comments, and
+    // answering {250, truncated:false} here is the same defect the issue list
+    // was fixed for — a list that looks complete while gh answers 200/true on
+    // the very same ticket, and a marker search that would then post on it.
+    test('a walk that ENDS on a short page is still capped, and says it was', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig((call) =>
+          call.args.at(-1) === '3'
+            ? { kind: 'ok', stdout: glabPage(glabNotes(50)) }
+            : { kind: 'ok', stdout: glabPage(glabNotes(GLAB_PAGE_SIZE)) },
+        )
+        const result = await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })
+        expect(result).toMatchObject({ available: true, truncated: true })
+        expect(result.available && result.comments).toHaveLength(ISSUE_COMMENT_LIST_MAX)
+        expect(r.calls.map((c) => c.args.at(-1))).toEqual(['1', '2', '3'])
+      })
+    })
+
+    test('a page that comes back unreadable MID-WALK is a cli-error, never a half-read list', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig((call) =>
+          call.args.at(-1) === '1'
+            ? { kind: 'ok', stdout: glabPage(glabNotes(GLAB_PAGE_SIZE)) }
+            : { kind: 'ok', stdout: glabPage([{ author: {} }]) },
+        )
+        // A 100-comment page that WAS read is not an answer: the marker could
+        // sit in the page that was not.
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })).toMatchObject({
+          available: false,
+          reason: 'cli-error',
+        })
+      })
+    })
+
+    test('a CLI that fails MID-WALK never degrades to the pages it already had', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig((call) =>
+          call.args.at(-1) === '1'
+            ? { kind: 'ok', stdout: glabPage(glabNotes(GLAB_PAGE_SIZE)) }
+            : { kind: 'error', message: 'HTTP 502' },
+        )
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })).toEqual({
+          available: false,
+          reason: 'cli-error',
+          detail: 'glab: HTTP 502',
+        })
+      })
+    })
+
+    test('an issue glab answers without a Notes array has no comments, it is not unreadable', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig(ok(JSON.stringify(GLAB_ISSUE)))
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })).toEqual({
+          available: true,
+          comments: [],
+          truncated: false,
+        })
+      })
+    })
+
+    test('glab walks pages until one comes back short', async () => {
+      await withRepo(GITLAB_REMOTE, async (repo) => {
+        const r = rig((call) =>
+          call.args.includes('--page')
+            ? {
+                kind: 'ok',
+                stdout: JSON.stringify({
+                  ...GLAB_ISSUE,
+                  Notes: glabNotes(call.args.at(-1) === '1' ? 100 : 3),
+                }),
+              }
+            : { kind: 'missing' },
+        )
+        const result = await listIssueComments({ cwd: repo, execFn: r.execFn, number: 7 })
+        expect(result).toMatchObject({ available: true, truncated: false })
+        expect(result.available && result.comments).toHaveLength(103)
+        expect(r.calls.map((c) => c.args.at(-1))).toEqual(['1', '2'])
+      })
+    })
+
+    // m5: the twin of `buildMrDescription`'s "sized from a LITERAL 6 000, not
+    // from MR_BODY_SUMMARY_MAX" test, which the ISSUE_COMMENT_LIST_MAX side was
+    // missing. A cap measured against the very constant it is checking cannot
+    // tell 200 from 2 000: both leave a 201-comment payload "one past the cap"
+    // and a 300-comment payload untouched at one, cut at the other.
+    test('the cap is 200 comments, whatever the constant is set to', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(
+          ok(JSON.stringify({ comments: Array.from({ length: 300 }, () => ghComment('x')) })),
+        )
+        const result = await listIssueComments({ cwd: repo, execFn: r.execFn, number: 42 })
+        expect(result).toMatchObject({ available: true, truncated: true })
+        expect(result.available && result.comments).toHaveLength(200)
+      })
+    })
+
+    test('past the cap the answer says so instead of looking complete', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(
+          ok(
+            JSON.stringify({
+              comments: Array.from({ length: ISSUE_COMMENT_LIST_MAX + 1 }, () => ghComment('x')),
+            }),
+          ),
+        )
+        const result = await listIssueComments({ cwd: repo, execFn: r.execFn, number: 42 })
+        expect(result).toMatchObject({ available: true, truncated: true })
+        expect(result.available && result.comments).toHaveLength(ISSUE_COMMENT_LIST_MAX)
+      })
+    })
+
+    test('an unreadable payload is a cli-error, never a half-read list', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(ok(JSON.stringify({ comments: [ghComment('ok'), { author: {} }] })))
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 42 })).toMatchObject({
+          available: false,
+          reason: 'cli-error',
+        })
+      })
+    })
+
+    test('no binary at all is no-cli, and it never throws', async () => {
+      await withRepo(SELF_HOSTED_REMOTE, async (repo) => {
+        const r = rig(missing)
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 42 })).toEqual({
+          available: false,
+          reason: 'no-cli',
+        })
+        expect(r.calls.map((c) => c.cli)).toEqual(['gh', 'glab'])
+      })
+    })
+
+    test('a failing CLI is a cli-error carrying its own words', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(failing('HTTP 404'))
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 42 })).toEqual({
+          available: false,
+          reason: 'cli-error',
+          detail: 'gh: HTTP 404',
+        })
+      })
+    })
+
+    test('an impossible issue number never launches anything', async () => {
+      await withRepo(GITHUB_REMOTE, async (repo) => {
+        const r = rig(ok('{}'))
+        expect(await listIssueComments({ cwd: repo, execFn: r.execFn, number: 0 })).toMatchObject({
+          available: false,
+          reason: 'invalid-input',
+        })
+        expect(r.calls).toHaveLength(0)
+      })
     })
   })
 
