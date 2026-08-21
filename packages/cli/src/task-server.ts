@@ -93,9 +93,16 @@ import {
   validateIssueRef,
   type IssueReconcile,
 } from './task-issue.js'
+import {
+  cycleLabelEvent,
+  cycleLabelForStatus,
+  syncCycleLabel,
+  type CycleLabel,
+} from './task-labels.js'
 import { mergeTask, type MergeOutcome } from './task-merge.js'
 import { resolveTaskPlan, type TaskPlanDeps, type TaskPreviewResult } from './task-plan.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
+import { publishTaskRecap } from './task-recap-publish.js'
 import {
   applyTaskRetention,
   DEFAULT_TASK_RETENTION,
@@ -1506,6 +1513,155 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
   }
 
+  // --- T3.7 wiring: the task's cycle, mirrored onto its ticket ---------------
+  //
+  // `syncCycleLabel` (task-labels.ts) writes to the forge and returns what
+  // happened; deciding WHEN to call it and appending the event it hands back
+  // is this module's job, and this is where that job lives.
+  //
+  // THE LABEL IS AN EFFECT OF THE TRANSITION, NEVER A SECOND WRITER OF IT.
+  // Every call below runs AFTER the transition has been persisted and
+  // broadcast, reads the record and never writes it: no outcome of a pose
+  // touches `record.status`, `record.reason` or `saveTask`. The single owner
+  // of a final transition — the reviewer's own `io.persist()`, the gates
+  // folded in before it — keeps being the single owner.
+
+  /**
+   * Which cycle label each task's ticket was last DRIVEN to, so a transition
+   * is told apart from a repetition. Two things make this necessary:
+   *
+   *   - `onTask` also fires for a HEARTBEAT (`beat()`, task-runner.ts), which
+   *     changes no status at all. Without this, a running ticketed task would
+   *     spend one `issue view` round trip every heartbeat period, forever;
+   *   - three statuses share `codesema:reviewing` and four share
+   *     `codesema:blocked`. `reviewing → review_ok → shipped` is three
+   *     transitions and ONE label, and the two that say nothing new cost
+   *     nothing — not even the read `syncCycleLabel` would spend to conclude
+   *     `unchanged`. That is what "a transition poses exactly one label"
+   *     means from the forge's side, and it is also the difference between
+   *     three system notes on the ticket and one.
+   *
+   * A FAILED pose is deliberately not remembered: the next transition tries
+   * again, which is exactly what `cycleLabelEvent`'s own message promises
+   * ("to be corrected at the next transition").
+   *
+   * HARD-BOUNDED, and by a COUNT rather than by a rule about which tasks
+   * matter: past `CYCLE_LABEL_MEMO_MAX` the least recently driven entry goes.
+   * An evicted entry costs one extra round trip on that task's next
+   * transition and nothing else — the same price a workspace restart pays.
+   */
+  const cycleLabelPosed = new Map<string, CycleLabel>()
+
+  /** How many tasks the memo above remembers before evicting the oldest. */
+  const CYCLE_LABEL_MEMO_MAX = 1024
+
+  /**
+   * Poses started where NO caller can await one — `onTask` is a `void`
+   * callback by the runner's contract — kept so `shutdown()` can drain them.
+   * Each entry removes itself when it settles, so nothing accumulates.
+   */
+  const cycleLabelPoses = new Set<Promise<void>>()
+
+  /**
+   * How many drain rounds `shutdown()` spends on the poses above. A COUNT,
+   * never a clock: a pose starts no other pose, so one round after the runners
+   * have drained is already enough and the extras are pure belt-and-braces —
+   * where a deadline would make the drain depend on how loaded the machine is.
+   */
+  const CYCLE_LABEL_DRAIN_ROUNDS = 3
+
+  const cycleLabelKey = (cwd: string, id: string): string => `${cwd} ${id}`
+
+  /**
+   * One pose, named explicitly, plus the memo and the journal line that go
+   * with it. Returns nothing: no caller of this ever decides anything on a
+   * label.
+   *
+   * The memo is staked BEFORE the round trip, so two transitions closer
+   * together than one forge call do not both fire the same pose; it is
+   * released again if the pose failed, so the next transition retries.
+   */
+  const writeCycleLabel = async (
+    projectId: string,
+    cwd: string,
+    record: TaskRecord,
+    label: CycleLabel,
+  ): Promise<void> => {
+    const key = cycleLabelKey(cwd, record.id)
+    // Re-inserted rather than updated in place: a Map iterates in insertion
+    // order, so this is what makes the eviction below least-recently-driven.
+    cycleLabelPosed.delete(key)
+    cycleLabelPosed.set(key, label)
+    if (cycleLabelPosed.size > CYCLE_LABEL_MEMO_MAX) {
+      const oldest = cycleLabelPosed.keys().next()
+      if (!oldest.done) {
+        cycleLabelPosed.delete(oldest.value)
+      }
+    }
+    const outcome = await syncCycleLabel({
+      cwd,
+      issue: record.issue,
+      label,
+      ...(opts.issueExecFn ? { execFn: opts.issueExecFn } : {}),
+    })
+    if (outcome.kind === 'failed' && cycleLabelPosed.get(key) === label) {
+      // Not posed. Forget the claim so the NEXT transition retries rather than
+      // believing the ticket already says this.
+      cycleLabelPosed.delete(key)
+    }
+    const input = cycleLabelEvent(outcome)
+    if (!input) {
+      // Nothing to say: a pose that landed is not news, and one line per
+      // transition would drown the journal it is meant to inform.
+      return
+    }
+    const event = appendTaskEvent(cwd, record.id, input)
+    emit({ project_id: projectId, task_id: record.id, event: { name: 'task_event', data: event } })
+  }
+
+  /**
+   * The cycle label a task's CURRENT status calls for, posed if — and only if
+   * — it differs from the one this workspace last drove the ticket to.
+   *
+   * TWO reasons to say nothing, and they are not the same reason:
+   *
+   *   - the ticket already carries this label, so there is no transition to
+   *     mirror. A heartbeat lands here, and so do the two transitions of
+   *     `reviewing → review_ok → shipped` that share `codesema:reviewing`;
+   *   - the ticket carries `codesema:merged`. NO status maps to that label —
+   *     a record stays 'shipped' after its branch lands, and 'shipped' is a
+   *     status it can never legitimately leave (`shipRefusal` 409s it, and
+   *     neither reply nor resume accepts it). Every later persist of 'shipped'
+   *     is therefore a repetition, and an abandon cleaning up a merged task's
+   *     worktree writes exactly one: without this guard it would walk the
+   *     ticket back from `codesema:merged` to `codesema:reviewing`, undoing
+   *     from the outside the one label this whole chain exists to pose.
+   */
+  const mirrorCycleLabel = (projectId: string, cwd: string, record: TaskRecord): Promise<void> => {
+    const last = cycleLabelPosed.get(cycleLabelKey(cwd, record.id))
+    const label = cycleLabelForStatus(record.status)
+    if (last === label || last === 'codesema:merged') {
+      return Promise.resolve()
+    }
+    return writeCycleLabel(projectId, cwd, record, label)
+  }
+
+  /**
+   * A pose fired from a hook that has nothing to await it with. It is still
+   * not silent and still not lost: a rejection (the seam contract broken by an
+   * injected `execFn`, a journal that would not append) becomes a notice, and
+   * the promise is held until `shutdown()` has drained it.
+   */
+  const trackCycleLabel = (pose: Promise<void>): void => {
+    const settled = pose.catch((err: unknown) => {
+      notice(`a cycle label could not be mirrored onto the ticket: ${errorMessage(err)}`)
+    })
+    cycleLabelPoses.add(settled)
+    void settled.then(() => {
+      cycleLabelPoses.delete(settled)
+    })
+  }
+
   /**
    * T5. Never rejects: a push failure comes back as a plain error result with
    * an 'error' journal event, status untouched — the branch and worktree are
@@ -1612,6 +1768,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       record.updated_at = new Date().toISOString()
       saveTask(cwd, record)
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      // T3.7, AFTER the write and the frame: this transition never reaches
+      // `onTask` (ship persists and broadcasts on its own), so it is mirrored
+      // here or nowhere. Not awaited — the ship's own answer must not wait on
+      // a forge round trip about a label, and `shipped` shares
+      // `codesema:reviewing` with the `review_ok` it comes from, so the
+      // nominal auto-ship spends nothing at all here.
+      trackCycleLabel(mirrorCycleLabel(projectId, cwd, record))
       // T1.9: nothing was ever created for a 'policy' task, so nothing is
       // attempted for one either — same gate as the runner's abandon path.
       if (record.isolation === 'container') {
@@ -1620,6 +1783,72 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       return { ok: true }
     } finally {
       ctx.shipping.delete(id)
+    }
+  }
+
+  /**
+   * What a LANDED merge owes the ticket, in the ONE order T3.5's decision 3
+   * and T3.6's insertion note both fix: the recap COMMENT, then the
+   * `codesema:merged` LABEL, then `closeIssue`.
+   *
+   * WHY THAT ORDER, both halves of it:
+   *
+   *   - the closure is LAST because an issue closed without its recap is a
+   *     ticket closed without a trace (T3.5, decision 3). `publishTaskRecap`
+   *     owns that rule — a comment that did not land skips the closure — and
+   *     it is not re-implemented here;
+   *   - the label sits BETWEEN the two because a closed issue can refuse a
+   *     label, never the other way round. `onBeforeClose` is the slot T3.5
+   *     kept `closeStep` a separate step for.
+   *
+   * The label is posed on EVERY landed merge, including the ones whose recap
+   * was held back locally (no recap on disk, a recap carrying a secret): the
+   * merge is a fact about the BRANCH, and it stayed true whatever happened to
+   * the comment. `posed` is what makes it exactly once — the hook runs only on
+   * the path that reaches the closure, so the other paths pose it right after.
+   *
+   * AWAITED, all of it, and awaited by an awaited `runMergeStep`: a
+   * publication that left "in the background" would let this hook return, the
+   * runner release the project's claim and the process start draining with the
+   * comment unwritten — and, worse, could put the closure of the issue ahead
+   * of the recap that justifies it. That is the promise the shortcut breaks.
+   *
+   * NOTHING here touches the record: a merge that landed leaves the status on
+   * `shipped` (T3.6), and a forge that refused the comment, the label or the
+   * closure is a named degradation on the JOURNAL — never a status, never a
+   * `record.reason`. `published.events` are appended by `publishTaskRecap`
+   * itself, so they are only BROADCAST here: the caller announces what landed
+   * on disk, not what was attempted (invariant 2's API leg).
+   */
+  const publishMergedOutcome = async (ctx: ProjectContext, record: TaskRecord): Promise<void> => {
+    const cwd = ctx.project.path
+    const projectId = ctx.project.id
+    let posed = false
+    const poseMerged = async (): Promise<void> => {
+      posed = true
+      // Named explicitly, because NO status maps to it: a record stays
+      // 'shipped' after its branch lands, so this label is posed by whatever
+      // performed the merge or by nothing at all (task-labels.ts, D15).
+      await writeCycleLabel(projectId, cwd, record, 'codesema:merged')
+    }
+    const published = await publishTaskRecap({
+      cwd,
+      task: record,
+      // A FACT, handed in, never evaluated there: this is the one call site
+      // that knows the merge happened.
+      merged: true,
+      ...(opts.issueExecFn ? { execFn: opts.issueExecFn } : {}),
+      onBeforeClose: poseMerged,
+    })
+    for (const event of published.events) {
+      emit({
+        project_id: projectId,
+        task_id: record.id,
+        event: { name: 'task_event', data: event },
+      })
+    }
+    if (!posed) {
+      await poseMerged()
     }
   }
 
@@ -1647,11 +1876,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    *    open risk); inventing one here would be a contract change nobody
    *    decided.
    *
-   * ORDER FOR THE TICKETS THAT FOLLOW — T3.5's recap comment and issue
-   * closing, and T3.7's `codesema:merged` label — is: recap comment, then the
-   * label, then `closeIssue`, and ALL THREE only on `outcome.kind === 'merged'`
-   * (a closed issue can refuse a label; never the other way round). The
-   * insertion point is right below, where this function returns the outcome.
+   * WHAT THE TICKET GETS — T3.5's recap comment and issue closing, and T3.7's
+   * `codesema:merged` label — is `publishMergedOutcome` above: recap comment,
+   * then the label, then `closeIssue`, and all three only on
+   * `outcome.kind === 'merged'` (a closed issue can refuse a label; never the
+   * other way round). It is awaited right below, before this function returns
+   * the outcome.
    *
    * Never rejects: a merge module that threw would strand the end of a turn.
    */
@@ -1694,6 +1924,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       record.updated_at = new Date().toISOString()
       saveTask(cwd, record)
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      // T3.7, same shape as the ship's: after the persisted transition, never
+      // instead of it. `waiting_for_you` is `codesema:blocked` — the ticket
+      // now says a person is needed, which is exactly what just became true.
+      trackCycleLabel(mirrorCycleLabel(projectId, cwd, record))
+    }
+    if (outcome.kind === 'merged') {
+      // T3.5 × T3.6 × T3.7, and the only place `outcome.kind === 'merged'` is
+      // ever read: what a LANDED merge owes the ticket. AWAITED — see
+      // `publishMergedOutcome`.
+      await publishMergedOutcome(ctx, record)
     }
     return outcome
   }
@@ -2244,8 +2484,24 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       ...(pinAllowedDomains ? { pinAllowedDomains } : {}),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
       ...(opts.releaseAgentHomeFn ? { releaseAgentHomeFn: opts.releaseAgentHomeFn } : {}),
-      onTask: (record) =>
-        emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } }),
+      onTask: (record) => {
+        emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+        // T3.7: THE funnel for every transition the runner owns — 'running',
+        // 'reviewing', 'review_ko', 'waiting_for_you', 'interrupted',
+        // 'failed', and the 'queued' a reply or a resume writes. The runner
+        // persists BEFORE it calls this hook, so the label is always an effect
+        // of a transition already on disk.
+        //
+        // Not awaited, and it cannot be: this hook is `(record) => void` by
+        // the runner's contract. That is also the right shape — design
+        // decision 3 of task-labels.ts says the label is an effect of the
+        // transition and never a condition of it, and a turn that waited on a
+        // forge to change status would make it exactly that. What the shortcut
+        // would otherwise cost is paid for elsewhere: order between poses is
+        // `syncCycleLabel`'s per-issue serialisation, and a process exiting
+        // mid-pose is `shutdown()`'s drain.
+        trackCycleLabel(mirrorCycleLabel(projectId, cwd, record))
+      },
       onEvent: (taskId, event) =>
         emit({
           project_id: projectId,
@@ -3061,6 +3317,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         data: { isolation: planned.isolation, reason: planned.isolationReason },
       })
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      // T3.7: the record's FIRST persisted status, and the only place
+      // `codesema:queued` is reachable for a task that is created into a busy
+      // project — `start()` below persists nothing when the task has to wait,
+      // so `onTask` would not see it until its turn came, possibly hours
+      // later. Not awaited: creating a task must not wait on a forge.
+      trackCycleLabel(mirrorCycleLabel(projectId, ctx.project.path, record))
       emit({
         project_id: projectId,
         task_id: record.id,
@@ -3240,6 +3502,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
 
     async shutdown() {
       await Promise.allSettled([...contexts.values()].map((ctx) => ctx.runner.shutdown()))
+      // T3.7: the poses started from `onTask`, `create()` and `ship()` have no
+      // caller to await them. Drained here so the process does not exit
+      // between a transition and the label that mirrors it — including the
+      // 'interrupted' transitions the runner shutdown just above writes.
+      // Bounded by a COUNT of rounds and not by a clock: a pose starts no
+      // other pose, so the rounds only exist for the ones enqueued while the
+      // previous batch was settling.
+      for (
+        let round = 0;
+        round < CYCLE_LABEL_DRAIN_ROUNDS && cycleLabelPoses.size > 0;
+        round += 1
+      ) {
+        await Promise.allSettled(cycleLabelPoses)
+      }
     },
 
     subscribe(listener) {

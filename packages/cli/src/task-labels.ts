@@ -36,10 +36,14 @@
 // NOT WIRED FROM HERE. `syncCycleLabel` is a pure entry point: it writes to the
 // forge and returns what happened, and its caller decides when to call it and
 // appends the event it hands back — exactly the shape `reconcileIssueSnapshot`
-// / `issueReconcileEvent` already have in task-issue.ts. The status
-// transitions of `task-server.ts` and the end of merge of `task-merge.ts`
-// (T3.6, `codesema:merged`) are the two call sites this is meant for; neither
-// is called from this module.
+// / `issueReconcileEvent` already have in task-issue.ts.
+//
+// ITS CALLERS, all in task-server.ts and all AFTER a persisted transition:
+// `mirrorCycleLabel` (the status half — `onTask`, `create()`, `ship()` and the
+// merge step's hand-back), and `publishMergedOutcome` (the merge half, which
+// names `codesema:merged` explicitly because no status maps to it). None of
+// them writes the record, and none of them lets an outcome of this module
+// enter a decision.
 
 import { resolveProjectConfig } from './config.js'
 import type { TaskIssueRef, TaskReason, TaskStatus } from './contract.js'

@@ -64,6 +64,8 @@ import {
   resetActiveClaims,
   resetQueueDegradedReports,
 } from './task-queue.js'
+import { RECAP_MARKER_PREFIX } from './task-recap-publish.js'
+import { writeTaskRecap } from './task-recap.js'
 import type { TaskRetentionOutcome } from './task-retention.js'
 import { readTaskReview, type CreateTaskReviewerOptions } from './task-review.js'
 import {
@@ -9606,5 +9608,804 @@ describe('automatic fix loop, end to end (T3.3)', () => {
       slot.release?.()
       await manager.shutdown()
     }
+  })
+})
+
+// --- T3.7 × T3.6 × T3.5: the cycle mirrored onto the ticket ----------------
+//
+// These tests are about the WIRE, not the mechanisms: `syncCycleLabel`,
+// `cycleLabelEvent` and `publishTaskRecap` are each proven in their own file,
+// and all three used to have no production caller at all — deleting them from
+// this module left every suite green. What is asserted here is therefore, in
+// every case, an argv or a journal line that only the CALL SITE can produce.
+describe('cycle labels and the recap, wired onto a real run', () => {
+  const jsonl = (events: unknown[]) => `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+  const claudeStream = (response: string) =>
+    jsonl([
+      { type: 'system', subtype: 'init', session_id: 'sess-cycle' },
+      { type: 'result', result: response },
+    ])
+
+  const SET_LABELS = '--raw-field=labels[]='
+
+  /**
+   * One forge, stateful about the issue's labels, recording only the WRITES.
+   * Reads are noise here (admission, snapshot reconciliation and every pose
+   * spend one each); what the wiring is judged on is what it wrote, and in
+   * which order.
+   */
+  function cycleForge(
+    opts: {
+      body: string
+      labels?: string[]
+      catalog?: string[]
+      comments?: string[]
+      failLabelWrite?: boolean
+      /** Refuses the FIRST write of this label only; every later one lands. */
+      failLabelWriteOnce?: string
+      failClose?: boolean
+    } = { body: '' },
+  ) {
+    /** Write operations, in the order the forge saw them. */
+    const writes: string[] = []
+    const refusedOnce = new Set<string>()
+    const labels = [...(opts.labels ?? [])]
+    const issueJson = () =>
+      JSON.stringify({
+        number: 42,
+        title: 'Fix flaky worktree cleanup',
+        body: opts.body,
+        state: 'OPEN',
+        labels: labels.map((name) => ({ name })),
+        author: { id: 'u1', is_bot: false, login: 'octocat', name: 'The Octocat' },
+        createdAt: '2026-07-20T09:00:00Z',
+        updatedAt: '2026-07-28T10:00:00Z',
+        url: 'https://github.com/acme/repo/issues/42',
+      })
+    const rig = forgeRig((call) => {
+      const [verb, sub] = call.args
+      if (verb === 'issue' && sub === 'view') {
+        // `--json comments` is `listIssueComments`; anything else is `getIssue`
+        // (the label pose's read, the admission's, the reconciliation's).
+        if (call.args.includes('comments')) {
+          return {
+            kind: 'ok',
+            stdout: JSON.stringify({
+              comments: (opts.comments ?? []).map((body) => ({
+                body,
+                author: { login: 'octocat' },
+                createdAt: '2026-08-01T09:00:00Z',
+              })),
+            }),
+          }
+        }
+        return { kind: 'ok', stdout: issueJson() }
+      }
+      if (verb === 'label' && sub === 'list') {
+        return {
+          kind: 'ok',
+          stdout: JSON.stringify((opts.catalog ?? []).map((name) => ({ name }))),
+        }
+      }
+      if (verb === 'label' && sub === 'create') {
+        writes.push(`label create ${String(call.args[2])}`)
+        return { kind: 'ok', stdout: '' }
+      }
+      if (verb === 'api') {
+        const next = call.args
+          .filter((arg) => arg.startsWith(SET_LABELS))
+          .map((arg) => arg.slice(SET_LABELS.length))
+        writes.push(`labels ${next.join(',')}`)
+        const once = opts.failLabelWriteOnce
+        if (once !== undefined && next.includes(once) && !refusedOnce.has(once)) {
+          refusedOnce.add(once)
+          return { kind: 'error', message: 'gh: HTTP 502 Bad Gateway (labels)' }
+        }
+        if (opts.failLabelWrite) {
+          return { kind: 'error', message: 'gh: HTTP 502 Bad Gateway (labels)' }
+        }
+        labels.splice(0, labels.length, ...next)
+        return { kind: 'ok', stdout: '' }
+      }
+      if (verb === 'issue' && sub === 'comment') {
+        writes.push('comment')
+        return { kind: 'ok', stdout: '' }
+      }
+      if (verb === 'issue' && sub === 'close') {
+        writes.push('close')
+        return opts.failClose
+          ? { kind: 'error', message: 'gh: HTTP 502 Bad Gateway (close)' }
+          : { kind: 'ok', stdout: '' }
+      }
+      return { kind: 'error', message: `unexpected argv: ${call.args.join(' ')}` }
+    })
+    return { ...rig, writes, currentLabels: () => [...labels] }
+  }
+
+  /** Every cycle label this run wrote, in order — the pose trace on its own. */
+  const posed = (writes: readonly string[]): string[] =>
+    writes.filter((op) => op.startsWith('labels ')).map((op) => op.slice('labels '.length))
+
+  type RunOpts = {
+    /** The project's `.codesema/config.json` opt-in. Absent means never declared. */
+    cycleLabels?: boolean
+    /** What the merge step answers. Absent means the default `human` policy: no merge. */
+    merged?: boolean
+    /** Whether the ship writes a recap.json — the document `publishTaskRecap` reads. */
+    recap?: boolean
+    forge: ReturnType<typeof cycleForge>
+    /** Skips `manager.create({issue})`: a task with no ticket at all. */
+    ticketless?: boolean
+  }
+
+  /**
+   * One whole nominal run — create, turn, review OK, auto-ship, merge step —
+   * awaited to its end through `shutdown()`, which drains the poses started
+   * from hooks that have nothing to await them with.
+   */
+  async function runCycle(opts: RunOpts) {
+    const project = register(makeRepoWithRemote())
+    if (opts.cycleLabels !== undefined) {
+      saveRepoConfig(project.path, { forgeCycleLabels: opts.cycleLabels })
+    }
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        if (opts.recap) {
+          // What the real ship leaves behind, and the only document
+          // `publishTaskRecap` will agree to publish.
+          writeTaskRecap(options.cwd, options.task.id, {
+            version: 1,
+            summary: 'Rewired the worktree cleanup.',
+            changes: ['worktree: prune before delete'],
+            decisions: [],
+            files: ['src/task-worktree.ts'],
+            tests: [{ command: 'bun test', status: 'passed' }],
+            branch: options.task.branch,
+          })
+        }
+        return Promise.resolve({
+          pushed: true,
+          mrUrl: 'https://github.com/acme/repo/pull/9',
+          note: null,
+        })
+      },
+      issueExecFn: opts.forge.execFn,
+      ...(opts.merged
+        ? {
+            mergeSettings: {
+              policy: 'auto' as const,
+              deleteBranch: false,
+              allowMergeWithoutChecks: false,
+            },
+            mergeTaskFn: () =>
+              Promise.resolve({
+                kind: 'merged' as const,
+                cli: 'gh' as const,
+                url: 'https://github.com/acme/repo/pull/9',
+                readiness: { ready: true, conditions: [], blockers: [] },
+                events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+              }),
+          }
+        : {}),
+    })
+    const created = await manager.create(project.id, {
+      autoShip: true,
+      ...(opts.ticketless
+        ? { title: 'No ticket at all', prompt: 'do it' }
+        : { issue: VALID_ISSUE_REF }),
+    })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    const id = created.record.id
+    // Bounded on a COUNT of journal lines, never on a duration: the merge step
+    // writes its own line unconditionally, so this is a wait for a fact the
+    // run always produces — a regression turns into an assertion below, not
+    // into a timeout that reads the same as a slow machine.
+    await until(() => readTaskEvents(project.path, id).some((e) => e.type === 'merge'))
+    // Drains the poses `onTask` / `create()` / `ship()` could not await: after
+    // this, everything this run will ever write to the forge is written.
+    await manager.shutdown()
+    return { project, manager, id, events: () => readTaskEvents(project.path, id) }
+  }
+
+  test('a project that never opted in writes no cycle label at all — and still gets its recap', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, merged: true, recap: true })
+
+    // The opt-in half: not one label write, not even a catalog read, across
+    // admission → running → reviewing → shipped → merged. `disabled` leaves
+    // `syncCycleLabel` before a single forge argv is BUILT, and the wiring is
+    // what has to preserve that.
+    expect(posed(forge.writes)).toEqual([])
+    expect(forge.calls.some((c) => c.args[0] === 'label')).toBe(false)
+    expect(forge.calls.some((c) => c.args[0] === 'api')).toBe(false)
+    // ...and the recap publication is NOT behind that opt-in: a merge that
+    // landed still comments and still closes. The two are wired together and
+    // gated apart, which is the whole point of asserting them in one test.
+    expect(forge.writes).toEqual(['comment', 'close'])
+    expect(run.events().some((e) => e.type === 'issue' && e.data.name === 'recap_posted')).toBe(
+      true,
+    )
+    expect(run.events().some((e) => e.type === 'issue' && e.data.name === 'closed')).toBe(true)
+  })
+
+  test('an opted-in run poses one label per transition, then comment → codesema:merged → close', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+
+    // ONE label per transition, and only where the label actually changes:
+    // 'review_ok' and 'shipped' both mean `codesema:reviewing`, so the three
+    // transitions that share it cost one write, not three.
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:merged',
+    ])
+    // Lazily created, once each, and only the ones this run actually needed:
+    // `codesema:blocked` never appears in a repo whose tasks never block.
+    expect(forge.writes.filter((op) => op.startsWith('label create'))).toEqual([
+      'label create codesema:queued',
+      'label create codesema:in-progress',
+      'label create codesema:reviewing',
+      'label create codesema:merged',
+    ])
+    // THE order T3.5's decision 3 fixes, asserted as an order and not as a
+    // set: the recap comment, then the label, then the closure. Reversing any
+    // two of them is what this reads.
+    const at = (op: string) => forge.writes.indexOf(op)
+    expect(at('comment')).toBeGreaterThanOrEqual(0)
+    expect(at('comment')).toBeLessThan(at('labels codesema:merged'))
+    expect(at('labels codesema:merged')).toBeLessThan(at('close'))
+    // The issue is left carrying exactly one cycle label, and it is the one
+    // no STATUS maps to.
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+    // A landed merge moves no status (T3.6) and a pose is not news: no
+    // 'label_not_posed' line on a run where everything landed.
+    expect(loadTask(run.project.path, run.id)?.status).toBe('shipped')
+    expect(loadTask(run.project.path, run.id)?.reason).toBeUndefined()
+    expect(run.events().some((e) => e.data.name === 'label_not_posed')).toBe(false)
+    // SIX issue reads for the whole run, and the exact figure is the point:
+    // one for the admission, one for the pre-review snapshot reconciliation,
+    // and ONE PER POSE — four, not six. `review_ok` and `shipped` are
+    // transitions that say nothing new about the ticket, and the wiring
+    // recognises that BEFORE spending a round trip on `syncCycleLabel`'s own
+    // `unchanged`. It is the same guard that keeps a heartbeat — which lands
+    // on `onTask` exactly like a transition does — from reading the issue
+    // every thirty seconds for the length of a turn.
+    expect(
+      forge.calls.filter(
+        (c) => c.args[0] === 'issue' && c.args[1] === 'view' && !c.args.includes('comments'),
+      ).length,
+    ).toBe(6)
+  })
+
+  test('a merge the gate refuses hands the task back AND says so on the ticket', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      issueExecFn: forge.execFn,
+      // The REAL gate under `auto`: no archived review, no criteria verdicts —
+      // refused long before any merge command is built.
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+    })
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() =>
+      readTaskEvents(project.path, created.record.id).some(
+        (e) => e.type === 'merge' && e.data.name === 'refused',
+      ),
+    )
+    await manager.shutdown()
+
+    expect(loadTask(project.path, created.record.id)?.status).toBe('waiting_for_you')
+    // The hand-back is a transition like any other, and the ticket says it:
+    // the four statuses that stop needing the machine and start needing a
+    // person all read `codesema:blocked` from the outside.
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:blocked',
+    ])
+    // A refused merge is not a merge: no recap comment, no closure, and no
+    // `codesema:merged` anywhere near this ticket.
+    expect(forge.writes).not.toContain('comment')
+    expect(forge.writes).not.toContain('close')
+    expect(forge.currentLabels()).toEqual(['codesema:blocked'])
+  })
+
+  test('a HUMAN ship out of a review_ko moves the ticket off codesema:blocked', async () => {
+    // The one transition that never reaches `onTask`: `ship()` persists and
+    // broadcasts on its own, so this label is mirrored from the ship's own
+    // call site or from nowhere. The auto-ship path cannot show it — `shipped`
+    // shares `codesema:reviewing` with the `review_ok` it chains from — so the
+    // discriminating input is a ship the human clicks on a KO review, where
+    // the ticket really does move from `codesema:blocked`.
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ko'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      issueExecFn: forge.execFn,
+    })
+    const created = await manager.create(project.id, { autoShip: false, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() => loadTask(project.path, created.record.id)?.status === 'review_ko')
+    expect(await manager.ship(project.id, created.record.id)).toEqual({ ok: true })
+    await manager.shutdown()
+
+    expect(loadTask(project.path, created.record.id)?.status).toBe('shipped')
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:blocked',
+      'codesema:reviewing',
+    ])
+    expect(forge.currentLabels()).toEqual(['codesema:reviewing'])
+  })
+
+  test('the turn does not end until the ticket has been written: no background publication', async () => {
+    // TRAP N° 1 OF THIS BATCH, and the one no assertion on a finished run can
+    // see: turning `await publishMergedOutcome(...)` into `void
+    // publishMergedOutcome(...)` leaves every outcome of every other test in
+    // this file identical, because a rig that answers instantly finishes the
+    // publication before anyone looks. What the shortcut actually breaks is a
+    // promise about TIME — the end of a turn releases the project's claim, and
+    // a claim released with the comment still in flight lets the NEXT task of
+    // that project start on a ticket this one has not finished writing (and,
+    // on a Ctrl-C, lets the process drain out from under it).
+    //
+    // So the assertion is an ORDER between two independent facts: the issue is
+    // closed, and the next task's agent starts. One forge answer is held open
+    // to make the two separable at all.
+    const log: string[] = []
+    /** A holder, not a bare `let`: the assignment happens inside a callback. */
+    const gate: { release: (() => void) | null } = { release: null }
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 10_000,
+      runAgentFn: (options: AgentRunOptions) => {
+        log.push(options.prompt.includes('wait your turn') ? 'agent:next' : 'agent:first')
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        writeTaskRecap(options.cwd, options.task.id, {
+          version: 1,
+          summary: 'Rewired the worktree cleanup.',
+          changes: [],
+          decisions: [],
+          files: [],
+          tests: [],
+          branch: options.task.branch,
+        })
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+      issueExecFn: ((cli, args, cwd) => {
+        if (args[0] === 'issue' && args[1] === 'comment') {
+          log.push('comment-asked')
+          // Held OPEN: the publication cannot finish until this is released.
+          return new Promise((resolve) => {
+            gate.release = () => {
+              resolve(forge.execFn(cli, args, cwd))
+            }
+          })
+        }
+        if (args[0] === 'issue' && args[1] === 'close') {
+          log.push('closed')
+        }
+        return forge.execFn(cli, args, cwd)
+      }) as ForgeIssuesExecFn,
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }),
+    })
+    const first = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    const second = await manager.create(project.id, {
+      autoShip: false,
+      title: 'next',
+      prompt: 'wait your turn',
+    })
+    if (!first.ok || !second.ok) {
+      throw new Error('create refused')
+    }
+    try {
+      await until(() => log.includes('comment-asked'))
+      // A COUNTER, never a clock: the answer is released as soon as the second
+      // task's agent has started — which, if the publication is properly
+      // awaited, never happens — and otherwise after a bounded number of
+      // polls, so a correct build finishes instead of hanging on a promise
+      // nobody will keep.
+      for (let poll = 0; poll < 200 && !log.includes('agent:next'); poll += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      gate.release?.()
+      await until(() => log.includes('closed') && log.includes('agent:next'), 10_000)
+      // The whole assertion: the ticket was finished BEFORE the project moved on.
+      expect(log.indexOf('closed')).toBeLessThan(log.indexOf('agent:next'))
+    } finally {
+      gate.release?.()
+      await manager.shutdown()
+    }
+  })
+
+  test('a pose that failed is retried by the next transition that wants the same label', async () => {
+    // The discriminating input is the ONE case a run where everything fails
+    // cannot show: a single refused write, followed by a LATER transition
+    // asking for the SAME label. `reviewing`, `review_ok` and `shipped` all
+    // mean `codesema:reviewing`, so the second of them is the retry — but only
+    // if the failure was not remembered as a pose. Remember it and the ticket
+    // stays on `codesema:in-progress` for good, silently, under a journal line
+    // that promised a correction which never comes.
+    const forge = cycleForge({
+      body: conformingTicketBody(),
+      catalog: [],
+      failLabelWriteOnce: 'codesema:reviewing',
+    })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: async (record, io) => {
+        // Held until the 'reviewing' pose has actually FAILED and said so, so
+        // the transition below is a later one and not a concurrent one — two
+        // poses of the same label in flight together are meant to collapse
+        // into one, which is a different rule and not the one under test.
+        // A COUNTER, not a clock: a build that never journals the failure
+        // falls out of the loop and fails the assertion below instead of
+        // hanging on a condition that will not come.
+        for (
+          let poll = 0;
+          poll < 300 &&
+          !readTaskEvents(project.path, record.id).some((e) => e.data.name === 'label_not_posed');
+          poll += 1
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        record.status = 'review_ok'
+        io.persist()
+      },
+      shipTaskFn: () => Promise.resolve({ pushed: true, mrUrl: null, note: null }),
+      issueExecFn: forge.execFn,
+    })
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() => loadTask(project.path, created.record.id)?.status === 'shipped', 10_000)
+    await manager.shutdown()
+
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:reviewing',
+    ])
+    // The retry landed: the ticket ends up telling the truth.
+    expect(forge.currentLabels()).toEqual(['codesema:reviewing'])
+    // ...and the one failure was still named, exactly once.
+    expect(
+      readTaskEvents(project.path, created.record.id).filter(
+        (e) => e.type === 'issue' && e.data.name === 'label_not_posed',
+      ),
+    ).toHaveLength(1)
+  })
+
+  test('every degradation of this wiring reaches the bus, not only the journal', async () => {
+    // Invariant 2 has THREE legs — a readable reason, a journal line, and the
+    // API surfacing that journal — and the third is the one a `readTaskEvents`
+    // assertion cannot see: `publishTaskRecap` appends its own lines to disk,
+    // so a caller that forgets to broadcast them leaves every on-disk
+    // assertion green while no live workspace ever learns what happened.
+    const envelopes: TaskEnvelope[] = []
+    const forge = cycleForge({
+      body: conformingTicketBody(),
+      catalog: [],
+      failLabelWrite: true,
+      failClose: true,
+    })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        writeTaskRecap(options.cwd, options.task.id, {
+          version: 1,
+          summary: 'Rewired the worktree cleanup.',
+          changes: [],
+          decisions: [],
+          files: [],
+          tests: [],
+          branch: options.task.branch,
+        })
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+      issueExecFn: forge.execFn,
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }),
+    })
+    manager.subscribe((envelope) => envelopes.push(envelope))
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() =>
+      readTaskEvents(project.path, created.record.id).some((e) => e.type === 'merge'),
+    )
+    await manager.shutdown()
+
+    const broadcast = envelopes
+      .filter((e) => e.event.name === 'task_event')
+      .map((e) => e.event.data as TaskEvent)
+      .filter((event) => event.type === 'issue')
+      .map((event) => event.data.name)
+    // T3.5's own lines, appended by `publishTaskRecap` and broadcast by its
+    // caller...
+    expect(broadcast).toContain('recap_posted')
+    expect(broadcast).toContain('close_unreachable')
+    // ...and T3.7's, appended and broadcast by the pose's call site.
+    expect(broadcast).toContain('label_not_posed')
+  })
+
+  test('abandoning a merged task never walks the ticket back off codesema:merged', async () => {
+    // `codesema:merged` is the one label NO status maps to, and 'shipped' is a
+    // status the record keeps for good. An abandon — the ordinary way a human
+    // reclaims a landed task's worktree — re-persists that very 'shipped',
+    // which reaches `onTask` like any transition would. Mirroring it would
+    // relabel the ticket `codesema:reviewing` and undo, on the forge, the one
+    // thing the whole merge chain exists to say.
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+    const before = forge.writes.length
+
+    expect(await run.manager.abandon(run.project.id, run.id)).toMatchObject({ ok: true })
+    await run.manager.shutdown()
+
+    // Not one more forge write, and the ticket still says what happened.
+    expect(forge.writes).toHaveLength(before)
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+  })
+
+  test('a task with no ticket asks the forge nothing, opt-in or not', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    await runCycle({ forge, cycleLabels: true, merged: true, recap: true, ticketless: true })
+    expect(forge.calls).toEqual([])
+  })
+
+  test('a label write the forge refuses changes no status, and says so in the journal', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [], failLabelWrite: true })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+
+    // 1. The status is IDENTICAL to the nominal run: a label is an effect of
+    //    the transition, never a condition of it, and nothing in this module
+    //    lets a forge failure reach `saveTask`.
+    const record = loadTask(run.project.path, run.id)
+    expect(record?.status).toBe('shipped')
+    expect(record?.reason).toBeUndefined()
+    // 2. The merge's own work still happened, in its order: a label that would
+    //    not be written must not cost the ticket its recap or its closure.
+    expect(forge.writes.filter((op) => !op.startsWith('label'))).toEqual(['comment', 'close'])
+    // 3. And it is NOT silent: one readable line per failed pose, on the
+    //    'issue' domain, with the D2 code ADDED beside the message.
+    const failures = run
+      .events()
+      .filter((e) => e.type === 'issue' && e.data.name === 'label_not_posed')
+    expect(failures.length).toBeGreaterThanOrEqual(4)
+    expect(failures.map((e) => e.data.label)).toContain('codesema:merged')
+    expect(failures.every((e) => e.reason_code === 'forge_unreachable')).toBe(true)
+    expect(failures.every((e) => e.data.step === 'write')).toBe(true)
+    expect(String(failures[0]?.data.message)).toContain("the task's status is unaffected")
+  })
+
+  test('a failed pose is retried at the next transition, never remembered as posed', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [], failLabelWrite: true })
+    await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+    // Every transition tried, none of them believed the ticket already said
+    // what it never said: the claim staked before the round trip is dropped on
+    // a failure, which is exactly what `cycleLabelEvent`'s own message
+    // promises ("to be corrected at the next transition").
+    expect(posed(forge.writes)).toEqual([
+      'codesema:queued',
+      'codesema:in-progress',
+      'codesema:reviewing',
+      'codesema:merged',
+    ])
+  })
+
+  test('a merge whose recap never made it still poses codesema:merged, and never closes the issue', async () => {
+    // No recap.json on disk: the publication is refused LOCALLY, the forge is
+    // perfectly healthy, and the merge is still a fact about the branch.
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: false })
+
+    expect(forge.writes).not.toContain('comment')
+    // An issue closed without its recap is a ticket closed without a trace.
+    expect(forge.writes).not.toContain('close')
+    expect(run.events().some((e) => e.type === 'issue' && e.data.name === 'recap_missing')).toBe(
+      true,
+    )
+    // ...and the label is posed all the same, LAST, because the merge happened.
+    expect(posed(forge.writes).at(-1)).toBe('codesema:merged')
+  })
+
+  test('a closure the forge refuses is named, and still leaves the label posed', async () => {
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [], failClose: true })
+    const run = await runCycle({ forge, cycleLabels: true, merged: true, recap: true })
+
+    const closeFailed = run
+      .events()
+      .find((e) => e.type === 'issue' && e.data.name === 'close_unreachable')
+    expect(closeFailed).toBeDefined()
+    expect(closeFailed?.reason_code).toBe('forge_unreachable')
+    expect(String(closeFailed?.data.message)).toContain('carries the recap but could not be closed')
+    expect(forge.currentLabels()).toEqual(['codesema:merged'])
+    // Still no status moved by any of it.
+    expect(loadTask(run.project.path, run.id)?.status).toBe('shipped')
+  })
+
+  test('a recap already on the ticket is not sent twice, and the issue is still closed', async () => {
+    const marker = `<!-- ${RECAP_MARKER_PREFIX}`
+    const forge = cycleForge({ body: conformingTicketBody(), catalog: [] })
+    const project = register(makeRepoWithRemote())
+    saveRepoConfig(project.path, { forgeCycleLabels: true })
+    // The idempotence guard needs the TASK's own id, which only exists once
+    // the task does — so the marker is planted from the ship stub, on the very
+    // task about to be published.
+    const seen: string[] = []
+    const manager = createTaskManager({
+      command: 'claude -p',
+      timeoutMs: 5000,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('all done')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        seen.push(`${marker}${options.task.id} -->`)
+        writeTaskRecap(options.cwd, options.task.id, {
+          version: 1,
+          summary: 'Rewired the worktree cleanup.',
+          changes: [],
+          decisions: [],
+          files: [],
+          tests: [],
+          branch: options.task.branch,
+        })
+        return Promise.resolve({ pushed: true, mrUrl: null, note: null })
+      },
+      issueExecFn: ((cli, args, cwd) => {
+        if (args[0] === 'issue' && args[1] === 'view' && args.includes('comments')) {
+          return Promise.resolve({
+            kind: 'ok' as const,
+            stdout: JSON.stringify({
+              comments: seen.map((body) => ({
+                body,
+                author: { login: 'octocat' },
+                createdAt: '2026-08-01T09:00:00Z',
+              })),
+            }),
+          })
+        }
+        return forge.execFn(cli, args, cwd)
+      }) as ForgeIssuesExecFn,
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: () =>
+        Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }),
+    })
+    const created = await manager.create(project.id, { autoShip: true, issue: VALID_ISSUE_REF })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() =>
+      readTaskEvents(project.path, created.record.id).some((e) => e.type === 'merge'),
+    )
+    await manager.shutdown()
+
+    const events = readTaskEvents(project.path, created.record.id)
+    expect(events.some((e) => e.type === 'issue' && e.data.name === 'recap_already_posted')).toBe(
+      true,
+    )
+    expect(forge.writes).not.toContain('comment')
+    // Posted by an earlier run IS posted: the closure goes ahead, and the
+    // label still sits between the two.
+    const at = (op: string) => forge.writes.indexOf(op)
+    expect(at('labels codesema:merged')).toBeGreaterThanOrEqual(0)
+    expect(at('labels codesema:merged')).toBeLessThan(at('close'))
   })
 })

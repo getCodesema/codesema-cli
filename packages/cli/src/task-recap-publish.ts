@@ -21,10 +21,13 @@
 //     (`forge_unreachable` + a readable reason + a journal line) and leaves
 //     `recap.json` untouched on disk (design decision 6).
 //
-// It has NO CALLER yet: T3.6 owns the merge and is therefore the only thing
-// that can supply `merged`. Said here rather than left to be discovered,
-// because the previous ticket in this chain shipped a generator with no caller
-// while claiming otherwise.
+// ITS ONE CALLER is `runMergeStep` (task-server.ts), on `outcome.kind ===
+// 'merged'` and nowhere else: T3.6 owns the merge and is therefore the only
+// thing that can supply `merged`. That call is AWAITED inside the merge step,
+// which is itself awaited by `onTurnDone` — a recap that left "in the
+// background" is a recap whose issue can be closed before anything was
+// written, and the end of a turn would release the project's claim with the
+// publication still in flight.
 
 import {
   detectDiffSecrets,
@@ -228,6 +231,20 @@ export type PublishRecapOptions = {
   merged: boolean
   /** Forge I/O seam (§ 0.4): no test ever runs a real gh/glab, it asserts on the argv. */
   execFn?: ForgeIssuesExecFn | undefined
+  /**
+   * T3.7's slot, and the reason `closeStep` was kept a step of its own: what
+   * runs BETWEEN the recap comment and `closeIssue`, exactly once, and only on
+   * the path where the closure is actually attempted (a bound issue, `merged`
+   * true). The wiring uses it for the `codesema:merged` label, because a closed
+   * issue can refuse a label and never the other way round.
+   *
+   * AWAITED, never fired off: the whole point of the slot is that the closure
+   * happens after it. And its rejection is SWALLOWED — this function is
+   * documented as never throwing, and a hook that blew up must not cost the
+   * closure of an issue whose recap is already on the forge; the hook owns its
+   * own degradation reporting (`cycleLabelEvent`, in the wiring's case).
+   */
+  onBeforeClose?: () => Promise<unknown>
   // --- Seams for everything else this function touches.
   readTaskRecapFn?: typeof readTaskRecap
   listIssueCommentsFn?: typeof listIssueComments
@@ -314,6 +331,15 @@ async function closeStep(
     // Not merged: the issue stays open, and that is the right answer, not a
     // degradation — nothing to journal, nothing to name.
     return { ...done, close: 'not_merged', reason: null }
+  }
+  if (opts.onBeforeClose) {
+    // Between the comment and the closure, and awaited: see the option's doc.
+    try {
+      await opts.onBeforeClose()
+    } catch {
+      // Never throws, and never blocks the closure — the hook is an effect of
+      // the merge, not a condition of it.
+    }
   }
   const closed = await (opts.closeIssueFn ?? closeIssue)({
     cwd: opts.cwd,
