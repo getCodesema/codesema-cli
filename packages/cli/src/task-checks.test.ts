@@ -6,14 +6,20 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { containerGitStateDir } from './container-git.js'
 import { TASK_CHECK_TAIL_MAX, type TaskChecks } from './contract.js'
 import {
+  bootstrapWorktreeInstall,
+  BUN_INSTALL_COMMAND,
   DEFAULT_CHECK_TIMEOUT_SECONDS,
   DEFAULT_CHECKS_IMAGE,
   detectChecks,
   detectContainerRuntime,
   detectFromDeclarations,
+  detectInstall,
+  lockfileFingerprint,
+  pkgCacheVolume,
   planFromConfig,
   resolveChecksPlan,
   runChecks,
+  worktreeHasDeps,
   type ExecFn,
   type ExecResult,
 } from './task-checks.js'
@@ -69,6 +75,9 @@ function dockerRig(byCommand: (command: string, call: Call) => ExecResult) {
     if (call.args[0] === 'kill') {
       return ok()
     }
+    if (call.args[0] === 'volume') {
+      return ok()
+    }
     const command = call.args.at(-1) ?? ''
     return byCommand(command, call)
   })
@@ -86,7 +95,7 @@ describe('detectChecks', () => {
     })
     expect(plan).toEqual({
       image: 'oven/bun:1',
-      install: 'bun install --frozen-lockfile',
+      install: BUN_INSTALL_COMMAND,
       commands: ['bun run typecheck', 'bun run test', 'bun run lint'],
       network: true,
       timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
@@ -165,6 +174,166 @@ describe('detectChecks', () => {
   })
 })
 
+describe('detectInstall', () => {
+  test('npm lockfile with no check scripts still has an install step', () => {
+    expect(
+      detectInstall({
+        files: ['package-lock.json', 'package.json'],
+        packageJson: packageJson({ build: 'tsc -b' }),
+      }),
+    ).toEqual({
+      image: DEFAULT_CHECKS_IMAGE,
+      install: 'npm ci',
+      timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+    })
+  })
+
+  test('package.json without a lockfile falls back to npm install', () => {
+    expect(detectInstall({ files: ['package.json'] })?.install).toBe('npm install')
+  })
+
+  test('bun lockfile wins and uses frozen install', () => {
+    expect(detectInstall({ files: ['bun.lock', 'package-lock.json'] })).toEqual({
+      image: 'oven/bun:1',
+      install: BUN_INSTALL_COMMAND,
+      timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
+    })
+    expect(BUN_INSTALL_COMMAND).toContain('--backend=copyfile')
+  })
+
+  test('nothing recognizable: null', () => {
+    expect(detectInstall({ files: ['README.md'] })).toBeNull()
+  })
+})
+
+describe('lockfileFingerprint / worktreeHasDeps', () => {
+  test('hashes the first present lockfile and is stable', () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const a = lockfileFingerprint(worktree)
+    const b = lockfileFingerprint(worktree)
+    expect(a).toMatch(/^[0-9a-f]{16}$/)
+    expect(a).toBe(b)
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":3}')
+    expect(lockfileFingerprint(worktree)).not.toBe(a)
+  })
+
+  test('deps are present only when node_modules or .venv exists', () => {
+    expect(worktreeHasDeps(worktree)).toBe(false)
+    mkdirSync(join(worktree, 'node_modules'))
+    expect(worktreeHasDeps(worktree)).toBe(true)
+  })
+})
+
+describe('bootstrapWorktreeInstall', () => {
+  test('unconfigured worktree never probes a runtime', async () => {
+    const { calls, exec } = fakeExec(() => ok())
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'aaaa1111bbbb',
+      execFn: exec,
+    })
+    expect(result.status).toBe('unconfigured')
+    expect(calls).toEqual([])
+  })
+
+  test('skips when the lockfile hash matches and node_modules is there', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    mkdirSync(join(worktree, 'node_modules'))
+    const hash = lockfileFingerprint(worktree)
+    const { calls, exec } = dockerRig(() => ok())
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'aaaa1111bbbb',
+      previousFingerprint: hash,
+      execFn: exec,
+    })
+    expect(result.status).toBe('skipped')
+    expect(result.fingerprint).toBe(hash)
+    expect(calls).toEqual([])
+  })
+
+  test('installs with network, cache volume, and host uid when the worktree is fresh', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const started: string[] = []
+    const { calls, exec } = dockerRig(() => ok({ stdout: 'added 10 packages' }))
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'projdeadbeef',
+      uid: 1000,
+      gid: 1000,
+      execFn: exec,
+      onStart: (command) => started.push(command),
+    })
+    expect(result.status).toBe('passed')
+    expect(started).toEqual(['npm ci'])
+    const volume = calls.find((c) => c.args[0] === 'volume')
+    expect(volume?.args).toEqual(['volume', 'create', pkgCacheVolume('projdeadbeef')])
+    // Docker (not a podman shim) chowns the cache volume, then installs as --user.
+    const chown = calls.find((c) => c.args[0] === 'run' && c.args.includes('chown'))
+    expect(chown?.args).toContain('busybox')
+    const run = calls.find((c) => c.args[0] === 'run' && (c.args.at(-1) ?? '').includes('npm ci'))
+    expect(run).toBeDefined()
+    const args = run!.args
+    expect(args).not.toContain('--network')
+    expect(args.join(' ')).toContain(`${pkgCacheVolume('projdeadbeef')}:/cache`)
+    expect(args).toContain('--user')
+    expect(args[args.indexOf('--user') + 1]).toBe('1000:1000')
+    expect(args).not.toContain('--userns=keep-id')
+    expect(args.at(-1)).toContain('mkdir -p')
+  })
+
+  test('a podman runtime uses keep-id instead of --user', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const { calls, exec } = fakeExec((call) => {
+      if (call.args[0] === '--version') {
+        return ok({ stdout: 'podman version 5.7.0' })
+      }
+      return ok()
+    })
+    await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'projdeadbeef',
+      execFn: exec,
+    })
+    expect(calls.some((c) => c.args.includes('chown'))).toBe(false)
+    const run = calls.find((c) => c.args[0] === 'run')
+    expect(run?.args).toContain('--userns=keep-id')
+    expect(run?.args).not.toContain('--user')
+  })
+
+  test('bun install copies from the cache volume instead of hardlinking', async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { calls, exec } = dockerRig(() => ok())
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'projdeadbeef',
+      uid: 1000,
+      gid: 1000,
+      execFn: exec,
+    })
+    expect(result.status).toBe('passed')
+    expect(result.command).toBe(BUN_INSTALL_COMMAND)
+    const run = calls.find(
+      (c) => c.args[0] === 'run' && (c.args.at(-1) ?? '').includes(BUN_INSTALL_COMMAND),
+    )
+    expect(run?.args.at(-1)).toContain('--backend=copyfile')
+  })
+
+  test('reinstalls a matching hash when node_modules is gone (rebuilt worktree)', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const hash = lockfileFingerprint(worktree)
+    const { calls, exec } = dockerRig(() => ok())
+    const result = await bootstrapWorktreeInstall({
+      worktree,
+      projectId: 'projdeadbeef',
+      previousFingerprint: hash,
+      execFn: exec,
+    })
+    expect(result.status).toBe('passed')
+    expect(calls.some((c) => c.args[0] === 'run')).toBe(true)
+  })
+})
+
 describe('planFromConfig', () => {
   test('commands are the essence: none (or only blanks) = unconfigured', () => {
     expect(planFromConfig({})).toBeNull()
@@ -239,10 +408,7 @@ describe('runChecks', () => {
     expect(result.head_sha).toBe('abc123')
     expect(result.finished_at).not.toBeNull()
     // install + bun test
-    expect(result.checks.map((c) => c.command)).toEqual([
-      'bun install --frozen-lockfile',
-      'bun test',
-    ])
+    expect(result.checks.map((c) => c.command)).toEqual([BUN_INSTALL_COMMAND, 'bun test'])
     expect(result.checks.every((c) => c.status === 'passed' && c.exit_code === 0)).toBe(true)
 
     const testRun = calls.find((c) => c.args.at(-1) === 'bun test')
@@ -258,7 +424,7 @@ describe('runChecks', () => {
     // Check commands NEVER get network...
     expect(args[args.indexOf('--network') + 1]).toBe('none')
     // ...while the detected install step does (fresh worktree, registry needed).
-    const install = calls.find((c) => c.args.at(-1) === 'bun install --frozen-lockfile')
+    const install = calls.find((c) => c.args.at(-1) === BUN_INSTALL_COMMAND)
     expect(install?.args).not.toContain('--network')
   })
 
@@ -313,7 +479,7 @@ describe('runChecks', () => {
     const result = await runChecks({ worktree, headSha: 'abc', execFn: exec })
     expect(result.status).toBe('failed')
     expect(result.checks.map((c) => [c.command, c.status])).toEqual([
-      ['bun install --frozen-lockfile', 'passed'],
+      [BUN_INSTALL_COMMAND, 'passed'],
       ['bun run typecheck', 'failed'],
       ['bun test', 'passed'],
       ['bun run lint', 'passed'],
@@ -681,7 +847,7 @@ describe('resolveChecksPlan', () => {
     )
     expect(resolveChecksPlan({ worktree })).toEqual({
       image: 'oven/bun:1',
-      install: 'bun install --frozen-lockfile',
+      install: BUN_INSTALL_COMMAND,
       commands: ['make check'],
       network: true,
       timeoutSeconds: DEFAULT_CHECK_TIMEOUT_SECONDS,
@@ -720,7 +886,7 @@ describe('resolveChecksPlan', () => {
     const result = await runChecks({ worktree, headSha: 'abc', execFn: exec })
     expect(result.status).toBe('passed')
     expect(result.checks.map((c) => c.command)).toEqual([
-      'bun install --frozen-lockfile',
+      BUN_INSTALL_COMMAND,
       'bun run typecheck',
       'bun run test',
     ])

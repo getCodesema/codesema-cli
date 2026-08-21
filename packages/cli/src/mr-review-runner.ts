@@ -4,12 +4,13 @@ import { join } from 'node:path'
 import { listWorktrees } from './branches.js'
 import { ensureWorkDir } from './config.js'
 import { listOpenMrs, type ForgeMr, type ForgeMrsResult } from './forge-mrs.js'
-import { git, refExists, tryGit } from './git.js'
+import { git, refExists, tryGit, type ProbeExecFn } from './git.js'
 import { prep } from './prep.js'
 import { resolvePreviewRefs } from './preview.js'
 import { archiveRecord } from './record.js'
 import { buildFullReviewPrompt, runDualFlow, runSimpleFlow } from './review.js'
 import type { LiveSession } from './serve.js'
+import { acquireWorktreeLock, type WorktreeLockHandle } from './worktree-lock.js'
 
 export type MrReviewMode = 'simple' | 'dual'
 export type MrReviewPhase = 'idle' | 'running' | 'done' | 'error'
@@ -75,6 +76,35 @@ function removeMrWorktree(cwd: string, worktreeDir: string): void {
   tryGit(['worktree', 'prune'], cwd)
 }
 
+/**
+ * What the CLEANUP acquisition is willing to wait, as opposed to the full
+ * budget the work itself gets. A cleanup runs on the way out — often on the way
+ * out of the process — and the removal is safe without the lock anyway (git's
+ * own index lock remains the net). Waiting the full minute-plus here would hold
+ * a Ctrl-C hostage to a lock that changes nothing about the outcome.
+ */
+const CLEANUP_LOCK_TIMEOUT_MS = 2_000
+
+/**
+ * The MR review's worktree lives in a tmpdir, but `git worktree add/remove`
+ * still writes the REPOSITORY's index and its .git/worktrees registry — the
+ * very thing the repo lock serializes. So these runs take it too, exactly like
+ * task worktrees do.
+ *
+ * Only the add and the remove are held, never the agent run between them: a
+ * review takes minutes, and holding a repo-wide lock for that long would block
+ * every task in the workspace. The lock protects the git operations, not the
+ * work.
+ */
+async function underRepoLock<T>(cwd: string, fn: () => T): Promise<T> {
+  const lock = await acquireWorktreeLock(cwd)
+  try {
+    return fn()
+  } finally {
+    lock.release()
+  }
+}
+
 function slug(name: string): string {
   return name.replace(/[^a-zA-Z0-9-]+/g, '-')
 }
@@ -85,6 +115,18 @@ export function createMrReviewRunner(opts: {
   agentCommand: string
   timeoutMs: number
   listMrs?: (cwd: string) => Promise<ForgeMrsResult>
+  /**
+   * Forge probe behind the branch target detection (see preview.ts). The same
+   * seam as everywhere else in the repo: no test runs a real gh/glab, and a
+   * caller that omits it gets the real probe.
+   */
+  execFn?: ProbeExecFn
+  /**
+   * Aborted when the process is draining. Only the CLEANUP acquisition honors
+   * it: a review already under way keeps its worktree until it settles, but
+   * nothing on the exit path should queue behind a repo lock.
+   */
+  shutdownSignal?: AbortSignal
 }): MrReviewRunner {
   const listMrs = opts.listMrs ?? listOpenMrs
 
@@ -106,24 +148,35 @@ export function createMrReviewRunner(opts: {
 
     if (resolved.kind === 'mr') {
       fetchMrBranch(opts.cwd, resolved.mr.sourceBranch)
-      addMrWorktree(opts.cwd, worktreeDir, resolved.mr.sourceBranch)
+      await underRepoLock(opts.cwd, () =>
+        addMrWorktree(opts.cwd, worktreeDir, resolved.mr.sourceBranch),
+      )
       branchForPrep = resolved.mr.sourceBranch
       targetForPrep = resolved.mr.targetBranch
     } else {
-      const refs = await resolvePreviewRefs(opts.cwd, { kind: 'branch', name: resolved.name })
-      const alreadyCheckedOut = listWorktrees(opts.cwd).some((wt) => wt.branch === resolved.name)
-      if (alreadyCheckedOut) {
-        const sha = git(['rev-parse', `refs/heads/${resolved.name}`], opts.cwd)
-        addDetachedWorktree(opts.cwd, worktreeDir, sha)
-      } else {
-        addLocalBranchWorktree(opts.cwd, worktreeDir, resolved.name)
-      }
+      const refs = await resolvePreviewRefs(
+        opts.cwd,
+        { kind: 'branch', name: resolved.name },
+        { execFn: opts.execFn },
+      )
+      await underRepoLock(opts.cwd, () => {
+        // Both the "is it checked out" probe and the add write/read the same
+        // registry: they belong INSIDE the lock, or the answer can go stale
+        // between them.
+        const alreadyCheckedOut = listWorktrees(opts.cwd).some((wt) => wt.branch === resolved.name)
+        if (alreadyCheckedOut) {
+          const sha = git(['rev-parse', `refs/heads/${resolved.name}`], opts.cwd)
+          addDetachedWorktree(opts.cwd, worktreeDir, sha)
+        } else {
+          addLocalBranchWorktree(opts.cwd, worktreeDir, resolved.name)
+        }
+      })
       branchForPrep = resolved.name
       targetForPrep = refs.target
     }
 
     try {
-      const input = prep({
+      const input = await prep({
         branch: branchForPrep,
         target: targetForPrep,
         cwd: worktreeDir,
@@ -171,7 +224,26 @@ export function createMrReviewRunner(opts: {
       archiveRecord(outcome.record, opts.cwd)
       opts.session.setDone(outcome.record)
     } finally {
-      removeMrWorktree(opts.cwd, worktreeDir)
+      // A cleanup path must never mask the outcome it is cleaning up after, so
+      // this acquisition is total: if the lock cannot be had, the removal
+      // still happens (git's own index lock remains the net) rather than throw
+      // out of a `finally` and replace the run's real error with a lock story.
+      // Bounded, and abandoned at once when the process is shutting down: this
+      // wait sits between the user and the exit.
+      let lock: WorktreeLockHandle | null = null
+      try {
+        lock = await acquireWorktreeLock(opts.cwd, {
+          timeoutMs: CLEANUP_LOCK_TIMEOUT_MS,
+          ...(opts.shutdownSignal ? { signal: opts.shutdownSignal } : {}),
+        })
+      } catch {
+        lock = null
+      }
+      try {
+        removeMrWorktree(opts.cwd, worktreeDir)
+      } finally {
+        lock?.release()
+      }
     }
   }
 

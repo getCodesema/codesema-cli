@@ -9,8 +9,9 @@
 // [Ship] + [Diff], and the folded "DONE" pile. Clicking a card opens it in
 // the focus zone. Each live card carries a discreet isolation dot (green =
 // caged in a container, hollow = policy) whenever that dot tells the cards
-// apart, and a dismissible banner sits on top when the whole workspace fell
-// back to policy while a container runtime could have carried it. All
+// apart, and a dismissible banner sits on top when the compose-target
+// project fell back to policy while a container runtime could have carried
+// it (in "All projects", that is the select, not the launch-repo blob). All
 // grouping/extraction is pure; the queue only holds its disclosure state, the
 // banner dismissal and a minute tick for the pause durations.
 import { computed, onUnmounted, ref, watch } from 'vue'
@@ -23,18 +24,22 @@ import {
   shouldOfferIsolationUpgrade,
   showIsolationDot,
 } from '../composables/useIsolation'
+import { isolationForProject } from '../composables/useProjects'
 import {
   formatDuration,
   groupQueue,
   lastQuestion,
+  queueRankHintKey,
+  reasonDetailText,
   resumeStateOf,
+  statusLabelKey,
   waitingSince,
   type QueueSection,
 } from '../composables/useTaskBoard'
 import { taskKey, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { EXECUTION_STATUS } from '../execution-status'
 import { t } from '../i18n'
-import type { Project, WorkspaceInfo } from '../types'
+import type { AgentOption, Project, TaskIsolation, WorkspaceInfo } from '../types'
 import TaskComposer from './TaskComposer.vue'
 
 const props = defineProps<{
@@ -50,9 +55,10 @@ const props = defineProps<{
   filter: string | null
   creating: boolean
   createError: string | null
-  /** Workspace isolation facts (GET /api/projects); null = the server said
-   * nothing, so the queue claims nothing either. */
+  /** Launch-repo / process-wide isolation (fallback for older CLIs). */
   workspace: WorkspaceInfo | null
+  agents?: readonly AgentOption[]
+  currentAgent?: string
 }>()
 
 const emit = defineEmits<{
@@ -113,6 +119,18 @@ function pausedFor(state: TaskState): string | null {
 
 const excerptOf = (state: TaskState): string | null => lastQuestion(state.events)
 
+/**
+ * The blocker's own sentence, when the card's flag names a machine verdict
+ * rather than a question (T3.6 adversarial review, MAJEUR 1). It takes
+ * PRECEDENCE over the question excerpt on purpose: `lastQuestion` scans the
+ * whole journal, so a conversation that asked something three turns ago and is
+ * now parked by the merge gate would otherwise show that stale question as if
+ * it were what the card is waiting on — while the thing to actually do (fetch
+ * the target, resolve the overlap, validate the criteria list) went unsaid.
+ * Null for every ordinary wait, which keeps showing the question.
+ */
+const reasonOf = (state: TaskState): string | null => reasonDetailText(state.record)
+
 /** T8: what a stopped conversation offers — only 'ready' earns a button. */
 const resumeOf = (state: TaskState) => resumeStateOf(state.record)
 
@@ -122,14 +140,31 @@ const doneOpen = ref(true)
 
 const isEmpty = computed(() => props.states.length === 0)
 
+/** The #N pill's tooltip; queueRankHintKey decides which promise it may make. */
+const rankHint = (state: TaskState, rank: number): string =>
+  t(queueRankHintKey(state.record), { n: rank })
+
 // ── Isolation: per-card dot + the one-time upgrade banner ─────────────────
 const isoOf = (state: TaskState) => isolationBadge(state.record)
-const showIso = (state: TaskState): boolean => showIsolationDot(state.record, props.workspace)
+const isolationOf = (projectId: string): WorkspaceInfo | null =>
+  isolationForProject(projectId, props.projects, props.workspace)
+const showIso = (state: TaskState): boolean =>
+  showIsolationDot(state.record, isolationOf(state.projectId))
 
 // Dismissal is a local preference, persisted for good on this machine.
 const isoBannerDismissed = ref(readIsolationBannerDismissed())
+// Banner follows the repo a NEW task would land in (filter, else the All-mode
+// select). Passing filter=null would fall back to the launch-repo blob and
+// hide a degraded sibling you are about to create on.
+const composeIsolation = computed(() =>
+  isolationForProject(effectiveTarget.value, props.projects, props.workspace),
+)
+const composeIsolationMode = computed<TaskIsolation | null>(
+  () => composeIsolation.value?.isolation_default ?? null,
+)
+const composeAgent = computed(() => composeIsolation.value?.agent ?? props.currentAgent ?? '')
 const showIsoBanner = computed(() =>
-  shouldOfferIsolationUpgrade(props.workspace, isoBannerDismissed.value),
+  shouldOfferIsolationUpgrade(composeIsolation.value, isoBannerDismissed.value),
 )
 
 function dismissIsoBanner(): void {
@@ -160,7 +195,15 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           </option>
         </select>
       </label>
-      <TaskComposer ref="composer" :creating="creating" :error="createError" @create="onCreate" />
+      <TaskComposer
+        ref="composer"
+        :creating="creating"
+        :error="createError"
+        :agents="agents ?? []"
+        :current-agent="composeAgent"
+        :isolation="composeIsolationMode"
+        @create="onCreate"
+      />
     </div>
 
     <div class="wq-scroll">
@@ -171,7 +214,11 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           <span aria-hidden="true">🛡</span> {{ t('workspace.isolationUpgradeTitle') }}
         </p>
         <p class="wq-iso-body">
-          {{ t('workspace.isolationUpgradeBody', { reason: workspace?.isolation_reason ?? '' }) }}
+          {{
+            t('workspace.isolationUpgradeBody', {
+              reason: composeIsolation?.isolation_reason ?? workspace?.isolation_reason ?? '',
+            })
+          }}
         </p>
         <p class="wq-iso-actions">
           <a
@@ -221,9 +268,10 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
               :aria-label="t(isoOf(state).labelKey)"
               :title="t(isoOf(state).hintKey)"
             />
-            <span class="wq-flag">{{ t(EXECUTION_STATUS[state.record.status].labelKey) }}</span>
+            <span class="wq-flag">{{ t(statusLabelKey(state.record)) }}</span>
           </span>
-          <span v-if="excerptOf(state)" class="wq-question">« {{ excerptOf(state) }} »</span>
+          <span v-if="reasonOf(state)" class="wq-reason">{{ reasonOf(state) }}</span>
+          <span v-else-if="excerptOf(state)" class="wq-question">« {{ excerptOf(state) }} »</span>
           <span class="wq-meta">
             {{ projectName(state) }}
             <template v-if="pausedFor(state)">
@@ -261,6 +309,16 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
               aria-hidden="true"
             />
             <span class="wq-title">{{ state.record.title }}</span>
+            <!-- One task at a time per repo: a conversation waiting its turn
+                 shows WHERE it is in its project's line, so "queued" never
+                 reads as "stuck". Absent on the one that is actually running. -->
+            <span
+              v-if="state.record.queue_position !== undefined"
+              class="wq-rank"
+              :title="rankHint(state, state.record.queue_position)"
+            >
+              {{ t('workspace.queuePosition', { n: state.record.queue_position }) }}
+            </span>
             <span
               v-if="showIso(state)"
               class="wq-iso"
@@ -621,6 +679,20 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
   color: var(--cs-ghost);
 }
 
+/* Rank in the project's queue: a quiet monospace pill, never louder than the
+   title it sits next to — it is a fact about waiting, not a warning. */
+.wq-rank {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--cs-line);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--cs-ghost);
+}
+
 /* Attention card: amber ground + left rail, soft halo — the loudest thing
    on screen, because the human is what everything waits on. */
 .wq-card--attention {
@@ -653,6 +725,19 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--cs-amber-text);
+  background: var(--cs-inset);
+  border-radius: 6px;
+  padding: 6px 9px;
+  overflow-wrap: anywhere;
+}
+
+/* The blocker's own sentence: same block as a question excerpt, without the
+   quotation marks and in the muted voice — this is the machine explaining
+   itself, not somebody asking. */
+.wq-reason {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--cs-muted);
   background: var(--cs-inset);
   border-radius: 6px;
   padding: 6px 9px;

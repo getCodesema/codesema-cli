@@ -24,6 +24,7 @@ import {
   CHECK_GLYPH,
   CHECK_STATUS_KEY,
   CHECKS_STATUS_KEY,
+  checksHeadVerified,
   checksSetupCard,
   checksSetupErrorText,
   checksSourceLabel,
@@ -42,9 +43,11 @@ import {
   formatTokens,
   groupThreadEvents,
   lastQuestion,
+  reasonDetailText,
   replyModeOf,
   resumeStateOf,
   reviewRefOf,
+  statusPhraseKey,
   streamsLiveText,
   timeAgo,
   type FocusTab,
@@ -89,6 +92,22 @@ const emit = defineEmits<{ 'open-review': [record: ReviewRecord]; 'toggle-pin': 
 
 const record = computed(() => props.state.record)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
+// T1.3 (D4), adversarial review round 3 MAJEUR 4/AC-12: a 'queued' task
+// waiting for the MACHINE-wide cap gets its own header phrase instead of the
+// generic "queued — waiting for a slot" — the only consumer of
+// `state.liveLoadCap`/`waitingForSlot` outside the store itself.
+const phraseKey = computed(() =>
+  statusPhraseKey(record.value, props.state.liveLoadCap?.waitingForSlot ?? false),
+)
+/**
+ * The blocker's own sentence, right under the phrase that names it (T3.6
+ * adversarial review, MAJEUR 1). The phrase says WHAT holds the conversation;
+ * this says what to DO about it — the target ref to fetch, the forge CLI's own
+ * words, the criteria still unmet — and nothing rendered it anywhere before.
+ * Null whenever this build has no per-reason phrase for the record, so no raw
+ * server English ever appears on its own (see `reasonDetailText`).
+ */
+const reasonDetail = computed(() => reasonDetailText(record.value))
 // Containment of this conversation's turns, fixed at its creation: the chip
 // states it, the tooltip says what it actually guarantees.
 const isolation = computed(() => isolationBadge(record.value))
@@ -794,13 +813,14 @@ const wait = computed(() =>
         >
           <span aria-hidden="true">{{ isolation.glyph }}</span> {{ t(isolation.labelKey) }}
         </span>
-        <span class="cv-phrase" :style="{ color: visual.text }">{{ t(visual.phraseKey) }}</span>
+        <span class="cv-phrase" :style="{ color: visual.text }">{{ t(phraseKey) }}</span>
         <span class="cv-chrono">
           <span>{{ t('workspace.workTime', { t: work }) }}</span>
           <span v-if="wait" class="cv-wait">{{ t('workspace.waitTime', { t: wait }) }}</span>
         </span>
       </div>
 
+      <p v-if="reasonDetail" class="cv-reason">{{ reasonDetail }}</p>
       <p v-if="shipNotice" class="cv-notice">{{ shipNotice }}</p>
       <!-- Interrupted, but with nothing to restart: say it instead of showing
            a Resume that could only fail. -->
@@ -996,7 +1016,7 @@ const wait = computed(() =>
             <span v-if="checksRunning" class="cv-checks-dot" aria-hidden="true" />
             {{ t(CHECKS_STATUS_KEY[checks.status]) }}
           </span>
-          <span v-if="checks.head_sha" class="cv-checks-head">
+          <span v-if="checksHeadVerified(checks)" class="cv-checks-head">
             {{ t('workspace.checksHeadVerified', { sha: shortSha(checks.head_sha) })
             }}<template v-if="checksStamp"> · {{ checksStamp }}</template>
           </span>
@@ -1426,6 +1446,16 @@ const wait = computed(() =>
   margin: 0;
   font-size: 12.5px;
   color: var(--cs-amber-text);
+}
+
+/* The refusal's technical annex: the phrase above already said it in the
+   reader's language, so this one stays muted and wraps rather than shouts. */
+.cv-reason {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--cs-muted);
+  overflow-wrap: anywhere;
 }
 
 .cv-error {

@@ -10,11 +10,13 @@ import {
   refExists,
   repoRoot,
   revListCount,
-  tryExec,
+  tryExecAsync,
   tryGit,
+  type ProbeExecFn,
 } from './git.js'
 import { t } from './i18n.js'
 import { buildImpactCandidates, type ImpactCandidates } from './impact.js'
+import { runProbes } from './probes.js'
 import { loadRules } from './rules.js'
 import type { ServerContext } from './server-context.js'
 import { renderFieldRows, type FieldRow } from './ui.js'
@@ -47,10 +49,17 @@ export type PrepInput = {
   target: string
   target_source: string
   merge_base: string
+  /**
+   * Commit the reviewed range STARTS at, when the caller pinned one (a task
+   * conversation anchoring on where it began). Absent on every ordinary MR
+   * review, where the range is the merge-base with the target — and absent is
+   * the honest default: no pin, no claim.
+   */
+  baseline?: string
   head_sha: string
   repo_root: string
   commits: string[]
-  files: { path: string; additions: number; deletions: number }[]
+  files: { path: string; previousPath?: string; additions: number; deletions: number }[]
   custom_instructions: string | null
   /** Team rules from .codesema/RULES.md, one "[Cn] rule" grid line each. */
   rules: string[] | null
@@ -81,34 +90,141 @@ function sameBranch(a: string, b: string): boolean {
   return short(a) === short(b)
 }
 
-function targetFromForge(cwd: string): { target: string; source: string } | null {
+/** `glab mr view` answers one object, `glab mr list` an array; both carry target_branch. */
+function glabTargetBranch(raw: string): string | null {
+  let data: unknown
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    // unexpected glab output: no target, and the caller falls through
+    return null
+  }
+  const first = Array.isArray(data) ? data[0] : data
+  const name = (first as { target_branch?: unknown } | null | undefined)?.target_branch
+  return typeof name === 'string' && name ? name : null
+}
+
+/** A `gh --jq` probe already prints the bare branch name (or nothing at all). */
+function ghTargetBranch(raw: string): string | null {
+  const name = raw.trim()
+  return name && name !== 'null' ? name : null
+}
+
+/** The two prefixes forgeProbes builds its `source` from, and the only expensive sources. */
+const FORGE_TARGET_SOURCES = ['gitlab (', 'github ('] as const
+
+/**
+ * True when a detected target came from a forge probe rather than from
+ * `origin/HEAD`, the merge-base heuristic or the `--target` flag. Lives here,
+ * next to the strings it recognises, so no caller has to re-spell them.
+ */
+export function isForgeTargetSource(source: string): boolean {
+  return FORGE_TARGET_SOURCES.some((prefix) => source.startsWith(prefix))
+}
+
+type ForgeProbe = {
+  label: string
+  /** How the answer is read back — the two forges do not print the same thing. */
+  read: (raw: string) => string | null
+  /** What goes in `target_source`: the command actually run, not a family name. */
+  source: string
+  run: () => Promise<string | null>
+}
+
+/**
+ * How each porcelain is asked about `headRef`, gitlab first (the preference is
+ * unchanged), skipping the CLI that origin clearly rules out.
+ *
+ * A NAMED branch is never passed as a positional. `gh pr view 1234` and
+ * `glab mr view 1234` read a purely numeric argument as a PR/MR **number**, so
+ * a branch called `1234` would adopt the target of an unrelated pull request —
+ * and no guard on the name alone is enough, since the porcelains resolve other
+ * shapes (a URL, an id) the same way. The named case therefore asks the
+ * unambiguous LIST form instead, where the branch can only be read as a
+ * branch: `gh pr list --head=<branch>` (`-H`, gh 2.46.0) and
+ * `glab mr list --source-branch=<branch>` (`-s`, glab 1.53.0), both with the
+ * value attached so it cannot be re-read as an option either.
+ *
+ * Both list forms answer OPEN requests only (their shared default), which is
+ * the question being asked here — what does this branch target *now*; a branch
+ * whose request is already closed falls through to origin/HEAD like any other
+ * unanswered probe.
+ *
+ * 'HEAD' means "the checked-out one", which is exactly what both porcelains
+ * answer when given no positional argument, so that case keeps its historical
+ * argv byte for byte.
+ */
+function forgeProbes(cwd: string, headRef: string, execFn: ProbeExecFn): ForgeProbe[] {
+  const named = headRef !== 'HEAD'
   // Each probe blocks up to 8s; when origin clearly names one forge, skip the other.
   // An unrecognized remote (self-hosted on a custom domain) still probes both.
   const hint = detectForgeHint(cwd)
-  const skipGitlab = hint === 'github'
-  const skipGithub = hint === 'gitlab'
-
-  const glabOut = skipGitlab ? null : tryExec('glab', ['mr', 'view', '--output', 'json'], cwd)
-  if (glabOut) {
-    try {
-      const name = (JSON.parse(glabOut) as { target_branch?: string }).target_branch
-      if (name) {
-        const ref = resolveRef(name, cwd)
-        if (ref) {
-          return { target: ref, source: 'gitlab (glab mr view)' }
-        }
-      }
-    } catch {
-      // unexpected glab output: fall through to the next fallback
-    }
+  const probes: ForgeProbe[] = []
+  if (hint !== 'github') {
+    const args = named
+      ? ['mr', 'list', `--source-branch=${headRef}`, '--per-page', '1', '--output', 'json']
+      : ['mr', 'view', '--output', 'json']
+    probes.push({
+      label: 'glab',
+      read: glabTargetBranch,
+      source: `gitlab (glab mr ${named ? 'list' : 'view'})`,
+      run: () => execFn('glab', args, cwd),
+    })
   }
-  const ghOut = skipGithub
-    ? null
-    : tryExec('gh', ['pr', 'view', '--json', 'baseRefName', '--jq', '.baseRefName'], cwd)
-  if (ghOut) {
-    const ref = resolveRef(ghOut, cwd)
+  if (hint !== 'gitlab') {
+    const args = named
+      ? [
+          'pr',
+          'list',
+          `--head=${headRef}`,
+          '--limit',
+          '1',
+          '--json',
+          'baseRefName',
+          // `// empty` so an empty result prints nothing instead of the string "null".
+          '--jq',
+          '.[0].baseRefName // empty',
+        ]
+      : ['pr', 'view', '--json', 'baseRefName', '--jq', '.baseRefName']
+    probes.push({
+      label: 'gh',
+      read: ghTargetBranch,
+      source: `github (gh pr ${named ? 'list' : 'view'})`,
+      run: () => execFn('gh', args, cwd),
+    })
+  }
+  return probes
+}
+
+/**
+ * Target branch as the forge CLIs see it. Both probes are launched before the
+ * first one answers, so the pair costs one shared 8s window instead of 16s
+ * chained; the per-probe timeout is untouched and gitlab still wins over github
+ * when both answer (they are read back in launch order).
+ *
+ * `headRef` names the branch to ask about; see forgeProbes for how each forge
+ * is asked, and why a named branch never travels as a positional.
+ */
+export async function targetFromForge(
+  cwd: string,
+  execFn: ProbeExecFn = tryExecAsync,
+  headRef = 'HEAD',
+): Promise<{ target: string; source: string } | null> {
+  // Belt and braces: git cannot create a branch whose name starts with '-',
+  // so this is unreachable through prep/preview — but a ref that could be
+  // read as a flag never reaches a forge CLI. Skipping the probe is the safe
+  // half of the choice: the caller falls back to origin/HEAD.
+  if (headRef !== 'HEAD' && headRef.startsWith('-')) {
+    return null
+  }
+  const probes = forgeProbes(cwd, headRef, execFn)
+  const outcomes = await runProbes(probes)
+  for (const [index, probe] of probes.entries()) {
+    const raw = outcomes[index]
+    const name = raw ? probe.read(raw) : null
+    const ref = name ? resolveRef(name, cwd) : null
     if (ref) {
-      return { target: ref, source: 'github (gh pr view)' }
+      return { target: ref, source: probe.source }
     }
   }
   return null
@@ -153,12 +269,25 @@ function targetFromHeuristic(
   return best ? { target: best.target, source: 'heuristic (nearest merge-base)' } : null
 }
 
-export function detectTarget(
+export type DetectTargetOptions = {
+  /** Ref whose target is being detected; 'HEAD' means the checked-out branch. */
+  headRef?: string | undefined
+  /** Test seam: no test runs a real gh/glab, it asserts on the argv it was handed. */
+  execFn?: ProbeExecFn | undefined
+}
+
+/**
+ * Options object rather than two more positional parameters: the repo caps a
+ * signature at four (oxlint max-params), and the existing three-argument call
+ * sites stay untouched.
+ */
+export async function detectTarget(
   current: string,
   flag: string | undefined,
   cwd: string,
-  headRef = 'HEAD',
-): { target: string; source: string } {
+  opts: DetectTargetOptions = {},
+): Promise<{ target: string; source: string }> {
+  const headRef = opts.headRef ?? 'HEAD'
   if (flag) {
     const ref = resolveRef(flag, cwd)
     if (!ref) {
@@ -166,7 +295,10 @@ export function detectTarget(
     }
     return { target: ref, source: '--target flag' }
   }
-  const forge = headRef === 'HEAD' ? targetFromForge(cwd) : null
+  // The forge is probed whatever the head ref is. It used to be skipped unless
+  // headRef was 'HEAD', so `--branch other-branch` jumped straight to
+  // origin/HEAD — incoherent the moment the forge is the source of truth (D7).
+  const forge = await targetFromForge(cwd, opts.execFn ?? tryExecAsync, headRef)
   const detected = forge ?? targetFromOriginHead(cwd) ?? targetFromHeuristic(current, headRef, cwd)
   if (!detected) {
     throw new Error(t('prep.noTarget'))
@@ -213,8 +345,33 @@ function truncateSubject(subject: string): string {
 export type DiffSummary = {
   merge_base: string
   commits: string[]
-  files: { path: string; additions: number; deletions: number }[]
+  files: { path: string; previousPath?: string; additions: number; deletions: number }[]
   diff: string
+}
+
+function parseNumstat(raw: string): DiffSummary['files'] {
+  const records = raw.split('\0')
+  const files: DiffSummary['files'] = []
+  for (let i = 0; i < records.length - 1; i += 1) {
+    const [add = '0', del = '0', ...rest] = (records[i] ?? '').split('\t')
+    let path = rest.join('\t')
+    let previousPath: string | undefined
+    if (!path) {
+      // Rename/copy record: `add\tdel\t` followed by two NUL-separated paths (source, destination).
+      previousPath = records[i + 1]
+      i += 2
+      path = records[i] ?? ''
+    }
+    if (path) {
+      files.push({
+        path,
+        ...(previousPath ? { previousPath } : {}),
+        additions: Number.isFinite(Number(add)) ? Number(add) : 0,
+        deletions: Number.isFinite(Number(del)) ? Number(del) : 0,
+      })
+    }
+  }
+  return files
 }
 
 /**
@@ -222,50 +379,56 @@ export type DiffSummary = {
  * shared by computePrepInput (local branch vs. detected target) and the web
  * preview endpoints (arbitrary local or remote-tracking refs, e.g. an MR not
  * checked out locally).
+ *
+ * `baseline` narrows the SCOPE of the measurement without touching the
+ * IDENTITY of the comparison. The target keeps naming the branch this work is
+ * headed for — it labels the review, keys its archive and drives the
+ * incremental lookup — while the range starts where the work actually began.
+ * That is what a task conversation needs: on a branch that already carried
+ * commits before the conversation opened, `target...source` measures those too.
+ * Without a baseline, nothing changes: the range is the merge-base of target
+ * and source, exactly as before.
  */
-export function computeDiffSummary(sourceRef: string, targetRef: string, cwd: string): DiffSummary {
-  const mb = mergeBase(targetRef, sourceRef, cwd)
+export function computeDiffSummary(
+  sourceRef: string,
+  targetRef: string,
+  cwd: string,
+  baseline?: string | undefined,
+): DiffSummary {
+  // The baseline IS the base of the range it opens: no merge-base to look for.
+  const mb = baseline ?? mergeBase(targetRef, sourceRef, cwd)
   if (!mb) {
     throw new Error(t('prep.noMergeBase', { target: targetRef, branch: sourceRef }))
   }
 
   const excludes = excludePathspecs(cwd)
-  const range = `${targetRef}...${sourceRef}`
+  const range = baseline ? `${baseline}..${sourceRef}` : `${targetRef}...${sourceRef}`
+  const commitRange = baseline ? `${baseline}..${sourceRef}` : `${targetRef}..${sourceRef}`
   const diff = mrDiff(range, cwd, excludes)
 
-  const commits = (
-    tryGit(['log', '--pretty=%s', `${targetRef}..${sourceRef}`, '--max-count=30'], cwd) ?? ''
-  )
+  const commits = (tryGit(['log', '--pretty=%s', commitRange, '--max-count=30'], cwd) ?? '')
     .split('\n')
     .filter(Boolean)
     .map(truncateSubject)
 
-  const files = (
+  const files = parseNumstat(
     tryGit(
-      ['-c', 'core.quotePath=false', 'diff', '--numstat', range, '--', '.', ...excludes],
+      ['-c', 'core.quotePath=false', 'diff', '--numstat', '-z', range, '--', '.', ...excludes],
       cwd,
-    ) ?? ''
+    ) ?? '',
   )
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [add = '0', del = '0', ...rest] = line.split('\t')
-      return {
-        path: rest.join('\t'),
-        additions: Number.isFinite(Number(add)) ? Number(add) : 0,
-        deletions: Number.isFinite(Number(del)) ? Number(del) : 0,
-      }
-    })
 
   return { merge_base: mb, commits, files, diff }
 }
 
 /** Pure calculation behind `prep`: no disk writes, safe to call for a preview. */
-export function computePrepInput(opts: {
+export async function computePrepInput(opts: {
   branch?: string | undefined
   target?: string | undefined
+  /** Pins where the reviewed range starts; see computeDiffSummary. */
+  baseline?: string | undefined
   cwd: string
-}): PrepInput {
+}): Promise<PrepInput> {
   const cwd = repoRoot(opts.cwd)
   const checkedOut = currentBranch(cwd)
   const branch = opts.branch ?? checkedOut
@@ -277,12 +440,17 @@ export function computePrepInput(opts: {
   }
   const headRef = opts.branch && opts.branch !== checkedOut ? opts.branch : 'HEAD'
 
-  const { target, source } = detectTarget(branch, opts.target, cwd, headRef)
+  const { target, source } = await detectTarget(branch, opts.target, cwd, { headRef })
   if (sameBranch(target, branch)) {
     throw new Error(t('prep.targetIsSelf', { branch }))
   }
 
-  const { merge_base: mb, commits, files, diff } = computeDiffSummary(headRef, target, cwd)
+  const {
+    merge_base: mb,
+    commits,
+    files,
+    diff,
+  } = computeDiffSummary(headRef, target, cwd, opts.baseline)
   if (!diff.trim()) {
     const dirty = headRef === 'HEAD' ? tryGit(['status', '--porcelain'], cwd) : null
     const hint = dirty?.trim() ? t('prep.dirtyHint') : ''
@@ -301,6 +469,7 @@ export function computePrepInput(opts: {
     target,
     target_source: source,
     merge_base: mb,
+    ...(opts.baseline ? { baseline: opts.baseline } : {}),
     head_sha: headSha(cwd, headRef),
     repo_root: cwd,
     commits,
@@ -313,13 +482,15 @@ export function computePrepInput(opts: {
   }
 }
 
-export function prep(opts: {
+export async function prep(opts: {
   branch?: string | undefined
   target?: string | undefined
+  /** Pins where the reviewed range starts; see computeDiffSummary. */
+  baseline?: string | undefined
   cwd: string
   quiet?: boolean | undefined
-}): PrepInput {
-  const input = computePrepInput(opts)
+}): Promise<PrepInput> {
+  const input = await computePrepInput(opts)
   const {
     branch,
     target,

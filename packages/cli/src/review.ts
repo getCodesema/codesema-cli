@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { agentEnv, hardenedReviewCommand, runAgent, type AgentRunOptions } from './agent.js'
+import { hardenedReviewCommand, reviewAgentEnv, runAgent, type AgentRunOptions } from './agent.js'
 import { pickBranch } from './branches.js'
 import {
   ensureWorkDir,
@@ -42,6 +42,7 @@ import { createSession, startServer, type LiveSession } from './serve.js'
 import { buildServerContext, type ServerContext } from './server-context.js'
 import { printReviewSummary } from './summary.js'
 import { autoPushReview } from './sync.js'
+import { mergeCriterionVerdicts } from './task-criteria-gate.js'
 import { isInteractive, select } from './tui.js'
 import {
   ACCENT,
@@ -241,8 +242,8 @@ function buildIncrementalPrompt(
   return { prompt, sinceSha: since }
 }
 
-function detectAgentCommand(cwd: string): string {
-  const [first] = detectAgents(cwd)
+async function detectAgentCommand(cwd: string): Promise<string> {
+  const [first] = await detectAgents(cwd)
   if (first) {
     return defaultCommand(first)
   }
@@ -408,9 +409,20 @@ export async function runAgentJsonWithRetry<T>(
   }
 }
 
-/** The full (non-incremental) review prompt for an MR: reviewInstructions + the whole diff. */
-export function buildFullReviewPrompt(input: PrepInput): string {
-  return `${reviewInstructions()}\n\n<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>\n\nOutput ONLY the JSON object now.`
+/**
+ * The full (non-incremental) review prompt for an MR: reviewInstructions + the
+ * whole diff. `chapter` is an EXTRA block inserted between the input and the
+ * closing line — T3.2's acceptance-criteria chapter is the only caller, and
+ * omitting it reproduces the prompt byte for byte, which is what keeps a task
+ * without criteria on exactly the behaviour it had before that ticket.
+ */
+export function buildFullReviewPrompt(input: PrepInput, chapter?: string | undefined): string {
+  return [
+    reviewInstructions(),
+    `<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>`,
+    ...(chapter ? [chapter] : []),
+    'Output ONLY the JSON object now.',
+  ].join('\n\n')
 }
 
 export type SimpleOutcome =
@@ -431,6 +443,8 @@ export async function runSimpleFlow(opts: {
   prompt: string
   incremental: boolean
   onProgress?: (status: string) => void
+  /** Aborting SIGTERMs the review agent's process group (workspace shutdown). */
+  signal?: AbortSignal | undefined
 }): Promise<SimpleOutcome> {
   const forwardPartial = createPartialForwarder(opts.session)
   let out: string
@@ -438,10 +452,11 @@ export async function runSimpleFlow(opts: {
     out = await runAgentJsonWithRetry(
       {
         command: hardenedReviewCommand(opts.agentCommand),
-        env: agentEnv(opts.agentCommand),
+        env: reviewAgentEnv(opts.agentCommand),
         prompt: opts.prompt,
         cwd: opts.input.repo_root,
-        timeoutMs: opts.timeoutMs,
+        absoluteCapMs: opts.timeoutMs,
+        ...(opts.signal ? { signal: opts.signal } : {}),
         onText: (text) => {
           const partial = forwardPartial(text)
           if (!partial) {
@@ -503,12 +518,24 @@ export async function runDualFlow(opts: {
   timeoutMs: number
   session: LiveSession
   spinner: { update: (status: string) => void }
+  /**
+   * T3.2: the acceptance-criteria chapter, appended to BOTH lanes' prompts.
+   * Both lanes are asked, and their per-criterion verdicts are reconciled
+   * pessimistically below — the judge only ever arbitrates FINDINGS, so a
+   * criteria list left to it would be dropped on the floor, and a dropped
+   * list reads downstream as "nothing was judged", which blocks every
+   * ticketed task in dual mode forever.
+   */
+  criteriaChapter?: string | undefined
+  /** Aborting SIGTERMs both lanes' agent process groups (workspace shutdown). */
+  signal?: AbortSignal | undefined
 }): Promise<DualOutcome> {
-  const { agentCommand, input, dir, timeoutMs, session, spinner } = opts
+  const { agentCommand, input, dir, timeoutMs, session, spinner, signal } = opts
   const inputBlock = `<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>`
+  const chapterBlock = opts.criteriaChapter ? [opts.criteriaChapter] : []
   const closing = 'Output ONLY the JSON object now.'
   const command = hardenedReviewCommand(agentCommand)
-  const env = agentEnv(agentCommand)
+  const env = reviewAgentEnv(agentCommand)
 
   const lanes: { a: string | null; b: string | null } = { a: null, b: null }
   const updateLanes = () =>
@@ -523,7 +550,8 @@ export async function runDualFlow(opts: {
         env,
         prompt,
         cwd: input.repo_root,
-        timeoutMs,
+        absoluteCapMs: timeoutMs,
+        ...(signal ? { signal } : {}),
         onText: (text) => {
           const partial = forward(text)
           if (!partial) {
@@ -538,8 +566,11 @@ export async function runDualFlow(opts: {
   }
 
   const [resA, resB] = await Promise.allSettled([
-    laneRun('a', [reviewInstructions(), inputBlock, closing].join('\n\n')),
-    laneRun('b', [prosecutorInstructions(languageRule()), inputBlock, closing].join('\n\n')),
+    laneRun('a', [reviewInstructions(), inputBlock, ...chapterBlock, closing].join('\n\n')),
+    laneRun(
+      'b',
+      [prosecutorInstructions(languageRule()), inputBlock, ...chapterBlock, closing].join('\n\n'),
+    ),
   ])
 
   const settle = (
@@ -605,7 +636,7 @@ export async function runDualFlow(opts: {
       judgeOutput = await runAgentJsonWithRetry(
         {
           command: hardenedReviewCommand(judgeCommand),
-          env: agentEnv(judgeCommand),
+          env: reviewAgentEnv(judgeCommand),
           prompt: [
             judgeInstructions(languageRule()),
             inputBlock,
@@ -613,7 +644,8 @@ export async function runDualFlow(opts: {
             closing,
           ].join('\n\n'),
           cwd: input.repo_root,
-          timeoutMs,
+          absoluteCapMs: timeoutMs,
+          ...(signal ? { signal } : {}),
           onText: (text) => {
             const now = Date.now()
             if (now - lastJudgeParse < PARTIAL_PARSE_INTERVAL_MS) {
@@ -638,7 +670,19 @@ export async function runDualFlow(opts: {
 
   const assembly = assembleDualReview(crossLane.a, crossLane.b, judgeOutput)
   const dualStats = { ...assembly.stats, merged: assembly.stats.merged + crossLane.merged }
-  const final = groundReview(assembly.review, input.diff)
+  // T3.2: `assembleDualReview` arbitrates findings and nothing else, so the
+  // per-criterion verdicts are folded back in HERE, deterministically and
+  // pessimistically (mergeCriterionVerdicts). Omitted when neither lane
+  // produced any, so a dual review without criteria keeps writing a record
+  // with no `criteria` key at all.
+  const mergedCriteria = mergeCriterionVerdicts(
+    groundedA.review.criteria,
+    groundedB.review.criteria,
+  )
+  const final = groundReview(
+    mergedCriteria.length > 0 ? { ...assembly.review, criteria: mergedCriteria } : assembly.review,
+    input.diff,
+  )
   const resolved = buildRecord(final.review)
   const record: ReviewRecord = { ...resolved, meta: { ...resolved.meta, dual: dualStats } }
 
@@ -729,7 +773,7 @@ export async function review(opts: {
       console.log('')
     }
   }
-  agentCommand ??= detectAgentCommand(cwd)
+  agentCommand ??= await detectAgentCommand(cwd)
 
   // Agent inherited from the repo config (neither --agent nor global): require approval.
   const repoAgent = cwd ? loadRepoConfig(cwd).agent : undefined
@@ -750,7 +794,7 @@ export async function review(opts: {
     branch = picked
   }
 
-  const prepared = prep({ branch, target: opts.target ?? config.target, cwd, quiet: true })
+  const prepared = await prep({ branch, target: opts.target ?? config.target, cwd, quiet: true })
   // Best-effort, never blocking: offline, unlinked workspace, a non-200 or a
   // timeout all silently degrade to null (local review unchanged).
   const input: PrepInput = {

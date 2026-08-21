@@ -3,13 +3,26 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_MERGE_SETTINGS,
   globalConfigPath,
+  hasInvalidPositiveIntKey,
+  invalidMergeKeys,
   isRepoAgentTrusted,
   loadConfig,
   loadGlobalConfig,
   loadRepoConfig,
+  presentRepoGlobalOnlyKeys,
+  repoConfigPath,
+  repoGlobalOnlyIgnoredNotices,
+  resolveMaxAutoFixRounds,
+  resolveMergeSettings,
+  resolveProjectAgentCommand,
+  resolveProjectConfig,
+  resolveReviewMode,
+  resolveWatchdogBudgets,
   saveGlobalConfig,
   saveRepoConfig,
+  trustedProjectAgentCommand,
   trustRepoAgent,
   trustStorePath,
   type CodesemaConfig,
@@ -229,5 +242,552 @@ describe('isolation configuration', () => {
     expect(loadRepoConfig(repoDir).isolationAllowedDomains).toBeUndefined()
     saveRepoConfig(repoDir, { isolationAllowedDomains: ['!!!'] })
     expect(loadRepoConfig(repoDir).isolationAllowedDomains).toBeUndefined()
+  })
+})
+
+describe('watchdog budgets (D3)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-wd-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-wd-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('no configuration: 30 min, 2 h and 30 s (D3)', () => {
+    expect(resolveWatchdogBudgets(loadConfig(repoDir))).toEqual({
+      inactivityMs: 30 * 60_000,
+      toolBudgetMs: 2 * 60 * 60_000,
+      heartbeatMs: 30_000,
+    })
+  })
+
+  test('the three budgets are readable from the config and override the defaults', () => {
+    saveRepoConfig(repoDir, {
+      watchdogInactivitySeconds: 600,
+      watchdogToolBudgetSeconds: 5400,
+      watchdogHeartbeatSeconds: 10,
+    })
+    const config = loadConfig(repoDir)
+    expect(config.watchdogInactivitySeconds).toBe(600)
+    expect(config.watchdogToolBudgetSeconds).toBe(5400)
+    expect(config.watchdogHeartbeatSeconds).toBe(10)
+    expect(resolveWatchdogBudgets(config)).toEqual({
+      inactivityMs: 600_000,
+      toolBudgetMs: 5_400_000,
+      heartbeatMs: 10_000,
+    })
+  })
+
+  test('a repo budget wins over the global one, field by field', () => {
+    saveGlobalConfig({ watchdogInactivitySeconds: 60, watchdogHeartbeatSeconds: 5 })
+    saveRepoConfig(repoDir, { watchdogInactivitySeconds: 120 })
+    expect(resolveWatchdogBudgets(loadConfig(repoDir))).toEqual({
+      inactivityMs: 120_000,
+      toolBudgetMs: 2 * 60 * 60_000,
+      heartbeatMs: 5_000,
+    })
+  })
+
+  test('an unusable value falls back to its default rather than to a run cut on sight', () => {
+    saveRepoConfig(repoDir, {
+      watchdogInactivitySeconds: 0,
+      watchdogToolBudgetSeconds: -1,
+      watchdogHeartbeatSeconds: 1.5,
+    })
+    const config = loadRepoConfig(repoDir)
+    expect(config.watchdogInactivitySeconds).toBeUndefined()
+    expect(config.watchdogToolBudgetSeconds).toBeUndefined()
+    expect(config.watchdogHeartbeatSeconds).toBeUndefined()
+    expect(resolveWatchdogBudgets(config)).toEqual({
+      inactivityMs: 30 * 60_000,
+      toolBudgetMs: 2 * 60 * 60_000,
+      heartbeatMs: 30_000,
+    })
+  })
+
+  test('timeout gets the same guard: it is the last-resort ceiling now', () => {
+    // Since T1.7 nothing else watches the wall clock, so a 0 or a negative
+    // would read as "kill on sight" instead of "no ceiling".
+    saveRepoConfig(repoDir, { timeout: 0 })
+    expect(loadRepoConfig(repoDir).timeout).toBeUndefined()
+    saveRepoConfig(repoDir, { timeout: -30 })
+    expect(loadRepoConfig(repoDir).timeout).toBeUndefined()
+    saveRepoConfig(repoDir, { timeout: 1.5 })
+    expect(loadRepoConfig(repoDir).timeout).toBeUndefined()
+    saveRepoConfig(repoDir, { timeout: 3600 })
+    expect(loadRepoConfig(repoDir).timeout).toBe(3600)
+  })
+
+  // T1.9 review round 1, Mineur 5: taskRetentionCount's `>= 0` guard was one
+  // of three surviving mutants — unlike timeout/maxParallelTasks, 0 here is
+  // the OPPOSITE of "kill on sight": it is a legitimate, deliberate choice
+  // ("keep none, purge every terminated task at the next boot"), so the
+  // guard must accept 0 while still rejecting anything that would slice an
+  // array with a negative or fractional count.
+  //
+  // T1.4 review A2 moved the key to GLOBAL-ONLY, so the value guard is now
+  // pinned on the scope that can still carry it: the global file. The repo
+  // scope is pinned by the test right below — this pair replaces the single
+  // `loadRepoConfig` assertion this test used to make, which described a
+  // contract that let a cloned repo purge every other project's work.
+  test('taskRetentionCount on the GLOBAL file: 0 is a legitimate deliberate choice, negative/fractional fall back to the default', () => {
+    saveGlobalConfig({ taskRetentionCount: 0 })
+    expect(loadGlobalConfig().taskRetentionCount).toBe(0)
+    saveGlobalConfig({ taskRetentionCount: 5 })
+    expect(loadGlobalConfig().taskRetentionCount).toBe(5)
+    saveGlobalConfig({ taskRetentionCount: -1 })
+    expect(loadGlobalConfig().taskRetentionCount).toBeUndefined()
+    saveGlobalConfig({ taskRetentionCount: 2.5 })
+    expect(loadGlobalConfig().taskRetentionCount).toBeUndefined()
+  })
+
+  // The destructive half of T1.4 review A2, pinned on the merge every boot
+  // actually performs: `applyRetention()` takes ONE keep count and applies it
+  // to EVERY registered project, so a cloned repo that wrote
+  // `taskRetentionCount: 0` used to purge the finished tasks — worktree, HOME
+  // volume and .codesema/tasks/<id>/ — of all the OTHER projects at the next
+  // boot. The repo value is now stripped, and NAMED (invariant 2).
+  test('taskRetentionCount is GLOBAL-ONLY: a repo file cannot decide how long other projects keep their tasks', () => {
+    saveGlobalConfig({ taskRetentionCount: 20 })
+    saveRepoConfig(repoDir, { taskRetentionCount: 0 })
+    expect(loadRepoConfig(repoDir).taskRetentionCount).toBeUndefined()
+    // What `workspace()` actually feeds `createTaskManager`.
+    expect(loadConfig(repoDir).taskRetentionCount).toBe(20)
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.taskRetentionCount).toBe(20)
+    expect(resolved.warnings.some((line) => line.includes('taskRetentionCount'))).toBe(true)
+    // Even a value the parser would have kept is ignored: presence is what is
+    // warned about, not usability.
+    saveRepoConfig(repoDir, { taskRetentionCount: 3 })
+    expect(loadConfig(repoDir).taskRetentionCount).toBe(20)
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual(['taskRetentionCount'])
+  })
+
+  test('a budget that is not a number at all is simply absent', () => {
+    saveRepoConfig(repoDir, { watchdogInactivitySeconds: '600' as never })
+    expect(loadRepoConfig(repoDir).watchdogInactivitySeconds).toBeUndefined()
+  })
+})
+
+describe('machine load cap keys (T1.3, D4)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-cap-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-cap-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('maxConcurrentAgents survives a GLOBAL round-trip, integer >= 1 only', () => {
+    saveGlobalConfig({ maxConcurrentAgents: 6 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBe(6)
+    saveGlobalConfig({ maxConcurrentAgents: 0 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBeUndefined()
+    saveGlobalConfig({ maxConcurrentAgents: -1 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBeUndefined()
+    saveGlobalConfig({ maxConcurrentAgents: 1.5 })
+    expect(loadGlobalConfig().maxConcurrentAgents).toBeUndefined()
+  })
+
+  test('the deprecated maxParallelTasks still round-trips on the GLOBAL file', () => {
+    saveGlobalConfig({ maxParallelTasks: 2 })
+    expect(loadGlobalConfig().maxParallelTasks).toBe(2)
+  })
+
+  test('both keys can coexist on the GLOBAL file: loadConfig hands both back, the caller picks', () => {
+    saveGlobalConfig({ maxParallelTasks: 2, maxConcurrentAgents: 5 })
+    const config = loadConfig(repoDir)
+    expect(config.maxParallelTasks).toBe(2)
+    expect(config.maxConcurrentAgents).toBe(5)
+  })
+
+  test('a repo file that sets either key is stripped (T1.4: global-only)', () => {
+    saveGlobalConfig({ maxConcurrentAgents: 4 })
+    saveRepoConfig(repoDir, { maxParallelTasks: 2, maxConcurrentAgents: 9, agent: 'claude -p' })
+    expect(loadRepoConfig(repoDir)).toEqual({ agent: 'claude -p' })
+    expect(loadConfig(repoDir).maxConcurrentAgents).toBe(4)
+    expect(loadConfig(repoDir).maxParallelTasks).toBeUndefined()
+  })
+
+  // MINEUR (adversarial review): parseConfig drops an unusable value in
+  // silence — same doctrine as every other numeric key — but the machine cap
+  // is the one place a CALLER (workspace.ts) wants to know it happened, so
+  // this is the seam that tells "present and wrong" from "absent".
+  describe('hasInvalidPositiveIntKey', () => {
+    test('absent is not invalid: nothing to warn about', () => {
+      saveRepoConfig(repoDir, {})
+      expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxConcurrentAgents')).toBe(false)
+    })
+
+    test('a usable value is not invalid', () => {
+      saveRepoConfig(repoDir, { maxConcurrentAgents: 3 })
+      expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxConcurrentAgents')).toBe(false)
+    })
+
+    test('0, negative, fractional and non-numeric are all invalid', () => {
+      for (const bad of [0, -1, 1.5, 'quatre' as unknown as number]) {
+        saveRepoConfig(repoDir, { maxConcurrentAgents: bad })
+        expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxConcurrentAgents')).toBe(true)
+      }
+    })
+
+    test('the deprecated alias gets the same treatment', () => {
+      saveRepoConfig(repoDir, { maxParallelTasks: -2 })
+      expect(hasInvalidPositiveIntKey(repoConfigPath(repoDir), 'maxParallelTasks')).toBe(true)
+    })
+
+    test('a path with no file at all is not invalid — nothing was ever typed', () => {
+      expect(
+        hasInvalidPositiveIntKey(join(repoDir, 'nope', 'config.json'), 'maxConcurrentAgents'),
+      ).toBe(false)
+    })
+  })
+})
+
+describe('resolveProjectConfig (T1.4)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-proj-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-proj-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('repo timeout wins over global', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    expect(resolveProjectConfig(repoDir).config.timeout).toBe(300)
+  })
+
+  test('a CLI flag wins over the repo file', () => {
+    saveRepoConfig(repoDir, { isolation: 'policy', timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir, { isolation: 'container', timeout: 60 })
+    expect(resolved.config.isolation).toBe('container')
+    expect(resolved.config.timeout).toBe(60)
+  })
+
+  // T3.7/D15. A boolean opt-in has a failure mode a number does not: `false`
+  // is the value a project uses to REFUSE what the machine turned on, and a
+  // parse that keeps values by truthiness drops it — handing the project
+  // straight back to the global `true` it had just declined.
+  test('the cycle-label opt-in defaults to off, and a repo false beats a global true', () => {
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBeUndefined()
+    saveGlobalConfig({ forgeCycleLabels: true })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(true)
+    saveRepoConfig(repoDir, { forgeCycleLabels: false })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(false)
+    // And it is repo-settable in the other direction too, unlike the
+    // global-only keys next door.
+    saveGlobalConfig({})
+    saveRepoConfig(repoDir, { forgeCycleLabels: true })
+    expect(resolveProjectConfig(repoDir).config.forgeCycleLabels).toBe(true)
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual([])
+  })
+
+  test('outside any repo, only the global file (and flags) apply', () => {
+    saveGlobalConfig({ timeout: 900, isolation: 'policy' })
+    saveRepoConfig(repoDir, { timeout: 300, isolation: 'container' })
+    expect(resolveProjectConfig(null).config).toMatchObject({ timeout: 900, isolation: 'policy' })
+    expect(resolveProjectConfig(null, { timeout: 15 }).config.timeout).toBe(15)
+  })
+
+  test('a repo maxConcurrentAgents is ignored, the global cap stands, and a warning names the key', () => {
+    saveGlobalConfig({ maxConcurrentAgents: 4 })
+    saveRepoConfig(repoDir, { maxConcurrentAgents: 1 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxConcurrentAgents).toBe(4)
+    expect(resolved.warnings.some((line) => line.includes('maxConcurrentAgents'))).toBe(true)
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual(['maxConcurrentAgents'])
+  })
+
+  test('the review mode a project declares is what resolves (T3.2)', () => {
+    saveRepoConfig(repoDir, { reviewMode: 'dual' })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBe('dual')
+    expect(resolveReviewMode(resolved.config)).toBe('dual')
+  })
+
+  test('a repo review mode wins over the global one, like every repo-settable key', () => {
+    saveGlobalConfig({ reviewMode: 'dual' })
+    saveRepoConfig(repoDir, { reviewMode: 'simple' })
+    expect(resolveReviewMode(resolveProjectConfig(repoDir).config)).toBe('simple')
+  })
+
+  test('no review mode declared anywhere resolves to simple (non-regression)', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBeUndefined()
+    expect(resolveReviewMode(resolved.config)).toBe('simple')
+  })
+
+  test('a review mode outside the enum is dropped without throwing, and simple stands', () => {
+    // Written through saveRepoConfig so the directory exists, then hand-mangled
+    // the way a human editing the file would.
+    saveRepoConfig(repoDir, { timeout: 300 })
+    writeFileSync(
+      repoConfigPath(repoDir),
+      JSON.stringify({ timeout: 300, reviewMode: 'triple' }),
+      'utf8',
+    )
+    expect(() => resolveProjectConfig(repoDir)).not.toThrow()
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.reviewMode).toBeUndefined()
+    expect(resolveReviewMode(resolved.config)).toBe('simple')
+  })
+
+  // --- T3.3 (D14): the bound of the automatic fix loop --------------------
+
+  test('resolveMaxAutoFixRounds answers on its OWN bar, not on the parser’s', () => {
+    // Hand-built configs, deliberately: `parseConfig` drops an unusable value
+    // before the resolver sees it, so going through `resolveProjectConfig`
+    // cannot tell whether this function has a bar of its own. It must, because
+    // it is exported and read by callers that never opened a config file.
+    expect(resolveMaxAutoFixRounds({})).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: undefined })).toBe(2)
+    // `0` has no meaning this ticket specified — it is an unusable bound like
+    // any other, NOT a switch that turns the loop off.
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 0 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: -3 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 2.5 })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: Number.NaN })).toBe(2)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: '3' as unknown as number })).toBe(2)
+    // ...and a usable one is honoured verbatim.
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 1 })).toBe(1)
+    expect(resolveMaxAutoFixRounds({ maxAutoFixRounds: 7 })).toBe(7)
+  })
+
+  test('the fix-loop bound a project declares is what resolves (T3.3/D14)', () => {
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 3 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxAutoFixRounds).toBe(3)
+    expect(resolveMaxAutoFixRounds(resolved.config)).toBe(3)
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 1 })
+    expect(resolveMaxAutoFixRounds(resolveProjectConfig(repoDir).config)).toBe(1)
+  })
+
+  test('a repo bound wins over the global one, like every repo-settable key', () => {
+    saveGlobalConfig({ maxAutoFixRounds: 5 })
+    saveRepoConfig(repoDir, { maxAutoFixRounds: 1 })
+    expect(resolveMaxAutoFixRounds(resolveProjectConfig(repoDir).config)).toBe(1)
+  })
+
+  test('no bound declared anywhere answers the D14 default of 2', () => {
+    saveGlobalConfig({ timeout: 900 })
+    saveRepoConfig(repoDir, { timeout: 300 })
+    const resolved = resolveProjectConfig(repoDir)
+    expect(resolved.config.maxAutoFixRounds).toBeUndefined()
+    expect(resolveMaxAutoFixRounds(resolved.config)).toBe(2)
+  })
+
+  test('an unusable bound falls back on the default without throwing', () => {
+    saveRepoConfig(repoDir, { timeout: 300 })
+    // `0` is in this list on purpose: this ticket does NOT give it the
+    // meaning "switch the loop off", so it is an unusable bound like any
+    // other and the D14 default stands.
+    for (const bad of [0, -1, 2.5, '3', null, [], { rounds: 2 }] as unknown[]) {
+      writeFileSync(
+        repoConfigPath(repoDir),
+        JSON.stringify({ timeout: 300, maxAutoFixRounds: bad }),
+        'utf8',
+      )
+      expect(() => resolveProjectConfig(repoDir)).not.toThrow()
+      const resolved = resolveProjectConfig(repoDir)
+      expect(resolved.config.maxAutoFixRounds).toBeUndefined()
+      expect(resolveMaxAutoFixRounds(resolved.config)).toBe(2)
+    }
+  })
+
+  test('the deprecated alias in a repo file is named the same way', () => {
+    saveRepoConfig(repoDir, { maxParallelTasks: 2 })
+    const notices = repoGlobalOnlyIgnoredNotices(repoDir)
+    expect(notices.some((line) => line.includes('maxParallelTasks'))).toBe(true)
+    expect(repoGlobalOnlyIgnoredNotices(null)).toEqual([])
+  })
+
+  test('trustedProjectAgentCommand is scoped to the repo that provided the command', () => {
+    trustRepoAgent(repoDir, 'claude -p --model opus')
+    expect(trustedProjectAgentCommand(repoDir, 'claude -p --model opus')).toEqual({
+      kind: 'trusted',
+      command: 'claude -p --model opus',
+    })
+    expect(trustedProjectAgentCommand('/other-repo', 'claude -p --model opus')).toEqual({
+      kind: 'untrusted',
+      command: 'claude -p --model opus',
+    })
+    expect(trustedProjectAgentCommand(repoDir, undefined)).toEqual({ kind: 'none' })
+  })
+
+  test('resolveProjectAgentCommand TOFU-checks only the repo file, never the global agent', () => {
+    saveGlobalConfig({ agent: 'codex exec -' })
+    saveRepoConfig(repoDir, { agent: 'claude -p --model opus' })
+    trustRepoAgent(repoDir, 'claude -p --model opus')
+    expect(resolveProjectAgentCommand(repoDir, {}, 'fallback').command).toBe(
+      'claude -p --model opus',
+    )
+    const other = mkdtempSync(join(tmpdir(), 'codesema-proj-other-'))
+    expect(resolveProjectAgentCommand(other, {}, 'fallback')).toEqual({ command: 'codex exec -' })
+    rmSync(other, { recursive: true, force: true })
+  })
+
+  test('a CLI --agent flag bypasses TOFU', () => {
+    saveRepoConfig(repoDir, { agent: 'claude -p --model opus' })
+    expect(resolveProjectAgentCommand(repoDir, { agent: 'codex exec -' }, 'fallback').command).toBe(
+      'codex exec -',
+    )
+  })
+
+  test('an untrusted repo agent falls back to global, with a warning', () => {
+    saveGlobalConfig({ agent: 'codex exec -' })
+    saveRepoConfig(repoDir, { agent: 'claude -p --model opus' })
+    const resolved = resolveProjectAgentCommand(repoDir, {}, 'fallback')
+    expect(resolved.command).toBe('codex exec -')
+    expect(resolved.warning).toContain('claude -p --model opus')
+  })
+})
+
+describe('merge settings (T3.6, D12/D13/DP1)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-merge-cfg-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-merge-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('a config with no merge key merges nothing, picks nothing, consents to nothing', () => {
+    expect(resolveMergeSettings({})).toEqual({
+      policy: 'human',
+      deleteBranch: false,
+      allowMergeWithoutChecks: false,
+    })
+    // The absent strategy is a VALUE, not a gap: it is what makes the argv
+    // carry no strategy option at all (D13).
+    expect('strategy' in resolveMergeSettings({})).toBe(false)
+    expect(resolveMergeSettings({})).toEqual(DEFAULT_MERGE_SETTINGS)
+  })
+
+  test('the four keys are read from the global file and applied', () => {
+    saveGlobalConfig({
+      mergePolicy: 'auto',
+      mergeStrategy: 'squash',
+      deleteBranchAfterMerge: true,
+      allowMergeWithoutChecks: true,
+    })
+    expect(resolveMergeSettings(loadGlobalConfig())).toEqual({
+      policy: 'auto',
+      strategy: 'squash',
+      deleteBranch: true,
+      allowMergeWithoutChecks: true,
+    })
+  })
+
+  test('an unknown value degrades to the default without throwing, and never to auto', () => {
+    writeFileSync(
+      globalConfigPath(),
+      JSON.stringify({
+        mergePolicy: 'Auto',
+        mergeStrategy: 'fast-forward',
+        deleteBranchAfterMerge: 'yes',
+        allowMergeWithoutChecks: 1,
+      }),
+    )
+    const config = loadGlobalConfig()
+    expect(config.mergePolicy).toBeUndefined()
+    expect(config.mergeStrategy).toBeUndefined()
+    expect(config.deleteBranchAfterMerge).toBeUndefined()
+    expect(config.allowMergeWithoutChecks).toBeUndefined()
+    expect(resolveMergeSettings(config)).toEqual(DEFAULT_MERGE_SETTINGS)
+  })
+
+  test('a value present but unusable is NAMED, not merely dropped', () => {
+    writeFileSync(globalConfigPath(), JSON.stringify({ mergePolicy: 'Auto', mergeStrategy: 42 }))
+    expect(invalidMergeKeys(globalConfigPath())).toEqual(['mergePolicy', 'mergeStrategy'])
+    // Absent, or present and usable, is nothing to warn about.
+    saveGlobalConfig({ mergePolicy: 'auto' })
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+    saveGlobalConfig({})
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+  })
+
+  test('unreadable or missing JSON is nothing to warn about, and never throws', () => {
+    expect(invalidMergeKeys(join(configDir, 'nope.json'))).toEqual([])
+    writeFileSync(globalConfigPath(), '{ not json')
+    expect(() => invalidMergeKeys(globalConfigPath())).not.toThrow()
+    expect(invalidMergeKeys(globalConfigPath())).toEqual([])
+  })
+
+  test('the four keys are GLOBAL-ONLY: a cloned repo cannot consent on your behalf', () => {
+    saveGlobalConfig({ mergePolicy: 'human' })
+    saveRepoConfig(repoDir, {
+      mergePolicy: 'auto',
+      mergeStrategy: 'rebase',
+      deleteBranchAfterMerge: true,
+      allowMergeWithoutChecks: true,
+    })
+    expect(loadRepoConfig(repoDir).mergePolicy).toBeUndefined()
+    expect(loadRepoConfig(repoDir).allowMergeWithoutChecks).toBeUndefined()
+    // What `workspace()` actually feeds `createTaskManager`.
+    expect(resolveMergeSettings(loadConfig(repoDir))).toEqual(DEFAULT_MERGE_SETTINGS)
+    // ...and it is NAMED, never dropped in silence (invariant n° 2).
+    expect(presentRepoGlobalOnlyKeys(repoDir)).toEqual([
+      'mergePolicy',
+      'mergeStrategy',
+      'deleteBranchAfterMerge',
+      'allowMergeWithoutChecks',
+    ])
+    const notices = repoGlobalOnlyIgnoredNotices(repoDir)
+    for (const key of ['mergePolicy', 'allowMergeWithoutChecks']) {
+      expect(notices.some((line) => line.includes(key))).toBe(true)
+    }
   })
 })

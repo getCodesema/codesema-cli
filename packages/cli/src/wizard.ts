@@ -9,8 +9,9 @@ import {
   trustRepoAgent,
   type CodesemaConfig,
 } from './config.js'
-import { tryExec } from './git.js'
+import { tryExecAsync, type ProbeExecFn } from './git.js'
 import { setLanguage, t, type SupportedLanguage } from './i18n.js'
+import { runProbes } from './probes.js'
 import { isInteractive, select, textInput } from './tui.js'
 import { bold, dim } from './ui.js'
 
@@ -32,8 +33,12 @@ export type AgentDef = {
 }
 
 // Headless invocations verified against each CLI's official docs (2026-07):
-// claude -p / codex exec - / gemini read the prompt on stdin and write to stdout.
-// opencode has no documented stdin mode, so it is only usable via a custom command.
+// claude -p / codex exec - / gemini / opencode run read the prompt on stdin and
+// write to stdout. opencode run reads stdin via Bun.stdin.text() when not a TTY
+// (verified 1.18.19, present since v1.0.0). grok is the exception (verified
+// against grok 1.0.5, 2026-08): its -p/--single takes the prompt as an ARGUMENT
+// and its --prompt-file wants a real path, so it is fed through {promptFile}
+// (see PROMPT_FILE_PLACEHOLDER) rather than stdin.
 export const AGENT_DEFS: AgentDef[] = [
   {
     id: 'claude',
@@ -68,10 +73,124 @@ export const AGENT_DEFS: AgentDef[] = [
     judgeModel: 'gemini-2.5-pro',
     // no CLI effort flag: gemini only supports it via settings.json
   },
+  {
+    id: 'grok',
+    label: 'Grok CLI (xAI)',
+    bin: 'grok',
+    base: 'grok --prompt-file {promptFile}',
+    modelFlag: '-m',
+    models: ['grok-4.6', 'grok-4.5'],
+    judgeModel: 'grok-4.5',
+    effortFlag: (v) => `--reasoning-effort ${v}`,
+    efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  },
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    bin: 'opencode',
+    base: 'opencode run',
+    modelFlag: '-m',
+    models: [],
+    // Empty on purpose: a wizard run must not write into this module-level
+    // list. judgeCommandFor then leaves the command unchanged (primary model).
+    judgeModel: '',
+    effortFlag: (v) => `--variant ${v}`,
+    efforts: ['minimal', 'low', 'medium', 'high', 'max'],
+  },
 ]
 
-export function detectAgents(cwd: string): AgentDef[] {
-  return AGENT_DEFS.filter((def) => tryExec(def.bin, ['--version'], cwd) !== null)
+/** One `provider/model` id per line; headers, blanks and other junk are dropped. */
+export function parseOpencodeModels(stdout: string): string[] {
+  const models: string[] = []
+  const seen = new Set<string>()
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!/^\S+\/\S+$/.test(line) || seen.has(line)) {
+      continue
+    }
+    seen.add(line)
+    models.push(line)
+  }
+  return models
+}
+
+/** `grok models` prints a bullet list (`* grok-4.6 (default)`, `- grok-4.5`). */
+export function parseGrokModels(stdout: string): string[] {
+  const models: string[] = []
+  const seen = new Set<string>()
+  for (const raw of stdout.split(/\r?\n/)) {
+    const id = /^\s*[*+-]\s+(\S+)/.exec(raw)?.[1]
+    if (!id || seen.has(id)) {
+      continue
+    }
+    seen.add(id)
+    models.push(id)
+  }
+  return models
+}
+
+/** Live `bin models` stdout when the CLI has that subcommand; else the static list. */
+export async function listAgentModels(
+  def: AgentDef,
+  cwd: string,
+  execFn: ProbeExecFn = tryExecAsync,
+): Promise<string[]> {
+  if (def.id === 'opencode' || def.id === 'grok') {
+    const stdout = await execFn(def.bin, ['models'], cwd)
+    if (stdout) {
+      const parsed = def.id === 'opencode' ? parseOpencodeModels(stdout) : parseGrokModels(stdout)
+      if (parsed.length > 0) {
+        return parsed
+      }
+    }
+  }
+  return [...def.models]
+}
+
+const OPENCODE_JUDGE_RE = /mini|flash|air|haiku|nano/i
+
+/** Prefer a cheap mid-tier id; else the first listed model; else ''. */
+export function pickOpencodeJudge(models: readonly string[]): string {
+  return models.find((id) => OPENCODE_JUDGE_RE.test(id)) ?? models[0] ?? ''
+}
+
+/**
+ * Map a user-supplied agent string onto a known command: an AGENT_DEFS id or
+ * bin becomes that provider's defaultCommand; a command whose first-token bin
+ * is known is kept; anything else is null (a true custom command).
+ * Exported for callers that resolve `--agent` / config onto a known bin.
+ */
+export function resolveKnownAgentCommand(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return null
+  }
+  const def = AGENT_DEFS.find((d) => d.id === trimmed || d.bin === trimmed)
+  if (def) {
+    return defaultCommand(def)
+  }
+  const first = trimmed.split(/\s+/)[0] ?? ''
+  const bin = first.split('/').pop() ?? ''
+  return AGENT_DEFS.some((d) => d.bin === bin) ? trimmed : null
+}
+
+/**
+ * Agents available on PATH, in AGENT_DEFS order. Every `<bin> --version` probe
+ * is launched before the first one answers (runProbes), so detection costs one
+ * shared 8s window instead of one per agent — the old sequential filter chained
+ * one timeout per agent before the workspace could even boot.
+ */
+export async function detectAgents(
+  cwd: string,
+  execFn: ProbeExecFn = tryExecAsync,
+): Promise<AgentDef[]> {
+  const outcomes = await runProbes(
+    AGENT_DEFS.map((def) => ({
+      label: def.bin,
+      run: () => execFn(def.bin, ['--version'], cwd),
+    })),
+  )
+  return AGENT_DEFS.filter((_, index) => outcomes[index] !== null)
 }
 
 /** Default headless command for a provider (no model or effort). */
@@ -98,6 +217,82 @@ export function composeCommand(def: AgentDef, model?: string, effort?: string): 
     command += ` ${def.suffix}`
   }
   return command
+}
+
+/** `-m` / `--model` value on a known-agent command, if the flag is present. */
+export function parseCommandModel(command: string): string | undefined {
+  const bin = command.trim().split(/\s+/)[0]?.split('/').pop() ?? ''
+  const def = AGENT_DEFS.find((d) => d.bin === bin)
+  if (!def) {
+    return undefined
+  }
+  const flag = def.modelFlag
+  const tokens: string[] = []
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g
+  let match = re.exec(command)
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '')
+    match = re.exec(command)
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i] ?? ''
+    if (tok === flag) {
+      const next = tokens[i + 1]
+      if (!next || next === def.suffix) {
+        return undefined
+      }
+      return next
+    }
+    if (flag.startsWith('--') && tok.startsWith(`${flag}=`)) {
+      const value = tok.slice(flag.length + 1)
+      return value || undefined
+    }
+  }
+  return undefined
+}
+
+/** Effort/variant value composed onto a known-agent command, if present. */
+export function parseCommandEffort(command: string): string | undefined {
+  const bin = command.trim().split(/\s+/)[0]?.split('/').pop() ?? ''
+  const def = AGENT_DEFS.find((d) => d.bin === bin)
+  if (!def?.effortFlag) {
+    return undefined
+  }
+  const marker = '__CODESEMA_EFFORT__'
+  const shaped = def.effortFlag(marker).trim()
+  const at = shaped.indexOf(marker)
+  if (at < 0) {
+    return undefined
+  }
+  const prefix = shaped.slice(0, at).trim()
+  const tokens: string[] = []
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g
+  let match = re.exec(command)
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '')
+    match = re.exec(command)
+  }
+  const prefixTokens = prefix.split(/\s+/).filter(Boolean)
+  const last = prefixTokens.at(-1) ?? ''
+  if (last.endsWith('=')) {
+    const key = last
+    for (const tok of tokens) {
+      if (tok.startsWith(key)) {
+        return tok.slice(key.length) || undefined
+      }
+    }
+    return undefined
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === last) {
+      const next = tokens[i + 1]
+      if (!next || next === def.suffix) {
+        return undefined
+      }
+      return next
+    }
+  }
+  return undefined
 }
 
 const CLI_DEFAULT = Symbol('cli-default')
@@ -150,7 +345,7 @@ export async function runAgentWizard(
     return null
   }
 
-  const detected = detectAgents(cwd)
+  const detected = await detectAgents(cwd)
   const missing = AGENT_DEFS.filter((d) => !detected.includes(d))
   if (missing.length) {
     console.log(`  ${dim(t('wizard.notOnPath', { bins: missing.map((d) => d.bin).join(', ') }))}`)
@@ -189,7 +384,13 @@ export async function runAgentWizard(
     return command ? { command, agentId: 'custom' } : null
   }
 
-  const def = picked
+  let def = picked
+  const models = await listAgentModels(def, cwd)
+  def = {
+    ...def,
+    models,
+    ...(def.id === 'opencode' ? { judgeModel: pickOpencodeJudge(models) } : {}),
+  }
 
   const modelOptions = [
     ...def.models.map((m) => ({

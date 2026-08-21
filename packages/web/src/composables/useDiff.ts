@@ -159,6 +159,10 @@ export function parseDiff(diff: string, findings: Finding[] = []): ParsedDiff {
   let oldNo = 0
   let newNo = 0
   let pendingOld: string | null = null
+  // A 100%-similarity rename/copy has no `---`/`+++` lines at all: the file is
+  // opened from its `rename to`/`copy to` header instead, and reused (not
+  // duplicated) if a `+++` line follows in the same section.
+  let fromRenameHeader = false
 
   for (const raw of (diff ?? '').split('\n')) {
     if (raw.startsWith('--- ')) {
@@ -168,14 +172,39 @@ export function parseDiff(diff: string, findings: Finding[] = []): ParsedDiff {
     if (raw.startsWith('+++ ')) {
       const newPath = stripPrefix(raw.slice(4))
       const path = newPath !== '/dev/null' ? newPath : (pendingOld ?? newPath)
-      current = { path, rows: [], topFindings: [], byLine: {}, hunks: [], addCount: 0, delCount: 0 }
-      files.push(current)
+      if (current && fromRenameHeader) {
+        current.path = path
+        fromRenameHeader = false
+      } else {
+        current = {
+          path,
+          rows: [],
+          topFindings: [],
+          byLine: {},
+          hunks: [],
+          addCount: 0,
+          delCount: 0,
+        }
+        files.push(current)
+      }
       oldNo = 0
       newNo = 0
       continue
     }
+    if (raw.startsWith('rename to ') || raw.startsWith('copy to ')) {
+      const path = raw.slice(raw.indexOf(' to ') + 4)
+      current = { path, rows: [], topFindings: [], byLine: {}, hunks: [], addCount: 0, delCount: 0 }
+      files.push(current)
+      fromRenameHeader = true
+      oldNo = 0
+      newNo = 0
+      continue
+    }
+    if (raw.startsWith('diff --git')) {
+      fromRenameHeader = false
+      continue
+    }
     if (
-      raw.startsWith('diff --git') ||
       raw.startsWith('index ') ||
       raw.startsWith('new file') ||
       raw.startsWith('deleted file') ||
@@ -187,7 +216,9 @@ export function parseDiff(diff: string, findings: Finding[] = []): ParsedDiff {
     ) {
       continue
     }
-    if (!current) {
+    if (!current || fromRenameHeader) {
+      // fromRenameHeader: a hunkless rename/copy section has no content lines;
+      // don't attribute stray lines (e.g. the diff's trailing blank line) to it.
       continue
     }
 

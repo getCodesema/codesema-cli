@@ -6,35 +6,56 @@ export const DEFAULT_TIMEOUT_S = 900
 
 const MAX_SUMMARY_CHARS = 4000
 
+/** Appends `flag` unless the user already made that call themselves. */
+function appendUnlessOwned(command: string, owned: string[], flag: string): string {
+  return owned.some((own) => command.includes(own)) ? command : `${command} ${flag}`
+}
+
 /**
  * The review agent runs read-only; applying fixes needs file-edit permissions.
  * Flags verified against each CLI's official docs (2026-07): claude
  * --permission-mode acceptEdits, codex --sandbox workspace-write, gemini
- * --approval-mode auto_edit. Custom commands are trusted as configured.
+ * --approval-mode auto_edit. Grok is the odd one (verified by running grok 1.0.5,
+ * 2026-08): its acceptEdits mode announces the edit and writes nothing headlessly,
+ * so the mode that actually applies one is --permission-mode auto. Custom commands
+ * are trusted as configured.
  */
 export function fixCommandFor(command: string): string {
   if (/^claude(\s|$)/.test(command)) {
-    if (command.includes('--permission-mode')) {
-      return command
-    }
-    return `${command} --permission-mode acceptEdits`
+    return appendUnlessOwned(command, ['--permission-mode'], '--permission-mode acceptEdits')
   }
   if (/^codex\s+exec(\s|$)/.test(command)) {
-    if (command.includes('--sandbox') || command.includes('--full-auto')) {
-      return command
-    }
-    return command.replace(/^codex\s+exec/, 'codex exec --sandbox workspace-write')
+    return command.includes('--sandbox') || command.includes('--full-auto')
+      ? command
+      : command.replace(/^codex\s+exec/, 'codex exec --sandbox workspace-write')
   }
   if (/^gemini(\s|$)/.test(command)) {
-    if (command.includes('--approval-mode') || command.includes('--yolo')) {
-      return command
-    }
-    return `${command} --approval-mode auto_edit`
+    return appendUnlessOwned(command, ['--approval-mode', '--yolo'], '--approval-mode auto_edit')
+  }
+  if (/^grok(\s|$)/.test(command)) {
+    return appendUnlessOwned(
+      command,
+      ['--permission-mode', '--always-approve'],
+      '--permission-mode auto',
+    )
+  }
+  if (/^opencode(\s|$)/.test(command)) {
+    // Default build agent already allows every tool.
+    return command
   }
   return command
 }
 
-function isFixable(finding: Finding): boolean {
+/**
+ * Whether a finding asks for a code change at all: a `praise`/`why` note never
+ * does, and an `info`-severity remark is a remark. EXPORTED since T3.3 because
+ * it is the ONE bar three call sites have to agree on — what this runner
+ * offers a human, what `taskReviewVerdict` calls actionable, and what the
+ * automatic fix loop retries on. Two copies of this predicate would let a
+ * review block on a finding the fix prompt then omits, which is exactly the
+ * shape of a loop that spends its whole budget changing nothing.
+ */
+export function isFixable(finding: Finding): boolean {
   if (finding.kind === 'praise' || finding.kind === 'why') {
     return false
   }
@@ -173,7 +194,7 @@ export function createFixRunner(opts: {
         command: fixCommandFor(opts.command),
         prompt: buildAgentFixPrompt(record, selected),
         cwd: opts.cwd,
-        timeoutMs: opts.timeoutMs,
+        absoluteCapMs: opts.timeoutMs,
       })
         .then((out) => {
           summary = out.trim().slice(0, MAX_SUMMARY_CHARS)

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { loadConfig } from './config.js'
 import { exportCommand } from './export.js'
@@ -15,7 +17,59 @@ import { VERSION } from './version.js'
 import { configCommand } from './wizard.js'
 import { workspace } from './workspace.js'
 
-function parseIntFlag(
+/**
+ * Any flag bag, as `parseArgs` hands one over: absent, a string, or a boolean.
+ * `resolveCommand` only ever asks for flags by name, so it stays usable from a
+ * test with a bare object literal.
+ */
+export type CliValues = {
+  readonly [flag: string]: string | boolean | undefined
+}
+
+/** The flags this CLI declares, with the exact type `parseArgs` gives each one. */
+type ParsedValues = {
+  branch?: string | undefined
+  target?: string | undefined
+  agent?: string | undefined
+  review?: string | undefined
+  out?: string | undefined
+  port?: string | undefined
+  timeout?: string | undefined
+  full?: boolean | undefined
+  dual?: boolean | undefined
+  force?: boolean | undefined
+  'fail-on'?: string | undefined
+  'no-open'?: boolean | undefined
+  help?: boolean | undefined
+  version?: boolean | undefined
+}
+
+export const COMMAND_NAMES = [
+  'review',
+  'prep',
+  'workspace',
+  'menu',
+  'show',
+  'config',
+  'export',
+  'sync',
+  'link',
+] as const
+
+export type CommandName = (typeof COMMAND_NAMES)[number]
+
+/**
+ * What the command line asks for, decided without touching the world.
+ * `unknown` carries its own exit code so the caller stays a plain dispatcher.
+ */
+export type ResolvedCommand =
+  | { kind: 'version' }
+  | { kind: 'help' }
+  | { kind: 'workspace' }
+  | { kind: 'command'; name: CommandName; arg: string | undefined }
+  | { kind: 'unknown'; command: string; exitCode: 1 }
+
+export function parseIntFlag(
   name: string,
   raw: string | undefined,
   min: number,
@@ -31,7 +85,7 @@ function parseIntFlag(
   return n
 }
 
-function parseFailOn(raw: string | undefined): ReviewGate | undefined {
+export function parseFailOn(raw: string | undefined): ReviewGate | undefined {
   if (raw === undefined) {
     return undefined
   }
@@ -39,6 +93,108 @@ function parseFailOn(raw: string | undefined): ReviewGate | undefined {
     return raw as ReviewGate
   }
   throw new Error(t('cli.failOnError', { raw, values: REVIEW_GATE_VALUES.join(', ') }))
+}
+
+function isCommandName(value: string): value is CommandName {
+  return (COMMAND_NAMES as readonly string[]).includes(value)
+}
+
+/**
+ * The whole dispatch decision, pure: no I/O, no `await`, nothing read from the
+ * process. The terminal state enters through `ctx.interactive` (injection seam)
+ * so the branch that used to be reachable only from a real TTY is testable.
+ *
+ * The order below mirrors `main()` exactly — `--version`, then `--help`, then
+ * the workspace switch, then the command table — because `main()` interleaves
+ * side effects between those steps and must keep its historical sequence.
+ */
+export function resolveCommand(
+  values: CliValues,
+  positionals: readonly string[],
+  ctx: { interactive: boolean },
+): ResolvedCommand {
+  if (values.version === true) {
+    return { kind: 'version' }
+  }
+  if (values.help === true) {
+    return { kind: 'help' }
+  }
+  // The workspace IS the product (plan decision n°7): a bare interactive
+  // `codesema` opens it. Review flags keep their historical meaning (they fall
+  // through to `review` below) and non-TTY keeps the old default, so CI
+  // pipelines built on bare `codesema` are untouched. The old menu stays
+  // reachable as `codesema menu`.
+  if (positionals[0] === undefined && !reviewFlagsPassed(values) && ctx.interactive) {
+    return { kind: 'workspace' }
+  }
+  const command = positionals[0] ?? 'review'
+  if (!isCommandName(command)) {
+    return { kind: 'unknown', command, exitCode: 1 }
+  }
+  return { kind: 'command', name: command, arg: positionals[1] }
+}
+
+async function runCommand(
+  name: CommandName,
+  arg: string | undefined,
+  values: ParsedValues,
+  repoRoot: string | null,
+): Promise<void> {
+  switch (name) {
+    case 'review':
+      await review({
+        branch: values.branch,
+        target: values.target,
+        agent: values.agent,
+        port: parseIntFlag('port', values.port, 1, 65535),
+        timeout: parseIntFlag('timeout', values.timeout, 1, 86400),
+        full: values.full,
+        dual: values.dual,
+        failOn: parseFailOn(values['fail-on']),
+        open: !values['no-open'],
+        cwd: process.cwd(),
+      })
+      break
+    case 'prep':
+      await prep({
+        branch: values.branch,
+        target: values.target ?? loadConfig(repoRoot).target,
+        cwd: process.cwd(),
+      })
+      break
+    case 'workspace':
+      await workspace({
+        port: parseIntFlag('port', values.port, 1, 65535),
+        open: !values['no-open'],
+        cwd: process.cwd(),
+        agent: values.agent,
+        timeout: parseIntFlag('timeout', values.timeout, 1, 86400),
+      })
+      break
+    case 'menu':
+      await runMenu({ cwd: process.cwd() })
+      break
+    case 'show':
+      await show({
+        review: values.review,
+        port: parseIntFlag('port', values.port, 1, 65535) ?? loadConfig(repoRoot).port,
+        open: !values['no-open'],
+        cwd: process.cwd(),
+      })
+      break
+    case 'config':
+      await configCommand(repoRoot)
+      break
+    case 'export':
+      exportCommand({ review: values.review, out: values.out, cwd: process.cwd() })
+      break
+    case 'sync':
+      await syncCommand({ action: arg, cwd: process.cwd(), force: values.force })
+      break
+    case 'link':
+      await linkCommand({ code: arg })
+      break
+  }
 }
 
 async function main(): Promise<void> {
@@ -62,88 +218,52 @@ async function main(): Promise<void> {
     },
   })
 
-  if (values.version) {
+  const resolved = resolveCommand(values, positionals, { interactive: isInteractive() })
+  if (resolved.kind === 'version') {
     console.log(VERSION)
     return
   }
   const repoRoot = tryGit(['rev-parse', '--show-toplevel'], process.cwd())
   setLanguage(loadConfig(repoRoot).language)
-  if (values.help) {
+  if (resolved.kind === 'help') {
     console.log(t('cli.help'))
     return
   }
   await maybeOfferUpgrade()
-  // The workspace IS the product (plan decision n°7): a bare interactive
-  // `codesema` opens it. Review flags keep their historical meaning (they fall
-  // through to `review` below) and non-TTY keeps the old default, so CI
-  // pipelines built on bare `codesema` are untouched. The old menu stays
-  // reachable as `codesema menu`.
-  if (positionals[0] === undefined && !reviewFlagsPassed(values) && isInteractive()) {
+  if (resolved.kind === 'workspace') {
     await workspace({ port: undefined, open: true, cwd: process.cwd() })
     return
   }
-  const command = positionals[0] ?? 'review'
+  if (resolved.kind === 'unknown') {
+    console.error(`${t('cli.unknownCommand', { command: resolved.command })}\n`)
+    console.log(t('cli.help'))
+    process.exitCode = resolved.exitCode
+    return
+  }
+  await runCommand(resolved.name, resolved.arg, values, repoRoot)
+}
 
-  switch (command) {
-    case 'review':
-      await review({
-        branch: values.branch,
-        target: values.target,
-        agent: values.agent,
-        port: parseIntFlag('port', values.port, 1, 65535),
-        timeout: parseIntFlag('timeout', values.timeout, 1, 86400),
-        full: values.full,
-        dual: values.dual,
-        failOn: parseFailOn(values['fail-on']),
-        open: !values['no-open'],
-        cwd: process.cwd(),
-      })
-      break
-    case 'prep':
-      prep({
-        branch: values.branch,
-        target: values.target ?? loadConfig(repoRoot).target,
-        cwd: process.cwd(),
-      })
-      break
-    case 'workspace':
-      await workspace({
-        port: parseIntFlag('port', values.port, 1, 65535),
-        open: !values['no-open'],
-        cwd: process.cwd(),
-      })
-      break
-    case 'menu':
-      await runMenu({ cwd: process.cwd() })
-      break
-    case 'show':
-      await show({
-        review: values.review,
-        port: parseIntFlag('port', values.port, 1, 65535) ?? loadConfig(repoRoot).port,
-        open: !values['no-open'],
-        cwd: process.cwd(),
-      })
-      break
-    case 'config':
-      await configCommand(repoRoot)
-      break
-    case 'export':
-      exportCommand({ review: values.review, out: values.out, cwd: process.cwd() })
-      break
-    case 'sync':
-      await syncCommand({ action: positionals[1], cwd: process.cwd(), force: values.force })
-      break
-    case 'link':
-      await linkCommand({ code: positionals[1] })
-      break
-    default:
-      console.error(`${t('cli.unknownCommand', { command })}\n`)
-      console.log(t('cli.help'))
-      process.exitCode = 1
+/**
+ * This module is both the executable entry point and the home of the exported
+ * `resolveCommand`, which its test imports: run `main()` only when the process
+ * was started ON this file (a bin symlink realpaths back to it), never when a
+ * test — or anything else — imports it.
+ */
+function isProcessEntrypoint(): boolean {
+  const entry = process.argv[1]
+  if (entry === undefined) {
+    return false
+  }
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
   }
 }
 
-main().catch((err: unknown) => {
-  console.error(`codesema: ${err instanceof Error ? err.message : String(err)}`)
-  process.exit(1)
-})
+if (isProcessEntrypoint()) {
+  main().catch((err: unknown) => {
+    console.error(`codesema: ${err instanceof Error ? err.message : String(err)}`)
+    process.exit(1)
+  })
+}

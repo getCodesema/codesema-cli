@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { firstTokenBin, parseModelFlag } from '../composables/agentCommand'
+import type { AgentOption } from '../types'
 
-type RepoConfigSnapshot = { rulesContent: string; syncAutoPush: boolean }
+type RepoConfigSnapshot = {
+  rulesContent: string
+  syncAutoPush: boolean
+  agent?: string
+  model?: string
+  effort?: string
+  agents?: AgentOption[]
+}
 
 const isClient = typeof window !== 'undefined'
 const configToken = isClient
@@ -12,6 +21,8 @@ const loading = ref(true)
 const loadError = ref<string | null>(null)
 const rulesContent = ref('')
 const syncAutoPush = ref(false)
+const agent = ref('')
+const agents = ref<AgentOption[]>([])
 
 const savingRules = ref(false)
 const rulesSaved = ref(false)
@@ -20,6 +31,11 @@ let rulesSavedTimer: ReturnType<typeof setTimeout> | undefined
 
 const togglingSync = ref(false)
 const syncError = ref<string | null>(null)
+
+const savingAgent = ref(false)
+const agentError = ref<string | null>(null)
+const model = ref('')
+const effort = ref('')
 
 async function load() {
   loading.value = true
@@ -32,6 +48,12 @@ async function load() {
     const snapshot = (await res.json()) as RepoConfigSnapshot
     rulesContent.value = snapshot.rulesContent
     syncAutoPush.value = snapshot.syncAutoPush
+    agent.value = snapshot.agent ?? ''
+    agents.value = Array.isArray(snapshot.agents) ? snapshot.agents : []
+    // `model`/`effort` are authoritative; parseModelFlag only covers a CLI
+    // old enough to omit them from the snapshot.
+    model.value = snapshot.model ?? parseModelFlag(agent.value)
+    effort.value = snapshot.effort ?? ''
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -92,6 +114,98 @@ async function toggleAutoSync() {
   }
 }
 
+const agentSelectValue = computed(() => {
+  const current = agent.value.trim()
+  if (agents.value.some((opt) => opt.command === current)) {
+    return current
+  }
+  const bin = firstTokenBin(current)
+  return agents.value.find((opt) => opt.bin === bin)?.command ?? current
+})
+
+const selectedAgent = computed(() => {
+  const current = agentSelectValue.value
+  return (
+    agents.value.find((opt) => opt.command === current) ??
+    agents.value.find((opt) => opt.bin === firstTokenBin(current))
+  )
+})
+
+const selectedAgentId = computed(() => selectedAgent.value?.id ?? agentSelectValue.value)
+
+/** Model ids the CLI reported; free text stays possible, hence a datalist. */
+const modelOptions = computed(() => selectedAgent.value?.models ?? [])
+const effortOptions = computed(() => selectedAgent.value?.efforts ?? [])
+
+async function persistAgent(
+  nextCommand: string,
+  nextModel: string,
+  nextEffort: string,
+): Promise<void> {
+  if (!configToken || savingAgent.value) {
+    return
+  }
+  const previous = { agent: agent.value, model: model.value, effort: effort.value }
+  const opt =
+    agents.value.find((a) => a.command === nextCommand) ??
+    agents.value.find((a) => a.bin === firstTokenBin(nextCommand))
+  agent.value = nextCommand
+  model.value = nextModel
+  effort.value = nextEffort
+  savingAgent.value = true
+  agentError.value = null
+  try {
+    const res = await fetch('/api/config/agent', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-codesema-config-token': configToken },
+      body: JSON.stringify({
+        agent: opt?.id ?? nextCommand,
+        model: nextModel.trim(),
+        effort: nextEffort.trim(),
+      }),
+    })
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
+    const body = (await res.json()) as { agent?: string; model?: string; effort?: string }
+    if (typeof body.agent === 'string') {
+      agent.value = body.agent
+      model.value = body.model ?? parseModelFlag(body.agent)
+      effort.value = body.effort ?? nextEffort.trim()
+    }
+  } catch (e) {
+    agent.value = previous.agent
+    model.value = previous.model
+    effort.value = previous.effort
+    agentError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    savingAgent.value = false
+  }
+}
+
+async function saveAgent(next: string) {
+  if (next === agentSelectValue.value) {
+    return
+  }
+  // Model and effort ids are provider-specific: switching provider drops them.
+  const sameBin = firstTokenBin(next) === firstTokenBin(agent.value)
+  await persistAgent(next, sameBin ? model.value : '', sameBin ? effort.value : '')
+}
+
+async function saveModel(next: string) {
+  if (next.trim() === model.value.trim()) {
+    return
+  }
+  await persistAgent(agentSelectValue.value, next, effort.value)
+}
+
+async function saveEffort(next: string) {
+  if (next.trim() === effort.value.trim()) {
+    return
+  }
+  await persistAgent(agentSelectValue.value, model.value, next)
+}
+
 onMounted(load)
 </script>
 
@@ -125,6 +239,66 @@ onMounted(load)
             {{ $t('settings.saveError') }} ({{ rulesError }})
           </p>
         </div>
+      </section>
+
+      <section v-if="agents.length > 0" class="cfg-section">
+        <h2 class="cfg-section-title">{{ $t('settings.agentTitle') }}</h2>
+        <p class="cfg-hint codesema-muted">{{ $t('settings.agentHint') }}</p>
+        <div class="cfg-agent-fields">
+          <select
+            class="cfg-select"
+            :value="agentSelectValue"
+            :disabled="!configToken || savingAgent"
+            @change="saveAgent(($event.target as HTMLSelectElement).value)"
+          >
+            <option
+              v-for="opt in agents"
+              :key="opt.id"
+              :value="opt.command"
+              :disabled="!opt.detected && opt.command !== agentSelectValue"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+          <label class="cfg-model">
+            <span class="cfg-model-label">{{ $t('settings.modelLabel') }}</span>
+            <input
+              class="cfg-input"
+              type="text"
+              :value="model"
+              :list="modelOptions.length > 0 ? `cfg-models-${selectedAgentId}` : undefined"
+              :placeholder="
+                selectedAgentId === 'opencode'
+                  ? $t('settings.modelPlaceholderOpencode')
+                  : $t('settings.modelPlaceholder')
+              "
+              :disabled="!configToken || savingAgent"
+              spellcheck="false"
+              autocomplete="off"
+              @change="saveModel(($event.target as HTMLInputElement).value)"
+            />
+            <datalist v-if="modelOptions.length > 0" :id="`cfg-models-${selectedAgentId}`">
+              <option v-for="id in modelOptions" :key="id" :value="id" />
+            </datalist>
+          </label>
+          <label v-if="effortOptions.length > 0" class="cfg-model cfg-effort">
+            <span class="cfg-model-label">{{ $t('settings.effortLabel') }}</span>
+            <select
+              class="cfg-select cfg-input"
+              :value="effort"
+              :disabled="!configToken || savingAgent"
+              @change="saveEffort(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">{{ $t('settings.effortDefault') }}</option>
+              <option v-for="level in effortOptions" :key="level" :value="level">
+                {{ level }}
+              </option>
+            </select>
+          </label>
+        </div>
+        <p v-if="agentError" class="cfg-error">
+          {{ $t('settings.agentError') }} ({{ agentError }})
+        </p>
       </section>
 
       <section class="cfg-section">
@@ -244,6 +418,47 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.cfg-select,
+.cfg-input {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--codesema-ink);
+  background: var(--codesema-bg);
+  border: 1px solid var(--codesema-line);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+.cfg-agent-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.cfg-model {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: min(100%, 280px);
+  flex: 1;
+}
+
+.cfg-effort {
+  min-width: min(100%, 140px);
+  flex: 0 1 140px;
+}
+
+.cfg-model-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--codesema-ink-2);
+}
+
+.cfg-input {
+  width: 100%;
 }
 
 .cfg-save-btn,

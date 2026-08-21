@@ -3,6 +3,7 @@
 // compose these functions; none of this logic lives in a .vue file (testable
 // with bun:test).
 
+import { EXECUTION_STATUS } from '../execution-status'
 import { t, type MessageKey } from '../i18n'
 import type { TaskEvent, TaskEventData, TaskEventType, TaskRecord, TaskStatus } from '../types'
 import type { FindingSeverity } from './useDiff'
@@ -54,6 +55,247 @@ const QUEUE_SECTION_BY_STATUS: Record<TaskStatus, QueueSection> = {
 
 export function queueSectionOf(status: TaskStatus): QueueSection {
   return QUEUE_SECTION_BY_STATUS[status]
+}
+
+/**
+ * The exact English `reason.detail` task-runner.ts attaches to a MACHINE-cap
+ * wait (its private `MACHINE_LOAD_DETAIL` constant) — hand-mirrored here
+ * (§ 0.4 convention: `packages/web/src/types.ts` already mirrors the contract
+ * by hand) because it is the ONLY thing on a `TaskRecord` that tells the two
+ * `resource_busy` motifs apart. `data.name` ('machine_busy'/'project_busy')
+ * lives on the task's `queue` journal EVENT, not on the record itself, and
+ * WorkQueue.vue's #N pill only ever has the record — never that task's
+ * events (adversarial review round 3, MAJEUR 3: "à défaut reason.detail").
+ *
+ * The mirror is checked, not merely documented: WorkQueue.test.ts extracts
+ * `MACHINE_LOAD_DETAIL` from the CLI source and renders the pill with it, so
+ * a drift on either side turns that test red (round 5, mineur F).
+ */
+const MACHINE_LOAD_WAIT_DETAIL =
+  'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'
+
+/**
+ * Which promise the #N pill's tooltip may make. "N conversations ahead in this
+ * project" is only true while the project HAS something running, and the
+ * record says so itself: `resource_busy` is exactly the code the server writes
+ * on a task waiting behind an active one. Any other reason — a conversation
+ * whose worktree would not materialize, say — means the line is STOPPED, not
+ * busy, and pointing at conversations ahead of it would send the human looking
+ * for agents that are not there.
+ *
+ * T1.3 (D4) split `resource_busy` into two motifs, and this pill used to
+ * conflate them (adversarial review round 3, MAJEUR 3): a task alone in an
+ * otherwise idle project, held back by the MACHINE-wide cap, was told "N
+ * conversations ahead in this project" — there are none, nothing runs there.
+ * `reason.detail` is the discriminant (see `MACHINE_LOAD_WAIT_DETAIL` above).
+ */
+export function queueRankHintKey(
+  record: Pick<TaskRecord, 'reason'>,
+):
+  | 'workspace.queuePositionHint'
+  | 'workspace.queuePositionHintIdle'
+  | 'workspace.queuePositionHintMachine' {
+  if (record.reason?.code !== 'resource_busy') {
+    return 'workspace.queuePositionHintIdle'
+  }
+  return record.reason.detail === MACHINE_LOAD_WAIT_DETAIL
+    ? 'workspace.queuePositionHintMachine'
+    : 'workspace.queuePositionHint'
+}
+
+/**
+ * The conversation header's status phrase for a 'queued' task: the plain "in
+ * line" phrase (EXECUTION_STATUS.queued.phraseKey), UNLESS the last task_meta
+ * frame said this wait is for a MACHINE slot rather than this project's own
+ * admission (T1.3, D4). Null for every other status — the caller falls back
+ * to EXECUTION_STATUS as before. Adversarial review round 3, MAJEUR 4/AC-12:
+ * `liveLoadCap`/`waitingForSlot` existed on the store and nothing derived a
+ * label from them; this is that derivation, and the component using it is
+ * what actually satisfies "the UI CAN derive the label".
+ */
+export function queuePhraseKey(
+  status: TaskStatus,
+  waitingForSlot: boolean,
+): 'workspace.phaseQueuedMachine' | null {
+  return status === 'queued' && waitingForSlot ? 'workspace.phaseQueuedMachine' : null
+}
+
+type StatusKeys = { phrase: MessageKey; label: MessageKey }
+
+/**
+ * The `review_ko` reasons that need their OWN sentences, because the default
+ * ones ("Review blocked" / "review blocked — findings to fix") are FALSE for
+ * them: the review itself was GREEN and something beside it blocked.
+ *
+ * T3.1 added `checks_failed`; T3.2 added `criteria_unmet` — a branch the
+ * reviewer approved whose acceptance criteria are not all met. Kept as ONE
+ * table read by both helpers below, rather than a branch in each: the pair
+ * drifted apart once already, and a code wired into the phrase but not into
+ * the label reads "Review blocked · review blocked — criteria not met".
+ *
+ * Any other code (a real `review_blocked`, an unknown one from a newer server)
+ * falls through to the status default, which is correct for it. T3.6's
+ * `checks_unavailable` / `criteria_missing` are NOT here either: the merge gate
+ * hands a task back on `waiting_for_you`, never on `review_ko`, so their
+ * entries live in the second table below.
+ */
+const REVIEW_KO_KEYS: Record<string, StatusKeys> = {
+  checks_failed: { phrase: 'workspace.phaseChecksFailed', label: 'workspace.statusChecksFailed' },
+  criteria_unmet: {
+    phrase: 'workspace.phaseCriteriaUnmet',
+    label: 'workspace.statusCriteriaUnmet',
+  },
+}
+
+/**
+ * The `waiting_for_you` reasons that need their own sentences — a SECOND table,
+ * per status, and the separation is the point rather than an accident.
+ *
+ * T3.3's bounded fix loop hands a task back on `waiting_for_you` carrying the
+ * same `review_blocked`/`criteria_unmet` codes the reviewer uses on
+ * `review_ko`. The two must NOT read alike, because they do not offer the same
+ * thing: a `review_ko` is a verdict a human may still assume and ship, while a
+ * task the loop gave up on is parked — the ship refuses it — and what moves it
+ * is an answer. A single shared table rendered both as "Review blocked ·
+ * review blocked — findings to fix", so the board showed a capability the task
+ * no longer had.
+ *
+ * The phrase also carries the one thing a human cannot deduce from the status:
+ * their own reply restarts the automatic budget from zero, so the Fix button
+ * is not a way to spend a round that no longer exists.
+ *
+ * T3.6's merge gate hands a task back on this same status, carrying ANY of
+ * the SIX codes it can refuse with. Without an entry here they would all read
+ * "Needs you · paused — waiting for your answer" while nobody asked a question
+ * and the real blocker went unnamed. `checks_unavailable` and
+ * `criteria_missing` are deliberately NOT folded onto their `checks_failed` /
+ * `criteria_unmet` neighbours: "checks failed" and "checks could not be run"
+ * are opposite statements about the same run, and showing the first for the
+ * second is the exact lie DP1 minted a separate code to avoid.
+ *
+ * The last four arrived with the adversarial review of T3.6 (MAJEUR 1): the
+ * ticket wired two of the gate's exits and left `merge_conflict`,
+ * `forge_unreachable`, `branch_diverged` and `checks_failed` on the default —
+ * `branch_diverged` being, per the ticket's own design note, the MOST FREQUENT
+ * refusal on an active repository. `checks_failed` is here for the same reason
+ * and takes its own PHRASE rather than the `review_ko` one: the review passed,
+ * the merge is what is held, and "review blocked — checks failed" would name
+ * the wrong gate. Its label is the generic "Merge held" precisely because the
+ * only accurate short label ("Checks failed") is the one the `review_ko` card
+ * already carries, and the two states do not offer the same thing.
+ *
+ * Safe on `waiting_for_you` precisely because a reason never outlives the turn
+ * that posed it: the runner clears `reason` the moment a turn starts
+ * (task-runner.ts's runTurn), so a task parked on a question can never still
+ * be carrying an earlier turn's `review_blocked`. A code outside this table —
+ * a question with no reason at all, an unknown code from a newer server —
+ * falls through to `phaseWaiting`, which is right for it.
+ */
+const WAITING_FIX_LOOP_KEYS: Record<string, StatusKeys> = {
+  review_blocked: {
+    phrase: 'workspace.phaseFixLoopStopped',
+    label: 'workspace.statusFixLoopStopped',
+  },
+  criteria_unmet: {
+    phrase: 'workspace.phaseFixLoopStoppedCriteria',
+    label: 'workspace.statusFixLoopStopped',
+  },
+  checks_unavailable: {
+    phrase: 'workspace.phaseChecksUnavailable',
+    label: 'workspace.statusChecksUnavailable',
+  },
+  criteria_missing: {
+    phrase: 'workspace.phaseCriteriaMissing',
+    label: 'workspace.statusCriteriaMissing',
+  },
+  merge_conflict: {
+    phrase: 'workspace.phaseMergeConflict',
+    label: 'workspace.statusMergeConflict',
+  },
+  forge_unreachable: {
+    phrase: 'workspace.phaseForgeUnreachable',
+    label: 'workspace.statusForgeUnreachable',
+  },
+  branch_diverged: {
+    phrase: 'workspace.phaseBranchDiverged',
+    label: 'workspace.statusBranchDiverged',
+  },
+  checks_failed: {
+    phrase: 'workspace.phaseMergeChecksFailed',
+    label: 'workspace.statusMergeHeld',
+  },
+}
+
+const REASON_KEYS_BY_STATUS: Partial<Record<TaskStatus, Record<string, StatusKeys>>> = {
+  review_ko: REVIEW_KO_KEYS,
+  waiting_for_you: WAITING_FIX_LOOP_KEYS,
+}
+
+function reviewKoKeys(record: Pick<TaskRecord, 'status' | 'reason'>): StatusKeys | undefined {
+  if (!record.reason) {
+    return undefined
+  }
+  return REASON_KEYS_BY_STATUS[record.status]?.[record.reason.code]
+}
+
+/**
+ * Header phrase for a conversation. See `REVIEW_KO_KEYS`: a `review_ko` that
+ * the review itself did not cause must not reuse "findings to fix". Same
+ * shape as `queuePhraseKey` — a neighbour helper whose premise these tickets
+ * invalidated.
+ */
+export function statusPhraseKey(
+  record: Pick<TaskRecord, 'status' | 'reason'>,
+  waitingForSlot: boolean,
+): MessageKey {
+  const queued = queuePhraseKey(record.status, waitingForSlot)
+  if (queued) {
+    return queued
+  }
+  return reviewKoKeys(record)?.phrase ?? EXECUTION_STATUS[record.status].phraseKey
+}
+
+/** Queue-card flag: same split as `statusPhraseKey`, for the short label. */
+export function statusLabelKey(record: Pick<TaskRecord, 'status' | 'reason'>): MessageKey {
+  return reviewKoKeys(record)?.label ?? EXECUTION_STATUS[record.status].labelKey
+}
+
+/**
+ * The refusal's own sentence — the WAY OUT — for a record whose blocker this
+ * build recognizes. Null for anything else.
+ *
+ * DP1: "a refusal that does not say how to get out of it is a dead end", and
+ * the exit is the half the two tables above cannot carry. `phaseMergeConflict`
+ * says the branch conflicts; only `reason.detail` says WHICH cli said so and
+ * that nothing was rebased, reset or deleted. `phaseBranchDiverged` says the
+ * branch is not up to date; only the detail names the target ref, and whether
+ * the branch is BEHIND it or could not be compared with it at all — two facts
+ * the same code covers on purpose (task-merge.ts's `branchCondition`).
+ *
+ * It was measured absent (T3.6 adversarial review, MAJEUR 1): no component
+ * rendered `record.reason.detail`, so the server's sentence — the one thing
+ * naming the exit — reached no screen at all, while this file's own comment on
+ * `SUMMARY_KEYS.merge` justified keeping merge journal lines mute by claiming
+ * "the sentence still travels: it is the record's `reason.detail`, shown where
+ * a reason is shown". This function is what makes that true.
+ *
+ * GATED ON THE TABLES, not on the presence of a detail, and that is the whole
+ * design: the detail is the SERVER's English, and this workspace refuses to
+ * pour English sentences into a French UI wherever a translated equivalent
+ * exists (see `SUMMARY_KEYS` / `RESOURCE_NAME_LABEL_KEY`). Here none can: the
+ * sentence is built at runtime around branch names, criterion ids and a forge
+ * CLI's own words. So it is shown exactly where the build ALSO shows a
+ * translated phrase naming the blocker — the detail then reads as the
+ * technical annex of a sentence the human already understood, never as the
+ * only thing on the card. A `resource_busy` wait, an `agent_error`, an
+ * unknown code from a newer server: no table entry, no raw English.
+ */
+export function reasonDetailText(record: Pick<TaskRecord, 'status' | 'reason'>): string | null {
+  if (!reviewKoKeys(record)) {
+    return null
+  }
+  const detail = record.reason?.detail?.trim()
+  return detail ? detail : null
 }
 
 export type QueueGroups<T> = Record<QueueSection, T[]>
@@ -435,6 +677,14 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   error: 'workspace.evError',
   interrupted: 'workspace.evInterrupted',
   isolation: 'workspace.evIsolation',
+  cost: 'workspace.evCost',
+  branch: 'workspace.evBranch',
+  resource: 'workspace.evResource',
+  queue: 'workspace.evQueue',
+  issue: 'workspace.evIssue',
+  prep: 'workspace.evPrep',
+  criteria: 'workspace.evCriteria',
+  merge: 'workspace.evMerge',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -456,10 +706,148 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   error: 'stop',
   interrupted: 'idle',
   isolation: 'idle',
+  // Neutral on purpose: a cost that could not be established is a gap in the
+  // accounting, not a failure of the work.
+  cost: 'idle',
+  // Neutral on purpose (T1.6, DP14): none of the three branch facts this
+  // carries stops anything — a declined rename, a preserved branch, a
+  // fallen-back-to anchor are none of them a failure of the work.
+  branch: 'idle',
+  // Neutral even on a release FAILURE (DP9): a leaked volume the boot sweep
+  // will rattrap is not the cry-wolf red 'error' would paint on a task that
+  // otherwise shipped or was abandoned cleanly.
+  resource: 'idle',
+  // Neutral: an ordinary wait for a resource is not a degradation (DP8(b)/DP9).
+  queue: 'idle',
+  // Static fallback only: 'edited'/'not_ticket' (waiting on a human) and
+  // 'cosmetic'/'bound' (routine) read very differently — see the per-name
+  // tone lookup below, consulted first.
+  issue: 'idle',
+  prep: 'idle',
+  // Neutral: an unreadable draft does not fail the task, and a validation is
+  // a settled fact, not a cry-wolf red.
+  criteria: 'idle',
+  // Static fallback only, and the routine one: a satisfied condition and a
+  // "merged" line are settled facts. The names that WAIT on a person
+  // (`condition_unmet`, `refused`, `failed`) are amber through the per-name
+  // lookup below — never red, since nothing failed: the work is committed,
+  // the merge request is open, and what is missing is a decision or a fix.
+  merge: 'idle',
 }
 
-export function eventTone(type: TaskEventType): EventTone {
-  return EVENT_TONE[type]
+/**
+ * `data.name` is what actually distinguishes an 'issue' event's tone (DP9):
+ * `edited`/`not_ticket`/`snapshot_unreadable`/`unreachable` leave this task's
+ * ticket unresolved, `bound`/`coverage_gap`/`cosmetic` are settled facts.
+ * NONE of them is ever red. Falls back to `EVENT_TONE.issue` for a name this build does
+ * not know (a newer server), which is deliberately the ROUTINE tone —
+ * defaulting an unknown cause to "check" would paint every future addition
+ * red or amber before anyone decided it should be.
+ */
+const ISSUE_EVENT_TONE: Record<string, EventTone> = {
+  edited: 'check',
+  not_ticket: 'check',
+  // A ticket whose frozen snapshot cannot be read back is silently out of
+  // edit detection until a human re-binds it: amber, like the two above, for
+  // the same reason — it is waiting on a person, not on the machine.
+  snapshot_unreadable: 'check',
+  // A forge this session could not read: AMBER, never red (DP9 — the task
+  // carries on unmodified on its frozen snapshot, nothing is refused) and
+  // never neutral either. It sits with the three above on the axis that
+  // actually separates this table: the comparison did NOT conclude, so this
+  // task's ticket is of unknown freshness — and, unlike every 'idle' name
+  // here, this line comes with a D2 `reason_code` posed on the record.
+  unreachable: 'check',
+  bound: 'idle',
+  coverage_gap: 'idle',
+  cosmetic: 'idle',
+  // T3.5. The split is the same axis as above: a publication that landed (or
+  // that correctly did nothing) is a settled fact; one that was held back or
+  // could not reach the forge waits on a person — amber, never red, since the
+  // task itself shipped and its recap is safe on disk either way.
+  recap_posted: 'idle',
+  recap_already_posted: 'idle',
+  closed: 'idle',
+  recap_missing: 'check',
+  recap_blocked_secrets: 'check',
+  recap_unreachable: 'check',
+  close_unreachable: 'check',
+}
+
+/**
+ * `data.name` of a 'shipped' event, when the ship landed short of the recap it
+ * was meant to carry (T3.5, round 2 majeur 2). Amber, never red and never
+ * green: the push DID land and the merge request IS open — the ship itself
+ * succeeded — but a document was withheld or never produced, and a person has
+ * to decide what to do about it.
+ *
+ * A nominal ship poses NO name and keeps `EVENT_TONE.shipped` ('go'), which
+ * is why this table has three entries and not four: a badge on every ship
+ * would say nothing.
+ */
+const SHIPPED_EVENT_TONE: Record<string, EventTone> = {
+  recap_missing: 'check',
+  recap_blocked_secrets: 'check',
+  recap_unscanned: 'check',
+}
+
+/**
+ * `event.type` decides the tone for every domain but 'issue' and 'shipped'
+ * (DP9), whose `data.name` carries the actual cause — `edited`/`not_ticket`
+ * are amber (waiting on a human), the rest are neutral. Takes the whole event
+ * rather than the bare type for exactly those two cases.
+ */
+/**
+ * Same per-name refinement as ISSUE_EVENT_TONE, for the one 'criteria' name
+ * that is NOT a settled fact: a blocked gate (T3.2) is a task waiting on a
+ * person — the criteria have to be met, or the human has to assume the KO —
+ * so it reads amber like `edited`/`not_ticket`, not grey like a validation.
+ * Never red: the work is committed and the review itself said what it had to
+ * say. Every other name falls back to `EVENT_TONE.criteria`, so an unknown
+ * one from a newer server stays routine rather than being painted amber
+ * before anyone decided it should be.
+ */
+const CRITERIA_EVENT_TONE: Record<string, EventTone> = {
+  gate_blocked: 'check',
+}
+
+/**
+ * Same per-name refinement for the merge gate (T3.6). Three names wait on a
+ * PERSON — an unsatisfied condition, the refusal it produces, and a forge that
+ * would not merge — so they read amber, like `gate_blocked`. `merged` is the
+ * one green line of the domain: the branch is in its target. Everything else
+ * (a satisfied condition, a `human` policy holding back, a degraded setting)
+ * is a settled fact and stays neutral.
+ *
+ * NONE of them is ever red: the work is committed, the merge request is open,
+ * and what is missing is a decision or a fix — painting that in the colour of
+ * a crashed agent is the cry-wolf DP8(b) already refused for `cost`.
+ */
+const MERGE_EVENT_TONE: Record<string, EventTone> = {
+  condition_unmet: 'check',
+  refused: 'check',
+  failed: 'check',
+  merged: 'go',
+}
+
+export function eventTone(event: Pick<TaskEvent, 'type' | 'data'>): EventTone {
+  const name = typeof event.data.name === 'string' ? event.data.name : ''
+  if (event.type === 'issue') {
+    return ISSUE_EVENT_TONE[name] ?? EVENT_TONE.issue
+  }
+  if (event.type === 'criteria') {
+    return CRITERIA_EVENT_TONE[name] ?? EVENT_TONE.criteria
+  }
+  if (event.type === 'shipped') {
+    // Unknown name (a newer server) falls back to the ROUTINE tone, the same
+    // rule ISSUE_EVENT_TONE follows: a future addition must not be painted
+    // amber before anyone decided it should be.
+    return SHIPPED_EVENT_TONE[name] ?? EVENT_TONE.shipped
+  }
+  if (event.type === 'merge') {
+    return MERGE_EVENT_TONE[name] ?? EVENT_TONE.merge
+  }
+  return EVENT_TONE[event.type]
 }
 
 /** First non-empty string among the given data keys, or null. */
@@ -491,10 +879,291 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   review_done: [],
   // Rendered by its own component (TaskEventChecks): no probed key.
   checks: [],
+  // Probed only when the event carries no `data.name` (see shippedEventText):
+  // an older journal line, or the nominal ship, which has nothing to name.
   shipped: ['url', 'branch'],
   error: ['message', 'error', 'summary'],
   interrupted: ['message', 'summary'],
   isolation: ['reason', 'isolation'],
+  cost: ['message', 'summary'],
+  branch: ['text'],
+  // Unreachable, and NOT what protects this type. `eventSummary` branches on
+  // `event.type === 'resource'` BEFORE it ever indexes this table, so the
+  // whole entry — empty or not — is dead weight; it is here because the
+  // Record<TaskEventType, …> type demands one key per event type. The actual
+  // protection is that branch, and it lives in `eventSummary`: what must never
+  // happen is a `resource` line rendering `data.message`, the SERVER's own
+  // English sentence, verbatim in a French UI (§6 quater's "message technique
+  // anglais servi tel quel" trap). Restoring keys here would change nothing;
+  // removing that branch would break it. See RESOURCE_NAME_LABEL_KEY below.
+  resource: [],
+  // Rendered from `data.name` (queueEventText below), never from the raw
+  // `data.message` the server writes: that field is an ENGLISH sentence
+  // (adversarial review round 3, MAJEUR 4) and, being always present, made
+  // the `?? label` fallback below structurally unreachable — the translated
+  // 'workspace.evQueue' label was dead code no journal line ever showed.
+  queue: [],
+  // Rendered from `data.name` (issueEventText below), never from the raw
+  // `data.message` the server writes: that field is an ENGLISH sentence built
+  // in task-issue.ts and, being posed by ALL of the six 'issue' constructors,
+  // it made the `?? label` fallback at the end of `eventSummary`
+  // structurally unreachable — the translated 'workspace.evIssue' label was
+  // dead code no journal line ever showed, and a French workspace read six
+  // English sentences (round-4 adversarial review, majeur 1; same defect
+  // T1.3 closed for 'queue').
+  issue: [],
+  prep: [],
+  // Rendered from `data.name` (criteriaEventText below), never from the raw
+  // `data.message` the server writes: that field is an ENGLISH sentence, and
+  // being always present would make the `?? label` fallback structurally
+  // unreachable — the translated 'workspace.evCriteria' label would be dead
+  // code no journal line ever showed (§6 quater).
+  criteria: [],
+  // Unreachable, exactly like `resource` above, and NOT what protects this
+  // type: `eventSummary` branches on `event.type === 'merge'` BEFORE it ever
+  // indexes this table, so the entry — empty or not — is dead weight the
+  // `Record<TaskEventType, …>` demands. A mutation campaign confirmed it:
+  // setting this to `['message']` changes nothing. The actual protection is
+  // that branch, and what it keeps out is real — a merge line ALWAYS carries
+  // `data.message`, the refusal sentence in the server's English, which would
+  // otherwise be served verbatim to a French journal and make every
+  // translated label structurally unreachable. The sentence still travels: it
+  // is the record's `reason.detail`, and `reasonDetailText` above is what
+  // actually shows it — a claim this comment made for a whole ticket before
+  // anything rendered that field (MAJEUR 1).
+  merge: [],
+}
+
+/**
+ * Per-`data.name` voice of a `resource` event (DP9's closed discriminant;
+ * T1.9 emits exactly these three). An unrecognized name — a future DP9
+ * addition this build predates — falls back to the localized type label
+ * ("Resource"/"Ressource"), NEVER to the raw `data.message`: the whole point
+ * is that the English server sentence must never reach the French journal.
+ */
+const RESOURCE_NAME_LABEL_KEY: Record<string, MessageKey> = {
+  home_volume_released: 'workspace.evResourceHomeReleased',
+  home_volume_not_released: 'workspace.evResourceHomeNotReleased',
+  container_runtime_absent: 'workspace.evResourceNoRuntime',
+}
+
+/** `eventSummary`'s branch for `resource` events — see RESOURCE_NAME_LABEL_KEY. */
+function resourceSummary(data: TaskEventData, label: string): string {
+  const name = firstString(data, ['name'])
+  const key = name ? RESOURCE_NAME_LABEL_KEY[name] : undefined
+  return key ? t(key) : label
+}
+
+/**
+ * `data.name` of a 'queue' event → its own translated detail, distinct from
+ * the generic 'En attente' label (DP9's grammar: the type names the domain,
+ * `data.name` names the incident). An unrecognized name (an older bundle
+ * reading a future producer's event, whitelist-and-truncate) degrades to the
+ * plain label rather than showing nothing or a raw token.
+ */
+const QUEUE_NAME_KEY: Record<string, MessageKey> = {
+  machine_busy: 'workspace.evQueueMachine',
+  project_busy: 'workspace.evQueueProject',
+}
+
+const PREP_NAME_KEY: Record<string, MessageKey> = {
+  install_started: 'workspace.evPrepStarted',
+  install_skipped: 'workspace.evPrepSkipped',
+  install_passed: 'workspace.evPrepPassed',
+  install_failed: 'workspace.evPrepFailed',
+}
+
+function prepEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? PREP_NAME_KEY[name] : undefined
+  const label = key ? t(key) : t(EVENT_LABEL_KEY.prep)
+  if (name === 'install_failed') {
+    const detail = firstString(data, ['detail'])
+    return detail ? `${label} · ${clip(detail)}` : label
+  }
+  const command = firstString(data, ['command'])
+  return command ? `${label} · ${command}` : label
+}
+
+function queueEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? QUEUE_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.queue)
+}
+
+/**
+ * `data.name` of an 'issue' event → its own translated key (DP9's grammar:
+ * the type names the domain, `data.name` names the incident). An
+ * unrecognized name — an older bundle reading a newer server's event —
+ * degrades to the plain 'Ticket' label rather than showing a raw token.
+ */
+const ISSUE_NAME_KEY: Record<string, MessageKey> = {
+  bound: 'workspace.evIssueBound',
+  coverage_gap: 'workspace.evIssueCoverageGap',
+  cosmetic: 'workspace.evIssueCosmetic',
+  not_ticket: 'workspace.evIssueNotTicket',
+  snapshot_unreadable: 'workspace.evIssueSnapshotUnreadable',
+  unreachable: 'workspace.evIssueUnreachable',
+  // T3.5, publishing the recap on the ticket. Seven distinct outcomes, seven
+  // distinct lines: they differ by what a human would have to DO about them
+  // (nothing, look at the secret, retry the forge), so folding any two onto
+  // one key would tell the reader less than the server knows. `unreachable`
+  // above is NOT reused for the two forge failures here: it says "this
+  // ticket's freshness was not compared", which is a different fact and would
+  // be a false one on this path.
+  recap_posted: 'workspace.evIssueRecapPosted',
+  recap_already_posted: 'workspace.evIssueRecapAlreadyPosted',
+  recap_missing: 'workspace.evIssueRecapMissing',
+  recap_blocked_secrets: 'workspace.evIssueRecapBlockedSecrets',
+  recap_unreachable: 'workspace.evIssueRecapUnreachable',
+  closed: 'workspace.evIssueClosed',
+  close_unreachable: 'workspace.evIssueCloseUnreachable',
+  // T3.7: a cycle label that could not be written. NOT routed through
+  // ISSUE_EVENT_TONE, on purpose — its routine 'idle' fallback is the right
+  // tone and stating it again here would only add an entry no mutation could
+  // distinguish from the default. A stale label refuses nothing and asks
+  // nothing of anyone; the next transition rewrites it.
+  label_not_posed: 'workspace.evIssueLabelNotPosed',
+}
+
+const ISSUE_SECTION_KEY: Record<string, MessageKey> = {
+  context: 'workspace.evIssueSectionContext',
+  goal: 'workspace.evIssueSectionGoal',
+  scope: 'workspace.evIssueSectionScope',
+  out_of_scope: 'workspace.evIssueSectionOutOfScope',
+}
+
+/** A comma-joined `data` list rendered as translated items, or "none". */
+function issueList(data: TaskEventData, key: string, labels?: Record<string, MessageKey>): string {
+  const raw = typeof data[key] === 'string' ? data[key] : ''
+  const items = raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+  if (items.length === 0) {
+    return t('workspace.evIssueNone')
+  }
+  // An id (or a section name) this bundle does not know is shown verbatim:
+  // a criterion id IS its own label, and an unknown section is better named
+  // by its wire token than dropped.
+  return items.map((item) => (labels?.[item] ? t(labels[item]) : item)).join(', ')
+}
+
+/**
+ * The journal line of an 'issue' event, from its `data.name` and — for
+ * 'edited' — from the machine-readable diff DP13 requires it to carry: WHICH
+ * sections moved and WHICH acceptance criteria appeared or disappeared, by
+ * stable id. `sections_unknown` is the snapshot that has no per-section
+ * breakdown at all: it must never render as "none moved", which is the
+ * opposite of what the body hash just proved.
+ */
+function issueEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  if (name === 'edited') {
+    return t('workspace.evIssueEdited', {
+      sections:
+        data.sections_unknown === true
+          ? t('workspace.evIssueSectionsUnknown')
+          : issueList(data, 'sections', ISSUE_SECTION_KEY),
+      added: issueList(data, 'criteria_added'),
+      removed: issueList(data, 'criteria_removed'),
+    })
+  }
+  const key = name ? ISSUE_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.issue)
+}
+
+/**
+ * `data.name` of a 'criteria' event → its own translated key (DP9: the type
+ * names the domain, `data.name` names the incident). An unrecognized name
+ * degrades to the plain 'Criteria' label rather than showing a raw token or
+ * the server's English `data.message`.
+ */
+const CRITERIA_NAME_KEY: Record<string, MessageKey> = {
+  draft_unparsed: 'workspace.evCriteriaDraftUnparsed',
+  draft_proposed: 'workspace.evCriteriaDraftProposed',
+  validated: 'workspace.evCriteriaValidated',
+  gate_blocked: 'workspace.evCriteriaGateBlocked',
+  gate_passed: 'workspace.evCriteriaGatePassed',
+}
+
+function criteriaEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? CRITERIA_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.criteria)
+}
+
+/**
+ * `data.name` of a 'shipped' event → its own translated line (T3.5, round 2
+ * majeur 2). Posed ONLY when the ship landed short of the recap it was meant
+ * to carry, so the ordinary ship keeps reading as the plain 'Shipped' label.
+ *
+ * Before this table, all three of those ships rendered IDENTICALLY to a
+ * nominal one — green, one word — because the whole story sat in `data.note`,
+ * a raw English sentence nothing renders, and `SUMMARY_KEYS.shipped` probes
+ * 'url'/'branch', which the payload does not carry. A recap withheld for
+ * carrying a secret was indistinguishable, on screen, from a recap posted.
+ */
+const SHIPPED_NAME_KEY: Record<string, MessageKey> = {
+  recap_missing: 'workspace.evShippedRecapMissing',
+  recap_blocked_secrets: 'workspace.evShippedRecapBlocked',
+  recap_unscanned: 'workspace.evShippedRecapUnscanned',
+}
+
+/**
+ * The journal line of a 'shipped' event. `data.note` is NEVER read: it is the
+ * server's own English sentence (task-ship.ts), the same trap 'queue',
+ * 'issue', 'resource' and 'criteria' each closed in turn — a French workspace
+ * must not read `recap withheld from the merge request: …` verbatim.
+ * Degrades to the probed summary keys, then to the plain label, for a name
+ * this bundle does not know.
+ */
+function shippedEventText(data: TaskEventData, label: string): string {
+  const name = firstString(data, ['name'])
+  const key = name ? SHIPPED_NAME_KEY[name] : undefined
+  return key ? t(key) : (firstString(data, SUMMARY_KEYS.shipped) ?? label)
+}
+
+/**
+ * `data.name` of a 'merge' event → its own translated key, and `data.condition`
+ * → the translated name of D12's condition the line is about (T3.6). Same DP9
+ * grammar as 'criteria' and 'issue', and the same refusal to touch
+ * `data.message`: that field carries the server's English refusal sentence,
+ * which a French journal must never be served verbatim.
+ *
+ * The four conditions are journaled one by one, satisfied or not, so this
+ * lookup is what makes them legible as four lines rather than four copies of
+ * the word "Merge".
+ */
+const MERGE_NAME_KEY: Record<string, MessageKey> = {
+  condition_met: 'workspace.evMergeConditionMet',
+  condition_unmet: 'workspace.evMergeConditionUnmet',
+  condition_consented: 'workspace.evMergeConditionConsented',
+  merged: 'workspace.evMergeMerged',
+  refused: 'workspace.evMergeRefused',
+  policy_human: 'workspace.evMergePolicyHuman',
+  failed: 'workspace.evMergeFailed',
+  config_degraded: 'workspace.evMergeConfigDegraded',
+}
+
+const MERGE_CONDITION_KEY: Record<string, MessageKey> = {
+  review: 'workspace.evMergeCondReview',
+  checks: 'workspace.evMergeCondChecks',
+  criteria: 'workspace.evMergeCondCriteria',
+  branch: 'workspace.evMergeCondBranch',
+}
+
+function mergeEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? MERGE_NAME_KEY[name] : undefined
+  const label = key ? t(key) : t(EVENT_LABEL_KEY.merge)
+  const condition = firstString(data, ['condition'])
+  const conditionKey = condition ? MERGE_CONDITION_KEY[condition] : undefined
+  // An unknown condition token (a newer server's fifth condition) shows
+  // verbatim rather than being dropped: the raw name still says more than
+  // silence, and it is a wire token, not a sentence to translate.
+  const named = condition ? (conditionKey ? t(conditionKey) : condition) : null
+  return named ? `${label} · ${named}` : label
 }
 
 /**
@@ -540,6 +1209,27 @@ export function eventSummary(event: TaskEvent): string {
       return clip(`${name} · ${detail}`)
     }
     return clip(name ?? detail ?? label)
+  }
+  if (event.type === 'resource') {
+    return clip(resourceSummary(event.data, label))
+  }
+  if (event.type === 'queue') {
+    return clip(queueEventText(event.data))
+  }
+  if (event.type === 'issue') {
+    return clip(issueEventText(event.data))
+  }
+  if (event.type === 'prep') {
+    return clip(prepEventText(event.data))
+  }
+  if (event.type === 'criteria') {
+    return clip(criteriaEventText(event.data))
+  }
+  if (event.type === 'shipped') {
+    return clip(shippedEventText(event.data, label))
+  }
+  if (event.type === 'merge') {
+    return clip(mergeEventText(event.data))
   }
   const details = summaryDetails(event)
   if (details.length > 0) {

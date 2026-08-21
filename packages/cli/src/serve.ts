@@ -5,7 +5,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { listLocalBranches } from './branches.js'
-import { isTaskId, type ReviewRecord } from './contract.js'
+import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './config.js'
+import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
 import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
@@ -27,8 +28,20 @@ import {
   setSyncAutoPush,
   writeRulesContent,
 } from './repo-config.js'
+import { applyTaskCriteria } from './task-criteria.js'
 import type { TaskActionResult } from './task-runner.js'
-import type { TaskEnvelope, TaskManager } from './task-server.js'
+import type { CreateTaskManagerInput, TaskEnvelope, TaskManager } from './task-server.js'
+import {
+  AGENT_DEFS,
+  composeCommand,
+  defaultCommand,
+  detectAgents,
+  listAgentModels,
+  parseCommandEffort,
+  parseCommandModel,
+  resolveKnownAgentCommand,
+  type AgentDef,
+} from './wizard.js'
 
 const WEB_DIST = fileURLToPath(new URL('../web-dist', import.meta.url))
 
@@ -39,7 +52,7 @@ export type LiveInput = {
   branch: string
   target: string
   commits: string[]
-  files: { path: string; additions: number; deletions: number }[]
+  files: { path: string; previousPath?: string; additions: number; deletions: number }[]
   additions: number
   deletions: number
   incremental: boolean
@@ -465,7 +478,211 @@ async function handleSyncAutoPushUpdate(
   return sendJson(res, 200, { ok: true, syncAutoPush: enabled })
 }
 
+async function handleConfigGet(
+  res: ServerResponse,
+  cwd: string,
+  tasks: TasksEndpoint | undefined,
+  agents: () => Promise<AgentOption[]>,
+): Promise<void> {
+  const body: {
+    rulesContent: string
+    syncAutoPush: boolean
+    agent?: string
+    model?: string
+    effort?: string
+    agents?: AgentOption[]
+  } = {
+    rulesContent: readRulesContent(cwd),
+    syncAutoPush: readSyncAutoPush(cwd),
+  }
+  if (tasks) {
+    body.agent = tasks.manager.defaultCommand()
+    // Read back from the command itself, not the config file: the command is
+    // what actually runs, and a `--agent` flag can override the stored config.
+    body.model = parseCommandModel(body.agent) ?? ''
+    body.effort = parseCommandEffort(body.agent) ?? ''
+    body.agents = overlayConfiguredAgent(await agents(), body.agent)
+  }
+  return sendJson(res, 200, body)
+}
+
+async function handleConfigAgentUpdate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  repoConfig: RepoConfigEndpoint,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  if (!tasks) {
+    return sendJson(res, 501, { error: 'task manager unavailable' })
+  }
+  if (req.headers['x-codesema-config-token'] !== repoConfig.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_AGENT_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  const payload = body as { agent?: unknown; model?: unknown; effort?: unknown } | null
+  const raw = payload?.agent
+  if (typeof raw !== 'string') {
+    return sendText(res, 400, 'bad request')
+  }
+  if (payload?.model !== undefined && typeof payload.model !== 'string') {
+    return sendText(res, 400, 'bad request')
+  }
+  if (payload?.effort !== undefined && typeof payload.effort !== 'string') {
+    return sendText(res, 400, 'bad request')
+  }
+  const resolved = resolveKnownAgentCommand(raw)
+  if (!resolved || resolved.length > TASK_AGENT_MAX) {
+    return sendText(res, 400, 'bad request')
+  }
+  const current = loadGlobalConfig()
+  const picked = resolveAgentSelection(resolved, current, payload)
+  if (picked.command.length > TASK_AGENT_MAX) {
+    return sendText(res, 400, 'bad request')
+  }
+  saveGlobalConfig(nextGlobalConfig(current, picked))
+  tasks.manager.setDefaultCommand(picked.command)
+  return sendJson(res, 200, {
+    ok: true,
+    agent: picked.command,
+    model: picked.model ?? '',
+    effort: picked.effort ?? '',
+  })
+}
+
+type AgentSelection = {
+  command: string
+  def: AgentDef | undefined
+  model: string | undefined
+  effort: string | undefined
+}
+
+/**
+ * A PUT may carry only `agent` (the wizard-composed default keeps its model),
+ * or `agent` plus an explicit model/effort the settings panel just edited. An
+ * empty string is a deliberate CLEAR, which is why absent and '' differ here.
+ */
+function resolveAgentSelection(
+  resolved: string,
+  current: CodesemaConfig,
+  payload: { model?: unknown; effort?: unknown } | null,
+): AgentSelection {
+  const bin = resolved.trim().split(/\s+/)[0]?.split('/').pop() ?? ''
+  const def = AGENT_DEFS.find((d) => d.bin === bin)
+  let model = parseCommandModel(resolved)
+  let effort = parseCommandEffort(resolved)
+  const modelInput = typeof payload?.model === 'string' ? payload.model : undefined
+  const effortInput = typeof payload?.effort === 'string' ? payload.effort : undefined
+  if (!def || (modelInput === undefined && effortInput === undefined)) {
+    return { command: resolved, def, model, effort }
+  }
+  model = modelInput === undefined ? (model ?? current.model) : modelInput.trim() || undefined
+  effort =
+    effortInput === undefined
+      ? current.agentId === def.id
+        ? current.effort
+        : undefined
+      : effortInput.trim() || undefined
+  return { command: composeCommand(def, model, effort), def, model, effort }
+}
+
+function nextGlobalConfig(current: CodesemaConfig, picked: AgentSelection): CodesemaConfig {
+  const next: CodesemaConfig = { ...current, agent: picked.command }
+  if (picked.def) {
+    next.agentId = picked.def.id
+  }
+  // A cleared model or effort must LEAVE the file, not linger as a stale key.
+  if (picked.model) {
+    next.model = picked.model
+  } else {
+    delete next.model
+  }
+  if (picked.effort) {
+    next.effort = picked.effort
+  } else {
+    delete next.effort
+  }
+  return next
+}
+
 const MAX_TASK_BODY_BYTES = 64 * 1024
+const MAX_AGENT_BODY_BYTES = TASK_AGENT_MAX + 1024
+
+type AgentOption = {
+  id: string
+  label: string
+  bin: string
+  command: string
+  detected: boolean
+  models: string[]
+  efforts: string[]
+}
+
+/**
+ * `opencode models` / `grok models` are real subprocess launches that cost
+ * SECONDS, and GET /api/config is hit every time the settings panel opens: the
+ * response must never wait on one. The list is served from this cache (falling
+ * back to the static suggestions until it is warm) while a refresh runs in the
+ * background, so at worst the live ids land on the next open.
+ */
+const AGENT_MODELS_TTL_MS = 5 * 60 * 1000
+const agentModelsCache = new Map<string, { at: number; models: string[] }>()
+const agentModelsInFlight = new Set<string>()
+
+async function refreshAgentModels(def: AgentDef, cwd: string, now: number): Promise<void> {
+  const key = `${cwd}\u0000${def.id}`
+  if (agentModelsInFlight.has(key)) {
+    return
+  }
+  agentModelsInFlight.add(key)
+  try {
+    agentModelsCache.set(key, { at: now, models: await listAgentModels(def, cwd) })
+  } catch {
+    // A failed probe leaves the previous entry (or the static list) in place.
+  } finally {
+    agentModelsInFlight.delete(key)
+  }
+}
+
+function agentModels(def: AgentDef, cwd: string, detected: boolean, now: number): string[] {
+  const hit = agentModelsCache.get(`${cwd}\u0000${def.id}`)
+  if (detected && (!hit || now - hit.at >= AGENT_MODELS_TTL_MS)) {
+    void refreshAgentModels(def, cwd, now)
+  }
+  return hit ? [...hit.models] : [...def.models]
+}
+
+async function listAgentOptions(cwd: string): Promise<AgentOption[]> {
+  const detected = await detectAgents(cwd)
+  const ids = new Set(detected.map((def) => def.id))
+  const now = Date.now()
+  return AGENT_DEFS.map((def) => ({
+    id: def.id,
+    label: def.label,
+    bin: def.bin,
+    command: defaultCommand(def),
+    detected: ids.has(def.id),
+    models: agentModels(def, cwd, ids.has(def.id), now),
+    efforts: def.efforts ? [...def.efforts] : [],
+  }))
+}
+
+/** The configured command (with `-m`) replaces that provider's default row. */
+export function overlayConfiguredAgent(
+  agents: readonly AgentOption[],
+  current: string | undefined,
+): AgentOption[] {
+  const trimmed = current?.trim() ?? ''
+  if (!trimmed) {
+    return [...agents]
+  }
+  const bin = trimmed.split(/\s+/)[0]?.split('/').pop() ?? ''
+  return agents.map((agent) => (agent.bin === bin ? { ...agent, command: trimmed } : agent))
+}
 
 /**
  * Every task route is scoped by a MANDATORY project id (the multi-project
@@ -502,27 +719,43 @@ export function resolveProjectCwd(
   return { cwd: project.path }
 }
 
+/** A parsed task-creation request, ready for either the real create or its dry-run. */
+type TaskCreateRequest = {
+  tasks: TasksEndpoint
+  projectId: string
+  input: CreateTaskManagerInput
+}
+
 /**
  * The task routes drive agents that EDIT worktrees of the repo, so every
  * mutation carries the same per-server CSRF token mechanic as /api/fix (see
  * handleFixStart): x-codesema-tasks-token, injected into the served page.
+ *
+ * ONE parser for BOTH `/api/tasks` and `/api/tasks/preview` (T2.6): a dry-run
+ * that validated a different schema from the creation it previews would refuse
+ * — or accept — bodies the real route does not, which is the one thing a
+ * preview must never do. It answers the refusal itself and returns null; the
+ * caller has nothing left to do.
  */
-async function handleTaskCreate(
+async function readTaskCreateRequest(
   req: IncomingMessage,
   res: ServerResponse,
   tasks: TasksEndpoint | undefined,
-): Promise<void> {
+): Promise<TaskCreateRequest | null> {
   if (!tasks) {
-    return sendJson(res, 501, { error: 'task manager unavailable' })
+    sendJson(res, 501, { error: 'task manager unavailable' })
+    return null
   }
   if (req.headers['x-codesema-tasks-token'] !== tasks.token) {
-    return sendText(res, 403, 'forbidden')
+    sendText(res, 403, 'forbidden')
+    return null
   }
   let body: unknown
   try {
     body = await readJsonBody(req, MAX_TASK_BODY_BYTES)
   } catch {
-    return sendText(res, 400, 'bad request')
+    sendText(res, 400, 'bad request')
+    return null
   }
   const b = body as {
     project_id?: unknown
@@ -532,45 +765,133 @@ async function handleTaskCreate(
     base?: unknown
     branch?: unknown
     target?: unknown
+    issue?: unknown
+    agent?: unknown
   } | null
+  // T2.4: `issue` replaces `title`+`prompt` (which then become optional) — an
+  // object is enough to route the request to the manager, which owns the
+  // real validation (forge, project, iid, url) and its refusals.
+  const issue =
+    b?.issue && typeof b.issue === 'object' && !Array.isArray(b.issue)
+      ? (b.issue as Record<string, unknown>)
+      : null
   if (
     typeof b?.project_id !== 'string' ||
     !b.project_id.trim() ||
-    typeof b.title !== 'string' ||
-    typeof b.prompt !== 'string' ||
+    (issue === null && (typeof b.title !== 'string' || typeof b.prompt !== 'string')) ||
+    (b.title !== undefined && typeof b.title !== 'string') ||
+    (b.prompt !== undefined && typeof b.prompt !== 'string') ||
+    (b.issue !== undefined && issue === null) ||
     (b.autoShip !== undefined && typeof b.autoShip !== 'boolean') ||
     (b.base !== undefined && typeof b.base !== 'string') ||
     (b.branch !== undefined && typeof b.branch !== 'string') ||
-    (b.target !== undefined && typeof b.target !== 'string')
+    (b.target !== undefined && typeof b.target !== 'string') ||
+    (b.agent !== undefined && typeof b.agent !== 'string')
   ) {
-    return sendText(res, 400, 'bad request')
+    sendText(res, 400, 'bad request')
+    return null
+  }
+  let resolvedAgent: string | undefined
+  if (typeof b.agent === 'string') {
+    const resolved = resolveKnownAgentCommand(b.agent)
+    if (!resolved || resolved.length > TASK_AGENT_MAX) {
+      sendText(res, 400, 'bad request')
+      return null
+    }
+    resolvedAgent = resolved
   }
   // base/branch/target are only type-checked here: the manager owns the real
   // validation (trim, length bound, option-lookalike refusal, branch
   // existence → 400, base/branch exclusivity → 400, active-conversation and
-  // checked-out-elsewhere guards → 409).
-  const created = tasks.manager.create(b.project_id.trim(), {
-    title: b.title,
-    prompt: b.prompt,
-    autoShip: b.autoShip ?? false,
-    ...(typeof b.base === 'string' ? { base: b.base } : {}),
-    ...(typeof b.branch === 'string' ? { branch: b.branch } : {}),
-    ...(typeof b.target === 'string' ? { target: b.target } : {}),
-  })
-  if (!created.ok) {
-    // existing_task_id rides along on the uniqueness 409: the web client
-    // opens that conversation instead of showing a dead-end error.
-    return sendJson(res, created.code, {
-      error: created.error,
-      ...(created.existing_task_id !== undefined
-        ? { existing_task_id: created.existing_task_id }
+  // checked-out-elsewhere guards → 409). Same for `issue`: forge/project/iid/url
+  // are handed through as `unknown` and validated by task-issue.ts.
+  return {
+    tasks,
+    projectId: b.project_id.trim(),
+    input: {
+      ...(typeof b.title === 'string' ? { title: b.title } : {}),
+      ...(typeof b.prompt === 'string' ? { prompt: b.prompt } : {}),
+      autoShip: b.autoShip ?? false,
+      ...(typeof b.base === 'string' ? { base: b.base } : {}),
+      ...(typeof b.branch === 'string' ? { branch: b.branch } : {}),
+      ...(typeof b.target === 'string' ? { target: b.target } : {}),
+      ...(resolvedAgent ? { agent: resolvedAgent } : {}),
+      ...(issue
+        ? {
+            issue: {
+              forge: issue.forge,
+              project: issue.project,
+              iid: issue.iid,
+              url: issue.url,
+            },
+          }
         : {}),
-    })
+    },
+  }
+}
+
+/**
+ * A creation refusal, on the wire. existing_task_id rides along on the
+ * uniqueness 409: the web client opens that conversation instead of showing a
+ * dead-end error. reason_code rides along the same way, verbatim: the readable
+ * error stays the message, the code is what a machine can branch on.
+ *
+ * Shared with the preview so a dry-run refusal reaches the client in exactly
+ * the shape the real refusal would (T2.6).
+ */
+function sendTaskRefusal(
+  res: ServerResponse,
+  refusal: { code: number; error: string; existing_task_id?: string; reason_code?: string },
+): void {
+  sendJson(res, refusal.code, {
+    error: refusal.error,
+    ...(refusal.existing_task_id !== undefined
+      ? { existing_task_id: refusal.existing_task_id }
+      : {}),
+    ...(refusal.reason_code !== undefined ? { reason_code: refusal.reason_code } : {}),
+  })
+}
+
+async function handleTaskCreate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  const parsed = await readTaskCreateRequest(req, res, tasks)
+  if (!parsed) {
+    return
+  }
+  const created = await parsed.tasks.manager.create(parsed.projectId, parsed.input)
+  if (!created.ok) {
+    return sendTaskRefusal(res, created)
   }
   return sendJson(res, 201, created.record)
 }
 
-type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume'
+/**
+ * T2.6 dry-run. Same posture as the creation it previews — loopback + Host
+ * guard (the request handler), CSRF token, `MAX_TASK_BODY_BYTES`, the same
+ * body schema, the same refusals — and no effect at all: the manager's
+ * `preview` writes no record, no journal line, no branch, no worktree and no
+ * queue entry. 200 rather than 201 for the same reason: nothing was created.
+ */
+async function handleTaskPreview(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tasks: TasksEndpoint | undefined,
+): Promise<void> {
+  const parsed = await readTaskCreateRequest(req, res, tasks)
+  if (!parsed) {
+    return
+  }
+  const previewed = await parsed.tasks.manager.preview(parsed.projectId, parsed.input)
+  if (!previewed.ok) {
+    return sendTaskRefusal(res, previewed)
+  }
+  return sendJson(res, 200, previewed.plan)
+}
+
+type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume' | 'criteria'
 
 /**
  * The mutations that carry NO request body: everything they need is already
@@ -579,14 +900,39 @@ type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'r
  */
 const BODYLESS_TASK_ACTIONS: Record<
   'interrupt' | 'abandon' | 'resume',
-  (manager: TaskManager, projectId: string, id: string) => TaskActionResult
+  (
+    manager: TaskManager,
+    projectId: string,
+    id: string,
+  ) => TaskActionResult | Promise<TaskActionResult>
 > = {
   interrupt: (manager, projectId, id) => manager.interrupt(projectId, id),
   abandon: (manager, projectId, id) => manager.abandon(projectId, id),
   resume: (manager, projectId, id) => manager.resume(projectId, id),
 }
 
-/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume)?project=, all under the tasks CSRF token. */
+/**
+ * Body of a task action. Success carries `queue_position` when the gesture left
+ * the task WAITING (a reply or a resume behind another task of the same repo):
+ * the caller renders the right thing without a round-trip, exactly like the
+ * creation response. `preserved_branch` (T1.6) is set only by an abandon that
+ * kept the branch instead of deleting it. A refusal carries its `reason_code`
+ * next to — never instead of — the readable message, the way POST /api/tasks
+ * already does.
+ */
+function taskActionBody(result: TaskActionResult): Record<string, unknown> {
+  return result.ok
+    ? {
+        ok: true,
+        ...(result.queue_position === undefined ? {} : { queue_position: result.queue_position }),
+        ...(result.preserved_branch === undefined
+          ? {}
+          : { preserved_branch: result.preserved_branch }),
+      }
+    : { error: result.error, ...(result.reason_code ? { reason_code: result.reason_code } : {}) }
+}
+
+/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume|criteria)?project=, all under the tasks CSRF token. */
 async function handleTaskAction(
   req: IncomingMessage,
   res: ServerResponse,
@@ -606,13 +952,34 @@ async function handleTaskAction(
   if (!isTaskId(action.id)) {
     return sendText(res, 404, 'not found')
   }
+  if (action.kind === 'criteria') {
+    // T2.5: the ONLY path from a criteria proposal to disk. Persistence lives
+    // in task-criteria.ts (loadTask/saveTask/appendTaskEvent) so this ticket
+    // does not occupy a task-server.ts slot.
+    let body: unknown
+    try {
+      body = await readJsonBody(req, MAX_TASK_BODY_BYTES)
+    } catch {
+      return sendText(res, 400, 'bad request')
+    }
+    const project = getProject(projectId)
+    if (!project) {
+      return sendText(res, 404, 'not found')
+    }
+    const result = applyTaskCriteria(project.path, action.id, body)
+    return result.ok
+      ? sendJson(res, 200, { ok: true, criteria: result.criteria })
+      : sendJson(res, result.code, { error: result.error })
+  }
   if (action.kind === 'ship') {
     // T5: push + MR creation. Success detail (MR URL, degraded-ship note)
     // travels on the SSE stream as the 'shipped' event and the record update.
+    // T3.1: a 409 (checks in flight, ship already in progress, …) carries
+    // `reason_code` next to the readable message, same as POST /api/tasks.
     const result = await tasks.manager.ship(projectId, action.id)
     return result.ok
       ? sendJson(res, 200, { ok: true })
-      : sendJson(res, result.code, { error: result.error })
+      : sendJson(res, result.code, taskActionBody(result))
   }
   if (action.kind === 'checks') {
     // Fire-and-forget start: 202 says the run is on its way, the outcome
@@ -623,10 +990,8 @@ async function handleTaskAction(
       : sendJson(res, result.code, { error: result.error })
   }
   if (action.kind !== 'reply') {
-    const result = BODYLESS_TASK_ACTIONS[action.kind](tasks.manager, projectId, action.id)
-    return result.ok
-      ? sendJson(res, 200, { ok: true })
-      : sendJson(res, result.code, { error: result.error })
+    const result = await BODYLESS_TASK_ACTIONS[action.kind](tasks.manager, projectId, action.id)
+    return sendJson(res, result.ok ? 200 : result.code, taskActionBody(result))
   }
   let body: unknown
   try {
@@ -639,9 +1004,7 @@ async function handleTaskAction(
     return sendText(res, 400, 'bad request')
   }
   const result = tasks.manager.reply(projectId, action.id, message)
-  return result.ok
-    ? sendJson(res, 200, { ok: true })
-    : sendJson(res, result.code, { error: result.error })
+  return sendJson(res, result.ok ? 200 : result.code, taskActionBody(result))
 }
 
 const MAX_PROJECT_BODY_BYTES = 4 * 1024
@@ -840,7 +1203,8 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
-const TASK_ACTION_RE = /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume)$/
+const TASK_ACTION_RE =
+  /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume|criteria)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
 const TASK_REVIEW_RE = /^\/api\/tasks\/([^/]+)\/review$/
@@ -863,6 +1227,7 @@ function createRequestHandler(handlerOpts: {
   // at most one of each, the cap only guards against runaway clients.
   let sseClients = 0
   const repoConfig: RepoConfigEndpoint = { cwd, token: configToken }
+  const listAgents = (): Promise<AgentOption[]> => listAgentOptions(cwd)
 
   return (req: IncomingMessage, res: ServerResponse): void => {
     // The server only binds to loopback, but a malicious site could still reach
@@ -892,6 +1257,13 @@ function createRequestHandler(handlerOpts: {
       }
       if (pathname === '/api/tasks') {
         return void handleTaskCreate(req, res, tasks)
+      }
+      // T2.6: the dry-run twin of the route right above. A dedicated path
+      // rather than a `dry_run` flag on /api/tasks — the absence of effects is
+      // then structural, not conditional on a boolean in the body of the most
+      // destructive route of this server (design.md D-e).
+      if (pathname === '/api/tasks/preview') {
+        return void handleTaskPreview(req, res, tasks)
       }
       if (pathname === '/api/projects') {
         return void handleProjectAdd(req, res, tasks)
@@ -928,6 +1300,9 @@ function createRequestHandler(handlerOpts: {
       if (pathname === '/api/config/sync-auto-push') {
         return void handleSyncAutoPushUpdate(req, res, repoConfig)
       }
+      if (pathname === '/api/config/agent') {
+        return void handleConfigAgentUpdate(req, res, repoConfig, tasks)
+      }
       return sendText(res, 405, 'method not allowed')
     }
     if (req.method !== 'GET') {
@@ -946,10 +1321,7 @@ function createRequestHandler(handlerOpts: {
         return sendJson(res, 200, record)
       }
       if (pathname === '/api/config') {
-        return sendJson(res, 200, {
-          rulesContent: readRulesContent(cwd),
-          syncAutoPush: readSyncAutoPush(cwd),
-        })
+        return void handleConfigGet(res, cwd, tasks, listAgents)
       }
       if (
         pathname === '/api/mrs' ||
@@ -997,13 +1369,17 @@ function createRequestHandler(handlerOpts: {
         if (!tasks) {
           return sendJson(res, 501, { error: 'task manager unavailable' })
         }
-        // `workspace` carries the process-wide facts the UI needs before it
-        // can honestly label anything: whether the container cage is usable
-        // here, and which isolation a new task would be created with.
+        // Isolation is per project (T1.4). Each registry entry carries its
+        // own overlay; `workspace` stays the launch-repo (or global) facts
+        // for older UIs. selectProject is client-local, so the UI reads
+        // `project.isolation` for the active card instead of refetching.
         return sendJson(res, 200, {
-          projects: listProjects(),
+          projects: listProjects().map((project) => ({
+            ...project,
+            isolation: tasks.manager.workspaceInfo(project.id),
+          })),
           current: tasks.currentProjectId,
-          workspace: tasks.manager.workspaceInfo(),
+          workspace: tasks.manager.workspaceInfo(tasks.currentProjectId),
         })
       }
       if (pathname === '/api/projects/discover') {

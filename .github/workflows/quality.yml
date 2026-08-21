@@ -2,6 +2,11 @@ name: Quality
 
 on:
   pull_request:
+  # A merge queue tests each PR against the real tip of the target branch (plus
+  # whatever is queued ahead of it) on a temporary branch, and merges only if
+  # THAT is green. Without this trigger the checks never start on that branch:
+  # the queue waits, times out, and evicts the pull request.
+  merge_group:
   push:
     branches:
       - main

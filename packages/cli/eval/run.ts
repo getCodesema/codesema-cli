@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
-import { agentEnv, hardenedReviewCommand, runAgent } from '../src/agent.js'
+import { hardenedReviewCommand, reviewAgentEnv, runAgent } from '../src/agent.js'
 import { groundReview, sanitizeReview, type SanitizedReview } from '../src/contract.js'
 import { prosecutorInstructions } from '../src/dual.js'
 import { extractReviewJson, reviewInstructions } from '../src/review.js'
@@ -38,10 +38,10 @@ async function runLane(
   ].join('\n\n')
   const raw = await runAgent({
     command: hardenedReviewCommand(agent),
-    env: agentEnv(agent),
+    env: reviewAgentEnv(agent),
     prompt,
     cwd: process.cwd(),
-    timeoutMs,
+    absoluteCapMs: timeoutMs,
   })
   return groundReview(sanitizeReview(JSON.parse(extractReviewJson(raw))), fixture.input.diff).review
 }

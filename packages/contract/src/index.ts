@@ -1,6 +1,23 @@
+// DP12: the per-criterion verdict type is defined ONCE, beside
+// `AcceptanceCriterion` in ticket.ts, and reused verbatim here (T3.2's
+// `ReviewRecord`) and by `RecapRecord` (T3.4). Importing it rather than
+// restating it is what keeps the three consumers from drifting into two
+// spellings of the same fact. ticket.ts imports nothing, so this cannot cycle.
+import {
+  CRITERION_VERDICT_EVIDENCE_MAX,
+  NON_BLANK,
+  sanitizeCriterionVerdicts,
+  TICKET_CRITERIA_MAX,
+  type CriterionStatus,
+  type CriterionVerdict,
+} from './ticket.js'
+
 // All agent input passes through here: whitelist and truncate, never throw.
 
+export * from './reasons.js'
+export * from './recap.js'
 export * from './tasks.js'
+export * from './ticket.js'
 
 export type NarrativeConfidence = 'high' | 'medium' | 'low'
 export type NarrativeRisk = 'high' | 'medium' | 'low'
@@ -79,6 +96,26 @@ export type SanitizedReview = {
    * from the agent: the declaration only forces a per-file decision.
    */
   files_reviewed?: ReviewedFile[]
+  /**
+   * DP12 / T3.2: the per-criterion verdicts this review reached, one entry per
+   * acceptance criterion the task is judged against.
+   *
+   * It lives in the CONTRACT rather than in `task-review.ts` for one concrete
+   * reason: `sanitizeRecord` below rebuilds an archive from a STRICT whitelist
+   * (`version`, `meta`, `commits`, `diff`, `review`), so anything outside the
+   * contract written into an archive is ERASED on read-back. T3.6 evaluates
+   * the criteria condition of a merge AFTER the ship, possibly at a later
+   * boot where nothing in memory survived — a type local to the reviewer
+   * would leave it with nothing to read.
+   *
+   * OPTIONAL, and its honest default is ABSENCE: "this review judged no
+   * criteria" — every archive written before this field existed, and every
+   * task with no ticket. Never `[]`: an empty list would claim a review that
+   * judged a criteria list of length zero, which a ticket never has
+   * (`TICKET_CRITERIA_MIN`). The gate that reads it is CLI-side and
+   * deterministic; nothing here is a verdict the model produced.
+   */
+  criteria?: CriterionVerdict[]
 }
 
 export type DualStats = {
@@ -364,6 +401,12 @@ export function sanitizeReview(raw: unknown): SanitizedReview {
   const findings = sanitizeFindings(r.findings)
   const narrative = sanitizeNarrative(r.narrative, findings.length)
   const reviewedPaths = sanitizeReviewedPaths(r.files_reviewed)
+  // DP12: dedup on `criterion_id`, an invented id DISCARDED (never rebuilt),
+  // an out-of-enum status degraded to 'unclear' (never to 'met', which would
+  // fabricate a success) — all of it owned by ticket.ts, not restated here.
+  // Nothing survives means the key is OMITTED, not emptied: see the field's
+  // own doc on `SanitizedReview`.
+  const criteria = sanitizeCriterionVerdicts(r.criteria)
   return {
     verdict,
     summary,
@@ -372,6 +415,7 @@ export function sanitizeReview(raw: unknown): SanitizedReview {
     ...(reviewedPaths !== undefined
       ? { files_reviewed: reviewedFilesFrom(reviewedPaths, findings) }
       : {}),
+    ...(criteria.length > 0 ? { criteria } : {}),
   }
 }
 
@@ -703,6 +747,278 @@ export function groundReview(
   }
 }
 
+/**
+ * How a criterion's `evidence` names the line it proves: `path:line`, the same
+ * new-file coordinates a finding uses. Everything else in the string is free
+ * prose (the reviewer's quote), so an evidence that carries no anchor is not
+ * malformed — it is simply UNGROUNDABLE, and `groundCriterionVerdicts` treats
+ * it as such.
+ *
+ * Round 2, majeur 1(a). The first version of this rule read `/^\s*(...)/`: the
+ * anchor had to be the FIRST thing in the evidence, bare, with no decoration.
+ * A campaign over 28 plausible spellings grounded 8 of them — the SAME
+ * criterion with the SAME proof flipped from `met` to `unclear` because the
+ * model wrapped the path in backticks. That is not severity, it is a
+ * formatting tax, and it was being charged to the WORK.
+ *
+ * So RECOGNITION is loose and SEVERITY is not. What widened is only what we
+ * agree to READ as an anchor:
+ *
+ *  - the anchor may sit anywhere in the evidence — after prose, behind a
+ *    markdown bullet, on the second line;
+ *  - backticks and quotes are not part of a path, so they are not part of the
+ *    match either;
+ *  - `path:11`, `path:L11`, `path#L11` and `path line 11` are one coordinate in
+ *    four spellings;
+ *  - an OVER-QUALIFIED path resolves when a diff path is a suffix of it AT A
+ *    `/` BOUNDARY (`anchorFileInDiff`). That one rule covers `b/src/gate.ts`
+ *    and `a/src/gate.ts` — the form the diff literally displays, and the one
+ *    `markerLinePath` already strips when it INDEXES it — plus `./src/gate.ts`
+ *    and an absolute `/home/me/repo/src/gate.ts`;
+ *  - several candidates in one evidence are all tried.
+ *
+ * What did NOT widen: every candidate is still checked against the diff — the
+ * file must be in it and the line must be inside one of its `@@` hunks — and a
+ * verdict whose evidence anchors nowhere still falls back to `unclear`. The
+ * question stayed "is this proof verifiable?"; it stopped being "did the model
+ * write the path undecorated?".
+ */
+const ANCHOR_SEPARATOR = String.raw`(?::L?|#L|\s+lines?\s+)`
+
+/**
+ * Undelimited scan, anywhere in the string. The path stops at whitespace, at
+ * the separator's own punctuation and at any quote — which is exactly what
+ * makes `` `src/gate.ts:11` `` and `"src/gate.ts:11"` parse without a
+ * dedicated unwrapping pass.
+ */
+const ANCHOR_LOOSE_RE = new RegExp(String.raw`([^\s:#\`'"]+)${ANCHOR_SEPARATOR}(\d+)`, 'gi')
+
+/** Backtick / double-quote / single-quote spans, read WHOLE (see below). */
+const ANCHOR_DELIMITED_RE = /`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'/g
+
+/**
+ * A delimited span that is an anchor and NOTHING else. This is the only form
+ * in which a path may carry a space: `` `src/my file.ts:11` `` is unambiguous
+ * precisely because the delimiters say where the path starts and stops, while
+ * the same path written bare in prose does not. Anchored at both ends on
+ * purpose — a span holding prose around the anchor is left to the loose scan,
+ * which would read its path as ending at the last space.
+ */
+const ANCHOR_WHOLE_SPAN_RE = new RegExp(
+  String.raw`^\s*(\S(?:[\s\S]*\S)?)${ANCHOR_SEPARATOR}(\d+)\s*$`,
+  'i',
+)
+
+/**
+ * Bound on how many candidates one evidence contributes. `evidence` is capped
+ * at `CRITERION_VERDICT_EVIDENCE_MAX` code points by the sanitizer, but this
+ * function is also reachable from a hand-built record, and the grounding loop
+ * below is O(candidates x diff files). Thirty-two distinct anchors in a single
+ * quote is already far past anything a reviewer writes.
+ */
+const EVIDENCE_ANCHORS_MAX = 32
+
+/** Trailing prose punctuation a path never ends with. `.` is NOT in it: `a.ts` does. */
+const PATH_TRAILING_PUNCTUATION = ',;)]}>*~'
+
+/**
+ * Leading prose punctuation a path never starts with: markdown emphasis and
+ * the three bracket families a reviewer parenthesises an anchor with. `.` and
+ * `_` are NOT in it — `./src/a.ts` and `_internal/a.ts` are both real paths.
+ */
+const PATH_LEADING_PUNCTUATION = '([{<*~'
+
+/**
+ * Both ends stripped in one scan, deliberately NOT with a regex. The trailing
+ * form was written `/[,;)\]}>*~]+$/` first, and that shape is quadratic: with
+ * nothing anchoring its start, the engine restarts the run at every position of
+ * a long `)))…)` and re-walks it to the `$` it never reaches. Measured on the
+ * regex it replaces: 10 000 closing parens took 72 ms, 20 000 took 276 ms,
+ * 40 000 took 1 094 ms — the classic doubling-quadruples curve, on a string a
+ * model writes. The sanitizer caps evidence at `CRITERION_VERDICT_EVIDENCE_MAX`
+ * code points, but this function is also reachable from a hand-built record, so
+ * the bound belongs in the parser rather than in its callers.
+ *
+ * The scan decides exactly the same strings, in one pass: leading first, then
+ * trailing on what is left, which is the order the two `.replace()` calls had.
+ */
+function stripPathPunctuation(raw: string): string {
+  let start = 0
+  let end = raw.length
+  while (start < end && PATH_LEADING_PUNCTUATION.includes(raw[start] as string)) {
+    start += 1
+  }
+  while (end > start && PATH_TRAILING_PUNCTUATION.includes(raw[end - 1] as string)) {
+    end -= 1
+  }
+  return raw.slice(start, end)
+}
+
+export type EvidenceAnchor = { file: string; line: number }
+
+/**
+ * The `path:line` coordinates an evidence claims, in the order they appear —
+ * empty when it claims none. Never throws; a line that is not a positive safe
+ * integer is no anchor at all (`a.ts:0`, `a.ts:99999999999999999999`), which
+ * is honest: we would not be able to check it either way.
+ */
+export function parseEvidenceAnchors(evidence: unknown): EvidenceAnchor[] {
+  if (typeof evidence !== 'string' || evidence === '') {
+    return []
+  }
+  const out: EvidenceAnchor[] = []
+  const push = (rawFile: string, rawLine: string): void => {
+    if (out.length >= EVIDENCE_ANCHORS_MAX) {
+      return
+    }
+    const file = stripPathPunctuation(rawFile.trim())
+    const line = Number(rawLine)
+    if (file && Number.isSafeInteger(line) && line > 0) {
+      out.push({ file, line })
+    }
+  }
+  // Delimited spans first: they are the only place a path may hold a space,
+  // and reading the span whole is what makes that unambiguous.
+  for (const span of evidence.matchAll(ANCHOR_DELIMITED_RE)) {
+    const whole = ANCHOR_WHOLE_SPAN_RE.exec(span[1] ?? span[2] ?? span[3] ?? '')
+    if (whole) {
+      push(whole[1] as string, whole[2] as string)
+    }
+  }
+  for (const match of evidence.matchAll(ANCHOR_LOOSE_RE)) {
+    push(match[1] as string, match[2] as string)
+  }
+  return out
+}
+
+/**
+ * The FIRST coordinate an evidence claims, or null when it claims none. Kept
+ * beside `parseEvidenceAnchors` because "what does this evidence point at" is
+ * a question with one useful answer for a caller that only wants to show it;
+ * the grounding below deliberately tries them all.
+ */
+export function parseEvidenceAnchor(evidence: unknown): EvidenceAnchor | null {
+  return parseEvidenceAnchors(evidence)[0] ?? null
+}
+
+/**
+ * Which diff path an anchor's path names, or null. TWO readings, and the second
+ * subsumes more than it looks like it does: the path exactly as written, then
+ * the LONGEST diff path that is a suffix of it AT A `/` BOUNDARY.
+ *
+ * That suffix rule is what makes `b/src/gate.ts`, `a/src/gate.ts`,
+ * `./src/gate.ts` and `/home/me/repo/src/gate.ts` all resolve to the diff's own
+ * `src/gate.ts`: any prefix at all ends the decorated path with `/src/gate.ts`.
+ * A dedicated `a/`/`b/`/`./` stripper was written here first and then deleted —
+ * every input it could decide, this loop decides identically, which is the
+ * honest definition of dead (the same rule that removed two conjuncts from
+ * `groundCriterionVerdicts`). A mutation campaign confirmed it: stripping the
+ * stripper reddened nothing.
+ *
+ * The `/` boundary is the whole severity of the rule — it is what stops
+ * `src/gate.ts` from being found inside `notsrc/gate.ts`, and what stops a bare
+ * `gate.ts` from matching any file that happens to end in it.
+ */
+function anchorFileInDiff(index: DiffIndex, file: string): string | null {
+  if (index.hunks.has(file)) {
+    return file
+  }
+  let best: string | null = null
+  for (const known of index.hunks.keys()) {
+    if (file.endsWith(`/${known}`) && (best === null || known.length > best.length)) {
+      best = known
+    }
+  }
+  return best
+}
+
+/**
+ * Whether an evidence points at a line the diff actually carries. ONE check,
+ * not two: `index.hunks` is only ever keyed by a path that `index.files` also
+ * carries (both are filled from the same `+++` line), so a `files.has(...)`
+ * conjunct would be a branch no input can decide — a mutation campaign found
+ * it unkillable, which is the honest definition of dead. A file absent from
+ * the diff has no hunks entry at all, so it fails here exactly like a line
+ * outside every hunk does; a deleted file (`+++ /dev/null`) never gets one
+ * either, which is right — there is no new-file line for an evidence to point
+ * at.
+ */
+function evidenceIsAnchoredIn(index: DiffIndex, evidence: unknown): boolean {
+  return parseEvidenceAnchors(evidence).some((anchor) => {
+    const file = anchorFileInDiff(index, anchor.file)
+    return file !== null && lineInHunks(index.hunks.get(file), anchor.line)
+  })
+}
+
+export type CriteriaGroundingReport = {
+  /** Verdicts whose evidence claimed an anchor the diff does not carry; the evidence was removed. */
+  dropped_evidence: CriterionVerdict[]
+  /** Verdicts whose status fell to 'unclear' because nothing grounded it. */
+  demoted: CriterionVerdict[]
+  /** The diff could not be indexed at all: NOTHING in it could be verified. */
+  diff_unreadable: boolean
+}
+
+/**
+ * Deterministic post-check of per-criterion verdicts against the reviewed diff
+ * (T3.2), on the exact pattern of `groundReview` above: same `indexDiff` /
+ * `lineInHunks`, same "never throws" contract, same vocabulary of a dropped
+ * anchor. What differs is the CONSEQUENCE, and deliberately so — a finding
+ * that loses its anchor is still a finding, while a criterion verdict that
+ * loses its proof is no longer a verdict:
+ *
+ * - an evidence whose `path:line` names a file absent from the diff, or a line
+ *   outside every hunk of a file that IS in the diff, is REMOVED;
+ * - a verdict that CLAIMED an evidence and lost it falls to `'unclear'`: the
+ *   reviewer asserted something checkable and the check failed, so the whole
+ *   verdict stops being trustworthy;
+ * - a `'met'` with no surviving evidence falls to `'unclear'` too — a positive
+ *   claim with no proof is a doubt, and D11's gate treats a doubt as a block.
+ *   An `'unmet'` that never claimed an anchor keeps its status: nothing about
+ *   it was falsified, and blurring a named failure into a shrug would lose
+ *   information without changing what the gate decides.
+ *
+ * An UNINDEXABLE diff (`diff_unreadable`) is not "leave everything alone" the
+ * way it is for `groundReview`: there, keeping unverified findings only risks
+ * noise; here it would let a model's `'met'` through a merge gate with nothing
+ * behind it. So the output degrades — every `met` becomes `unclear` — and the
+ * report says why. It still never throws.
+ */
+export function groundCriterionVerdicts(
+  verdicts: readonly CriterionVerdict[],
+  diff: string,
+): { verdicts: CriterionVerdict[]; report: CriteriaGroundingReport } {
+  const index = typeof diff === 'string' ? indexDiff(diff) : null
+  const report: CriteriaGroundingReport = {
+    dropped_evidence: [],
+    demoted: [],
+    diff_unreadable: index === null,
+  }
+  const out: CriterionVerdict[] = []
+  for (const verdict of verdicts) {
+    // ONE condition, not two (round 2, mineur 7): `evidenceIsAnchoredIn` is
+    // false for an evidence that claims nothing, so a `parseEvidenceAnchor(...)
+    // !== null` conjunct in front of it would be a third branch no input can
+    // decide — the same "a branch no input can reach is dead" rule that
+    // removed the other two in this function, applied to itself.
+    const grounded = index !== null && evidenceIsAnchoredIn(index, verdict.evidence)
+    if (grounded) {
+      out.push(verdict)
+      continue
+    }
+    const claimed = typeof verdict.evidence === 'string' && verdict.evidence !== ''
+    if (claimed) {
+      report.dropped_evidence.push(verdict)
+    }
+    const status: CriterionStatus = claimed || verdict.status === 'met' ? 'unclear' : verdict.status
+    if (status !== verdict.status) {
+      report.demoted.push(verdict)
+    }
+    out.push({ criterion_id: verdict.criterion_id, status })
+  }
+  return { verdicts: out, report }
+}
+
 const RISK_ENUM = { enum: ['high', 'medium', 'low'] } as const
 
 /** JSON Schema (draft 2020-12) for a ReviewRecord, for consumers validating synced reviews. */
@@ -756,6 +1072,45 @@ export const reviewRecordSchema = {
         files_reviewed: {
           type: 'array',
           items: { anyOf: [{ type: 'string' }, { $ref: '#/$defs/reviewedFile' }] },
+        },
+        // DP12 / T3.2. `minItems: 1` because ABSENCE is how "this review
+        // judged no criteria" is said — `sanitizeReview` omits the key rather
+        // than writing `[]`. `uniqueItems` catches a literal duplicate item;
+        // it does NOT catch two entries sharing a `criterion_id` while
+        // differing in status or evidence (draft 2020-12 has no "unique by
+        // property" keyword) — the same documented gap as
+        // `recapRecordSchema.criteria`. That stronger guarantee is made on the
+        // producing side, by `sanitizeCriterionVerdicts`.
+        criteria: {
+          type: 'array',
+          minItems: 1,
+          maxItems: TICKET_CRITERIA_MAX,
+          uniqueItems: true,
+          items: { $ref: '#/$defs/criterionVerdict' },
+        },
+      },
+    },
+    criterionVerdict: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['criterion_id', 'status'],
+      properties: {
+        criterion_id: { type: 'string', pattern: '^ac-[0-9a-f]{12}$' },
+        status: { enum: ['met', 'unmet', 'unclear'] },
+        // Multi-line-capable prose (the reviewer's quoted grounding, DP12):
+        // bounded, never blanked — `sanitizeCriterionVerdict` omits an empty
+        // evidence instead of storing one.
+        //
+        // Round 2, mineur 3: `NON_BLANK` (ticket.ts), the SAME pattern
+        // `recapRecordSchema.$defs.criterionVerdict.evidence` uses, in place of
+        // the `minLength: 1` this $def shipped with. The two schemas publish
+        // one type; the bare `minLength` accepted `'   '`, which the sanitizer
+        // trims to empty and then OMITS — a schema looser than its own
+        // sanctioned reader, on a field whose twin was already locked.
+        evidence: {
+          type: 'string',
+          maxLength: CRITERION_VERDICT_EVIDENCE_MAX,
+          pattern: NON_BLANK,
         },
       },
     },

@@ -25,7 +25,7 @@ export async function show(opts: {
 
   const session = createSession({ record })
   const config = loadConfig(cwd)
-  const [detected] = detectAgents(cwd)
+  const [detected] = await detectAgents(cwd)
   const agentCommand = config.agent ?? (detected ? defaultCommand(detected) : undefined)
   // A repo-provided agent command needs the same TOFU approval as in `review`;
   // show never prompts, so an untrusted one simply disables the fix button.

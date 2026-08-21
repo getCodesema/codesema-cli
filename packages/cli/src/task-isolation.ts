@@ -8,12 +8,12 @@
 //   detection image → node:26), so the agent works in the environment the
 //   project already describes for humans;
 // - an AGENT image derived from it (non-root user at the host's uid + git +
-//   claude-code),
-//   tagged by content hash and built once;
+//   the agent CLI), tagged by content hash (including the agent name) and
+//   built once;
 // - a per-workspace INTERNAL network plus one squid container as the only way
 //   out: CONNECT to the allowlisted domains, nothing else;
-// - a per-task named volume as the agent's HOME (claude credentials copied in
-//   once, provider sessions persisted across turns);
+// - a per-task named volume as the agent's HOME (credentials copied in once,
+//   provider sessions persisted across turns);
 // - the task worktree as the ONLY host path mounted (rw), everything else of
 //   the machine is simply absent.
 //
@@ -25,15 +25,29 @@
 // box READ-ONLY (container-git.ts) so the agent can see what it changed
 // without being able to rewrite a single ref.
 
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { knownAgent } from './agent.js'
+import {
+  AGENT_KILL_GRACE_MS,
+  AGENT_SETTLE_GRACE_MS,
+  AGENT_WATCHDOG_DEFAULTS,
+  AgentWatchdogError,
+  armStreamWatchdog,
+  flagPresent,
+  knownAgent,
+  systemClock,
+  watchdogMessage,
+  type AgentClock,
+  type AgentHeartbeat,
+  type AgentWatchdogCause,
+  type WatchdogBudgets,
+} from './agent.js'
 import type { IsolationMode } from './config.js'
 import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
-import type { TaskIsolation } from './contract.js'
+import { isTaskId, type TaskIsolation } from './contract.js'
 import { t } from './i18n.js'
 import type { ChecksConfig } from './repo-config.js'
 import { detectContainerRuntime, resolveChecksPlan, type ExecResult } from './task-checks.js'
@@ -201,6 +215,102 @@ export const CAGE_FORWARDED_ENV: readonly string[] = [
   'ANTHROPIC_SMALL_FAST_MODEL',
 ]
 
+const OPENCODE_FORWARDED_ENV: readonly string[] = [
+  'OPENCODE_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'XAI_API_KEY',
+]
+
+/** First PATH token of a command line (`/usr/bin/opencode run` → `opencode`). */
+function commandBin(command: string): string {
+  return (command.trim().split(/\s+/)[0] ?? '').split('/').pop() ?? ''
+}
+
+/**
+ * Is this command a cageable agent without touching agent.ts (PR 1 may not
+ * have added `opencode` to AGENT_BINS yet).
+ */
+export function cageableCommand(command: string): boolean {
+  const agent: string | null = knownAgent(command)
+  if (agent === 'claude' || agent === 'opencode') {
+    return true
+  }
+  return commandBin(command) === 'opencode'
+}
+
+export function isOpencode(command: string): boolean {
+  const agent: string | null = knownAgent(command)
+  if (agent === 'opencode') {
+    return true
+  }
+  return commandBin(command) === 'opencode'
+}
+
+/** Provider env forwarded into the cage for this command. Anthropic-only unless opencode. */
+export function cageForwardedEnv(command: string): readonly string[] {
+  return isOpencode(command)
+    ? [...CAGE_FORWARDED_ENV, ...OPENCODE_FORWARDED_ENV]
+    : CAGE_FORWARDED_ENV
+}
+
+/** Strip a matching pair of quotes; `--model='openrouter/foo'` keeps them otherwise. */
+function stripQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+/**
+ * `-m` / `--model` value on a command line, quote-aware so
+ * `--model 'openrouter/foo'` still selects the OpenRouter allowlist.
+ */
+function commandModel(command: string): string | undefined {
+  const tokens: string[] = []
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g
+  let match = re.exec(command)
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '')
+    match = re.exec(command)
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i] ?? ''
+    if (tok === '-m' || tok === '--model') {
+      const next = tokens[i + 1]
+      return next !== undefined ? stripQuotes(next) : undefined
+    }
+    if (tok.startsWith('--model=')) {
+      return stripQuotes(tok.slice('--model='.length))
+    }
+  }
+  return undefined
+}
+
+/**
+ * Egress allowlist for a caged command. `DEFAULT_ISOLATION_ALLOWED_DOMAINS`
+ * stays the claude list; opencode's depends on `-m`/`--model`.
+ */
+export function isolationDomainsFor(command: string): readonly string[] {
+  if (!isOpencode(command)) {
+    return DEFAULT_ISOLATION_ALLOWED_DOMAINS
+  }
+  const model = commandModel(command) ?? ''
+  if (model.startsWith('openrouter/')) {
+    return ['openrouter.ai', 'models.opencode.ai']
+  }
+  if (model.startsWith('anthropic/')) {
+    return [...DEFAULT_ISOLATION_ALLOWED_DOMAINS, 'models.opencode.ai']
+  }
+  return ['opencode.ai', 'models.opencode.ai']
+}
+
 /** Deterministic per-task container name: interrupt/timeout kill it by name. */
 export function agentContainerName(taskId: string): string {
   return `codesema-task-${taskId}`
@@ -209,6 +319,21 @@ export function agentContainerName(taskId: string): string {
 /** Per-task HOME volume: credentials bootstrapped once, sessions kept across turns. */
 export function agentHomeVolume(taskId: string): string {
   return `codesema-home-${taskId}`
+}
+
+/**
+ * Docker/podman label key stamped on every HOME volume THIS process creates,
+ * with the OS user's numeric id as its value (Décision, T1.9 review round 1):
+ * a machine with several `docker`-group users sharing one daemon has no
+ * other way to tell "idle, ours" from "idle, a colleague's" — a name alone
+ * (`codesema-home-<id>`) says nothing about who made it. The boot sweep
+ * reads it back to refuse ever touching a volume owned by a DIFFERENT uid.
+ */
+export const HOME_VOLUME_OWNER_LABEL = 'codesema.workspace'
+
+/** Stable per-OS-user id for the label above; 0 on a platform with no uid (never Linux/macOS with docker). */
+export function workspaceOwnerId(): string {
+  return String(process.getuid?.() ?? 0)
 }
 
 // --- exec seam -------------------------------------------------------------
@@ -385,7 +510,7 @@ const fallbackBase = (input: BaseImageInput): BaseImage => {
  *      `build.dockerfile` relative to the devcontainer folder, plus a simple
  *      STRING postCreateCommand;
  *   2. the image the checks detection picked for this repo;
- *   3. node:22.
+ *   3. `DEFAULT_BASE_IMAGE` — node:26.
  *
  * Everything the core does not cover (features, docker-compose, an array or
  * object postCreateCommand, a build context outside the devcontainer folder)
@@ -495,17 +620,57 @@ export function readBaseImageInputs(
 /** Shell-quoted safely by construction: JSON exec form, never a bare RUN line. */
 const runLine = (command: string): string => `RUN ["sh","-lc",${JSON.stringify(command)}]`
 
-/** npm on most bases, bun on a bun base — the seam exists so tests pin it. */
+/**
+ * Agent CLI install, branched INSIDE the image (same shape as GIT_INSTALL_COMMAND):
+ * curl+tar+bash → native installer, else npm (same RUN as cache clean), else bun,
+ * else a sentence a human can act on. `baseRef` is kept on the signature so
+ * callers that used to pick bun vs npm still compile; the image decides.
+ */
+export function installCommandFor(agent: string, baseRef?: string): string {
+  void baseRef
+  const pkg = agent === 'opencode' ? 'opencode-ai' : '@anthropic-ai/claude-code'
+  const nativePipe =
+    agent === 'opencode'
+      ? 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path || true'
+      : 'curl -fsSL https://claude.ai/install.sh | bash || true'
+  const nativeHomes =
+    agent === 'opencode'
+      ? [
+          'if [ -x "$HOME/.opencode/bin/opencode" ]; then mv "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; fi',
+          'if [ -x "$HOME/.local/bin/opencode" ]; then mv "$HOME/.local/bin/opencode" /usr/local/bin/opencode; fi',
+        ]
+      : [
+          'if [ -x "$HOME/.local/bin/claude" ]; then mv "$HOME/.local/bin/claude" /usr/local/bin/claude; fi',
+        ]
+  return [
+    'if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then',
+    `  ${nativePipe}`,
+    ...nativeHomes.map((line) => `  ${line}`),
+    // Native tools present is not native success: a failed curl | bash still
+    // leaves the following `if [ -x ]` false with status 0. Only a binary on
+    // the shared PATH (or at /usr/local/bin) exits the RUN; otherwise npm.
+    `  if command -v ${agent} >/dev/null 2>&1 || [ -x /usr/local/bin/${agent} ]; then exit 0; fi`,
+    'fi',
+    'if command -v npm >/dev/null 2>&1; then',
+    `  npm install -g ${pkg} && npm cache clean --force; exit $?;`,
+    'fi',
+    'if command -v bun >/dev/null 2>&1; then',
+    `  BUN_INSTALL=/usr/local bun install -g ${pkg}; exit $?;`,
+    'fi',
+    `echo "codesema: this base image has neither curl+tar+bash, npm, nor bun, so ${agent} cannot be installed` +
+      ' — add one of those to the image your .devcontainer or checks config points at" >&2',
+    'exit 1',
+  ].join('\n')
+}
+
 export function defaultInstallCommand(baseRef: string): string {
-  return /(^|\/)bun(:|$)/.test(baseRef)
-    ? BUN_CLAUDE_INSTALL_COMMAND
-    : DEFAULT_CLAUDE_INSTALL_COMMAND
+  return installCommandFor('claude', baseRef)
 }
 
 export type AgentDockerfileInput = {
   /** Fully resolved FROM reference (a plain image, or the pre-built base tag). */
   baseRef: string
-  /** claude-code installation, run as root so the binary lands on the shared PATH. */
+  /** Agent CLI installation, run as root so the binary lands on the shared PATH. */
   installCommand: string
   /** devcontainer postCreateCommand, or null. */
   postCreate: string | null
@@ -526,7 +691,7 @@ export type AgentDockerfileInput = {
  * that cannot read the worktree's history is not the agent the task was
  * recorded with.
  *
- * Order is load-bearing: the user setup, the git install and the claude-code
+ * Order is load-bearing: the user setup, the git install and the agent CLI
  * install all run as ROOT, before the final USER, so the binaries land on the
  * shared PATH and the package manager can write.
  */
@@ -556,10 +721,15 @@ export function generateAgentDockerfile(input: AgentDockerfileInput): string {
   return lines.join('\n')
 }
 
-/** codesema-agent:<12 hex of sha256(base + dockerfile + host claude version)>. */
-export function agentImageTag(baseRef: string, dockerfile: string, claudeVersion: string): string {
+/** codesema-agent:<12 hex of sha256(agent + base + dockerfile + host agent version)>. */
+export function agentImageTag(
+  baseRef: string,
+  dockerfile: string,
+  claudeVersion: string,
+  agent = 'claude',
+): string {
   const hash = createHash('sha256')
-    .update(`${baseRef} ${dockerfile} ${claudeVersion}`)
+    .update(`${agent}\u0000${baseRef}\u0000${dockerfile}\u0000${claudeVersion}`)
     .digest('hex')
     .slice(0, 12)
   return `codesema-agent:${hash}`
@@ -568,11 +738,13 @@ export function agentImageTag(baseRef: string, dockerfile: string, claudeVersion
 export type BuildAgentImageOptions = {
   worktree: string
   base: BaseImage
-  /** Host claude version, folded into the tag: a CLI upgrade rebuilds the cage. */
+  /** Host agent version, folded into the tag: a CLI upgrade rebuilds the cage. */
   claudeVersion: string
+  /** Agent the image is for; hashed into the tag. Defaults to claude. */
+  agent?: string
   runtime: string
   execFn?: IsolationExecFn
-  /** Test/smoke seam; defaults to defaultInstallCommand(base). */
+  /** Test/smoke seam; defaults to installCommandFor(agent, base). */
   installCommand?: string
   uid?: number
   gid?: number
@@ -593,7 +765,7 @@ export function resetIsolationCaches(): void {
   homes.clear()
   podmanProbes.clear()
   cachedRuntime = null
-  cachedClaudeVersion = null
+  cachedAgentVersions.clear()
 }
 
 function buildFailure(result: ExecResult): string {
@@ -622,7 +794,7 @@ export async function buildAgentImage(opts: BuildAgentImageOptions): Promise<str
     const dockerfile = opts.base.dockerfile ?? ''
     const context = opts.base.context ?? '.'
     const hash = createHash('sha256')
-      .update(`${opts.worktree} ${dockerfile}`)
+      .update(`${opts.worktree}\u0000${dockerfile}`)
       .digest('hex')
       .slice(0, 12)
     baseTag = `codesema-base:${hash}`
@@ -637,14 +809,15 @@ export async function buildAgentImage(opts: BuildAgentImageOptions): Promise<str
     }
   }
 
+  const agent = opts.agent ?? 'claude'
   const dockerfile = generateAgentDockerfile({
     baseRef,
-    installCommand: opts.installCommand ?? defaultInstallCommand(baseRef),
+    installCommand: opts.installCommand ?? installCommandFor(agent, baseRef),
     postCreate: opts.base.postCreate,
     uid,
     gid,
   })
-  const tag = agentImageTag(baseRef, dockerfile, opts.claudeVersion)
+  const tag = agentImageTag(baseRef, dockerfile, opts.claudeVersion, agent)
   const cached = imageBuilds.get(tag)
   if (cached) {
     return cached
@@ -880,10 +1053,20 @@ export type BootstrapAgentHomeOptions = {
   image: string
   execFn?: IsolationExecFn
   env?: NodeJS.ProcessEnv
-  /** Host credentials file; defaults to ~/.claude/.credentials.json. */
+  /** Host credentials file; defaults to agentCredentialsPath(agent, env). */
   credentialsPath?: string
+  /** Which agent's credentials to seed; defaults to claude. */
+  agent?: string
   /** Resolved podman-ness; probed from the binary when absent. */
   podman?: boolean
+}
+
+/** Host path of the agent's credentials file. */
+export function agentCredentialsPath(agent: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (agent === 'opencode') {
+    return join(env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'opencode', 'auth.json')
+  }
+  return join(homedir(), '.claude', '.credentials.json')
 }
 
 const homes = new Map<string, Promise<AgentHome>>()
@@ -894,7 +1077,7 @@ export function isPodman(runtime: string): boolean {
 }
 
 /** runtime name → what the binary actually reported. */
-const podmanProbes = new Map<string, Promise<boolean>>()
+const podmanProbes = new Map<string, Promise<boolean | null>>()
 
 /**
  * Is this runtime really podman? The binary NAME cannot answer it: a very
@@ -904,14 +1087,26 @@ const podmanProbes = new Map<string, Promise<boolean>>()
  * Without it the agent's uid maps to a foreign host uid and every write into
  * /work fails with EACCES. So ask the binary what it is.
  */
-export async function runtimeIsPodman(runtime: string, execFn?: IsolationExecFn): Promise<boolean> {
+export async function runtimeIsPodman(
+  runtime: string,
+  execFn?: IsolationExecFn,
+): Promise<boolean | null> {
   if (isPodman(runtime)) {
     return true
   }
-  const probe = async (): Promise<boolean> => {
+  const probe = async (): Promise<boolean | null> => {
     const exec = execFn ?? defaultExec
     const result = await exec(runtime, ['--version'], { timeoutMs: 20_000 })
-    return result.code === 0 && /podman/i.test(`${result.stdout}${result.stderr}`)
+    // T1.9 review round 4, MAJEUR 3: a probe that did not RUN answers null,
+    // never `false`. `false` reads as "this is docker", a positive fact, and
+    // the orphaned-volume sweep spends it on choosing which label format to
+    // ask for — under podman the wrong choice makes every foreign owner label
+    // unreadable, and an unreadable label is what now lets a volume through.
+    // A binary that could not answer must abstain instead.
+    if (result.code !== 0) {
+      return null
+    }
+    return /podman/i.test(`${result.stdout}${result.stderr}`)
   }
   if (execFn) {
     return probe()
@@ -922,21 +1117,34 @@ export async function runtimeIsPodman(runtime: string, execFn?: IsolationExecFn)
   }
   const started = probe()
   podmanProbes.set(runtime, started)
+  // A memo that is only ever written and never cleared would freeze a single
+  // transient failure (a daemon still starting at boot, an EMFILE burst) for
+  // the entire life of the workspace process. Only an ANSWER is worth
+  // remembering; ignorance is re-asked.
+  void started.then(
+    (value) => {
+      if (value === null) {
+        podmanProbes.delete(runtime)
+      }
+    },
+    () => podmanProbes.delete(runtime),
+  )
   return started
 }
 
 const usernsArgs = (podman: boolean): string[] => (podman ? ['--userns=keep-id'] : [])
 
 /**
- * Creates the task's HOME volume and seeds it ONCE. With
- * CLAUDE_CODE_OAUTH_TOKEN in the environment nothing is copied (the token is
- * forwarded per run); otherwise the host's ~/.claude/.credentials.json is
- * piped into the volume through an ephemeral container — on STDIN, so the
- * secret never appears in an argv the whole machine can read in `ps`.
+ * Creates the task's HOME volume and seeds it ONCE. For claude, a
+ * CLAUDE_CODE_OAUTH_TOKEN in the environment means nothing is copied (the
+ * token is forwarded per run); otherwise the host credentials file is piped
+ * into the volume through an ephemeral container — on STDIN, so the secret
+ * never appears in an argv the whole machine can read in `ps`. OpenCode is
+ * never skipped on that token: its auth lives in auth.json.
  *
  * Bootstrapping is what the volume's existence means: an existing volume is
- * left strictly alone, which is also how a claude session survives from one
- * turn to the next.
+ * left strictly alone, which is also how a session survives from one turn
+ * to the next.
  */
 export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promise<AgentHome> {
   const cached = homes.get(opts.taskId)
@@ -945,25 +1153,33 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
   }
   const exec = opts.execFn ?? defaultExec
   const env = opts.env ?? process.env
+  const agent = opts.agent ?? 'claude'
   const volume = agentHomeVolume(opts.taskId)
+  const destDir =
+    agent === 'opencode' ? `${CAGE_HOME_DIR}/.local/share/opencode` : `${CAGE_HOME_DIR}/.claude`
+  const destFile = agent === 'opencode' ? 'auth.json' : '.credentials.json'
   const run = (async (): Promise<AgentHome> => {
     if (await inspectOk(exec, opts.runtime, 'volume', volume)) {
       return { volume, credentials: 'already-bootstrapped' }
     }
-    const created = await exec(opts.runtime, ['volume', 'create', volume], { timeoutMs: 60_000 })
+    const created = await exec(
+      opts.runtime,
+      ['volume', 'create', '--label', `${HOME_VOLUME_OWNER_LABEL}=${workspaceOwnerId()}`, volume],
+      { timeoutMs: 60_000 },
+    )
     if (created.code !== 0) {
       throw new Error(t('isolation.homeFailed', { error: buildFailure(created) }))
     }
-    if (env.CLAUDE_CODE_OAUTH_TOKEN) {
+    if (agent !== 'opencode' && env.CLAUDE_CODE_OAUTH_TOKEN) {
       return { volume, credentials: 'oauth-token' }
     }
-    const path = opts.credentialsPath ?? join(homedir(), '.claude', '.credentials.json')
+    const path = opts.credentialsPath ?? agentCredentialsPath(agent, env)
     let content: string
     try {
       content = readFileSync(path, 'utf8')
     } catch {
-      // No credentials to copy: the cage still runs, and claude inside it says
-      // it is unauthenticated — far better than pretending we seeded something.
+      // No credentials to copy: the cage still runs, and the agent inside it
+      // says it is unauthenticated — far better than pretending we seeded.
       return { volume, credentials: 'missing' }
     }
     const seeded = await exec(
@@ -978,11 +1194,15 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
         'none',
         '--security-opt',
         'no-new-privileges',
-        ...usernsArgs(opts.podman ?? (await runtimeIsPodman(opts.runtime, opts.execFn))),
+        // `?? false` on purpose, and ONLY here: an unanswered probe on the RUN
+        // path means no --userns=keep-id, the long-standing behavior, and the
+        // worst case is an EACCES the turn reports. Nothing is destroyed. The
+        // sweep, which destroys, abstains instead.
+        ...usernsArgs(opts.podman ?? (await runtimeIsPodman(opts.runtime, opts.execFn)) ?? false),
         opts.image,
         'sh',
         '-lc',
-        `umask 077; mkdir -p ${CAGE_HOME_DIR}/.claude && cat > ${CAGE_HOME_DIR}/.claude/.credentials.json`,
+        `umask 077; mkdir -p ${destDir} && cat > ${destDir}/${destFile}`,
       ],
       { timeoutMs: 120_000, input: content },
     )
@@ -996,22 +1216,361 @@ export async function bootstrapAgentHome(opts: BootstrapAgentHomeOptions): Promi
   return run
 }
 
+/**
+ * Named, never thrown: the whole point of this result is that a caller at
+ * termination (ship, abandon) can report the outcome and move on — never
+ * retry, never fail the task over it (D-rule of T1.9: a `volume rm` that
+ * fails takes nothing and refuses nothing, so it carries no D2 code, only a
+ * readable name).
+ */
+export type ReleaseAgentHomeResult =
+  | { released: true }
+  | { released: false; reason: 'no-runtime' }
+  | { released: false; reason: 'rm-failed'; detail: string }
+
+export type ReleaseAgentHomeOptions = {
+  taskId: string
+  /** Resolved runtime; probed via isolationRuntime(execFn) when absent. */
+  runtime?: string
+  execFn?: IsolationExecFn
+}
+
+/**
+ * Releases the task's HOME volume at termination (ship, abandon), through the
+ * SAME seam as the rest of isolation — `execFile` argv, never a runtime
+ * binary named by the caller. Best-effort by contract: a volume that could
+ * not be removed here is exactly what the boot sweep (sweepOrphanedHomeVolumes)
+ * rattraps on the next start, so this NEVER throws — every outcome, runtime
+ * absent included, comes back as data.
+ */
+export async function releaseAgentHome(
+  opts: ReleaseAgentHomeOptions,
+): Promise<ReleaseAgentHomeResult> {
+  const exec = opts.execFn ?? defaultExec
+  const runtime = opts.runtime ?? (await isolationRuntime(opts.execFn))
+  if (!runtime) {
+    return { released: false, reason: 'no-runtime' }
+  }
+  const volume = agentHomeVolume(opts.taskId)
+  const removed = await exec(runtime, ['volume', 'rm', volume], { timeoutMs: 30_000 })
+  if (removed.code !== 0) {
+    // A task can reach ship/abandon having never run a single caged turn (a
+    // question turn, an interrupt before the first one, `isolation:'container'`
+    // decided but never exercised): bootstrapAgentHome was then never called,
+    // and NOTHING was ever created for `volume rm` to fail on. Reported as
+    // 'released' rather than as a failure — a "no such volume" from the
+    // runtime is not a degradation here, it is the honest reading of "there
+    // was nothing to release" (false negative fixed, T1.9 review round 1,
+    // Mineur 6).
+    //
+    // Matched on the `rm` attempt's own message rather than a separate
+    // `inspect` beforehand (the first fix here did exactly that, and it
+    // traded the false negative for a false POSITIVE: an `inspect` failing
+    // for an unrelated reason — the daemon momentarily busy, a permission
+    // hiccup — is not proof the volume never existed, yet was read as
+    // 'released: true' all the same, masking a real removal failure). Docker
+    // and podman both say so, in slightly different words, in the SAME `rm`
+    // response, so no second round trip — and no second TOCTOU window — is
+    // needed to tell the two apart.
+    if (/no such volume/i.test(removed.stderr) || /no such volume/i.test(removed.stdout)) {
+      return { released: true }
+    }
+    return { released: false, reason: 'rm-failed', detail: buildFailure(removed) }
+  }
+  // The bootstrap memo would otherwise answer 'already-bootstrapped' for a
+  // volume this process just deleted — harmless in practice (ship/abandon are
+  // terminal, no turn runs again on this taskId) but wrong to leave standing.
+  homes.delete(opts.taskId)
+  return { released: true }
+}
+
+/** Prefix every task's HOME volume carries — the sweep's only identification (Décision 1). */
+const HOME_VOLUME_PREFIX = 'codesema-home-'
+
+/**
+ * One HOME volume as the sweep sees it: the task id its name encodes, and who
+ * (if anyone) labeled it as theirs. `ownerLabel === null` means the runtime's
+ * own label filter did not return this volume — a positive statement that it
+ * carries no `codesema.workspace` label, NEVER the result of a label we
+ * failed to read (see listHomeVolumeEntries).
+ */
+type HomeVolumeEntry = { id: string; ownerLabel: string | null }
+
+/** First `value` of `key=value` in a comma-joined DOCKER `--format '{{.Labels}}'` string. */
+function labelValue(labels: string, key: string): string | null {
+  for (const pair of labels.split(',')) {
+    const eq = pair.indexOf('=')
+    if (eq !== -1 && pair.slice(0, eq) === key) {
+      return pair.slice(eq + 1)
+    }
+  }
+  return null
+}
+
+/**
+ * Label-value template for the FILTERED listing below.
+ *
+ * T1.9 review round 3, MAJEUR 2: docker's `{{.Labels}}` renders the
+ * `k=v,k2=v2` form `labelValue` parses — podman's renders a Go map's default
+ * `map[k:v k2:v2]` string instead (verified live, podman 5.7.0), which
+ * contains no `=` before any comma and made `labelValue` return null for
+ * EVERY volume under podman, including ones this very build just labeled.
+ * `{{index .Labels "key"}}` extracts the value directly regardless of how the
+ * whole map would print, and is verified portable on podman (renders the bare
+ * value) — so podman gets that format, docker keeps the comma-joined one
+ * `labelValue` already handles correctly.
+ */
+const ownerLabelFormat = (podman: boolean): string =>
+  podman ? `{{.Name}}\t{{index .Labels "${HOME_VOLUME_OWNER_LABEL}"}}` : '{{.Name}}\t{{.Labels}}'
+
+/**
+ * HOME volumes on the runtime, with who (if anyone) labeled each as theirs.
+ * Null when the inventory could not be read — no runtime, a listing that
+ * failed, or one whose output does not have the shape it was asked for. The
+ * caller must NOT read null as "no volumes": deleting on the strength of a
+ * list it never actually saw would wipe volumes it merely failed to
+ * enumerate.
+ *
+ * A name whose suffix is not a valid 12-hex task id — `codesema-home-`,
+ * `codesema-home-not-an-id`, a path-traversal attempt, a `-backup` suffix
+ * tacked onto a real one — is DROPPED rather than coerced: this sweep only
+ * ever acts on ids it can trust round-trip through `agentHomeVolume`.
+ *
+ * T1.9 review round 4, MAJEUR 3 — why TWO listings and not one. The owner
+ * label is no longer a gate (round 3 made it an exclusion: a volume labeled
+ * for a DIFFERENT uid is spared, an unlabeled one is swept, which is the
+ * whole point of Décision 1). That inversion turned every way of FAILING to
+ * read a label into a licence to delete: a line the runtime truncated, or a
+ * template that rendered nothing, both came back as `ownerLabel === null` —
+ * indistinguishable from "carries no label" — and another uid's volume went.
+ * So absence of a label is now established POSITIVELY, by asking the runtime
+ * itself which volumes carry it (`--filter label=…`, supported by docker and
+ * verified on podman 5.7.0): a volume the filtered listing did not return
+ * carries no such label, full stop. Nothing about that conclusion depends on
+ * parsing a string.
+ *
+ * And a line of the FILTERED listing that does not have the arity it was
+ * asked for (no tab) cannot be attributed to a volume at all — it names one
+ * the runtime just told us IS labeled, and reading it as anything else would
+ * be exactly the bug above. That is an inventory read that failed: null, and
+ * the sweep does not run.
+ */
+async function listHomeVolumeEntries(
+  runtime: string,
+  exec: IsolationExecFn,
+  podman: boolean,
+): Promise<HomeVolumeEntry[] | null> {
+  const all = await exec(runtime, ['volume', 'ls', '--format', '{{.Name}}'], { timeoutMs: 30_000 })
+  if (all.code !== 0) {
+    return null
+  }
+  const labeled = await exec(
+    runtime,
+    [
+      'volume',
+      'ls',
+      '--filter',
+      `label=${HOME_VOLUME_OWNER_LABEL}`,
+      '--format',
+      ownerLabelFormat(podman),
+    ],
+    { timeoutMs: 30_000 },
+  )
+  // A failure HERE is never "nobody labeled anything": it is the same
+  // unreadable inventory as above, and it must cancel the sweep rather than
+  // let every foreign volume read as unlabeled.
+  if (labeled.code !== 0) {
+    return null
+  }
+  const owners = new Map<string, string>()
+  for (const line of labeled.stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) {
+      continue
+    }
+    const tab = trimmed.indexOf('\t')
+    if (tab === -1) {
+      return null
+    }
+    const rest = trimmed.slice(tab + 1).trim()
+    // `?? rest` and not `?? null`: this volume IS labeled (the runtime's own
+    // filter returned it), so a value this parser cannot make sense of must
+    // stay a value — one that will not match our owner id, hence excluded —
+    // and must never collapse into "unlabeled", which would sweep it.
+    const value = podman ? rest : (labelValue(rest, HOME_VOLUME_OWNER_LABEL) ?? rest)
+    owners.set(trimmed.slice(0, tab), value)
+  }
+  const entries: HomeVolumeEntry[] = []
+  for (const line of all.stdout.split('\n')) {
+    const name = line.trim()
+    if (!name.startsWith(HOME_VOLUME_PREFIX)) {
+      continue
+    }
+    const id = name.slice(HOME_VOLUME_PREFIX.length)
+    if (!isTaskId(id)) {
+      continue
+    }
+    entries.push({ id, ownerLabel: owners.get(name) ?? null })
+  }
+  return entries
+}
+
+export type HomeVolumeSweepOutcome = {
+  /** Task ids whose orphaned volume was removed. */
+  removed: string[]
+  /**
+   * One readable line per action or failure, for the boot's notice channel —
+   * NEVER the task journal (DP9): a volume this sweep names has no live task
+   * directory left to write into, `appendTaskEvent`'s `mkdirSync` would
+   * either resurrect one or race the very deletion this sweep is reporting.
+   */
+  notices: string[]
+}
+
+export type HomeVolumeSweepOptions = {
+  /** Every task id any KNOWN project record still claims (all registered projects, not just one), taken as a SNAPSHOT before the (slow) runtime round trips below. */
+  claimedIds: ReadonlySet<string>
+  /**
+   * Re-verified immediately before EACH removal — closes the race between the
+   * `claimedIds` snapshot above and the runtime round trips (`volume ls` then
+   * one `volume rm` per candidate), which can together take long enough for a
+   * brand-new task (or a brand-new registered project) to exist without ever
+   * having been in the snapshot. `null` means the inventory could not be
+   * rebuilt just now (same Risk-1 reasoning as the initial snapshot): every
+   * remaining candidate is left in place rather than trusted on a stale read.
+   * Absent entirely (unit tests, callers with no live registry to re-read):
+   * the initial snapshot is the only check.
+   */
+  recheckClaimedIds?: () => ReadonlySet<string> | null
+  runtime?: string
+  execFn?: IsolationExecFn
+}
+
+/**
+ * Boot sweep of orphaned HOME volumes (Décision 1, design.md: identified by
+ * NAME, never by label — 0.12 volumes carry none, and recovering exactly
+ * those is the point of the sweep). A volume is removed when its id is
+ * claimed by NO record of NO known project (Risk 1), whether or not it
+ * carries this workspace user's ownership label — an UNLABELED volume is the
+ * common, expected, pre-T1.9 case, not a reason to hold back.
+ *
+ * T1.9 review round 3, MAJEUR 3: an earlier round gated unlabeled volumes
+ * behind an opt-in `sweepUnlabeled` flag that was never wired to any config
+ * key or CLI flag anywhere in the codebase — under the shipped default, this
+ * sweep could not recover a SINGLE 0.12 volume, which is the one thing
+ * Décision 1 exists to do, and the notice it emitted advertised an opt-in
+ * that did not exist. Removed rather than wired: design.md never asked for
+ * label-gated recovery, and the one label-based protection design.md's own
+ * Risk 1 discussion never anticipated but is still worth keeping — a volume
+ * labeled for a DIFFERENT known uid is never touched, claimed or not, since
+ * this daemon may be shared by several `docker`-group users with no shared
+ * registry to tell their tasks apart — survives untouched below: it only
+ * ever excludes a volume that CARRIES a foreign label, never one with none.
+ *
+ * Never throws (Risk 2's sibling rule for the boot path): a runtime that
+ * cannot be reached, or a listing/removal that fails, comes back as a named
+ * notice, and the boot proceeds either way.
+ */
+export async function sweepOrphanedHomeVolumes(
+  opts: HomeVolumeSweepOptions,
+): Promise<HomeVolumeSweepOutcome> {
+  const exec = opts.execFn ?? defaultExec
+  const runtime = opts.runtime ?? (await isolationRuntime(opts.execFn))
+  if (!runtime) {
+    return {
+      removed: [],
+      notices: ['no container runtime detected — the orphaned HOME volume sweep did not run'],
+    }
+  }
+  // T1.9 review round 4, MAJEUR 3: podman-ness decides WHICH label template
+  // the listing below asks for, and asking for the wrong one is how a foreign
+  // owner label becomes unreadable. A probe that could not answer therefore
+  // stops the sweep instead of guessing 'docker' — an orphaned volume
+  // surviving until the next boot costs disk; another uid's volume deleted on
+  // a guess costs their agent's home.
+  const podman = await runtimeIsPodman(runtime, opts.execFn)
+  if (podman === null) {
+    return {
+      removed: [],
+      notices: [
+        `could not determine whether ${runtime} is podman (its --version probe failed) — the orphaned HOME volume sweep did not run`,
+      ],
+    }
+  }
+  const entries = await listHomeVolumeEntries(runtime, exec, podman)
+  if (entries === null) {
+    return {
+      removed: [],
+      notices: ['could not list HOME volumes — the orphaned volume sweep did not run'],
+    }
+  }
+  const owner = workspaceOwnerId()
+  const removed: string[] = []
+  const notices: string[] = []
+  for (const { id, ownerLabel } of entries) {
+    if (ownerLabel !== null && ownerLabel !== owner) {
+      // Someone else's volume on the same daemon: never ours to judge.
+      // Unlabeled (ownerLabel === null) is the common pre-T1.9 case and
+      // falls straight through to the orphan check below — see this
+      // function's own doc comment (MAJEUR 3).
+      continue
+    }
+    if (opts.claimedIds.has(id)) {
+      continue
+    }
+    if (opts.recheckClaimedIds) {
+      const fresh = opts.recheckClaimedIds()
+      if (fresh === null) {
+        notices.push(
+          `orphaned HOME volume ${agentHomeVolume(id)} left in place: the claimed-id inventory could not be re-verified right before removing it`,
+        )
+        continue
+      }
+      if (fresh.has(id)) {
+        continue
+      }
+    }
+    const volume = agentHomeVolume(id)
+    const result = await exec(runtime, ['volume', 'rm', volume], { timeoutMs: 30_000 })
+    if (result.code === 0) {
+      removed.push(id)
+      notices.push(`orphaned HOME volume ${volume} removed at boot: no task record claims it`)
+    } else {
+      notices.push(`orphaned HOME volume ${volume} could not be removed: ${buildFailure(result)}`)
+    }
+  }
+  return { removed, notices }
+}
+
 // --- the caged turn --------------------------------------------------------
 
 /** Same shape as the runner's TaskSession, duplicated to avoid an import cycle. */
 export type CagedSession = { kind: 'new' | 'resume'; id: string }
 
 /**
- * Per-turn agent command INSIDE the cage. Same stream/session flags as the
- * host path (taskCommandFor), but the policy hardening is replaced by
- * --dangerously-skip-permissions: the container IS the guarantee, so the
- * agent gets its full toolset — including Bash — within it. Nothing here
- * restricts settings or MCP: a hostile repo file can only reach the cage.
+ * Per-turn agent command INSIDE the cage. Claude: policy hardening is
+ * replaced by --dangerously-skip-permissions (the container IS the
+ * guarantee). OpenCode: `--format json`, `--auto` (headless equivalent of
+ * skip-permissions), and resume `-s`. Nothing here restricts settings or
+ * MCP: a hostile repo file can only reach the cage.
  */
 export function containerTaskCommandFor(
   command: string,
   opts: { session: CagedSession | null },
 ): string {
+  if (isOpencode(command)) {
+    let cmd = command
+    if (!flagPresent(cmd, '--format')) {
+      cmd += ' --format json'
+    }
+    if (!flagPresent(cmd, '--auto')) {
+      cmd += ' --auto'
+    }
+    if (opts.session?.kind === 'resume') {
+      cmd += ` -s ${opts.session.id}`
+    }
+    return cmd
+  }
   let cmd = command
   if (!/^claude(\s|$)/.test(command)) {
     return cmd
@@ -1115,76 +1674,206 @@ export function containerRunArgs(spec: ContainerRunSpec): string[] {
 export type ContainerSpawnOptions = {
   file: string
   args: string[]
+  /**
+   * The AGENT command line running inside the box (not the runtime argv):
+   * says whether the stdout coming back can be decoded as claude JSONL, which
+   * is what the watchdog reads its tool signals from.
+   */
+  command: string
   /** Turn prompt, written to the container's stdin. */
   input: string
+  /** Last-resort ceiling; the watchdog is what detects a dead run (effectiveAbsoluteCapMs). */
   timeoutMs: number
   signal?: AbortSignal | undefined
   /** Cumulative stdout, same contract as runAgent's onText. */
   onText?: ((text: string) => void) | undefined
   /** Kills the container by NAME: killing the client alone leaves it running. */
   onKill: () => void
+  /** Watchdog budgets (D3 defaults when absent) — the caged turn gets the same guard as the host one. */
+  watchdog?: WatchdogBudgets | undefined
+  /** Liveness beat, one per heartbeat period. */
+  onHeartbeat?: ((beat: AgentHeartbeat) => void) | undefined
+  /** Test seams: injected clock and process spawn (no real container, no real wait). */
+  clock?: AgentClock | undefined
+  spawnProcessFn?: ContainerProcessSpawnFn | undefined
 }
+
+/** Process seam of the real container spawn: tests hand back a recording double. */
+export type ContainerProcessSpawnFn = (
+  file: string,
+  args: string[],
+  options: SpawnOptions,
+) => ChildProcess
 
 /** Streaming spawn seam: tests replace it, unit tests never spawn a container. */
 export type ContainerSpawnFn = (opts: ContainerSpawnOptions) => Promise<string>
 
 /**
- * Real spawn: argv array, NO shell on the host. Timeout and interrupt both
- * kill the container by name (the client dying would otherwise leave the
- * agent running inside its box) and then SIGTERM the client itself.
+ * Bounded wait between the container kill and signalling the CLIENT: `docker
+ * kill` has to reach the engine and the client usually exits on its own once
+ * the container is gone. Signalling the client first would orphan the box.
+ */
+export const CONTAINER_KILL_GRACE_MS = 5_000
+
+/**
+ * Real spawn: argv array, NO shell on the host. The caged turn carries the
+ * same semantic watchdog as the host one (runAgent): silence with no tool out,
+ * or a tool that never comes back, kills the run with `inactivity_timeout` —
+ * the cage is the DEFAULT path whenever a runtime exists, so leaving it
+ * unwatched would leave the bug the watchdog exists to fix in place.
+ *
+ * The kill escalation is ordered and every step is bounded: close stdin → kill
+ * the CONTAINER by name (the client dying alone leaves the agent running in
+ * its box) → wait → SIGTERM the client → wait → SIGKILL it → close stdout →
+ * wait → settle anyway. stdout stays open until the very end so the agent's
+ * last words survive its death, and the final settle exists because no signal
+ * is a guarantee: a promise that never settles turns Ctrl-C into a hang.
  */
 export const spawnContainer: ContainerSpawnFn = (opts) =>
   new Promise((resolve, reject) => {
-    const child = spawn(opts.file, opts.args, { stdio: ['pipe', 'pipe', 'inherit'] })
+    const clock = opts.clock ?? systemClock
+    const spawnProcessFn = opts.spawnProcessFn ?? spawn
+    const child = spawnProcessFn(opts.file, opts.args, { stdio: ['pipe', 'pipe', 'inherit'] })
+    const stdin = child.stdin
+    const stdout = child.stdout
+    stdin?.on('error', () => {})
+
     let out = ''
-    let timedOut = false
+    let capped = false
     let aborted = false
-    const stop = () => {
-      opts.onKill()
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // already gone
+    let killing = false
+    let settled = false
+    let cut: { cause: AgentWatchdogCause; elapsedMs: number } | null = null
+    let capCancel: (() => void) | null = null
+    let stepCancel: (() => void) | null = null
+
+    const stopTimers = (): void => {
+      armed.stop()
+      capCancel?.()
+      stepCancel?.()
+      capCancel = null
+      stepCancel = null
+    }
+    const finish = (outcome: () => void): void => {
+      if (settled) {
+        return
       }
-    }
-    const timer = setTimeout(() => {
-      timedOut = true
-      stop()
-    }, opts.timeoutMs)
-    const onAbort = () => {
-      aborted = true
-      stop()
-    }
-    if (opts.signal?.aborted) {
-      onAbort()
-    } else {
-      opts.signal?.addEventListener('abort', onAbort, { once: true })
-    }
-    child.stdout.on('data', (d: Buffer) => {
-      out += d.toString()
-      opts.onText?.(out)
-    })
-    child.on('error', (err) => {
-      clearTimeout(timer)
+      settled = true
+      stopTimers()
       opts.signal?.removeEventListener('abort', onAbort)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      opts.signal?.removeEventListener('abort', onAbort)
-      if (aborted) {
+      outcome()
+    }
+    const settleFromState = (code: number | null): void => {
+      // A watchdog cut owns the outcome: a human hitting Stop during the kill
+      // is reacting to it, not causing it, and overwriting the cause would
+      // lose the reason code and the resumable status that goes with it.
+      if (cut) {
+        reject(new AgentWatchdogError(cut.cause, watchdogMessage(cut.cause, cut.elapsedMs)))
+      } else if (aborted) {
         reject(new Error(t('agent.interrupted')))
-      } else if (timedOut) {
+      } else if (capped) {
         reject(new Error(t('agent.timeout', { s: Math.round(opts.timeoutMs / 1000) })))
       } else if (code === 0) {
         resolve(out)
       } else {
         reject(new Error(t('agent.exitCode', { code })))
       }
+    }
+    const killClient = (signal: NodeJS.Signals): void => {
+      try {
+        child.kill(signal)
+      } catch {
+        // already gone
+      }
+    }
+    const escalateKill = (): void => {
+      if (killing) {
+        return
+      }
+      killing = true
+      // Nothing left for the budgets to say, and a beat during the death
+      // throes would only claim life where there is none.
+      armed.stop()
+      // 1. stdin: already closed in today's flow (the prompt is written and
+      //    stdin ended as soon as the run starts), kept first because the
+      //    order is the contract — EOF is the gentlest way to ask an agent to
+      //    leave, and the guard above absorbs a redundant close.
+      try {
+        stdin?.end()
+      } catch {
+        // already gone
+      }
+      // 2. the container, by NAME: the box is what holds the agent.
+      opts.onKill()
+      stepCancel = clock.setTimer(() => {
+        // 3. the client, once the box has had its chance to take it down.
+        killClient('SIGTERM')
+        stepCancel = clock.setTimer(() => {
+          // 4. a client that ignored SIGTERM, and only then 5. stdout.
+          killClient('SIGKILL')
+          try {
+            stdout?.destroy()
+          } catch {
+            // stream already gone
+          }
+          // 6. no signal is a promise the process is gone; report anyway.
+          stepCancel = clock.setTimer(() => {
+            stepCancel = null
+            finish(() => settleFromState(null))
+          }, AGENT_SETTLE_GRACE_MS)
+        }, AGENT_KILL_GRACE_MS)
+      }, CONTAINER_KILL_GRACE_MS)
+    }
+
+    const armed = armStreamWatchdog({
+      command: opts.command,
+      // The cage's stdout is relayed raw to the caller (runTaskTurn owns the
+      // TEXT parser); this watchdog keeps its own count-only reader.
+      callerDecodes: false,
+      budgets: opts.watchdog ?? AGENT_WATCHDOG_DEFAULTS,
+      clock,
+      ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
+      onExpire: (cause, elapsedMs) => {
+        if (killing) {
+          return
+        }
+        cut = { cause, elapsedMs }
+        escalateKill()
+      },
     })
-    child.stdin.on('error', () => {})
-    child.stdin.write(opts.input)
-    child.stdin.end()
+
+    capCancel = clock.setTimer(() => {
+      capCancel = null
+      if (killing) {
+        return
+      }
+      capped = true
+      escalateKill()
+    }, opts.timeoutMs)
+
+    function onAbort(): void {
+      aborted = true
+      escalateKill()
+    }
+    if (opts.signal?.aborted) {
+      onAbort()
+    } else {
+      opts.signal?.addEventListener('abort', onAbort, { once: true })
+    }
+    stdout?.on('data', (d: Buffer) => {
+      const chunk = d.toString()
+      out += chunk
+      armed.push(chunk)
+      opts.onText?.(out)
+    })
+    child.on('error', (err) => {
+      finish(() => reject(err))
+    })
+    child.on('close', (code: number | null) => {
+      finish(() => settleFromState(code))
+    })
+    stdin?.write(opts.input)
+    stdin?.end()
   })
 
 let cachedRuntime: Promise<string | null> | null = null
@@ -1198,20 +1887,32 @@ export function isolationRuntime(execFn?: IsolationExecFn): Promise<string | nul
   return cachedRuntime
 }
 
-let cachedClaudeVersion: Promise<string> | null = null
+/** bin → host `--version` probe. Tests clear it via resetIsolationCaches. */
+const cachedAgentVersions = new Map<string, Promise<string>>()
 
-/** Host claude version, part of the image tag: upgrading the CLI rebuilds the cage. */
-export function hostClaudeVersion(execFn?: IsolationExecFn): Promise<string> {
+/** Host agent version, part of the image tag: upgrading the CLI rebuilds the cage. */
+export function hostAgentVersion(command: string, execFn?: IsolationExecFn): Promise<string> {
+  const bin = commandBin(command) || 'claude'
   const probe = async (): Promise<string> => {
     const exec = execFn ?? defaultExec
-    const result = await exec('claude', ['--version'], { timeoutMs: 20_000 })
+    const result = await exec(bin, ['--version'], { timeoutMs: 20_000 })
     return result.code === 0 ? result.stdout.trim().slice(0, 100) || 'unknown' : 'unknown'
   }
   if (execFn) {
     return probe()
   }
-  cachedClaudeVersion ??= probe()
-  return cachedClaudeVersion
+  const cached = cachedAgentVersions.get(bin)
+  if (cached) {
+    return cached
+  }
+  const started = probe()
+  cachedAgentVersions.set(bin, started)
+  return started
+}
+
+/** Host claude version; wrapper around hostAgentVersion. */
+export function hostClaudeVersion(execFn?: IsolationExecFn): Promise<string> {
+  return hostAgentVersion('claude', execFn)
 }
 
 export type RunContainerTurnOptions = {
@@ -1221,7 +1922,14 @@ export type RunContainerTurnOptions = {
   /** Raw agent command line to run inside the cage (already flagged). */
   command: string
   prompt: string
+  /** Last-resort ceiling; the watchdog is what detects a dead run (effectiveAbsoluteCapMs). */
   timeoutMs: number
+  /** Watchdog budgets (D3 defaults when absent): the caged turn is watched like the host one. */
+  watchdog?: WatchdogBudgets | undefined
+  /** Liveness beat, one per heartbeat period. */
+  onHeartbeat?: ((beat: AgentHeartbeat) => void) | undefined
+  /** Injected clock (test seam): no test ever waits out a budget. */
+  clock?: AgentClock | undefined
   /** Effective egress allowlist. */
   allowedDomains?: readonly string[]
   /** Repo checks config, used by the base-image resolution. */
@@ -1253,12 +1961,17 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
   if (!runtime) {
     throw new Error(t('isolation.noRuntime'))
   }
-  const podman = await runtimeIsPodman(runtime, opts.execFn)
+  // Run path: an unanswered probe degrades to "not podman" (no keep-id) as it
+  // always has — see the bootstrap's own note. Only the destructive sweep
+  // treats null as a reason to stop.
+  const podman = (await runtimeIsPodman(runtime, opts.execFn)) ?? false
   const base = resolveBaseImage(readBaseImageInputs(opts.worktree, opts.checksConfig ?? undefined))
+  const agent = commandBin(opts.command) || 'claude'
   const image = await buildAgentImage({
     worktree: opts.worktree,
     base,
-    claudeVersion: opts.claudeVersion ?? (await hostClaudeVersion(opts.execFn)),
+    agent,
+    claudeVersion: opts.claudeVersion ?? (await hostAgentVersion(opts.command, opts.execFn)),
     runtime,
     ...(opts.execFn ? { execFn: opts.execFn } : {}),
     ...(opts.installCommand !== undefined ? { installCommand: opts.installCommand } : {}),
@@ -1272,6 +1985,7 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
     runtime,
     taskId: opts.taskId,
     image,
+    agent,
     podman,
     ...(opts.execFn ? { execFn: opts.execFn } : {}),
     ...(opts.env ? { env: opts.env } : {}),
@@ -1292,15 +2006,21 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
     network: proxy.network,
     proxyUrl: proxy.url,
     command: opts.command,
-    forwardEnv: CAGE_FORWARDED_ENV.filter((key) => env[key]),
+    forwardEnv: cageForwardedEnv(opts.command).filter((key) => env[key]),
     ...(git ? { gitMounts: git.mountArgs } : {}),
   })
   const spawnFn = opts.spawnFn ?? spawnContainer
   return spawnFn({
     file: runtime,
     args,
+    // The AGENT command, not the runtime argv: the watchdog reads its tool
+    // signals from what comes back on stdout, which this describes.
+    command: opts.command,
     input: opts.prompt,
     timeoutMs: opts.timeoutMs,
+    ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
+    ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
+    ...(opts.clock ? { clock: opts.clock } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     ...(opts.onText ? { onText: opts.onText } : {}),
     onKill: () => {
@@ -1329,8 +2049,15 @@ export type IsolationProbe = {
 
 export type ProbeIsolationOptions = {
   configured: IsolationMode
-  /** Configured agent command: the cage image only provides claude-code. */
+  /** Configured agent command: the cage image ships claude and opencode. */
   command: string
+  /**
+   * When true, skip the cageable-agent check. T1.4 probes the RUNTIME once
+   * at boot (machine-wide) and binds the agent/mode per project at task
+   * creation via `overlayIsolationProbe`. Default false: a direct caller
+   * still gets the honest agent-reason.
+   */
+  ignoreAgent?: boolean
   execFn?: IsolationExecFn
 }
 
@@ -1352,7 +2079,7 @@ export async function probeIsolation(opts: ProbeIsolationOptions): Promise<Isola
   if (configured === 'policy') {
     return deny(t('isolation.reasonConfigured'))
   }
-  if (knownAgent(opts.command) !== 'claude') {
+  if (!opts.ignoreAgent && !cageableCommand(opts.command)) {
     return deny(t('isolation.reasonAgent', { command: opts.command }))
   }
   const runtime = await isolationRuntime(opts.execFn)
@@ -1378,20 +2105,98 @@ export async function probeIsolation(opts: ProbeIsolationOptions): Promise<Isola
   }
 }
 
+/**
+ * Re-bind a machine-level isolation probe (is a runtime reachable?) to one
+ * project's configured mode and agent command. The boot probe no longer
+ * carries the launch repo's isolation/agent, so two projects can disagree
+ * on container vs policy without one poisoning the other (T1.4).
+ *
+ * Pure: no I/O. The machine probe is the injectable seam.
+ */
+export function overlayIsolationProbe(
+  machine: IsolationProbe,
+  opts: { configured: IsolationMode; command: string },
+): IsolationProbe {
+  const { configured, command } = opts
+  if (configured === 'policy') {
+    if (isOpencode(command)) {
+      return {
+        available: false,
+        mode: 'policy',
+        reason: t('isolation.reasonPolicyUnsafe'),
+        configured,
+        runtime: machine.runtime,
+      }
+    }
+    // UNPROBED_ISOLATION is configured 'policy' with no runtime: keep its
+    // "was not probed" reason rather than inventing "set in the configuration"
+    // when nothing was ever asked (T1.4 review nit).
+    const unprobed = machine.runtime === null && machine.configured === 'policy'
+    return {
+      available: false,
+      mode: 'policy',
+      reason: unprobed ? machine.reason : t('isolation.reasonConfigured'),
+      configured,
+      runtime: machine.runtime,
+    }
+  }
+  if (!cageableCommand(command)) {
+    return {
+      available: false,
+      mode: 'policy',
+      reason: t('isolation.reasonAgent', { command }),
+      configured,
+      runtime: machine.runtime,
+    }
+  }
+  if (!machine.runtime) {
+    return {
+      available: false,
+      mode: 'policy',
+      reason: machine.reason,
+      configured,
+      runtime: null,
+    }
+  }
+  if (!machine.available) {
+    return {
+      available: false,
+      mode: 'policy',
+      reason: machine.reason,
+      configured,
+      runtime: machine.runtime,
+    }
+  }
+  return {
+    available: true,
+    mode: 'container',
+    reason: machine.reason,
+    configured,
+    runtime: machine.runtime,
+  }
+}
+
 /** Isolation a task gets at creation, and why. Null result = refuse the creation. */
-export function resolveTaskIsolation(probe: IsolationProbe): {
+export function resolveTaskIsolation(
+  probe: IsolationProbe,
+  command?: string,
+): {
   isolation: TaskIsolation
   reason: string
 } | null {
   if (probe.configured === 'container' && !probe.available) {
     return null
   }
-  if (probe.configured === 'policy') {
-    return { isolation: 'policy', reason: probe.reason }
+  const result: { isolation: TaskIsolation; reason: string } =
+    probe.configured === 'policy'
+      ? { isolation: 'policy', reason: probe.reason }
+      : probe.available
+        ? { isolation: 'container', reason: probe.reason }
+        : { isolation: 'policy', reason: probe.reason }
+  if (result.isolation === 'policy' && command !== undefined && isOpencode(command)) {
+    return null
   }
-  return probe.available
-    ? { isolation: 'container', reason: probe.reason }
-    : { isolation: 'policy', reason: probe.reason }
+  return result
 }
 
 /** True when the workspace holds a resolved probe saying the cage is usable. */

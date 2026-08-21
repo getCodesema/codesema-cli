@@ -48,4 +48,16 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   error: TaskEventLine,
   interrupted: TaskEventLine,
   isolation: TaskEventLine,
+  cost: TaskEventLine,
+  branch: TaskEventLine,
+  resource: TaskEventLine,
+  // T1.3: a plain line, like 'cost' and 'isolation' — a neutral fact, never
+  // rendered as an error.
+  queue: TaskEventLine,
+  issue: TaskEventLine,
+  prep: TaskEventLine,
+  criteria: TaskEventLine,
+  // T3.6: a plain line like 'criteria' — the tone is what tells a satisfied
+  // condition from a refused merge, never a distinct component.
+  merge: TaskEventLine,
 }

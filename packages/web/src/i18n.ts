@@ -152,6 +152,15 @@ const en = {
   'settings.autoSyncOn': 'Auto-sync: on',
   'settings.autoSyncOff': 'Auto-sync: off',
   'settings.autoSyncError': 'Could not update auto-sync.',
+  'settings.agentTitle': 'Default agent',
+  'settings.agentHint':
+    'New tasks use this agent and model unless you pick another one when launching a conversation. For OpenCode, a model like openrouter/… also opens that provider in the cage.',
+  'settings.agentError': 'Could not update the default agent.',
+  'settings.modelLabel': 'Model',
+  'settings.modelPlaceholder': 'optional — CLI default',
+  'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
+  'settings.effortLabel': 'Reasoning effort',
+  'settings.effortDefault': 'CLI default',
 
   'mrs.title': 'Open MRs',
   'mrs.refresh': 'Refresh',
@@ -208,6 +217,20 @@ const en = {
   'workspace.statusReviewing': 'Reviewing',
   'workspace.statusReviewOk': 'Review passed',
   'workspace.statusReviewKo': 'Review blocked',
+  'workspace.statusChecksFailed': 'Checks failed',
+  'workspace.statusCriteriaUnmet': 'Criteria not met',
+  'workspace.statusFixLoopStopped': 'Auto-fix gave up',
+  'workspace.statusChecksUnavailable': 'Checks unavailable',
+  'workspace.statusCriteriaMissing': 'Criteria missing',
+  // T3.6, the four remaining exits of the merge gate. The card shows the FLAG
+  // and nothing else, so each one names its own blocker rather than sharing a
+  // generic "merge held" nobody could act on at a glance — except the checks
+  // one, whose only honest short label would be indistinguishable from the
+  // `review_ko` "Checks failed" it must not be confused with.
+  'workspace.statusMergeConflict': 'Merge conflict',
+  'workspace.statusForgeUnreachable': 'Forge unreachable',
+  'workspace.statusBranchDiverged': 'Branch not up to date',
+  'workspace.statusMergeHeld': 'Merge held',
   'workspace.statusShipped': 'Shipped',
   'workspace.statusFailed': 'Failed',
   'workspace.statusInterrupted': 'Interrupted',
@@ -261,6 +284,99 @@ const en = {
   'workspace.evError': 'Error',
   'workspace.evInterrupted': 'Interrupted',
   'workspace.evIsolation': 'Isolation',
+  'workspace.evCost': 'Cost',
+  'workspace.evBranch': 'Branch',
+  'workspace.evResource': 'Resource',
+  // Per-`data.name` voice of a `resource` event (T1.9/DP9): translated so the
+  // journal never falls back to the server's own English `data.message` —
+  // see RESOURCE_NAME_LABEL_KEY in useTaskBoard.ts.
+  'workspace.evResourceHomeReleased': 'HOME volume released',
+  'workspace.evResourceHomeNotReleased': 'HOME volume could not be released',
+  'workspace.evResourceNoRuntime': 'No container runtime — HOME volume could not be released',
+  'workspace.evQueue': 'Waiting',
+  'workspace.evQueueMachine': 'Waiting for a machine slot',
+  'workspace.evQueueProject': 'Waiting: another task of this project is already active',
+  'workspace.evIssue': 'Ticket',
+  'workspace.evPrep': 'Preparing',
+  'workspace.evPrepStarted': 'Installing dependencies',
+  'workspace.evPrepSkipped': 'Dependencies already installed',
+  'workspace.evPrepPassed': 'Dependencies installed',
+  'workspace.evPrepFailed': 'Could not install dependencies',
+  // One per `data.name` of an 'issue' event (DP9: the type names the domain,
+  // `data.name` names the incident). The server ALSO writes an English
+  // `data.message`; these are what the journal actually shows, so that a
+  // French workspace never reads a sentence built server-side.
+  'workspace.evIssueBound': 'Conversation created from a forge ticket',
+  'workspace.evIssueCoverageGap':
+    'This ticket carries content outside the five contract sections: an edit there will not be detected',
+  'workspace.evIssueCosmetic':
+    'Cosmetic edit on the forge: what this contract reads of the ticket has not changed',
+  'workspace.evIssueEdited':
+    'Ticket edited on the forge — sections: {sections}; criteria added: {added}; removed: {removed}',
+  'workspace.evIssueNotTicket': 'The ticket no longer passes the ticket contract',
+  'workspace.evIssueSnapshotUnreadable':
+    'The frozen ticket could not be read back: edits to this ticket are no longer detected',
+  'workspace.evIssueUnreachable':
+    'The forge could not be read: this ticket was not compared, the conversation carries on on its frozen copy',
+  // T3.5: publishing the recap on the ticket. Each line names what happened
+  // AND where the recap now is, because "nothing was posted" on its own reads
+  // as "the recap is lost" — which it never is.
+  'workspace.evIssueRecapPosted': 'Recap posted on the ticket',
+  'workspace.evIssueRecapAlreadyPosted':
+    'The recap was already on the ticket: nothing was posted a second time',
+  'workspace.evIssueRecapMissing':
+    'No recap could be produced for this conversation: nothing was posted on the ticket',
+  'workspace.evIssueRecapBlockedSecrets':
+    'Recap held back: it looks like it carries a secret. Nothing was sent to the forge, the recap stays on this machine',
+  'workspace.evIssueRecapUnreachable':
+    'The recap could not be posted on the ticket: it stays on this machine',
+  // T3.5, round 2 majeur 2: the three things a ship has to say about the recap
+  // it did NOT carry. Each one names the state of the recap, not only that the
+  // branch shipped — "Shipped" alone was what made a withheld secret look
+  // exactly like a posted recap.
+  'workspace.evShippedRecapMissing':
+    'Shipped without a recap: none could be produced for this branch',
+  'workspace.evShippedRecapBlocked':
+    'Shipped, recap held back: it looks like it carries a secret. Nothing was sent to the forge, the recap stays on this machine',
+  'workspace.evShippedRecapUnscanned':
+    'Shipped, recap held back: the check that clears it of secrets could not run, so nothing was sent to the forge',
+  'workspace.evIssueClosed': 'Ticket closed on the forge',
+  'workspace.evIssueCloseUnreachable':
+    'The ticket carries its recap but could not be closed on the forge',
+  'workspace.evIssueLabelNotPosed':
+    'The cycle label could not be written on the forge: the ticket there still shows the previous state, and nothing else changed',
+  'workspace.evIssueNone': 'none',
+  'workspace.evIssueSectionsUnknown': 'unknown (this snapshot has no per-section breakdown)',
+  'workspace.evIssueSectionContext': 'context',
+  'workspace.evIssueSectionGoal': 'goal',
+  'workspace.evIssueSectionScope': 'scope',
+  'workspace.evIssueSectionOutOfScope': 'out of scope',
+  'workspace.evCriteria': 'Criteria',
+  'workspace.evCriteriaDraftUnparsed':
+    'The criteria draft was unreadable: the task continues without criteria',
+  'workspace.evCriteriaDraftProposed':
+    'The agent proposed acceptance criteria: they count for nothing until you validate them',
+  'workspace.evCriteriaValidated': 'Acceptance criteria validated',
+  'workspace.evCriteriaGateBlocked':
+    'Acceptance criteria not satisfied: this task is not ready to merge',
+  'workspace.evCriteriaGatePassed': 'Every acceptance criterion is satisfied, evidence in the diff',
+
+  // --- merge gate (T3.6, D12) ---
+  'workspace.evMerge': 'Merge',
+  'workspace.evMergeConditionMet': 'Merge condition satisfied',
+  'workspace.evMergeConditionUnmet': 'Merge condition not satisfied',
+  'workspace.evMergeConditionConsented': 'Merge condition waived by your explicit consent',
+  'workspace.evMergeCondReview': 'code review',
+  'workspace.evMergeCondChecks': 'repository checks',
+  'workspace.evMergeCondCriteria': 'acceptance criteria',
+  'workspace.evMergeCondBranch': 'branch up to date with its target',
+  'workspace.evMergeMerged': 'Branch merged into its target',
+  'workspace.evMergeRefused': 'Automatic merge refused: a condition is missing',
+  'workspace.evMergePolicyHuman':
+    'Conditions checked, the merge is left to you (mergePolicy: human)',
+  'workspace.evMergeFailed': 'The forge refused the merge',
+  'workspace.evMergeConfigDegraded':
+    'An unusable merge setting was ignored and its default applied',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projects',
@@ -294,6 +410,13 @@ const en = {
   'workspace.queueActive': 'In progress',
   'workspace.queueReady': 'Ready to ship',
   'workspace.queueDone': 'Done',
+  'workspace.queuePosition': '#{n}',
+  'workspace.queuePositionHint':
+    'Waiting for its turn: {n} conversation ahead in this project | Waiting for its turn: {n} conversations ahead in this project',
+  'workspace.queuePositionHintIdle':
+    "In this project's line, at #{n} — but nothing is running on it right now",
+  'workspace.queuePositionHintMachine':
+    'At #{n} — waiting for a machine-wide slot to free up, not for another conversation of this project',
   'workspace.pausedFor': 'paused for {t}',
   'workspace.shipAction': 'Ship',
   'workspace.diffAction': 'Diff',
@@ -306,16 +429,31 @@ const en = {
   'workspace.tabDiffCount': 'Diff · {n} file | Diff · {n} files',
   'workspace.tabChecks': 'Checks',
   'workspace.agentLabel': 'Agent',
+  'workspace.agentBuildHint':
+    'The first task with this agent builds a container image (~1.4 GB); later tasks reuse it.',
   'workspace.agoTime': '{t} ago',
   'workspace.quickReplyOther': 'Something else…',
   'workspace.pin': 'Pin this conversation (side by side)',
   'workspace.unpin': 'Unpin this conversation',
   'workspace.phaseQueued': 'queued — waiting for a slot',
+  'workspace.phaseQueuedMachine': 'queued — waiting for a machine-wide slot',
   'workspace.phaseRunning': 'working',
   'workspace.phaseWaiting': 'paused — waiting for your answer',
   'workspace.phaseReviewing': 'review in progress',
   'workspace.phaseReviewOk': 'review OK — ready to ship',
   'workspace.phaseReviewKo': 'review blocked — findings to fix',
+  'workspace.phaseChecksFailed': 'review blocked — checks failed',
+  'workspace.phaseCriteriaUnmet': 'review blocked — acceptance criteria not met',
+  'workspace.phaseFixLoopStopped':
+    'automatic fixes stopped — findings still to fix; your reply starts a fresh fix budget',
+  'workspace.phaseFixLoopStoppedCriteria':
+    'automatic fixes stopped — acceptance criteria still not met; your reply starts a fresh fix budget',
+  'workspace.phaseChecksUnavailable': 'merge held — the checks could not be run',
+  'workspace.phaseCriteriaMissing': 'merge held — no validated acceptance criteria',
+  'workspace.phaseMergeConflict': 'merge held — the branch conflicts with its target',
+  'workspace.phaseForgeUnreachable': 'merge held — the forge did not perform the merge',
+  'workspace.phaseBranchDiverged': 'merge held — the branch is not up to date with its target',
+  'workspace.phaseMergeChecksFailed': 'merge held — the repository checks failed',
   'workspace.phaseShipped': 'shipped',
   'workspace.phaseFailed': 'failed',
   'workspace.phaseInterrupted': 'interrupted',
@@ -341,6 +479,34 @@ const en = {
     'Removes the worktree checkout only — the branch itself is yours and stays.',
   'workspace.draftWorkonHint': 'The conversation will work directly on {branch}',
   'workspace.draftTargetHint': 'Merge target: {target}',
+
+  // --- T2.6 the plan a conversation would run under, before it is launched ---
+  'workspace.planTitle': 'What will be created',
+  'workspace.planLoading': 'Working out the plan…',
+  'workspace.planError': 'Could not work out the plan ({error})',
+  'workspace.planNone': 'none',
+  'workspace.planRepo': 'Repo',
+  'workspace.planBranch': 'Branch',
+  'workspace.planWorktree': 'Worktree',
+  'workspace.planBase': 'Starts from',
+  'workspace.planTarget': 'Merges into',
+  'workspace.planIsolation': 'Isolation',
+  'workspace.planAgent': 'Agent',
+  'workspace.planQueue': 'Queue',
+  'workspace.planIssue': 'Ticket',
+  'workspace.planBranchUncertain': '{branch}-… (the exact name is picked at launch)',
+  'workspace.planBranchDerived': 'Derived from the first line of your prompt.',
+  'workspace.planWorktreeValue': '{root}/<task id>',
+  'workspace.planBaseUnknown': 'undetermined — {reason}',
+  'workspace.planQueueNow': 'starts right away',
+  'workspace.planQueueAt': 'waits at position {n}',
+  'workspace.planIsolationContainer': 'container',
+  'workspace.planIsolationPolicy': 'host, hardened',
+  'workspace.planBaseLabel': 'Branch to start from',
+  'workspace.planBranchLabel': 'Branch to work on',
+  'workspace.planRetarget': 'Apply',
+  'workspace.planIndicative':
+    'Checked again when you launch: the queue and the branches can move meanwhile.',
   'workspace.toggleConversations': 'Show or hide the conversations',
 
   // --- sandboxed checks (Checks tab / journal / queue badge) ---
@@ -420,6 +586,19 @@ const en = {
     'New conversations fall back to policy isolation ({reason}). With a container runtime installed (Podman or Docker), each task runs in its own box and the agent gets a full shell safely.',
   'workspace.isolationUpgradeLink': 'Improve the isolation',
   'workspace.isolationUpgradeDismiss': 'Dismiss',
+  // D9 (T2.7): the workspace says out loud that it cannot reach a forge, and
+  // WHY. Three motifs, three different things to do about it — never one
+  // vague sentence, and never a silence a user would read as "all fine".
+  'workspace.forgeUnavailable': 'Forge unavailable',
+  'workspace.forgeReasonNoRemote': 'this repo has no origin remote',
+  'workspace.forgeReasonNoCli': 'neither gh nor glab is installed',
+  'workspace.forgeReasonCliError': 'the forge CLI installed here did not answer',
+  // The server said "unavailable" and named no motif — an older CLI, or one
+  // that could not tell. Saying so is the honest answer; inventing the most
+  // likely motif would be the "right call, wrong announcement" mistake.
+  'workspace.forgeReasonUnknown': 'for a reason this workspace could not name',
+  'workspace.forgeUnavailableHint':
+    'Conversations still run: a task can be created from a title and a prompt, and a task already bound to a ticket carries on with the copy it froze. What is off: binding a new issue, posting a recap on a merge request, and merging.',
 }
 
 export type MessageKey = keyof typeof en
@@ -574,6 +753,15 @@ const fr: Record<MessageKey, string> = {
   'settings.autoSyncOn': 'Auto-sync : activée',
   'settings.autoSyncOff': 'Auto-sync : désactivée',
   'settings.autoSyncError': 'Impossible de mettre à jour la synchronisation automatique.',
+  'settings.agentTitle': 'Agent par défaut',
+  'settings.agentHint':
+    "Les nouvelles tâches utilisent cet agent et ce modèle, sauf si tu en choisis un autre au lancement d'une conversation. Pour OpenCode, un modèle du type openrouter/… ouvre aussi ce provider dans la cage.",
+  'settings.agentError': "Impossible de mettre à jour l'agent par défaut.",
+  'settings.modelLabel': 'Modèle',
+  'settings.modelPlaceholder': 'optionnel — défaut du CLI',
+  'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
+  'settings.effortLabel': 'Effort de raisonnement',
+  'settings.effortDefault': 'défaut du CLI',
 
   'mrs.title': 'MRs ouvertes',
   'mrs.refresh': 'Rafraîchir',
@@ -630,6 +818,15 @@ const fr: Record<MessageKey, string> = {
   'workspace.statusReviewing': 'En review',
   'workspace.statusReviewOk': 'Review OK',
   'workspace.statusReviewKo': 'Review bloquée',
+  'workspace.statusChecksFailed': 'Checks en échec',
+  'workspace.statusCriteriaUnmet': 'Critères non satisfaits',
+  'workspace.statusFixLoopStopped': 'Correction auto arrêtée',
+  'workspace.statusChecksUnavailable': 'Checks indisponibles',
+  'workspace.statusCriteriaMissing': 'Critères manquants',
+  'workspace.statusMergeConflict': 'Conflit de fusion',
+  'workspace.statusForgeUnreachable': 'Forge injoignable',
+  'workspace.statusBranchDiverged': 'Branche pas à jour',
+  'workspace.statusMergeHeld': 'Fusion suspendue',
   'workspace.statusShipped': 'Publiée',
   'workspace.statusFailed': 'Échouée',
   'workspace.statusInterrupted': 'Interrompue',
@@ -684,6 +881,87 @@ const fr: Record<MessageKey, string> = {
   'workspace.evError': 'Erreur',
   'workspace.evInterrupted': 'Interrompue',
   'workspace.evIsolation': 'Isolation',
+  'workspace.evCost': 'Coût',
+  'workspace.evBranch': 'Branche',
+  'workspace.evResource': 'Ressource',
+  'workspace.evResourceHomeReleased': 'Volume HOME libéré',
+  'workspace.evResourceHomeNotReleased': 'Volume HOME non libéré',
+  'workspace.evResourceNoRuntime': 'Aucun runtime de conteneur — volume HOME non libéré',
+  'workspace.evQueue': 'En attente',
+  'workspace.evQueueMachine': "En attente d'un slot machine",
+  'workspace.evQueueProject': 'En attente : une autre tâche de ce projet est déjà active',
+  'workspace.evIssue': 'Ticket',
+  'workspace.evPrep': 'Préparation',
+  'workspace.evPrepStarted': 'Installation des dépendances',
+  'workspace.evPrepSkipped': 'Dépendances déjà installées',
+  'workspace.evPrepPassed': 'Dépendances installées',
+  'workspace.evPrepFailed': "Impossible d'installer les dépendances",
+  'workspace.evIssueBound': 'Conversation créée depuis un ticket de la forge',
+  'workspace.evIssueCoverageGap':
+    'Ce ticket porte du contenu hors des cinq sections du contrat : une édition à cet endroit ne sera pas détectée',
+  'workspace.evIssueCosmetic':
+    "Édition cosmétique sur la forge : ce que ce contrat lit du ticket n'a pas changé",
+  'workspace.evIssueEdited':
+    'Ticket modifié sur la forge — sections : {sections} ; critères ajoutés : {added} ; retirés : {removed}',
+  'workspace.evIssueNotTicket': 'Le ticket ne passe plus le contrat de ticket',
+  'workspace.evIssueSnapshotUnreadable':
+    'Le ticket figé est illisible : les éditions de ce ticket ne sont plus détectées',
+  'workspace.evIssueUnreachable':
+    "La forge n'a pas pu être lue : ce ticket n'a pas été comparé, la conversation continue sur sa copie figée",
+  'workspace.evIssueRecapPosted': 'Récapitulatif posté sur le ticket',
+  'workspace.evIssueRecapAlreadyPosted':
+    'Le récapitulatif était déjà sur le ticket : rien n’a été posté une seconde fois',
+  'workspace.evIssueRecapMissing':
+    'Aucun récapitulatif n’a pu être produit pour cette conversation : rien n’a été posté sur le ticket',
+  'workspace.evIssueRecapBlockedSecrets':
+    'Récapitulatif retenu : il semble porter un secret. Rien n’a été envoyé à la forge, le récapitulatif reste sur cette machine',
+  'workspace.evIssueRecapUnreachable':
+    'Le récapitulatif n’a pas pu être posté sur le ticket : il reste sur cette machine',
+  'workspace.evShippedRecapMissing':
+    'Publiée sans récapitulatif : aucun n’a pu être produit pour cette branche',
+  'workspace.evShippedRecapBlocked':
+    'Publiée, récapitulatif retenu : il semble porter un secret. Rien n’a été envoyé à la forge, le récapitulatif reste sur cette machine',
+  'workspace.evShippedRecapUnscanned':
+    'Publiée, récapitulatif retenu : le contrôle qui le déclare exempt de secret n’a pas pu s’exécuter, rien n’a donc été envoyé à la forge',
+  'workspace.evIssueClosed': 'Ticket fermé sur la forge',
+  'workspace.evIssueCloseUnreachable':
+    'Le ticket porte son récapitulatif mais n’a pas pu être fermé sur la forge',
+  'workspace.evIssueLabelNotPosed':
+    "Le label de cycle n'a pas pu être écrit sur la forge : le ticket y affiche encore l'état précédent, et rien d'autre n'a changé",
+  'workspace.evIssueNone': 'aucun',
+  'workspace.evIssueSectionsUnknown': 'inconnues (ce snapshot ne ventile pas par section)',
+  'workspace.evIssueSectionContext': 'contexte',
+  'workspace.evIssueSectionGoal': 'objectif',
+  'workspace.evIssueSectionScope': 'périmètre',
+  'workspace.evIssueSectionOutOfScope': 'hors périmètre',
+  'workspace.evCriteria': 'Critères',
+  'workspace.evCriteriaDraftUnparsed':
+    "Le brouillon de critères n'était pas lisible : la tâche continue sans critères",
+  'workspace.evCriteriaDraftProposed':
+    "L'agent a proposé des critères d'acceptation : ils ne comptent pas tant que vous ne les avez pas validés",
+  'workspace.evCriteriaValidated': "Critères d'acceptation validés",
+  'workspace.evCriteriaGateBlocked':
+    "Critères d'acceptation non satisfaits : cette tâche n'est pas prête à merger",
+  'workspace.evCriteriaGatePassed':
+    "Tous les critères d'acceptation sont satisfaits, preuve à l'appui dans le diff",
+
+  // --- merge gate (T3.6, D12) ---
+  'workspace.evMerge': 'Fusion',
+  'workspace.evMergeConditionMet': 'Condition de fusion remplie',
+  'workspace.evMergeConditionUnmet': 'Condition de fusion non remplie',
+  'workspace.evMergeConditionConsented':
+    'Condition de fusion levée par votre consentement explicite',
+  'workspace.evMergeCondReview': 'review de code',
+  'workspace.evMergeCondChecks': 'checks du dépôt',
+  'workspace.evMergeCondCriteria': "critères d'acceptation",
+  'workspace.evMergeCondBranch': 'branche à jour avec sa cible',
+  'workspace.evMergeMerged': 'Branche fusionnée dans sa cible',
+  'workspace.evMergeRefused': 'Fusion automatique refusée : une condition manque',
+  'workspace.evMergePolicyHuman':
+    'Conditions vérifiées, la fusion vous revient (mergePolicy : human)',
+  'workspace.evMergeFailed': 'La forge a refusé la fusion',
+  'workspace.evMergeConfigDegraded':
+    'Un réglage de fusion inutilisable a été ignoré et son défaut appliqué',
 
   // --- workspace multi-project (A3, B2) ---
   'workspace.projectLabel': 'Projets',
@@ -719,6 +997,13 @@ const fr: Record<MessageKey, string> = {
   'workspace.queueActive': 'En cours',
   'workspace.queueReady': 'Prêt à shipper',
   'workspace.queueDone': 'Terminé',
+  'workspace.queuePosition': '#{n}',
+  'workspace.queuePositionHint':
+    'En attente de son tour : {n} conversation devant elle dans ce projet | En attente de son tour : {n} conversations devant elle dans ce projet',
+  'workspace.queuePositionHintIdle':
+    'Dans la file de ce projet, en #{n} — mais rien ne tourne dessus en ce moment',
+  'workspace.queuePositionHintMachine':
+    "En #{n} — en attente d'un slot machine libre, pas d'une autre conversation de ce projet",
   'workspace.pausedFor': 'en pause depuis {t}',
   'workspace.shipAction': 'Shipper',
   'workspace.diffAction': 'Diff',
@@ -731,16 +1016,31 @@ const fr: Record<MessageKey, string> = {
   'workspace.tabDiffCount': 'Diff · {n} fichier | Diff · {n} fichiers',
   'workspace.tabChecks': 'Checks',
   'workspace.agentLabel': 'Agent',
+  'workspace.agentBuildHint':
+    'La première tâche avec cet agent construit une image de container (~1,4 Go) ; les suivantes la réutilisent.',
   'workspace.agoTime': 'il y a {t}',
   'workspace.quickReplyOther': 'Autre chose…',
   'workspace.pin': 'Épingler cette conversation (côte à côte)',
   'workspace.unpin': 'Désépingler cette conversation',
   'workspace.phaseQueued': 'en file — attend un créneau',
+  'workspace.phaseQueuedMachine': 'en file — attend un slot machine',
   'workspace.phaseRunning': 'en cours',
   'workspace.phaseWaiting': 'en pause — attend votre réponse',
   'workspace.phaseReviewing': 'review en cours',
   'workspace.phaseReviewOk': 'review OK — prêt à shipper',
   'workspace.phaseReviewKo': 'review bloquée — findings à corriger',
+  'workspace.phaseChecksFailed': 'review bloquée — checks en échec',
+  'workspace.phaseCriteriaUnmet': "review bloquée — critères d'acceptation non satisfaits",
+  'workspace.phaseFixLoopStopped':
+    'corrections automatiques arrêtées — findings encore à corriger ; votre réponse repart avec un budget de correction complet',
+  'workspace.phaseFixLoopStoppedCriteria':
+    "corrections automatiques arrêtées — critères d'acceptation encore non satisfaits ; votre réponse repart avec un budget de correction complet",
+  'workspace.phaseChecksUnavailable': "fusion suspendue — les checks n'ont pas pu être exécutés",
+  'workspace.phaseCriteriaMissing': "fusion suspendue — aucun critère d'acceptation validé",
+  'workspace.phaseMergeConflict': 'fusion suspendue — la branche est en conflit avec sa cible',
+  'workspace.phaseForgeUnreachable': "fusion suspendue — la forge n'a pas effectué la fusion",
+  'workspace.phaseBranchDiverged': "fusion suspendue — la branche n'est pas à jour avec sa cible",
+  'workspace.phaseMergeChecksFailed': 'fusion suspendue — les checks du dépôt ont échoué',
   'workspace.phaseShipped': 'shippée',
   'workspace.phaseFailed': 'échouée',
   'workspace.phaseInterrupted': 'interrompue',
@@ -766,6 +1066,34 @@ const fr: Record<MessageKey, string> = {
     'Supprime seulement le worktree — la branche t’appartient et reste.',
   'workspace.draftWorkonHint': 'La conversation travaillera directement sur {branch}',
   'workspace.draftTargetHint': 'Cible de merge : {target}',
+
+  // --- T2.6 le plan de la conversation, avant son lancement ---
+  'workspace.planTitle': 'Ce qui va être créé',
+  'workspace.planLoading': 'Calcul du plan…',
+  'workspace.planError': 'Impossible de calculer le plan ({error})',
+  'workspace.planNone': 'aucun',
+  'workspace.planRepo': 'Dépôt',
+  'workspace.planBranch': 'Branche',
+  'workspace.planWorktree': 'Worktree',
+  'workspace.planBase': 'Part de',
+  'workspace.planTarget': 'Fusionne dans',
+  'workspace.planIsolation': 'Isolation',
+  'workspace.planAgent': 'Agent',
+  'workspace.planQueue': 'File',
+  'workspace.planIssue': 'Ticket',
+  'workspace.planBranchUncertain': '{branch}-… (le nom exact est choisi au lancement)',
+  'workspace.planBranchDerived': 'Dérivée de la première ligne de ton prompt.',
+  'workspace.planWorktreeValue': '{root}/<id de tâche>',
+  'workspace.planBaseUnknown': 'indéterminée — {reason}',
+  'workspace.planQueueNow': 'démarre tout de suite',
+  'workspace.planQueueAt': 'attend en position {n}',
+  'workspace.planIsolationContainer': 'container',
+  'workspace.planIsolationPolicy': 'hôte, durci',
+  'workspace.planBaseLabel': 'Branche de départ',
+  'workspace.planBranchLabel': 'Branche de travail',
+  'workspace.planRetarget': 'Appliquer',
+  'workspace.planIndicative':
+    'Revérifié au lancement : la file et les branches peuvent bouger d’ici là.',
   'workspace.toggleConversations': 'Afficher ou masquer les conversations',
 
   // --- sandboxed checks (Checks tab / journal / queue badge) ---
@@ -847,6 +1175,13 @@ const fr: Record<MessageKey, string> = {
     "Les nouvelles conversations retombent sur l'isolation policy ({reason}). Avec un runtime de containers installé (Podman ou Docker), chaque tâche tourne dans sa propre boîte et l'agent y retrouve un shell complet en sécurité.",
   'workspace.isolationUpgradeLink': "Améliorer l'isolation",
   'workspace.isolationUpgradeDismiss': 'Masquer',
+  'workspace.forgeUnavailable': 'Forge indisponible',
+  'workspace.forgeReasonNoRemote': "ce dépôt n'a pas de remote origin",
+  'workspace.forgeReasonNoCli': "ni gh ni glab n'est installé",
+  'workspace.forgeReasonCliError': "le CLI de forge installé ici n'a pas répondu",
+  'workspace.forgeReasonUnknown': "pour une raison que ce workspace n'a pas su nommer",
+  'workspace.forgeUnavailableHint':
+    "Les conversations continuent : on peut créer une tâche à partir d'un titre et d'un prompt, et une tâche déjà rattachée à un ticket poursuit sur la copie qu'elle a figée. Ce qui est coupé : rattacher une nouvelle issue, poster un récap sur une merge request, et merger.",
 }
 
 /**

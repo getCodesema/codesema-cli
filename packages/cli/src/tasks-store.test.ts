@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -14,7 +15,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   TASK_CHECK_TAIL_MAX,
   TASK_EVENT_DATA_STRING_MAX,
+  TICKET_BODY_HASH_TAG,
   type TaskChecks,
+  type TaskIssueRef,
+  type TaskIssueSnapshot,
   type TaskRecord,
 } from './contract.js'
 import {
@@ -22,13 +26,29 @@ import {
   createTask,
   listTasks,
   loadTask,
+  onStoreUnreadable,
   readTaskChecks,
   readTaskEvents,
+  readTaskJournal,
+  removeTaskDir,
+  resetJournalCursors,
+  resetStoreReports,
   saveTask,
+  setJournalReader,
   taskDir,
+  taskIdsOnDisk,
+  taskRecordExists,
   tasksDir,
   writeTaskChecks,
 } from './tasks-store.js'
+
+/**
+ * chmod does not bind root, so a suite run as root cannot exercise a
+ * permission failure at all. The skip is gated on the UID and NOTHING else:
+ * conditioning it on the failure being observed makes the test silently
+ * assert nothing the day the failure stops happening.
+ */
+const RUNNING_AS_ROOT = process.getuid?.() === 0
 
 let cwd: string
 
@@ -37,6 +57,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Both are process-wide test seams: leaving either armed would leak the
+  // counting reader (or a warm cursor) into the next test.
+  setJournalReader(null)
+  resetJournalCursors()
+  resetStoreReports()
   rmSync(cwd, { recursive: true, force: true })
 })
 
@@ -78,6 +103,53 @@ describe('createTask', () => {
   test('.codesema/ gets its auto .gitignore (ensureWorkDir reused)', () => {
     createTask(cwd, input)
     expect(readFileSync(join(cwd, '.codesema', '.gitignore'), 'utf8')).toBe('*\n')
+  })
+
+  // T2.4/D7 (round-2 adversarial review, mineur): `issue` and `issueSnapshot`
+  // are documented as ALWAYS given together. A single guard now enforces
+  // that instead of two independent conditional spreads that could silently
+  // drift apart under a future edit.
+  describe('issue / issueSnapshot are always given together', () => {
+    const issueRef: TaskIssueRef = {
+      forge: 'github',
+      project: 'acme/repo',
+      iid: 1,
+      url: 'https://github.com/acme/repo/issues/1',
+    }
+    const issueSnapshot: TaskIssueSnapshot = {
+      body_hash: `${TICKET_BODY_HASH_TAG}:${'a'.repeat(64)}`,
+      criteria: [],
+      taken_at: new Date().toISOString(),
+    }
+
+    test('both present together is accepted, and both land on the record', () => {
+      const record = createTask(cwd, { ...input, issue: issueRef, issueSnapshot })
+      expect(record.issue).toEqual(issueRef)
+      expect(record.issue_snapshot).toEqual(issueSnapshot)
+    })
+
+    test('neither present is accepted, and neither field is written', () => {
+      const record = createTask(cwd, input)
+      expect(record.issue).toBeUndefined()
+      expect(record.issue_snapshot).toBeUndefined()
+    })
+
+    test('issue without issueSnapshot throws rather than writing a half-bound record', () => {
+      expect(() => createTask(cwd, { ...input, issue: issueRef })).toThrow()
+    })
+
+    test('issueSnapshot without issue throws rather than writing a half-bound record', () => {
+      expect(() => createTask(cwd, { ...input, issueSnapshot })).toThrow()
+    })
+  })
+
+  test('agent is copied onto the record when present, and stays absent otherwise', () => {
+    const withAgent = createTask(cwd, { ...input, agent: 'opencode run' })
+    expect(withAgent.agent).toBe('opencode run')
+    expect(loadTask(cwd, withAgent.id)?.agent).toBe('opencode run')
+    const without = createTask(cwd, input)
+    expect(without.agent).toBeUndefined()
+    expect(loadTask(cwd, without.id)?.agent).toBeUndefined()
   })
 })
 
@@ -258,6 +330,269 @@ describe('appendTaskEvent / readTaskEvents', () => {
   })
 })
 
+describe('readTaskJournal: what the read could NOT establish', () => {
+  let record: TaskRecord
+
+  beforeEach(() => {
+    record = createTask(cwd, input)
+  })
+
+  afterEach(() => {
+    setJournalReader(null)
+  })
+
+  test('an ABSENT journal is empty, not unreadable — that is the answer zero', () => {
+    // A task that never journalled anything genuinely has no events, and a
+    // caller deriving a count from it is entitled to read that as zero.
+    const read = readTaskJournal(cwd, record.id)
+    expect(read).toEqual({ events: [], unreadable: false, dropped: 0 })
+  })
+
+  test('a journal that EXISTS and cannot be read is unreadable, not empty', () => {
+    // EACCES after a chmod, EMFILE under a descriptor storm, EIO on a failing
+    // disk: the events are unknown, and `[]` would mean the opposite. This is
+    // the distinction the fix loop's bound rests on — a budget nobody could
+    // count is never a full one.
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    setJournalReader(() => null)
+    const read = readTaskJournal(cwd, record.id)
+    expect(read.unreadable).toBe(true)
+    expect(read.events).toEqual([])
+    // ...and the plain reader still answers `[]`, so every existing caller is
+    // untouched by the distinction it does not need.
+    expect(readTaskEvents(cwd, record.id)).toEqual([])
+  })
+
+  test('the REAL reader tells the two apart by errno, not by guesswork', () => {
+    // No seam here: the shipped `defaultJournalReader` must make the call, or
+    // a real EACCES/EIO in production reads as a fresh, empty journal. The
+    // fault used is EISDIR rather than a chmod, because a chmod says nothing
+    // when the suite happens to run as root.
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    expect(readTaskJournal(cwd, record.id).unreadable).toBe(false) // ENOENT
+    mkdirSync(journal)
+    try {
+      expect(readTaskJournal(cwd, record.id).unreadable).toBe(true) // EISDIR
+    } finally {
+      rmSync(journal, { recursive: true })
+    }
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    expect(readTaskJournal(cwd, record.id).unreadable).toBe(false)
+  })
+
+  test('a malformed id is a refusal to look, so it reads as unreadable', () => {
+    expect(readTaskJournal(cwd, '../oops')).toEqual({
+      events: [],
+      unreadable: true,
+      dropped: 0,
+    })
+  })
+
+  test('lines that did not parse are COUNTED, not merely skipped', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    appendFileSync(journal, '{"seq":2,"at":"2026-08-2\nnot json at all\n')
+    const read = readTaskJournal(cwd, record.id)
+    expect(read.unreadable).toBe(false)
+    expect(read.events).toHaveLength(1)
+    // Two unusable lines: a caller counting events knows its count may be
+    // short instead of acting on a number a corruption moved, in silence.
+    expect(read.dropped).toBe(2)
+    // Blank lines are not damage.
+    appendFileSync(journal, '\n\n')
+    expect(readTaskJournal(cwd, record.id).dropped).toBe(2)
+  })
+
+  test('an intact journal drops nothing', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'hi' } })
+    expect(readTaskJournal(cwd, record.id).dropped).toBe(0)
+  })
+})
+
+describe('journal cost: the in-memory seq cursor', () => {
+  let record: TaskRecord
+
+  beforeEach(() => {
+    record = createTask(cwd, input)
+  })
+
+  /** Arms the read seam and returns the paths it was asked to read, in order. */
+  function countReads(): string[] {
+    const reads: string[] = []
+    setJournalReader((path) => {
+      reads.push(path)
+      try {
+        return readFileSync(path, 'utf8')
+      } catch {
+        return null
+      }
+    })
+    return reads
+  }
+
+  test('10 000 appends on one task read the journal exactly once', () => {
+    const reads = countReads()
+    for (let i = 0; i < 10_000; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'tool_use', data: { tool: 'Edit', ok: true } })
+    }
+    // The acceptance criterion is a CALL COUNT, never a stopwatch: recomputing
+    // the seq by re-reading the whole journal made an append O(journal size).
+    expect(reads).toHaveLength(1)
+    setJournalReader(null)
+    const events = readTaskEvents(cwd, record.id)
+    expect(events).toHaveLength(10_000)
+    expect(events.at(-1)?.seq).toBe(10_000)
+  })
+
+  test('a first append on an existing journal reads once, then resumes at max + 1', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: { turn: 1 } })
+    appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'hi' } })
+    resetJournalCursors()
+    const reads = countReads()
+    expect(appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'again' } }).seq).toBe(
+      3,
+    )
+    expect(reads).toHaveLength(1)
+    // The cursor is warm now: the next appends cost no read at all.
+    expect(appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'more' } }).seq).toBe(4)
+    expect(reads).toHaveLength(1)
+  })
+
+  test('seq stays strictly increasing and gapless across store restarts', () => {
+    for (let i = 0; i < 5; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'message', data: { n: i } })
+    }
+    resetJournalCursors()
+    for (let i = 0; i < 5; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'message', data: { n: 5 + i } })
+    }
+    resetJournalCursors()
+    const last = appendTaskEvent(cwd, record.id, { type: 'shipped', data: {} })
+    expect(last.seq).toBe(11)
+    expect(readTaskEvents(cwd, record.id).map((e) => e.seq)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    ])
+  })
+
+  test('a crash-truncated tail is still repaired by the first append after a restart', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: {} })
+    appendTaskEvent(cwd, record.id, { type: 'message', data: {} })
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    // Crash mid-append: the tail line has no newline. Only IT may be lost.
+    appendFileSync(journal, '{"seq":3,"at":"2026-08-14T10:0')
+    resetJournalCursors()
+    const e = appendTaskEvent(cwd, record.id, { type: 'error', data: { message: 'boom' } })
+    expect(e.seq).toBe(3)
+    expect(readFileSync(journal, 'utf8')).toContain('10:0\n{')
+    expect(readTaskEvents(cwd, record.id).map((x) => x.seq)).toEqual([1, 2, 3])
+  })
+
+  test('the cold cursor takes the max of the VALID seqs and never throws', () => {
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    writeFileSync(
+      journal,
+      `${[
+        '{"seq":1,"at":"2026-08-14T10:00:00.000Z","type":"turn_started","data":{}}',
+        'not json at all',
+        '{"seq":"NaN","type":"message","data":{}}',
+        '{"seq":7,"at":"2026-08-14T10:02:00.000Z","type":"message","data":{"text":"seven"}}',
+        '{"seq":4,"at":"2026-08-14T10:03:00.000Z","type":"hyper_event","data":{}}',
+        '',
+      ].join('\n')}`,
+    )
+    const e = appendTaskEvent(cwd, record.id, { type: 'message', data: { text: 'after' } })
+    expect(e.seq).toBe(8)
+    expect(readTaskEvents(cwd, record.id).map((x) => x.seq)).toEqual([1, 7, 8])
+  })
+
+  test('an append made behind our back invalidates the cached cursor', () => {
+    appendTaskEvent(cwd, record.id, { type: 'turn_started', data: {} })
+    const journal = join(taskDir(cwd, record.id), 'events.jsonl')
+    // Another writer (or a hand edit) grew the file: the size no longer matches
+    // what this process left, so the cursor is re-derived instead of trusted.
+    appendFileSync(
+      journal,
+      '{"seq":9,"at":"2026-08-14T10:04:00.000Z","type":"message","data":{}}\n',
+    )
+    const reads = countReads()
+    expect(appendTaskEvent(cwd, record.id, { type: 'message', data: {} }).seq).toBe(10)
+    expect(reads).toHaveLength(1)
+  })
+
+  test('readTaskEvents({afterSeq}) stays exact on a journal written through the cursor', () => {
+    for (let i = 1; i <= 50; i += 1) {
+      appendTaskEvent(cwd, record.id, { type: 'message', data: { n: i } })
+    }
+    const caught = readTaskEvents(cwd, record.id, { afterSeq: 30 })
+    expect(caught.map((e) => e.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 31))
+    // File order, not just the seq set: the SSE catch-up of J5 replays it as is.
+    expect(caught.map((e) => e.data.n)).toEqual(Array.from({ length: 20 }, (_, i) => i + 31))
+    expect(readTaskEvents(cwd, record.id, { afterSeq: 50 })).toEqual([])
+    expect(readTaskEvents(cwd, record.id, { afterSeq: 0 })).toHaveLength(50)
+  })
+
+  test('a .codesema/tasks tree written by 0.12 is resumed without a gap', () => {
+    // Fixture written by hand in the 0.12 on-disk format (unchanged here): a
+    // task directory this process has never touched, journal included.
+    const id = 'a1b2c3d4e5f6'
+    const dir = join(tasksDir(cwd), id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'task.json'),
+      `${JSON.stringify(
+        {
+          version: 1,
+          id,
+          title: 'Written by 0.12',
+          status: 'waiting_for_you',
+          base: 'main',
+          branch: 'codesema/task-written-by-012',
+          worktree: join(cwd, '.codesema', 'worktrees', id),
+          agent_session_id: 'sess-012',
+          turns: [
+            {
+              prompt: 'do the thing',
+              response: 'done',
+              question: null,
+              started_at: '2026-08-14T09:00:00.000Z',
+              ended_at: '2026-08-14T09:05:00.000Z',
+            },
+          ],
+          review_ref: null,
+          work_ms: 300_000,
+          wait_ms: 0,
+          auto_ship: false,
+          work_on: false,
+          isolation: 'policy',
+          created_at: '2026-08-14T09:00:00.000Z',
+          updated_at: '2026-08-14T09:05:00.000Z',
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    writeFileSync(
+      join(dir, 'events.jsonl'),
+      `${[
+        '{"seq":1,"at":"2026-08-14T09:00:00.000Z","type":"turn_started","data":{"turn":1}}',
+        '{"seq":2,"at":"2026-08-14T09:01:00.000Z","type":"tool_use","data":{"tool":"Edit","file":"a.ts","ok":true,"note":null}}',
+        '{"seq":3,"at":"2026-08-14T09:05:00.000Z","type":"message","data":{"text":"done"}}',
+      ].join('\n')}\n`,
+    )
+
+    const e = appendTaskEvent(cwd, id, { type: 'review_started', data: { turn: 1 } })
+    expect(e.seq).toBe(4)
+    expect(readTaskEvents(cwd, id).map((x) => x.seq)).toEqual([1, 2, 3, 4])
+    expect(readTaskEvents(cwd, id, { afterSeq: 2 }).map((x) => x.type)).toEqual([
+      'message',
+      'review_started',
+    ])
+    // The rest of the 0.12 tree stays readable, not just its journal.
+    expect(loadTask(cwd, id)?.title).toBe('Written by 0.12')
+  })
+})
+
 describe('readTaskChecks / writeTaskChecks', () => {
   let record: TaskRecord
 
@@ -317,5 +652,261 @@ describe('readTaskChecks / writeTaskChecks', () => {
       writeTaskChecks(cwd, record.id, { status: 'nope' } as unknown as TaskChecks),
     ).toThrow()
     expect(existsSync(join(taskDir(cwd, record.id), 'checks.json'))).toBe(false)
+  })
+})
+
+// T1.2: the queue sweep DELETES entries on a null loadTask, so it needs the
+// difference between "no such task" and "I could not find out". Collapsing the
+// second into the first costs a perfectly valid task its place in the line.
+describe('taskRecordExists', () => {
+  test('true for a record that is there, even when it is illegible', () => {
+    const record = createTask(cwd, { ...input, title: 'legible' })
+    expect(taskRecordExists(cwd, record.id)).toBe(true)
+
+    writeFileSync(join(taskDir(cwd, record.id), 'task.json'), '{ truncated')
+    // Unreadable is NOT gone: loadTask says nothing, this still says it exists.
+    expect(loadTask(cwd, record.id)).toBeNull()
+    expect(taskRecordExists(cwd, record.id)).toBe(true)
+  })
+
+  test('false only when it is genuinely not there', () => {
+    const record = createTask(cwd, { ...input, title: 'doomed' })
+    rmSync(taskDir(cwd, record.id), { recursive: true, force: true })
+    expect(taskRecordExists(cwd, record.id)).toBe(false)
+    expect(taskRecordExists(cwd, 'aaaaaaaaaaaa')).toBe(false)
+    // An id the store could never resolve is not a task at all.
+    expect(taskRecordExists(cwd, '../escape')).toBe(false)
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'a task DIRECTORY we cannot even look into is not reported as gone',
+    () => {
+      const record = createTask(cwd, { ...input, title: 'locked away' })
+      chmodSync(taskDir(cwd, record.id), 0o000)
+      try {
+        // EACCES on the directory: we could not find out, and "could not find
+        // out" must never be read as "gone" by a caller that evicts on false.
+        expect(taskRecordExists(cwd, record.id)).toBe(true)
+      } finally {
+        chmodSync(taskDir(cwd, record.id), 0o700)
+      }
+    },
+  )
+})
+
+// T1.2 re-review round 7, BLOQUANT 2: the queue's "a record we could not place
+// is at least NAMED" rests entirely on this function, and every test of that
+// behaviour injected a hand-written `idsOnDisk`. The filters and the catch
+// below were exercised by nothing at all — a version returning [] left the
+// whole suite green while the feature silently disappeared. Real filesystem,
+// no seam.
+describe('taskIdsOnDisk', () => {
+  test('every task DIRECTORY, readable or not — and nothing else', () => {
+    const readable = createTask(cwd, { ...input, title: 'readable' })
+    const illegible = createTask(cwd, { ...input, title: 'illegible' })
+    writeFileSync(join(taskDir(cwd, illegible.id), 'task.json'), '{ truncated')
+
+    // Things that are NOT tasks, next door: a file where a directory would be,
+    // a directory whose name is not a task id, and one in the wrong charset.
+    writeFileSync(join(tasksDir(cwd), 'aaaaaaaaaaab'), 'a file, not a directory')
+    mkdirSync(join(tasksDir(cwd), 'not-an-id'), { recursive: true })
+    mkdirSync(join(tasksDir(cwd), 'ZZZZZZZZZZZZ'), { recursive: true })
+
+    const ids = taskIdsOnDisk(cwd)
+    expect(new Set(ids)).toEqual(new Set([readable.id, illegible.id]))
+    // The illegible one is the whole point: listTasks drops it, this keeps it.
+    expect(listTasks(cwd).map((r) => r.id)).toEqual([readable.id])
+  })
+
+  test('no tasks directory at all is simply no tasks', () => {
+    expect(taskIdsOnDisk(cwd)).toEqual([])
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'a tasks directory it cannot LIST yields nothing, never a throw — and SAYS so',
+    () => {
+      createTask(cwd, { ...input, title: 'hidden' })
+      const said: { cwd: string; reason: string }[] = []
+      onStoreUnreadable((where, reason) => said.push({ cwd: where, reason }))
+      chmodSync(tasksDir(cwd), 0o000)
+      try {
+        expect(taskIdsOnDisk(cwd)).toEqual([])
+        // Same guard on the neighbour that rebuilds from it: the queue's list()
+        // is documented as never throwing and reads through here.
+        expect(listTasks(cwd)).toEqual([])
+      } finally {
+        chmodSync(tasksDir(cwd), 0o700)
+      }
+      // T1.2 re-review round 8, BLOQUANT 2: the guard above bought invariant 1
+      // (tolerant reads) by spending invariant 2 (no silent degradation). An
+      // empty answer from a store full of tasks is the single most misleading
+      // value this module can return, and both readers used to return it
+      // without a word. Literal anchor, not `toContain(storeUnlistable(...))`:
+      // asserting a message against the very function that built it proves
+      // nothing about its content.
+      expect(said).toHaveLength(1)
+      expect(said[0]?.cwd).toBe(cwd)
+      expect(said[0]?.reason).toContain('the task store of this project could not be listed')
+      expect(said[0]?.reason).toContain('EACCES')
+      expect(said[0]?.reason).toContain('no task is treated as gone')
+    },
+  )
+
+  // T1.9 review round 3, Mineur 10: every test of the store guard denied
+  // access on `tasks/` itself — the READDIR failure path, which existed even
+  // BEFORE the CRITIQUE fix (`statSync` was added ON TOP of it, guarding the
+  // STAT of `tasks/` itself). None of them exercised the branch the fix
+  // actually added: a `statSync(tasksDir(cwd))` that fails for a reason OTHER
+  // than "never created" — the exact case `existsSync` used to collapse into
+  // `false` (a store this process genuinely has, just cannot currently see).
+  // Reproduced by denying traversal on tasks/'s PARENT (`.codesema/`): the
+  // directory has never been listed, only `statSync`'d, so this can only be
+  // caught by the code this round's CRITIQUE fix touched.
+  test.skipIf(RUNNING_AS_ROOT)(
+    'tasks/ unreachable through its PARENT (EACCES on statSync, not on readdir) is reported, never read as "never created"',
+    () => {
+      createTask(cwd, { ...input, title: 'hidden' })
+      const said: { cwd: string; reason: string }[] = []
+      onStoreUnreadable((where, reason) => said.push({ cwd: where, reason }))
+      const workDir = join(cwd, '.codesema')
+      chmodSync(workDir, 0o000)
+      try {
+        expect(taskIdsOnDisk(cwd)).toEqual([])
+        expect(listTasks(cwd)).toEqual([])
+      } finally {
+        chmodSync(workDir, 0o700)
+      }
+      // The whole point: this is NOT "a store that was never created" (that
+      // case reports NOTHING, see the test below) — it is a store this
+      // process could not reach, and invariant 2 forbids conflating the two.
+      expect(said.length).toBeGreaterThan(0)
+      expect(said[0]?.cwd).toBe(cwd)
+      expect(said[0]?.reason).toContain('EACCES')
+    },
+  )
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'one dark store is one notice, and it re-arms once it clears',
+    () => {
+      createTask(cwd, { ...input, title: 'hidden' })
+      const said: string[] = []
+      onStoreUnreadable((_where, reason) => said.push(reason))
+      chmodSync(tasksDir(cwd), 0o000)
+      try {
+        // Both readers, several times over: a store read on every listing must
+        // not turn one broken directory into a stream of identical notices.
+        taskIdsOnDisk(cwd)
+        listTasks(cwd)
+        taskIdsOnDisk(cwd)
+        expect(said).toHaveLength(1)
+      } finally {
+        chmodSync(tasksDir(cwd), 0o700)
+      }
+      // Readable again: the incident is forgotten, so a RELAPSE is said afresh
+      // rather than swallowed by a memory of the previous one.
+      expect(listTasks(cwd)).toHaveLength(1)
+      chmodSync(tasksDir(cwd), 0o000)
+      try {
+        expect(listTasks(cwd)).toEqual([])
+      } finally {
+        chmodSync(tasksDir(cwd), 0o700)
+      }
+      expect(said).toHaveLength(2)
+    },
+  )
+
+  test('a store that was never created is not a store that broke', () => {
+    const said: string[] = []
+    onStoreUnreadable((_where, reason) => said.push(reason))
+    expect(listTasks(cwd)).toEqual([])
+    expect(taskIdsOnDisk(cwd)).toEqual([])
+    expect(said).toEqual([])
+  })
+
+  // T1.2 re-review round 9: the sink path above is well covered — and the sink
+  // is what the TASK SERVER registers. Every CLI path that never starts the
+  // task server (a review, a prep, a ship) has none, and there the console is
+  // the only voice invariant 2 has left. Nothing held either of its two
+  // branches, which is how a last resort quietly stops being one.
+  test.skipIf(RUNNING_AS_ROOT)('with NO sink registered, the console is the voice', () => {
+    createTask(cwd, { ...input, title: 'hidden' })
+    const warnings: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    }
+    chmodSync(tasksDir(cwd), 0o000)
+    try {
+      expect(listTasks(cwd)).toEqual([])
+    } finally {
+      chmodSync(tasksDir(cwd), 0o700)
+      console.warn = realWarn
+    }
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('the task store of this project could not be listed')
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)('a sink that THROWS does not take the degradation with it', () => {
+    createTask(cwd, { ...input, title: 'hidden' })
+    onStoreUnreadable(() => {
+      throw new Error('listener blew up')
+    })
+    const warnings: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    }
+    chmodSync(tasksDir(cwd), 0o000)
+    try {
+      // Contained: a broken listener must not turn a tolerated read into a
+      // crash for every caller of the store.
+      expect(listTasks(cwd)).toEqual([])
+    } finally {
+      chmodSync(tasksDir(cwd), 0o700)
+      console.warn = realWarn
+    }
+    // …and not hidden either: the reason still reached a human.
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('the task store of this project could not be listed')
+  })
+})
+
+describe('removeTaskDir', () => {
+  test('removes the whole task directory: task.json, events.jsonl, checks.json, everything', () => {
+    const task = createTask(cwd, { ...input, title: 'to purge' })
+    appendTaskEvent(cwd, task.id, { type: 'error', data: { message: 'x' } })
+    expect(existsSync(taskDir(cwd, task.id))).toBe(true)
+
+    expect(removeTaskDir(cwd, task.id)).toBe(true)
+
+    expect(existsSync(taskDir(cwd, task.id))).toBe(false)
+  })
+
+  test('a directory that was already gone is still a success, not a failure', () => {
+    expect(removeTaskDir(cwd, 'aaaaaaaaaaaa')).toBe(true)
+  })
+
+  // T1.9 review round 1, Mineur 5: `isTaskId` is the ONLY thing standing
+  // between this function's `id` argument and `taskDir(cwd, id)` — join()
+  // resolves `..` segments exactly like any other path component, so an id
+  // that is not a valid 12-hex task id must be refused before it ever
+  // reaches rmSync, or a path-traversal-shaped "id" would let this recursive
+  // delete escape .codesema/tasks/ entirely. Proven directly: a sibling
+  // directory outside tasks/ survives a call built to reach it.
+  test('an id shaped like a path-traversal attempt is refused before anything is touched', () => {
+    const outside = join(cwd, 'not-a-task-dir')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'canary.txt'), 'must survive')
+
+    const traversal = `../../../../../../..${outside}`
+    expect(removeTaskDir(cwd, traversal)).toBe(false)
+
+    expect(existsSync(join(outside, 'canary.txt'))).toBe(true)
+  })
+
+  test('a garden-variety invalid id (too short, uppercase, non-hex) is refused the same way', () => {
+    expect(removeTaskDir(cwd, 'not-hex')).toBe(false)
+    expect(removeTaskDir(cwd, 'AAAAAAAAAAAA')).toBe(false)
+    expect(removeTaskDir(cwd, '')).toBe(false)
   })
 })

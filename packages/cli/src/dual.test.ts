@@ -45,8 +45,25 @@ describe('judgeCommandFor', () => {
     expect(judgeCommandFor('gemini -m gemini-3-pro-preview')).toBe('gemini -m gemini-2.5-pro')
   })
 
+  test('grok: mid-tier model, the rest of the command untouched', () => {
+    expect(
+      judgeCommandFor('grok --prompt-file {promptFile} -m grok-4.6 --reasoning-effort high'),
+    ).toBe('grok --prompt-file {promptFile} -m grok-4.5 --reasoning-effort high')
+    expect(judgeCommandFor('grok --prompt-file {promptFile}')).toBe(
+      'grok --prompt-file {promptFile} -m grok-4.5',
+    )
+  })
+
   test('custom command unchanged', () => {
-    expect(judgeCommandFor('opencode run "$(cat)"')).toBe('opencode run "$(cat)"')
+    expect(judgeCommandFor('my-agent run')).toBe('my-agent run')
+  })
+
+  test('opencode with an empty judge model is left alone', () => {
+    // AGENT_DEFS.judgeModel stays '': dual uses the primary model.
+    expect(judgeCommandFor('opencode run')).toBe('opencode run')
+    expect(judgeCommandFor('opencode run -m anthropic/claude-sonnet-4-5')).toBe(
+      'opencode run -m anthropic/claude-sonnet-4-5',
+    )
   })
 })
 

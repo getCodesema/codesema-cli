@@ -4,11 +4,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'bun:test'
 import type { ForgeMr, ForgeMrsResult } from './forge-mrs.js'
-import { tryGit } from './git.js'
+import { tryGit, type ProbeExecFn } from './git.js'
 import { createMrReviewRunner } from './mr-review-runner.js'
 import { createSession } from './serve.js'
+import { acquireWorktreeLock, worktreeLockPath } from './worktree-lock.js'
 
 const REVIEW = '{"verdict":"approve","summary":"ok","findings":[]}'
+
+/**
+ * The branch path resolves its review target through the forge (D7), so
+ * without this seam every branch review in this file would launch the real
+ * `gh` AND `glab` — slow, and broken on a machine that has neither. Answering
+ * nothing is what those binaries did here anyway: the fixture repo has no
+ * remote.
+ */
+const noForge: ProbeExecFn = () => Promise.resolve(null)
 
 function git(args: string[], cwd: string): void {
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
@@ -93,6 +103,16 @@ async function waitForPhase(
     await new Promise((r) => setTimeout(r, 20))
   }
   expect(runner.status().phase).toBe(phase)
+}
+
+async function until(cond: () => boolean, timeoutMs = 15000): Promise<void> {
+  const startedAt = Date.now()
+  while (!cond()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('timed out waiting for a condition')
+    }
+    await new Promise((r) => setTimeout(r, 20))
+  }
 }
 
 function worktreeCount(cwd: string): number {
@@ -247,6 +267,7 @@ describe('createMrReviewRunner (branch source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
+      execFn: noForge,
     })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
@@ -258,6 +279,65 @@ describe('createMrReviewRunner (branch source)', () => {
     expect(worktreeCount(cwd)).toBe(1)
   }, 20000)
 
+  test('the disposable worktree is materialized under the REPO lock, and releases it', async () => {
+    const { cwd } = setupBranchRepo()
+    const session = createSession()
+    const runner = createMrReviewRunner({
+      cwd,
+      session,
+      agentCommand: agentScriptFor(cwd, REVIEW),
+      timeoutMs: 15000,
+    })
+    // The worktree lives in a tmpdir, but `git worktree add` writes THIS
+    // repository's index and registry — the same thing task worktrees are
+    // serialized on. A holder must therefore hold this run back too.
+    const blocker = await acquireWorktreeLock(cwd)
+    const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
+    expect(started).toEqual({ ok: true })
+    // Still queueing for the lock: only the MAIN worktree exists, the
+    // disposable one has not been added.
+    expect(worktreeCount(cwd)).toBe(1)
+
+    blocker.release()
+    await waitForPhase(runner, 'done')
+
+    expect(session.record()?.meta.branch).toBe('feature/y')
+    // The run holds the lock only around the git operations, never for the
+    // whole review — and it leaves none behind.
+    expect(existsSync(worktreeLockPath(cwd))).toBe(false)
+  }, 20000)
+
+  test('the cleanup never queues behind the repo lock on the way out', async () => {
+    const { cwd } = setupBranchRepo()
+    const draining = new AbortController()
+    const runner = createMrReviewRunner({
+      cwd,
+      session: createSession(),
+      agentCommand: agentScriptFor(cwd, REVIEW),
+      timeoutMs: 15000,
+      shutdownSignal: draining.signal,
+    })
+
+    expect(await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')).toEqual({
+      ok: true,
+    })
+    // Once the disposable worktree exists, the add has released the lock: from
+    // here on, the only acquisition left is the CLEANUP one.
+    await until(() => worktreeCount(cwd) === 2)
+    const blocker = await acquireWorktreeLock(cwd)
+    // The workspace is going down while a review is still finishing.
+    draining.abort()
+
+    // A cleanup that queued for the full budget would sit between the user and
+    // the exit for over a minute. It gives up instead — git's own index lock
+    // is still the net under the removal — and the run settles.
+    await waitForPhase(runner, 'done', 10_000)
+    expect(worktreeCount(cwd)).toBe(1)
+    // And it took nothing from the holder it could not wait for.
+    expect(existsSync(worktreeLockPath(cwd))).toBe(true)
+    blocker.release()
+  }, 20000)
+
   test('reviews the currently checked-out branch using a detached worktree', async () => {
     const { cwd } = setupBranchRepo()
     git(['checkout', 'feature/y'], cwd)
@@ -267,6 +347,7 @@ describe('createMrReviewRunner (branch source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
+      execFn: noForge,
     })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')
@@ -289,6 +370,7 @@ describe('createMrReviewRunner (branch source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
+      execFn: noForge,
     })
 
     const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple')

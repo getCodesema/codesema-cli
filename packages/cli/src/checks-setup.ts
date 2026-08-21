@@ -5,7 +5,7 @@
 //
 // Three properties make this safe to expose in the UI:
 //  1. The agent runs READ-ONLY — hardenedReviewCommand cuts its tools, MCP
-//     servers and repo-provided settings, agentEnv strips the environment. It
+//     servers and repo-provided settings, reviewAgentEnv strips the environment. It
 //     is a pure text transformer here, exactly like the review agent.
 //  2. The agent reads NOTHING itself: codesema collects the relevant files,
 //     truncates them and puts them IN the prompt. What it cannot see, it
@@ -18,7 +18,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { agentEnv, hardenedReviewCommand, runAgent, type AgentRunOptions } from './agent.js'
+import { hardenedReviewCommand, reviewAgentEnv, runAgent, type AgentRunOptions } from './agent.js'
 import { writeChecksConfig, type ChecksConfig } from './repo-config.js'
 import { DEFAULT_CHECK_TIMEOUT_SECONDS, readDeclarationFiles } from './task-checks.js'
 
@@ -453,8 +453,13 @@ export type ChecksSetupRunner = {
 }
 
 export type CreateChecksSetupRunnerOptions = {
-  /** Raw configured agent command; empty means no agent (every start 501s). */
+  /** Fallback agent command; empty means no agent (every start 501s). */
   command: string
+  /**
+   * Per-project agent (T1.4). When set, a checks proposal for project B uses
+   * B's resolved command, not the launch-repo fallback.
+   */
+  resolveCommand?: (projectPath: string) => string
   timeoutMs?: number
   /** Test seam: the default spawns the real agent (read-only, minimal env). */
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
@@ -488,7 +493,7 @@ export function createChecksSetupRunner(opts: CreateChecksSetupRunnerOptions): C
     status: (projectId) => states.get(projectId) ?? IDLE,
 
     start(project) {
-      const command = opts.command.trim()
+      const command = (opts.resolveCommand?.(project.path) ?? opts.command).trim()
       if (!command) {
         return { ok: false, code: 501, error: 'no agent configured' }
       }
@@ -500,14 +505,14 @@ export function createChecksSetupRunner(opts: CreateChecksSetupRunnerOptions): C
         try {
           const files = collect(project.path)
           const prompt = buildChecksSetupPrompt({ entries: rootEntries(project.path), files })
-          const env = agentEnv(command)
+          const env = reviewAgentEnv(command)
           // Read-only by construction: hardened command (no tools, no MCP, no
           // repo settings) and a minimal environment, exactly like a review.
           const raw = await run({
             command: hardenedReviewCommand(command),
             prompt,
             cwd: project.path,
-            timeoutMs,
+            absoluteCapMs: timeoutMs,
             ...(env !== undefined ? { env } : {}),
           })
           const proposal = sanitizeChecksProposal(extractProposalJson(raw))

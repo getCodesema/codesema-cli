@@ -22,6 +22,7 @@ import type {
   TaskChecks,
   TaskEnvelope,
   TaskEvent,
+  TaskPlan,
   TaskRecord,
   WorkspaceInfo,
 } from '../types'
@@ -46,6 +47,7 @@ import {
   streamsLiveText,
   type LiveMessage,
 } from './useTaskBoard'
+import { parseTaskPlan } from './useTaskPlan'
 
 export type TaskState = {
   /** Registry id of the repo this task lives in. */
@@ -61,6 +63,14 @@ export type TaskState = {
   liveMessages: LiveMessage[]
   /** Live token meter of the in-flight turn (task_meta frames, volatile). */
   liveTokens: number
+  /**
+   * Machine-wide load cap occupation (T1.3, D4), volatile: the last
+   * `task_meta` frame that carried one. Null until such a frame has been
+   * seen — which is NOT proof the cap was never touched, only that nothing
+   * here has said so yet (adversarial review, MAJEUR 2: this field existed on
+   * the wire but nothing read it).
+   */
+  liveLoadCap: { occupied: number; max: number; queued: number; waitingForSlot: boolean } | null
   /** Sandboxed checks result (volatile mirror of checks.json): hydrated by
    * GET /api/tasks/:id/checks on demand, updated by 'task_checks' frames.
    * Null until either happened — which is NOT proof no checks ever ran. */
@@ -80,6 +90,8 @@ export type CreateTaskInput = {
   branch?: string
   /** Work-on mode only: the MR target branch, used by the server as base. */
   target?: string
+  /** Full agent command for this task. Absent = project runtime command. */
+  agent?: string
 }
 
 export type CreateTaskResult =
@@ -93,12 +105,17 @@ export type CreateTaskResult =
       existingTaskId: string | null
     }
 
-type TaskStore = Map<string, TaskState>
+export type TaskStore = Map<string, TaskState>
 
 /** Composite store key: task ids are only unique within one repo's store. */
 export const taskKey = (projectId: string, taskId: string): string => `${projectId}/${taskId}`
 
-function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): void {
+/**
+ * Applies one 'task' frame to the store. Exported for its test: it owns the
+ * rules a record crosses when it lands (live bubbles dropped, progress line
+ * dropped, rank taken from the frame).
+ */
+export function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): void {
   const current = store.get(taskKey(projectId, record.id))
   if (!current) {
     store.set(taskKey(projectId, record.id), {
@@ -108,11 +125,17 @@ function upsertRecord(store: TaskStore, projectId: string, record: TaskRecord): 
       liveText: '',
       liveMessages: [],
       liveTokens: 0,
+      liveLoadCap: null,
       checks: null,
     })
     return
   }
   const previous = current.record.status
+  // `queue_position` is never persisted: the server decorates the frames it
+  // sends (every 'task' frame of a queued record, plus a fresh round for
+  // everyone still waiting whenever the line moves). So the frame is taken at
+  // its word — inventing or freezing a rank client-side is exactly how a card
+  // ends up showing a place it no longer holds.
   current.record = record
   // The agent's bubbles die with its turn: any other status means the journal
   // (turn.response) is now the one telling what was said.
@@ -158,6 +181,31 @@ function pushEvent(store: TaskStore, projectId: string, taskId: string, event: T
   mergeEvent(current.events, event)
 }
 
+/** The payload of a 'task_meta' SSE frame — see TaskEnvelope in types.ts. */
+type TaskMetaData = Extract<TaskEnvelope, { event: { name: 'task_meta' } }>['event']['data']
+
+/**
+ * Applies one 'task_meta' frame: an ordinary token-meter tick updates the
+ * live count, a load-cap transition (T1.3, D4) updates the occupation —
+ * NEVER both from the same frame. Exported for its test (adversarial review
+ * round 3, MAJEUR 4): the previous round's `if (load_cap)` guard protected
+ * `liveLoadCap` from being wiped by a plain tick, but left `liveTokens`
+ * unguarded the OTHER way — a load-cap frame's `tokens: 0` (accurate for
+ * THAT frame; no turn has produced any yet) would silently zero a live count
+ * an earlier tick already established, correct only by the accident of event
+ * ordering, not by construction.
+ */
+export function applyTaskMetaFrame(
+  current: Pick<TaskState, 'liveTokens' | 'liveLoadCap'>,
+  data: TaskMetaData,
+): void {
+  if (data.load_cap) {
+    current.liveLoadCap = { ...data.load_cap, waitingForSlot: data.waiting_for_slot ?? false }
+  } else {
+    current.liveTokens = data.tokens
+  }
+}
+
 function parseFrame<N extends TaskEnvelope['event']['name']>(
   e: Event,
 ): Extract<TaskEnvelope, { event: { name: N } }> {
@@ -166,6 +214,84 @@ function parseFrame<N extends TaskEnvelope['event']['name']>(
 
 /** Agent-assisted checks setup, one state per PROJECT (never per task). */
 type ChecksSetupStore = Map<string, ChecksSetupState>
+
+/**
+ * Every listener the task stream installs, as plain functions of an `Event`
+ * — the SSE wiring made testable (T1.3 round 4, MAJEUR 4). Extracted from
+ * `openStream` because the listener BODIES are where a store update can quietly
+ * stop going through the function that guards it: replacing
+ * `applyTaskMetaFrame(current, …)` with a direct pair of assignments left the
+ * whole suite green while re-introducing the very bug that function exists to
+ * prevent (a load-cap frame's `tokens: 0` zeroing a live count). Nothing here
+ * touches `EventSource`, so a test drives them with a `{ data }` object.
+ */
+export function taskStreamHandlers(
+  store: TaskStore,
+  setups: ChecksSetupStore,
+  connected: Ref<boolean>,
+  connections: Ref<number>,
+): Record<string, (e: Event) => void> {
+  return {
+    open: () => {
+      connected.value = true
+      connections.value++
+    },
+    // EventSource retries on its own; we only surface the connection state.
+    error: () => {
+      connected.value = false
+    },
+    task: (e) => {
+      const envelope = parseFrame<'task'>(e)
+      upsertRecord(store, envelope.project_id, envelope.event.data)
+    },
+    task_event: (e) => {
+      const envelope = parseFrame<'task_event'>(e)
+      pushEvent(store, envelope.project_id, envelope.task_id, envelope.event.data)
+    },
+    task_text: (e) => {
+      const envelope = parseFrame<'task_text'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        // Two channels in one frame: an indexed agent message accumulates, a
+        // bare progress line replaces the previous one.
+        applyLiveText(current, envelope.event.data)
+      }
+    },
+    task_meta: (e) => {
+      const envelope = parseFrame<'task_meta'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        applyTaskMetaFrame(current, envelope.event.data)
+      }
+    },
+    // Checks transitions (running → per-check update → final): each frame
+    // carries the WHOLE checks.json, so replacing is always correct — and a
+    // `null` payload (a 'running' the server took back because the run never
+    // started) puts the conversation back to "never ran", which is what
+    // re-enables its "Re-run checks" button.
+    task_checks: (e) => {
+      const envelope = parseFrame<'task_checks'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        current.checks = envelope.event.data
+      }
+    },
+    // Agent-assisted setup: the run's progress and its final proposal. The
+    // frame is project-scoped (no task_id) and its payload is parsed
+    // defensively — a bare proposal object reads as "ready" just like a state
+    // envelope.
+    checks_proposal: (e) => {
+      const envelope = parseFrame<'checks_proposal'>(e)
+      const projectId = envelope.project_id
+      // Merged, not replaced: applying consumes the proposal server-side and
+      // broadcasts an idle state that must not erase the local confirmation.
+      setups.set(
+        projectId,
+        mergeChecksSetup(setups.get(projectId), parseChecksSetup(envelope.event.data)),
+      )
+    },
+  }
+}
 
 function openStream(
   store: TaskStore,
@@ -176,60 +302,11 @@ function openStream(
   // The initial replay covers every task of every registered project; the
   // rail shows them all, only the right panel scopes to the active card.
   const source = new EventSource('/api/tasks/events')
-  source.addEventListener('open', () => {
-    connected.value = true
-    connections.value++
-  })
-  // EventSource retries on its own; we only surface the connection state.
-  source.addEventListener('error', () => {
-    connected.value = false
-  })
-  source.addEventListener('task', (e) => {
-    const envelope = parseFrame<'task'>(e)
-    upsertRecord(store, envelope.project_id, envelope.event.data)
-  })
-  source.addEventListener('task_event', (e) => {
-    const envelope = parseFrame<'task_event'>(e)
-    pushEvent(store, envelope.project_id, envelope.task_id, envelope.event.data)
-  })
-  source.addEventListener('task_text', (e) => {
-    const envelope = parseFrame<'task_text'>(e)
-    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
-    if (current) {
-      // Two channels in one frame: an indexed agent message accumulates, a
-      // bare progress line replaces the previous one.
-      applyLiveText(current, envelope.event.data)
-    }
-  })
-  source.addEventListener('task_meta', (e) => {
-    const envelope = parseFrame<'task_meta'>(e)
-    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
-    if (current) {
-      current.liveTokens = envelope.event.data.tokens
-    }
-  })
-  // Checks transitions (running → per-check update → final): each frame
-  // carries the WHOLE checks.json, so replacing is always correct.
-  source.addEventListener('task_checks', (e) => {
-    const envelope = parseFrame<'task_checks'>(e)
-    const current = store.get(taskKey(envelope.project_id, envelope.task_id))
-    if (current) {
-      current.checks = envelope.event.data
-    }
-  })
-  // Agent-assisted setup: the run's progress and its final proposal. The frame
-  // is project-scoped (no task_id) and its payload is parsed defensively —
-  // a bare proposal object reads as "ready" just like a state envelope.
-  source.addEventListener('checks_proposal', (e) => {
-    const envelope = parseFrame<'checks_proposal'>(e)
-    const projectId = envelope.project_id
-    // Merged, not replaced: applying consumes the proposal server-side and
-    // broadcasts an idle state that must not erase the local confirmation.
-    setups.set(
-      projectId,
-      mergeChecksSetup(setups.get(projectId), parseChecksSetup(envelope.event.data)),
-    )
-  })
+  for (const [name, handler] of Object.entries(
+    taskStreamHandlers(store, setups, connected, connections),
+  )) {
+    source.addEventListener(name, handler)
+  }
   return source
 }
 
@@ -409,6 +486,36 @@ async function createTask(
       error: e instanceof Error ? e.message : String(e),
       existingTaskId: null,
     }
+  }
+}
+
+export type PreviewTaskResult =
+  { ok: true; plan: TaskPlan } | { ok: false; status: number; error: string }
+
+/**
+ * T2.6 dry-run. Same route posture as the creation it previews (CSRF token,
+ * JSON body) and NO effect at all — nothing lands in the store, precisely
+ * because nothing was created. The answer is re-parsed rather than trusted:
+ * an older CLI answering a narrower plan degrades into a refusal here instead
+ * of half-rendering a panel.
+ */
+async function previewTask(
+  token: string,
+  body: Record<string, unknown>,
+): Promise<PreviewTaskResult> {
+  try {
+    const res = await fetch('/api/tasks/preview', {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: await errorFrom(res) }
+    }
+    const plan = parseTaskPlan(await res.json())
+    return plan ? { ok: true, plan } : { ok: false, status: res.status, error: 'unreadable plan' }
+  } catch (e) {
+    return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) }
   }
 }
 
@@ -642,6 +749,9 @@ export function useTasks(token: string) {
     hydrate: (projectId: string, id: string) => hydrateStore(store, projectId, id),
     create: (projectId: string, input: CreateTaskInput) =>
       createTask(token, store, projectId, input),
+    // T2.6: the plan a create with this very body WOULD produce. Read-only on
+    // both sides — the server writes nothing, and neither does this.
+    preview: (body: Record<string, unknown>) => previewTask(token, body),
     reply: (projectId: string, id: string, message: string) =>
       postAction(token, actionPath(projectId, id, 'reply'), { message }),
     interrupt: (projectId: string, id: string) =>

@@ -26,7 +26,7 @@ This auto-detects the current branch and the target branch, computes the MR diff
 Read `.codesema/input.json`. It contains:
 
 - `title`, `branch`, `target`, `merge_base`, `commits`: context about the MR.
-- `files`: the changed files with additions/deletions counts.
+- `files`: the changed files with additions/deletions counts. A renamed or copied file carries its source path as `previousPath`; `path` (the destination) is the one to reference in findings.
 - `diff`: the full unified diff. Line numbers for findings MUST be **new-file line numbers**, derived from the `@@ -a,b +c,d @@` hunk headers.
 - `custom_instructions`: the team's own review instructions (from `.codesema/PROMPT.md`), or null. When present, apply them on top of the guidelines below; they win on conflicts.
 - `rules`: the team's review rules (from `.codesema/RULES.md`), one `[Cn] rule` line each, or null. Hunt them FIRST, before the file-by-file sweep, jumping to the code each rule's `Where to look` segment targets. A `convention` finding MUST cite its rule id (`[C2]`), the deviation must be introduced by the diff itself, and code covered by a rule's `Exceptions` is never flagged.

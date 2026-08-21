@@ -266,6 +266,45 @@ describe('createChecksSetupRunner', () => {
     expect(runs[0]?.prompt).toContain('Output the JSON object now.')
   })
 
+  // J1 (adversarial review, mineur). `resolveCommand` is T1.4's per-project
+  // seam, and it survived mutation in BOTH directions: collapsing the
+  // expression to `opts.command` left every proposal on the launch repo's
+  // agent, and nothing observed the seam being called at all. The test above
+  // pins the other side (no seam given, the fallback runs).
+  test('resolveCommand decides which agent proposes, per project (T1.4)', async () => {
+    const { runs, runAgentFn } = fakeAgent(JSON.stringify(CLEAN_PROPOSAL))
+    const asked: string[] = []
+    const runner = createChecksSetupRunner({
+      command: 'claude -p',
+      resolveCommand: (projectPath) => {
+        asked.push(projectPath)
+        return 'claude -p --model haiku'
+      },
+      runAgentFn,
+    })
+    runner.start(project())
+    await settle()
+    // Asked about THIS project's path, not the process's cwd.
+    expect(asked).toEqual([repo])
+    expect(runs[0]?.command).toContain('claude -p --model haiku')
+    // The cross-assertion: the fallback command is not what ran.
+    expect(runs[0]?.command).not.toBe(
+      'claude -p --tools "" --strict-mcp-config --setting-sources user',
+    )
+  })
+
+  test('a project whose resolved agent is empty 501s, fallback or not (T1.4)', async () => {
+    const { runs, runAgentFn } = fakeAgent(JSON.stringify(CLEAN_PROPOSAL))
+    const runner = createChecksSetupRunner({
+      command: 'claude -p',
+      resolveCommand: () => '   ',
+      runAgentFn,
+    })
+    expect(runner.start(project())).toEqual({ ok: false, code: 501, error: 'no agent configured' })
+    await settle()
+    expect(runs).toHaveLength(0)
+  })
+
   test('a JSON answer wrapped in prose and fences still lands', async () => {
     const { runAgentFn } = fakeAgent(
       `Here is what I would run:\n\`\`\`json\n${JSON.stringify(CLEAN_PROPOSAL)}\n\`\`\`\nTell me if that works.`,

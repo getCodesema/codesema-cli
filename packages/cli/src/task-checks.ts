@@ -8,12 +8,12 @@
 // Everything host-side goes through execFile with an argv array: no shell
 // interpolation ever happens on the host (the check command itself runs under
 // `sh -lc` INSIDE the container, where it can do no harm beyond the mount).
-// V1 debt: node_modules live in the worktree (no shared cache volume yet), so
-// every run reinstalls dependencies.
+// Package cache lives in a per-project named volume. node_modules still land
+// in the worktree — the runner commits from the host.
 
 import { execFile } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
 import {
@@ -28,6 +28,13 @@ import type { ChecksConfig } from './repo-config.js'
 export const DEFAULT_CHECK_TIMEOUT_SECONDS = 300
 /** Image used when an explicit config sets commands but no image. */
 export const DEFAULT_CHECKS_IMAGE = 'node:26'
+
+/**
+ * Bun's default installer hardlinks from its cache into node_modules. The
+ * cache is a named volume and the worktree is a bind mount — two filesystems
+ * — so hardlink fails with ENOENT. copyfile is slower and works.
+ */
+export const BUN_INSTALL_COMMAND = 'bun install --frozen-lockfile --backend=copyfile'
 
 /** Combined stdout+stderr capture cap per exec (the persisted tail is far smaller). */
 const EXEC_MAX_BUFFER = 10 * 1024 * 1024
@@ -167,7 +174,7 @@ export function detectChecks(input: DetectChecksInput): ChecksPlan | null {
     if (scripts.has('lint')) {
       commands.push('bun run lint')
     }
-    return { image: 'oven/bun:1', install: 'bun install --frozen-lockfile', commands, ...base }
+    return { image: 'oven/bun:1', install: BUN_INSTALL_COMMAND, commands, ...base }
   }
   if (files.has('package-lock.json') || files.has('yarn.lock')) {
     const commands = CHECK_SCRIPT_NAMES.filter((name) => scripts.has(name)).map(
@@ -188,6 +195,124 @@ export function detectChecks(input: DetectChecksInput): ChecksPlan | null {
     return { image: 'python:3.12', install: 'pip install -e .', commands: ['pytest'], ...base }
   }
   return null
+}
+
+/** Image + install command for a worktree, even when there is nothing to CHECK. */
+export type InstallPlan = {
+  image: string
+  install: string
+  timeoutSeconds: number
+}
+
+/**
+ * Lockfile / manifest → how to install, ignoring whether any check script
+ * exists. An npm repo with only a `build` script has nothing for `detectChecks`
+ * and still has an install step — that is the hole #63 closes.
+ */
+export function detectInstall(input: DetectChecksInput): InstallPlan | null {
+  const files = new Set(input.files)
+  const timeoutSeconds = DEFAULT_CHECK_TIMEOUT_SECONDS
+  if (files.has('bun.lock') || files.has('bun.lockb')) {
+    return { image: 'oven/bun:1', install: BUN_INSTALL_COMMAND, timeoutSeconds }
+  }
+  if (files.has('package-lock.json') || files.has('yarn.lock')) {
+    return { image: DEFAULT_CHECKS_IMAGE, install: 'npm ci', timeoutSeconds }
+  }
+  if (files.has('package.json')) {
+    return { image: DEFAULT_CHECKS_IMAGE, install: 'npm install', timeoutSeconds }
+  }
+  if (files.has('pyproject.toml')) {
+    return { image: 'python:3.12', install: 'pip install -e .', timeoutSeconds }
+  }
+  return null
+}
+
+/** Disk-reading wrapper; any read failure = nothing to install. */
+export function detectInstallFromWorktree(worktree: string): InstallPlan | null {
+  let files: string[]
+  try {
+    files = readdirSync(worktree)
+  } catch {
+    return null
+  }
+  const readIfPresent = (name: string): string | null => {
+    if (!files.includes(name)) {
+      return null
+    }
+    try {
+      return readFileSync(join(worktree, name), 'utf8')
+    } catch {
+      return null
+    }
+  }
+  let packageJson: { scripts?: Record<string, unknown> } | null = null
+  const rawPackageJson = readIfPresent('package.json')
+  if (rawPackageJson) {
+    try {
+      packageJson = JSON.parse(rawPackageJson) as { scripts?: Record<string, unknown> } | null
+    } catch {
+      packageJson = null
+    }
+  }
+  return detectInstall({ files, packageJson, pyproject: readIfPresent('pyproject.toml') })
+}
+
+/**
+ * Install step to run before an agent turn: explicit checks config.install
+ * wins, otherwise the lockfile heuristic (including npm repos with no check
+ * scripts). Null = this worktree has nothing to install.
+ */
+export function resolveInstallPlan(input: {
+  worktree: string
+  config?: ChecksConfig | null
+}): InstallPlan | null {
+  const configured = input.config?.install?.trim()
+  if (configured) {
+    return {
+      image: input.config?.image?.trim() || DEFAULT_CHECKS_IMAGE,
+      install: configured,
+      timeoutSeconds:
+        Number.isInteger(input.config?.timeoutSeconds) &&
+        (input.config?.timeoutSeconds as number) > 0
+          ? (input.config?.timeoutSeconds as number)
+          : DEFAULT_CHECK_TIMEOUT_SECONDS,
+    }
+  }
+  return detectInstallFromWorktree(input.worktree)
+}
+
+const LOCKFILE_CANDIDATES = [
+  'bun.lock',
+  'bun.lockb',
+  'package-lock.json',
+  'yarn.lock',
+  'poetry.lock',
+  'Pipfile.lock',
+  'package.json',
+  'pyproject.toml',
+] as const
+
+/** sha256 of the first present lockfile/manifest, or null when none exist. */
+export function lockfileFingerprint(worktree: string): string | null {
+  for (const name of LOCKFILE_CANDIDATES) {
+    try {
+      const body = readFileSync(join(worktree, name))
+      return createHash('sha256').update(name).update('\0').update(body).digest('hex').slice(0, 16)
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+/** True when a previous install left something the agent can import. */
+export function worktreeHasDeps(worktree: string): boolean {
+  return existsSync(join(worktree, 'node_modules')) || existsSync(join(worktree, '.venv'))
+}
+
+/** Per-project package-cache volume: host never reads it, the install step does. */
+export function pkgCacheVolume(projectId: string): string {
+  return `codesema-pkgcache-${projectId}`
 }
 
 // --- level 2 detection: what the repo DECLARES about its own checks --------
@@ -620,6 +745,8 @@ export type RunChecksOptions = {
   worktree: string
   /** Explicit repo config; null/absent falls back to auto-detection. */
   config?: ChecksConfig | null
+  /** When set, the install step mounts `pkgCacheVolume(projectId)` at /cache. */
+  projectId?: string
   /** Worktree HEAD stamped on the result (recorded, never executed). */
   headSha: string
   /**
@@ -642,6 +769,8 @@ type RunStepInput = {
   worktree: string
   /** READ-ONLY `-v` arguments exposing the repo's git directory; see container-git.ts. */
   gitMounts: readonly string[]
+  /** Extra docker/podman argv (cache volume, --user, --userns=keep-id). */
+  extraArgs?: readonly string[]
 }
 
 /** One containerized step. Kills the container on timeout (killing the client alone leaves it running). */
@@ -661,6 +790,7 @@ async function runStep(input: RunStepInput): Promise<StepOutcome> {
     // Check commands are the repo's own: hooks, version stamps and test rigs
     // routinely shell out to git, which a linked worktree alone cannot answer.
     ...input.gitMounts,
+    ...(input.extraArgs ?? []),
     ...gitSafeDirectoryEnvArgs(CHECKS_WORK_DIR),
     ...(step.network ? [] : ['--network', 'none']),
     '--cpus',
@@ -670,7 +800,9 @@ async function runStep(input: RunStepInput): Promise<StepOutcome> {
     plan.image,
     'sh',
     '-lc',
-    step.command,
+    input.extraArgs && input.extraArgs.length > 0
+      ? `mkdir -p "$HOME" "$npm_config_cache" "$BUN_INSTALL_CACHE_DIR" "$PIP_CACHE_DIR"; ${step.command}`
+      : step.command,
   ]
   const startedAt = Date.now()
   const run = await exec(runtime, args, { timeoutMs: plan.timeoutSeconds * 1000 })
@@ -748,6 +880,13 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
   const exec = opts.execFn ?? defaultExec
   const git = prepareContainerGit({ worktree: opts.worktree, workDir: CHECKS_WORK_DIR })
   const gitMounts = git?.mountArgs ?? []
+  const installExtra = opts.projectId
+    ? await ensureInstallExtraArgs({
+        exec,
+        runtime,
+        projectId: opts.projectId,
+      })
+    : []
   const steps = [
     ...(plan.install ? [{ command: plan.install, network: plan.network, install: true }] : []),
     ...plan.commands.map((command) => ({ command, network: false, install: false })),
@@ -772,6 +911,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
       plan,
       worktree: opts.worktree,
       gitMounts,
+      ...(step.install && installExtra.length > 0 ? { extraArgs: installExtra } : {}),
     })
     snapshot.checks.push(result)
     if (failure !== null) {
@@ -788,4 +928,159 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
   }
   const failed = snapshot.checks.some((c) => c.status === 'failed' || c.status === 'timeout')
   return finish(failed ? 'failed' : 'passed')
+}
+
+const PKG_CACHE_DIR = '/cache'
+
+async function runtimeLooksLikePodman(runtime: string, exec: ExecFn): Promise<boolean> {
+  if (/(^|\/)podman$/.test(runtime)) {
+    return true
+  }
+  const probe = await exec(runtime, ['--version'], { timeoutMs: 20_000 })
+  return /podman/i.test(`${probe.stdout}${probe.stderr}`)
+}
+
+async function ensureInstallExtraArgs(opts: {
+  exec: ExecFn
+  runtime: string
+  projectId: string
+  uid?: number
+  gid?: number
+  podman?: boolean
+}): Promise<string[]> {
+  const volume = pkgCacheVolume(opts.projectId)
+  await opts.exec(opts.runtime, ['volume', 'create', volume], { timeoutMs: 30_000 })
+  const uid = opts.uid ?? process.getuid?.() ?? 1000
+  const gid = opts.gid ?? process.getgid?.() ?? 1000
+  const podman = opts.podman ?? (await runtimeLooksLikePodman(opts.runtime, opts.exec))
+  const uidArgs = podman ? ['--userns=keep-id'] : ['--user', `${uid}:${gid}`]
+  if (!podman) {
+    // The cache volume is born root:root. Without keep-id, the install user
+    // cannot mkdir inside it unless we chown first.
+    await opts.exec(
+      opts.runtime,
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${volume}:${PKG_CACHE_DIR}`,
+        'busybox',
+        'chown',
+        '-R',
+        `${uid}:${gid}`,
+        PKG_CACHE_DIR,
+      ],
+      { timeoutMs: 60_000 },
+    )
+  }
+  return [
+    '-v',
+    `${volume}:${PKG_CACHE_DIR}`,
+    '-e',
+    `HOME=${PKG_CACHE_DIR}/home`,
+    '-e',
+    `npm_config_cache=${PKG_CACHE_DIR}/npm`,
+    '-e',
+    `BUN_INSTALL_CACHE_DIR=${PKG_CACHE_DIR}/bun`,
+    '-e',
+    `PIP_CACHE_DIR=${PKG_CACHE_DIR}/pip`,
+    '-e',
+    `XDG_CACHE_HOME=${PKG_CACHE_DIR}`,
+    ...uidArgs,
+  ]
+}
+
+export type BootstrapInstallStatus = 'passed' | 'skipped' | 'failed' | 'unconfigured'
+
+export type BootstrapInstallResult = {
+  status: BootstrapInstallStatus
+  command: string | null
+  fingerprint: string | null
+  detail: string
+}
+
+export type BootstrapWorktreeInstallOptions = {
+  worktree: string
+  projectId: string
+  config?: ChecksConfig | null
+  /** Last install's lockfile hash, from the task record. */
+  previousFingerprint?: string | null
+  uid?: number
+  gid?: number
+  podman?: boolean
+  execFn?: ExecFn
+  /** Fired once an install is about to run (not on skip / unconfigured). */
+  onStart?: (command: string) => void
+}
+
+/**
+ * Installs the worktree's dependencies in a checks-shaped container (network
+ * ON, shared package-cache volume) BEFORE the agent turn. Skips when the
+ * lockfile hash matches the previous install AND node_modules/.venv is still
+ * there — a rebuilt empty worktree always reinstalls.
+ */
+export async function bootstrapWorktreeInstall(
+  opts: BootstrapWorktreeInstallOptions,
+): Promise<BootstrapInstallResult> {
+  const plan = resolveInstallPlan({
+    worktree: opts.worktree,
+    ...(opts.config !== undefined ? { config: opts.config } : {}),
+  })
+  const fingerprint = lockfileFingerprint(opts.worktree)
+  if (!plan) {
+    return { status: 'unconfigured', command: null, fingerprint, detail: '' }
+  }
+  if (fingerprint && fingerprint === opts.previousFingerprint && worktreeHasDeps(opts.worktree)) {
+    return {
+      status: 'skipped',
+      command: plan.install,
+      fingerprint,
+      detail: 'lockfile unchanged',
+    }
+  }
+  opts.onStart?.(plan.install)
+  const runtime = await containerRuntime(opts.execFn)
+  if (!runtime) {
+    return {
+      status: 'failed',
+      command: plan.install,
+      fingerprint,
+      detail: 'no container runtime found: install docker or podman to install dependencies',
+    }
+  }
+  const exec = opts.execFn ?? defaultExec
+  const extraArgs = await ensureInstallExtraArgs({
+    exec,
+    runtime,
+    projectId: opts.projectId,
+    ...(opts.uid !== undefined ? { uid: opts.uid } : {}),
+    ...(opts.gid !== undefined ? { gid: opts.gid } : {}),
+    ...(opts.podman !== undefined ? { podman: opts.podman } : {}),
+  })
+  const git = prepareContainerGit({ worktree: opts.worktree, workDir: CHECKS_WORK_DIR })
+  const { result, hardError } = await runStep({
+    exec,
+    runtime,
+    step: { command: plan.install, network: true },
+    plan: {
+      image: plan.image,
+      install: plan.install,
+      commands: [],
+      network: true,
+      timeoutSeconds: plan.timeoutSeconds,
+      source: 'scripts',
+    },
+    worktree: opts.worktree,
+    gitMounts: git?.mountArgs ?? [],
+    extraArgs,
+  })
+  if (hardError !== null || result.status !== 'passed') {
+    return {
+      status: 'failed',
+      command: plan.install,
+      fingerprint,
+      detail: hardError ?? result.tail.slice(-400) ?? `exit ${String(result.exit_code)}`,
+    }
+  }
+  return { status: 'passed', command: plan.install, fingerprint, detail: '' }
 }

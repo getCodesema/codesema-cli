@@ -5,17 +5,44 @@
 // origin-hint rule as the MR list (forge-mrs.ts). A missing forge CLI degrades
 // the ship to "push only" instead of failing it: the push DID succeed, the MR
 // is one manual step away, and the note says so explicitly.
+//
+// The degraded outcomes below are D9's "no recap posted" half, and the rule
+// they answer to is written once, in degraded-mode.ts. Each one carries
+// `forge_unreachable` BESIDE the note it already produced (never instead of
+// it) plus the motif verbatim in `detail` — `no-remote`, `no-cli`,
+// `cli-error`, `offline` — so a reader can tell "install a CLI" from "the
+// CLI failed" from "there is no remote at all" from "this machine never
+// reached the host". Everything the remote ANSWERED (a rejected push, a
+// declining hook, a refused credential) stays deliberately uncoded.
+//
+// T3.5 changed WHAT the merge request says, and added the one thing that makes
+// it sayable: the ship is where the task's recap (T3.4) is generated and
+// written to `.codesema/tasks/<id>/recap.json`, right before the description is
+// composed from it. Not at the end of every turn (a full diff per turn is
+// expensive for a document only the ship publishes) and not at merge time (too
+// late — the description is built here). A task that never ships therefore
+// never gets a recap, which is the honest consequence: there is nothing to
+// recap about work that was not shipped.
 
 import { execFile } from 'node:child_process'
-import { sanitizeRecord, type ReviewRecord, type TaskRecord } from './contract.js'
+import { type ReasonCode, type RecapRecord, type SecretMatch, type TaskRecord } from './contract.js'
+import type { ForgeDegradation } from './degraded-mode.js'
 import { detectForgeHint, subprocessEnv } from './git.js'
-import { t } from './i18n.js'
-import { readJson } from './record.js'
+import { t, type MessageKey } from './i18n.js'
+import { scanRecapSecrets } from './task-recap-publish.js'
+import { generateRecap, renderRecapMarkdown, writeTaskRecap } from './task-recap.js'
 
 /** Pushes and MR creations talk to the network: much looser than forge-mrs's 8s list timeout. */
 export const SHIP_EXEC_TIMEOUT_MS = 60_000
-/** Bound for the last-turn summary embedded in the MR description. */
-const MR_BODY_SUMMARY_MAX = 4000
+/**
+ * Bound for the recap rendering embedded in the MR description, in CODE
+ * POINTS. Unchanged in value and in mechanics since it bounded the last-turn
+ * summary (T5): what it bounds moved from a chatty agent response to a
+ * structured document (T3.5), the reason did not — nothing this machine
+ * composes is sent unbounded to a forge. Exported so the bound can be asserted
+ * from the outside instead of inferred from a magic number.
+ */
+export const MR_BODY_SUMMARY_MAX = 4000
 /** Bound for CLI error messages surfaced in journal events. */
 const SHIP_ERROR_MAX = 500
 
@@ -26,7 +53,19 @@ const SHIP_ERROR_MAX = 500
  * text, which forge-mrs discards but the ship's error events need.
  */
 export type ShipCliOutcome =
-  { kind: 'ok'; stdout: string } | { kind: 'missing' } | { kind: 'error'; message: string }
+  | { kind: 'ok'; stdout: string }
+  | { kind: 'missing' }
+  /**
+   * The command RAN and failed. `status` is its exit code when there was one
+   * (a spawn that never produced a process has none), and it is the only
+   * dependable way to tell git's own failures apart: git LOCALISES its
+   * messages — `git remote get-url origin` on a repo without one answers
+   * "error: Pas de serveur remote 'origin'" on a French box (measured, git
+   * 2.53.0) — while the exit code is the same everywhere. OPTIONAL: a caller
+   * that does not care keeps working, and an outcome without it is read as
+   * "which failure this was is unknown", never as a particular one.
+   */
+  | { kind: 'error'; message: string; status?: number }
 
 export type ShipGitExecFn = (args: string[], cwd: string) => Promise<ShipCliOutcome>
 export type ShipForgeExecFn = (
@@ -35,7 +74,19 @@ export type ShipForgeExecFn = (
   cwd: string,
 ) => Promise<ShipCliOutcome>
 
-function execCli(cmd: string, args: string[], cwd: string): Promise<ShipCliOutcome> {
+/**
+ * The exec pattern of every forge call this workspace makes — argv only (no
+ * host-side shell interpolation), `SHIP_EXEC_TIMEOUT_MS`, and
+ * `GIT_TERMINAL_PROMPT=0` so a remote that wants credentials fails FAST with
+ * a readable error instead of hanging until the timeout.
+ *
+ * EXPORTED (T3.6) rather than copied into the merge module: the merge has
+ * exactly the same I/O profile as the ship — a forge CLI that talks to the
+ * network, a need to fail fast on a credentials prompt, and a
+ * `missing` / `error` distinction that must not blur. A second copy would be
+ * two paths meant to behave identically, drifting the first time one is fixed.
+ */
+export function execCli(cmd: string, args: string[], cwd: string): Promise<ShipCliOutcome> {
   return new Promise((resolve) => {
     execFile(
       cmd,
@@ -55,7 +106,13 @@ function execCli(cmd: string, args: string[], cwd: string): Promise<ShipCliOutco
             return
           }
           const message = (stderr.trim() || err.message).slice(0, SHIP_ERROR_MAX)
-          resolve({ kind: 'error', message })
+          // execFile reports the exit code in `code` for a process that RAN,
+          // and a string errno (ENOENT, E2BIG…) for one that never started.
+          resolve({
+            kind: 'error',
+            message,
+            ...(typeof err.code === 'number' ? { status: err.code } : {}),
+          })
           return
         }
         resolve({ kind: 'ok', stdout })
@@ -89,45 +146,67 @@ export function isMrAlreadyExistsError(message: string): boolean {
   return /already exists/i.test(message)
 }
 
-/** Best-effort load of the task's archived review; null on any miss (same tolerance as buildFixTurnPrompt). */
-function loadReview(task: TaskRecord): ReviewRecord | null {
-  if (!task.review_ref) {
-    return null
-  }
-  try {
-    return sanitizeRecord(readJson(task.review_ref))
-  } catch {
-    return null
-  }
+/**
+ * Truncation by CODE POINTS, never by UTF-16 units: a `.slice()` on a string
+ * can cut a surrogate pair in half and put a lone half-character on the forge.
+ * The last kept code point is given up to the ellipsis so the result is never
+ * longer than `max` — the same mechanics the last-turn summary had, extracted
+ * so the rule has one home.
+ */
+export function boundCodePoints(value: string, max: number): string {
+  const codePoints = Array.from(value)
+  return codePoints.length > max ? `${codePoints.slice(0, max - 1).join('')}…` : value
 }
 
 /**
- * MR description: the agent's last summary, the local review verdict, and an
- * honest provenance note. The summary is the response of the last turn that
- * has one (the very last turn always does on the ship path — its 'done'
- * outcome is what triggered the review), bounded so a chatty agent cannot
- * blow up the forge's description limit.
+ * What the merge-request description has to say about the recap. Three states,
+ * because they are three different sentences to a human: there is one, there
+ * is none, or there is one that must not leave this machine.
  */
-export function buildMrDescription(task: TaskRecord): string {
+export type MrRecapSource =
+  | { kind: 'recap'; recap: RecapRecord }
+  /** No recap could be produced — a generator that refused, or a write that did not land. */
+  | { kind: 'missing' }
+  /** A recap exists on disk but the secret scan held it back before anything was sent. */
+  | { kind: 'blocked' }
+  /**
+   * A recap exists on disk and the secret scan itself could not run, so
+   * NOTHING cleared it. Kept apart from `blocked` because the two are
+   * different sentences to a human: one says a secret was seen, the other
+   * says nobody looked — and claiming the first when only the second happened
+   * would send a reader hunting for a leak that was never found.
+   */
+  | { kind: 'unscanned' }
+
+/** What the description says in place of a recap it may not carry. One key per refusal. */
+const NO_RECAP_KEY: Record<Exclude<MrRecapSource['kind'], 'recap'>, MessageKey> = {
+  missing: 'ship.mrNoRecap',
+  blocked: 'ship.mrRecapBlocked',
+  unscanned: 'ship.mrRecapUnscanned',
+}
+
+/**
+ * MR description: the recap's markdown rendering (T3.4,
+ * `renderRecapMarkdown`), consumed WITHOUT reformatting, bounded at
+ * `MR_BODY_SUMMARY_MAX`, and closed by the provenance note behind its `---`
+ * separator.
+ *
+ * The note is appended AFTER the truncation, never before: it is the most
+ * honest element of the whole body — the one line that tells a reviewer where
+ * this text came from — and a bound applied to the assembled document would
+ * make a long recap eat it.
+ *
+ * Never throws, and never leaves the description empty: a task with no recap
+ * gets a description that SAYS there is no recap (invariant 2) and a ship that
+ * completes regardless — the merge request is not the place to discover that a
+ * generator degraded.
+ */
+export function buildMrDescription(source: MrRecapSource): string {
   const parts: string[] = []
-  const summary = task.turns.findLast((turn) => turn.response)?.response
-  if (summary) {
-    const codePoints = Array.from(summary)
-    parts.push(
-      codePoints.length > MR_BODY_SUMMARY_MAX
-        ? `${codePoints.slice(0, MR_BODY_SUMMARY_MAX - 1).join('')}…`
-        : summary,
-    )
-  }
-  const review = loadReview(task)
-  if (review) {
-    parts.push(
-      t(
-        'ship.mrReviewLine',
-        { verdict: review.review.verdict, n: review.review.findings.length },
-        review.review.findings.length,
-      ),
-    )
+  if (source.kind === 'recap') {
+    parts.push(boundCodePoints(renderRecapMarkdown(source.recap), MR_BODY_SUMMARY_MAX))
+  } else {
+    parts.push(t(NO_RECAP_KEY[source.kind]))
   }
   parts.push(`---\n${t('ship.mrGeneratedNote')}`)
   return parts.join('\n\n')
@@ -140,10 +219,76 @@ export type ShipTaskOptions = {
   /** Test seams — the defaults run real git / gh / glab. */
   execGit?: ShipGitExecFn
   execForge?: ShipForgeExecFn
+  /** Recap seams (T3.5): the defaults drive the real generator and the real store. */
+  generateRecapFn?: typeof generateRecap
+  writeTaskRecapFn?: typeof writeTaskRecap
+  scanRecapSecretsFn?: typeof scanRecapSecrets
 }
 
+/**
+ * The motif of a degradation, VERBATIM as the vocabulary names it
+ * (degraded-mode.ts) — never a reworded sentence. It travels next to
+ * `reasonCode`, and the caller composes the reason's `detail` from the two so
+ * `no-cli` can never be read as `cli-error`. OPTIONAL everywhere: an outcome
+ * that names no degradation carries neither field.
+ */
+type ShipDegradation = { reasonCode?: ReasonCode; detail?: ShipMotif }
+
+/**
+ * The motifs a ship can name. The three the forge client itself produces,
+ * plus `offline` — the one D9's title lists that no forge client can ever
+ * answer, because the push dies before any forge is asked (see
+ * `transportFailure` below).
+ */
+type ShipMotif = ForgeDegradation | 'offline'
+
+/**
+ * What the ship has to say about the recap it was supposed to carry, in the
+ * `data.name` vocabulary every other journal payload uses — raw wire tokens,
+ * the UI translating from them (`shippedEventText`, useTaskBoard.ts).
+ *
+ * It exists because a ship whose recap was HELD BACK used to be
+ * indistinguishable, in the workspace journal, from a nominal one: the event
+ * carried the story in `data.note`, no component reads `note`,
+ * `SUMMARY_KEYS.shipped` probes `url`/`branch` and matches neither, and
+ * `outcome.reasonCode` being undefined on that path made `task-server.ts`
+ * `delete record.reason`. Three green "Publiée" lines, one of which had
+ * silently withheld a document for carrying a secret. The three messages
+ * this module poses on `shipped` now get the same audit its seven `issue`
+ * names already had.
+ *
+ * Only the refusals are named. A ship that carried its recap poses NOTHING,
+ * so the nominal line keeps reading as the plain label — naming the happy
+ * path would put a badge on every single ship.
+ */
+export type ShipRecapState = 'recap_missing' | 'recap_blocked_secrets' | 'recap_unscanned'
+
 export type ShipOutcome =
-  { pushed: true; mrUrl: string | null; note: string | null } | { pushed: false; error: string }
+  | ({
+      pushed: true
+      mrUrl: string | null
+      note: string | null
+      /**
+       * Names the degradation when the ship landed short of an MR. OPTIONAL:
+       * a ship that opened its merge request has nothing to name, and the
+       * `note` stays the readable half of the story either way.
+       */
+      /**
+       * Names the degradation when the ship landed short of its RECAP —
+       * a different axis from `reasonCode`, which is about the merge request,
+       * and both can be posed on the same ship. OPTIONAL: absent is "the
+       * recap rode along", the ordinary case.
+       */
+      recapState?: ShipRecapState
+    } & ShipDegradation)
+  /**
+   * Nothing shipped. `error` is the readable half and has always been there;
+   * the two optional fields name it when the cause is a forge codesema could
+   * not reach, and stay absent for every other push failure — a rejected
+   * non-fast-forward, a hook, a credential prompt — which `forge_unreachable`
+   * would misname.
+   */
+  | ({ pushed: false; error: string } & ShipDegradation)
 
 type ForgeCandidate = { cli: 'gh' | 'glab'; args: string[] }
 
@@ -153,12 +298,11 @@ type ForgeCandidate = { cli: 'gh' | 'glab'; args: string[] }
  * unrecognized (self-hosted) remote tries both. Flags verified against
  * gh 2.46.0 and glab 1.53.0.
  */
-function forgeCandidates(cwd: string, task: TaskRecord): ForgeCandidate[] {
+function forgeCandidates(cwd: string, task: TaskRecord, description: string): ForgeCandidate[] {
   const hint = detectForgeHint(cwd)
   // The MR targets the base BRANCH on the forge: strip the remote-tracking
   // prefix a detected base like 'origin/develop' carries.
   const base = task.base.replace(/^origin\//, '')
-  const description = buildMrDescription(task)
   const candidates: ForgeCandidate[] = []
   if (hint !== 'gitlab') {
     // prettier-ignore
@@ -178,10 +322,14 @@ function forgeCandidates(cwd: string, task: TaskRecord): ForgeCandidate[] {
 }
 
 /** Post-push MR creation: by construction always a pushed:true outcome. */
-async function createMr(opts: ShipTaskOptions, execForge: ShipForgeExecFn): Promise<ShipOutcome> {
+async function createMr(
+  opts: ShipTaskOptions,
+  execForge: ShipForgeExecFn,
+  description: string,
+): Promise<ShipOutcome> {
   // Journal note, not UI copy: raw English like every other event payload.
   let note: string | null = null
-  for (const candidate of forgeCandidates(opts.cwd, opts.task)) {
+  for (const candidate of forgeCandidates(opts.cwd, opts.task, description)) {
     const outcome = await execForge(candidate.cli, candidate.args, opts.cwd)
     if (outcome.kind === 'missing') {
       continue
@@ -211,29 +359,391 @@ async function createMr(opts: ShipTaskOptions, execForge: ShipForgeExecFn): Prom
       note: mrUrl ? null : `${candidate.cli} created the merge request but printed no URL`,
     }
   }
+  if (note !== null) {
+    // A forge CLI DID run and failed: its own message stays the honest note.
+    //
+    // This used to be left UNCODED, on the argument that "the forge answered,
+    // so forge_unreachable would misname it". T2.7 overturns that: D2 defines
+    // `forge_unreachable` as "the forge could not be reached: no gh/glab
+    // available, no network, an API that refused" (contract/src/reasons.ts),
+    // and a `gh` that exits non-zero on `pr create` IS an API that refused.
+    // The three DP14 questions all answer yes — it qualifies a refusal (no MR
+    // was opened), terminal-vs-retryable is meaningful (retryable: the same
+    // call can succeed later), and a machine reads it (T3.6 will not merge
+    // without an MR). Leaving it uncoded made the ONE forge degradation a
+    // human is most likely to hit the only one no machine could see.
+    //
+    // `detail: 'cli-error'` is what keeps it distinguishable from the
+    // `no-cli` case below, which shares the code and means the opposite
+    // thing for what the user must do about it.
+    return { pushed: true, mrUrl: null, note, reasonCode: 'forge_unreachable', detail: 'cli-error' }
+  }
   return {
     pushed: true,
     mrUrl: null,
-    note:
-      note ??
-      'no forge CLI (gh or glab) available — branch pushed, open the merge request manually',
+    note: 'no forge CLI (gh or glab) available — branch pushed, open the merge request manually',
+    // The push DID land: the work is safe on origin and the MR is one manual
+    // (or one retried) step away — a retryable degradation, not a failure.
+    reasonCode: 'forge_unreachable',
+    detail: 'no-cli',
   }
 }
 
 /**
- * Push + MR creation. The push is the gate: if it fails, nothing shipped and
- * the caller keeps the task status unchanged. Past the push, every outcome is
- * a successful ship — mrUrl null with an explanatory note when no forge CLI
- * could open the MR (not installed, no matching remote, tool error).
+ * Journal note, not UI copy: raw English like every other payload in this file.
+ * Deliberately NOT exported: a test that imported it would compare the message
+ * to the constant that produces it and prove nothing. What the tests pin is
+ * the pair (readable message, coded motif) at the surface where a human and a
+ * machine actually read it.
+ */
+const SHIP_NO_REMOTE_ERROR =
+  'no origin remote is configured for this repo — there is nothing to push the branch to, and no merge request can be opened'
+
+/** Exit code git uses for "there is no remote by that name" (git 2.53.0). */
+const GIT_NO_SUCH_REMOTE = 2
+
+/**
+ * Is there an `origin` to push to? Asked through the SAME injected git seam as
+ * the push itself, so a test that stubs git stubs this too and no test ever
+ * needs a real remote.
+ *
+ * TRI-state, and that is the whole point (round-2 adversarial review, majeur
+ * 1). `false` is claimed only when git ANSWERED that there is no such remote —
+ * exit code 2, the same signal `probeOriginRemote` reads, and the only one
+ * that survives a localised git. Everything else (git not installed, a `cwd`
+ * that is not a repo or cannot be read, a timeout) is `null`: "I could not
+ * ask". Collapsing those into `false` is how a repo that HAS an origin got
+ * refused with "no origin remote is configured for this repo" the moment git
+ * went missing — the exact "right decision, wrong announcement" mistake this
+ * module writes down and then made.
+ *
+ * A remote whose URL is blank is `false`, not `null`: git answered, and the
+ * answer is nothing to push to. `probeOriginRemote` says the same, so the
+ * header and the refusal cannot disagree about one repo.
+ */
+async function originRemote(execGit: ShipGitExecFn, cwd: string): Promise<boolean | null> {
+  const outcome = await execGit(['remote', 'get-url', 'origin'], cwd)
+  if (outcome.kind === 'ok') {
+    return outcome.stdout.trim() !== ''
+  }
+  return outcome.kind === 'error' && outcome.status === GIT_NO_SUCH_REMOTE ? false : null
+}
+
+/**
+ * Does this push failure mean the remote host was never reached?
+ *
+ * The list is SHORT on purpose, and every entry is a phrase libcurl or
+ * OpenSSH prints — never one of git's own. That is what makes them usable:
+ * git translates its own wrapper (`fatal: unable to access …` comes out
+ * `fatal: impossible d'accéder à …` on a French box, measured on git 2.53.0)
+ * while the library's half stays in English whatever the locale is. A rule
+ * written on git's wrapper would code a failure in one language and nothing
+ * at all in another.
+ *
+ * Deliberately NOT in the list, each for a measured reason:
+ *
+ *  - `unable to access` — the wrapper libcurl's message hangs off. It also
+ *    wraps `The requested URL returned error: 403` (measured against a local
+ *    403), and a forge that ANSWERED 403 refused us, it was not unreachable.
+ *    `forge_unreachable` is a RETRYABLE code: pinning it on a permission
+ *    problem tells a machine to keep trying something that will never work.
+ *  - `Could not read from remote repository` — ssh's epilogue, printed just
+ *    as much for a rejected key as for a dead network.
+ *  - a rejected push (non-fast-forward, a hook, a protected branch) carries
+ *    none of these and stays UNCODED, which is the point of a short list: a
+ *    wrong code is worse than no code, because D2 is what a resume decision
+ *    is made on.
+ */
+const TRANSPORT_FAILURES: readonly string[] = [
+  // libcurl "Could not resolve host: <h>", and ssh's "Could not resolve
+  // hostname <h>: <why>" by the same prefix. Both measured.
+  'could not resolve host',
+  // libcurl "Failed to connect to <h> port <p> after <n> ms: <why>" — which
+  // is also where an ENETUNREACH surfaces on the https transport. Measured.
+  'failed to connect to',
+  // ssh "connect to host <h> port <p>: Connection refused". Measured.
+  'connection refused',
+  // Both transports print exactly this. Measured on ssh.
+  'connection timed out',
+]
+
+function transportFailure(message: string): boolean {
+  const said = message.toLowerCase()
+  return TRANSPORT_FAILURES.some((phrase) => said.includes(phrase))
+}
+
+/**
+ * The agent's own last summary — the ONE prose source the ship path can read
+ * today, and the same one the description carried before T3.5. It reaches the
+ * recap as `summary`, which the renderer quotes; `changes[]`/`decisions[]` stay
+ * empty until something produces them, and an empty section is omitted rather
+ * than filled with an invented placeholder.
+ *
+ * `Array.isArray` and not a bare `.findLast`: a hand-edited or truncated
+ * task.json can carry a record without `turns`, and this must degrade, not
+ * throw, on the path that ships.
+ */
+function lastTurnContribution(task: TaskRecord): { summary: string } | null {
+  const turns = Array.isArray(task.turns) ? task.turns : []
+  const summary = turns.findLast((turn) => turn?.response)?.response
+  return summary ? { summary } : null
+}
+
+type PreparedRecap = {
+  source: MrRecapSource
+  /** Exactly what landed in recap.json, or null when nothing did. */
+  persisted: RecapRecord | null
+  /** Degradation to add to the ship's note; null on the nominal path. */
+  note: string | null
+  /** The same degradation as a wire token for the journal; null on the nominal path. */
+  state: ShipRecapState | null
+}
+
+/**
+ * Generates the task's recap and persists it (tmp+rename, invariant 5), then
+ * decides what the merge-request description may carry.
+ *
+ * The order matters and is not the obvious one: the recap is WRITTEN before
+ * the secret scan runs. `recap.json` is a local file — writing it sends
+ * nothing anywhere — and the ticket requires a blocked recap to SURVIVE on
+ * disk, secret included, for the human who has to act on it. Scanning first
+ * and skipping the write on a match would destroy the very artefact the block
+ * is supposed to preserve.
+ *
+ * What survives is the CONTENT, not the byte-for-byte file: `attachMrUrl`
+ * still back-writes `mr_url` afterwards on a ship that opened a merge
+ * request, blocked or not. That is deliberate — the link belongs on the
+ * record whatever became of the publication, and a later manual publication
+ * would want it — and it is said here because the first version of this
+ * ticket's CHANGELOG entry claimed the file stayed "intact", which is
+ * literally false and would send a reader looking for a bug that is a
+ * decision.
+ *
+ * Never throws: `writeTaskRecap` does (an unusable id or record are hard
+ * invariants there), and an injected generator can, and neither may take down
+ * a push that already succeeded.
+ */
+/** Either the recap that landed on disk, or the readable reason none did. */
+type PersistedRecap = { recap: RecapRecord } | { reason: string }
+
+function generateAndPersist(opts: ShipTaskOptions): PersistedRecap {
+  const generate = opts.generateRecapFn ?? generateRecap
+  const write = opts.writeTaskRecapFn ?? writeTaskRecap
+  try {
+    const contribution = lastTurnContribution(opts.task)
+    // `criteriaVerdicts` is deliberately NOT passed: T3.2 is the ticket that
+    // makes per-criterion verdicts readable off a review, and inventing a
+    // source for them here would put a figure in the recap that nothing
+    // measured. Until then the recap's "Acceptance criteria" section is
+    // absent — omitted, per renderRecapMarkdown, not rendered empty.
+    const result = generate({
+      cwd: opts.cwd,
+      task: opts.task,
+      ...(contribution ? { modelOutput: contribution } : {}),
+    })
+    if (result.recap === null) {
+      // The generator refuses only when the record has no usable branch: there
+      // is nothing to identify a recap by, so there is nothing to publish.
+      const reason = result.degradations.find((d) => d.field === 'branch')?.reason
+      return { reason: reason ?? 'the generator produced none' }
+    }
+    return { recap: write(opts.cwd, opts.task.id, result.recap) }
+  } catch (err) {
+    // Generation or persistence blew up. The push already landed; say what
+    // broke and ship anyway.
+    return { reason: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** Either the rendering may be published, or the readable reason it may not. */
+type ScanVerdict = { clear: true } | { clear: false; kind: 'blocked' | 'unscanned'; note: string }
+
+/**
+ * The secret gate over what the description would carry, INSIDE a guard of
+ * its own.
+ *
+ * The guard is the point, and it was the one seam of the three that did not
+ * have one: `generateRecapFn` and `writeTaskRecapFn` are both called under
+ * `generateAndPersist`'s `try`, `scanRecapSecretsFn` was called outside it —
+ * so a throw here escaped a `prepareRecap` documented "Never throws", and
+ * `task-server.ts` (the `catch` around `run(...)`) would have turned it into
+ * `pushed: false` for a push that had ALREADY succeeded: the commits on
+ * origin, the task left un-shipped, and a "git push failed" the user can
+ * neither reproduce nor act on.
+ *
+ * A scan that did not run FAILS CLOSED, and says so in its own words rather
+ * than borrowing `blocked`'s: nothing cleared the document, and the whole
+ * reason this gate sits before the description is composed is that nothing
+ * uncleared reaches a forge.
+ */
+function scanForSecrets(opts: ShipTaskOptions, persisted: RecapRecord): ScanVerdict {
+  let secrets: SecretMatch[]
+  try {
+    secrets = (opts.scanRecapSecretsFn ?? scanRecapSecrets)(renderRecapMarkdown(persisted))
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    return {
+      clear: false,
+      kind: 'unscanned',
+      note: `recap withheld from the merge request: its secret scan could not run (${detail})`,
+    }
+  }
+  if (secrets.length === 0) {
+    return { clear: true }
+  }
+  // Blocked BEFORE the description is composed, so nothing derived from the
+  // recap reaches the forge — while recap.json, written above, keeps the
+  // secret on disk for a human. Same blocking scan as the sync's (sync.ts),
+  // and with no --force escape hatch: the sync's exists because a human typed
+  // the command and can answer for it; nothing here is typed by anyone.
+  const detail = secrets.map((match) => `${match.file}: ${match.detail}`).join('; ')
+  return {
+    clear: false,
+    kind: 'blocked',
+    note: `recap withheld from the merge request: it looks like it carries a secret (${detail})`,
+  }
+}
+
+/** The wire token each refusal is journaled under. */
+const RECAP_STATE: Record<Exclude<MrRecapSource['kind'], 'recap'>, ShipRecapState> = {
+  missing: 'recap_missing',
+  blocked: 'recap_blocked_secrets',
+  unscanned: 'recap_unscanned',
+}
+
+function prepareRecap(opts: ShipTaskOptions): PreparedRecap {
+  const built = generateAndPersist(opts)
+  if (!('recap' in built)) {
+    return {
+      source: { kind: 'missing' },
+      persisted: null,
+      note: `no recap: ${built.reason}`,
+      state: RECAP_STATE.missing,
+    }
+  }
+  const persisted = built.recap
+  const verdict = scanForSecrets(opts, persisted)
+  if (!verdict.clear) {
+    return {
+      source: { kind: verdict.kind },
+      persisted,
+      note: verdict.note,
+      state: RECAP_STATE[verdict.kind],
+    }
+  }
+  return { source: { kind: 'recap', recap: persisted }, persisted, note: null, state: null }
+}
+
+/** Joins the sentences a ship has to say, in the order they happened; null when it has none. */
+function joinNotes(...notes: readonly (string | null)[]): string | null {
+  const said = notes.filter((note): note is string => note !== null && note !== '')
+  return said.length > 0 ? said.join('; ') : null
+}
+
+/**
+ * Adds `recapNote` to whatever the MR creation already had to say, never
+ * replacing it (invariant 2: a new reason is ADDED to the existing message).
+ */
+function withRecapNote(outcome: ShipOutcome, recapNote: string | null): ShipOutcome {
+  if (!outcome.pushed || recapNote === null) {
+    return outcome
+  }
+  return { ...outcome, note: joinNotes(recapNote, outcome.note) }
+}
+
+/**
+ * Back-writes the merge request's URL onto the recap once the MR exists, and
+ * returns the sentence to add to the ship's note when it could not.
+ *
+ * `generateRecap` reads `mr_url` off the LAST 'shipped' journal event, which
+ * on a first ship is written by the caller only after this function returns —
+ * so at generation time that URL is structurally unknowable. Without this
+ * second write the recap published on the issue would never link the merge
+ * request it describes, on exactly the ships that opened one. Atomic like the
+ * first write.
+ *
+ * A failure here is NOT a violation of invariant 2 — the URL survives on the
+ * `shipped` event and in the merge request itself, so nothing about the ship
+ * becomes unknowable — which is why it never degrades the outcome. But it
+ * used to be swallowed in total silence, and "silent by design" is not a
+ * shape this repo has anywhere else: a clause costs nothing and tells the one
+ * reader who would otherwise wonder why `recap.json` has no `mr_url` on a
+ * task that plainly opened an MR.
+ */
+function attachMrUrl(
+  opts: ShipTaskOptions,
+  prepared: PreparedRecap,
+  mrUrl: string | null,
+): string | null {
+  if (prepared.persisted === null || mrUrl === null || prepared.persisted.mr_url === mrUrl) {
+    return null
+  }
+  try {
+    ;(opts.writeTaskRecapFn ?? writeTaskRecap)(opts.cwd, opts.task.id, {
+      ...prepared.persisted,
+      mr_url: mrUrl,
+    })
+    return null
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    return `the merge request URL could not be written back onto the recap (${detail}) — the recap on disk keeps its previous contents`
+  }
+}
+
+/**
+ * Push + recap + MR creation. The push is the gate: if it fails, nothing
+ * shipped, no recap is produced and the caller keeps the task status
+ * unchanged. Past the push, every outcome is a successful ship — mrUrl null
+ * with an explanatory note when no forge CLI could open the MR (not installed,
+ * no matching remote, tool error).
  */
 export async function shipTask(opts: ShipTaskOptions): Promise<ShipOutcome> {
   const execGit = opts.execGit ?? defaultExecGit
+  // D9 (degraded-mode.ts): no remote, no ship — REFUSED, and named. Without
+  // this gate the push still failed, but with git's own words and no
+  // `reason_code` at all: the one degradation D9 is most about ("a repo with
+  // no remote") was the one the product could not name. Checked before the
+  // push rather than after, so the refusal is not a network error message.
+  //
+  // `null` — could not ask — deliberately falls THROUGH to the push instead
+  // of refusing: we have nothing honest to announce, so we let the push
+  // happen and git's own words be the answer. That is also what keeps the
+  // "git not found" branch below reachable.
+  if ((await originRemote(execGit, opts.cwd)) === false) {
+    return {
+      pushed: false,
+      error: SHIP_NO_REMOTE_ERROR,
+      reasonCode: 'forge_unreachable',
+      detail: 'no-remote',
+    }
+  }
   const push = await execGit(['push', '-u', 'origin', opts.task.branch], opts.cwd)
   if (push.kind === 'missing') {
     return { pushed: false, error: 'git push failed: git not found' }
   }
   if (push.kind === 'error') {
-    return { pushed: false, error: `git push failed: ${push.message}` }
+    const error = `git push failed: ${push.message}`
+    // D9's third motif, and the most common of the three: the repo has a
+    // remote and a forge CLI, and the machine simply cannot reach the host.
+    // The push dies before any forge is asked anything, so nothing else in
+    // this file would ever have named it. Everything the short list above
+    // does not recognise stays uncoded, on purpose.
+    return transportFailure(push.message)
+      ? { pushed: false, error, reasonCode: 'forge_unreachable', detail: 'offline' }
+      : { pushed: false, error }
   }
-  return createMr(opts, opts.execForge ?? defaultExecForge)
+  const prepared = prepareRecap(opts)
+  const outcome = await createMr(
+    opts,
+    opts.execForge ?? defaultExecForge,
+    buildMrDescription(prepared.source),
+  )
+  if (!outcome.pushed) {
+    return outcome
+  }
+  const attachNote = attachMrUrl(opts, prepared, outcome.mrUrl)
+  // The recap state rides the outcome so the caller can journal it BY NAME:
+  // a note nothing renders is a note nobody reads (majeur 2).
+  const named = prepared.state ? { ...outcome, recapState: prepared.state } : outcome
+  return withRecapNote(named, joinNotes(prepared.note, attachNote))
 }

@@ -5,7 +5,16 @@
 // with bun:test, no DOM, no fetch); the thin localStorage wrappers at the
 // bottom are the only impure parts and stay best-effort.
 
-import type { ForgeMr, LocalBranch, Project, TaskRecord, TaskStatus } from '../types'
+import type { MessageKey } from '../i18n'
+import type {
+  ForgeMr,
+  ForgeUnavailableReason,
+  LocalBranch,
+  Project,
+  TaskRecord,
+  TaskStatus,
+  WorkspaceInfo,
+} from '../types'
 import { compareByActivity, sectionOf } from './useTaskBoard'
 import type { TaskState } from './useTasks'
 
@@ -74,6 +83,64 @@ export function deriveActiveProject(
     return apiCurrent
   }
   return projects[0]?.id ?? null
+}
+
+/**
+ * Isolation facts for the card the human is looking at (T1.4). Each project
+ * carries its overlay on GET /api/projects; older CLIs omit it and we fall
+ * back to the process-wide blob (launch repo).
+ */
+export function isolationForProject(
+  projectId: string | null,
+  projects: readonly Project[],
+  fallback: WorkspaceInfo | null,
+): WorkspaceInfo | null {
+  if (projectId === null) {
+    return fallback
+  }
+  return projects.find((project) => project.id === projectId)?.isolation ?? fallback
+}
+
+/**
+ * The three motifs of D9, and the sentence each one deserves. A `Record` over
+ * the union rather than a lookup with a default: a fourth motif appearing in
+ * `ForgeUnavailableReason` stops compiling here instead of silently falling
+ * back to the vaguest wording.
+ */
+const FORGE_REASON_KEYS: Record<ForgeUnavailableReason, MessageKey> = {
+  'no-remote': 'workspace.forgeReasonNoRemote',
+  'no-cli': 'workspace.forgeReasonNoCli',
+  'cli-error': 'workspace.forgeReasonCliError',
+}
+
+/**
+ * The reason the header must state, or null when there is nothing to state.
+ *
+ * Null covers exactly TWO cases, and neither is a degradation: the server said
+ * the forge is available, or it said NOTHING at all (an older CLI, a workspace
+ * that never probed). The second is "unknown", and the honest thing to do with
+ * an unknown is to claim neither side — the doctrine `WorkspaceInfo` documents
+ * on the field itself. What is never allowed is the reverse: `forge_available:
+ * false` with no motif must still SAY something, hence the explicit unknown
+ * wording rather than a silent null.
+ */
+export function forgeUnavailableKey(info: WorkspaceInfo | null): MessageKey | null {
+  if (!info || info.forge_available !== false) {
+    return null
+  }
+  // `forge_reason` is TYPED as the union but ARRIVES over the wire, from a CLI
+  // that may be newer than this bundle. An unknown motif is looked up, misses,
+  // and — before this guard — returned `undefined`, which the `v-if` reads as
+  // "nothing to say" and the badge DISAPPEARS: a degradation the server took
+  // the trouble to announce, silently swallowed by the half that exists to
+  // show it. A motif we cannot name still gets said, with the wording for
+  // exactly that. And `Object.hasOwn` rather than a plain lookup, because
+  // `forge_reason: '__proto__'` (or 'toString') would otherwise hit
+  // Object.prototype and hand the template a truthy non-key to render.
+  const reason = info.forge_reason
+  return reason !== undefined && Object.hasOwn(FORGE_REASON_KEYS, reason)
+    ? FORGE_REASON_KEYS[reason]
+    : 'workspace.forgeReasonUnknown'
 }
 
 /** Card counters: conversations needing the human vs conversations moving. */
