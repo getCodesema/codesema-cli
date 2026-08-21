@@ -431,7 +431,7 @@ export async function syncCycleLabel(opts: {
   // chain kept in `inFlight` stays rejectable, which is what gives
   // `then(run, run)` above something to actually protect the next transition
   // from. Swallowing it one level down would turn that arm into dead code.
-  return serialize(`${opts.cwd} ${String(issue.iid)}`, () =>
+  return serialize(`${opts.cwd}\u0000${String(issue.iid)}`, () =>
     poseCycleLabel(forge, issue.iid, opts.label),
   ).catch((error: unknown): CycleLabelOutcome => ({
     kind: 'failed',
