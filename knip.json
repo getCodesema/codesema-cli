@@ -32,8 +32,13 @@
   // `workspaces` exists — the root package is the workspace named ".".
   "workspaces": {
     ".": {
-      // DEBT — `unrun` sits in the root devDependencies and nothing uses it: no
-      // script, no source file, no CI job. Drop the dependency, then drop this.
+      // NOT debt, despite how it looks: `unrun` is an OPTIONAL PEER of tsdown
+      // (`"unrun": "*"` in its peerDependencies), and installing it is what
+      // makes tsdown load tsdown.config.ts through it — the build log says so
+      // on every run: `config file: .../tsdown.config.ts (unrun)`. Nothing
+      // imports it, which is exactly why knip cannot see the link and calls it
+      // unused. Removing it does not break the build, it silently changes which
+      // config loader runs. Keep both the dependency and this line.
       "ignoreDependencies": ["unrun"]
     },
 

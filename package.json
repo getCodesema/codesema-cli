@@ -13,6 +13,7 @@
     "build:cli": "bun run --cwd packages/cli build",
     "lint": "oxlint",
     "knip": "knip",
+    "audit": "bun audit --audit-level=high",
     "typecheck": "bun run build:contract && bun run typecheck:only",
     "typecheck:only": "bun run --cwd packages/contract typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/web typecheck",
     "test": "bun run build:contract && bun run test:only",
@@ -26,6 +27,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "overrides": {
+    "nanoid": "^3.3.18",
+    "postcss": "^8.5.26"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.2",

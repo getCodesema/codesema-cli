@@ -29,6 +29,20 @@ jobs:
 
       - run: bun run knip
 
+      # Known advisories against the installed tree. Every package this can
+      # flag today is a BUILD-time dependency: `codesema` ships with no runtime
+      # dependencies at all, so nothing here reaches a user's machine by being
+      # installed. It still matters, because these packages execute during
+      # `bun run build` and that build produces the `dist` we publish.
+      #
+      # Two transitive packages are pinned past their advisories through the
+      # `overrides` block in the root package.json (postcss, and the nanoid it
+      # pulls). Their parents — vite, vue, @vue/compiler-sfc — still declare
+      # ranges that resolve to the vulnerable versions, so removing the override
+      # silently reintroduces both. Drop an entry only once its parent has moved
+      # on, and confirm with `bun run audit` rather than by reading the range.
+      - run: bun run audit
+
       - run: bun run format:check
 
       - run: bun run typecheck
