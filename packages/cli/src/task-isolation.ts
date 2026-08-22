@@ -92,7 +92,13 @@ export const CAGE_HOME_DIR = '/home/agent'
 /** Default install of the agent CLI into the image; injectable (tests, smoke runs). */
 export const DEFAULT_CLAUDE_INSTALL_COMMAND = 'npm install -g @anthropic-ai/claude-code'
 
-/** Bun bases have no npm: BUN_INSTALL puts the binary on the shared PATH. */
+/**
+ * Bun bases have no npm: BUN_INSTALL puts the binary on the shared PATH.
+ *
+ * @deadcode Nothing selects a bun base today, so nothing reads this. Kept as the
+ * counterpart of DEFAULT_CLAUDE_INSTALL_COMMAND until that path is either wired
+ * up or dropped; delete both this and the tag when the question is settled.
+ */
 export const BUN_CLAUDE_INSTALL_COMMAND =
   'BUN_INSTALL=/usr/local bun install -g @anthropic-ai/claude-code'
 
@@ -1910,7 +1916,12 @@ export function hostAgentVersion(command: string, execFn?: IsolationExecFn): Pro
   return started
 }
 
-/** Host claude version; wrapper around hostAgentVersion. */
+/**
+ * Host claude version; wrapper around hostAgentVersion.
+ *
+ * @deadcode Every caller went through hostAgentVersion directly. Delete this
+ * wrapper and its tag unless a caller comes back.
+ */
 export function hostClaudeVersion(execFn?: IsolationExecFn): Promise<string> {
   return hostAgentVersion('claude', execFn)
 }

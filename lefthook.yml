@@ -10,10 +10,35 @@ pre-commit:
       glob: '*.{ts,mjs,vue}'
       run: bunx oxlint {staged_files}
 
+commit-msg:
+  commands:
+    commitlint:
+      # Conventional Commits, cf. commitlint.config.mjs pour les deux écarts au
+      # preset et pour les commits que le task runner génère lui-même.
+      run: bunx commitlint --edit {1}
+
 pre-push:
   commands:
+    secrets:
+      # Le pre-commit ne voit que l'index : un secret arrivé par un commit non
+      # passé par le hook (--no-verify, rebase, cherry-pick, commit d'un autre
+      # outil) ne serait rattrapé par rien avant la forge. On scanne donc ici
+      # ce qui est sur le point de partir, borné aux commits non poussés :
+      # l'historique antérieur a déjà été scanné aux pushs précédents et un
+      # full-scan croît avec le dépôt. Repli sur le full-scan quand la branche
+      # n'a pas encore d'upstream (premier push, `@{push}` irrésolu).
+      run: |
+        if remote_head="$(git rev-parse '@{push}' 2>/dev/null)"; then
+          gitleaks git --no-banner --redact --log-opts="$remote_head..HEAD" .
+        else
+          gitleaks git --no-banner --redact .
+        fi
     typecheck:
       run: bun run typecheck
+    knip:
+      # Unused files, exports and dependencies. Runs in about a second, so it
+      # sits here rather than waiting for CI to say it.
+      run: bun run knip
     test:
       # git exports its repo-location vars (GIT_DIR, GIT_WORK_TREE, ...) to the
       # hooks it runs; the test suite spawns git inside throwaway tmpdirs, and
@@ -21,4 +46,4 @@ pre-push:
       # calls to the real repository (test branches, commits and config land in
       # the repo you are pushing from). Strip them before running the tests —
       # same doctrine as subprocessEnv in packages/cli/src/git.ts.
-      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_PREFIX -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH bun run test
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_PREFIX -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH bun run test:coverage

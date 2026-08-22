@@ -27,13 +27,15 @@ jobs:
 
       - run: bun run lint
 
+      - run: bun run knip
+
       - run: bun run format:check
 
       - run: bun run typecheck
 
       - run: bun run build
 
-      - run: bun run test
+      - run: bun run test:coverage
 
       - run: bunx publint packages/cli
 
