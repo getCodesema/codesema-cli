@@ -17,6 +17,7 @@
     "typecheck:only": "bun run --cwd packages/contract typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/web typecheck",
     "test": "bun run build:contract && bun run test:only",
     "test:only": "bun test --timeout=20000 $(bun -e 'console.log(process.env.CI ? \"\" : \"--parallel=\" + Math.max(1, navigator.hardwareConcurrency >> 1))') packages/cli packages/web packages/contract",
+    "test:changed": "bun run build:contract && bun scripts/test-changed.mjs",
     "test:coverage": "bun run build:contract && bun scripts/coverage-gate.mjs",
     "verify": "bun run build:contract && bun run typecheck:only && bun run test:only",
     "prepare": "lefthook install || echo 'WARNING: lefthook install failed — git hooks are NOT active (no gitleaks secret scan, no format/lint on commit). Run `bun run prepare` again once git and lefthook are available.'",
