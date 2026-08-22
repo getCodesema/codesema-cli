@@ -38,6 +38,10 @@ export type HunkGap = { gap: number }
 
 export type HunkBlock = { rows: HunkLine[] } | HunkGap
 
+/**
+ * @deadcode No consumer left: the split view narrows on the row objects
+ * themselves. Delete this alias and its tag unless one comes back.
+ */
 export type SplitRowKind = 'ctx' | 'chg' | 'note'
 
 export type SplitRow =

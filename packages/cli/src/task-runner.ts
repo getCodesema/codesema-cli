@@ -108,6 +108,9 @@ import {
  * instead. This constant, `TaskSlotPool` and `TaskRunnerOptions.maxParallel`
  * /`.slots` stay exactly as inert as T1.2 left them, kept only so the
  * deprecated key still parses into a shape nothing reads for admission.
+ *
+ * @deadcode Inert by design since T1.2, per the note above — the tag records
+ * that knip is right, not that the constant is about to go.
  */
 export const DEFAULT_MAX_PARALLEL_TASKS = 3
 

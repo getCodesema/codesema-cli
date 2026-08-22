@@ -3,6 +3,10 @@ dist/
 web-dist/
 .codesema/
 *.log
+
+# only produced when the coverage run is asked for a file reporter (lcov);
+# the default text reporter of scripts/coverage-gate.mjs writes nothing to disk
+coverage/
 .DS_Store
 .env
 .env.*
