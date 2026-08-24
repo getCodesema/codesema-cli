@@ -3,6 +3,32 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.14.0] - unreleased
+
+### Added
+
+- **An issue radar in the workspace focus zone.** Where the focus zone used to show a one-line invitation when nothing was open, the selected project now gets two foldable accordions, its open issues and its open merge requests. Sorting is by update time or by title, the only two fields that exist and are never null on both sides. The state filter (draft against ready, read from `isDraft`) is offered on merge requests only: after the restriction to open items there is no honest boolean left to discriminate issues, and a filter that always returns everything is a control that lies about what it does. For the same reason there is no Open / Merged / Closed filter anywhere, since neither list ever carries a closed item. Label chips are cumulative and their counts are derived from the list actually loaded, never from a hardcoded vocabulary. Fold state, sort, filter and selected labels persist as a single typed JSON blob in `localStorage`, read back tolerantly (absent, empty, partial or corrupted all degrade to defaults) and always behind a `try`/`catch`, since the store itself throws in a private window. The accordion count badge stays absent while the real state is unknown rather than showing a zero nobody measured.
+
+- **`GET /api/issues?project=` serves the forge issues to the web UI.** The CLI already knew how to read them; nothing exposed them. The route mirrors `/api/mrs` exactly: same project resolution, same 404 on an unknown project, same test seam, and the result is passed through untouched. The `useIssues` composable loads them lazily per project, caches per project, retries a project left in transport error, and keeps the whole result rather than a bare array, including its `truncated` flag and the five unavailability reasons with their optional detail. A forge that is unreachable and a project with no open issue are never confused.
+
+- **The merge request contract carries thirteen enriched fields, every one of them nullable.** State, draft flag, labels, additions, deletions, changed files, a check rollup, reviewers, assignees, milestone, mergeability, commit count and body. `null` means the forge did not say it, never zero: a renderer omits the element instead of printing a `0` that reads as a measurement, while a zero that was actually measured is shown. `gh` fills them from a widened `--json` selection. `glab` has no field selection at all, so it fills what its list payload already carries and adds one bounded `api` call per merge request for the rest, leaving `null` behind wherever the REST API exposes nothing. GitLab therefore shows less than GitHub, which is the point: it never shows something false.
+
+- **A shared merge request card and metadata rail** (`packages/web/src/components/mr/`), consumed by the workspace radar and adopted by the standalone review UI, so the rule that turns data into pixels lives in one place instead of two that drift. Both render in the light and the dark theme through the existing `.ws-root` remap, using only remapped tokens. Passing checks fold into a single count because a green check calls for no action, while failures and pending runs are spelled out. When a check list is truncated the card refuses its own numbers and falls back to an aggregate signal, in text as well as in every attribute. "Check status unavailable" and "no automated checks" stay two different sentences, and an unknown metric prints as a dash rather than a zero.
+
+- **Tailwind v4 as a CSS-first theme foundation.** Our existing tokens are exposed through an `@theme inline` block, which keeps the generated utilities pointing at the live custom properties so the dark remap still applies to them. Preflight is deliberately not imported: the existing components rely on browser default styles inside their scoped blocks, and its reset would break them on sight.
+
+### Fixed
+
+- **The merge request list was silently capped at thirty.** Neither porcelain received a pagination flag, and both stop at thirty by default, so a repository with more open merge requests presented a prefix of its list as the whole list, with nothing in the payload to say otherwise. Both calls are now bounded explicitly, `--limit` for `gh` and a page walk for `glab`, against a shared cap of 200 aligned with the issue client, and `ForgeMrsResult` carries a list-level `truncated` flag that the UI renders.
+
+- **The forge output buffer kept Node's 1 MiB default.** Harmless while the payload was seven short fields, dangerous the moment it carried every commit and every full description: an ordinary repository could exceed it, and the resulting error turned the entire list into `cli-error` even though the data was there. Raised to 64 MiB, the value the issue client already used.
+
+- **The GitLab enrichment budget was checked only before starting a call**, never during one, so a call started just before the deadline could run its own five seconds past it and the phase could last nearly twice what its own comment promised. Each call now gets a leash equal to the time remaining.
+
+- **The web layer threw away the truncation flag the forge client had just gained.** `loadMrs` reduced the whole `/api/mrs` result to `body.available ? body.mrs : []`, so three different facts landed on the same empty array: a forge that answered with no open merge request, a forge that could not be reached, and a request that failed outright. The capped-list flag went with them, which reintroduced in the UI exactly the silent truncation the forge client had just been hardened against. The outcome of each load is now kept beside the flat list the conversation tree needs, and the radar renders it: the truncation line, a message per unavailability motif, and a count badge that stays absent while the state is unknown rather than showing a zero.
+
+- **Three comment-kind tokens were never remapped for the dark theme.** `--codesema-kind-security`, `-perf` and `-praise` kept their light-theme colours inside the workspace, so the diff view showed pastel badges on a dark ground. They now map onto the dark tokens that already existed. `-convention`, `-design` and `-why` have no dark counterpart yet and stay unmapped on purpose, which is a design decision rather than a mechanical one.
+
 ## [0.13.0] - 2026-08-21
 
 ### Added
