@@ -144,16 +144,9 @@ describe('parseGhMrList', () => {
         assignees: [{ id: 'u2', login: 'assignee1', name: 'Assignee One' }],
         milestone: { number: 1, title: 'v1.0', description: '', dueOn: null },
         mergeable: 'MERGEABLE',
-        commits: [
-          {
-            oid: 'abc123',
-            messageHeadline: 'feat: sidebar',
-            messageBody: '',
-            committedDate: '2026-07-28T09:00:00Z',
-            authoredDate: '2026-07-28T09:00:00Z',
-            authors: [{ name: 'octocat', email: 'o@example.test', id: 'u1', login: 'octocat' }],
-          },
-        ],
+        // No `commits` here: gh never sends it (never requested, see
+        // GH_JSON_FIELDS in forge-mrs.ts), and the parser ignores it even
+        // when present, so this fixture matches the real payload shape.
         body: 'PR description',
       },
     ])
@@ -177,10 +170,36 @@ describe('parseGhMrList', () => {
         assignees: ['assignee1'],
         milestone: 'v1.0',
         mergeable: 'mergeable',
-        commits: 1,
+        commits: null,
         body: 'PR description',
       },
     ])
+  })
+
+  test('commits is always null, even if a payload happened to carry one: it is never requested from gh', () => {
+    const raw = JSON.stringify([
+      {
+        ...BASE_FIELDS,
+        author: { login: 'a' },
+        baseRefName: 'main',
+        headRefName: 'feat/x',
+        commits: [
+          {
+            oid: 'abc123',
+            messageHeadline: 'feat: x',
+            messageBody: '',
+            committedDate: '2026-07-28T09:00:00Z',
+            authoredDate: '2026-07-28T09:00:00Z',
+            authors: [{ name: 'a', email: 'a@example.test', id: 'u1', login: 'a' }],
+          },
+        ],
+      },
+    ])
+    const parsed = parseGhMrList(raw)
+    expect(parsed?.[0]?.commits).toBeNull()
+    // Not the length of the array a careless mapping would have derived:
+    expect(parsed?.[0]?.commits).not.toBe(1)
+    expect(parsed?.[0]?.commits).not.toBe(0)
   })
 
   test('a field the forge did not supply is null, never 0, [], or ""', () => {
@@ -1150,6 +1169,27 @@ describe('listOpenMrs', () => {
         const limitIndex = capturedArgs.indexOf('--limit')
         expect(limitIndex).toBeGreaterThan(-1)
         expect(capturedArgs[limitIndex + 1]).toBe(String(MR_LIST_MAX + 1))
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('gh is never asked for commits: it blows past the GraphQL node budget at MR_LIST_MAX scale', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        let capturedArgs: string[] = []
+        const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            capturedArgs = args
+            return Promise.resolve({ kind: 'ok', stdout: '[]' })
+          }
+          return Promise.resolve({ kind: 'missing' })
+        }
+        await listOpenMrs(repo, { execFn })
+        const jsonIndex = capturedArgs.indexOf('--json')
+        expect(jsonIndex).toBeGreaterThan(-1)
+        const fields = (capturedArgs[jsonIndex + 1] ?? '').split(',')
+        expect(fields).not.toContain('commits')
       } finally {
         cleanup()
       }

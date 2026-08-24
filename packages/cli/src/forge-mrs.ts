@@ -44,8 +44,19 @@ export type ForgeMrsResult =
   | { available: true; mrs: ForgeMr[]; truncated: boolean }
   | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
 
+/**
+ * `commits` is deliberately absent: gh's GraphQL query walks it down to each
+ * commit's `authors`, roughly 5000 nodes per MR, and the node budget scales
+ * with `--limit`. At `--limit 201` (MR_LIST_MAX below) GitHub's API refuses
+ * the whole query with "exceeds the maximum limit of 500,000" nodes, verified
+ * against the real getCodesema/codesema-cli repo. Since a refused query fails
+ * the ENTIRE `pr list` call, keeping `commits` would turn every MR list past
+ * roughly a hundred open MRs into a full `cli-error`, exactly the whole-list
+ * rejection the field-by-field degradation doctrine forbids. `commits` stays
+ * null for gh, same as it already is for glab (see parseGlabMrList).
+ */
 // prettier-ignore
-const GH_JSON_FIELDS = 'number,title,author,headRefName,baseRefName,updatedAt,url,state,isDraft,labels,additions,deletions,changedFiles,statusCheckRollup,reviewRequests,assignees,milestone,mergeable,commits,body'
+const GH_JSON_FIELDS = 'number,title,author,headRefName,baseRefName,updatedAt,url,state,isDraft,labels,additions,deletions,changedFiles,statusCheckRollup,reviewRequests,assignees,milestone,mergeable,body'
 const EXEC_TIMEOUT_MS = 8000
 
 /**
@@ -240,11 +251,6 @@ function parseGhMilestone(value: unknown): string | null {
   return isNonEmptyString(title) ? title : null
 }
 
-/** gh's `commits` field is the full commit list (api/export_pr.go), not a count: derive the count from it. */
-function parseGhCommitsCount(value: unknown): number | null {
-  return Array.isArray(value) ? value.length : null
-}
-
 const GH_CHECKRUN_PASSED = new Set(['SUCCESS', 'NEUTRAL'])
 const GH_CHECKRUN_SKIPPED = new Set(['SKIPPED', 'CANCELLED', 'STALE'])
 const GH_STATUSCONTEXT_PASSED = new Set(['SUCCESS'])
@@ -375,7 +381,9 @@ export function parseGhMrList(raw: string): ForgeMr[] | null {
       assignees: parseGhLogins(e.assignees),
       milestone: parseGhMilestone(e.milestone),
       mergeable: parseGhMergeable(e.mergeable),
-      commits: parseGhCommitsCount(e.commits),
+      // Never requested (see GH_JSON_FIELDS above): gh's commit list blows
+      // past GitHub's GraphQL node budget once --limit grows with MR_LIST_MAX.
+      commits: null,
       body: parseOptionalString(e.body),
     })
   }
