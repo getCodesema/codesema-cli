@@ -9,6 +9,7 @@ import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './confi
 import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
+import { listIssues as probeIssues, type ForgeIssuesResult } from './forge-issues.js'
 import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
 import { t } from './i18n.js'
 import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
@@ -1148,6 +1149,20 @@ async function handleMrsList(
   sendJson(res, 200, result)
 }
 
+async function handleIssuesList(
+  res: ServerResponse,
+  cwd: string,
+  listIssues: (cwd: string) => Promise<ForgeIssuesResult>,
+): Promise<void> {
+  const result = await listIssues(cwd)
+  sendJson(res, 200, result)
+}
+
+/** Adapts forge-issues's `listIssues({cwd, state?})` to the plain `(cwd) => Promise<result>`
+ *  shape every route handler and test seam here uses; open issues only, same default the
+ *  underlying probe already applies. */
+const listIssuesDefault = (cwd: string): Promise<ForgeIssuesResult> => probeIssues({ cwd })
+
 /** GET /api/preview?source=mr&number=N | ?source=branch&name=X: deterministic (no agent) MR/branch preview. */
 async function handlePreview(
   res: ServerResponse,
@@ -1218,11 +1233,13 @@ function createRequestHandler(handlerOpts: {
   cwd: string
   configToken: string
   listMrs: (cwd: string) => Promise<ForgeMrsResult>
+  listIssues: (cwd: string) => Promise<ForgeIssuesResult>
   fix?: FixEndpoint | undefined
   mrReview?: MrReviewEndpoint | undefined
   tasks?: TasksEndpoint | undefined
 }) {
-  const { session, indexHtml, cwd, configToken, listMrs, fix, mrReview, tasks } = handlerOpts
+  const { session, indexHtml, cwd, configToken, listMrs, listIssues, fix, mrReview, tasks } =
+    handlerOpts
   // One cap for BOTH streams (review session + tasks): each browser tab holds
   // at most one of each, the cap only guards against runaway clients.
   let sseClients = 0
@@ -1325,6 +1342,7 @@ function createRequestHandler(handlerOpts: {
       }
       if (
         pathname === '/api/mrs' ||
+        pathname === '/api/issues' ||
         pathname === '/api/branches' ||
         pathname === '/api/preview' ||
         pathname === '/api/preview/diff'
@@ -1335,6 +1353,9 @@ function createRequestHandler(handlerOpts: {
         }
         if (pathname === '/api/mrs') {
           return void handleMrsList(res, scoped.cwd, listMrs)
+        }
+        if (pathname === '/api/issues') {
+          return void handleIssuesList(res, scoped.cwd, listIssues)
         }
         if (pathname === '/api/branches') {
           return sendJson(res, 200, listLocalBranches(scoped.cwd))
@@ -1530,6 +1551,8 @@ export async function startServer(
     currentProjectId?: string | null | undefined
     /** Test seam for GET /api/mrs (same shape as mr-review-runner's); defaults to the real forge CLI probe. */
     listMrs?: ((cwd: string) => Promise<ForgeMrsResult>) | undefined
+    /** Test seam for GET /api/issues; defaults to the real forge CLI probe. */
+    listIssues?: ((cwd: string) => Promise<ForgeIssuesResult>) | undefined
   },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
@@ -1568,6 +1591,7 @@ export async function startServer(
       cwd: opts.cwd,
       configToken,
       listMrs: opts.listMrs ?? listOpenMrs,
+      listIssues: opts.listIssues ?? listIssuesDefault,
       fix,
       mrReview,
       tasks,
