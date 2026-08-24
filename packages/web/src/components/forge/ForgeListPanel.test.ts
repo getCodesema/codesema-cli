@@ -524,6 +524,11 @@ describe('search box: title/number search, i18n placeholder, clear only when non
     expect(html).toContain(t('forge.listSearchPlaceholder'))
   })
 
+  test('the search box carries the magnifier glyph, by its stable lucide class', async () => {
+    const html = await render({})
+    expect(html).toContain('lucide-search')
+  })
+
   test('the clear button is absent while the search box is empty (its default state)', async () => {
     const html = await render({})
     expect(html).not.toContain(t('forge.listSearchClear'))
@@ -586,6 +591,11 @@ describe('footer: count (search-aware, truncation-aware) and relative freshness'
   test('the refresh button carries its own aria-label', async () => {
     const html = await render({})
     expect(html).toContain(t('forge.listFooterRefresh'))
+  })
+
+  test('the refresh button carries the refresh glyph, by its stable lucide class', async () => {
+    const html = await render({})
+    expect(html).toContain('lucide-refresh-cw')
   })
 
   test('issues loading spins the refresh button; mrs never does (no loading status to read)', async () => {

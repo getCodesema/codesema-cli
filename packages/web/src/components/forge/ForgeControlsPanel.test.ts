@@ -150,14 +150,24 @@ describe('both accordion headers always render; only the active section has a bo
   })
 })
 
-/** The two accordion head buttons, in DOM order, as [ariaExpanded, closedChevron] pairs. */
+/** The two accordion head buttons, in DOM order, as [ariaExpanded, closedChevron] pairs.
+ * The chevron is a lucide icon: its rendered `class` carries the library's own
+ * prefix classes ahead of ours, and both the section icon and the chevron are
+ * `<svg>` elements inside the same header, so this reads every svg's class
+ * list in the header and picks the one carrying the `fcp-acc-chevron` token
+ * (an exact token match, not a substring one, since "fcp-acc-chevron--closed"
+ * also contains "fcp-acc-chevron" as a substring). */
 function headsOf(html: string): Array<{ expanded: string; chevronClosed: boolean }> {
-  const pattern =
-    /<button type="button" class="fcp-acc-head" aria-expanded="(true|false)"[^>]*>[\s\S]*?<svg class="fcp-acc-chevron( fcp-acc-chevron--closed)?"/g
-  return [...html.matchAll(pattern)].map((m) => ({
-    expanded: m[1] ?? '',
-    chevronClosed: Boolean(m[2]),
-  }))
+  const headPattern =
+    /<button type="button" class="fcp-acc-head" aria-expanded="(true|false)"[^>]*>([\s\S]*?)<\/button>/g
+  return [...html.matchAll(headPattern)].map((head) => {
+    const svgClasses = [...head[2]!.matchAll(/<svg[^>]*\bclass="([^"]*)"/g)].map((m) => m[1]!)
+    const chevronClass = svgClasses.find((cls) => cls.split(/\s+/).includes('fcp-acc-chevron'))
+    return {
+      expanded: head[1] ?? '',
+      chevronClosed: (chevronClass?.split(/\s+/) ?? []).includes('fcp-acc-chevron--closed'),
+    }
+  })
 }
 
 describe('accordion headers: aria-expanded and the chevron follow the active section', () => {
@@ -332,6 +342,55 @@ describe('pull requests section: sort, status filter (draft/ready only), labels'
     })
     expect(html).toContain('needs-review')
     expect(html).toContain('lc-chip')
+  })
+})
+
+// Pins the glyph choices by their stable, library-generated lucide classes,
+// never the icons' own SVG path data, which can change on a library bump.
+describe('section and control glyphs', () => {
+  test('the issues section header carries the circle-dot glyph', async () => {
+    const html = await render({ activeSection: 'issues' })
+    expect(html).toContain('lucide-circle-dot')
+  })
+
+  test('the pull requests section header carries the pull-request glyph', async () => {
+    const html = await render({ activeSection: 'mrs' })
+    expect(html).toContain('lucide-git-pull-request-icon')
+  })
+
+  test('both accordion chevrons carry the chevron-down glyph', async () => {
+    const html = await render({ activeSection: 'issues' })
+    expect((html.match(/lucide-chevron-down/g) ?? []).length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('the sort heading carries the up-down arrow glyph, updated carries a clock, title a list', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue()]) }),
+    })
+    expect(html).toContain('lucide-arrow-up-down')
+    expect(html).toContain('lucide-clock')
+    expect(html).toContain('lucide-list-icon')
+  })
+
+  test('the labels heading carries the tag glyph, its search toggle the magnifier', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue({ labels: [label('bug')] })]) }),
+    })
+    expect(html).toContain('lucide-tag')
+    expect(html).toContain('lucide-search')
+  })
+
+  test('the mrs filters heading carries the funnel glyph, the reset action the cross', async () => {
+    const html = await render({
+      activeSection: 'mrs',
+      mrs: [mr()],
+      mrsState: { status: 'loaded', truncated: false },
+      mrsFilter: 'draft',
+    })
+    expect(html).toContain('lucide-list-filter')
+    expect(html).toContain('lucide-x-icon')
   })
 })
 

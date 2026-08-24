@@ -94,6 +94,40 @@ describe('state badge', () => {
   })
 })
 
+// Pins each state's lucide glyph by its stable, library-generated class
+// (lucide-<icon-name>), never the icon's own SVG path data, which can change
+// on a library bump. "open" alone must render the plain pull-request glyph,
+// not the draft one, since draft is a distinct state carried by `isDraft`.
+describe('state glyph: one of the four pull-request icons, matching the variant', () => {
+  test('open (not draft) renders the plain pull-request glyph', async () => {
+    const html = await renderCard(baseMr({ state: 'open', isDraft: false }))
+    expect(html).toContain('lucide-git-pull-request-icon')
+    expect(html).not.toContain('lucide-git-pull-request-draft')
+  })
+
+  test('open + draft renders the draft glyph, not the plain one', async () => {
+    const html = await renderCard(baseMr({ state: 'open', isDraft: true }))
+    expect(html).toContain('lucide-git-pull-request-draft')
+  })
+
+  test('merged renders the git-merge glyph', async () => {
+    const html = await renderCard(baseMr({ state: 'merged' }))
+    expect(html).toContain('lucide-git-merge')
+  })
+
+  test('closed renders the closed pull-request glyph', async () => {
+    const html = await renderCard(baseMr({ state: 'closed' }))
+    expect(html).toContain('lucide-git-pull-request-closed')
+  })
+
+  test('the state icon stays decorative: aria-hidden, no separate accessible name of its own', async () => {
+    const html = await renderCard(baseMr({ state: 'open', isDraft: false }))
+    const stateAt = html.indexOf('mrc-state')
+    const svgAt = html.indexOf('<svg', stateAt)
+    expect(html.slice(svgAt, svgAt + 400)).toContain('aria-hidden="true"')
+  })
+})
+
 describe('diff stats: null hides, a measured zero shows', () => {
   test('additions and deletions both null hide the bar and both counters', async () => {
     const html = await renderCard(baseMr({ additions: null, deletions: null }))
@@ -173,6 +207,11 @@ describe('changed files: null hides, a measured zero shows', () => {
     const html = await renderCard(baseMr({ changedFiles: 6 }))
     expect(html).toContain(t('mrs.card.filesChanged', { n: 6 }, 6))
   })
+
+  test('carries the file-diff glyph, by its stable lucide class', async () => {
+    const html = await renderCard(baseMr({ changedFiles: 6 }))
+    expect(html).toContain('lucide-file-diff')
+  })
 })
 
 describe('checks tally', () => {
@@ -217,6 +256,18 @@ describe('checks tally', () => {
       baseMr({ checks: { passed: 12, failed: 1, pending: 2, skipped: 0, truncated: false } }),
     )
     expect(html).toContain(t('mrs.checks.failed', { n: 1 }, 1))
+  })
+
+  // Pins each bucket's lucide glyph by its stable, library-generated class,
+  // never the icon's own SVG path data.
+  test('each bucket renders its own distinct glyph', async () => {
+    const html = await renderCard(
+      baseMr({ checks: { passed: 12, failed: 1, pending: 2, skipped: 3, truncated: false } }),
+    )
+    expect(html).toContain('lucide-circle-x')
+    expect(html).toContain('lucide-loader-circle')
+    expect(html).toContain('lucide-circle-check')
+    expect(html).toContain('lucide-circle-slash')
   })
 })
 

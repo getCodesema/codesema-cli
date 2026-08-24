@@ -54,6 +54,7 @@ export function skeletonTitleWidth(cardIndex: number): string {
 // since there is only one section on screen to fold. Clicking an item selects
 // it (for the detail panel) instead of opening it in a new tab; the external
 // "open in forge" link lives on the detail panel.
+import { RefreshCw, Search, X } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
@@ -271,10 +272,7 @@ function onFooterRefresh(): void {
   <div class="flp-root">
     <div class="flp-search">
       <div class="flp-search-pill">
-        <svg class="flp-search-icon" aria-hidden="true" viewBox="0 0 16 16">
-          <circle cx="6.7" cy="6.7" r="4.2" />
-          <path d="M9.8 9.8L13 13" />
-        </svg>
+        <Search class="flp-search-icon" aria-hidden="true" />
         <input
           v-model="searchQuery"
           type="text"
@@ -289,7 +287,7 @@ function onFooterRefresh(): void {
           :aria-label="t('forge.listSearchClear')"
           @click="searchQuery = ''"
         >
-          <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+          <X aria-hidden="true" />
         </button>
       </div>
     </div>
@@ -434,10 +432,7 @@ function onFooterRefresh(): void {
           :aria-label="t('forge.listFooterRefresh')"
           @click="onFooterRefresh"
         >
-          <svg aria-hidden="true" viewBox="0 0 16 16">
-            <path d="M13 8A5 5 0 1 1 11.5 4.4" />
-            <path d="M13 3.5v3.2h-3.2" />
-          </svg>
+          <RefreshCw aria-hidden="true" />
         </button>
       </span>
     </div>
@@ -510,15 +505,6 @@ function onFooterRefresh(): void {
 
 .flp-search-clear:hover {
   color: var(--cs-text-2);
-}
-
-.flp-search-icon,
-.flp-search-clear svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .flp-search-clear svg {
@@ -656,11 +642,6 @@ function onFooterRefresh(): void {
 .flp-footer-refresh svg {
   width: 100%;
   height: 100%;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .flp-footer-refresh:hover {

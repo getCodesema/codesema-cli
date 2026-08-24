@@ -3,6 +3,7 @@
 // title, labels. Mirrors MrCard.vue's header shape so the two accordions of
 // the forge board read as one density system. Props in, nothing fetched,
 // nothing owned: the caller decides what a click does.
+import { CircleCheck, CircleDot } from '@lucide/vue'
 import { computed } from 'vue'
 import { t, type MessageKey } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
@@ -27,14 +28,8 @@ const stateLabelKey = computed<MessageKey>(() =>
         role="img"
         :aria-label="t(stateLabelKey)"
       >
-        <svg v-if="issue.state === 'open'" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="5.5" />
-          <circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none" />
-        </svg>
-        <svg v-else viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="5.5" />
-          <path d="M5.5 8.2l1.8 1.8 3.2-3.6" />
-        </svg>
+        <CircleDot v-if="issue.state === 'open'" aria-hidden="true" />
+        <CircleCheck v-else aria-hidden="true" />
       </span>
       <span class="fic-number">{{ t('mrs.number', { n: issue.number }) }}</span>
       <span class="fic-author">{{ issue.author }}</span>
@@ -81,11 +76,6 @@ const stateLabelKey = computed<MessageKey>(() =>
 .fic-state svg {
   width: 100%;
   height: 100%;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .fic-state--open {

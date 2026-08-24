@@ -2,6 +2,17 @@
 // Dense, presentational card for one merge request: state, number, author,
 // age, title, files/diff/checks stats. Props in, nothing fetched, nothing
 // owned: the caller supplies the ForgeMr and decides selection/click.
+import {
+  CircleCheck,
+  CircleSlash,
+  CircleX,
+  FileDiff,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestClosed,
+  GitPullRequestDraft,
+  LoaderCircle,
+} from '@lucide/vue'
 import { computed } from 'vue'
 import { t, type MessageKey } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
@@ -102,24 +113,10 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
         role="img"
         :aria-label="t(mrState.labelKey)"
       >
-        <svg v-if="mrState.variant === 'open'" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="5.5" />
-          <circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none" />
-        </svg>
-        <svg v-else-if="mrState.variant === 'draft'" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="5.5" stroke-dasharray="2 2" />
-        </svg>
-        <svg v-else-if="mrState.variant === 'merged'" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="5" cy="4" r="1.3" fill="currentColor" stroke="none" />
-          <circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none" />
-          <circle cx="11" cy="8" r="1.3" fill="currentColor" stroke="none" />
-          <path d="M5 5.3v5" />
-          <path d="M5 8c3 0 4.5-1 6-1.5" />
-        </svg>
-        <svg v-else viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="5.5" />
-          <path d="M6 6l4 4M10 6l-4 4" />
-        </svg>
+        <GitPullRequest v-if="mrState.variant === 'open'" aria-hidden="true" />
+        <GitPullRequestDraft v-else-if="mrState.variant === 'draft'" aria-hidden="true" />
+        <GitMerge v-else-if="mrState.variant === 'merged'" aria-hidden="true" />
+        <GitPullRequestClosed v-else aria-hidden="true" />
       </span>
       <span class="mrc-number">{{ t('mrs.number', { n: mr.number }) }}</span>
       <span class="mrc-author">{{ mr.author }}</span>
@@ -130,10 +127,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
     <div v-if="hasStats" class="mrc-stats">
       <span v-if="changedFiles !== null" class="mrc-files">
-        <svg class="mrc-file-icon" aria-hidden="true" viewBox="0 0 16 16">
-          <path d="M4 2.2h5.2L11.8 5v8.8H4z" />
-          <path d="M9.2 2.2V5h2.6" />
-        </svg>
+        <FileDiff class="mrc-file-icon" aria-hidden="true" />
         {{ t('mrs.card.filesChanged', { n: changedFiles }, changedFiles) }}
       </span>
       <span
@@ -175,18 +169,18 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
             :aria-label="t(CHECK_LABEL_KEYS[entry.bucket], { n: entry.count }, entry.count)"
           >
             <span aria-hidden="true">{{ entry.count }}</span>
-            <svg class="mrc-check-icon" aria-hidden="true" viewBox="0 0 16 16">
-              <path v-if="entry.bucket === 'failed'" d="M4 4l8 8M12 4l-8 8" />
-              <template v-else-if="entry.bucket === 'pending'">
-                <circle cx="8" cy="8" r="5.5" />
-                <path d="M8 4.5V8l2.2 1.3" />
-              </template>
-              <path v-else-if="entry.bucket === 'passed'" d="M4.5 8.5l2.5 2.5 4.5-5" />
-              <template v-else>
-                <circle cx="8" cy="8" r="5.5" />
-                <path d="M6 8h4" />
-              </template>
-            </svg>
+            <CircleX v-if="entry.bucket === 'failed'" class="mrc-check-icon" aria-hidden="true" />
+            <LoaderCircle
+              v-else-if="entry.bucket === 'pending'"
+              class="mrc-check-icon"
+              aria-hidden="true"
+            />
+            <CircleCheck
+              v-else-if="entry.bucket === 'passed'"
+              class="mrc-check-icon"
+              aria-hidden="true"
+            />
+            <CircleSlash v-else class="mrc-check-icon" aria-hidden="true" />
           </span>
         </template>
       </span>
@@ -220,11 +214,6 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrc-state svg {
   width: 100%;
   height: 100%;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .mrc-state--open {
@@ -301,11 +290,6 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   flex: none;
   width: 11px;
   height: 11px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .mrc-diffbar {
@@ -357,11 +341,6 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   flex: none;
   width: 12px;
   height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .mrc-check-entry--passed {

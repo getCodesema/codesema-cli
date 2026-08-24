@@ -37,25 +37,24 @@ async function render(
 }
 
 describe('fold state', () => {
-  test('closed: chevron points right, body and slots are not rendered', async () => {
+  test('closed: chevron is rotated to point right, body and slots are not rendered', async () => {
     const html = await render(
       { label: 'Issues', count: 3, truncatedHint: null, open: false },
       { default: () => 'BODY_MARK', filters: () => 'FILTERS_MARK', labels: () => 'LABELS_MARK' },
     )
-    expect(html).toContain('▸')
-    expect(html).not.toContain('▾')
+    expect(html).toContain('fa-chevron--closed')
     expect(html).toContain('aria-expanded="false"')
     expect(html).not.toContain('BODY_MARK')
     expect(html).not.toContain('FILTERS_MARK')
     expect(html).not.toContain('LABELS_MARK')
   })
 
-  test('open: chevron points down, body and slots render', async () => {
+  test('open: chevron points down (not rotated), body and slots render', async () => {
     const html = await render(
       { label: 'Issues', count: 3, truncatedHint: null, open: true },
       { default: () => 'BODY_MARK', filters: () => 'FILTERS_MARK', labels: () => 'LABELS_MARK' },
     )
-    expect(html).toContain('▾')
+    expect(html).not.toContain('fa-chevron--closed')
     expect(html).toContain('aria-expanded="true"')
     expect(html).toContain('BODY_MARK')
     expect(html).toContain('FILTERS_MARK')

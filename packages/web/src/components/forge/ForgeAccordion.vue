@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ChevronDown } from '@lucide/vue'
+
 // Shared accordion chrome for one forge board list (issues or pull requests):
 // a foldable header with its count and, when the forge capped the list, an
 // explicit caveat line, never silence on a truncated result. The controls
@@ -26,7 +28,7 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 <template>
   <section class="fa-root">
     <button class="fa-head" :aria-expanded="open" @click="emit('update:open', !open)">
-      <span class="fa-chevron" aria-hidden="true">{{ open ? '▾' : '▸' }}</span>
+      <ChevronDown class="fa-chevron" :class="{ 'fa-chevron--closed': !open }" aria-hidden="true" />
       <span class="fa-label">{{ label }}</span>
       <span v-if="count !== null" class="fa-count">{{ count }}</span>
     </button>
@@ -74,9 +76,14 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 
 .fa-chevron {
   flex: none;
-  width: 10px;
-  font-size: 10px;
+  width: 14px;
+  height: 14px;
   color: var(--cs-ghost);
+  transition: transform 150ms ease;
+}
+
+.fa-chevron--closed {
+  transform: rotate(-90deg);
 }
 
 .fa-label {

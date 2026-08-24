@@ -94,6 +94,28 @@ describe('state icon', () => {
     expect(html).toContain(t('mrs.card.stateClosed'))
     expect(html).not.toContain(t('mrs.card.stateOpen'))
   })
+
+  // Pins the lucide glyph choice by its stable, library-generated class
+  // (lucide-<icon-name>), never the icon's own SVG path data, which can
+  // change on a library bump.
+  test('an open issue renders the circle-dot glyph, not circle-check', async () => {
+    const html = await renderCard(baseIssue({ state: 'open' }))
+    expect(html).toContain('lucide-circle-dot')
+    expect(html).not.toContain('lucide-circle-check')
+  })
+
+  test('a closed issue renders the circle-check glyph, not circle-dot', async () => {
+    const html = await renderCard(baseIssue({ state: 'closed' }))
+    expect(html).toContain('lucide-circle-check')
+    expect(html).not.toContain('lucide-circle-dot')
+  })
+
+  test('the state icon stays decorative: aria-hidden, no separate accessible name of its own', async () => {
+    const html = await renderCard(baseIssue({ state: 'open' }))
+    const stateAt = html.indexOf('fic-state')
+    const svgAt = html.indexOf('<svg', stateAt)
+    expect(html.slice(svgAt, svgAt + 400)).toContain('aria-hidden="true"')
+  })
 })
 
 test('the age reads through the shared relative-time formatter', async () => {

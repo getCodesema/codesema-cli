@@ -13,6 +13,18 @@
 // breakpoint the three panels stack at, reused here rather than a separate
 // one), the band flips to a short horizontal bar at the top, text no longer
 // rotated.
+import {
+  ArrowUpDown,
+  ChevronDown,
+  CircleDot,
+  Clock,
+  GitPullRequest,
+  List,
+  ListFilter,
+  Search,
+  Tag,
+  X,
+} from '@lucide/vue'
 import { computed, nextTick, ref } from 'vue'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
@@ -177,27 +189,20 @@ const mrsLabelCountsFiltered = computed(() =>
             aria-controls="fcp-body-issues"
             @click="openSection('issues')"
           >
-            <svg class="fcp-acc-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <circle cx="8" cy="8" r="5.5" />
-            </svg>
+            <CircleDot class="fcp-acc-icon" aria-hidden="true" />
             <span class="fcp-acc-label">{{ t('forge.issuesTitle') }}</span>
-            <svg
+            <ChevronDown
               class="fcp-acc-chevron"
               :class="{ 'fcp-acc-chevron--closed': activeSection !== 'issues' }"
-              viewBox="0 0 16 16"
               aria-hidden="true"
-            >
-              <path d="M4 6l4 4 4-4" />
-            </svg>
+            />
           </button>
           <div v-if="activeSection === 'issues'" id="fcp-body-issues" class="fcp-acc-body">
             <template v-if="issuesHasData">
               <div class="fcp-block">
                 <h3 class="fcp-block-title">
                   <span class="fcp-block-title-text">
-                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M4 3v9M2 5.5L4 3l2 2.5M12 13V4M10 10.5L12 13l2-2.5" />
-                    </svg>
+                    <ArrowUpDown class="fcp-block-icon" aria-hidden="true" />
                     {{ t('forge.sortLabel') }}
                   </span>
                 </h3>
@@ -212,13 +217,8 @@ const mrsLabelCountsFiltered = computed(() =>
                     :aria-checked="issuesSort === opt.value"
                     @click="emit('update:issuesSort', opt.value)"
                   >
-                    <svg class="fcp-row-icon" viewBox="0 0 16 16" aria-hidden="true">
-                      <template v-if="opt.value === 'updated'">
-                        <circle cx="7" cy="7" r="5" />
-                        <path d="M7 4.2V7l2 1.2" />
-                      </template>
-                      <path v-else d="M2.5 4h11M2.5 8h7M2.5 12h4" />
-                    </svg>
+                    <Clock v-if="opt.value === 'updated'" class="fcp-row-icon" aria-hidden="true" />
+                    <List v-else class="fcp-row-icon" aria-hidden="true" />
                     {{ t(opt.labelKey) }}
                   </button>
                 </div>
@@ -227,10 +227,7 @@ const mrsLabelCountsFiltered = computed(() =>
               <div class="fcp-block">
                 <h3 class="fcp-block-title">
                   <span class="fcp-block-title-text">
-                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M2 2h5.5l6.5 6.5-5.5 5.5L2 7.5V2z" />
-                      <path d="M4.7 4.7h.01" stroke-width="2" />
-                    </svg>
+                    <Tag class="fcp-block-icon" aria-hidden="true" />
                     {{ t('forge.controlsLabelsHeading') }}
                   </span>
                   <button
@@ -247,10 +244,7 @@ const mrsLabelCountsFiltered = computed(() =>
                       issuesLabelSearchOpen ? closeIssuesLabelSearch() : openIssuesLabelSearch()
                     "
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <circle cx="6.7" cy="6.7" r="4.2" />
-                      <path d="M9.8 9.8L13 13" />
-                    </svg>
+                    <Search aria-hidden="true" />
                   </button>
                 </h3>
                 <div v-if="issuesLabelSearchOpen" class="fcp-label-search">
@@ -268,9 +262,7 @@ const mrsLabelCountsFiltered = computed(() =>
                     :aria-label="t('forge.controlsLabelSearchClose')"
                     @click="closeIssuesLabelSearch"
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M3 3l8 8M11 3l-8 8" />
-                    </svg>
+                    <X aria-hidden="true" />
                   </button>
                 </div>
                 <LabelChips
@@ -292,31 +284,20 @@ const mrsLabelCountsFiltered = computed(() =>
             aria-controls="fcp-body-mrs"
             @click="openSection('mrs')"
           >
-            <svg class="fcp-acc-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <circle cx="5" cy="4" r="1.5" />
-              <circle cx="5" cy="12" r="1.5" />
-              <circle cx="11" cy="8" r="1.5" />
-              <path d="M5 5.5v5" />
-              <path d="M5 8c3 0 4.5-1 6-1.5" />
-            </svg>
+            <GitPullRequest class="fcp-acc-icon" aria-hidden="true" />
             <span class="fcp-acc-label">{{ t('forge.mrsTitle') }}</span>
-            <svg
+            <ChevronDown
               class="fcp-acc-chevron"
               :class="{ 'fcp-acc-chevron--closed': activeSection !== 'mrs' }"
-              viewBox="0 0 16 16"
               aria-hidden="true"
-            >
-              <path d="M4 6l4 4 4-4" />
-            </svg>
+            />
           </button>
           <div v-if="activeSection === 'mrs'" id="fcp-body-mrs" class="fcp-acc-body">
             <template v-if="mrsHasData">
               <div class="fcp-block">
                 <h3 class="fcp-block-title">
                   <span class="fcp-block-title-text">
-                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M4 3v9M2 5.5L4 3l2 2.5M12 13V4M10 10.5L12 13l2-2.5" />
-                    </svg>
+                    <ArrowUpDown class="fcp-block-icon" aria-hidden="true" />
                     {{ t('forge.sortLabel') }}
                   </span>
                 </h3>
@@ -331,13 +312,8 @@ const mrsLabelCountsFiltered = computed(() =>
                     :aria-checked="mrsSort === opt.value"
                     @click="emit('update:mrsSort', opt.value)"
                   >
-                    <svg class="fcp-row-icon" viewBox="0 0 16 16" aria-hidden="true">
-                      <template v-if="opt.value === 'updated'">
-                        <circle cx="7" cy="7" r="5" />
-                        <path d="M7 4.2V7l2 1.2" />
-                      </template>
-                      <path v-else d="M2.5 4h11M2.5 8h7M2.5 12h4" />
-                    </svg>
+                    <Clock v-if="opt.value === 'updated'" class="fcp-row-icon" aria-hidden="true" />
+                    <List v-else class="fcp-row-icon" aria-hidden="true" />
                     {{ t(opt.labelKey) }}
                   </button>
                 </div>
@@ -346,9 +322,7 @@ const mrsLabelCountsFiltered = computed(() =>
               <div class="fcp-block">
                 <h3 class="fcp-block-title">
                   <span class="fcp-block-title-text">
-                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M2.5 3h11l-4.25 5v4l-2.5-1.3V8z" />
-                    </svg>
+                    <ListFilter class="fcp-block-icon" aria-hidden="true" />
                     {{ t('forge.controlsFiltersHeading') }}
                   </span>
                   <button
@@ -357,9 +331,7 @@ const mrsLabelCountsFiltered = computed(() =>
                     class="fcp-reset"
                     @click="resetMrFilter"
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M3 3l8 8M11 3l-8 8" />
-                    </svg>
+                    <X aria-hidden="true" />
                     {{ t('forge.controlsFiltersReset') }}
                   </button>
                 </h3>
@@ -395,10 +367,7 @@ const mrsLabelCountsFiltered = computed(() =>
               <div class="fcp-block">
                 <h3 class="fcp-block-title">
                   <span class="fcp-block-title-text">
-                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M2 2h5.5l6.5 6.5-5.5 5.5L2 7.5V2z" />
-                      <path d="M4.7 4.7h.01" stroke-width="2" />
-                    </svg>
+                    <Tag class="fcp-block-icon" aria-hidden="true" />
                     {{ t('forge.controlsLabelsHeading') }}
                   </span>
                   <button
@@ -413,10 +382,7 @@ const mrsLabelCountsFiltered = computed(() =>
                     :aria-expanded="mrsLabelSearchOpen"
                     @click="mrsLabelSearchOpen ? closeMrsLabelSearch() : openMrsLabelSearch()"
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <circle cx="6.7" cy="6.7" r="4.2" />
-                      <path d="M9.8 9.8L13 13" />
-                    </svg>
+                    <Search aria-hidden="true" />
                   </button>
                 </h3>
                 <div v-if="mrsLabelSearchOpen" class="fcp-label-search">
@@ -434,9 +400,7 @@ const mrsLabelCountsFiltered = computed(() =>
                     :aria-label="t('forge.controlsLabelSearchClose')"
                     @click="closeMrsLabelSearch"
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M3 3l8 8M11 3l-8 8" />
-                    </svg>
+                    <X aria-hidden="true" />
                   </button>
                 </div>
                 <LabelChips
@@ -769,19 +733,5 @@ const mrsLabelCountsFiltered = computed(() =>
 
 .fcp-label-search-close:hover {
   color: var(--cs-text-2);
-}
-
-.fcp-acc-icon,
-.fcp-acc-chevron,
-.fcp-block-icon,
-.fcp-row-icon,
-.fcp-search-toggle svg,
-.fcp-label-search-close svg,
-.fcp-reset svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 </style>
