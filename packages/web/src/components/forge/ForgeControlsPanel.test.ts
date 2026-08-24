@@ -348,6 +348,11 @@ describe('pull requests section: sort, status filter (draft/ready only), labels'
 // Pins the glyph choices by their stable, library-generated lucide classes,
 // never the icons' own SVG path data, which can change on a library bump.
 describe('section and control glyphs', () => {
+  test('the collapse button carries the chevrons-left glyph', async () => {
+    const html = await render({ collapsed: false })
+    expect(html).toContain('lucide-chevrons-left')
+  })
+
   test('the issues section header carries the circle-dot glyph', async () => {
     const html = await render({ activeSection: 'issues' })
     expect(html).toContain('lucide-circle-dot')
