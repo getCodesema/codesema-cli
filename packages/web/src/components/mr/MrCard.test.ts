@@ -124,6 +124,38 @@ describe('diff stats: null hides, a measured zero shows', () => {
     const html = await renderCard(baseMr({ additions: 10, deletions: 10 }))
     expect(html).toContain('mrc-diffblock')
   })
+
+  test('a measured zero/zero hides the bar too: there is no neutral block to fall back to', async () => {
+    const html = await renderCard(baseMr({ additions: 0, deletions: 0 }))
+    expect(html).not.toContain('mrc-diffblock')
+    expect(html).toContain('+0')
+    expect(html).toContain('−0')
+  })
+})
+
+describe('stats row: omitted entirely with neither diff nor checks, files come before the bar', () => {
+  test('omitted entirely when there is neither diff data nor checks', async () => {
+    const html = await renderCard(
+      baseMr({ additions: null, deletions: null, changedFiles: null, checks: null }),
+    )
+    expect(html).not.toContain('mrc-stats')
+  })
+
+  test('present as soon as any one of diff/files/checks is present', async () => {
+    const html = await renderCard(
+      baseMr({ additions: null, deletions: null, changedFiles: null, checks: null }),
+    )
+    const withFilesOnly = await renderCard(
+      baseMr({ additions: null, deletions: null, changedFiles: 3, checks: null }),
+    )
+    expect(html).not.toContain('mrc-stats')
+    expect(withFilesOnly).toContain('mrc-stats')
+  })
+
+  test('the file count renders before the diff bar in the markup', async () => {
+    const html = await renderCard(baseMr({ additions: 10, deletions: 10, changedFiles: 6 }))
+    expect(html.indexOf('mrc-files')).toBeLessThan(html.indexOf('mrc-diffbar'))
+  })
 })
 
 describe('changed files: null hides, a measured zero shows', () => {
@@ -150,16 +182,16 @@ describe('checks tally', () => {
     expect(html).not.toContain(t('mrs.checks.aggregatePassed'))
   })
 
-  test('renders the four buckets in fixed order, hiding the zero bucket', async () => {
+  test('renders the four buckets in fixed order (failed, pending, passed, skipped), hiding the zero bucket', async () => {
     const html = await renderCard(
       baseMr({ checks: { passed: 12, failed: 1, pending: 2, skipped: 0, truncated: false } }),
     )
-    const passedAt = html.indexOf(t('mrs.checks.passed', { n: 12 }, 12))
     const failedAt = html.indexOf(t('mrs.checks.failed', { n: 1 }, 1))
     const pendingAt = html.indexOf(t('mrs.checks.pending', { n: 2 }, 2))
-    expect(passedAt).toBeGreaterThan(-1)
-    expect(failedAt).toBeGreaterThan(passedAt)
+    const passedAt = html.indexOf(t('mrs.checks.passed', { n: 12 }, 12))
+    expect(failedAt).toBeGreaterThan(-1)
     expect(pendingAt).toBeGreaterThan(failedAt)
+    expect(passedAt).toBeGreaterThan(pendingAt)
     expect(html).not.toContain(t('mrs.checks.skipped', { n: 0 }, 0))
   })
 
@@ -179,4 +211,16 @@ describe('checks tally', () => {
     expect(html).not.toContain('34')
     expect(html).not.toContain(t('mrs.checks.passed', { n: 34 }, 34))
   })
+
+  test('each visible bucket carries its own full label for assistive tech, not just the bare digit', async () => {
+    const html = await renderCard(
+      baseMr({ checks: { passed: 12, failed: 1, pending: 2, skipped: 0, truncated: false } }),
+    )
+    expect(html).toContain(t('mrs.checks.failed', { n: 1 }, 1))
+  })
+})
+
+test('the age reads through the shared relative-time formatter', async () => {
+  const html = await renderCard(baseMr({ updatedAt: new Date().toISOString() }))
+  expect(html).toContain(t('time.justNow'))
 })

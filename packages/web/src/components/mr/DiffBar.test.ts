@@ -10,8 +10,8 @@ describe('diffBarBlocks', () => {
     expect(diffBarBlocks(0, 100)).toEqual(['del', 'del', 'del', 'del', 'del'])
   })
 
-  test('a measured zero/zero renders five neutral blocks, not an empty bar', () => {
-    expect(diffBarBlocks(0, 0)).toEqual(['neutral', 'neutral', 'neutral', 'neutral', 'neutral'])
+  test('a measured zero/zero renders no bar at all: there is no neutral block', () => {
+    expect(diffBarBlocks(0, 0)).toBeNull()
   })
 
   test('a tiny addition against a huge deletion still floors to one green block', () => {

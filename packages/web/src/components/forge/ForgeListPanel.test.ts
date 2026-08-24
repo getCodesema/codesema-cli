@@ -210,10 +210,12 @@ describe('issues: loading / error / unavailable / empty / list', () => {
   })
 
   test('default sort is most-recently-updated first', async () => {
-    const older = issue({ number: 1, title: 'older', updatedAt: '2026-01-01T00:00:00Z' })
-    const newer = issue({ number: 2, title: 'newer', updatedAt: '2026-06-01T00:00:00Z' })
+    // Titles rendered exactly as `>title<`: a bare substring search would
+    // also match the unrelated word "placeholder" in the search box markup.
+    const older = issue({ number: 1, title: 'olderTitle', updatedAt: '2026-01-01T00:00:00Z' })
+    const newer = issue({ number: 2, title: 'newerTitle', updatedAt: '2026-06-01T00:00:00Z' })
     const html = await render({ issuesState: issuesState({ result: available([older, newer]) }) })
-    expect(html.indexOf('newer')).toBeLessThan(html.indexOf('older'))
+    expect(html.indexOf('>newerTitle<')).toBeLessThan(html.indexOf('>olderTitle<'))
   })
 
   test('each issue is a selectable button carrying the select-item aria-label, not a forge link', async () => {
@@ -433,5 +435,166 @@ describe('selection: the item matching the current selection is marked current',
     })
     expect(html).toContain('aria-current="true"')
     expect(html).toContain('flp-item--on')
+  })
+})
+
+describe('matchesForgeSearch: title or number, case-insensitive, empty query matches all', () => {
+  test('an empty query matches everything', async () => {
+    const { matchesForgeSearch } = await import('./ForgeListPanel.vue')
+    expect(matchesForgeSearch('Add forge board', 7, '')).toBe(true)
+    expect(matchesForgeSearch('Add forge board', 7, '   ')).toBe(true)
+  })
+
+  test('matches a substring of the title, case-insensitively', async () => {
+    const { matchesForgeSearch } = await import('./ForgeListPanel.vue')
+    expect(matchesForgeSearch('Add forge board screen', 7, 'FORGE')).toBe(true)
+    expect(matchesForgeSearch('Add forge board screen', 7, 'zzz')).toBe(false)
+  })
+
+  test('matches the bare number', async () => {
+    const { matchesForgeSearch } = await import('./ForgeListPanel.vue')
+    expect(matchesForgeSearch('Add forge board', 42, '42')).toBe(true)
+    expect(matchesForgeSearch('Add forge board', 421, '42')).toBe(true)
+    expect(matchesForgeSearch('Add forge board', 7, '42')).toBe(false)
+  })
+
+  test('a leading # against the number is stripped, never required', async () => {
+    const { matchesForgeSearch } = await import('./ForgeListPanel.vue')
+    expect(matchesForgeSearch('Add forge board', 42, '#42')).toBe(true)
+    expect(matchesForgeSearch('Add forge board', 42, '42')).toBe(true)
+  })
+
+  test('neither the title nor the number matches: no match', async () => {
+    const { matchesForgeSearch } = await import('./ForgeListPanel.vue')
+    expect(matchesForgeSearch('Add forge board', 42, 'zzz')).toBe(false)
+  })
+})
+
+describe('skeleton geometry: five cards, a diagonal stagger, no comb effect', () => {
+  test('five cards, matching the geometry the panel actually renders', async () => {
+    const { SKELETON_CARD_COUNT } = await import('./ForgeListPanel.vue')
+    expect(SKELETON_CARD_COUNT).toBe(5)
+  })
+
+  test('the first card, first element carries no delay at all', async () => {
+    const { skeletonDelay, SKELETON_ELEMENT_OFFSETS } = await import('./ForgeListPanel.vue')
+    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.icon)).toBe('0.00s')
+  })
+
+  test('elements within one card stagger by the documented per-element offsets', async () => {
+    const { skeletonDelay, SKELETON_ELEMENT_OFFSETS } = await import('./ForgeListPanel.vue')
+    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.number)).toBe('0.04s')
+    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.author)).toBe('0.08s')
+    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.age)).toBe('0.12s')
+    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.title)).toBe('0.16s')
+  })
+
+  test('later cards stagger further, compounding with the element offset (diagonal sweep)', async () => {
+    const { skeletonDelay, SKELETON_ELEMENT_OFFSETS } = await import('./ForgeListPanel.vue')
+    expect(skeletonDelay(1, SKELETON_ELEMENT_OFFSETS.icon)).toBe('0.06s')
+    expect(skeletonDelay(2, SKELETON_ELEMENT_OFFSETS.title)).toBe('0.28s')
+    expect(skeletonDelay(4, SKELETON_ELEMENT_OFFSETS.title)).toBe('0.40s')
+  })
+
+  test('title widths cycle across consecutive cards rather than repeating one width', async () => {
+    const { skeletonTitleWidth } = await import('./ForgeListPanel.vue')
+    const widths = [0, 1, 2, 3, 4].map((i) => skeletonTitleWidth(i))
+    expect(new Set(widths.slice(0, 3)).size).toBe(3)
+    // The cycle wraps: the 4th card reuses the 1st card's width.
+    expect(skeletonTitleWidth(3)).toBe(skeletonTitleWidth(0))
+  })
+})
+
+describe('loading skeleton: replaces the plain loading text with card-shaped placeholders', () => {
+  test('renders five skeleton cards, still carrying the loading text for assistive tech', async () => {
+    const html = await render({ issuesState: issuesState({ loading: true }) })
+    expect(html).toContain(t('forge.loading'))
+    expect((html.match(/flp-skel-card/g) ?? []).length).toBe(5)
+  })
+
+  test('an available result never shows the skeleton', async () => {
+    const html = await render({ issuesState: issuesState({ result: available([issue()]) }) })
+    expect(html).not.toContain('flp-skel-card')
+  })
+})
+
+describe('search box: title/number search, i18n placeholder, clear only when non-empty', () => {
+  test('renders the search input with its i18n placeholder and aria-label', async () => {
+    const html = await render({})
+    expect(html).toContain(t('forge.listSearchPlaceholder'))
+  })
+
+  test('the clear button is absent while the search box is empty (its default state)', async () => {
+    const html = await render({})
+    expect(html).not.toContain(t('forge.listSearchClear'))
+  })
+
+  test('an empty search never hides an otherwise-visible list', async () => {
+    const html = await render({
+      issuesState: issuesState({ result: available([issue({ title: 'fix the thing' })]) }),
+    })
+    expect(html).toContain('fix the thing')
+    expect(html).not.toContain(t('forge.listSearchEmpty'))
+  })
+})
+
+describe('footer: count (search-aware, truncation-aware) and relative freshness', () => {
+  test('issues: an empty, available list reads as a plain zero count', async () => {
+    const html = await render({ issuesState: issuesState({ result: available([]) }) })
+    expect(html).toContain(t('forge.listFooterCountIssues', { n: 0 }, 0))
+  })
+
+  test('issues: a non-empty list is counted in the footer, distinct from the header badge', async () => {
+    const items = [issue({ number: 1 }), issue({ number: 2 }), issue({ number: 3 })]
+    const html = await render({ issuesState: issuesState({ result: available(items) }) })
+    expect(html).toContain(t('forge.listFooterCountIssues', { n: 3 }, 3))
+  })
+
+  test('issues: truncated never presents the cap as a total, reuses the truncation wording', async () => {
+    const html = await render({
+      issuesState: issuesState({
+        result: available([issue({ number: 1 }), issue({ number: 2 })], true),
+      }),
+    })
+    expect(html).toContain(t('forge.truncatedHint', { n: 2 }))
+    expect(html).not.toContain(t('forge.listFooterCountIssues', { n: 2 }, 2))
+  })
+
+  test('mrs: a loaded, non-empty list is counted with the pull-request noun', async () => {
+    const html = await render(
+      mrsProps({
+        mrs: [mr({ number: 1 }), mr({ number: 2 })],
+        mrsState: { status: 'loaded', truncated: false },
+      }),
+    )
+    expect(html).toContain(t('forge.listFooterCountMrs', { n: 2 }, 2))
+  })
+
+  test('mrs: truncated never presents the cap as a total either', async () => {
+    const html = await render(
+      mrsProps({ mrs: [mr(), mr({ number: 2 })], mrsState: { status: 'loaded', truncated: true } }),
+    )
+    expect(html).toContain(t('forge.truncatedHint', { n: 2 }))
+    expect(html).not.toContain(t('forge.listFooterCountMrs', { n: 2 }, 2))
+  })
+
+  test('a freshly rendered panel reads its freshness as just now', async () => {
+    const html = await render({})
+    expect(html).toContain(t('forge.listFooterFreshness', { age: t('time.justNow') }))
+  })
+
+  test('the refresh button carries its own aria-label', async () => {
+    const html = await render({})
+    expect(html).toContain(t('forge.listFooterRefresh'))
+  })
+
+  test('issues loading spins the refresh button; mrs never does (no loading status to read)', async () => {
+    const loading = await render({ issuesState: issuesState({ loading: true }) })
+    expect(loading).toContain('flp-footer-refresh--spin')
+
+    const mrsLoaded = await render(
+      mrsProps({ mrs: [mr()], mrsState: { status: 'loaded', truncated: false } }),
+    )
+    expect(mrsLoaded).not.toContain('flp-footer-refresh--spin')
   })
 })

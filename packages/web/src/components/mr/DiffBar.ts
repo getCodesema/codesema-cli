@@ -2,7 +2,7 @@
 // blocks. Split out of MrCard.vue so the boundary math is unit-testable on
 // its own, with no SSR render involved.
 
-export type DiffBarBlock = 'add' | 'del' | 'neutral'
+export type DiffBarBlock = 'add' | 'del'
 
 const BAR_LENGTH = 5
 /** As soon as there is any addition, it earns at least one green block. */
@@ -11,10 +11,15 @@ const ADD_FLOOR = 1
  * the five blocks: a real deletion must never round away to nothing. */
 const ADD_CEIL = 4
 
-export function diffBarBlocks(additions: number, deletions: number): DiffBarBlock[] {
+/**
+ * `null` at a measured zero/zero: every rendered block is green or red, there
+ * is no neutral block to fall back to, so the bar itself has nothing honest
+ * left to show and disappears instead.
+ */
+export function diffBarBlocks(additions: number, deletions: number): DiffBarBlock[] | null {
   const total = additions + deletions
   if (total <= 0) {
-    return Array<DiffBarBlock>(BAR_LENGTH).fill('neutral')
+    return null
   }
   let addCount = Math.round((additions / total) * BAR_LENGTH)
   if (additions > 0) {

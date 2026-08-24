@@ -1,5 +1,5 @@
 // Same harness as MrCard.test.ts / WorkspaceHeader.test.ts.
-import { expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
@@ -80,4 +80,32 @@ test('the empty string body is not rendered as a degradation of any kind', async
   const html = await renderCard(baseIssue({ body: '' }))
   expect(html).not.toContain('undefined')
   expect(html).not.toContain('null')
+})
+
+describe('state icon', () => {
+  test('an open issue carries the open state label, not the closed one', async () => {
+    const html = await renderCard(baseIssue({ state: 'open' }))
+    expect(html).toContain(t('mrs.card.stateOpen'))
+    expect(html).not.toContain(t('mrs.card.stateClosed'))
+  })
+
+  test('a closed issue carries the closed state label, not the open one', async () => {
+    const html = await renderCard(baseIssue({ state: 'closed' }))
+    expect(html).toContain(t('mrs.card.stateClosed'))
+    expect(html).not.toContain(t('mrs.card.stateOpen'))
+  })
+})
+
+test('the age reads through the shared relative-time formatter', async () => {
+  const html = await renderCard(baseIssue({ updatedAt: new Date().toISOString() }))
+  expect(html).toContain(t('time.justNow'))
+})
+
+test('the title keeps its full text in the markup: the two-line cap is CSS only, never a JS slice', async () => {
+  const long =
+    'A very long issue title that would visibly overflow two lines of a dense card without a CSS clamp applied to it'
+  const html = await renderCard(baseIssue({ title: long }))
+  expect(html).toContain(long)
+  expect(html).toContain('fic-title')
+  expect(html).not.toContain('…')
 })

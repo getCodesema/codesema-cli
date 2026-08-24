@@ -635,6 +635,15 @@ const en = {
   'workspace.forgeUnavailableHint':
     'Conversations still run: a task can be created from a title and a prompt, and a task already bound to a ticket carries on with the copy it froze. What is off: binding a new issue, posting a recap on a merge request, and merging.',
 
+  // --- Relative time (forge list cards) ---
+  'time.justNow': 'just now',
+  'time.minutesAgo': '{n} min ago',
+  'time.hoursAgo': '{n}h ago',
+  'time.daysAgo': '{n}d ago',
+  'time.weeksAgo': '{n}w ago',
+  'time.monthsAgo': '{n}mo ago',
+  'time.yearsAgo': '{n}y ago',
+
   // --- Forge board (C3): two accordions, issues and pull requests ---
   'forge.issuesTitle': 'Issues',
   'forge.mrsTitle': 'Pull requests',
@@ -685,6 +694,15 @@ const en = {
   'forge.controlsLabelSearchOpen': 'Search labels',
   'forge.controlsLabelSearchClose': 'Close the label search',
   'forge.controlsLabelSearchPlaceholder': 'Search labels…',
+
+  // --- Forge list panel: search box, footer, loading skeleton ---
+  'forge.listSearchPlaceholder': 'Search by title or number…',
+  'forge.listSearchClear': 'Clear the search',
+  'forge.listSearchEmpty': 'No result for this search.',
+  'forge.listFooterCountIssues': '{n} issue | {n} issues',
+  'forge.listFooterCountMrs': '{n} pull request | {n} pull requests',
+  'forge.listFooterFreshness': 'updated {age}',
+  'forge.listFooterRefresh': 'Refresh the list',
 }
 
 export type MessageKey = keyof typeof en
@@ -1304,6 +1322,15 @@ const fr: Record<MessageKey, string> = {
   'workspace.forgeUnavailableHint':
     "Les conversations continuent : on peut créer une tâche à partir d'un titre et d'un prompt, et une tâche déjà rattachée à un ticket poursuit sur la copie qu'elle a figée. Ce qui est coupé : rattacher une nouvelle issue, poster un récap sur une merge request, et merger.",
 
+  // --- Temps relatif (cartes de la liste forge) ---
+  'time.justNow': "à l'instant",
+  'time.minutesAgo': 'il y a {n} min',
+  'time.hoursAgo': 'il y a {n} h',
+  'time.daysAgo': 'il y a {n} j',
+  'time.weeksAgo': 'il y a {n} sem',
+  'time.monthsAgo': 'il y a {n} mois',
+  'time.yearsAgo': 'il y a {n} an | il y a {n} ans',
+
   // --- Forge board (C3) : deux accordéons, issues et pull requests ---
   'forge.issuesTitle': 'Issues',
   'forge.mrsTitle': 'Pull requests',
@@ -1353,6 +1380,15 @@ const fr: Record<MessageKey, string> = {
   'forge.controlsLabelSearchOpen': 'Rechercher un label',
   'forge.controlsLabelSearchClose': 'Fermer la recherche de labels',
   'forge.controlsLabelSearchPlaceholder': 'Rechercher un label…',
+
+  // --- Panneau de liste forge : recherche, pied de liste, squelette de chargement ---
+  'forge.listSearchPlaceholder': 'Rechercher par titre ou numéro…',
+  'forge.listSearchClear': 'Effacer la recherche',
+  'forge.listSearchEmpty': 'Aucun résultat pour cette recherche.',
+  'forge.listFooterCountIssues': '{n} issue | {n} issues',
+  'forge.listFooterCountMrs': '{n} pull request | {n} pull requests',
+  'forge.listFooterFreshness': 'mis à jour {age}',
+  'forge.listFooterRefresh': 'Rafraîchir la liste',
 }
 
 /**

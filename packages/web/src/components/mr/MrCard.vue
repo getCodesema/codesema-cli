@@ -1,23 +1,19 @@
 <script setup lang="ts">
-// Dense, presentational card for one merge request: state badge, micro diff
-// bar, +N/-N, file count, checks tally. Props in, nothing fetched, nothing
+// Dense, presentational card for one merge request: state, number, author,
+// age, title, files/diff/checks stats. Props in, nothing fetched, nothing
 // owned: the caller supplies the ForgeMr and decides selection/click.
 import { computed } from 'vue'
 import { t, type MessageKey } from '../../i18n'
+import { formatRelativeAge } from '../../relative-time'
 import type { ForgeMr } from '../../types'
-import {
-  aggregateCheckStatus,
-  CHECK_BUCKETS,
-  type CheckAggregateStatus,
-  type CheckBucket,
-} from './Checks'
+import { aggregateCheckStatus, type CheckAggregateStatus, type CheckBucket } from './Checks'
 import { diffBarBlocks } from './DiffBar'
 
 const props = defineProps<{ mr: ForgeMr }>()
 
-type BadgeVariant = 'open' | 'draft' | 'merged' | 'closed'
+type StateVariant = 'open' | 'draft' | 'merged' | 'closed'
 
-const badge = computed<{ variant: BadgeVariant; labelKey: MessageKey } | null>(() => {
+const mrState = computed<{ variant: StateVariant; labelKey: MessageKey } | null>(() => {
   const { state, isDraft } = props.mr
   if (state === null) {
     return null
@@ -34,6 +30,7 @@ const badge = computed<{ variant: BadgeVariant; labelKey: MessageKey } | null>((
   return { variant: 'closed', labelKey: 'mrs.card.stateClosed' }
 })
 
+const age = computed(() => formatRelativeAge(props.mr.updatedAt))
 const additions = computed(() => props.mr.additions)
 const deletions = computed(() => props.mr.deletions)
 const changedFiles = computed(() => props.mr.changedFiles)
@@ -46,9 +43,24 @@ const diffBar = computed(() => {
   return diffBarBlocks(additions.value, deletions.value)
 })
 
+const hasStats = computed(
+  () =>
+    diffBar.value !== null ||
+    additions.value !== null ||
+    deletions.value !== null ||
+    changedFiles.value !== null ||
+    checks.value !== null,
+)
+
 type ChecksDisplay =
   | { kind: 'aggregate'; status: CheckAggregateStatus }
   | { kind: 'counts'; buckets: { bucket: CheckBucket; count: number }[] }
+
+/** Failed first, then in-progress, then success, then everything else: the
+ * reader's attention should land on what needs it, not on an alphabetical or
+ * schema-field order. Local to this card, not CHECK_BUCKETS' own order (used
+ * elsewhere for a different, non-urgency-ranked purpose). */
+const CHECK_RENDER_ORDER: readonly CheckBucket[] = ['failed', 'pending', 'passed', 'skipped']
 
 const checksDisplay = computed<ChecksDisplay | null>(() => {
   const rollup = checks.value
@@ -58,21 +70,11 @@ const checksDisplay = computed<ChecksDisplay | null>(() => {
   if (rollup.truncated) {
     return { kind: 'aggregate', status: aggregateCheckStatus(rollup) }
   }
-  const buckets = CHECK_BUCKETS.map((bucket) => ({ bucket, count: rollup[bucket] })).filter(
+  const buckets = CHECK_RENDER_ORDER.map((bucket) => ({ bucket, count: rollup[bucket] })).filter(
     (entry) => entry.count > 0,
   )
   return { kind: 'counts', buckets }
 })
-
-function formatUpdatedAt(iso: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
-      new Date(iso),
-    )
-  } catch {
-    return iso
-  }
-}
 
 const CHECK_LABEL_KEYS: Record<CheckBucket, MessageKey> = {
   passed: 'mrs.checks.passed',
@@ -92,28 +94,48 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 <template>
   <div class="mrc-root">
-    <div class="mrc-top">
-      <span v-if="badge" class="mrc-badge" :class="`mrc-badge--${badge.variant}`">{{
-        t(badge.labelKey)
-      }}</span>
+    <div class="mrc-head">
+      <span
+        v-if="mrState"
+        class="mrc-state"
+        :class="`mrc-state--${mrState.variant}`"
+        role="img"
+        :aria-label="t(mrState.labelKey)"
+      >
+        <svg v-if="mrState.variant === 'open'" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5" />
+          <circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none" />
+        </svg>
+        <svg v-else-if="mrState.variant === 'draft'" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5" stroke-dasharray="2 2" />
+        </svg>
+        <svg v-else-if="mrState.variant === 'merged'" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="5" cy="4" r="1.3" fill="currentColor" stroke="none" />
+          <circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none" />
+          <circle cx="11" cy="8" r="1.3" fill="currentColor" stroke="none" />
+          <path d="M5 5.3v5" />
+          <path d="M5 8c3 0 4.5-1 6-1.5" />
+        </svg>
+        <svg v-else viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5" />
+          <path d="M6 6l4 4M10 6l-4 4" />
+        </svg>
+      </span>
       <span class="mrc-number">{{ t('mrs.number', { n: mr.number }) }}</span>
-      <span class="mrc-branch">{{ mr.sourceBranch }}</span>
+      <span class="mrc-author">{{ mr.author }}</span>
+      <span class="mrc-age">{{ age }}</span>
     </div>
 
     <p class="mrc-title">{{ mr.title }}</p>
 
-    <p class="mrc-meta">{{ mr.author }} · {{ formatUpdatedAt(mr.updatedAt) }}</p>
-
-    <div
-      v-if="
-        diffBar ||
-        additions !== null ||
-        deletions !== null ||
-        changedFiles !== null ||
-        checksDisplay
-      "
-      class="mrc-stats"
-    >
+    <div v-if="hasStats" class="mrc-stats">
+      <span v-if="changedFiles !== null" class="mrc-files">
+        <svg class="mrc-file-icon" aria-hidden="true" viewBox="0 0 16 16">
+          <path d="M4 2.2h5.2L11.8 5v8.8H4z" />
+          <path d="M9.2 2.2V5h2.6" />
+        </svg>
+        {{ t('mrs.card.filesChanged', { n: changedFiles }, changedFiles) }}
+      </span>
       <span
         v-if="diffBar"
         class="mrc-diffbar"
@@ -127,11 +149,10 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
           :class="`mrc-diffblock--${block}`"
         />
       </span>
-      <span v-if="additions !== null" class="mrc-add">+{{ additions }}</span>
-      <span v-if="deletions !== null" class="mrc-del">−{{ deletions }}</span>
-      <span v-if="changedFiles !== null" class="mrc-files">{{
-        t('mrs.card.filesChanged', { n: changedFiles }, changedFiles)
-      }}</span>
+      <span v-if="additions !== null || deletions !== null" class="mrc-diffcounts">
+        <span v-if="additions !== null" class="mrc-add">+{{ additions }}</span>
+        <span v-if="deletions !== null" class="mrc-del">−{{ deletions }}</span>
+      </span>
       <span v-if="checksDisplay" class="mrc-checks">
         <template v-if="checksDisplay.kind === 'aggregate'">
           <span
@@ -151,8 +172,22 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
             :key="entry.bucket"
             class="mrc-check-entry"
             :class="`mrc-check-entry--${entry.bucket}`"
-            >{{ t(CHECK_LABEL_KEYS[entry.bucket], { n: entry.count }, entry.count) }}</span
+            :aria-label="t(CHECK_LABEL_KEYS[entry.bucket], { n: entry.count }, entry.count)"
           >
+            <span aria-hidden="true">{{ entry.count }}</span>
+            <svg class="mrc-check-icon" aria-hidden="true" viewBox="0 0 16 16">
+              <path v-if="entry.bucket === 'failed'" d="M4 4l8 8M12 4l-8 8" />
+              <template v-else-if="entry.bucket === 'pending'">
+                <circle cx="8" cy="8" r="5.5" />
+                <path d="M8 4.5V8l2.2 1.3" />
+              </template>
+              <path v-else-if="entry.bucket === 'passed'" d="M4.5 8.5l2.5 2.5 4.5-5" />
+              <template v-else>
+                <circle cx="8" cy="8" r="5.5" />
+                <path d="M6 8h4" />
+              </template>
+            </svg>
+          </span>
         </template>
       </span>
     </div>
@@ -163,74 +198,85 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrc-root {
   display: flex;
   flex-direction: column;
-  gap: 4px;
   width: 100%;
 }
 
-.mrc-top {
+.mrc-head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--cs-ghost);
 }
 
-.mrc-badge {
-  flex-shrink: 0;
-  font-size: 9.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: 999px;
-  padding: 1.5px 7px;
+.mrc-state {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
 }
 
-.mrc-badge--open {
-  color: var(--codesema-risk-med);
-  background: var(--codesema-risk-med-soft);
+.mrc-state svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.mrc-badge--draft {
-  color: var(--codesema-ink-3);
-  background: var(--codesema-line-2);
+.mrc-state--open {
+  color: var(--cs-amber-text);
 }
 
-.mrc-badge--merged {
-  color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+.mrc-state--draft {
+  color: var(--cs-ghost);
 }
 
-.mrc-badge--closed {
-  color: var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
+.mrc-state--merged {
+  color: var(--cs-green-text);
+}
+
+.mrc-state--closed {
+  color: var(--cs-red-text);
 }
 
 .mrc-number {
-  flex-shrink: 0;
-  font-size: 11.5px;
+  flex: none;
   font-weight: 700;
-  color: var(--codesema-accent);
+  color: var(--cs-green-text);
 }
 
-.mrc-branch {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--codesema-ink-3);
+.mrc-author {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mrc-title {
-  margin: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--codesema-ink);
-  line-height: 1.35;
+.mrc-author::before {
+  content: '·';
+  margin-right: 6px;
 }
 
-.mrc-meta {
+.mrc-age {
+  flex: none;
+  margin-left: auto;
+}
+
+.mrc-title {
   margin: 0;
-  font-size: 11px;
-  color: var(--codesema-ink-3);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--cs-text);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 
 .mrc-stats {
@@ -238,10 +284,28 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 2px;
-  font-size: 10.5px;
+  margin-top: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
-  color: var(--codesema-ink-3);
+  color: var(--cs-ghost);
+}
+
+.mrc-files {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mrc-file-icon {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .mrc-diffbar {
@@ -252,49 +316,68 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrc-diffblock {
   width: 6px;
   height: 6px;
-  border-radius: 1.5px;
+  border-radius: 1px;
 }
 
 .mrc-diffblock--add {
-  background: var(--codesema-risk-low);
+  background: var(--cs-green-text);
 }
 
 .mrc-diffblock--del {
-  background: var(--codesema-risk-high);
+  background: var(--cs-red-text);
 }
 
-.mrc-diffblock--neutral {
-  background: var(--codesema-line-idle);
-}
-
-.mrc-add {
-  color: var(--codesema-risk-low);
-}
-
-.mrc-del {
-  color: var(--codesema-risk-high);
-}
-
-.mrc-checks {
+.mrc-diffcounts {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
+.mrc-add {
+  color: var(--cs-green-text);
+}
+
+.mrc-del {
+  color: var(--cs-red-text);
+}
+
+.mrc-checks {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mrc-check-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mrc-check-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .mrc-check-entry--passed {
-  color: var(--codesema-risk-low);
+  color: var(--cs-green-text);
 }
 
 .mrc-check-entry--failed {
-  color: var(--codesema-risk-high);
+  color: var(--cs-red-text);
 }
 
 .mrc-check-entry--pending {
-  color: var(--codesema-risk-med);
+  color: var(--cs-amber-text);
 }
 
 .mrc-check-entry--skipped {
-  color: var(--codesema-ink-3);
+  color: var(--cs-ghost);
 }
 
 .mrc-checks-dot {
@@ -305,19 +388,19 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrc-checks-dot--passed {
-  background: var(--codesema-risk-low);
+  background: var(--cs-green-text);
 }
 
 .mrc-checks-dot--failed {
-  background: var(--codesema-risk-high);
+  background: var(--cs-red-text);
 }
 
 .mrc-checks-dot--pending {
-  background: var(--codesema-risk-med);
+  background: var(--cs-amber-text);
 }
 
 .mrc-checks-dot--skipped,
 .mrc-checks-dot--unknown {
-  background: var(--codesema-dot-idle);
+  background: var(--cs-dot-idle);
 }
 </style>
