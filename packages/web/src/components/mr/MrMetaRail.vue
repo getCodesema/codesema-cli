@@ -1,23 +1,51 @@
 <script setup lang="ts">
-// Metadata rail of one merge request: labels, reviewers, assignees,
-// milestone, mergeable, commits, auto-review. Presentational only, props in,
-// nothing fetched. Every section but auto-review disappears when its field is
-// `null` (unknown); auto-review is the one exception (see below).
-import { computed } from 'vue'
+// Metadata rail of one merge request: auto-review, reviewers, assignees,
+// labels, milestone, branches, changes, dates. Presentational only, props in,
+// nothing fetched. Every section but auto-review disappears when it has
+// nothing to show; auto-review is the one exception (see below).
+import {
+  ChevronDown,
+  CircleCheck,
+  Clock,
+  Eye,
+  FileDiff,
+  GitBranch,
+  Milestone,
+  ShieldCheck,
+  Tag,
+  UserRound,
+} from '@lucide/vue'
+import { computed, ref } from 'vue'
 import { t, type MessageKey } from '../../i18n'
+import { formatRelativeAge } from '../../relative-time'
 import type { ForgeMr } from '../../types'
 import { labelPillStyle } from '../forge/LabelColor'
 import { aggregateCheckStatus, type CheckAggregateStatus, type CheckBucket } from './Checks'
 
 const props = defineProps<{ mr: ForgeMr }>()
 
+/** Rendered in place of a numeric metric this forge did not report: never a
+ * zero, which would read as a measured value. Not an em dash (banned project
+ * wide), an en dash instead. */
+const UNKNOWN_METRIC = '–'
+
 const labels = computed(() => props.mr.labels)
 const reviewers = computed(() => props.mr.reviewers)
 const assignees = computed(() => props.mr.assignees)
 const milestone = computed(() => props.mr.milestone)
 const mergeable = computed(() => props.mr.mergeable)
-const commits = computed(() => props.mr.commits)
 const checks = computed(() => props.mr.checks)
+
+const hasChanges = computed(
+  () =>
+    props.mr.changedFiles !== null ||
+    props.mr.additions !== null ||
+    props.mr.deletions !== null ||
+    props.mr.commits !== null ||
+    mergeable.value !== null,
+)
+
+const updatedAge = computed(() => formatRelativeAge(props.mr.updatedAt))
 
 type AutoReview =
   | { kind: 'unavailable' }
@@ -52,6 +80,12 @@ const autoReview = computed<AutoReview>(() => {
   return { kind: 'detailed', passed: rollup.passed, rest }
 })
 
+/** The passed count starts folded behind a disclosure button: failures and
+ * pending checks need the reader's attention and are spelled out in full,
+ * good news does not. Reset is not tracked across a prop change: switching
+ * the selected MR remounts this component (see ForgeDetailPanel.vue). */
+const passedOpen = ref(false)
+
 const MERGEABLE_LABEL_KEYS: Record<NonNullable<ForgeMr['mergeable']>, MessageKey> = {
   mergeable: 'mrs.rail.mergeableStateOk',
   conflicting: 'mrs.rail.mergeableStateConflicting',
@@ -76,56 +110,11 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 <template>
   <div class="mrr-root">
-    <section v-if="labels !== null" class="mrr-section">
-      <h3 class="mrr-heading">{{ t('mrs.rail.labels') }}</h3>
-      <p v-if="labels.length === 0" class="mrr-empty">{{ t('mrs.rail.labelsEmpty') }}</p>
-      <ul v-else class="mrr-chips">
-        <li
-          v-for="label in labels"
-          :key="label.name"
-          class="mrr-label-chip"
-          :style="labelPillStyle(label.color)"
-        >
-          {{ label.name }}
-        </li>
-      </ul>
-    </section>
-
-    <section v-if="reviewers !== null" class="mrr-section">
-      <h3 class="mrr-heading">{{ t('mrs.rail.reviewers') }}</h3>
-      <p v-if="reviewers.length === 0" class="mrr-empty">{{ t('mrs.rail.reviewersEmpty') }}</p>
-      <ul v-else class="mrr-chips">
-        <li v-for="name in reviewers" :key="name" class="mrr-chip">{{ name }}</li>
-      </ul>
-    </section>
-
-    <section v-if="assignees !== null" class="mrr-section">
-      <h3 class="mrr-heading">{{ t('mrs.rail.assignees') }}</h3>
-      <p v-if="assignees.length === 0" class="mrr-empty">{{ t('mrs.rail.assigneesEmpty') }}</p>
-      <ul v-else class="mrr-chips">
-        <li v-for="name in assignees" :key="name" class="mrr-chip">{{ name }}</li>
-      </ul>
-    </section>
-
-    <section v-if="milestone !== null" class="mrr-section">
-      <h3 class="mrr-heading">{{ t('mrs.rail.milestone') }}</h3>
-      <p class="mrr-value">{{ milestone }}</p>
-    </section>
-
-    <section v-if="mergeable !== null" class="mrr-section">
-      <h3 class="mrr-heading">{{ t('mrs.rail.mergeable') }}</h3>
-      <span class="mrr-mergeable" :class="`mrr-mergeable--${mergeable}`">{{
-        t(MERGEABLE_LABEL_KEYS[mergeable])
-      }}</span>
-    </section>
-
-    <section v-if="commits !== null" class="mrr-section">
-      <h3 class="mrr-heading">{{ t('mrs.rail.commits') }}</h3>
-      <p class="mrr-value">{{ t('mrs.rail.commitsCount', { n: commits }, commits) }}</p>
-    </section>
-
     <section class="mrr-section">
-      <h3 class="mrr-heading">{{ t('mrs.rail.autoReview') }}</h3>
+      <h3 class="mrr-heading">
+        <ShieldCheck class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.autoReview') }}</span>
+      </h3>
       <p v-if="autoReview.kind === 'unavailable'" class="mrr-empty">
         {{ t('mrs.rail.autoReviewUnavailable') }}
       </p>
@@ -143,17 +132,149 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
         >
       </div>
       <div v-else class="mrr-checks-detailed">
-        <span class="mrr-check-entry mrr-check-entry--passed">{{
-          t('mrs.checks.passed', { n: autoReview.passed }, autoReview.passed)
-        }}</span>
-        <span
-          v-for="entry in autoReview.rest"
-          :key="entry.bucket"
-          class="mrr-check-entry"
-          :class="`mrr-check-entry--${entry.bucket}`"
-          >{{ t(CHECK_LABEL_KEYS[entry.bucket], { n: entry.count }, entry.count) }}</span
-        >
+        <div v-if="autoReview.rest.length > 0" class="mrr-check-group">
+          <h4 class="mrr-check-group-heading">{{ t('mrs.rail.autoReviewAttention') }}</h4>
+          <div class="mrr-check-entries">
+            <span
+              v-for="entry in autoReview.rest"
+              :key="entry.bucket"
+              class="mrr-check-entry"
+              :class="`mrr-check-entry--${entry.bucket}`"
+              >{{ t(CHECK_LABEL_KEYS[entry.bucket], { n: entry.count }, entry.count) }}</span
+            >
+          </div>
+        </div>
+        <div class="mrr-check-group">
+          <h4 class="mrr-check-group-heading">{{ t('mrs.rail.autoReviewPassedGroup') }}</h4>
+          <button
+            type="button"
+            class="mrr-check-passed"
+            :aria-expanded="passedOpen"
+            :aria-label="t('mrs.checks.passed', { n: autoReview.passed }, autoReview.passed)"
+            @click="passedOpen = !passedOpen"
+          >
+            <CircleCheck class="mrr-check-passed-icon" aria-hidden="true" />
+            <span aria-hidden="true">{{
+              passedOpen
+                ? t('mrs.checks.passed', { n: autoReview.passed }, autoReview.passed)
+                : String(autoReview.passed)
+            }}</span>
+            <ChevronDown
+              class="mrr-chevron"
+              :class="{ 'mrr-chevron--closed': !passedOpen }"
+              aria-hidden="true"
+            />
+          </button>
+        </div>
       </div>
+    </section>
+
+    <section v-if="reviewers !== null" class="mrr-section">
+      <h3 class="mrr-heading">
+        <Eye class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.reviewers') }}</span>
+      </h3>
+      <p v-if="reviewers.length === 0" class="mrr-empty">{{ t('mrs.rail.reviewersEmpty') }}</p>
+      <ul v-else class="mrr-chips">
+        <li v-for="name in reviewers" :key="name" class="mrr-chip">{{ name }}</li>
+      </ul>
+    </section>
+
+    <section v-if="assignees !== null" class="mrr-section">
+      <h3 class="mrr-heading">
+        <UserRound class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.assignees') }}</span>
+      </h3>
+      <p v-if="assignees.length === 0" class="mrr-empty">{{ t('mrs.rail.assigneesEmpty') }}</p>
+      <ul v-else class="mrr-chips">
+        <li v-for="name in assignees" :key="name" class="mrr-chip">{{ name }}</li>
+      </ul>
+    </section>
+
+    <section v-if="labels !== null" class="mrr-section">
+      <h3 class="mrr-heading">
+        <Tag class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.labels') }}</span>
+      </h3>
+      <p v-if="labels.length === 0" class="mrr-empty">{{ t('mrs.rail.labelsEmpty') }}</p>
+      <ul v-else class="mrr-chips">
+        <li
+          v-for="label in labels"
+          :key="label.name"
+          class="mrr-label-chip"
+          :style="labelPillStyle(label.color)"
+        >
+          {{ label.name }}
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="milestone !== null" class="mrr-section">
+      <h3 class="mrr-heading">
+        <Milestone class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.milestone') }}</span>
+      </h3>
+      <p class="mrr-value">{{ milestone }}</p>
+    </section>
+
+    <section class="mrr-section">
+      <h3 class="mrr-heading">
+        <GitBranch class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.branches') }}</span>
+      </h3>
+      <dl class="mrr-defs">
+        <div class="mrr-def-row">
+          <dt>{{ t('mrs.detailSource') }}</dt>
+          <dd class="mrr-branch">{{ mr.sourceBranch }}</dd>
+        </div>
+        <div class="mrr-def-row">
+          <dt>{{ t('mrs.detailTarget') }}</dt>
+          <dd class="mrr-branch">{{ mr.targetBranch }}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section v-if="hasChanges" class="mrr-section">
+      <h3 class="mrr-heading">
+        <FileDiff class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.changes') }}</span>
+      </h3>
+      <dl class="mrr-defs">
+        <div class="mrr-def-row">
+          <dt>{{ t('mrs.rail.changesFiles') }}</dt>
+          <dd>{{ mr.changedFiles ?? UNKNOWN_METRIC }}</dd>
+        </div>
+        <div class="mrr-def-row">
+          <dt>{{ t('mrs.rail.changesAdditions') }}</dt>
+          <dd class="mrr-def-add">
+            {{ mr.additions !== null ? `+${mr.additions}` : UNKNOWN_METRIC }}
+          </dd>
+        </div>
+        <div class="mrr-def-row">
+          <dt>{{ t('mrs.rail.changesDeletions') }}</dt>
+          <dd class="mrr-def-del">
+            {{ mr.deletions !== null ? `−${mr.deletions}` : UNKNOWN_METRIC }}
+          </dd>
+        </div>
+        <div class="mrr-def-row">
+          <dt>{{ t('mrs.rail.changesCommits') }}</dt>
+          <dd>{{ mr.commits ?? UNKNOWN_METRIC }}</dd>
+        </div>
+        <div v-if="mergeable !== null" class="mrr-def-row">
+          <dt>{{ t('mrs.rail.changesMergeable') }}</dt>
+          <dd class="mrr-mergeable-text" :class="`mrr-mergeable-text--${mergeable}`">
+            {{ t(MERGEABLE_LABEL_KEYS[mergeable]) }}
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="mrr-section">
+      <h3 class="mrr-heading">
+        <Clock class="mrr-heading-icon" aria-hidden="true" />
+        <span>{{ t('mrs.rail.dates') }}</span>
+      </h3>
+      <p class="mrr-value">{{ t('mrs.rail.updatedAt', { age: updatedAge }) }}</p>
     </section>
   </div>
 </template>
@@ -162,35 +283,47 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrr-root {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  font-size: 12.5px;
 }
 
 .mrr-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--cs-line-2);
+}
+
+.mrr-section:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
 }
 
 .mrr-heading {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--codesema-ink-3);
+  color: var(--cs-muted);
+}
+
+.mrr-heading-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
 }
 
 .mrr-empty {
   margin: 0;
-  font-size: 12px;
-  color: var(--codesema-ink-3);
+  color: var(--cs-ghost);
 }
 
 .mrr-value {
   margin: 0;
-  font-size: 13px;
-  color: var(--codesema-ink);
+  color: var(--cs-text);
 }
 
 .mrr-chips {
@@ -203,10 +336,9 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-chip {
-  font-size: 11.5px;
-  color: var(--codesema-ink-2);
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line-2);
+  color: var(--cs-text-2);
+  background: var(--cs-surface);
+  border: 1px solid var(--cs-line-2);
   border-radius: 999px;
   padding: 3px 10px;
 }
@@ -217,7 +349,6 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrr-label-chip {
   --lp-rest-bg: var(--cs-line-2);
 
-  font-size: 12px;
   font-weight: 500;
   color: var(--cs-text-2);
   padding: 2px 8px;
@@ -225,40 +356,61 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   background: var(--lp-rest-bg);
 }
 
-.mrr-mergeable {
-  display: inline-flex;
-  align-self: flex-start;
-  font-size: 11.5px;
-  font-weight: 600;
-  border-radius: 7px;
-  padding: 4px 10px;
-  border: 1px solid transparent;
+.mrr-defs {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.mrr-mergeable--mergeable {
-  color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
-  border-color: var(--codesema-risk-low);
+.mrr-def-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.mrr-mergeable--conflicting {
-  color: var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
-  border-color: var(--codesema-risk-high);
+.mrr-def-row dt {
+  color: var(--cs-muted);
 }
 
-.mrr-mergeable--unknown {
-  color: var(--codesema-risk-med);
-  background: var(--codesema-risk-med-soft);
-  border-color: var(--codesema-risk-med);
+.mrr-def-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--cs-text);
+  text-align: right;
+}
+
+.mrr-branch {
+  overflow-wrap: anywhere;
+}
+
+.mrr-def-add {
+  color: var(--cs-green-text);
+}
+
+.mrr-def-del {
+  color: var(--cs-red-text);
+}
+
+.mrr-mergeable-text--mergeable {
+  color: var(--cs-green-text);
+}
+
+.mrr-mergeable-text--conflicting {
+  color: var(--cs-red-text);
+}
+
+.mrr-mergeable-text--unknown {
+  color: var(--cs-amber-text);
 }
 
 .mrr-checks-aggregate {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
-  color: var(--codesema-ink-2);
+  color: var(--cs-text-2);
 }
 
 .mrr-checks-dot {
@@ -269,43 +421,87 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-checks-dot--passed {
-  background: var(--codesema-risk-low);
+  background: var(--cs-green-text);
 }
 
 .mrr-checks-dot--failed {
-  background: var(--codesema-risk-high);
+  background: var(--cs-red-text);
 }
 
 .mrr-checks-dot--pending {
-  background: var(--codesema-risk-med);
+  background: var(--cs-amber-text);
 }
 
 .mrr-checks-dot--skipped,
 .mrr-checks-dot--unknown {
-  background: var(--codesema-dot-idle);
+  background: var(--cs-dot-idle);
 }
 
 .mrr-checks-detailed {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mrr-check-group-heading {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cs-ghost);
+}
+
+.mrr-check-entries {
+  display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  font-size: 12px;
   font-family: var(--font-mono);
 }
 
-.mrr-check-entry--passed {
-  color: var(--codesema-risk-low);
-}
-
 .mrr-check-entry--failed {
-  color: var(--codesema-risk-high);
+  color: var(--cs-red-text);
 }
 
 .mrr-check-entry--pending {
-  color: var(--codesema-risk-med);
+  color: var(--cs-amber-text);
 }
 
 .mrr-check-entry--skipped {
-  color: var(--codesema-ink-3);
+  color: var(--cs-ghost);
+}
+
+.mrr-check-passed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  color: var(--cs-green-text);
+  background: var(--cs-green-soft);
+  border: none;
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.mrr-check-passed:hover {
+  background: var(--cs-green-ring);
+}
+
+.mrr-check-passed-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.mrr-chevron {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  transition: transform 150ms ease;
+}
+
+.mrr-chevron--closed {
+  transform: rotate(-90deg);
 }
 </style>
