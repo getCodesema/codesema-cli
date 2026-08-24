@@ -24,6 +24,7 @@ import {
   X,
 } from '@lucide/vue'
 import { computed, type Component } from 'vue'
+import { queueSectionOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
 import { t } from '../../i18n'
@@ -41,6 +42,11 @@ const props = defineProps<{
   projectName: string
   selected: boolean
 }>()
+
+/** Which of the four work sections this conversation is in. The row draws
+ *  its outline from it, and the table it comes from is exhaustive over every
+ *  TaskStatus, so a new status cannot silently fall through to "no outline". */
+const section = computed(() => queueSectionOf(props.state.record.status))
 
 const activity = computed(() => resolveActivityLine(props.state))
 const checksPill = computed(() => resolveChecksPill(props.state))
@@ -70,7 +76,7 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
 </script>
 
 <template>
-  <div class="cvr-root">
+  <div class="cvr-root" :class="`cvr-root--${section}`">
     <p class="cvr-meta">{{ projectName }} · {{ timestamp }}</p>
     <p class="cvr-title">{{ state.record.title }}</p>
     <p class="cvr-activity" :style="{ color: activityColor }">
@@ -115,7 +121,32 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
   flex-direction: column;
   width: 100%;
   padding: 8px 12px 8px 14px;
+  /* EVERY row carries a border, only its colour changes with the state, so
+     the geometry never shifts between one row and the next. */
+  border: 1px solid var(--cs-line);
   border-radius: 8px;
+}
+
+/* State outlines. DESIGN.md reserves a COLOURED border for a state, never for
+   decoration, so only the two sections that ask something of the reader get
+   one: amber when the human is the bottleneck, green when the work is one
+   click from shipping. "Working" and "done" stay neutral and are told apart
+   by intensity, plus, for working, the living dot the activity line already
+   renders. Painting all four would make a dense column read as a garland. */
+.cvr-root--attention {
+  border-color: var(--cs-amber-line);
+}
+
+.cvr-root--ready {
+  border-color: var(--cs-green-ring);
+}
+
+.cvr-root--active {
+  border-color: var(--cs-line-3);
+}
+
+.cvr-root--done {
+  border-color: var(--cs-line);
 }
 
 .cvr-meta,

@@ -13,7 +13,7 @@ import { renderToString } from 'vue/server-renderer'
 import { statusPhraseKey } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { t } from '../../i18n'
-import type { TaskChecks, TaskEvent, TaskRecord } from '../../types'
+import type { TaskChecks, TaskEvent, TaskRecord, TaskStatus } from '../../types'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -287,5 +287,57 @@ describe('geometry: CSS-pinned (sheet §4 and §7)', () => {
   test('the reference pill background is the elevated surface at 60%, never a plain hex', () => {
     expect(SOURCE).toContain('color-mix(in srgb, var(--cs-surface-2) 60%, transparent)')
     expect(SOURCE).not.toMatch(/#[0-9a-fA-F]{3,8}/)
+  })
+})
+
+// The state outline. DESIGN.md reserves a coloured border for a STATE and
+// forbids it as decoration, so only the two sections that ask something of
+// the reader are coloured: amber when the human is the bottleneck, green when
+// the work is one click from shipping. Working and done stay neutral.
+//
+// Every row carries a border either way, so switching state never shifts the
+// geometry by a pixel.
+describe('the row outlines its work state', () => {
+  const OUTLINE: Record<TaskStatus, string> = {
+    waiting_for_you: 'cvr-root--attention',
+    review_ko: 'cvr-root--attention',
+    interrupted: 'cvr-root--attention',
+    running: 'cvr-root--active',
+    reviewing: 'cvr-root--active',
+    queued: 'cvr-root--active',
+    review_ok: 'cvr-root--ready',
+    shipped: 'cvr-root--done',
+    failed: 'cvr-root--done',
+  }
+
+  test('every one of the nine statuses lands on an outline, none falls through', async () => {
+    for (const [status, expected] of Object.entries(OUTLINE)) {
+      const html = await render(taskState({ status: status as TaskStatus }))
+      expect(html).toContain(expected)
+    }
+  })
+
+  test('only the two sections that ask for an action are coloured', () => {
+    /** The body of one outline rule, and nothing else. */
+    function ruleBody(selector: string): string {
+      const at = SOURCE.indexOf(selector)
+      return SOURCE.slice(at, SOURCE.indexOf('}', at))
+    }
+    expect(ruleBody('.cvr-root--attention')).toContain('--cs-amber-line')
+    expect(ruleBody('.cvr-root--ready')).toContain('--cs-green-ring')
+    // Working and done are neutral: neither may reach for a state colour.
+    for (const selector of ['.cvr-root--active', '.cvr-root--done']) {
+      const body = ruleBody(selector)
+      expect(body).toContain('--cs-line')
+      expect(body).not.toContain('--cs-amber')
+      expect(body).not.toContain('--cs-green')
+      expect(body).not.toContain('--cs-red')
+    }
+  })
+
+  test('the border is on every row, so a state change never moves the layout', () => {
+    const root = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-root--attention'))
+    expect(root).toContain('border: 1px solid var(--cs-line);')
+    expect(root).toContain('padding: 8px 12px 8px 14px;')
   })
 })
