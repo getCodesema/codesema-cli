@@ -700,6 +700,10 @@ const en = {
   'forge.detailEmpty': 'Select an issue or a pull request to see its details here.',
   'forge.detailOpenLabel': 'Open in forge',
   'forge.detailDescriptionEmpty': 'No description.',
+  'forge.detailDescriptionTruncated': 'This description is too long and was truncated.',
+  'forge.detailDescriptionShapeAbnormal':
+    'This description could not be rendered because its structure looks abnormal.',
+  'forge.detailDescriptionTruncatedLink': 'Read it in full on the forge',
   'forge.detailRailAria': 'Metadata',
 
   // --- Forge board controls panel: sort / status filter / label search ---
@@ -1401,6 +1405,10 @@ const fr: Record<MessageKey, string> = {
   'forge.detailEmpty': 'Sélectionne une issue ou une merge request pour voir ses détails ici.',
   'forge.detailOpenLabel': 'Ouvrir dans la forge',
   'forge.detailDescriptionEmpty': 'Aucune description.',
+  'forge.detailDescriptionTruncated': 'Cette description est trop longue et a été tronquée.',
+  'forge.detailDescriptionShapeAbnormal':
+    "Cette description n'a pas pu être rendue car sa structure semble anormale.",
+  'forge.detailDescriptionTruncatedLink': 'La lire en entier sur la forge',
   'forge.detailRailAria': 'Métadonnées',
 
   // --- Forge board controls panel: sort / status filter / label search ---

@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { REFERENCE_LINK_CLASS, renderForgeMarkdown } from './ForgeMarkdown'
+import {
+  BLOCKQUOTE_DEPTH_LIMIT,
+  EMPHASIS_RUN_LIMIT,
+  hasPathologicalMarkdownShape,
+  MAX_FORGE_MARKDOWN_LENGTH,
+  REFERENCE_LINK_CLASS,
+  renderForgeMarkdown,
+} from './ForgeMarkdown'
 
 // The security suite below is the actual point of this module: a forge body
 // is untrusted content (anyone can open an issue on a public repo), and for
@@ -49,6 +56,12 @@ describe('security: nothing dangerous survives sanitize', () => {
     expect(html).not.toContain('<embed')
   })
 
+  test('a plaintext tag: removed entirely, defense in depth alongside script/style', () => {
+    const html = renderForgeMarkdown('before <plaintext>raw stuff</plaintext> after')
+    expect(html).not.toContain('<plaintext')
+    expect(html).not.toContain('raw stuff')
+  })
+
   test('an image with an onerror handler: the handler is stripped, a safe src stays', () => {
     const html = renderForgeMarkdown('<img src="https://example.test/x.png" onerror="alert(1)">')
     expect(html).not.toContain('onerror')
@@ -93,6 +106,93 @@ describe('security: nothing dangerous survives sanitize', () => {
     const html = renderForgeMarkdown('before <style>body{display:none}</style> after')
     expect(html).not.toContain('<style')
     expect(html).not.toContain('display:none')
+  })
+})
+
+// A forge body's cost to parse and sanitize is not bounded by its length
+// alone: some constructs are quadratic, others overflow the call stack, and
+// both can happen at lengths far below any cap that would still fit real
+// content. Length and shape are two separate concerns here: the cap keeps
+// an accidental multi-megabyte paste from reaching the parser at all, and
+// the shape guard (linear time, before parsing) is what actually stands
+// between a hostile body and the two known-expensive constructs, whatever
+// their length. Anyone can put either in a public issue; opening the detail
+// panel must never be the thing that pays for it, and a long ordinary
+// description must never pay for a limit sized for a threat it isn't.
+describe('bounded cost: parsing an untrusted body never runs away', () => {
+  describe('length: a generous cap, not a defense against shape on its own', () => {
+    test('input past MAX_FORGE_MARKDOWN_LENGTH is truncated before it is ever parsed', () => {
+      const html = renderForgeMarkdown('a'.repeat(MAX_FORGE_MARKDOWN_LENGTH + 1000))
+      expect(html).toContain('a'.repeat(MAX_FORGE_MARKDOWN_LENGTH))
+      expect(html).not.toContain('a'.repeat(MAX_FORGE_MARKDOWN_LENGTH + 1))
+    })
+
+    // The non-regression case a length-only cap gets backwards: a long,
+    // ordinary body (well under the cap, no pathological shape) must
+    // render in full, not just up to whatever a stricter cap would have
+    // allowed.
+    test('a long but ordinary description, under the cap, renders in full end to end', () => {
+      const sentence =
+        'Investigated the timeout: the retry loop backed off too aggressively and the pool starved under load. '
+      const body = sentence.repeat(150) + 'END-OF-DESCRIPTION-MARKER'
+      expect(body.length).toBeGreaterThan(15000)
+      expect(body.length).toBeLessThan(MAX_FORGE_MARKDOWN_LENGTH)
+      const html = renderForgeMarkdown(body)
+      expect(html).not.toContain('fdp-md-fallback')
+      expect(html).toContain('END-OF-DESCRIPTION-MARKER')
+    })
+  })
+
+  describe('shape: the actual danger, refused before parsing regardless of length', () => {
+    test('a run one character short of EMPHASIS_RUN_LIMIT parses normally', () => {
+      const html = renderForgeMarkdown('*'.repeat(EMPHASIS_RUN_LIMIT - 1) + 'x')
+      expect(html).not.toContain('fdp-md-fallback')
+    })
+
+    test('a run at EMPHASIS_RUN_LIMIT is refused, rendered as escaped raw text', () => {
+      const pathological = '*'.repeat(EMPHASIS_RUN_LIMIT)
+      expect(renderForgeMarkdown(pathological)).toBe(
+        `<p class="fdp-md-fallback">${pathological}</p>`,
+      )
+    })
+
+    test('nesting one level short of BLOCKQUOTE_DEPTH_LIMIT parses normally', () => {
+      const html = renderForgeMarkdown('> '.repeat(BLOCKQUOTE_DEPTH_LIMIT - 1) + 'x')
+      expect(html).not.toContain('fdp-md-fallback')
+    })
+
+    test('nesting at BLOCKQUOTE_DEPTH_LIMIT is refused, rendered as escaped raw text', () => {
+      const pathological = '> '.repeat(BLOCKQUOTE_DEPTH_LIMIT) + 'deep'
+      const html = renderForgeMarkdown(pathological)
+      expect(html).toContain('fdp-md-fallback')
+      expect(html).toContain('deep')
+      expect(html).not.toContain('<blockquote>')
+    })
+
+    test('a run of emphasis markers whose naive cost is quadratic in length: refused in linear time, stays fast', () => {
+      // The exact shape that made this pipeline take ~750ms at a mere
+      // 4,001 characters, unguarded: a long run of `*` on each side of one
+      // character.
+      const pathological = '*'.repeat(12000) + 'x' + '*'.repeat(12000)
+      const start = performance.now()
+      const html = renderForgeMarkdown(pathological)
+      expect(performance.now() - start).toBeLessThan(50)
+      expect(html).toContain('fdp-md-fallback')
+    })
+
+    test('deeply nested blockquotes: refused, never throw', () => {
+      // The exact shape that overflowed the parser's own call stack,
+      // unguarded, somewhere between 15,600 and 16,000 characters.
+      const pathological = '> '.repeat(11000) + 'deep'
+      expect(() => renderForgeMarkdown(pathological)).not.toThrow()
+      expect(renderForgeMarkdown(pathological)).toContain('fdp-md-fallback')
+    })
+
+    test('hasPathologicalMarkdownShape is exported so the caller can raise its own notice', () => {
+      expect(hasPathologicalMarkdownShape('*'.repeat(EMPHASIS_RUN_LIMIT))).toBe(true)
+      expect(hasPathologicalMarkdownShape('> '.repeat(BLOCKQUOTE_DEPTH_LIMIT))).toBe(true)
+      expect(hasPathologicalMarkdownShape('a perfectly ordinary sentence.')).toBe(false)
+    })
   })
 })
 
@@ -151,18 +251,26 @@ describe('typography: every element the detail panel styles', () => {
 })
 
 describe('reference link styling', () => {
-  test('a link whose href is in referenceUrls gets the reference class', () => {
+  test('a link whose href AND text match a reference gets the reference class', () => {
     const html = renderForgeMarkdown(
       '[#123](https://github.com/acme/repo/issues/123)',
-      new Set(['https://github.com/acme/repo/issues/123']),
+      new Map([['https://github.com/acme/repo/issues/123', '#123']]),
     )
     expect(html).toContain(`class="${REFERENCE_LINK_CLASS}"`)
   })
 
-  test('a plain link not in referenceUrls never gets the reference class', () => {
+  test('a plain link not matching any reference never gets the reference class', () => {
     const html = renderForgeMarkdown(
       '[text](https://example.com)',
-      new Set(['https://github.com/acme/repo/issues/123']),
+      new Map([['https://github.com/acme/repo/issues/123', '#123']]),
+    )
+    expect(html).not.toContain(REFERENCE_LINK_CLASS)
+  })
+
+  test('a link whose href matches a reference but whose text does not: no reference style, only a href match is not enough', () => {
+    const html = renderForgeMarkdown(
+      '[click here for the security fix](https://github.com/acme/repo/issues/123)',
+      new Map([['https://github.com/acme/repo/issues/123', '#123']]),
     )
     expect(html).not.toContain(REFERENCE_LINK_CLASS)
   })
@@ -170,7 +278,7 @@ describe('reference link styling', () => {
   test('a raw HTML link forging the reference class attribute: the class is dropped like any other, never granted the reference style', () => {
     const html = renderForgeMarkdown(
       '<a href="https://evil.example" class="fdp-md-ref">fake</a>',
-      new Set(['https://github.com/acme/repo/issues/123']),
+      new Map([['https://github.com/acme/repo/issues/123', '#123']]),
     )
     expect(html).not.toContain(REFERENCE_LINK_CLASS)
   })

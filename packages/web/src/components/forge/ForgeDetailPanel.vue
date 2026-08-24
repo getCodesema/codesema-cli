@@ -23,7 +23,11 @@ import { t, type MessageKey } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import MrMetaRail from '../mr/MrMetaRail.vue'
 import type { ForgeDetailItem } from './ForgeLogic'
-import { renderForgeMarkdown } from './ForgeMarkdown'
+import {
+  hasPathologicalMarkdownShape,
+  MAX_FORGE_MARKDOWN_LENGTH,
+  renderForgeMarkdown,
+} from './ForgeMarkdown'
 import { linkifyForgeReferences } from './ForgeReferenceLinks'
 import { labelPillStyle } from './LabelColor'
 
@@ -61,18 +65,52 @@ const description = computed(() => {
 })
 
 /**
- * Sanitized HTML for `description`: `#123` references are rewritten to
- * links first (ForgeReferenceLinks.ts, against the current item's own
- * URL), then the whole body goes through the sanitized markdown renderer
- * (ForgeMarkdown.ts). A forge body is untrusted content, so this is the
- * only place its raw text is ever interpreted as markup.
+ * A body past `MAX_FORGE_MARKDOWN_LENGTH` is truncated before it ever
+ * reaches the renderer, never silently: the panel says so, with a link to
+ * read the rest on the forge. `#123` references are rewritten to links
+ * first (ForgeReferenceLinks.ts, against the current item's own URL), on
+ * the already-truncated text: the length limit governs what the reader
+ * sees, not the reference rewrite's own tiny expansion of it.
  */
-const descriptionHtml = computed(() => {
+const linkifiedDescription = computed(() => {
   if (description.value === null) {
     return null
   }
-  const { markdown, referenceUrls } = linkifyForgeReferences(description.value, url.value ?? '')
-  return renderForgeMarkdown(markdown, referenceUrls)
+  const bounded = description.value.slice(0, MAX_FORGE_MARKDOWN_LENGTH)
+  return linkifyForgeReferences(bounded, url.value ?? '')
+})
+
+const isDescriptionTruncated = computed(
+  () => description.value !== null && description.value.length > MAX_FORGE_MARKDOWN_LENGTH,
+)
+
+/**
+ * True when the text that would reach the renderer is shaped like one of
+ * the two constructs `renderForgeMarkdown` refuses to parse (see
+ * `hasPathologicalMarkdownShape`): computed independently here, rather
+ * than inferred from `descriptionHtml`'s output, so the panel can show a
+ * notice that names what happened instead of a silent fallback to raw
+ * text. Distinct from `isDescriptionTruncated`: one says "there was more",
+ * the other says "what's here could not be rendered as written".
+ */
+const isDescriptionShapeAbnormal = computed(
+  () =>
+    linkifiedDescription.value !== null &&
+    hasPathologicalMarkdownShape(linkifiedDescription.value.markdown),
+)
+
+/**
+ * Sanitized HTML for `description`, from the same truncated, linkified
+ * text `isDescriptionShapeAbnormal` checked. A forge body is untrusted
+ * content, so this is the only place its raw text is ever interpreted as
+ * markup.
+ */
+const descriptionHtml = computed(() => {
+  if (linkifiedDescription.value === null) {
+    return null
+  }
+  const { markdown, references } = linkifiedDescription.value
+  return renderForgeMarkdown(markdown, references)
 })
 
 type BadgeVariant = 'open' | 'draft' | 'merged' | 'closed'
@@ -190,6 +228,18 @@ const issueUpdatedAge = computed(() =>
         <!-- eslint-disable-next-line vue/no-v-html -->
         <div v-if="descriptionHtml !== null" class="fdp-md" v-html="descriptionHtml" />
         <p v-else class="fdp-description-empty">{{ t('forge.detailDescriptionEmpty') }}</p>
+        <p v-if="isDescriptionShapeAbnormal" class="fdp-md-truncated">
+          {{ t('forge.detailDescriptionShapeAbnormal') }}
+          <a :href="url ?? undefined" target="_blank" rel="noopener noreferrer">{{
+            t('forge.detailDescriptionTruncatedLink')
+          }}</a>
+        </p>
+        <p v-else-if="isDescriptionTruncated" class="fdp-md-truncated">
+          {{ t('forge.detailDescriptionTruncated') }}
+          <a :href="url ?? undefined" target="_blank" rel="noopener noreferrer">{{
+            t('forge.detailDescriptionTruncatedLink')
+          }}</a>
+        </p>
       </div>
 
       <div class="fdp-rail" role="region" :aria-label="t('forge.detailRailAria')">
@@ -518,6 +568,21 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-md li + li {
   margin-top: 4px;
+}
+
+.fdp-md-fallback {
+  white-space: pre-wrap;
+}
+
+.fdp-md-truncated {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  color: var(--cs-ghost);
+}
+
+.fdp-md-truncated a {
+  color: var(--cs-green-text);
+  text-decoration: underline;
 }
 
 .fdp-description-empty {

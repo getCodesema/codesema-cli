@@ -10,6 +10,7 @@ import { renderToString } from 'vue/server-renderer'
 import { t } from '../../i18n'
 import type { ForgeIssue, ForgeMr } from '../../types'
 import type { ForgeDetailItem } from './ForgeLogic'
+import { MAX_FORGE_MARKDOWN_LENGTH } from './ForgeMarkdown'
 
 const SOURCE = readFileSync(join(import.meta.dir, 'ForgeDetailPanel.vue'), 'utf8')
 
@@ -235,6 +236,68 @@ describe('the body', () => {
     })
     expect(html).toContain('href="https://github.com/acme/repo/issues/7"')
     expect(html).toContain('fdp-md-ref')
+  })
+
+  test('a body past MAX_FORGE_MARKDOWN_LENGTH: a visible, non-silent truncation notice with a link to the forge', async () => {
+    const url = 'https://github.com/acme/repo/issues/9'
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ number: 9, url, body: 'a'.repeat(MAX_FORGE_MARKDOWN_LENGTH + 500) }),
+    })
+    expect(html).toContain(t('forge.detailDescriptionTruncated'))
+    expect(html).toContain(htmlEscapeAttr(t('forge.detailDescriptionTruncatedLink')))
+    expect(html).toContain(`href="${url}"`)
+  })
+
+  test('a body at or under MAX_FORGE_MARKDOWN_LENGTH: no truncation notice', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: 'a'.repeat(MAX_FORGE_MARKDOWN_LENGTH) }),
+    })
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+  })
+
+  // The non-regression case a length-only defense would get backwards: a
+  // long, ordinary description, comfortably under the cap, must render in
+  // full with no notice at all, not be treated as a threat for its length.
+  test('a long but ordinary description, under the cap: renders in full, no notice at all', async () => {
+    const sentence =
+      'Investigated the timeout: the retry loop backed off too aggressively and the pool starved under load. '
+    const body = sentence.repeat(150) + 'END-OF-DESCRIPTION-MARKER'
+    expect(body.length).toBeGreaterThan(15000)
+    expect(body.length).toBeLessThan(MAX_FORGE_MARKDOWN_LENGTH)
+    const html = await render({ kind: 'issue', issue: issue({ body }) })
+    expect(html).toContain('END-OF-DESCRIPTION-MARKER')
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+    expect(html).not.toContain(t('forge.detailDescriptionShapeAbnormal'))
+  })
+
+  // Length is not the danger: a body far under the cap, shaped like one of
+  // the two known-expensive constructs, must still be caught and named.
+  test('a short body shaped like a pathological emphasis run: the shape notice, not the length one', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: '*'.repeat(200) }),
+    })
+    expect(html).toContain(t('forge.detailDescriptionShapeAbnormal'))
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+  })
+
+  test('a short body shaped like pathologically deep blockquote nesting: the shape notice, not the length one', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: '> '.repeat(200) + 'deep' }),
+    })
+    expect(html).toContain(t('forge.detailDescriptionShapeAbnormal'))
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+  })
+
+  test('a body shaped to be pathologically expensive to parse: the panel still renders, never throws', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: '> '.repeat(20000) + 'deep' }),
+    })
+    expect(typeof html).toBe('string')
   })
 })
 
