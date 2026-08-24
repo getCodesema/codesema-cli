@@ -1,13 +1,15 @@
-// ForgeBoard is the three-panel shell (controls / list / detail). Same
-// harness as elsewhere: SSR string rendering, no live DOM, so interaction is
-// exercised through props and a seeded `localStorage` blob rather than
-// simulated clicks; the detailed list/controls/detail content itself is
-// covered by ForgeListPanel.test.ts / ForgeControlsPanel.test.ts /
-// ForgeDetailPanel.test.ts. `initialSelection` (see the prop's own doc in
-// ForgeBoard.vue) is the seam that lets this file drive the detail panel's
-// appearance without a click.
+// ForgeBoard is the two-panel board (list / detail). The controls are NOT
+// here: they live in the desk's permanent left rail, so their tests live in
+// ForgeControlsPanel.test.ts and WorkspaceView.test.ts.
+//
+// Same harness as elsewhere: SSR string rendering, no live DOM, so
+// interaction is exercised through props rather than simulated clicks. The
+// board no longer reads `localStorage` at all: its caller owns the
+// preferences and hands them down, which is why every test here is a plain
+// prop bag. `initialSelection` (see the prop's own doc in ForgeBoard.vue) is
+// the seam that lets this file drive the detail panel without a click.
 import { describe, expect, test } from 'bun:test'
-import { createSSRApp, h } from 'vue'
+import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { ProjectIssuesState } from '../../composables/useIssues'
@@ -15,13 +17,7 @@ import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
 import type { ForgeIssue, ForgeIssuesResult, ForgeMr } from '../../types'
 import type { ForgeSelection } from './ForgeLogic'
-import {
-  DEFAULT_FORGE_PREFS,
-  FORGE_CONTROLS_COLLAPSED_WIDTH,
-  FORGE_CONTROLS_WIDTH_DEFAULT,
-  FORGE_LIST_WIDTH_DEFAULT,
-  type ForgePrefs,
-} from './ForgePrefs'
+import { FORGE_LIST_WIDTH_DEFAULT, type ForgeSection } from './ForgePrefs'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -88,119 +84,84 @@ type RenderProps = {
   issuesState: ProjectIssuesState
   mrs: ForgeMr[]
   mrsState: MrsLoadState | null
+  /** All of the below now come from the caller instead of a persisted blob,
+   * and default here to what the shared preferences default to. */
+  section?: ForgeSection
+  issuesSort?: 'updated' | 'title'
+  mrsSort?: 'updated' | 'title'
+  mrsFilter?: 'all' | 'draft' | 'ready'
+  issuesLabels?: string[]
+  mrsLabels?: string[]
+  listWidth?: number
   initialSelection?: ForgeSelection | null
-  /** Defaults to 'demo': irrelevant to most tests, only the collapsed-band
-   * tests below actually vary it. */
-  projectName?: string
 }
 
 async function render(props: RenderProps): Promise<string> {
   const ForgeBoard = (await import('./ForgeBoard.vue')).default
-  const app = createSSRApp(ForgeBoard, { projectName: 'demo', ...props })
+  const app = createSSRApp(ForgeBoard, {
+    section: 'issues',
+    issuesSort: 'updated',
+    mrsSort: 'updated',
+    mrsFilter: 'all',
+    issuesLabels: [],
+    mrsLabels: [],
+    listWidth: FORGE_LIST_WIDTH_DEFAULT,
+    ...props,
+  })
   return renderToString(app)
-}
-
-/** Renders with a seeded persisted prefs blob, restoring the real
- * `localStorage` afterward. */
-async function renderWithPrefs(
-  prefsOverrides: Partial<ForgePrefs>,
-  props: RenderProps,
-): Promise<string> {
-  const store = new Map<string, string>()
-  store.set(
-    'codesema-ws-forge-prefs',
-    JSON.stringify({ ...DEFAULT_FORGE_PREFS, ...prefsOverrides }),
-  )
-  const stub = { getItem: (key: string) => store.get(key) ?? null, setItem: () => {} }
-  const globals = globalThis as { localStorage?: unknown }
-  const previous = globals.localStorage
-  try {
-    globals.localStorage = stub
-    return await render(props)
-  } finally {
-    globals.localStorage = previous
-  }
 }
 
 const noMrs: RenderProps = { issuesState: issuesState(), mrs: [], mrsState: null }
 
-describe('panel widths: reflected from the persisted prefs, falling back to the defaults', () => {
-  test('default widths (no persisted prefs) are the documented defaults', async () => {
+describe('the list width comes from the caller, never from storage', () => {
+  test('the default width is reflected', async () => {
     const html = await render(noMrs)
-    expect(html).toContain(`--fb-controls-w:${FORGE_CONTROLS_WIDTH_DEFAULT}px`)
     expect(html).toContain(`--fb-list-w:${FORGE_LIST_WIDTH_DEFAULT}px`)
   })
 
-  test('a persisted controlsWidth/listWidth is honored', async () => {
-    const html = await renderWithPrefs({ controlsWidth: 340, listWidth: 420 }, noMrs)
-    expect(html).toContain('--fb-controls-w:340px')
+  test('a width passed in is honored', async () => {
+    const html = await render({ ...noMrs, listWidth: 420 })
     expect(html).toContain('--fb-list-w:420px')
   })
-})
 
-describe('the controls panel collapses to its rail width, independent of the stored width to restore', () => {
-  test('collapsed: true pins the controls panel at the collapsed-rail width', async () => {
-    const html = await renderWithPrefs({ controlsCollapsed: true, controlsWidth: 340 }, noMrs)
-    expect(html).toContain(`--fb-controls-w:${FORGE_CONTROLS_COLLAPSED_WIDTH}px`)
-  })
-
-  test('collapsed: true hides the controls resize handle, the list/detail one stays (the detail panel is always on screen)', async () => {
-    const html = await renderWithPrefs({ controlsCollapsed: true }, noMrs)
+  // The rail's own width and collapsed state are no longer this component's
+  // business at all: it renders one splitter, between list and detail.
+  test('the board renders the list splitter and no controls splitter', async () => {
+    const html = await render(noMrs)
+    expect(html).toContain(t('forge.resizeListAria'))
     expect(html).not.toContain(t('forge.resizeControlsAria'))
-    expect(html).toContain(t('forge.resizeListAria'))
   })
 
-  test('collapsed: false shows both resize handles', async () => {
-    const html = await renderWithPrefs({ controlsCollapsed: false }, noMrs)
-    expect(html).toContain(t('forge.resizeControlsAria'))
-    expect(html).toContain(t('forge.resizeListAria'))
-  })
-
-  // The collapsed band carries the selected project's name through from
-  // WorkspaceView (:project-name), not a bare toggle.
-  test('collapsed: the band carries the project name passed in', async () => {
-    const html = await renderWithPrefs(
-      { controlsCollapsed: true },
-      { ...noMrs, projectName: 'my-repo' },
-    )
-    expect(html).toContain('class="fcp-band"')
-    expect(html).toContain('>my-repo<')
-  })
-
-  test('expanded: no collapsed band, the section nav shows instead', async () => {
-    const html = await renderWithPrefs(
-      { controlsCollapsed: false },
-      { ...noMrs, projectName: 'my-repo' },
-    )
+  test('the board renders no controls panel and no collapsed band', async () => {
+    const html = await render(noMrs)
     expect(html).not.toContain('fcp-band')
+    expect(html).not.toContain('fcp-sections')
   })
 })
 
-/** The list panel's own heading (`flp-heading`): the controls panel's
- * section nav always names BOTH sections regardless of which is active, so
- * an assertion about which section is actually SHOWN must read only this. */
+/** The list panel's own heading (`flp-heading`). */
 function listHeadingOf(html: string): string | null {
   return /<span class="flp-heading">([^<]*)<\/span>/.exec(html)?.[1] ?? null
 }
 
-describe('the active section (persisted) picks which list the list panel shows', () => {
-  test('activeSection: issues shows the issues heading, not pull requests', async () => {
-    const html = await renderWithPrefs(
-      { activeSection: 'issues' },
-      { issuesState: issuesState({ result: available([issue()]) }), mrs: [mr()], mrsState: null },
-    )
+describe('the section prop picks which list the list panel shows', () => {
+  test('section: issues shows the issues heading, not pull requests', async () => {
+    const html = await render({
+      section: 'issues',
+      issuesState: issuesState({ result: available([issue()]) }),
+      mrs: [mr()],
+      mrsState: null,
+    })
     expect(listHeadingOf(html)).toBe(t('forge.issuesTitle'))
   })
 
-  test('activeSection: mrs shows the pull requests heading, not issues', async () => {
-    const html = await renderWithPrefs(
-      { activeSection: 'mrs' },
-      {
-        issuesState: issuesState({ result: available([issue()]) }),
-        mrs: [mr()],
-        mrsState: { status: 'loaded', truncated: false },
-      },
-    )
+  test('section: mrs shows the pull requests heading, not issues', async () => {
+    const html = await render({
+      section: 'mrs',
+      issuesState: issuesState({ result: available([issue()]) }),
+      mrs: [mr()],
+      mrsState: { status: 'loaded', truncated: false },
+    })
     expect(listHeadingOf(html)).toBe(t('forge.mrsTitle'))
   })
 })
@@ -233,6 +194,7 @@ describe('the detail panel is always present, with an empty state until somethin
 
   test('a selection matching a loaded MR replaces the empty state with that MR', async () => {
     const html = await render({
+      section: 'mrs',
       issuesState: issuesState(),
       mrs: [mr({ number: 8, title: 'the selected mr' })],
       mrsState: { status: 'loaded', truncated: false },
@@ -260,70 +222,5 @@ describe('the detail panel is always present, with an empty state until somethin
       initialSelection: { kind: 'issue', number: 1 },
     })
     expect(html).toContain(t('forge.detailEmpty'))
-  })
-})
-
-// The rail's head: the shell hands the controls panel whatever belongs above
-// its sections (in the app, the project menu, so that navigation and controls
-// are ONE column instead of two). The board relays the slot rather than
-// carrying the menu's own props, so what is pinned here is that the relay
-// reaches the panel at all, and that it follows the panel's collapsed state.
-async function renderWithRailTop(
-  props: RenderProps,
-  prefsOverrides: Partial<ForgePrefs> = {},
-): Promise<string> {
-  const store = new Map<string, string>()
-  store.set(
-    'codesema-ws-forge-prefs',
-    JSON.stringify({ ...DEFAULT_FORGE_PREFS, ...prefsOverrides }),
-  )
-  const stub = { getItem: (key: string) => store.get(key) ?? null, setItem: () => {} }
-  const globals = globalThis as { localStorage?: unknown }
-  const previous = globals.localStorage
-  try {
-    globals.localStorage = stub
-    const ForgeBoard = (await import('./ForgeBoard.vue')).default
-    const app = createSSRApp({
-      render: () =>
-        h(
-          ForgeBoard,
-          { projectName: 'demo', ...props },
-          { 'rail-top': () => h('nav', {}, 'THE MENU') },
-        ),
-    })
-    return await renderToString(app)
-  } finally {
-    globals.localStorage = previous
-  }
-}
-
-describe('the rail-top slot reaches the controls panel', () => {
-  const base: RenderProps = { issuesState: issuesState(), mrs: [], mrsState: null }
-
-  test('slotted content lands in the controls panel head, above its sections', () => {
-    return renderWithRailTop(base).then((html) => {
-      expect(html).toContain('THE MENU')
-      const headAt = html.indexOf('fcp-top')
-      const sectionsAt = html.indexOf('fcp-sections')
-      expect(headAt).toBeGreaterThan(-1)
-      expect(sectionsAt).toBeGreaterThan(-1)
-      expect(headAt).toBeLessThan(sectionsAt)
-      expect(html.indexOf('THE MENU')).toBeLessThan(sectionsAt)
-    })
-  })
-
-  test('the head is gone with the panel collapsed: a vertical band shows the project name, nothing else', () => {
-    return renderWithRailTop(base, { controlsCollapsed: true }).then((html) => {
-      expect(html).not.toContain('THE MENU')
-      expect(html).not.toContain('fcp-top')
-      expect(html).toContain('fcp-band')
-    })
-  })
-
-  test('an unused slot costs nothing: no head content, and the panel still renders its sections', () => {
-    return render(base).then((html) => {
-      expect(html).not.toContain('THE MENU')
-      expect(html).toContain('fcp-sections')
-    })
   })
 })

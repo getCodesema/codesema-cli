@@ -29,7 +29,8 @@ import {
   isPinned,
   type FocusDeck,
 } from '../composables/useFocusDeck'
-import { useIssues } from '../composables/useIssues'
+import { useForgePrefs } from '../composables/useForgePrefs'
+import { EMPTY_ISSUES_STATE, useIssues } from '../composables/useIssues'
 import {
   buildProjectTree,
   countProjectActivity,
@@ -51,6 +52,13 @@ import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../comp
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
 import ForgeBoard from './forge/ForgeBoard.vue'
+import ForgeControlsPanel from './forge/ForgeControlsPanel.vue'
+import {
+  FORGE_CONTROLS_WIDTH_DEFAULT,
+  FORGE_CONTROLS_WIDTH_MAX,
+  FORGE_CONTROLS_WIDTH_MIN,
+} from './forge/ForgePrefs'
+import ForgeSplitter from './forge/ForgeSplitter.vue'
 import ProjectsNav from './ProjectsNav.vue'
 import RepoSettings from './RepoSettings.vue'
 import ReviewShell from './ReviewShell.vue'
@@ -556,6 +564,50 @@ async function onRemoveProject(id: string): Promise<void> {
   deck.value = deckCloseProject(deck.value, id)
 }
 
+// ── The permanent left rail ───────────────────────────────────────────────
+// The rail is on screen at all times: it carries the project menu whether or
+// not a board is up, and grows its filter sections only when one is. That
+// permanence is the point. When the menu was mounted inside the board it
+// moved and resized the instant a project was picked, so the screen jumped
+// under the pointer for what is supposed to be a plain navigation click.
+const {
+  prefs: forgePrefs,
+  activeSection,
+  railWidth,
+  railCollapsed,
+  listWidth,
+  issuesSort,
+  mrsSort,
+  mrsFilter,
+  railPanelWidth,
+  toggleIssueLabel,
+  toggleMrLabel,
+  clearIssueFilters,
+  clearMrFilters,
+} = useForgePrefs()
+
+/** The rail's collapsed band needs something to name itself with. With a
+ * project selected that is the project; with none it is the menu's own
+ * label, never an empty band. */
+const railLabel = computed(() =>
+  filter.value === null
+    ? t('workspace.projectLabel')
+    : (projectNameById.value.get(filter.value) ?? filter.value),
+)
+
+// The forge data the rail's sections read. They are only rendered when a
+// board is up, but the props are always bound, so these fall back to the
+// same empty values the composables use rather than to invented ones.
+const railIssuesState = computed(() =>
+  filter.value === null ? EMPTY_ISSUES_STATE : issues.stateOf(filter.value),
+)
+const railMrs = computed(() =>
+  filter.value === null ? [] : (mrsByProject.get(filter.value) ?? []),
+)
+const railMrsState = computed(() =>
+  filter.value === null ? null : (mrsLoadByProject.get(filter.value) ?? null),
+)
+
 // ── The project menu's bindings, grouped ──────────────────────────────────
 // The menu is mounted in one of two places depending on `boardVisible` (the
 // desk's own left column, or the head of the board's rail). Grouping its ten
@@ -616,11 +668,48 @@ const projectsNavHandlers = {
       <RepoSettings />
     </div>
     <div v-else class="ws-body">
-      <!-- The desk's left column, but only while the board is NOT up: with
-           the board up this same menu is mounted in the head of its rail
-           instead (see the `#rail-top` slot below), so the desk is three
-           columns rather than four. -->
-      <ProjectsNav v-if="!boardVisible" v-bind="projectsNavProps" v-on="projectsNavHandlers" />
+      <!-- The permanent left rail. It is on screen at all times and always
+           looks the same: the project menu sits in its head, and the board's
+           filter sections appear underneath only when a board is up. Picking
+           a project therefore adds sections below the menu instead of moving
+           or resizing the menu itself. -->
+      <aside class="ws-rail" :style="{ '--ws-rail-w': `${railPanelWidth}px` }">
+        <ForgeControlsPanel
+          :has-board="boardVisible"
+          :active-section="activeSection"
+          :collapsed="railCollapsed"
+          :project-name="railLabel"
+          :issues-state="railIssuesState"
+          :issues-sort="issuesSort"
+          :issues-labels="forgePrefs.issuesLabels"
+          :mrs="railMrs"
+          :mrs-state="railMrsState"
+          :mrs-sort="mrsSort"
+          :mrs-filter="mrsFilter"
+          :mrs-labels="forgePrefs.mrsLabels"
+          @update:active-section="(v) => (activeSection = v)"
+          @update:collapsed="(v) => (railCollapsed = v)"
+          @update:issues-sort="(v) => (issuesSort = v)"
+          @update:mrs-sort="(v) => (mrsSort = v)"
+          @update:mrs-filter="(v) => (mrsFilter = v)"
+          @toggle-issue-label="toggleIssueLabel"
+          @toggle-mr-label="toggleMrLabel"
+        >
+          <template #top>
+            <ProjectsNav v-bind="projectsNavProps" v-on="projectsNavHandlers" />
+          </template>
+        </ForgeControlsPanel>
+      </aside>
+
+      <ForgeSplitter
+        v-if="!railCollapsed"
+        :model-value="railWidth"
+        :min="FORGE_CONTROLS_WIDTH_MIN"
+        :max="FORGE_CONTROLS_WIDTH_MAX"
+        :default-width="FORGE_CONTROLS_WIDTH_DEFAULT"
+        :ariaLabel="t('forge.resizeControlsAria')"
+        @update:model-value="(v) => (railWidth = v)"
+      />
 
       <!-- Hidden while the forge board is the focus zone's content: the
            board then takes the full remaining width (rail / list / detail,
@@ -794,19 +883,21 @@ const projectsNavHandlers = {
                survives into a different project's items. -->
           <ForgeBoard
             :key="filter"
-            :project-name="projectNameById.get(filter) ?? filter"
+            :section="activeSection"
             :issues-state="issues.stateOf(filter)"
+            :issues-sort="issuesSort"
+            :issues-labels="forgePrefs.issuesLabels"
             :mrs="mrsByProject.get(filter) ?? []"
             :mrs-state="mrsLoadByProject.get(filter) ?? null"
+            :mrs-sort="mrsSort"
+            :mrs-filter="mrsFilter"
+            :mrs-labels="forgePrefs.mrsLabels"
+            :list-width="listWidth"
             @retry-issues="issues.reload(filter)"
-          >
-            <!-- The project menu, as the rail's head. Same component and
-                 same bindings as the desk's left column, just mounted in
-                 the one column the board keeps for navigation. -->
-            <template #rail-top>
-              <ProjectsNav v-bind="projectsNavProps" v-on="projectsNavHandlers" />
-            </template>
-          </ForgeBoard>
+            @clear-issue-filters="clearIssueFilters"
+            @clear-mr-filters="clearMrFilters"
+            @update:list-width="(v) => (listWidth = v)"
+          />
         </div>
 
         <!-- Empty focus: a sober invite (no project selected, or none registered). -->
@@ -851,6 +942,16 @@ const projectsNavHandlers = {
   min-height: 0;
   display: flex;
   align-items: stretch;
+}
+
+/* The permanent left rail. Its width is the ONE thing about it that ever
+   changes, and it changes only when the user drags the handle or collapses
+   it, never because a project was picked. */
+.ws-rail {
+  flex: 0 0 var(--ws-rail-w);
+  width: var(--ws-rail-w);
+  min-height: 0;
+  border-right: 1px solid var(--cs-line-2);
 }
 
 /* ── Focus zone: the column deck ──────────────────────────────────────── */

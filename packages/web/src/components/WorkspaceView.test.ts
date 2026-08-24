@@ -149,22 +149,22 @@ describe('the sober empty focus state still shows with no project selected', () 
     expect(forgeBoardTag).toContain(':key="filter"')
   })
 
-  // The collapsed controls panel shows the project's name (the vertical
-  // band): it has to come from somewhere, and the board itself has no
-  // notion of "which project" beyond the id-keyed data it's handed.
-  test("the board receives the selected project's display name", () => {
-    const forgeBoardTag = SOURCE.slice(
-      SOURCE.indexOf('<ForgeBoard'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+  // The rail's collapsed band names itself: with a project that is the
+  // project, with none it is the menu's own label, never an empty band.
+  test('the rail label falls back to the menu label when no project is selected', () => {
+    const railLabel = SOURCE.slice(
+      SOURCE.indexOf('const railLabel'),
+      SOURCE.indexOf('const railIssuesState'),
     )
-    expect(forgeBoardTag).toContain(':project-name="projectNameById.get(filter) ?? filter"')
+    expect(railLabel).toContain("t('workspace.projectLabel')")
+    expect(railLabel).toContain('projectNameById')
   })
 })
 
-// The board's four-column layout (menu / controls / list / detail) needs the
-// work queue's own column gone, not just visually crowded out: the work
-// queue hides for exactly the branch the board renders in, and comes back
-// for every other one (review, the deck, the empty-focus fallback).
+// The board's layout needs the work queue's own column gone, not just
+// visually crowded out: the work queue hides for exactly the branch the
+// board renders in, and comes back for every other one (review, the deck,
+// the empty-focus fallback).
 describe('the work queue hides while the board is the focus zone, shows everywhere else', () => {
   test('the work queue is gated on the same condition, negated', () => {
     const workQueueTag = SOURCE.slice(
@@ -175,78 +175,63 @@ describe('the work queue hides while the board is the focus zone, shows everywhe
   })
 })
 
-// The desk is three columns with the board up, not four: the project menu
-// moves into the head of the board's rail so that navigation and controls
-// share one column. What is pinned here is that the menu is mounted in BOTH
-// places under mutually exclusive conditions (never twice at once, never
-// nowhere), and that both mounts read the same grouped bindings rather than
-// spelling seventeen props and handlers out twice and drifting apart.
-describe('the project menu moves into the rail while the board is up', () => {
-  const mounts = SOURCE.split('<ProjectsNav').slice(1)
-
-  test('the menu is mounted in exactly two places', () => {
-    expect(mounts).toHaveLength(2)
+// The left rail is PERMANENT and always looks the same. That is the whole
+// point of it: when the menu was mounted inside the board it moved and
+// resized the instant a project was picked, so a plain navigation click made
+// the screen jump. Picking a project must add sections BELOW the menu, never
+// move the menu.
+describe('the left rail is permanent, and the menu inside it never moves', () => {
+  test('the rail is mounted unconditionally, outside every focus-zone branch', () => {
+    const railAt = SOURCE.indexOf('<aside class="ws-rail"')
+    expect(railAt).toBeGreaterThan(-1)
+    const railTag = SOURCE.slice(railAt, SOURCE.indexOf('>', railAt))
+    expect(railTag).not.toContain('v-if')
+    // Before the focus zone, so it is a sibling of it and not inside it.
+    expect(railAt).toBeLessThan(SOURCE.indexOf('<main class="ws-focus">'))
   })
 
-  test('the desk column is gated OFF while the board is up', () => {
-    const deskMount = mounts[0] ?? ''
-    expect(deskMount).toContain('v-if="!boardVisible"')
+  test('the menu is mounted in exactly one place: the rail head', () => {
+    const mountAt = SOURCE.indexOf('<ProjectsNav')
+    expect(mountAt).toBeGreaterThan(-1)
+    expect(SOURCE.indexOf('<ProjectsNav', mountAt + 1)).toBe(-1)
+    const slotAt = SOURCE.indexOf('<template #top>')
+    expect(slotAt).toBeGreaterThan(-1)
+    expect(mountAt).toBeGreaterThan(slotAt)
+    // The tag itself, not everything that follows it.
+    const mountTag = SOURCE.slice(mountAt, SOURCE.indexOf('/>', mountAt))
+    expect(mountTag).not.toContain('v-if')
   })
 
-  test('the rail mount sits inside the board, in its rail-top slot', () => {
-    const slotAt = SOURCE.indexOf('<template #rail-top>')
-    const boardAt = SOURCE.indexOf('<ForgeBoard')
-    const boardCloseAt = SOURCE.indexOf('</ForgeBoard>')
-    expect(slotAt).toBeGreaterThan(boardAt)
-    expect(slotAt).toBeLessThan(boardCloseAt)
-    // The second mount is the one in the slot.
-    expect(SOURCE.indexOf('<ProjectsNav', slotAt)).toBeGreaterThan(slotAt)
-    expect(SOURCE.indexOf('<ProjectsNav', slotAt)).toBeLessThan(boardCloseAt)
-  })
-
-  test('the rail mount carries no condition of its own: the board only renders when the board is up', () => {
-    const railMount = mounts[1] ?? ''
-    expect(railMount).not.toContain('v-if')
-  })
-
-  test('both mounts bind through the grouped props and handlers, never a spelled-out list', () => {
-    for (const mount of mounts) {
-      expect(mount).toContain('v-bind="projectsNavProps"')
-      expect(mount).toContain('v-on="projectsNavHandlers"')
-    }
-  })
-
-  test('every prop and handler the menu takes is in the grouped objects', () => {
-    const propsBlock = SOURCE.slice(
-      SOURCE.indexOf('const projectsNavProps'),
-      SOURCE.indexOf('const projectsNavHandlers'),
+  test('only the SECTIONS follow the board, through has-board', () => {
+    const panelTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeControlsPanel'),
+      SOURCE.indexOf('>', SOURCE.indexOf('<ForgeControlsPanel')),
     )
-    for (const key of [
-      'projects:',
-      'selected:',
-      'activity:',
-      'tree:',
-      'extraBranches:',
-      'focusedKeys:',
-      'addBusy:',
-      'addError:',
-      'removeError:',
-      'candidates:',
-    ]) {
-      expect(propsBlock).toContain(key)
-    }
+    expect(SOURCE).toContain(':has-board="boardVisible"')
+    expect(panelTag).not.toContain('v-if')
+  })
 
-    const handlersBlock = SOURCE.slice(SOURCE.indexOf('const projectsNavHandlers'))
-    for (const key of [
-      'select:',
-      'add:',
-      'remove:',
-      'discover:',
-      "'refresh-mrs':",
-      "'open-task':",
-      "'branch-click':",
-    ]) {
-      expect(handlersBlock).toContain(key)
+  test('the rail owns its own width and collapsed state, and the board no longer does', () => {
+    expect(SOURCE).toContain("'--ws-rail-w': `${railPanelWidth}px`")
+    expect(SOURCE).toContain('v-if="!railCollapsed"')
+    expect(SOURCE).toContain("t('forge.resizeControlsAria')")
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    expect(forgeBoardTag).not.toContain('collapsed')
+    expect(forgeBoardTag).not.toContain('controls')
+  })
+
+  test('the shared preferences come from the composable, not from the board', () => {
+    expect(SOURCE).toContain('useForgePrefs()')
+    // The board is handed the list-side preferences it renders with.
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    for (const binding of [':section="activeSection"', ':list-width="listWidth"']) {
+      expect(forgeBoardTag).toContain(binding)
     }
   })
 })

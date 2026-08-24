@@ -86,6 +86,7 @@ function available(issues: ForgeIssue[], truncated = false): ForgeIssuesResult {
 }
 
 type Props = {
+  hasBoard: boolean
   activeSection: ForgeSection
   collapsed: boolean
   projectName: string
@@ -101,6 +102,9 @@ type Props = {
 
 function props(overrides: Partial<Props> = {}): Props {
   return {
+    // Most tests here are about the filter sections, which only exist when
+    // a board is up; the rail-without-a-board case has its own describe.
+    hasBoard: true,
     activeSection: 'issues',
     collapsed: false,
     projectName: 'demo',
@@ -664,5 +668,36 @@ describe('the rail head adapts the project menu to living inside the rail', () =
 
   test('the head sits above the sections, never below them', () => {
     expect(SOURCE.indexOf('class="fcp-top"')).toBeLessThan(SOURCE.indexOf('class="fcp-sections"'))
+  })
+})
+
+// The rail is permanent, the sections are not. With no board up there is no
+// list for a filter to act on, so the rail is the project menu and nothing
+// else. This is what stops the menu from moving or resizing when a project
+// is picked: only the sections below it appear.
+describe('without a board the rail keeps its head and drops its sections', () => {
+  test('no sections, no accordion headers', async () => {
+    const html = await render(props({ hasBoard: false }))
+    expect(html).not.toContain('fcp-sections')
+    expect(html).not.toContain('fcp-acc-head')
+  })
+
+  test('the head and the collapse control are still there', async () => {
+    const html = await render(props({ hasBoard: false }))
+    expect(html).toContain('fcp-top')
+    expect(html).toContain('fcp-collapse')
+  })
+
+  test('with a board, the sections come back under that same head', async () => {
+    const html = await render(props({ hasBoard: true }))
+    expect(html).toContain('fcp-top')
+    expect(html).toContain('fcp-sections')
+    expect(html.indexOf('fcp-top')).toBeLessThan(html.indexOf('fcp-sections'))
+  })
+
+  test('collapsed, the band shows whatever label it was given, board or not', async () => {
+    const html = await render(props({ hasBoard: false, collapsed: true, projectName: 'Projects' }))
+    expect(html).toContain('fcp-band')
+    expect(html).toContain('>Projects<')
   })
 })

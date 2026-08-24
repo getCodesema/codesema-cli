@@ -42,6 +42,11 @@ import type { ForgeSection } from './ForgePrefs'
 import LabelChips from './LabelChips.vue'
 
 const props = defineProps<{
+  /** Whether a board is up. The rail itself is PERMANENT: it carries the
+   * project menu at all times, and only grows its filter sections when
+   * there is a list for them to filter. Sections that filtered nothing
+   * would be controls that do not control anything. */
+  hasBoard: boolean
   activeSection: ForgeSection
   collapsed: boolean
   projectName: string
@@ -190,7 +195,7 @@ const mrsLabelCountsFiltered = computed(() =>
         <slot name="top" />
       </div>
 
-      <div class="fcp-sections" :aria-label="t('forge.sectionNavAria')">
+      <div v-if="hasBoard" class="fcp-sections" :aria-label="t('forge.sectionNavAria')">
         <!-- Issues section -->
         <section class="fcp-section">
           <button
