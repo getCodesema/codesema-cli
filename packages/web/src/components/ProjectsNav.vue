@@ -8,6 +8,7 @@
 // the filter. The active project's MR/branch tree and its "Branches (N)"
 // disclosure live here too, compact, under the list. All data comes from
 // props, all mutations go up as events.
+import { GitBranch, LayoutGrid, MessageSquare, Plus } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import {
   nameColor,
@@ -189,6 +190,15 @@ watch(
          elevated ground, subtle shadow). `.pn-root` is only the 236px track
          it floats in. -->
     <div class="pn-card">
+      <!-- Header: brand mark + name. No collapse control (no persisted state
+           exists yet to drive one; a dead button would be worse than none). -->
+      <div class="pn-header">
+        <div class="pn-brand">
+          <span class="pn-brand-mark" aria-hidden="true">C</span>
+          <span class="pn-brand-name">codesema</span>
+        </div>
+      </div>
+
       <!-- All projects: no filter. Active = accent fill (ready-to-scan state). -->
       <button
         class="pn-all"
@@ -196,7 +206,10 @@ watch(
         :aria-pressed="selected === null"
         @click="emit('select', null)"
       >
-        {{ t('workspace.allProjects') }}
+        <span class="pn-icon-slot">
+          <LayoutGrid class="pn-row-icon" aria-hidden="true" />
+        </span>
+        <span class="pn-all-label">{{ t('workspace.allProjects') }}</span>
         <span class="pn-count-pill pn-all-count">{{ total }}</span>
       </button>
 
@@ -257,7 +270,10 @@ watch(
       <!-- Menu footer: the add-project control, set off by a hairline above. -->
       <div class="pn-footer">
         <button v-if="!formOpen" class="pn-add" @click="openForm">
-          + {{ t('workspace.addProject') }}
+          <span class="pn-icon-slot">
+            <Plus class="pn-row-icon" aria-hidden="true" />
+          </span>
+          <span>{{ t('workspace.addProject') }}</span>
         </button>
 
         <!-- Add form: detected repos first (one click), manual path as fallback. -->
@@ -305,7 +321,10 @@ watch(
       <!-- Compact tree of the selected project: open MRs + active branches. -->
       <div v-if="selected !== null" class="pn-tree">
         <div class="pn-tree-head">
-          <span class="pn-label pn-label--inline">{{ t('workspace.conversations') }}</span>
+          <span class="pn-label pn-label--inline">
+            <MessageSquare class="pn-node-glyph" aria-hidden="true" />
+            {{ t('workspace.conversations') }}
+          </span>
           <button
             class="pn-icon-btn"
             :title="t('workspace.refreshMrs')"
@@ -346,9 +365,7 @@ watch(
               "
               @click="onNodeClick(node)"
             >
-              <span class="pn-node-glyph" aria-hidden="true">
-                {{ node.kind === 'mr' ? '⇄' : '⎇' }}
-              </span>
+              <MessageSquare class="pn-node-glyph" aria-hidden="true" />
               <span class="pn-node-label">{{ nodeLabel(node) }}</span>
             </button>
           </div>
@@ -379,6 +396,7 @@ watch(
         <div v-if="extraBranches.length > 0" class="pn-node pn-others">
           <button class="pn-node-btn" :aria-expanded="othersOpen" @click="othersOpen = !othersOpen">
             <span class="pn-node-chevron" aria-hidden="true">{{ othersOpen ? '▾' : '▸' }}</span>
+            <GitBranch class="pn-node-glyph" aria-hidden="true" />
             <span class="pn-node-label pn-others-label">
               {{ t('workspace.otherBranches', { n: extraBranches.length }) }}
             </span>
@@ -391,7 +409,7 @@ watch(
               :title="t('workspace.startOnBranch')"
               @click="clickBranch(name, null)"
             >
-              <span class="pn-conv-glyph" aria-hidden="true">⎇</span>
+              <GitBranch class="pn-conv-glyph" aria-hidden="true" />
               <span class="pn-conv-title">{{ name }}</span>
             </button>
           </template>
@@ -432,8 +450,45 @@ watch(
   overflow-y: auto;
 }
 
+/* Header: brand mark + name, set off from the rest of the menu by a
+   hairline. One of only two hairlines in the whole menu (the other sits
+   above the footer): every other group boundary uses spacing alone. */
+.pn-header {
+  display: flex;
+  align-items: center;
+  padding: 4px 4px 12px;
+  border-bottom: 1px solid var(--cs-line);
+}
+
+.pn-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pn-brand-mark {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--cs-green-soft);
+  color: var(--cs-green-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pn-brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cs-text);
+}
+
 /* "All projects": neutral row; active state is fill + text only, no border
-   or side bar. */
+   or side bar. Same anatomy as every other navigation row (36px, 14px/500
+   text, 16px icon). */
 .pn-all {
   display: flex;
   align-items: center;
@@ -441,10 +496,11 @@ watch(
   height: 36px;
   text-align: left;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
   color: var(--cs-text-2);
   padding: 8px 12px;
-  border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
@@ -495,6 +551,9 @@ watch(
 }
 
 .pn-label--inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 4px;
 }
 
@@ -526,7 +585,6 @@ watch(
   line-height: 20px;
   color: var(--cs-text-2);
   padding: 8px 12px;
-  border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
@@ -553,6 +611,14 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Leading row icon: fills the 16px slot above, decorative (the adjacent
+   label already carries the meaning). */
+.pn-row-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 
 /* Identity dot: stable hue from the project name (nameColor). */
@@ -637,14 +703,23 @@ watch(
   border-top: 1px solid var(--cs-line);
 }
 
+/* Same anatomy as every other navigation row: 36px, 8px/12px padding, 8px
+   radius, 14px/500/20px text, 16px icon with a 10px gap. */
 .pn-add {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
   text-align: left;
-  font-size: 12px;
   font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
   color: var(--cs-ghost);
-  padding: 7px 10px;
+  padding: 8px 12px;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
 }
@@ -775,13 +850,13 @@ watch(
 }
 
 /* ── Compact tree of the selected project ─────────────────────────────── */
+/* Set off from the groups above by spacing alone: the reference menu keeps
+   hairlines to two total (under the header, above the footer). */
 .pn-tree {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--cs-line);
+  margin-top: 16px;
   min-height: 0;
 }
 
@@ -829,7 +904,7 @@ watch(
 }
 
 /* A tree node row: the fold chevron and the branch label are SEPARATE
-   buttons — the label click routes to the branch's conversation or draft. */
+   buttons: the label click routes to the branch's conversation or draft. */
 .pn-node-row {
   display: flex;
   align-items: stretch;
@@ -881,9 +956,7 @@ watch(
 .pn-node-glyph {
   flex: none;
   width: 13px;
-  text-align: center;
-  font-size: 11px;
-  font-family: var(--font-mono);
+  height: 13px;
   color: var(--cs-muted);
 }
 
@@ -920,13 +993,16 @@ watch(
   background: var(--cs-active);
 }
 
-/* The glyph is the colored carrier of the execution state (shared table). */
+/* Shared between an execution-state glyph (inline color overrides the one
+   below) and a plain branch icon (uses the color below as-is). */
 .pn-conv-glyph {
   flex: none;
   width: 13px;
+  height: 13px;
   text-align: center;
   font-size: 11px;
   font-family: var(--font-mono);
+  color: var(--cs-muted);
 }
 
 .pn-conv-title {

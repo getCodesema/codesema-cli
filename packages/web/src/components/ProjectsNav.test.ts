@@ -134,6 +134,132 @@ describe('menu geometry: pixel-accurate track and row dimensions', () => {
   })
 })
 
+describe('icons: one per row type, matching our own semantics', () => {
+  test('the four icons are imported from @lucide/vue', () => {
+    expect(SOURCE).toContain(
+      "import { GitBranch, LayoutGrid, MessageSquare, Plus } from '@lucide/vue'",
+    )
+  })
+
+  test('"All projects" carries the overview icon, "Add a project" the plus icon', () => {
+    expect(SOURCE).toContain('<LayoutGrid class="pn-row-icon" aria-hidden="true" />')
+    expect(SOURCE.match(/<LayoutGrid /g)?.length).toBe(1)
+    expect(SOURCE).toContain('<Plus class="pn-row-icon" aria-hidden="true" />')
+    expect(SOURCE.match(/<Plus /g)?.length).toBe(1)
+  })
+
+  test('the conversations section and each of its rows carry the conversation icon', () => {
+    expect(SOURCE.match(/<MessageSquare /g)?.length).toBe(2)
+  })
+
+  test('the branches disclosure and each of its rows carry the branch icon', () => {
+    expect(SOURCE.match(/<GitBranch /g)?.length).toBe(2)
+  })
+
+  test('a project row keeps its identity dot instead of stacking a generic repo icon', () => {
+    const projectRow = SOURCE.slice(SOURCE.indexOf('class="pn-project"'), SOURCE.indexOf('pn-name'))
+    expect(projectRow).toContain('class="pn-dot"')
+    expect(projectRow).not.toMatch(/<(LayoutGrid|Plus|MessageSquare|GitBranch) /)
+  })
+})
+
+describe('rows carry no border: normal is transparent ground, hover/active are fill only', () => {
+  test('"All projects" declares no border at all', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-all {'), SOURCE.indexOf('.pn-all:hover'))
+    expect(block).not.toMatch(/\bborder:/)
+  })
+
+  test('a project row declares no border at all', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-project {'), SOURCE.indexOf('.pn-project:hover'))
+    expect(block).not.toMatch(/\bborder:/)
+  })
+
+  test('the add-project row declares no border color, only `border: none`', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-add {'), SOURCE.indexOf('.pn-add:hover'))
+    expect(block).toContain('border: none;')
+  })
+})
+
+describe('navigation rows share one text size: 14px / 500 / 20px line height', () => {
+  test('"All projects" matches the project rows, not its former 12.5px', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-all {'), SOURCE.indexOf('.pn-all:hover'))
+    expect(block).toContain('font-size: 14px;')
+    expect(block).toContain('font-weight: 500;')
+    expect(block).toContain('line-height: 20px;')
+    expect(block).not.toContain('font-size: 12.5px;')
+  })
+
+  test('a project row is 14px / 500 / 20px', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-project {'), SOURCE.indexOf('.pn-project:hover'))
+    expect(block).toContain('font-size: 14px;')
+    expect(block).toContain('font-weight: 500;')
+    expect(block).toContain('line-height: 20px;')
+  })
+
+  test('the add-project row is 14px / 500 / 20px, not its former 12px', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-add {'), SOURCE.indexOf('.pn-add:hover'))
+    expect(block).toContain('font-size: 14px;')
+    expect(block).toContain('font-weight: 500;')
+    expect(block).toContain('line-height: 20px;')
+    expect(block).not.toContain('font-size: 12px;')
+  })
+})
+
+describe('the add-project row has the exact anatomy of every other navigation row', () => {
+  test('36px tall, 8px/12px padding, 8px radius: not its former 29px/7-10/7px', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-add {'), SOURCE.indexOf('.pn-add:hover'))
+    expect(block).toContain('height: 36px;')
+    expect(block).toContain('padding: 8px 12px;')
+    expect(block).toContain('border-radius: 8px;')
+    expect(block).not.toContain('height: 29px;')
+    expect(block).not.toContain('padding: 7px 10px;')
+    expect(block).not.toContain('border-radius: 7px;')
+  })
+
+  test('carries the same 16px icon slot as the other rows', async () => {
+    const html = await render()
+    const iconSlotCount = html.match(/class="pn-icon-slot"/g)?.length ?? 0
+    // "All projects" + one project row + the add-project row.
+    expect(iconSlotCount).toBe(3)
+  })
+})
+
+describe('header: brand mark and name, no functional collapse control', () => {
+  test('the header block exists with a 28px/8px-radius mark', () => {
+    expect(SOURCE).toContain('.pn-header {')
+    const mark = SOURCE.slice(
+      SOURCE.indexOf('.pn-brand-mark {'),
+      SOURCE.indexOf('.pn-brand-name {'),
+    )
+    expect(mark).toContain('width: 28px;')
+    expect(mark).toContain('height: 28px;')
+    expect(mark).toContain('border-radius: 8px;')
+  })
+
+  test('renders the brand name ahead of the "All projects" row', async () => {
+    const html = await render()
+    const headerAt = html.indexOf('class="pn-header"')
+    const brandAt = html.indexOf('codesema')
+    const allLabelAt = html.indexOf('class="pn-all-label"')
+    expect(headerAt).toBeGreaterThan(-1)
+    expect(brandAt).toBeGreaterThan(headerAt)
+    expect(allLabelAt).toBeGreaterThan(brandAt)
+  })
+})
+
+describe('hairlines: exactly two in the whole menu, under the header and above the footer', () => {
+  test('no hairline is left between the other groups', () => {
+    const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
+    const hairlines = styleBlock.match(/border-(top|bottom): 1px solid var\(--cs-line\);/g) ?? []
+    expect(hairlines.length).toBe(2)
+  })
+
+  test('the conversations tree no longer carries its own hairline above it', () => {
+    const block = SOURCE.slice(SOURCE.indexOf('.pn-tree {'), SOURCE.indexOf('.pn-tree-head {'))
+    expect(block).not.toMatch(/\bborder-top:/)
+  })
+})
+
 describe('structure: the card/list/footer wrappers actually exist in the render', () => {
   test('the inner card wraps the whole menu body', async () => {
     const html = await render()
