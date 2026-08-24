@@ -197,6 +197,44 @@ describe('rows carry no border: `border: none` is explicit, never a bare omissio
   })
 })
 
+describe('active rows: one uniform accent, tinted fill + accented icon, no neutral veil', () => {
+  test('no row anywhere in the menu uses the neutral --cs-active veil any more', () => {
+    const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
+    expect(styleBlock).not.toContain('var(--cs-active)')
+  })
+
+  test('"All projects" active fill is the tinted accent, and its icon accents with it', () => {
+    const block = SOURCE.slice(
+      SOURCE.indexOf('.pn-all--active {'),
+      SOURCE.indexOf('.pn-count-pill {'),
+    )
+    expect(block).toContain('background: var(--cs-green-soft);')
+    expect(block).toContain('.pn-all--active .pn-row-icon {')
+    expect(block).toContain('color: var(--cs-green-text);')
+  })
+
+  test('an active project row is the tinted accent, same as every other active row', () => {
+    const block = SOURCE.slice(
+      SOURCE.indexOf('.pn-project--active {'),
+      SOURCE.indexOf('/* The icon slot'),
+    )
+    expect(block).toContain('background: var(--cs-green-soft);')
+  })
+
+  test('an active project row does not recolor its identity dot: the dot names the repo, not a state', () => {
+    expect(SOURCE).not.toContain('.pn-project--active .pn-dot')
+  })
+
+  test('the focused conversation row is the tinted accent, its status glyph left alone', () => {
+    const block = SOURCE.slice(
+      SOURCE.indexOf('.pn-conv--open {'),
+      SOURCE.indexOf('.pn-conv-glyph {'),
+    )
+    expect(block).toContain('background: var(--cs-green-soft);')
+    expect(block).not.toContain('.pn-conv--open .pn-conv-glyph')
+  })
+})
+
 describe('navigation rows share one text size: 14px / 500 / 20px line height', () => {
   test('"All projects" matches the project rows, not its former 12.5px', () => {
     const block = SOURCE.slice(SOURCE.indexOf('.pn-all {'), SOURCE.indexOf('.pn-all:hover'))

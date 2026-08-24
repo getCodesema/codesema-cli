@@ -521,6 +521,14 @@ watch(
   font-weight: 600;
 }
 
+/* Active rows accent their own icon, on top of the tinted fill above: this
+   is what reads at a glance without a border. Rows without a real icon
+   (a project row's identity dot, a status glyph) are exempt: those colors
+   already carry other information and are not a decoration to accent. */
+.pn-all--active .pn-row-icon {
+  color: var(--cs-green-text);
+}
+
 /* Shared "count pastille" anatomy: min-width 18px, height 16px, full pill,
    12px bold text. Color/background per variant below: neutral pill
    baseline, a filled color only where the count already carries state
@@ -600,9 +608,12 @@ watch(
   background: var(--cs-hover);
 }
 
-/* Active state: fill + text only, no border or side bar. */
+/* Active state: fill + text only, no border or side bar. The tinted fill
+   matches every other active row in this menu (--cs-green-soft, not the
+   neutral --cs-active veil); the identity dot keeps its own color, which
+   names the repo and is not a state to accent. */
 .pn-project--active {
-  background: var(--cs-active);
+  background: var(--cs-green-soft);
   color: var(--cs-text);
   font-weight: 600;
 }
@@ -994,9 +1005,12 @@ watch(
   background: var(--cs-hover);
 }
 
-/* Marked: this conversation is the one currently in focus. */
+/* Marked: this conversation is the one currently in focus. Same tinted fill
+   as every other active row; its glyph carries the execution status, an
+   inline color, and stays as-is: that color is data, not a decoration to
+   accent. */
 .pn-conv--open {
-  background: var(--cs-active);
+  background: var(--cs-green-soft);
 }
 
 /* Shared between an execution-state glyph (inline color overrides the one
