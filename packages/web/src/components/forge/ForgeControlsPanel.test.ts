@@ -14,8 +14,14 @@ import { renderToString } from 'vue/server-renderer'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
-import type { ForgeIssue, ForgeIssuesResult, ForgeLabel, ForgeMr } from '../../types'
-import type { ForgeSortKey, MrStateFilter } from './ForgeLogic'
+import type {
+  ForgeIssue,
+  ForgeIssuesResult,
+  ForgeLabel,
+  ForgeMr,
+  ForgeMrStateFilter,
+} from '../../types'
+import type { ForgeSortKey } from './ForgeLogic'
 import type { ForgeSection } from './ForgePrefs'
 
 const SOURCE = readFileSync(join(import.meta.dir, 'ForgeControlsPanel.vue'), 'utf8')
@@ -96,7 +102,8 @@ type Props = {
   mrs: ForgeMr[]
   mrsState: MrsLoadState | null
   mrsSort: ForgeSortKey
-  mrsFilter: MrStateFilter
+  mrsStateFilter: ForgeMrStateFilter
+  mrsDraftOnly: boolean
   mrsLabels: string[]
 }
 
@@ -114,7 +121,8 @@ function props(overrides: Partial<Props> = {}): Props {
     mrs: [],
     mrsState: null,
     mrsSort: 'updated',
-    mrsFilter: 'all',
+    mrsStateFilter: 'open',
+    mrsDraftOnly: false,
     mrsLabels: [],
     ...overrides,
   }
@@ -298,44 +306,73 @@ describe('pull requests section: sort, status filter (draft/ready only), labels'
     expect(empty).not.toContain('fcp-block')
   })
 
-  test('only draft/ready are offered, never "all" as a row: the corpus cannot honor open/merged/closed', async () => {
+  // Two groups, and the separator between them is load-bearing: above it the
+  // STATE (exclusive, and it changes what is fetched from the forge), below it
+  // the DRAFT toggle (cumulative, and it sieves what was already fetched).
+  // They used to be one exclusive group offering draft/ready as if those were
+  // states, which left the real state filter unreachable.
+  test('the four states are offered as an exclusive group, draft/ready no longer are', async () => {
     const html = await render({
       activeSection: 'mrs',
       mrs: [mr()],
       mrsState: { status: 'loaded', truncated: false },
     })
-    expect(html).toContain(t('forge.filterDraft'))
-    expect(html).toContain(t('forge.filterReady'))
+    for (const key of [
+      'forge.stateOpen',
+      'forge.stateMerged',
+      'forge.stateClosed',
+      'forge.stateAll',
+    ]) {
+      expect(html).toContain(t(key))
+    }
+    expect(html).toContain('role="radiogroup" aria-label="' + t('forge.stateAria'))
   })
 
-  test('the exclusive filter rows carry role=radio and aria-checked, no separator (no cumulable toggle exists yet)', async () => {
+  test('the draft toggle is a CHECKBOX below the separator, never a fifth radio', async () => {
     const html = await render({
       activeSection: 'mrs',
       mrs: [mr()],
       mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'draft',
     })
-    expect(html).toContain('fcp-row-list" role="radiogroup" aria-label="' + t('forge.filterAria'))
-    expect(html).not.toContain('fcp-filter-sep')
+    expect(html).toContain('fcp-filter-sep')
+    expect(html).toContain('role="checkbox" aria-checked="false">' + t('forge.filterDraftOnly'))
+    // The separator sits between the two groups, not before both.
+    expect(html.indexOf(t('forge.stateAll'))).toBeLessThan(html.indexOf('fcp-filter-sep'))
+    expect(html.indexOf('fcp-filter-sep')).toBeLessThan(html.indexOf(t('forge.filterDraftOnly')))
   })
 
-  test('the reset link only shows once the status filter is active, and reads "reset"', async () => {
-    const inactive = await render({
+  test('the state and the toggle are independent: both can be set at once', async () => {
+    const html = await render({
       activeSection: 'mrs',
       mrs: [mr()],
       mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'all',
+      mrsStateFilter: 'merged',
+      mrsDraftOnly: true,
     })
+    expect(html).toContain('role="radio" aria-checked="true">' + t('forge.stateMerged'))
+    expect(html).toContain('role="checkbox" aria-checked="true">' + t('forge.filterDraftOnly'))
+  })
+
+  test('the reset link shows when EITHER dimension is narrowed, and reads "reset"', async () => {
+    const base = {
+      activeSection: 'mrs' as const,
+      mrs: [mr()],
+      mrsState: { status: 'loaded' as const, truncated: false },
+    }
+    // 'all' plus no sieve is the one unfiltered combination.
+    const inactive = await render({ ...base, mrsStateFilter: 'all', mrsDraftOnly: false })
     expect(inactive).not.toContain('fcp-reset')
 
-    const active = await render({
-      activeSection: 'mrs',
-      mrs: [mr()],
-      mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'draft',
-    })
-    expect(active).toContain('fcp-reset')
-    expect(active).toContain(t('forge.controlsFiltersReset'))
+    // The default state ('open') is already a narrowing, so it offers a reset.
+    for (const narrowed of [
+      { mrsStateFilter: 'open' as const, mrsDraftOnly: false },
+      { mrsStateFilter: 'all' as const, mrsDraftOnly: true },
+      { mrsStateFilter: 'closed' as const, mrsDraftOnly: true },
+    ]) {
+      const active = await render({ ...base, ...narrowed })
+      expect(active).toContain('fcp-reset')
+      expect(active).toContain(t('forge.controlsFiltersReset'))
+    }
   })
 
   test('label chips render from the loaded MRs', async () => {
@@ -396,7 +433,7 @@ describe('section and control glyphs', () => {
       activeSection: 'mrs',
       mrs: [mr()],
       mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'draft',
+      mrsDraftOnly: true,
     })
     expect(html).toContain('lucide-list-filter')
     expect(html).toContain('lucide-x-icon')

@@ -22,12 +22,7 @@ import { t } from '../../i18n'
 import type { ForgeMr } from '../../types'
 import ForgeDetailPanel from './ForgeDetailPanel.vue'
 import ForgeListPanel from './ForgeListPanel.vue'
-import {
-  resolveForgeSelection,
-  type ForgeSelection,
-  type ForgeSortKey,
-  type MrStateFilter,
-} from './ForgeLogic'
+import { resolveForgeSelection, type ForgeSelection, type ForgeSortKey } from './ForgeLogic'
 import {
   FORGE_LIST_WIDTH_DEFAULT,
   FORGE_LIST_WIDTH_MAX,
@@ -44,7 +39,7 @@ const props = defineProps<{
   mrs: ForgeMr[]
   mrsState: MrsLoadState | null
   mrsSort: ForgeSortKey
-  mrsFilter: MrStateFilter
+  mrsDraftOnly: boolean
   mrsLabels: string[]
   listWidth: number
   /** Seeds the initial selection (which item the detail panel opens on).
@@ -91,7 +86,7 @@ const detailItem = computed(() =>
         :mrs="mrs"
         :mrs-state="mrsState"
         :mrs-sort="mrsSort"
-        :mrs-filter="mrsFilter"
+        :mrs-draft-only="mrsDraftOnly"
         :mrs-labels="mrsLabels"
         :selection="selection"
         @clear-issue-filters="emit('clear-issue-filters')"

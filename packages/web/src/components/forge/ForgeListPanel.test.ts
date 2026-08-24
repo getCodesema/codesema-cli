@@ -10,7 +10,7 @@ import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
 import type { ForgeIssue, ForgeIssuesResult, ForgeLabel, ForgeMr } from '../../types'
-import type { ForgeSelection, ForgeSortKey, MrStateFilter } from './ForgeLogic'
+import type { ForgeSelection, ForgeSortKey } from './ForgeLogic'
 
 function label(name: string): ForgeLabel {
   return { name, color: null }
@@ -85,7 +85,7 @@ type Props = {
   mrs: ForgeMr[]
   mrsState: MrsLoadState | null
   mrsSort: ForgeSortKey
-  mrsFilter: MrStateFilter
+  mrsDraftOnly: boolean
   mrsLabels: string[]
   selection: ForgeSelection | null
 }
@@ -99,7 +99,7 @@ function props(overrides: Partial<Props> = {}): Props {
     mrs: [],
     mrsState: null,
     mrsSort: 'updated',
-    mrsFilter: 'all',
+    mrsDraftOnly: false,
     mrsLabels: [],
     selection: null,
     ...overrides,
@@ -328,7 +328,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       section: 'mrs',
       mrs: items,
       mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'draft',
+      mrsDraftOnly: true,
     })
     expect(html).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
   })
@@ -343,7 +343,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       section: 'mrs',
       mrs: items,
       mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'draft',
+      mrsDraftOnly: true,
       mrsLabels: ['bug'],
     })
     expect(html).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
@@ -371,7 +371,7 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       section: 'mrs',
       mrs: [mr({ number: 1, isDraft: false })],
       mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'draft',
+      mrsDraftOnly: true,
     })
     expect(html).toContain(t('forge.mrsFilteredEmptyFilter'))
     expect(html).not.toContain(t('forge.mrsFilteredEmptyLabels'))
@@ -388,7 +388,7 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       section: 'mrs',
       mrs: items,
       mrsState: { status: 'loaded', truncated: false },
-      mrsFilter: 'draft',
+      mrsDraftOnly: true,
       mrsLabels: ['bug'],
     })
     expect(html).toContain(t('forge.mrsFilteredEmptyBoth'))

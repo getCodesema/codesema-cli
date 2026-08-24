@@ -13,7 +13,7 @@
 // opens side by side, and never the silent coupling a module-level ref gives.
 
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
-import type { ForgeSortKey, MrStateFilter } from '../components/forge/ForgeLogic'
+import type { ForgeSortKey } from '../components/forge/ForgeLogic'
 import {
   FORGE_CONTROLS_COLLAPSED_WIDTH,
   readForgePrefs,
@@ -21,6 +21,7 @@ import {
   type ForgePrefs,
   type ForgeSection,
 } from '../components/forge/ForgePrefs'
+import type { ForgeMrStateFilter } from '../types'
 
 export type ForgePrefsStore = {
   /** The whole blob, for the fields read directly (label arrays). */
@@ -31,7 +32,8 @@ export type ForgePrefsStore = {
   listWidth: Ref<number>
   issuesSort: Ref<ForgeSortKey>
   mrsSort: Ref<ForgeSortKey>
-  mrsFilter: Ref<MrStateFilter>
+  mrsStateFilter: Ref<ForgeMrStateFilter>
+  mrsDraftOnly: Ref<boolean>
   /** The rail's width ON SCREEN: pinned to the collapsed band while
    * collapsed, since `railWidth` holds the width to restore on expand. */
   railPanelWidth: ComputedRef<number>
@@ -74,7 +76,8 @@ export function useForgePrefs(): ForgePrefsStore {
     listWidth: field('listWidth'),
     issuesSort: field('issuesSort'),
     mrsSort: field('mrsSort'),
-    mrsFilter: field('mrsFilter'),
+    mrsStateFilter: field('mrsStateFilter'),
+    mrsDraftOnly: field('mrsDraftOnly'),
     railPanelWidth: computed(() =>
       railCollapsed.value ? FORGE_CONTROLS_COLLAPSED_WIDTH : railWidth.value,
     ),
@@ -83,7 +86,9 @@ export function useForgePrefs(): ForgePrefsStore {
     // Releases the only filter dimension issues have (labels): the fix
     // offered on the "your filter matches nothing" state.
     clearIssueFilters: () => (prefs.value = { ...prefs.value, issuesLabels: [] }),
-    // Releases both MR filter dimensions at once.
-    clearMrFilters: () => (prefs.value = { ...prefs.value, mrsFilter: 'all', mrsLabels: [] }),
+    // Releases every MR filter dimension at once: the state goes back to
+    // the widest the forge will serve, and both sieves are dropped.
+    clearMrFilters: () =>
+      (prefs.value = { ...prefs.value, mrsStateFilter: 'all', mrsDraftOnly: false, mrsLabels: [] }),
   }
 }

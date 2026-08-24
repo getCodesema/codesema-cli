@@ -97,29 +97,28 @@ export function filterLabelCounts(counts: readonly LabelCount[], query: string):
 }
 
 /**
- * MR-only exclusive filter: the one field that actually discriminates inside
- * an OPEN-only corpus (issues carry no such field once narrowed to `open`).
- * `ready` mirrors MrCard's own badge reading of `isDraft`: `false` and `null`
- * (unknown) both show as "not a draft", so the filter agrees with what the
- * card itself displays rather than hiding an unknown-draft MR from both sides.
+ * Draft is a CUMULATIVE toggle applied to the list already fetched, and it
+ * is not a state. The state -- open, merged, closed -- is a different thing
+ * entirely: it is exclusive, it changes the QUERY sent to the forge, and it
+ * lives in `ForgeMrStateFilter` (types.ts). The two used to share one name
+ * here, which is what let the panel offer `draft`/`ready` as if they were
+ * states while the real state filter went unoffered.
+ *
+ * On `null`: a merge request whose draft flag the forge never reported is
+ * NOT shown when the toggle is on. `null` means "unknown", and a filter
+ * asking for drafts only cannot honestly include one it cannot vouch for.
+ * With the toggle off it shows like any other, which matches the card, whose
+ * badge treats `false` and `null` alike as "not marked a draft".
  */
-export type MrStateFilter = 'all' | 'draft' | 'ready'
-
-export function matchesMrStateFilter(mr: Pick<ForgeMr, 'isDraft'>, filter: MrStateFilter): boolean {
-  if (filter === 'all') {
-    return true
-  }
-  if (filter === 'draft') {
-    return mr.isDraft === true
-  }
-  return mr.isDraft !== true
+export function matchesDraftOnly(mr: Pick<ForgeMr, 'isDraft'>, draftOnly: boolean): boolean {
+  return !draftOnly || mr.isDraft === true
 }
 
-export function forgeFilterMrsByState<T extends Pick<ForgeMr, 'isDraft'>>(
+export function forgeFilterMrsByDraft<T extends Pick<ForgeMr, 'isDraft'>>(
   items: readonly T[],
-  filter: MrStateFilter,
+  draftOnly: boolean,
 ): T[] {
-  return items.filter((item) => matchesMrStateFilter(item, filter))
+  return draftOnly ? items.filter((item) => matchesDraftOnly(item, true)) : [...items]
 }
 
 // ── Panel resizing (three-panel forge board shell) ──────────────────────────

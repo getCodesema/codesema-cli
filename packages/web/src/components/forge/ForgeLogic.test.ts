@@ -5,11 +5,11 @@ import {
   filterLabelCounts,
   FORGE_SPLITTER_STEP,
   forgeFilterByLabels,
-  forgeFilterMrsByState,
+  forgeFilterMrsByDraft,
   forgeLabelCounts,
   forgeSort,
+  matchesDraftOnly,
   matchesLabels,
-  matchesMrStateFilter,
   resolveForgeSelection,
   sortByTitle,
   sortByUpdated,
@@ -184,38 +184,30 @@ describe('matchesLabels / forgeFilterByLabels', () => {
   })
 })
 
-describe('matchesMrStateFilter / forgeFilterMrsByState', () => {
-  test('"all" matches every draft state, including unknown', () => {
-    expect(matchesMrStateFilter({ isDraft: true }, 'all')).toBe(true)
-    expect(matchesMrStateFilter({ isDraft: false }, 'all')).toBe(true)
-    expect(matchesMrStateFilter({ isDraft: null }, 'all')).toBe(true)
+describe('matchesDraftOnly / forgeFilterMrsByDraft', () => {
+  test('the toggle off matches every draft state, including unknown', () => {
+    expect(matchesDraftOnly({ isDraft: true }, false)).toBe(true)
+    expect(matchesDraftOnly({ isDraft: false }, false)).toBe(true)
+    expect(matchesDraftOnly({ isDraft: null }, false)).toBe(true)
   })
 
-  test('"draft" matches only an explicit true', () => {
-    expect(matchesMrStateFilter({ isDraft: true }, 'draft')).toBe(true)
-    expect(matchesMrStateFilter({ isDraft: false }, 'draft')).toBe(false)
-    expect(matchesMrStateFilter({ isDraft: null }, 'draft')).toBe(false)
+  test('the toggle on matches only an explicit true: unknown is not a draft it can vouch for', () => {
+    expect(matchesDraftOnly({ isDraft: true }, true)).toBe(true)
+    expect(matchesDraftOnly({ isDraft: false }, true)).toBe(false)
+    expect(matchesDraftOnly({ isDraft: null }, true)).toBe(false)
   })
 
-  test('"ready" matches false and unknown, mirroring MrCard\'s own badge reading', () => {
-    expect(matchesMrStateFilter({ isDraft: false }, 'ready')).toBe(true)
-    expect(matchesMrStateFilter({ isDraft: null }, 'ready')).toBe(true)
-    expect(matchesMrStateFilter({ isDraft: true }, 'ready')).toBe(false)
-  })
-
-  test('these two filters are exclusive: no MR ever matches both draft and ready', () => {
-    for (const isDraft of [true, false, null] as const) {
-      const draft = matchesMrStateFilter({ isDraft }, 'draft')
-      const ready = matchesMrStateFilter({ isDraft }, 'ready')
-      expect(draft && ready).toBe(false)
-    }
-  })
-
-  test('forgeFilterMrsByState narrows the list accordingly', () => {
+  test('forgeFilterMrsByDraft narrows the list accordingly', () => {
     const mrs = [{ isDraft: true }, { isDraft: false }, { isDraft: null }]
-    expect(forgeFilterMrsByState(mrs, 'draft')).toEqual([{ isDraft: true }])
-    expect(forgeFilterMrsByState(mrs, 'ready')).toEqual([{ isDraft: false }, { isDraft: null }])
-    expect(forgeFilterMrsByState(mrs, 'all')).toEqual(mrs)
+    expect(forgeFilterMrsByDraft(mrs, true)).toEqual([{ isDraft: true }])
+    expect(forgeFilterMrsByDraft(mrs, false)).toEqual(mrs)
+  })
+
+  test("the off case returns a copy, never the caller's own array", () => {
+    const mrs = [{ isDraft: true }]
+    const out = forgeFilterMrsByDraft(mrs, false)
+    expect(out).toEqual(mrs)
+    expect(out).not.toBe(mrs)
   })
 })
 

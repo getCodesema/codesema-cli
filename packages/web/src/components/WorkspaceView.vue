@@ -76,7 +76,9 @@ const {
   connections,
   projects,
   mrsByProject,
-  mrsLoadByProject,
+  mrsOf,
+  mrsLoadOf,
+  loadMrsState,
   branchesByProject,
   start,
   stop,
@@ -578,7 +580,8 @@ const {
   listWidth,
   issuesSort,
   mrsSort,
-  mrsFilter,
+  mrsStateFilter,
+  mrsDraftOnly,
   railPanelWidth,
   toggleIssueLabel,
   toggleMrLabel,
@@ -602,10 +605,23 @@ const railIssuesState = computed(() =>
   filter.value === null ? EMPTY_ISSUES_STATE : issues.stateOf(filter.value),
 )
 const railMrs = computed(() =>
-  filter.value === null ? [] : (mrsByProject.get(filter.value) ?? []),
+  filter.value === null ? [] : mrsOf(filter.value, mrsStateFilter.value),
 )
 const railMrsState = computed(() =>
-  filter.value === null ? null : (mrsLoadByProject.get(filter.value) ?? null),
+  filter.value === null ? null : mrsLoadOf(filter.value, mrsStateFilter.value),
+)
+
+// Fetching the chosen state is lazy and idempotent: `loadMrsState` is a
+// no-op for a pair already loaded or in flight, so firing it on every change
+// of project OR state costs one request per pair and never a duplicate.
+watch(
+  [filter, mrsStateFilter],
+  ([projectId, state]) => {
+    if (projectId !== null) {
+      loadMrsState(projectId, state)
+    }
+  },
+  { immediate: true },
 )
 
 // ── The project menu's bindings, grouped ──────────────────────────────────
@@ -685,13 +701,15 @@ const projectsNavHandlers = {
           :mrs="railMrs"
           :mrs-state="railMrsState"
           :mrs-sort="mrsSort"
-          :mrs-filter="mrsFilter"
+          :mrs-state-filter="mrsStateFilter"
+          :mrs-draft-only="mrsDraftOnly"
           :mrs-labels="forgePrefs.mrsLabels"
           @update:active-section="(v) => (activeSection = v)"
           @update:collapsed="(v) => (railCollapsed = v)"
           @update:issues-sort="(v) => (issuesSort = v)"
           @update:mrs-sort="(v) => (mrsSort = v)"
-          @update:mrs-filter="(v) => (mrsFilter = v)"
+          @update:mrs-state-filter="(v) => (mrsStateFilter = v)"
+          @update:mrs-draft-only="(v) => (mrsDraftOnly = v)"
           @toggle-issue-label="toggleIssueLabel"
           @toggle-mr-label="toggleMrLabel"
         >
@@ -887,10 +905,10 @@ const projectsNavHandlers = {
             :issues-state="issues.stateOf(filter)"
             :issues-sort="issuesSort"
             :issues-labels="forgePrefs.issuesLabels"
-            :mrs="mrsByProject.get(filter) ?? []"
-            :mrs-state="mrsLoadByProject.get(filter) ?? null"
+            :mrs="mrsOf(filter, mrsStateFilter)"
+            :mrs-state="mrsLoadOf(filter, mrsStateFilter)"
             :mrs-sort="mrsSort"
-            :mrs-filter="mrsFilter"
+            :mrs-draft-only="mrsDraftOnly"
             :mrs-labels="forgePrefs.mrsLabels"
             :list-width="listWidth"
             @retry-issues="issues.reload(filter)"

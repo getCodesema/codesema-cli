@@ -30,13 +30,12 @@ import { computed, nextTick, ref } from 'vue'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
-import type { ForgeMr } from '../../types'
+import type { ForgeMr, ForgeMrStateFilter } from '../../types'
 import {
   filterLabelCounts,
-  forgeFilterMrsByState,
+  forgeFilterMrsByDraft,
   forgeLabelCounts,
   type ForgeSortKey,
-  type MrStateFilter,
 } from './ForgeLogic'
 import type { ForgeSection } from './ForgePrefs'
 import LabelChips from './LabelChips.vue'
@@ -56,7 +55,10 @@ const props = defineProps<{
   mrs: ForgeMr[]
   mrsState: MrsLoadState | null
   mrsSort: ForgeSortKey
-  mrsFilter: MrStateFilter
+  /** The exclusive, server-side state. Not to be confused with `mrsState`
+   * just above, which is the LOAD state of the list. */
+  mrsStateFilter: ForgeMrStateFilter
+  mrsDraftOnly: boolean
   mrsLabels: string[]
 }>()
 
@@ -65,7 +67,8 @@ const emit = defineEmits<{
   'update:collapsed': [collapsed: boolean]
   'update:issuesSort': [sort: ForgeSortKey]
   'update:mrsSort': [sort: ForgeSortKey]
-  'update:mrsFilter': [filter: MrStateFilter]
+  'update:mrsStateFilter': [state: ForgeMrStateFilter]
+  'update:mrsDraftOnly': [draftOnly: boolean]
   'toggle-issue-label': [label: string]
   'toggle-mr-label': [label: string]
 }>()
@@ -88,9 +91,8 @@ const mrsDegraded = computed(
   () => props.mrsState?.status === 'error' || props.mrsState?.status === 'unavailable',
 )
 const mrsHasData = computed(() => !mrsDegraded.value && props.mrs.length > 0)
-const mrsStateFiltered = computed(() => forgeFilterMrsByState(props.mrs, props.mrsFilter))
+const mrsStateFiltered = computed(() => forgeFilterMrsByDraft(props.mrs, props.mrsDraftOnly))
 const mrsLabelCounts = computed(() => forgeLabelCounts(mrsStateFiltered.value))
-const mrsFilterActive = computed(() => props.mrsFilter !== 'all')
 
 // ── Sort rows: same two criteria on both sections (see ForgeLogic.ts's own doc) ──
 type SortOption = { value: ForgeSortKey; labelKey: string }
@@ -99,26 +101,32 @@ const SORT_OPTIONS: readonly SortOption[] = [
   { value: 'title', labelKey: 'forge.sortTitle' },
 ]
 
-// ── Status filter rows (MRs only): mutually exclusive states above the
-// separator, cumulable toggles below. Only `draft`/`ready` are backed by
-// data today (an OPEN-only corpus can't honor `open`/`merged`/`closed`, see
-// matchesMrStateFilter's own doc) and no cumulable toggle exists yet, so
-// that second group starts empty and the separator stays hidden until it
-// gains an entry -- extending either group is one more object in its array,
-// never a rewrite of this list or of the template that renders it.
-type MrFilterEntry = { value: MrStateFilter; labelKey: string }
-const MR_EXCLUSIVE_FILTERS: readonly MrFilterEntry[] = [
-  { value: 'draft', labelKey: 'forge.filterDraft' },
-  { value: 'ready', labelKey: 'forge.filterReady' },
+// ── Filter rows (MRs only). Two groups, separated by a hairline, and the
+// separator is the whole point: above it the STATE, exclusive and fetched
+// from the forge; below it the DRAFT toggle, cumulative and applied to the
+// list already fetched. They used to be one exclusive group, which offered
+// `draft`/`ready` as if they were states and left the real state filter
+// unreachable even though the route, the cache and the loader all support it.
+type MrStateEntry = { value: ForgeMrStateFilter; labelKey: string }
+const MR_STATES: readonly MrStateEntry[] = [
+  { value: 'open', labelKey: 'forge.stateOpen' },
+  { value: 'merged', labelKey: 'forge.stateMerged' },
+  { value: 'closed', labelKey: 'forge.stateClosed' },
+  { value: 'all', labelKey: 'forge.stateAll' },
 ]
-const MR_TOGGLE_FILTERS: readonly MrFilterEntry[] = []
-const showMrFilterSeparator = MR_EXCLUSIVE_FILTERS.length > 0 && MR_TOGGLE_FILTERS.length > 0
 
-function selectMrFilter(value: MrStateFilter): void {
-  emit('update:mrsFilter', value)
+function selectMrState(value: ForgeMrStateFilter): void {
+  emit('update:mrsStateFilter', value)
 }
+function toggleMrDraftOnly(): void {
+  emit('update:mrsDraftOnly', !props.mrsDraftOnly)
+}
+/** Anything other than the widest state, or an active toggle, counts as
+ * filtered: the reset link has to offer to release both. */
+const mrFiltersActive = computed(() => props.mrsStateFilter !== 'all' || props.mrsDraftOnly)
 function resetMrFilter(): void {
-  emit('update:mrsFilter', 'all')
+  emit('update:mrsStateFilter', 'all')
+  emit('update:mrsDraftOnly', false)
 }
 
 // ── Label search: closed by default, opened by the magnifier in each
@@ -342,7 +350,7 @@ const mrsLabelCountsFiltered = computed(() =>
                     {{ t('forge.controlsFiltersHeading') }}
                   </span>
                   <button
-                    v-if="mrsFilterActive"
+                    v-if="mrFiltersActive"
                     type="button"
                     class="fcp-reset"
                     @click="resetMrFilter"
@@ -351,31 +359,33 @@ const mrsLabelCountsFiltered = computed(() =>
                     {{ t('forge.controlsFiltersReset') }}
                   </button>
                 </h3>
-                <div class="fcp-row-list" role="radiogroup" :aria-label="t('forge.filterAria')">
+                <div class="fcp-row-list">
+                  <div role="radiogroup" :aria-label="t('forge.stateAria')" class="fcp-row-group">
+                    <button
+                      v-for="s in MR_STATES"
+                      :key="s.value"
+                      type="button"
+                      class="fcp-row"
+                      :class="{ 'fcp-row--on': mrsStateFilter === s.value }"
+                      role="radio"
+                      :aria-checked="mrsStateFilter === s.value"
+                      @click="selectMrState(s.value)"
+                    >
+                      {{ t(s.labelKey) }}
+                    </button>
+                  </div>
+                  <div class="fcp-filter-sep" role="none" />
+                  <!-- Cumulative: a checkbox, never a radio, because it
+                       combines with whichever state is selected above. -->
                   <button
-                    v-for="f in MR_EXCLUSIVE_FILTERS"
-                    :key="f.value"
                     type="button"
                     class="fcp-row"
-                    :class="{ 'fcp-row--on': mrsFilter === f.value }"
-                    role="radio"
-                    :aria-checked="mrsFilter === f.value"
-                    @click="selectMrFilter(f.value)"
+                    :class="{ 'fcp-row--on': mrsDraftOnly }"
+                    role="checkbox"
+                    :aria-checked="mrsDraftOnly"
+                    @click="toggleMrDraftOnly"
                   >
-                    {{ t(f.labelKey) }}
-                  </button>
-                  <div v-if="showMrFilterSeparator" class="fcp-filter-sep" role="none" />
-                  <button
-                    v-for="f in MR_TOGGLE_FILTERS"
-                    :key="f.value"
-                    type="button"
-                    class="fcp-row"
-                    :class="{ 'fcp-row--on': mrsFilter === f.value }"
-                    role="radio"
-                    :aria-checked="mrsFilter === f.value"
-                    @click="selectMrFilter(f.value)"
-                  >
-                    {{ t(f.labelKey) }}
+                    {{ t('forge.filterDraftOnly') }}
                   </button>
                 </div>
               </div>

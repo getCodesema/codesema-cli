@@ -7,7 +7,8 @@
 // corrupted blob, plus a thin try/catch wrapper around the real localStorage
 // for the impure edges.
 
-import { clampWidth, type ForgeSortKey, type MrStateFilter } from './ForgeLogic'
+import type { ForgeMrStateFilter } from '../../types'
+import { clampWidth, type ForgeSortKey } from './ForgeLogic'
 
 export type ForgeSection = 'issues' | 'mrs'
 
@@ -15,7 +16,10 @@ export type ForgePrefs = {
   activeSection: ForgeSection
   issuesSort: ForgeSortKey
   mrsSort: ForgeSortKey
-  mrsFilter: MrStateFilter
+  /** Exclusive, and SERVER-side: it changes which list is fetched. */
+  mrsStateFilter: ForgeMrStateFilter
+  /** Cumulative, and CLIENT-side: it sieves the list already fetched. */
+  mrsDraftOnly: boolean
   issuesLabels: string[]
   mrsLabels: string[]
   /** Controls panel width in px, or its collapsed-rail width when collapsed. */
@@ -39,7 +43,8 @@ export const DEFAULT_FORGE_PREFS: ForgePrefs = {
   activeSection: 'issues',
   issuesSort: 'updated',
   mrsSort: 'updated',
-  mrsFilter: 'all',
+  mrsStateFilter: 'open',
+  mrsDraftOnly: false,
   issuesLabels: [],
   mrsLabels: [],
   controlsWidth: FORGE_CONTROLS_WIDTH_DEFAULT,
@@ -51,7 +56,7 @@ export const FORGE_PREFS_STORAGE_KEY = 'codesema-ws-forge-prefs'
 
 const SECTIONS: readonly ForgeSection[] = ['issues', 'mrs']
 const SORT_KEYS: readonly ForgeSortKey[] = ['updated', 'title']
-const MR_FILTERS: readonly MrStateFilter[] = ['all', 'draft', 'ready']
+const MR_STATES: readonly ForgeMrStateFilter[] = ['open', 'merged', 'closed', 'all']
 
 function isSection(value: unknown): value is ForgeSection {
   return typeof value === 'string' && (SECTIONS as readonly string[]).includes(value)
@@ -61,8 +66,8 @@ function isSortKey(value: unknown): value is ForgeSortKey {
   return typeof value === 'string' && (SORT_KEYS as readonly string[]).includes(value)
 }
 
-function isMrFilter(value: unknown): value is MrStateFilter {
-  return typeof value === 'string' && (MR_FILTERS as readonly string[]).includes(value)
+function isMrState(value: unknown): value is ForgeMrStateFilter {
+  return typeof value === 'string' && (MR_STATES as readonly string[]).includes(value)
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -121,7 +126,8 @@ export function parseForgePrefs(raw: string | null): ForgePrefs {
     activeSection: pick(p.activeSection, isSection, DEFAULT_FORGE_PREFS.activeSection),
     issuesSort: pick(p.issuesSort, isSortKey, DEFAULT_FORGE_PREFS.issuesSort),
     mrsSort: pick(p.mrsSort, isSortKey, DEFAULT_FORGE_PREFS.mrsSort),
-    mrsFilter: pick(p.mrsFilter, isMrFilter, DEFAULT_FORGE_PREFS.mrsFilter),
+    mrsStateFilter: pick(p.mrsStateFilter, isMrState, DEFAULT_FORGE_PREFS.mrsStateFilter),
+    mrsDraftOnly: pick(p.mrsDraftOnly, isBoolean, DEFAULT_FORGE_PREFS.mrsDraftOnly),
     issuesLabels: pick(p.issuesLabels, isStringArray, DEFAULT_FORGE_PREFS.issuesLabels),
     mrsLabels: pick(p.mrsLabels, isStringArray, DEFAULT_FORGE_PREFS.mrsLabels),
     controlsWidth: pickWidth(

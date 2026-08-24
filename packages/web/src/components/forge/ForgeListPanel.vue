@@ -65,11 +65,10 @@ import MrCard from '../mr/MrCard.vue'
 import ForgeIssueCard from './ForgeIssueCard.vue'
 import {
   forgeFilterByLabels,
-  forgeFilterMrsByState,
+  forgeFilterMrsByDraft,
   forgeSort,
   type ForgeSelection,
   type ForgeSortKey,
-  type MrStateFilter,
 } from './ForgeLogic'
 
 const props = defineProps<{
@@ -83,7 +82,7 @@ const props = defineProps<{
    * both a loaded empty list and a forge that could not be reached. */
   mrsState: MrsLoadState | null
   mrsSort: ForgeSortKey
-  mrsFilter: MrStateFilter
+  mrsDraftOnly: boolean
   mrsLabels: string[]
   selection: ForgeSelection | null
 }>()
@@ -122,7 +121,7 @@ const ISSUES_REASON_KEY = {
   unsupported: 'forge.issuesReasonUnsupported',
 } as const
 
-// Only labels can narrow the issues list (see forgeFilterMrsByState's own
+// Only labels can narrow the issues list (see forgeFilterMrsByDraft's own
 // doc: nothing else legitimately discriminates an OPEN-only corpus here).
 const issuesFilterActive = computed(() => props.issuesLabels.length > 0)
 const issuesVisible = computed(() =>
@@ -167,11 +166,11 @@ const mrsUnavailableKey = computed(() =>
   props.mrsState?.status === 'unavailable' ? MRS_REASON_KEY[props.mrsState.reason] : null,
 )
 const mrsTruncated = computed(() => props.mrsState?.status === 'loaded' && props.mrsState.truncated)
-const mrsStateFiltered = computed(() => forgeFilterMrsByState(props.mrs, props.mrsFilter))
+const mrsStateFiltered = computed(() => forgeFilterMrsByDraft(props.mrs, props.mrsDraftOnly))
 const mrsVisible = computed(() =>
   forgeSort(forgeFilterByLabels(mrsStateFiltered.value, props.mrsLabels), props.mrsSort),
 )
-const mrsFilterActive = computed(() => props.mrsFilter !== 'all' || props.mrsLabels.length > 0)
+const mrsFilterActive = computed(() => props.mrsDraftOnly || props.mrsLabels.length > 0)
 /** Same doctrine as issuesCount above: a formatted "shown / total" the moment
  * the status filter or a label selection is active, null (no badge at all)
  * until a fetch actually resolved into a count. */
@@ -193,7 +192,7 @@ const mrsTruncatedHint = computed(() =>
  * exactly what to release rather than a generic "try something else".
  */
 const mrsFilteredEmptyKey = computed(() => {
-  const statusActive = props.mrsFilter !== 'all'
+  const statusActive = props.mrsDraftOnly
   const labelsActive = props.mrsLabels.length > 0
   if (statusActive && labelsActive) {
     return 'forge.mrsFilteredEmptyBoth'

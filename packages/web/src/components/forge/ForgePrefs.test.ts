@@ -49,19 +49,23 @@ describe('parseForgePrefs', () => {
 
   test('a mistyped field is ignored in favor of its default, others still honored', () => {
     const parsed = parseForgePrefs(
-      JSON.stringify({ activeSection: 'both', mrsFilter: 'draft', issuesLabels: ['a', 2, 'b'] }),
+      JSON.stringify({
+        activeSection: 'both',
+        mrsStateFilter: 'merged',
+        issuesLabels: ['a', 2, 'b'],
+      }),
     )
     expect(parsed.activeSection).toBe(DEFAULT_FORGE_PREFS.activeSection)
-    expect(parsed.mrsFilter).toBe('draft')
+    expect(parsed.mrsStateFilter).toBe('merged')
     expect(parsed.issuesLabels).toEqual(DEFAULT_FORGE_PREFS.issuesLabels)
   })
 
   test('an unknown sort key, filter value or section falls back to its default', () => {
     const parsed = parseForgePrefs(
-      JSON.stringify({ issuesSort: 'popularity', mrsFilter: 'closed', activeSection: 'wiki' }),
+      JSON.stringify({ issuesSort: 'popularity', mrsStateFilter: 'ready', activeSection: 'wiki' }),
     )
     expect(parsed.issuesSort).toBe(DEFAULT_FORGE_PREFS.issuesSort)
-    expect(parsed.mrsFilter).toBe(DEFAULT_FORGE_PREFS.mrsFilter)
+    expect(parsed.mrsStateFilter).toBe(DEFAULT_FORGE_PREFS.mrsStateFilter)
     expect(parsed.activeSection).toBe(DEFAULT_FORGE_PREFS.activeSection)
   })
 
@@ -77,7 +81,8 @@ describe('parseForgePrefs', () => {
       activeSection: 'mrs',
       issuesSort: 'title',
       mrsSort: 'updated',
-      mrsFilter: 'ready',
+      mrsStateFilter: 'closed',
+      mrsDraftOnly: true,
       issuesLabels: ['bug'],
       mrsLabels: [],
       controlsWidth: 340,
@@ -191,5 +196,44 @@ describe('readForgePrefs / writeForgePrefs (localStorage wrappers)', () => {
     } finally {
       globals.localStorage = previous
     }
+  })
+})
+
+// The two MR filter dimensions are separate fields because they are separate
+// mechanisms: the state changes what is FETCHED, the draft toggle sieves what
+// was fetched. They were one field, which is what let the panel offer
+// draft/ready as though they were states.
+describe('the MR state filter and the draft toggle are independent fields', () => {
+  test('they default to the narrowest useful pair: open, no sieve', () => {
+    expect(DEFAULT_FORGE_PREFS.mrsStateFilter).toBe('open')
+    expect(DEFAULT_FORGE_PREFS.mrsDraftOnly).toBe(false)
+  })
+
+  test('every state the route accepts round-trips', () => {
+    for (const state of ['open', 'merged', 'closed', 'all'] as const) {
+      expect(parseForgePrefs(JSON.stringify({ mrsStateFilter: state })).mrsStateFilter).toBe(state)
+    }
+  })
+
+  test('a state outside the route’s vocabulary falls back rather than being sent on', () => {
+    for (const bogus of ['draft', 'ready', 'OPEN', '', 42, null]) {
+      expect(parseForgePrefs(JSON.stringify({ mrsStateFilter: bogus })).mrsStateFilter).toBe(
+        DEFAULT_FORGE_PREFS.mrsStateFilter,
+      )
+    }
+  })
+
+  test('the draft toggle only accepts a real boolean, never a truthy string', () => {
+    expect(parseForgePrefs(JSON.stringify({ mrsDraftOnly: true })).mrsDraftOnly).toBe(true)
+    for (const bogus of ['true', 1, 'yes', null]) {
+      expect(parseForgePrefs(JSON.stringify({ mrsDraftOnly: bogus })).mrsDraftOnly).toBe(false)
+    }
+  })
+
+  test('a blob written before the split keeps neither half of the old field', () => {
+    const parsed = parseForgePrefs(JSON.stringify({ mrsFilter: 'draft' }))
+    expect(parsed.mrsStateFilter).toBe(DEFAULT_FORGE_PREFS.mrsStateFilter)
+    expect(parsed.mrsDraftOnly).toBe(false)
+    expect(parsed).not.toHaveProperty('mrsFilter')
   })
 })

@@ -235,3 +235,38 @@ describe('the left rail is permanent, and the menu inside it never moves', () =>
     }
   })
 })
+
+// The state filter is server-side: picking "merged" does not sieve the open
+// list, it fetches a different one. The whole capability (route, per-state
+// cache, loader) already existed and NOTHING consumed it, which is the bug
+// this pins against: reading the eager open-only cache here would silently
+// show open MRs under a "merged" label.
+describe('the MR state filter actually reaches the forge', () => {
+  test('the list and its load state are read per (project, state), not from the open-only cache', () => {
+    expect(SOURCE).toContain('mrsOf(filter.value, mrsStateFilter.value)')
+    expect(SOURCE).toContain('mrsLoadOf(filter.value, mrsStateFilter.value)')
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    expect(forgeBoardTag).toContain(':mrs="mrsOf(filter, mrsStateFilter)"')
+    expect(forgeBoardTag).toContain(':mrs-state="mrsLoadOf(filter, mrsStateFilter)"')
+    // The eager, open-only map must not be what feeds the board any more.
+    expect(forgeBoardTag).not.toContain('mrsByProject')
+  })
+
+  test('a change of project OR of state triggers the fetch, immediately on mount', () => {
+    const watcher = SOURCE.slice(
+      SOURCE.indexOf('watch(\n  [filter, mrsStateFilter]'),
+      SOURCE.indexOf('// ── The project menu'),
+    )
+    expect(watcher).toContain('loadMrsState(projectId, state)')
+    expect(watcher).toContain('projectId !== null')
+    expect(watcher).toContain('{ immediate: true }')
+  })
+
+  test('the draft toggle stays client-side: it is handed down, never sent to the loader', () => {
+    expect(SOURCE).toContain(':mrs-draft-only="mrsDraftOnly"')
+    expect(SOURCE).not.toContain('loadMrsState(projectId, mrsDraftOnly')
+  })
+})
