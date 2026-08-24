@@ -63,11 +63,14 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
   })
 
   test('only the Launch path ever calls create; the plan path only previews', () => {
-    // `create(` reaches the API in exactly the two places that launch a
-    // conversation. A third call site appearing here is the regression this
-    // asserts against.
+    // `create(` reaches the API in exactly the one place that launches a
+    // conversation: every draft, fork or work-on, promotes through
+    // `onDraftCreate`. A second call site appearing here is the regression
+    // this asserts against: the standalone queue composer that used to be
+    // the other one is gone, replaced by opening a draft column instead of
+    // duplicating it (see `onNewConversation`).
     const createCalls = SOURCE.match(/await create\(/g) ?? []
-    expect(createCalls).toHaveLength(2)
+    expect(createCalls).toHaveLength(1)
     const planFn = SOURCE.slice(
       SOURCE.indexOf('function onPlanInput('),
       SOURCE.indexOf('function onDraftRetarget('),
@@ -161,17 +164,17 @@ describe('the sober empty focus state still shows with no project selected', () 
   })
 })
 
-// The board's layout needs the work queue's own column gone, not just
-// visually crowded out: the work queue hides for exactly the branch the
+// The board's layout needs the conversations column's own column gone, not
+// just visually crowded out: the column hides for exactly the branch the
 // board renders in, and comes back for every other one (review, the deck,
 // the empty-focus fallback).
-describe('the work queue hides while the board is the focus zone, shows everywhere else', () => {
-  test('the work queue is gated on the same condition, negated', () => {
-    const workQueueTag = SOURCE.slice(
-      SOURCE.indexOf('<WorkQueue'),
+describe('the conversations column hides while the board is the focus zone, shows everywhere else', () => {
+  test('the conversations column is gated on the same condition, negated', () => {
+    const columnTag = SOURCE.slice(
+      SOURCE.indexOf('<ConversationsColumn'),
       SOURCE.indexOf(':states="queueStates"'),
     )
-    expect(workQueueTag).toContain('v-if="!boardVisible"')
+    expect(columnTag).toContain('v-if="!boardVisible"')
   })
 })
 

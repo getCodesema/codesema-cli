@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { EXECUTION_STATUS } from '../execution-status'
 import type { TaskEvent, TaskEventType, TaskRecord, TaskStatus } from '../types'
@@ -67,6 +69,31 @@ function event(partial: Partial<TaskEvent>): TaskEvent {
   return { seq: 0, at: '2026-08-13T10:00:00.000Z', type: 'message', data: {}, ...partial }
 }
 
+/**
+ * The machine-cap `reason.detail` READ OUT OF THE CLI, not copied here.
+ *
+ * `MACHINE_LOAD_DETAIL` (packages/cli/src/task-runner.ts) is hand-mirrored as
+ * `MACHINE_LOAD_WAIT_DETAIL` in this file, the only discriminant between the
+ * two `resource_busy` motifs on a record that carries no events. A test that
+ * merely copy-pasted the CLI's English sentence would stay green even if the
+ * CLI's constant changed and the mirror did not: both sides would simply be
+ * wrong in the same way. Extracting the literal from the CLI source makes the
+ * coupling real, in the only way a hand-mirror allows: the web bundle must not
+ * import CLI code, and the constant is private on both sides. This is a
+ * test-time file read, not a dependency.
+ */
+const MACHINE_DETAIL = (() => {
+  const cliSource = readFileSync(
+    join(import.meta.dir, '..', '..', '..', 'cli', 'src', 'task-runner.ts'),
+    'utf8',
+  )
+  const match = cliSource.match(/const MACHINE_LOAD_DETAIL\s*=\s*'([^']*)'/)
+  if (!match?.[1]) {
+    throw new Error('MACHINE_LOAD_DETAIL not found in packages/cli/src/task-runner.ts')
+  }
+  return match[1]
+})()
+
 // T1.2 re-review, MINOR 9: the badge's tooltip is a claim about the project,
 // and it must not make it when nothing is running there.
 describe('queueRankHintKey', () => {
@@ -90,17 +117,16 @@ describe('queueRankHintKey', () => {
   // task alone in an idle project (held back by the MACHINE cap), which this
   // pill used to tell as "N conversations ahead in this project" — a promise
   // about agents that do not exist.
+  //
+  // The mutation this kills (round 5, mineur F): `MACHINE_LOAD_WAIT_DETAIL`
+  // drifting from the CLI's own `MACHINE_LOAD_DETAIL` while a test still
+  // compared against a copy-pasted literal would stay green: the two copies
+  // agreeing with each other proves nothing about the CLI. Comparing against
+  // `MACHINE_DETAIL`, read from the CLI source itself, is what actually
+  // exercises the mirror.
   test('a machine-cap wait gets its own hint, distinct from a project wait', () => {
     expect(
-      queueRankHintKey(
-        record({
-          reason: {
-            code: 'resource_busy',
-            detail:
-              'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run',
-          },
-        }),
-      ),
+      queueRankHintKey(record({ reason: { code: 'resource_busy', detail: MACHINE_DETAIL } })),
     ).toBe('workspace.queuePositionHintMachine')
   })
 })

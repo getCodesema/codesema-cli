@@ -25,8 +25,10 @@ import { groupConversationsByProject, searchRightPadding } from './Conversations
 const props = defineProps<{
   states: TaskState[]
   projectNames: ReadonlyMap<string, string>
-  /** taskKey of the conversation currently open elsewhere; null = none. */
-  selectedKey: string | null
+  /** taskKeys of every conversation currently open in the focus deck. Ours is
+   *  a DECK, not a single selection: several conversations can be pinned side
+   *  by side, so a row is highlighted when its key is in this list. */
+  focusedKeys: readonly string[]
 }>()
 
 const emit = defineEmits<{
@@ -67,9 +69,7 @@ function toggleGroup(projectId: string): void {
 }
 
 function isSelected(state: TaskState): boolean {
-  return (
-    props.selectedKey !== null && props.selectedKey === taskKey(state.projectId, state.record.id)
-  )
+  return props.focusedKeys.includes(taskKey(state.projectId, state.record.id))
 }
 </script>
 

@@ -64,12 +64,12 @@ export function queueSectionOf(status: TaskStatus): QueueSection {
  * by hand) because it is the ONLY thing on a `TaskRecord` that tells the two
  * `resource_busy` motifs apart. `data.name` ('machine_busy'/'project_busy')
  * lives on the task's `queue` journal EVENT, not on the record itself, and
- * WorkQueue.vue's #N pill only ever has the record — never that task's
+ * the #N pill this key feeds only ever has the record — never that task's
  * events (adversarial review round 3, MAJEUR 3: "à défaut reason.detail").
  *
- * The mirror is checked, not merely documented: WorkQueue.test.ts extracts
- * `MACHINE_LOAD_DETAIL` from the CLI source and renders the pill with it, so
- * a drift on either side turns that test red (round 5, mineur F).
+ * The mirror is checked, not merely documented: this file's own test extracts
+ * `MACHINE_LOAD_DETAIL` from the CLI source and calls `queueRankHintKey` with
+ * it, so a drift on either side turns that test red (round 5, mineur F).
  */
 const MACHINE_LOAD_WAIT_DETAIL =
   'the machine-wide load cap (maxConcurrentAgents) has no free slot for a turn, a review or a checks run'

@@ -51,6 +51,7 @@ import {
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
+import ConversationsColumn from './conversations/ConversationsColumn.vue'
 import ForgeBoard from './forge/ForgeBoard.vue'
 import ForgeControlsPanel from './forge/ForgeControlsPanel.vue'
 import {
@@ -64,7 +65,6 @@ import RepoSettings from './RepoSettings.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
-import WorkQueue from './WorkQueue.vue'
 import WorkspaceHeader from './WorkspaceHeader.vue'
 
 const props = defineProps<{ token: string }>()
@@ -404,6 +404,29 @@ function onBranchClick(projectId: string, branch: string, mr: ForgeMr | null): v
   }
 }
 
+/**
+ * [+ new conversation] in the conversations column: opens a draft column,
+ * the SAME mechanism a trunk branch click already uses, never a second
+ * composer. The column carries no project picker of its own, so the target
+ * is the filtered project, or the first registered one; the base is that
+ * project's current branch when its branches are already known (a project
+ * the human has looked at), else its first trunk branch, else the
+ * conventional 'main'. All three are one click away from a correction in the
+ * draft's own retarget field, so a wrong guess here costs nothing.
+ */
+function onNewConversation(): void {
+  const projectId = filter.value ?? projects.value[0]?.id ?? null
+  if (projectId === null) {
+    return
+  }
+  const branches = branchesByProject.get(projectId) ?? []
+  const base =
+    branches.find((b) => b.isCurrent)?.name ??
+    branches.find((b) => isTrunkBranch(b.name))?.name ??
+    'main'
+  openDraft(projectId, forkDraft(base))
+}
+
 /** Launches the real conversation from the draft: the POST carries base
  * (fork) or branch+target (work-on); on success — or on the 409 "already has
  * a conversation" — the column becomes that conversation IN PLACE. */
@@ -501,41 +524,6 @@ const extraBranches = computed<string[]>(() => {
     mrsByProject.get(projectId) ?? [],
   )
 })
-
-// ── Create (queue composer) ───────────────────────────────────────────────
-const creating = ref(false)
-const createError = ref<string | null>(null)
-
-async function onCreate(projectId: string, input: CreateTaskInput): Promise<void> {
-  creating.value = true
-  createError.value = null
-  const result = await create(projectId, input)
-  creating.value = false
-  if (!result.ok) {
-    if (result.existingTaskId !== null) {
-      // 409 uniqueness guard: open the branch's existing conversation.
-      openConversation(projectId, result.existingTaskId)
-      return
-    }
-    createError.value = result.error
-    return
-  }
-  openConversation(projectId, result.record.id)
-}
-
-/** [Ship] on a ready card: the existing ship action, with the conversation
- * brought into focus so the outcome is visible. */
-function onQueueShip(state: TaskState): void {
-  openConversation(state.projectId, state.record.id)
-  void ship(state.projectId, state.record.id)
-}
-
-/** [Resume] on a stopped card (T8): same shape as [Ship] — the conversation
- * opens, so the restarted turn is watched live instead of guessed at. */
-function onQueueResume(state: TaskState): void {
-  openConversation(state.projectId, state.record.id)
-  void resume(state.projectId, state.record.id)
-}
 
 // ── Project registry actions ──────────────────────────────────────────────
 const addBusy = ref(false)
@@ -744,22 +732,13 @@ const projectsNavHandlers = {
       <!-- Hidden while the forge board is the focus zone's content: the
            board then takes the full remaining width (rail / list / detail,
            three columns). -->
-      <WorkQueue
+      <ConversationsColumn
         v-if="!boardVisible"
         :states="queueStates"
         :project-names="projectNameById"
         :focused-keys="focusedKeys"
-        :projects="projects"
-        :filter="filter"
-        :creating="creating"
-        :create-error="createError"
-        :workspace="workspace"
-        :agents="agents"
-        :current-agent="currentAgent"
-        @open="(state) => openConversation(state.projectId, state.record.id)"
-        @ship="onQueueShip"
-        @resume="onQueueResume"
-        @create="onCreate"
+        @select="(state) => openConversation(state.projectId, state.record.id)"
+        @create="onNewConversation"
       />
 
       <main class="ws-focus">
@@ -1203,10 +1182,12 @@ const projectsNavHandlers = {
   border-color: var(--cs-muted);
 }
 
-/* Narrow desk: the projects column folds first, then the queue narrows. */
-@media (max-width: 1100px) {
-  .ws-body :deep(.wq-root) {
-    width: 360px;
-  }
+/* The conversations column sets its own 260px width but, by its own header
+   comment, leaves the flex behaviour to whoever mounts it, the same split
+   ForgeBoard.vue already has with ForgeSplitter.vue. Without this the column
+   would shrink under flex's default alongside the focus zone; `min-width: 0`
+   on `.ws-focus` is what absorbs a narrow desk instead. */
+.ws-body :deep(.cvc-root) {
+  flex: none;
 }
 </style>

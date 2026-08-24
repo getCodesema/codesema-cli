@@ -64,11 +64,11 @@ function taskState(recordOverrides: Partial<TaskRecord> = {}, projectId = 'p1'):
 type Props = {
   states: TaskState[]
   projectNames: ReadonlyMap<string, string>
-  selectedKey: string | null
+  focusedKeys: readonly string[]
 }
 
 function props(overrides: Partial<Props> = {}): Props {
-  return { states: [], projectNames: new Map(), selectedKey: null, ...overrides }
+  return { states: [], projectNames: new Map(), focusedKeys: [], ...overrides }
 }
 
 async function render(overrides: Partial<Props> = {}): Promise<string> {
@@ -137,14 +137,35 @@ describe('grouping: by project, our "folder" (sheet §10.2)', () => {
     expect(html).not.toContain('cvc-group-body--closed')
   })
 
-  test('each row carries the ticket-column selection contract (aria-current on the open one)', async () => {
+  test('one key in the focus deck: aria-current on that row only', async () => {
     const open = taskState({ id: 'open-one' }, 'p1')
     const other = taskState({ id: 'other-one' }, 'p1')
-    const html = await render({ states: [open, other], selectedKey: 'p1/open-one' })
+    const html = await render({ states: [open, other], focusedKeys: ['p1/open-one'] })
     const rows = [...html.matchAll(/<button type="button" class="cvc-row-btn[^"]*"([^>]*)>/g)]
     expect(rows).toHaveLength(2)
-    expect(rows.some((m) => m[1]?.includes('aria-current="true"'))).toBe(true)
     expect(rows.filter((m) => m[1]?.includes('aria-current="true"'))).toHaveLength(1)
+  })
+
+  test('several keys in the focus deck: aria-current on each pinned row, ours is a deck not a single selection', async () => {
+    const first = taskState({ id: 'first' }, 'p1')
+    const second = taskState({ id: 'second' }, 'p1')
+    const third = taskState({ id: 'third' }, 'p1')
+    const html = await render({
+      states: [first, second, third],
+      focusedKeys: ['p1/first', 'p1/third'],
+    })
+    const rows = [...html.matchAll(/<button type="button" class="cvc-row-btn[^"]*"([^>]*)>/g)]
+    expect(rows).toHaveLength(3)
+    expect(rows.filter((m) => m[1]?.includes('aria-current="true"'))).toHaveLength(2)
+  })
+
+  test('no key in the focus deck: no row carries aria-current', async () => {
+    const open = taskState({ id: 'open-one' }, 'p1')
+    const other = taskState({ id: 'other-one' }, 'p1')
+    const html = await render({ states: [open, other], focusedKeys: [] })
+    const rows = [...html.matchAll(/<button type="button" class="cvc-row-btn[^"]*"([^>]*)>/g)]
+    expect(rows).toHaveLength(2)
+    expect(rows.some((m) => m[1]?.includes('aria-current="true"'))).toBe(false)
   })
 })
 
