@@ -642,7 +642,6 @@ const en = {
   'forge.sortUpdated': 'Recently updated',
   'forge.sortTitle': 'Title (A→Z)',
   'forge.filterAria': 'Filter by status',
-  'forge.filterAll': 'All',
   'forge.filterDraft': 'Draft',
   'forge.filterReady': 'Ready',
   'forge.labelsAria': 'Filter by label',
@@ -678,6 +677,14 @@ const en = {
   'forge.detailTitle': 'Details',
   'forge.detailClose': 'Close the detail panel',
   'forge.detailEmpty': 'Select an issue or a pull request to see its details here.',
+
+  // --- Forge board controls panel: sort / status filter / label search ---
+  'forge.controlsFiltersHeading': 'Filters',
+  'forge.controlsFiltersReset': 'Reset',
+  'forge.controlsLabelsHeading': 'Labels',
+  'forge.controlsLabelSearchOpen': 'Search labels',
+  'forge.controlsLabelSearchClose': 'Close the label search',
+  'forge.controlsLabelSearchPlaceholder': 'Search labels…',
 }
 
 export type MessageKey = keyof typeof en
@@ -1304,7 +1311,6 @@ const fr: Record<MessageKey, string> = {
   'forge.sortUpdated': 'Récemment mises à jour',
   'forge.sortTitle': 'Titre (A→Z)',
   'forge.filterAria': 'Filtrer par statut',
-  'forge.filterAll': 'Toutes',
   'forge.filterDraft': 'Brouillon',
   'forge.filterReady': 'Prêtes',
   'forge.labelsAria': 'Filtrer par label',
@@ -1339,6 +1345,14 @@ const fr: Record<MessageKey, string> = {
   'forge.detailTitle': 'Détails',
   'forge.detailClose': 'Fermer le panneau de détail',
   'forge.detailEmpty': 'Sélectionne une issue ou une merge request pour voir ses détails ici.',
+
+  // --- Forge board controls panel: sort / status filter / label search ---
+  'forge.controlsFiltersHeading': 'Filtres',
+  'forge.controlsFiltersReset': 'Réinitialiser',
+  'forge.controlsLabelsHeading': 'Labels',
+  'forge.controlsLabelSearchOpen': 'Rechercher un label',
+  'forge.controlsLabelSearchClose': 'Fermer la recherche de labels',
+  'forge.controlsLabelSearchPlaceholder': 'Rechercher un label…',
 }
 
 /**

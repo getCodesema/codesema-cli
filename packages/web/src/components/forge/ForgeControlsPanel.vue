@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// The forge board's controls panel. For now this is only the section switch
-// (issues vs pull requests, replacing the old two-open-accordions layout
-// from ForgeBoard.vue) and this panel's own collapse toggle. Sort/status
-// filter/label chips stay where they already work, in the list panel; a
-// richer controls panel is a later lot.
+// The forge board's controls panel: two accordion sections (issues, pull
+// requests) that ARE the section switch (opening one closes the other and
+// picks what the neighboring list panel shows, see `activeSection`), each
+// carrying its own sort / status filter / label search, moved here from
+// ForgeListPanel.vue so the list panel stays a pure list renderer. Own
+// collapse toggle too.
 //
 // Collapsed: not just a bare toggle button. The whole 48px band shows the
 // project name in vertical, top-to-bottom writing mode, truncated to the
@@ -12,19 +13,131 @@
 // breakpoint the three panels stack at, reused here rather than a separate
 // one), the band flips to a short horizontal bar at the top, text no longer
 // rotated.
+import { computed, nextTick, ref } from 'vue'
+import type { ProjectIssuesState } from '../../composables/useIssues'
+import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
+import type { ForgeMr } from '../../types'
+import {
+  filterLabelCounts,
+  forgeFilterMrsByState,
+  forgeLabelCounts,
+  type ForgeSortKey,
+  type MrStateFilter,
+} from './ForgeLogic'
 import type { ForgeSection } from './ForgePrefs'
+import LabelChips from './LabelChips.vue'
 
-defineProps<{
+const props = defineProps<{
   activeSection: ForgeSection
   collapsed: boolean
   projectName: string
+  issuesState: ProjectIssuesState
+  issuesSort: ForgeSortKey
+  issuesLabels: string[]
+  mrs: ForgeMr[]
+  mrsState: MrsLoadState | null
+  mrsSort: ForgeSortKey
+  mrsFilter: MrStateFilter
+  mrsLabels: string[]
 }>()
 
 const emit = defineEmits<{
   'update:activeSection': [section: ForgeSection]
   'update:collapsed': [collapsed: boolean]
+  'update:issuesSort': [sort: ForgeSortKey]
+  'update:mrsSort': [sort: ForgeSortKey]
+  'update:mrsFilter': [filter: MrStateFilter]
+  'toggle-issue-label': [label: string]
+  'toggle-mr-label': [label: string]
 }>()
+
+function openSection(section: ForgeSection): void {
+  emit('update:activeSection', section)
+}
+
+// ── Issues: label counts, gated on there actually being loaded items to
+// control (mirrors ForgeListPanel's own former gate on its controls row) ──
+const issuesLoaded = computed(() => {
+  const result = props.issuesState.result
+  return result !== null && result.available ? result.issues : null
+})
+const issuesHasData = computed(() => (issuesLoaded.value?.length ?? 0) > 0)
+const issuesLabelCounts = computed(() => forgeLabelCounts(issuesLoaded.value ?? []))
+
+// ── Pull requests: same gate as ForgeListPanel's former `!mrsDegraded && mrs.length > 0` ──
+const mrsDegraded = computed(
+  () => props.mrsState?.status === 'error' || props.mrsState?.status === 'unavailable',
+)
+const mrsHasData = computed(() => !mrsDegraded.value && props.mrs.length > 0)
+const mrsStateFiltered = computed(() => forgeFilterMrsByState(props.mrs, props.mrsFilter))
+const mrsLabelCounts = computed(() => forgeLabelCounts(mrsStateFiltered.value))
+const mrsFilterActive = computed(() => props.mrsFilter !== 'all')
+
+// ── Sort rows: same two criteria on both sections (see ForgeLogic.ts's own doc) ──
+type SortOption = { value: ForgeSortKey; labelKey: string }
+const SORT_OPTIONS: readonly SortOption[] = [
+  { value: 'updated', labelKey: 'forge.sortUpdated' },
+  { value: 'title', labelKey: 'forge.sortTitle' },
+]
+
+// ── Status filter rows (MRs only): mutually exclusive states above the
+// separator, cumulable toggles below. Only `draft`/`ready` are backed by
+// data today (an OPEN-only corpus can't honor `open`/`merged`/`closed`, see
+// matchesMrStateFilter's own doc) and no cumulable toggle exists yet, so
+// that second group starts empty and the separator stays hidden until it
+// gains an entry -- extending either group is one more object in its array,
+// never a rewrite of this list or of the template that renders it.
+type MrFilterEntry = { value: MrStateFilter; labelKey: string }
+const MR_EXCLUSIVE_FILTERS: readonly MrFilterEntry[] = [
+  { value: 'draft', labelKey: 'forge.filterDraft' },
+  { value: 'ready', labelKey: 'forge.filterReady' },
+]
+const MR_TOGGLE_FILTERS: readonly MrFilterEntry[] = []
+const showMrFilterSeparator = MR_EXCLUSIVE_FILTERS.length > 0 && MR_TOGGLE_FILTERS.length > 0
+
+function selectMrFilter(value: MrStateFilter): void {
+  emit('update:mrsFilter', value)
+}
+function resetMrFilter(): void {
+  emit('update:mrsFilter', 'all')
+}
+
+// ── Label search: closed by default, opened by the magnifier in each
+// section's own "labels" block header. Focuses on open; closing always
+// clears the query, never leaves a stale filter active but invisible. ──
+const issuesLabelSearchOpen = ref(false)
+const issuesLabelQuery = ref('')
+const issuesLabelSearchInput = ref<HTMLInputElement | null>(null)
+const mrsLabelSearchOpen = ref(false)
+const mrsLabelQuery = ref('')
+const mrsLabelSearchInput = ref<HTMLInputElement | null>(null)
+
+async function openIssuesLabelSearch(): Promise<void> {
+  issuesLabelSearchOpen.value = true
+  await nextTick()
+  issuesLabelSearchInput.value?.focus()
+}
+function closeIssuesLabelSearch(): void {
+  issuesLabelSearchOpen.value = false
+  issuesLabelQuery.value = ''
+}
+async function openMrsLabelSearch(): Promise<void> {
+  mrsLabelSearchOpen.value = true
+  await nextTick()
+  mrsLabelSearchInput.value?.focus()
+}
+function closeMrsLabelSearch(): void {
+  mrsLabelSearchOpen.value = false
+  mrsLabelQuery.value = ''
+}
+
+const issuesLabelCountsFiltered = computed(() =>
+  filterLabelCounts(issuesLabelCounts.value, issuesLabelQuery.value),
+)
+const mrsLabelCountsFiltered = computed(() =>
+  filterLabelCounts(mrsLabelCounts.value, mrsLabelQuery.value),
+)
 </script>
 
 <template>
@@ -54,26 +167,288 @@ const emit = defineEmits<{
         <span aria-hidden="true">«</span>
       </button>
 
-      <nav class="fcp-nav" :aria-label="t('forge.sectionNavAria')">
-        <button
-          type="button"
-          class="fcp-nav-item"
-          :class="{ 'fcp-nav-item--on': activeSection === 'issues' }"
-          :aria-pressed="activeSection === 'issues'"
-          @click="emit('update:activeSection', 'issues')"
-        >
-          {{ t('forge.issuesTitle') }}
-        </button>
-        <button
-          type="button"
-          class="fcp-nav-item"
-          :class="{ 'fcp-nav-item--on': activeSection === 'mrs' }"
-          :aria-pressed="activeSection === 'mrs'"
-          @click="emit('update:activeSection', 'mrs')"
-        >
-          {{ t('forge.mrsTitle') }}
-        </button>
-      </nav>
+      <div class="fcp-sections" :aria-label="t('forge.sectionNavAria')">
+        <!-- Issues section -->
+        <section class="fcp-section">
+          <button
+            type="button"
+            class="fcp-acc-head"
+            :aria-expanded="activeSection === 'issues'"
+            aria-controls="fcp-body-issues"
+            @click="openSection('issues')"
+          >
+            <svg class="fcp-acc-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.5" />
+            </svg>
+            <span class="fcp-acc-label">{{ t('forge.issuesTitle') }}</span>
+            <svg
+              class="fcp-acc-chevron"
+              :class="{ 'fcp-acc-chevron--closed': activeSection !== 'issues' }"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+            >
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </button>
+          <div v-if="activeSection === 'issues'" id="fcp-body-issues" class="fcp-acc-body">
+            <template v-if="issuesHasData">
+              <div class="fcp-block">
+                <h3 class="fcp-block-title">
+                  <span class="fcp-block-title-text">
+                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M4 3v9M2 5.5L4 3l2 2.5M12 13V4M10 10.5L12 13l2-2.5" />
+                    </svg>
+                    {{ t('forge.sortLabel') }}
+                  </span>
+                </h3>
+                <div class="fcp-row-list" role="radiogroup" :aria-label="t('forge.sortLabel')">
+                  <button
+                    v-for="opt in SORT_OPTIONS"
+                    :key="opt.value"
+                    type="button"
+                    class="fcp-row"
+                    :class="{ 'fcp-row--on': issuesSort === opt.value }"
+                    role="radio"
+                    :aria-checked="issuesSort === opt.value"
+                    @click="emit('update:issuesSort', opt.value)"
+                  >
+                    <svg class="fcp-row-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <template v-if="opt.value === 'updated'">
+                        <circle cx="7" cy="7" r="5" />
+                        <path d="M7 4.2V7l2 1.2" />
+                      </template>
+                      <path v-else d="M2.5 4h11M2.5 8h7M2.5 12h4" />
+                    </svg>
+                    {{ t(opt.labelKey) }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="fcp-block">
+                <h3 class="fcp-block-title">
+                  <span class="fcp-block-title-text">
+                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M2 2h5.5l6.5 6.5-5.5 5.5L2 7.5V2z" />
+                      <path d="M4.7 4.7h.01" stroke-width="2" />
+                    </svg>
+                    {{ t('forge.controlsLabelsHeading') }}
+                  </span>
+                  <button
+                    type="button"
+                    class="fcp-search-toggle"
+                    :class="{ 'fcp-search-toggle--on': issuesLabelSearchOpen }"
+                    :aria-label="
+                      issuesLabelSearchOpen
+                        ? t('forge.controlsLabelSearchClose')
+                        : t('forge.controlsLabelSearchOpen')
+                    "
+                    :aria-expanded="issuesLabelSearchOpen"
+                    @click="
+                      issuesLabelSearchOpen ? closeIssuesLabelSearch() : openIssuesLabelSearch()
+                    "
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <circle cx="6.7" cy="6.7" r="4.2" />
+                      <path d="M9.8 9.8L13 13" />
+                    </svg>
+                  </button>
+                </h3>
+                <div v-if="issuesLabelSearchOpen" class="fcp-label-search">
+                  <input
+                    ref="issuesLabelSearchInput"
+                    v-model="issuesLabelQuery"
+                    type="text"
+                    class="fcp-label-search-input"
+                    :placeholder="t('forge.controlsLabelSearchPlaceholder')"
+                    :aria-label="t('forge.controlsLabelSearchPlaceholder')"
+                  />
+                  <button
+                    type="button"
+                    class="fcp-label-search-close"
+                    :aria-label="t('forge.controlsLabelSearchClose')"
+                    @click="closeIssuesLabelSearch"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M3 3l8 8M11 3l-8 8" />
+                    </svg>
+                  </button>
+                </div>
+                <LabelChips
+                  :counts="issuesLabelCountsFiltered"
+                  :selected="issuesLabels"
+                  @toggle="(label) => emit('toggle-issue-label', label)"
+                />
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- Pull requests section -->
+        <section class="fcp-section">
+          <button
+            type="button"
+            class="fcp-acc-head"
+            :aria-expanded="activeSection === 'mrs'"
+            aria-controls="fcp-body-mrs"
+            @click="openSection('mrs')"
+          >
+            <svg class="fcp-acc-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="5" cy="4" r="1.5" />
+              <circle cx="5" cy="12" r="1.5" />
+              <circle cx="11" cy="8" r="1.5" />
+              <path d="M5 5.5v5" />
+              <path d="M5 8c3 0 4.5-1 6-1.5" />
+            </svg>
+            <span class="fcp-acc-label">{{ t('forge.mrsTitle') }}</span>
+            <svg
+              class="fcp-acc-chevron"
+              :class="{ 'fcp-acc-chevron--closed': activeSection !== 'mrs' }"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+            >
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </button>
+          <div v-if="activeSection === 'mrs'" id="fcp-body-mrs" class="fcp-acc-body">
+            <template v-if="mrsHasData">
+              <div class="fcp-block">
+                <h3 class="fcp-block-title">
+                  <span class="fcp-block-title-text">
+                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M4 3v9M2 5.5L4 3l2 2.5M12 13V4M10 10.5L12 13l2-2.5" />
+                    </svg>
+                    {{ t('forge.sortLabel') }}
+                  </span>
+                </h3>
+                <div class="fcp-row-list" role="radiogroup" :aria-label="t('forge.sortLabel')">
+                  <button
+                    v-for="opt in SORT_OPTIONS"
+                    :key="opt.value"
+                    type="button"
+                    class="fcp-row"
+                    :class="{ 'fcp-row--on': mrsSort === opt.value }"
+                    role="radio"
+                    :aria-checked="mrsSort === opt.value"
+                    @click="emit('update:mrsSort', opt.value)"
+                  >
+                    <svg class="fcp-row-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <template v-if="opt.value === 'updated'">
+                        <circle cx="7" cy="7" r="5" />
+                        <path d="M7 4.2V7l2 1.2" />
+                      </template>
+                      <path v-else d="M2.5 4h11M2.5 8h7M2.5 12h4" />
+                    </svg>
+                    {{ t(opt.labelKey) }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="fcp-block">
+                <h3 class="fcp-block-title">
+                  <span class="fcp-block-title-text">
+                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M2.5 3h11l-4.25 5v4l-2.5-1.3V8z" />
+                    </svg>
+                    {{ t('forge.controlsFiltersHeading') }}
+                  </span>
+                  <button
+                    v-if="mrsFilterActive"
+                    type="button"
+                    class="fcp-reset"
+                    @click="resetMrFilter"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M3 3l8 8M11 3l-8 8" />
+                    </svg>
+                    {{ t('forge.controlsFiltersReset') }}
+                  </button>
+                </h3>
+                <div class="fcp-row-list" role="radiogroup" :aria-label="t('forge.filterAria')">
+                  <button
+                    v-for="f in MR_EXCLUSIVE_FILTERS"
+                    :key="f.value"
+                    type="button"
+                    class="fcp-row"
+                    :class="{ 'fcp-row--on': mrsFilter === f.value }"
+                    role="radio"
+                    :aria-checked="mrsFilter === f.value"
+                    @click="selectMrFilter(f.value)"
+                  >
+                    {{ t(f.labelKey) }}
+                  </button>
+                  <div v-if="showMrFilterSeparator" class="fcp-filter-sep" role="none" />
+                  <button
+                    v-for="f in MR_TOGGLE_FILTERS"
+                    :key="f.value"
+                    type="button"
+                    class="fcp-row"
+                    :class="{ 'fcp-row--on': mrsFilter === f.value }"
+                    role="radio"
+                    :aria-checked="mrsFilter === f.value"
+                    @click="selectMrFilter(f.value)"
+                  >
+                    {{ t(f.labelKey) }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="fcp-block">
+                <h3 class="fcp-block-title">
+                  <span class="fcp-block-title-text">
+                    <svg class="fcp-block-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M2 2h5.5l6.5 6.5-5.5 5.5L2 7.5V2z" />
+                      <path d="M4.7 4.7h.01" stroke-width="2" />
+                    </svg>
+                    {{ t('forge.controlsLabelsHeading') }}
+                  </span>
+                  <button
+                    type="button"
+                    class="fcp-search-toggle"
+                    :class="{ 'fcp-search-toggle--on': mrsLabelSearchOpen }"
+                    :aria-label="
+                      mrsLabelSearchOpen
+                        ? t('forge.controlsLabelSearchClose')
+                        : t('forge.controlsLabelSearchOpen')
+                    "
+                    :aria-expanded="mrsLabelSearchOpen"
+                    @click="mrsLabelSearchOpen ? closeMrsLabelSearch() : openMrsLabelSearch()"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <circle cx="6.7" cy="6.7" r="4.2" />
+                      <path d="M9.8 9.8L13 13" />
+                    </svg>
+                  </button>
+                </h3>
+                <div v-if="mrsLabelSearchOpen" class="fcp-label-search">
+                  <input
+                    ref="mrsLabelSearchInput"
+                    v-model="mrsLabelQuery"
+                    type="text"
+                    class="fcp-label-search-input"
+                    :placeholder="t('forge.controlsLabelSearchPlaceholder')"
+                    :aria-label="t('forge.controlsLabelSearchPlaceholder')"
+                  />
+                  <button
+                    type="button"
+                    class="fcp-label-search-close"
+                    :aria-label="t('forge.controlsLabelSearchClose')"
+                    @click="closeMrsLabelSearch"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M3 3l8 8M11 3l-8 8" />
+                    </svg>
+                  </button>
+                </div>
+                <LabelChips
+                  :counts="mrsLabelCountsFiltered"
+                  :selected="mrsLabels"
+                  @toggle="(label) => emit('toggle-mr-label', label)"
+                />
+              </div>
+            </template>
+          </div>
+        </section>
+      </div>
     </template>
   </div>
 </template>
@@ -82,11 +457,10 @@ const emit = defineEmits<{
 .fcp-root {
   display: flex;
   flex-direction: column;
-  gap: 10px;
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px 10px;
+  padding: 10px 0 0;
 }
 
 .fcp-root--collapsed {
@@ -108,6 +482,7 @@ const emit = defineEmits<{
   background: var(--cs-surface);
   color: var(--cs-muted);
   cursor: pointer;
+  margin: 0 8px 8px 0;
 }
 
 .fcp-collapse:hover {
@@ -165,33 +540,248 @@ const emit = defineEmits<{
   }
 }
 
-.fcp-nav {
+.fcp-sections {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  min-height: 0;
 }
 
-.fcp-nav-item {
+/* Section container: 8px external margin, 16px radius, 1px neutral border,
+   elevated surface, discrete shadow. */
+.fcp-section {
+  margin: 8px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 16px;
+  background: var(--cs-surface-2);
+  box-shadow: var(--cs-shadow-card);
+  overflow: hidden;
+}
+
+.fcp-acc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
   text-align: left;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 7px 10px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
-  background: var(--cs-surface);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
   color: var(--cs-muted);
   cursor: pointer;
 }
 
-.fcp-nav-item:hover {
-  border-color: var(--cs-line-3);
+.fcp-acc-head:hover {
+  color: var(--cs-text);
 }
 
-/* The active section is a state: colored, per the doctrine. */
-.fcp-nav-item--on {
-  border-color: var(--cs-green-ring);
+.fcp-acc-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+.fcp-acc-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  transition: transform 150ms ease;
+}
+
+.fcp-acc-chevron--closed {
+  transform: rotate(-90deg);
+}
+
+.fcp-acc-body {
+  padding-bottom: 12px;
+}
+
+.fcp-block {
+  padding: 0 12px;
+}
+
+.fcp-block-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 20px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--cs-ghost);
+}
+
+.fcp-block-title-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fcp-block-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.fcp-row-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fcp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--cs-muted);
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.fcp-row:hover {
+  background: var(--cs-hover);
+}
+
+/* Selected: an accent-weak fill and a heavier weight, per the doctrine.
+   Never a border -- a row's identity comes from its content and fill. */
+.fcp-row--on {
   background: var(--cs-green-soft);
   color: var(--cs-text);
+  font-weight: 500;
+}
+
+.fcp-row-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+/* Between the mutually exclusive states and the cumulable toggles. */
+.fcp-filter-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--cs-line-2);
+}
+
+.fcp-reset {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--cs-ghost);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.fcp-reset:hover {
+  color: var(--cs-text-2);
+}
+
+.fcp-reset svg {
+  width: 11px;
+  height: 11px;
+}
+
+.fcp-search-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cs-ghost);
+  cursor: pointer;
+}
+
+.fcp-search-toggle svg {
+  width: 13px;
+  height: 13px;
+}
+
+.fcp-search-toggle:hover {
+  color: var(--cs-text-2);
+}
+
+.fcp-search-toggle--on {
+  color: var(--cs-green-text);
+}
+
+.fcp-label-search {
+  position: relative;
+  margin: 0 0 8px;
+}
+
+.fcp-label-search-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 28px 6px 12px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 8px;
+  background: var(--cs-inset);
+  color: var(--cs-text);
+}
+
+.fcp-label-search-close {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cs-ghost);
+  cursor: pointer;
+}
+
+.fcp-label-search-close svg {
+  width: 11px;
+  height: 11px;
+}
+
+.fcp-label-search-close:hover {
+  color: var(--cs-text-2);
+}
+
+.fcp-acc-icon,
+.fcp-acc-chevron,
+.fcp-block-icon,
+.fcp-row-icon,
+.fcp-search-toggle svg,
+.fcp-label-search-close svg,
+.fcp-reset svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 </style>

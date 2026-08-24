@@ -1,13 +1,15 @@
 <script setup lang="ts">
 // The forge board's list panel: the actual functional issue/MR list
 // (loading / transport error / forge unavailable / empty / filtered-empty /
-// list states, sort, status filter, label chips), carried over from the old
-// two-accordion ForgeBoard.vue body. The difference: only ONE section is
-// shown at a time now (the active section picked in the controls panel),
-// always fully expanded, since there is only one section on screen to fold.
-// Clicking an item selects it (for the detail panel) instead of opening it
-// in a new tab; the external "open in forge" link now lives on the detail
-// panel.
+// list states), carried over from the old two-accordion ForgeBoard.vue body.
+// Sort / status filter / label chips are rendered by ForgeControlsPanel.vue
+// now; this panel only reads the current sort/filter/label SELECTION (still
+// needed to compute what is actually visible) and renders the result. Only
+// ONE section is shown at a time (the active section picked in the controls
+// panel), always fully expanded, since there is only one section on screen
+// to fold. Clicking an item selects it (for the detail panel) instead of
+// opening it in a new tab; the external "open in forge" link now lives on
+// the detail panel.
 import { computed } from 'vue'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
@@ -18,13 +20,11 @@ import ForgeIssueCard from './ForgeIssueCard.vue'
 import {
   forgeFilterByLabels,
   forgeFilterMrsByState,
-  forgeLabelCounts,
   forgeSort,
   type ForgeSelection,
   type ForgeSortKey,
   type MrStateFilter,
 } from './ForgeLogic'
-import LabelChips from './LabelChips.vue'
 
 const props = defineProps<{
   section: 'issues' | 'mrs'
@@ -43,11 +43,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'update:issuesSort': [sort: ForgeSortKey]
-  'update:mrsSort': [sort: ForgeSortKey]
-  'update:mrsFilter': [filter: MrStateFilter]
-  'toggle-issue-label': [label: string]
-  'toggle-mr-label': [label: string]
   'clear-issue-filters': []
   'clear-mr-filters': []
   'retry-issues': []
@@ -58,14 +53,6 @@ function isSelected(kind: ForgeSelection['kind'], number: number): boolean {
   return (
     props.selection !== null && props.selection.kind === kind && props.selection.number === number
   )
-}
-
-function onIssuesSortChange(event: Event): void {
-  emit('update:issuesSort', (event.target as HTMLSelectElement).value as ForgeSortKey)
-}
-
-function onMrsSortChange(event: Event): void {
-  emit('update:mrsSort', (event.target as HTMLSelectElement).value as ForgeSortKey)
 }
 
 // ── Issues: loading / transport error / forge unavailable / empty / list ──
@@ -91,7 +78,6 @@ const ISSUES_REASON_KEY = {
 // Only labels can narrow the issues list (see forgeFilterMrsByState's own
 // doc: nothing else legitimately discriminates an OPEN-only corpus here).
 const issuesFilterActive = computed(() => props.issuesLabels.length > 0)
-const issuesLabelCounts = computed(() => forgeLabelCounts(issuesLoaded.value ?? []))
 const issuesVisible = computed(() =>
   issuesLoaded.value === null
     ? []
@@ -133,11 +119,7 @@ const mrsErrorMessage = computed(() =>
 const mrsUnavailableKey = computed(() =>
   props.mrsState?.status === 'unavailable' ? MRS_REASON_KEY[props.mrsState.reason] : null,
 )
-const mrsDegraded = computed(
-  () => mrsErrorMessage.value !== null || mrsUnavailableKey.value !== null,
-)
 const mrsStateFiltered = computed(() => forgeFilterMrsByState(props.mrs, props.mrsFilter))
-const mrsLabelCounts = computed(() => forgeLabelCounts(mrsStateFiltered.value))
 const mrsVisible = computed(() =>
   forgeSort(forgeFilterByLabels(mrsStateFiltered.value, props.mrsLabels), props.mrsSort),
 )
@@ -172,13 +154,6 @@ const mrsFilteredEmptyKey = computed(() => {
   }
   return statusActive ? 'forge.mrsFilteredEmptyFilter' : 'forge.mrsFilteredEmptyLabels'
 })
-
-const MR_FILTERS: readonly MrStateFilter[] = ['all', 'draft', 'ready']
-const MR_FILTER_LABEL_KEY = {
-  all: 'forge.filterAll',
-  draft: 'forge.filterDraft',
-  ready: 'forge.filterReady',
-} as const
 </script>
 
 <template>
@@ -189,21 +164,6 @@ const MR_FILTER_LABEL_KEY = {
         <span v-if="issuesCount !== null" class="flp-count">{{ issuesCount }}</span>
       </div>
       <p v-if="issuesTruncatedHint" class="flp-truncated">{{ issuesTruncatedHint }}</p>
-
-      <div v-if="issuesLoaded && issuesLoaded.length > 0" class="flp-controls">
-        <LabelChips
-          :counts="issuesLabelCounts"
-          :selected="issuesLabels"
-          @toggle="(label) => emit('toggle-issue-label', label)"
-        />
-        <label class="flp-sort">
-          <span class="flp-sort-label">{{ t('forge.sortLabel') }}</span>
-          <select class="flp-sort-select" :value="issuesSort" @change="onIssuesSortChange">
-            <option value="updated">{{ t('forge.sortUpdated') }}</option>
-            <option value="title">{{ t('forge.sortTitle') }}</option>
-          </select>
-        </label>
-      </div>
 
       <p v-if="issuesState.error !== null" class="flp-degraded">
         {{ t('forge.transportError', { error: issuesState.error }) }}
@@ -244,34 +204,6 @@ const MR_FILTER_LABEL_KEY = {
         <span v-if="mrsCount !== null" class="flp-count">{{ mrsCount }}</span>
       </div>
       <p v-if="mrsTruncatedHint" class="flp-truncated">{{ mrsTruncatedHint }}</p>
-
-      <div v-if="!mrsDegraded && mrs.length > 0" class="flp-controls">
-        <div class="flp-filters" role="group" :aria-label="t('forge.filterAria')">
-          <button
-            v-for="filter in MR_FILTERS"
-            :key="filter"
-            type="button"
-            class="flp-filter-chip"
-            :class="{ 'flp-filter-chip--on': mrsFilter === filter }"
-            :aria-pressed="mrsFilter === filter"
-            @click="emit('update:mrsFilter', filter)"
-          >
-            {{ t(MR_FILTER_LABEL_KEY[filter]) }}
-          </button>
-        </div>
-        <LabelChips
-          :counts="mrsLabelCounts"
-          :selected="mrsLabels"
-          @toggle="(label) => emit('toggle-mr-label', label)"
-        />
-        <label class="flp-sort">
-          <span class="flp-sort-label">{{ t('forge.sortLabel') }}</span>
-          <select class="flp-sort-select" :value="mrsSort" @change="onMrsSortChange">
-            <option value="updated">{{ t('forge.sortUpdated') }}</option>
-            <option value="title">{{ t('forge.sortTitle') }}</option>
-          </select>
-        </label>
-      </div>
 
       <p v-if="mrsErrorMessage !== null" class="flp-degraded">{{ mrsErrorMessage }}</p>
       <p v-else-if="mrsUnavailableKey !== null" class="flp-degraded">{{ t(mrsUnavailableKey) }}</p>
@@ -335,66 +267,6 @@ const MR_FILTER_LABEL_KEY = {
   margin: 0;
   font-size: 11px;
   color: var(--cs-ghost);
-}
-
-.flp-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.flp-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.flp-sort-label {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--cs-ghost);
-}
-
-.flp-sort-select {
-  font-family: inherit;
-  font-size: 11.5px;
-  color: var(--cs-text-2);
-  background: var(--cs-surface);
-  border: 1px solid var(--cs-line-2);
-  border-radius: 6px;
-  padding: 3px 7px;
-}
-
-.flp-filters {
-  display: inline-flex;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
-  overflow: hidden;
-  align-self: flex-start;
-}
-
-.flp-filter-chip {
-  font-size: 11.5px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 4px 10px;
-  border: none;
-  background: var(--cs-surface);
-  color: var(--cs-muted);
-  cursor: pointer;
-}
-
-.flp-filter-chip + .flp-filter-chip {
-  border-left: 1px solid var(--cs-line-2);
-}
-
-/* The active filter is a state: colored, per the doctrine. */
-.flp-filter-chip--on {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
 }
 
 .flp-degraded {

@@ -224,16 +224,6 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     expect(html).toContain('class="flp-item')
     expect(html).not.toContain('target="_blank"')
   })
-
-  test('label chips render from the loaded issues, hidden on an empty list', async () => {
-    const withLabels = await render({
-      issuesState: issuesState({ result: available([issue({ labels: [label('bug')] })]) }),
-    })
-    expect(withLabels).toContain('bug')
-
-    const empty = await render({ issuesState: issuesState({ result: available([]) }) })
-    expect(empty).not.toContain('lc-chip')
-  })
 })
 
 describe('pull requests: transport error / forge unavailable / empty / list / truncated', () => {
@@ -249,14 +239,13 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
     ['no-cli', 'mrs.reasonNoCli'],
     ['cli-error', 'mrs.reasonCliError'],
   ] as const)(
-    'forge unavailable (%s) renders its own distinct message, hides the list and its controls',
+    'forge unavailable (%s) renders its own distinct message, hides the list',
     async (reason, key) => {
       const html = await render(
         mrsProps({ mrs: [mr()], mrsState: { status: 'unavailable', reason } }),
       )
       expect(html).toContain(t(key))
       expect(html).not.toContain(t('forge.mrsEmpty'))
-      expect(html).not.toContain('flp-filters')
       expect(html).not.toContain('flp-count')
     },
   )
@@ -273,7 +262,7 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
     expect(countBadgeOf(html)).toBe('0')
   })
 
-  test('a non-empty list renders the count, the status filter chips and each MR', async () => {
+  test('a non-empty list renders the count and each MR', async () => {
     const html = await render(
       mrsProps({
         mrs: [mr({ number: 1 }), mr({ number: 2 })],
@@ -281,9 +270,6 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
       }),
     )
     expect(countBadgeOf(html)).toBe('2')
-    expect(html).toContain(t('forge.filterAll'))
-    expect(html).toContain(t('forge.filterDraft'))
-    expect(html).toContain(t('forge.filterReady'))
     expect(html).toContain(t('mrs.number', { n: 1 }))
     expect(html).toContain(t('mrs.number', { n: 2 }))
   })

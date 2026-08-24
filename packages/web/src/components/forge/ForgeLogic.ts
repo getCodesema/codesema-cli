@@ -82,6 +82,21 @@ export function forgeFilterByLabels<T extends { labels: readonly ForgeLabel[] | 
 }
 
 /**
+ * Case-insensitive substring match of a label search query against each
+ * count's own name (never against `color`, an implementation detail no
+ * reader searches by). An empty or whitespace-only query is the search box's
+ * own rest state and matches everything, so opening the search never hides
+ * a chip that was visible a moment before.
+ */
+export function filterLabelCounts(counts: readonly LabelCount[], query: string): LabelCount[] {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') {
+    return [...counts]
+  }
+  return counts.filter((entry) => entry.label.toLowerCase().includes(needle))
+}
+
+/**
  * MR-only exclusive filter: the one field that actually discriminates inside
  * an OPEN-only corpus (issues carry no such field once narrowed to `open`).
  * `ready` mirrors MrCard's own badge reading of `isDraft`: `false` and `null`

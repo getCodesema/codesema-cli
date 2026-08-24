@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ForgeIssue, ForgeLabel, ForgeMr } from '../../types'
 import {
   clampWidth,
+  filterLabelCounts,
   FORGE_SPLITTER_STEP,
   forgeFilterByLabels,
   forgeFilterMrsByState,
@@ -110,6 +111,40 @@ describe('forgeLabelCounts', () => {
       { title: 'a', updatedAt: '2026-01-01T00:00:00Z', labels: [{ name: 'ui', color: null }] },
     ]
     expect(forgeLabelCounts(items)).toEqual([{ label: 'ui', color: null, count: 1 }])
+  })
+})
+
+describe('filterLabelCounts', () => {
+  const counts: LabelCount[] = [
+    { label: 'bug', color: null, count: 3 },
+    { label: 'ui-polish', color: null, count: 2 },
+    { label: 'documentation', color: null, count: 1 },
+  ]
+
+  test('an empty query matches everything, in the original order', () => {
+    expect(filterLabelCounts(counts, '')).toEqual(counts)
+  })
+
+  test('a whitespace-only query is the same as an empty one', () => {
+    expect(filterLabelCounts(counts, '   ')).toEqual(counts)
+  })
+
+  test('matches a substring of the label name', () => {
+    expect(filterLabelCounts(counts, 'ui')).toEqual([{ label: 'ui-polish', color: null, count: 2 }])
+  })
+
+  test('is case-insensitive', () => {
+    expect(filterLabelCounts(counts, 'BUG')).toEqual([{ label: 'bug', color: null, count: 3 }])
+  })
+
+  test('a query matching nothing returns an empty list, not an error', () => {
+    expect(filterLabelCounts(counts, 'zzz')).toEqual([])
+  })
+
+  test('leading/trailing whitespace in the query is trimmed before matching', () => {
+    expect(filterLabelCounts(counts, '  doc  ')).toEqual([
+      { label: 'documentation', color: null, count: 1 },
+    ])
   })
 })
 
