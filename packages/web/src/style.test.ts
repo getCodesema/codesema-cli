@@ -46,3 +46,78 @@ describe('style.css theme regression guard', () => {
     expect(hexLiterals).toEqual(['#dccac4', '#c9b8be'])
   })
 })
+
+describe('foundations: the body sets both the size and the leading', () => {
+  const body = css.slice(css.indexOf('body {'), css.indexOf('.codesema-muted'))
+
+  test('14px on 1.55: the size AND the leading, since the air comes from the leading', () => {
+    expect(body).toContain('font-size: 14px;')
+    expect(body).toContain('line-height: 1.55;')
+  })
+
+  test('the three motion curves are tokens, and entry and exit are NOT the same curve', () => {
+    expect(css).toContain('--cs-ease-in: cubic-bezier(0.16, 1, 0.3, 1);')
+    expect(css).toContain('--cs-ease-out: cubic-bezier(0.3, 0, 0.8, 0.15);')
+    expect(css).toContain('--cs-ease-overshoot: cubic-bezier(0.34, 1.56, 0.64, 1);')
+    const easeIn = /--cs-ease-in:([^;]*);/.exec(css)?.[1]?.trim()
+    const easeOut = /--cs-ease-out:([^;]*);/.exec(css)?.[1]?.trim()
+    expect(easeIn).not.toBe(easeOut)
+  })
+
+  test('the shallow shadow exists alongside the two deep ones', () => {
+    expect(css).toContain('--cs-shadow-hairline:')
+    expect(css).toContain('--cs-shadow-panel:')
+    expect(css).toContain('--cs-shadow-card:')
+  })
+
+  // Our reduced-motion guard clamps duration and iteration count. That is
+  // only safe because NO animation in this package uses animation-fill-mode:
+  // without it an element returns to its declared CSS (its full state) once
+  // the clamped animation ends. Add a `forwards`/`both` anywhere and a
+  // breathing dot would freeze on whichever keyframe happens to be last,
+  // dimmer and smaller than at rest, which is the opposite of the intent.
+  test('the guard clamps duration AND iteration count, never just the duration', () => {
+    const guard = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'))
+    expect(guard).toContain('animation-duration: 0.01ms !important;')
+    expect(guard).toContain('animation-iteration-count: 1 !important;')
+    expect(guard).toContain('transition-duration: 0.01ms !important;')
+  })
+})
+
+// The invariant behind the reduced-motion guard, enforced mechanically
+// across every component rather than trusted.
+//
+// Clamping an animation to 0.01ms with one iteration is only equivalent to
+// STOPPING it because nothing here uses animation-fill-mode: with no fill
+// mode an element returns to its declared CSS the instant the animation
+// ends, which is its full, at-rest appearance. Add `forwards` or `both` and
+// the element instead freezes on the last keyframe: a breathing dot whose
+// keyframes end dim and scaled down would sit permanently dim and scaled
+// down for exactly the users who asked for less motion.
+//
+// If this test fails, the fix is not to delete it. Either drop the fill
+// mode, or extend the guard with an explicit `animation: none` for the
+// element that needs one.
+describe('no animation-fill-mode anywhere: the reduced-motion guard depends on it', () => {
+  test('no component declares a fill mode that would freeze it on its last keyframe', () => {
+    const pattern = /animation-fill-mode\s*:|animation\s*:[^;]*\b(forwards|both)\b/
+    // The pattern actually catches both spellings: without this a typo in
+    // the regex would turn the whole test into a green light.
+    expect(pattern.test('animation-fill-mode: both;')).toBe(true)
+    expect(pattern.test('animation: fade 1s ease forwards;')).toBe(true)
+    expect(pattern.test('animation: wq-pulse 1.6s ease-in-out infinite;')).toBe(false)
+
+    const files = [...new Bun.Glob('**/*.{vue,css}').scanSync({ cwd: import.meta.dir })]
+    // A glob that matches nothing would pass this test vacuously forever.
+    expect(files.length).toBeGreaterThan(30)
+
+    const offenders: string[] = []
+    for (const file of files) {
+      const source = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf-8')
+      if (pattern.test(source)) {
+        offenders.push(file)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})

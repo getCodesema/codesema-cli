@@ -88,6 +88,13 @@ body {
   background: var(--codesema-bg);
   color: var(--codesema-ink);
   font-family: var(--font-sans);
+  /* 14px on 21.7px. Both halves matter and the second one is the one that
+     gets forgotten: a dense working screen reads at 14px, but its air comes
+     from the 1.55 leading, not from the size. Left to the browser this was
+     16px on roughly 1.2, which is simultaneously too big and too tight.
+     Anything without a font-size of its own inherits from here. */
+  font-size: 14px;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -164,6 +171,23 @@ body {
   --cs-diff-del-gut: rgba(217, 100, 89, 0.18);
   --cs-shadow-panel: 0 10px 30px -16px rgba(0, 0, 0, 0.45);
   --cs-shadow-card: 0 10px 24px -18px rgba(0, 0, 0, 0.55);
+  /* The third shadow: what lifts a card off its ground WITHOUT making it
+     float. The two above are both deep drop shadows, and a dense list of
+     cards needs the shallow one instead. */
+  --cs-shadow-hairline: 0 1px 2px rgba(0, 0, 0, 0.2);
+
+  /* ── Motion ───────────────────────────────────────────────────────────
+     Two curves rather than one, and the asymmetry is the whole point:
+     something arriving decelerates into place, something leaving is cut
+     short. A single ease for both makes exits read as reluctance.
+     `--cs-ease-overshoot` passes its target and comes back, so it belongs
+     to an element CHANGING PLACE, never to one appearing or disappearing. */
+  --cs-ease-in: cubic-bezier(0.16, 1, 0.3, 1);
+  --cs-ease-out: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --cs-ease-overshoot: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --cs-duration-fast: 0.2s;
+  --cs-duration-base: 0.24s;
+  --cs-duration-slow: 0.32s;
 }
 
 /* Wire our existing tokens as Tailwind theme variables so the bg, text,
@@ -290,10 +314,8 @@ body {
   --codesema-risk-low-soft: var(--cs-green-soft);
   /* kind-security/perf/praise mirror risk-high/med/low exactly in the light
      theme, so the same dark equivalents apply. kind-convention/design/why
-     have no dark counterpart in the --cs-* palette yet and stay unmapped
-     here (pre-existing gap, out of this chunk's scope: DiffView.vue shows
-     their light-theme colors even inside .ws-root until a --cs-* token is
-     picked for them). */
+     got their own dark tokens (water / lavender / ochre), so every light
+     token now has a dark counterpart and the remap test has no exception. */
   --codesema-kind-security: var(--cs-red-text);
   --codesema-kind-security-soft: var(--cs-red-soft);
   --codesema-kind-perf: var(--cs-amber-text);
