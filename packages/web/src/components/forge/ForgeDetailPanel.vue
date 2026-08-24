@@ -23,6 +23,8 @@ import { t, type MessageKey } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import MrMetaRail from '../mr/MrMetaRail.vue'
 import type { ForgeDetailItem } from './ForgeLogic'
+import { renderForgeMarkdown } from './ForgeMarkdown'
+import { linkifyForgeReferences } from './ForgeReferenceLinks'
 import { labelPillStyle } from './LabelColor'
 
 const props = defineProps<{ item: ForgeDetailItem | null }>()
@@ -56,6 +58,21 @@ const description = computed(() => {
   }
   const body = props.item.kind === 'issue' ? props.item.issue.body : props.item.mr.body
   return body === null || body === '' ? null : body
+})
+
+/**
+ * Sanitized HTML for `description`: `#123` references are rewritten to
+ * links first (ForgeReferenceLinks.ts, against the current item's own
+ * URL), then the whole body goes through the sanitized markdown renderer
+ * (ForgeMarkdown.ts). A forge body is untrusted content, so this is the
+ * only place its raw text is ever interpreted as markup.
+ */
+const descriptionHtml = computed(() => {
+  if (description.value === null) {
+    return null
+  }
+  const { markdown, referenceUrls } = linkifyForgeReferences(description.value, url.value ?? '')
+  return renderForgeMarkdown(markdown, referenceUrls)
 })
 
 type BadgeVariant = 'open' | 'draft' | 'merged' | 'closed'
@@ -170,7 +187,8 @@ const issueUpdatedAge = computed(() =>
           </div>
         </header>
 
-        <p v-if="description" class="fdp-description">{{ description }}</p>
+        <!-- eslint-disable-next-line vue/no-v-html -->
+        <div v-if="descriptionHtml !== null" class="fdp-md" v-html="descriptionHtml" />
         <p v-else class="fdp-description-empty">{{ t('forge.detailDescriptionEmpty') }}</p>
       </div>
 
@@ -406,11 +424,100 @@ const issueUpdatedAge = computed(() =>
   height: 14px;
 }
 
-.fdp-description {
+.fdp-md {
   margin: 20px 0 0;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--cs-text-2);
+}
+
+.fdp-md p {
+  margin: 4px 0;
+  line-height: 24px;
+}
+
+.fdp-md h1 {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.fdp-md h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.fdp-md h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.fdp-md h4 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fdp-md h5 {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.fdp-md h6 {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cs-muted);
+}
+
+.fdp-md code {
+  font-family: var(--font-mono);
+  background: var(--cs-surface);
+  color: var(--cs-green-text);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.fdp-md pre {
+  background: var(--cs-surface);
+  padding: 10px 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.fdp-md pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+}
+
+.fdp-md blockquote {
+  margin: 0;
+  border-left: 3px solid var(--cs-green-text);
+  padding-left: 12px;
+  color: var(--cs-muted);
+  font-style: italic;
+}
+
+.fdp-md a {
+  color: var(--cs-green-text);
+  text-decoration: underline;
+  text-decoration-style: solid;
+  text-decoration-color: color-mix(in srgb, var(--cs-green-text) 40%, transparent);
+}
+
+.fdp-md a:hover {
+  text-decoration-color: var(--cs-green-text);
+}
+
+.fdp-md a.fdp-md-ref {
+  text-decoration-style: dotted;
+}
+
+.fdp-md ul,
+.fdp-md ol {
+  padding-left: 32px;
+}
+
+.fdp-md li + li {
+  margin-top: 4px;
 }
 
 .fdp-description-empty {

@@ -183,17 +183,34 @@ describe('the header', () => {
 })
 
 describe('the body', () => {
-  test('a raw description renders as-is, no markdown transform', async () => {
+  test('markdown is rendered, not shown as raw sigils', async () => {
     const html = await render({
       kind: 'mr',
       mr: mr({ body: '**not bold** and a [link](https://example.test)' }),
     })
-    expect(html).toContain('**not bold** and a [link](https://example.test)')
+    expect(html).toContain('<strong>not bold</strong>')
+    expect(html).toContain('href="https://example.test"')
+    expect(html).not.toContain('**not bold**')
+  })
+
+  test('the rendered body sits in its own markdown container', async () => {
+    const html = await render({ kind: 'issue', issue: issue({ body: 'steps to reproduce' }) })
+    expect(html).toContain('class="fdp-md"')
+  })
+
+  test('a script tag in the body never reaches the page', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: 'before <script>alert(1)</script> after' }),
+    })
+    expect(html).not.toContain('<script')
+    expect(html).not.toContain('alert(1)')
   })
 
   test('an MR with no body: the empty state, not a blank paragraph', async () => {
     const html = await render({ kind: 'mr', mr: mr({ body: null }) })
     expect(html).toContain(t('forge.detailDescriptionEmpty'))
+    expect(html).not.toContain('class="fdp-md"')
   })
 
   test('an issue with an empty string body (a real, description-less issue): the empty state', async () => {
@@ -205,6 +222,30 @@ describe('the body', () => {
     const html = await render({ kind: 'issue', issue: issue({ body: 'steps to reproduce' }) })
     expect(html).toContain('steps to reproduce')
     expect(html).not.toContain(t('forge.detailDescriptionEmpty'))
+  })
+
+  test('a #123 reference in the body becomes a link to the issue tracker', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({
+        number: 42,
+        url: 'https://github.com/acme/repo/issues/42',
+        body: 'duplicate of #7',
+      }),
+    })
+    expect(html).toContain('href="https://github.com/acme/repo/issues/7"')
+    expect(html).toContain('fdp-md-ref')
+  })
+})
+
+describe('layout geometry: the markdown container (read from source)', () => {
+  test('a fenced code block scrolls in its own container, never the page', () => {
+    expect(SOURCE).toMatch(/\.fdp-md pre \{[^}]*overflow-x: auto;/)
+  })
+
+  test('a reference link is dotted, a plain link is solid', () => {
+    expect(SOURCE).toMatch(/\.fdp-md a \{[^}]*text-decoration-style: solid;/)
+    expect(SOURCE).toMatch(/\.fdp-md a\.fdp-md-ref \{[^}]*text-decoration-style: dotted;/)
   })
 })
 
