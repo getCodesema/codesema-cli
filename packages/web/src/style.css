@@ -140,6 +140,18 @@ body {
   --cs-red-text: #c96a5a;
   --cs-red-soft: rgba(217, 100, 89, 0.12);
   --cs-red-line: #3a2a26;
+  /* Three hues the traffic-light trio cannot carry, kept OUT of it on purpose:
+     they qualify a kind of remark, or a terminal outcome nobody must act on,
+     and green would collide with "this passes". Hue comes from DESIGN.md's
+     light secondary accents; lightness and saturation are raised into the
+     band the -text tokens above already occupy (57 to 66 percent lightness),
+     so they read on the dark ground without inventing a new hue. */
+  --cs-lavender: #9b8bda;
+  --cs-lavender-soft: rgba(155, 139, 218, 0.14);
+  --cs-water: #8bb8da;
+  --cs-water-soft: rgba(139, 184, 218, 0.14);
+  --cs-ochre: #daab8b;
+  --cs-ochre-soft: rgba(218, 171, 139, 0.14);
   /* Focus ring stays blue so keyboard focus is never mistaken for a state */
   --cs-blue: #5b9dd9;
   --cs-focus-ring: #5b9dd9;
@@ -288,6 +300,12 @@ body {
   --codesema-kind-perf-soft: var(--cs-amber-soft);
   --codesema-kind-praise: var(--cs-green-text);
   --codesema-kind-praise-soft: var(--cs-green-soft);
+  --codesema-kind-convention: var(--cs-water);
+  --codesema-kind-convention-soft: var(--cs-water-soft);
+  --codesema-kind-design: var(--cs-lavender);
+  --codesema-kind-design-soft: var(--cs-lavender-soft);
+  --codesema-kind-why: var(--cs-ochre);
+  --codesema-kind-why-soft: var(--cs-ochre-soft);
   --codesema-signal-go: var(--cs-green);
   --codesema-signal-check: var(--cs-amber);
   --codesema-signal-stop: var(--cs-red);

@@ -13,24 +13,11 @@ describe('style.css theme regression guard', () => {
   })
 
   test('every --codesema-* light token is remapped inside .ws-root onto a --cs-* variable', () => {
-    // kind-convention/design/why have no dark counterpart in --cs-* yet: a
-    // pre-existing gap (DiffView.vue keeps showing light-theme colors for
-    // these three inside the workspace), tracked separately and out of
-    // scope for the Tailwind wiring this test otherwise guards.
-    const knownUnmappedTokens = new Set([
-      '--codesema-kind-convention',
-      '--codesema-kind-convention-soft',
-      '--codesema-kind-design',
-      '--codesema-kind-design-soft',
-      '--codesema-kind-why',
-      '--codesema-kind-why-soft',
-    ])
-
     const lightRoot = css.match(/:root\s*\{([^}]*)\}/)
     expect(lightRoot).not.toBeNull()
-    const lightTokenNames = [...(lightRoot?.[1] ?? '').matchAll(/(--codesema-[\w-]+):/g)]
-      .map((match) => match[1] ?? '')
-      .filter((name) => !knownUnmappedTokens.has(name))
+    const lightTokenNames = [...(lightRoot?.[1] ?? '').matchAll(/(--codesema-[\w-]+):/g)].map(
+      (match) => match[1] ?? '',
+    )
     expect(lightTokenNames.length).toBeGreaterThan(0)
 
     const wsRoot = css.match(/\.ws-root\s*\{([^}]*)\}/)
