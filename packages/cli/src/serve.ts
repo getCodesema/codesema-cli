@@ -1588,6 +1588,54 @@ async function listen(
   throw new Error(t('serve.noFreePort', { start: startPort, end: startPort + 19 }))
 }
 
+/**
+ * Dev-only: the Vite dev server origin to load the UI from, or undefined for the
+ * embedded `web-dist` build. Set by `CODESEMA_DEV_VITE` so nothing can switch a
+ * published install into dev mode implicitly. Loopback only: the value ends up as
+ * a `<script src>` in the served page, so a remote origin here would be a remote
+ * script running against the local server.
+ */
+export function resolveDevViteOrigin(raw: string | undefined): string | undefined {
+  const value = raw?.trim()
+  if (!value) {
+    return undefined
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(t('serve.devViteInvalid', { value }))
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !isLoopbackHost(url.host)) {
+    throw new Error(t('serve.devViteInvalid', { value }))
+  }
+  return url.origin
+}
+
+/**
+ * Dev-only page shell pointing at the Vite dev server, per Vite's backend
+ * integration mode (https://vite.dev/guide/backend-integration): the CLI keeps
+ * serving the page (so `/api` stays same-origin and the boot script injection
+ * below is unchanged) while Vite serves the modules and drives HMR. Mirrors
+ * `packages/web/index.html`; keep both in step.
+ */
+export function devIndexHtml(viteOrigin: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>codesema</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="${viteOrigin}/@vite/client"></script>
+    <script type="module" src="${viteOrigin}/src/main.ts"></script>
+  </body>
+</html>
+`
+}
+
 export async function startServer(
   session: LiveSession,
   opts: {
@@ -1606,7 +1654,8 @@ export async function startServer(
       ((cwd: string, state?: ForgeIssueStateFilter) => Promise<ForgeIssuesResult>) | undefined
   },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
-  if (!existsSync(join(WEB_DIST, 'index.html'))) {
+  const devViteOrigin = resolveDevViteOrigin(process.env.CODESEMA_DEV_VITE)
+  if (!devViteOrigin && !existsSync(join(WEB_DIST, 'index.html'))) {
     throw new Error(t('serve.noWebUi', { path: WEB_DIST }))
   }
   const configToken = randomBytes(16).toString('hex')
@@ -1630,10 +1679,10 @@ export async function startServer(
     ...(mrReview ? [`window.__CODESEMA_MRREVIEW_TOKEN__=${JSON.stringify(mrReview.token)}`] : []),
     ...(tasks ? [`window.__CODESEMA_TASKS_TOKEN__=${JSON.stringify(tasks.token)}`] : []),
   ].join(';')
-  const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8').replace(
-    '</head>',
-    `<script>${bootScript}</script></head>`,
-  )
+  const indexSource = devViteOrigin
+    ? devIndexHtml(devViteOrigin)
+    : readFileSync(join(WEB_DIST, 'index.html'), 'utf8')
+  const indexHtml = indexSource.replace('</head>', `<script>${bootScript}</script></head>`)
 
   const { server, port } = await listen(
     createRequestHandler({

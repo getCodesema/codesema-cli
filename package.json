@@ -11,6 +11,8 @@
     "build:contract": "bun run --cwd packages/contract build",
     "build:web": "bun run --cwd packages/web build",
     "build:cli": "bun run --cwd packages/cli build",
+    "dev:web": "bun run --cwd packages/web dev",
+    "dev:cli": "CODESEMA_DEV_VITE=http://localhost:5173 bun packages/cli/src/index.ts",
     "lint": "oxlint",
     "knip": "knip",
     "audit": "bun audit --audit-level=high",

@@ -44,6 +44,33 @@ request and then hung for twenty on the merge queue's branch. Locally a person
 is watching and can interrupt; on CI nobody is, and a job that hangs costs far
 more than the twenty seconds it saved.
 
+## Working on the web UI
+
+`packages/cli/web-dist` is a build: editing `packages/web` and re-running
+`bun run build` between every change is the slow way. For hot module
+replacement, run the two halves side by side.
+
+```sh
+bun run dev:web                 # terminal 1: Vite on 5173
+bun run dev:cli workspace       # terminal 2: the CLI, pointed at it
+```
+
+Open the URL the **CLI** prints, not Vite's. This is Vite's backend
+integration mode (https://vite.dev/guide/backend-integration): the CLI keeps
+serving the page, so `/api`, the SSE streams and the tokens it injects into the
+page all stay exactly as they are in a real install, while Vite serves the
+modules and drives HMR. There is no proxy and no second origin to reason about.
+
+`dev:cli` is only a shorthand for `CODESEMA_DEV_VITE=http://localhost:5173`.
+Nothing reads that variable unless you set it, so a published install can never
+fall into this mode; the value must be a loopback origin, since it ends up as a
+`<script src>` on the page. `packages/web/vite.config.ts` pins port 5173 with
+`strictPort`, so a busy port fails loudly instead of drifting to 5174 while the
+CLI keeps pointing at 5173.
+
+The dev shell lives in `devIndexHtml` (`packages/cli/src/serve.ts`) and mirrors
+`packages/web/index.html`; a test fails if the two drift apart.
+
 ## Hooks
 
 Lefthook runs them; `bun run prepare` installs it.

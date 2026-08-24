@@ -272,6 +272,8 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
 
   'serve.noWebUi': 'embedded web UI not found at {path}: broken install or build',
   'serve.noFreePort': 'no free port between {start} and {end}',
+  'serve.devViteInvalid':
+    'CODESEMA_DEV_VITE must be a loopback http(s) URL such as http://localhost:5173, got {value}',
 
   'record.invalidJson': '{path} is not valid JSON — the agent output must be a single JSON object',
   'record.noInput': '.codesema/input.json not found — run `codesema prep` first',
@@ -737,6 +739,8 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
 
   'serve.noWebUi': 'UI web embarquée introuvable dans {path} : installation ou build cassé',
   'serve.noFreePort': 'aucun port libre entre {start} et {end}',
+  'serve.devViteInvalid':
+    'CODESEMA_DEV_VITE doit être une URL http(s) loopback comme http://localhost:5173, reçu {value}',
 
   'record.invalidJson':
     "{path} n'est pas du JSON valide : la sortie de l'agent doit être un unique objet JSON",

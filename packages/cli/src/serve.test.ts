@@ -11,7 +11,9 @@ import { parsePartialReview } from './partial.js'
 import { addProject } from './projects.js'
 import {
   createSession,
+  devIndexHtml,
   isLoopbackHost,
+  resolveDevViteOrigin,
   resolveProjectCwd,
   resolveStaticPath,
   startServer,
@@ -921,5 +923,111 @@ describe('GET /api/mrs state filter', () => {
     // Refused before the probe is ever asked: a caller requesting a state
     // this server does not recognise must not be silently served 'open'.
     expect(calls).toEqual([])
+  })
+})
+
+describe('resolveDevViteOrigin', () => {
+  test('is off unless CODESEMA_DEV_VITE says otherwise', () => {
+    expect(resolveDevViteOrigin(undefined)).toBeUndefined()
+    expect(resolveDevViteOrigin('')).toBeUndefined()
+    expect(resolveDevViteOrigin('   ')).toBeUndefined()
+  })
+
+  test('accepts loopback dev servers and keeps only the origin', () => {
+    expect(resolveDevViteOrigin('http://localhost:5173')).toBe('http://localhost:5173')
+    expect(resolveDevViteOrigin('http://127.0.0.1:5173/')).toBe('http://127.0.0.1:5173')
+    expect(resolveDevViteOrigin('http://localhost:5173/ignored/path')).toBe('http://localhost:5173')
+  })
+
+  test.each([
+    'http://evil.example.com:5173',
+    'http://localhost.evil.example.com:5173',
+    'file:///tmp/x',
+    'javascript:alert(1)',
+    'localhost:5173',
+    'not a url',
+  ])('refuses %s rather than injecting it as a script source', (value) => {
+    // The value lands in a <script src> on the served page, so anything that is
+    // not a loopback http(s) origin is a remote script against the local server.
+    expect(() => resolveDevViteOrigin(value)).toThrow()
+  })
+})
+
+describe('devIndexHtml', () => {
+  test('loads the Vite client and the app entry from the dev server', () => {
+    const html = devIndexHtml('http://localhost:5173')
+    expect(html).toContain(
+      '<script type="module" src="http://localhost:5173/@vite/client"></script>',
+    )
+    expect(html).toContain(
+      '<script type="module" src="http://localhost:5173/src/main.ts"></script>',
+    )
+  })
+
+  test('mirrors the shell of packages/web/index.html', () => {
+    // The two shells are kept in step by hand: if the real one grows a tag, this
+    // fails instead of the dev page silently rendering something else.
+    const source = readFileSync(
+      fileURLToPath(new URL('../../web/index.html', import.meta.url)),
+      'utf8',
+    )
+    const shell = (html: string) =>
+      html
+        .replace(/<script\b[^>]*><\/script>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    expect(shell(devIndexHtml('http://localhost:5173'))).toBe(shell(source))
+  })
+
+  test('keeps the </head> anchor startServer injects the boot script into', () => {
+    expect(devIndexHtml('http://localhost:5173')).toContain('</head>')
+  })
+})
+
+describe('startServer in dev mode', () => {
+  let port: number
+  let stop: () => Promise<void>
+  let repoDir: string
+  const previousDevVite = process.env.CODESEMA_DEV_VITE
+
+  beforeAll(async () => {
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-serve-dev-'))
+    process.env.CODESEMA_DEV_VITE = 'http://localhost:5173'
+    const started = await startServer(createSession(), { cwd: repoDir, port: 4931 })
+    port = started.port
+    stop = started.stop
+  })
+
+  afterAll(async () => {
+    await stop()
+    if (previousDevVite === undefined) {
+      delete process.env.CODESEMA_DEV_VITE
+    } else {
+      process.env.CODESEMA_DEV_VITE = previousDevVite
+    }
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('serves the dev shell instead of the embedded bundle', async () => {
+    const res = await rawRequest(port, '/')
+    expect(res.status).toBe(200)
+    expect(res.contentType).toBe('text/html; charset=utf-8')
+    expect(res.body).toContain('http://localhost:5173/@vite/client')
+    expect(res.body).not.toContain('/assets/')
+  })
+
+  test('still injects the boot script, so workspace mode survives HMR', async () => {
+    const res = await rawRequest(port, '/')
+    // Same injection as the bundled path: this is the whole point of letting the
+    // CLI serve the page rather than proxying /api to Vite.
+    expect(res.body).toContain('window.__CODESEMA_CONFIG_TOKEN__=')
+    expect(res.body).toContain('window.__CODESEMA_LOCALE__=')
+  })
+
+  test('keeps /api on the CLI origin', async () => {
+    // 202: no record yet. What matters is that the route answers from the same
+    // origin as the page, so no proxy and no CORS are in the dev loop at all.
+    const res = await rawRequest(port, '/api/review')
+    expect(res.status).toBe(202)
   })
 })
