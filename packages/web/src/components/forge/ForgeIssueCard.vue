@@ -88,7 +88,7 @@ function formatUpdatedAt(iso: string): string {
 }
 
 /* Non-interactive compact pill: same fill family as LabelChips' rest state
-   (see LabelColor.ts), never a colored border — a label on a card is content,
+   (see LabelColor.ts), never a colored border: a label on a card is content,
    not a state. */
 .fic-label {
   --lp-rest-bg: var(--cs-line-2);

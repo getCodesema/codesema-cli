@@ -60,7 +60,7 @@ export function forgeLabelCounts<T extends { labels: readonly ForgeLabel[] | nul
  * result further (the usual reading of "cumulable" filters, mirroring
  * GitHub's own multi-label filter). `null` labels (the forge did not report
  * any) never match a non-empty selection: an unknown is not a match. Matching
- * is always by name — a label's color is a display attribute, never part of
+ * is always by name: a label's color is a display attribute, never part of
  * its identity.
  */
 export function matchesLabels(
@@ -123,7 +123,7 @@ export type ForgeSplitterBounds = { min: number; max: number; defaultWidth: numb
 /**
  * The width after one keyboard interaction on a splitter (ARIA "window
  * splitter" pattern): ArrowLeft/ArrowRight move by one notch, Enter recalls
- * the panel's default width. Any other key is not this splitter's concern —
+ * the panel's default width. Any other key is not this splitter's concern:
  * `null` tells the caller to leave the event alone (no preventDefault, no
  * emit).
  */
@@ -165,7 +165,7 @@ export type ForgeDetailItem = { kind: 'issue'; issue: ForgeIssue } | { kind: 'mr
 /**
  * Resolves a selection against the currently loaded lists: `null` both when
  * nothing is selected and when the selected item fell out of its list (a
- * refresh dropped it, the forge closed it) — the detail panel then hides
+ * refresh dropped it, the forge closed it); the detail panel then hides
  * itself rather than showing a stale card.
  */
 export function resolveForgeSelection(
