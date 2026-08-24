@@ -55,7 +55,7 @@ const STUB_ISSUES: ForgeIssuesResult = {
       title: 'stubbed issue',
       body: 'a real body',
       state: 'open',
-      labels: ['bug'],
+      labels: [{ name: 'bug', color: 'd73a4a' }],
       author: 'me',
       createdAt: '2026-08-14T00:00:00Z',
       updatedAt: '2026-08-14T00:00:00Z',

@@ -161,7 +161,7 @@ describe('parseGhMrList', () => {
         url: 'https://github.com/acme/repo/pull/42',
         state: 'open',
         isDraft: true,
-        labels: ['bug'],
+        labels: [{ name: 'bug', color: 'd6393f' }],
         additions: 12,
         deletions: 3,
         changedFiles: 2,
@@ -519,7 +519,10 @@ describe('parseGlabMrList', () => {
         url: 'https://gitlab.com/acme/repo/-/merge_requests/7',
         state: 'open',
         isDraft: true,
-        labels: ['bug', 'needs-review'],
+        labels: [
+          { name: 'bug', color: null },
+          { name: 'needs-review', color: null },
+        ],
         additions: null,
         deletions: null,
         changedFiles: null,
@@ -1115,6 +1118,184 @@ describe('listOpenMrs', () => {
         })
         expect(result.available).toBe(true)
         expect(maxInFlight).toBeLessThanOrEqual(2)
+      } finally {
+        cleanup()
+      }
+    })
+  })
+
+  // --- T3.9: GitLab label-colour enrichment ------------------------------
+  //
+  // GitHub's `pr list` already carries colour for free (see parseGhMrList's
+  // own tests above), so none of this applies to it. GitLab's `mr list`
+  // payload is bare names, coloured, best-effort, from ONE catalog call
+  // shared with the changedFiles/checks enrichment's own deadline.
+  describe('GitLab label-colour enrichment (T3.9)', () => {
+    function glabMrWithLabels(iid: number, labels: string[]): Record<string, unknown> {
+      return {
+        iid,
+        title: `mr ${iid}`,
+        author: { username: 'a' },
+        source_branch: `feat/${iid}`,
+        target_branch: 'main',
+        updated_at: '2026-07-28T09:30:00.123Z',
+        web_url: `https://gitlab.example.test/a/b/-/merge_requests/${iid}`,
+        labels,
+      }
+    }
+
+    function glabLabelCatalogStdout(entries: { name: string; color: string | null }[]): string {
+      return JSON.stringify(
+        entries.map((e) => ({
+          id: 1,
+          name: e.name,
+          ...(e.color === null ? {} : { color: e.color }),
+        })),
+      )
+    }
+
+    test('colours labels from one bounded catalog call, never one per MR', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        const labelCalls: unknown[] = []
+        const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'missing' })
+          }
+          if (args[0] === 'mr') {
+            return Promise.resolve({
+              kind: 'ok',
+              stdout: JSON.stringify([glabMrWithLabels(1, ['bug']), glabMrWithLabels(2, ['ui'])]),
+            })
+          }
+          if (args[0] === 'label') {
+            labelCalls.push(args)
+            return Promise.resolve({
+              kind: 'ok',
+              stdout: glabLabelCatalogStdout([
+                { name: 'bug', color: '#D73A4A' },
+                { name: 'ui', color: '#428bca' },
+              ]),
+            })
+          }
+          // Per-MR api call for changedFiles/checks: irrelevant here.
+          return Promise.resolve({ kind: 'ok', stdout: JSON.stringify({}) })
+        }
+        const result = await listOpenMrs(repo, {
+          execFn,
+          glabEnrichConcurrency: 2,
+          glabEnrichBudgetMs: 5000,
+        })
+        expect(result.available).toBe(true)
+        if (!result.available) {
+          throw new Error('expected available')
+        }
+        expect(result.mrs.find((mr) => mr.number === 1)?.labels).toEqual([
+          { name: 'bug', color: 'd73a4a' },
+        ])
+        expect(result.mrs.find((mr) => mr.number === 2)?.labels).toEqual([
+          { name: 'ui', color: '428bca' },
+        ])
+        // One catalog call for the whole list, never one per MR.
+        expect(labelCalls).toHaveLength(1)
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('no label on any MR skips the catalog call entirely', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        const labelCalls: unknown[] = []
+        const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'missing' })
+          }
+          if (args[0] === 'mr') {
+            return Promise.resolve({
+              kind: 'ok',
+              stdout: JSON.stringify([glabMrWithLabels(1, [])]),
+            })
+          }
+          if (args[0] === 'label') {
+            labelCalls.push(args)
+          }
+          return Promise.resolve({ kind: 'ok', stdout: JSON.stringify({}) })
+        }
+        await listOpenMrs(repo, { execFn, glabEnrichConcurrency: 2, glabEnrichBudgetMs: 5000 })
+        expect(labelCalls).toHaveLength(0)
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('a catalog call that fails leaves every label at color: null, never fails the list', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'missing' })
+          }
+          if (args[0] === 'mr') {
+            return Promise.resolve({
+              kind: 'ok',
+              stdout: JSON.stringify([glabMrWithLabels(1, ['bug'])]),
+            })
+          }
+          if (args[0] === 'label') {
+            return Promise.resolve({ kind: 'error' })
+          }
+          return Promise.resolve({ kind: 'ok', stdout: JSON.stringify({}) })
+        }
+        const result = await listOpenMrs(repo, {
+          execFn,
+          glabEnrichConcurrency: 2,
+          glabEnrichBudgetMs: 5000,
+        })
+        expect(result.available).toBe(true)
+        if (!result.available) {
+          throw new Error('expected available')
+        }
+        expect(result.mrs[0]?.labels).toEqual([{ name: 'bug', color: null }])
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('a name absent from the catalog keeps color: null, never a guessed colour', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'missing' })
+          }
+          if (args[0] === 'mr') {
+            return Promise.resolve({
+              kind: 'ok',
+              stdout: JSON.stringify([glabMrWithLabels(1, ['bug', 'ui'])]),
+            })
+          }
+          if (args[0] === 'label') {
+            return Promise.resolve({
+              kind: 'ok',
+              stdout: glabLabelCatalogStdout([{ name: 'ui', color: '#428bca' }]),
+            })
+          }
+          return Promise.resolve({ kind: 'ok', stdout: JSON.stringify({}) })
+        }
+        const result = await listOpenMrs(repo, {
+          execFn,
+          glabEnrichConcurrency: 2,
+          glabEnrichBudgetMs: 5000,
+        })
+        expect(result.available).toBe(true)
+        if (!result.available) {
+          throw new Error('expected available')
+        }
+        expect(result.mrs[0]?.labels).toEqual([
+          { name: 'bug', color: null },
+          { name: 'ui', color: '428bca' },
+        ])
       } finally {
         cleanup()
       }

@@ -333,7 +333,12 @@ async function poseCycleLabel(
   // set that never belonged to it. Everything after the read is therefore
   // pinned to the forge that ANSWERED the read.
   const pin = read.answeredBy ?? null
-  const next = recomposeCycleLabels(read.issue.labels, label)
+  // Cycle labels are recomposed by NAME only: colour is a display concern
+  // this module never touches, and `setLabels` writes back names.
+  const next = recomposeCycleLabels(
+    read.issue.labels.map((forgeLabel) => forgeLabel.name),
+    label,
+  )
   if (next === null) {
     return { kind: 'unchanged', label }
   }

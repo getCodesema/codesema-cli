@@ -1,5 +1,8 @@
 import { execFile } from 'node:child_process'
+import type { ForgeLabel } from './forge-issues-parse.js'
 import { detectForgeHint, tryGit } from './git.js'
+
+export type { ForgeLabel } from './forge-issues-parse.js'
 
 export type ForgeMrState = 'open' | 'merged' | 'closed'
 export type ForgeMrMergeable = 'mergeable' | 'conflicting' | 'unknown'
@@ -22,7 +25,7 @@ export type ForgeMr = {
   url: string
   state: ForgeMrState | null
   isDraft: boolean | null
-  labels: string[] | null
+  labels: ForgeLabel[] | null
   additions: number | null
   deletions: number | null
   changedFiles: number | null
@@ -110,6 +113,19 @@ const GLAB_ENRICH_CONCURRENCY = 4
 const GLAB_ENRICH_CALL_TIMEOUT_MS = 5000
 const GLAB_ENRICH_BUDGET_MS = 6000
 
+/**
+ * Bound on the ONE label-catalog fetch `enrichGlabMrs` makes to colour bare
+ * label names (T3.9): a project's own labels form a small, stable set, so
+ * this is one call per MR LIST, never one per MR, same doctrine as
+ * `LABEL_LIST_MAX` in forge-issues.ts. It shares the enrichment phase's own
+ * wall-clock budget (`GLAB_ENRICH_BUDGET_MS`) rather than adding a second
+ * deadline: whatever it spends is time the per-MR fan-out below has less of,
+ * and a catalog that never finishes still leaves every label at its
+ * previous `color: null` rather than failing the list.
+ */
+const GLAB_LABEL_CATALOG_MAX = 200
+const GLAB_LABEL_CATALOG_PAGES = Math.ceil((GLAB_LABEL_CATALOG_MAX + 1) / GLAB_PAGE_SIZE)
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
@@ -175,23 +191,109 @@ function parseGhMergeable(value: unknown): ForgeMrMergeable | null {
   return typeof value === 'string' ? (GH_MERGEABLE_MAP[value] ?? null) : null
 }
 
+/**
+ * Exactly six hex digits, case-insensitive, normalised to lowercase: anything
+ * else (wrong length, a stray `#`, a non-hex character) degrades to null
+ * rather than being propagated or guessed at. Duplicated from
+ * forge-issues-parse.ts rather than imported: same independence doctrine this
+ * file's own header already applies to the rest of its parsing.
+ */
+const HEX_COLOR = /^[0-9a-f]{6}$/i
+
+function normalizeHexColor(value: string): string | null {
+  return HEX_COLOR.test(value) ? value.toLowerCase() : null
+}
+
+/** GitHub's own label colour is bare hex (verified: `gh pr list --json
+ * labels` on a real repo answers `{"color":"d73a4a", …}`, no `#`). */
+function ghLabelColor(raw: unknown): string | null {
+  return typeof raw === 'string' ? normalizeHexColor(raw) : null
+}
+
 /** gh's `labels` field is an array of Label nodes (`{id,name,description,color}`), never bare strings. */
-function parseGhLabels(value: unknown): string[] | null {
+function parseGhLabels(value: unknown): ForgeLabel[] | null {
   if (!Array.isArray(value)) {
     return null
   }
-  const names: string[] = []
+  const labels: ForgeLabel[] = []
   for (const item of value) {
     if (typeof item !== 'object' || item === null) {
       return null
     }
-    const name = readRecordProp(item as Record<string, unknown>, 'name')
+    const record = item as Record<string, unknown>
+    const name = readRecordProp(record, 'name')
     if (!isNonEmptyString(name)) {
       return null
     }
-    names.push(name)
+    labels.push({ name, color: ghLabelColor(readRecordProp(record, 'color')) })
   }
-  return names
+  return labels
+}
+
+/**
+ * GitLab's own colour is always `#`-prefixed (GitLab API docs, labels:
+ * "6-digit hex notation with leading '#' sign"), verified live against
+ * `glab label list --output json` on a public project (`"color":"#34495E"`).
+ */
+function glabLabelColor(raw: unknown): string | null {
+  if (typeof raw !== 'string') {
+    return null
+  }
+  return normalizeHexColor(raw.startsWith('#') ? raw.slice(1) : raw)
+}
+
+/** GitLab's `mr list`/`issue list` payload carries labels as bare strings,
+ * unlike gh's, which already carries colour for free, so `color` is always
+ * null here; a caller wanting colour enriches separately from the project's
+ * own label catalog (see `glabLabelColorCatalog`). */
+function parseGlabLabelNames(value: unknown): ForgeLabel[] | null {
+  const names = parseStringArray(value)
+  return names === null ? null : names.map((name) => ({ name, color: null }))
+}
+
+/**
+ * The project's own label catalog, coloured: `glab label list --output
+ * json`, read again here for its `color` field (verified live:
+ * `{"name":"bug","color":"#34495E", …}`). Used ONLY to paint the bare label
+ * names `mr list` hands back; one bad entry rejects the WHOLE catalog, same
+ * doctrine as every other list-of-objects parser in this file.
+ */
+function parseGlabLabelCatalog(raw: string): ForgeLabel[] | null {
+  let data: unknown
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(data)) {
+    return null
+  }
+  const labels: ForgeLabel[] = []
+  for (const entry of data) {
+    if (typeof entry !== 'object' || entry === null) {
+      return null
+    }
+    const record = entry as Record<string, unknown>
+    const name = readRecordProp(record, 'name')
+    if (!isNonEmptyString(name)) {
+      return null
+    }
+    labels.push({ name, color: glabLabelColor(readRecordProp(record, 'color')) })
+  }
+  return labels
+}
+
+/** Colours a label list from a name to colour catalog; a name absent from
+ * the catalog keeps whatever colour it already carried (null, on every
+ * caller today) rather than being treated as an error. */
+function applyLabelColors(
+  labels: readonly ForgeLabel[],
+  catalog: ReadonlyMap<string, string>,
+): ForgeLabel[] {
+  return labels.map((label) => ({
+    name: label.name,
+    color: catalog.get(label.name) ?? label.color,
+  }))
 }
 
 /** gh's `assignees` field is an array of GitHubUser nodes (`{id,login,name,databaseId}`). */
@@ -502,7 +604,10 @@ export function parseGlabMrList(raw: string): ForgeMr[] | null {
       url: e.web_url,
       state: parseGlabState(e.state),
       isDraft: parseGlabIsDraft(e.draft, e.work_in_progress),
-      labels: parseStringArray(e.labels),
+      // color always null here: GitLab's mr list payload is bare names, same
+      // as forge-issues.ts's issue list. Coloured, best-effort, by
+      // enrichGlabMrs below, same as changedFiles/checks.
+      labels: parseGlabLabelNames(e.labels),
       // Diff size, CI status and commit count are not on the list payload at
       // all (GitLab REST has no dedicated endpoint for the first two, and the
       // third needs its own paginated call): left null here, and changedFiles
@@ -696,6 +801,59 @@ async function enrichOneGlabMr(
 type EnrichBudget = { concurrency: number; budgetMs: number }
 
 /**
+ * The project's own label catalog, coloured: one bounded, paginated walk of
+ * `glab label list --output json`, sharing the caller's own deadline (never
+ * a separate one). Best-effort by construction: any failure, at any page,
+ * returns whatever was read so far rather than propagating an error, since a
+ * catalog fetch is never allowed to fail the MR list it colours.
+ */
+async function glabLabelColorCatalog(
+  cwd: string,
+  execFn: ForgeMrsExecFn,
+  deadline: number,
+): Promise<Map<string, string>> {
+  const catalog = new Map<string, string>()
+  for (let page = 1; page <= GLAB_LABEL_CATALOG_PAGES; page += 1) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      return catalog
+    }
+    const args = [
+      'label',
+      'list',
+      '--per-page',
+      GLAB_PER_PAGE,
+      '--page',
+      String(page),
+      '--output',
+      'json',
+    ]
+    const outcome = await execFn(
+      'glab',
+      args,
+      cwd,
+      Math.min(GLAB_ENRICH_CALL_TIMEOUT_MS, remaining),
+    )
+    if (outcome.kind !== 'ok') {
+      return catalog
+    }
+    const batch = parseGlabLabelCatalog(outcome.stdout)
+    if (batch === null) {
+      return catalog
+    }
+    for (const label of batch) {
+      if (label.color !== null) {
+        catalog.set(label.name, label.color)
+      }
+    }
+    if (batch.length < GLAB_PAGE_SIZE || catalog.size > GLAB_LABEL_CATALOG_MAX) {
+      break
+    }
+  }
+  return catalog
+}
+
+/**
  * Fills `changedFiles` and `checks` for a glab-sourced MR list, one `glab api`
  * call per MR, bounded by `budget.concurrency` workers and a global
  * `budget.budgetMs` wall-clock deadline (GLAB_ENRICH_CONCURRENCY /
@@ -706,6 +864,11 @@ type EnrichBudget = { concurrency: number; budgetMs: number }
  * whole never runs meaningfully past `budget.budgetMs`. An MR whose call
  * fails, times out, or is never reached before the deadline simply keeps
  * those two fields null: it is never removed from the returned list.
+ *
+ * Also colours every MR's labels, best-effort, from ONE label-catalog fetch
+ * (`glabLabelColorCatalog`) sharing this SAME deadline, done first, and
+ * skipped entirely when no MR carries a label, so a repo with no labelled
+ * MRs never pays for a catalog nobody needs.
  */
 async function enrichGlabMrs(
   mrs: ForgeMr[],
@@ -714,7 +877,17 @@ async function enrichGlabMrs(
   budget: EnrichBudget,
 ): Promise<ForgeMr[]> {
   const deadline = Date.now() + budget.budgetMs
-  const results = [...mrs]
+  const needsColor = mrs.some((mr) => (mr.labels?.length ?? 0) > 0)
+  const catalog = needsColor
+    ? await glabLabelColorCatalog(cwd, execFn, deadline)
+    : new Map<string, string>()
+  const results =
+    catalog.size === 0
+      ? [...mrs]
+      : mrs.map((mr) => ({
+          ...mr,
+          labels: mr.labels === null ? null : applyLabelColors(mr.labels, catalog),
+        }))
   let cursor = 0
 
   async function worker(): Promise<void> {
@@ -728,7 +901,11 @@ async function enrichGlabMrs(
       if (remaining <= 0) {
         return
       }
-      const mr = mrs[index]
+      // Reads from `results`, not `mrs`: the label-colouring pass above may
+      // already have replaced this entry, and enrichOneGlabMr's `{ ...mr }`
+      // spread must build on top of that, never overwrite it with the
+      // uncoloured original.
+      const mr = results[index]
       if (mr !== undefined) {
         const callTimeoutMs = Math.min(GLAB_ENRICH_CALL_TIMEOUT_MS, remaining)
         results[index] = await enrichOneGlabMr(mr, cwd, execFn, callTimeoutMs)

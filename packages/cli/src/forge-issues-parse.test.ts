@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  applyLabelColors,
   extractIssueUrl,
   ghIssueDatabaseId,
   ghIssueNumberFromRest,
@@ -21,6 +22,7 @@ import {
   parseGlabIssue,
   parseGlabIssueList,
   parseGlabIssueNotes,
+  parseGlabLabelCatalog,
   sanitizeIssueBody,
   sanitizeIssueLabels,
   sanitizeIssueTitle,
@@ -64,7 +66,7 @@ const GH_ISSUE_PARSED: ForgeIssue = {
   title: 'Add sidebar',
   body: 'It needs a sidebar.',
   state: 'open',
-  labels: ['bug'],
+  labels: [{ name: 'bug', color: 'd73a4a' }],
   author: 'octocat',
   createdAt: '2026-07-20T09:00:00Z',
   updatedAt: '2026-07-28T10:00:00Z',
@@ -76,7 +78,10 @@ const GLAB_ISSUE_PARSED: ForgeIssue = {
   title: 'Fix login',
   body: 'Login is broken.',
   state: 'open',
-  labels: ['bug', 'ui'],
+  labels: [
+    { name: 'bug', color: null },
+    { name: 'ui', color: null },
+  ],
   author: 'jdoe',
   createdAt: '2026-07-20T09:30:00.123Z',
   updatedAt: '2026-07-28T09:30:00.123Z',
@@ -154,11 +159,118 @@ describe('issue parsers', () => {
     expect(
       parseGlabIssueList(JSON.stringify([{ ...GLAB_ISSUE, labels: ['needs, triage'] }]))?.[0]
         ?.labels,
-    ).toEqual(['needs, triage'])
+    ).toEqual([{ name: 'needs, triage', color: null }])
     expect(
       parseGhIssueList(JSON.stringify([{ ...GH_ISSUE, labels: [{ name: 'needs, triage' }] }]))?.[0]
         ?.labels,
-    ).toEqual(['needs, triage'])
+    ).toEqual([{ name: 'needs, triage', color: null }])
+  })
+})
+
+describe('label colour', () => {
+  test('a GitHub label colour is read bare hex, lowercased', () => {
+    expect(
+      parseGhIssueList(
+        JSON.stringify([{ ...GH_ISSUE, labels: [{ name: 'bug', color: 'D73A4A' }] }]),
+      )?.[0]?.labels,
+    ).toEqual([{ name: 'bug', color: 'd73a4a' }])
+  })
+
+  test('an absent GitHub label colour reads as null, not an invented default', () => {
+    expect(
+      parseGhIssueList(JSON.stringify([{ ...GH_ISSUE, labels: [{ name: 'bug' }] }]))?.[0]?.labels,
+    ).toEqual([{ name: 'bug', color: null }])
+  })
+
+  test('a malformed GitHub label colour degrades to null, never rejects the label or the entry', () => {
+    const malformed = ['d73a4', 'd73a4ab', '#d73a4a', 'd73a4g', '', 'red', 12]
+    for (const color of malformed) {
+      expect(
+        parseGhIssueList(JSON.stringify([{ ...GH_ISSUE, labels: [{ name: 'bug', color }] }]))?.[0]
+          ?.labels,
+      ).toEqual([{ name: 'bug', color: null }])
+    }
+  })
+
+  test('a label with no name still rejects the whole entry, colour or not', () => {
+    expect(
+      parseGhIssueList(JSON.stringify([{ ...GH_ISSUE, labels: [{ color: 'd73a4a' }] }])),
+    ).toBeNull()
+    expect(parseGlabIssueList(JSON.stringify([{ ...GLAB_ISSUE, labels: [''] }]))).toBeNull()
+  })
+
+  test('an empty label list stays an empty list on both forges', () => {
+    expect(parseGhIssueList(JSON.stringify([{ ...GH_ISSUE, labels: [] }]))?.[0]?.labels).toEqual([])
+    expect(
+      parseGlabIssueList(JSON.stringify([{ ...GLAB_ISSUE, labels: [] }]))?.[0]?.labels,
+    ).toEqual([])
+  })
+
+  test('GitLab issue-list labels always read colour null: the payload never carries it', () => {
+    expect(
+      parseGlabIssueList(JSON.stringify([{ ...GLAB_ISSUE, labels: ['bug'] }]))?.[0]?.labels,
+    ).toEqual([{ name: 'bug', color: null }])
+  })
+})
+
+describe('parseGlabLabelCatalog', () => {
+  test('reads name and colour, stripping and lowercasing the leading #', () => {
+    const raw = JSON.stringify([
+      { name: 'bug', color: '#D73A4A' },
+      { name: 'ui', color: '#428bca' },
+    ])
+    expect(parseGlabLabelCatalog(raw)).toEqual([
+      { name: 'bug', color: 'd73a4a' },
+      { name: 'ui', color: '428bca' },
+    ])
+  })
+
+  test('a malformed colour degrades to null, never rejects the entry', () => {
+    expect(parseGlabLabelCatalog(JSON.stringify([{ name: 'bug', color: '#zzzzzz' }]))).toEqual([
+      { name: 'bug', color: null },
+    ])
+    expect(parseGlabLabelCatalog(JSON.stringify([{ name: 'bug' }]))).toEqual([
+      { name: 'bug', color: null },
+    ])
+  })
+
+  test('one entry with no name rejects the whole catalog', () => {
+    expect(
+      parseGlabLabelCatalog(JSON.stringify([{ name: 'bug' }, { color: '#fff000' }])),
+    ).toBeNull()
+  })
+
+  test('rejects a non-array payload and a truncated one, never throws', () => {
+    expect(parseGlabLabelCatalog(JSON.stringify({ name: 'bug' }))).toBeNull()
+    expect(parseGlabLabelCatalog('{ not json')).toBeNull()
+  })
+
+  test('an empty catalog is an empty array, not an unavailability', () => {
+    expect(parseGlabLabelCatalog('[]')).toEqual([])
+  })
+})
+
+describe('applyLabelColors', () => {
+  test('colours a label found in the catalog by exact name', () => {
+    const catalog = new Map([['bug', 'd73a4a']])
+    expect(applyLabelColors([{ name: 'bug', color: null }], catalog)).toEqual([
+      { name: 'bug', color: 'd73a4a' },
+    ])
+  })
+
+  test('a name absent from the catalog keeps its previous colour', () => {
+    const catalog = new Map([['ui', '428bca']])
+    expect(applyLabelColors([{ name: 'bug', color: null }], catalog)).toEqual([
+      { name: 'bug', color: null },
+    ])
+    expect(applyLabelColors([{ name: 'bug', color: 'd73a4a' }], catalog)).toEqual([
+      { name: 'bug', color: 'd73a4a' },
+    ])
+  })
+
+  test('an empty catalog leaves every label unchanged', () => {
+    const labels = [{ name: 'bug', color: null }]
+    expect(applyLabelColors(labels, new Map())).toEqual(labels)
   })
 })
 
@@ -268,7 +380,7 @@ describe('ghRestIssueFrom / parseGhSubIssueList (T2.2)', () => {
       title: 'Fix login',
       body: 'Login is broken.',
       state: 'open',
-      labels: ['bug'],
+      labels: [{ name: 'bug', color: null }],
       author: 'jdoe',
       createdAt: '2026-07-20T09:30:00.123Z',
       updatedAt: '2026-07-28T09:30:00.123Z',
@@ -552,7 +664,7 @@ describe('parseGlabHierarchyChildren (T2.2)', () => {
             title: 'Fix login',
             body: 'Login is broken.',
             state: 'open',
-            labels: ['bug'],
+            labels: [{ name: 'bug', color: null }],
             author: 'jdoe',
             createdAt: '2026-07-20T09:30:00.123Z',
             updatedAt: '2026-07-28T09:30:00.123Z',

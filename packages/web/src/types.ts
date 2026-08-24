@@ -148,6 +148,19 @@ export type ForgeMrState = 'open' | 'merged' | 'closed'
 export type ForgeMrMergeable = 'mergeable' | 'conflicting' | 'unknown'
 
 /**
+ * A label as either forge attributes it: a name plus its display colour.
+ * `color` is six lowercase hex digits with no leading `#`, whichever way the
+ * source forge spelled it (GitHub bare, GitLab `#`-prefixed): normalised
+ * once server-side rather than carried in two different shapes here. `null`
+ * when the forge did not say, or said something unreadable as a colour:
+ * never an empty string, never an invented default.
+ */
+export type ForgeLabel = {
+  name: string
+  color: string | null
+}
+
+/**
  * Check counts per outcome. `truncated` says the forge paginated the check
  * list and we stopped before the end: the four counts are then a floor, not a
  * total, and the UI owes the reader an aggregate signal instead of numbers it
@@ -178,7 +191,7 @@ export type ForgeMr = {
   url: string
   state: ForgeMrState | null
   isDraft: boolean | null
-  labels: string[] | null
+  labels: ForgeLabel[] | null
   additions: number | null
   deletions: number | null
   changedFiles: number | null
@@ -221,7 +234,7 @@ export type ForgeIssue = {
   /** '' is a real body, not a degradation: both forges accept a description-less issue. */
   body: string
   state: ForgeIssueState
-  labels: string[]
+  labels: ForgeLabel[]
   author: string
   createdAt: string
   updatedAt: string
