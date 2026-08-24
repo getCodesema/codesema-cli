@@ -16,6 +16,7 @@
 import {
   ArrowUpDown,
   ChevronDown,
+  ChevronsLeft,
   CircleDot,
   Clock,
   GitPullRequest,
@@ -176,7 +177,7 @@ const mrsLabelCountsFiltered = computed(() =>
         :aria-expanded="true"
         @click="emit('update:collapsed', true)"
       >
-        <span aria-hidden="true">«</span>
+        <ChevronsLeft aria-hidden="true" />
       </button>
 
       <div class="fcp-sections" :aria-label="t('forge.sectionNavAria')">
@@ -439,7 +440,6 @@ const mrsLabelCountsFiltered = computed(() =>
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
   font-family: inherit;
   border: 1px solid var(--cs-line-2);
   border-radius: 7px;
@@ -447,6 +447,11 @@ const mrsLabelCountsFiltered = computed(() =>
   color: var(--cs-muted);
   cursor: pointer;
   margin: 0 8px 8px 0;
+}
+
+.fcp-collapse svg {
+  width: 12px;
+  height: 12px;
 }
 
 .fcp-collapse:hover {
