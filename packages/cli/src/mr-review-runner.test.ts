@@ -63,6 +63,19 @@ function setupMrRepo(): { origin: string; cwd: string; mr: ForgeMr } {
     targetBranch: 'main',
     updatedAt: new Date().toISOString(),
     url: 'https://example.com/mr/1',
+    state: 'open',
+    isDraft: false,
+    labels: [],
+    additions: null,
+    deletions: null,
+    changedFiles: null,
+    checks: null,
+    reviewers: [],
+    assignees: [],
+    milestone: null,
+    mergeable: null,
+    commits: null,
+    body: null,
   }
   return { origin, cwd, mr }
 }

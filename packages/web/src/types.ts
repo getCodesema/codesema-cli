@@ -143,6 +143,31 @@ export type PartialReview = {
 
 // Mirrors packages/cli/src/forge-mrs.ts and the /api/mrs endpoint.
 
+export type ForgeMrState = 'open' | 'merged' | 'closed'
+
+export type ForgeMrMergeable = 'mergeable' | 'conflicting' | 'unknown'
+
+/**
+ * Check counts per outcome. `truncated` says the forge paginated the check
+ * list and we stopped before the end: the four counts are then a floor, not a
+ * total, and the UI owes the reader an aggregate signal instead of numbers it
+ * cannot stand behind.
+ */
+export type ForgeCheckRollup = {
+  passed: number
+  failed: number
+  pending: number
+  skipped: number
+  truncated: boolean
+}
+
+/**
+ * Every field below `url` is enriched: `null` means "the forge did not tell
+ * us", never "zero". A renderer omits the whole element rather than showing a
+ * 0 that reads as a measured value. The forge probe fills what its CLI can
+ * report and leaves the rest at `null`, so a field that GitLab cannot serve
+ * degrades to an absent line, never to a wrong one.
+ */
 export type ForgeMr = {
   number: number
   title: string
@@ -151,6 +176,19 @@ export type ForgeMr = {
   targetBranch: string
   updatedAt: string
   url: string
+  state: ForgeMrState | null
+  isDraft: boolean | null
+  labels: string[] | null
+  additions: number | null
+  deletions: number | null
+  changedFiles: number | null
+  checks: ForgeCheckRollup | null
+  reviewers: string[] | null
+  assignees: string[] | null
+  milestone: string | null
+  mergeable: ForgeMrMergeable | null
+  commits: number | null
+  body: string | null
 }
 
 /**
@@ -165,6 +203,41 @@ export type ForgeUnavailableReason = 'no-remote' | 'no-cli' | 'cli-error'
 
 export type ForgeMrsResult =
   { available: true; mrs: ForgeMr[] } | { available: false; reason: ForgeUnavailableReason }
+
+// Mirrors packages/cli/src/forge-issues-parse.ts and the /api/issues endpoint.
+
+export type ForgeIssueState = 'open' | 'closed'
+
+export type ForgeIssue = {
+  number: number
+  title: string
+  /** '' is a real body, not a degradation: both forges accept a description-less issue. */
+  body: string
+  state: ForgeIssueState
+  labels: string[]
+  author: string
+  createdAt: string
+  updatedAt: string
+  url: string
+}
+
+/**
+ * The issue client answers with two motifs the MR probe never raises, so its
+ * unavailability is a superset rather than the same union: `invalid-input`
+ * (our own refusal, before any call) and `unsupported` (the forge has no such
+ * operation). `detail` carries the failing CLI's own words when it has any; it
+ * is added to the code, never a replacement for it.
+ */
+export type ForgeIssueUnavailableReason = ForgeUnavailableReason | 'invalid-input' | 'unsupported'
+
+/**
+ * `truncated` is never optional on the success branch: the forge caps a list
+ * at ISSUE_LIST_MAX and a caller must never hold a capped list believing it is
+ * whole. A renderer that receives it owes the reader a signal, not silence.
+ */
+export type ForgeIssuesResult =
+  | { available: true; issues: ForgeIssue[]; truncated: boolean }
+  | { available: false; reason: ForgeIssueUnavailableReason; detail?: string }
 
 // Mirrors packages/cli/src/mr-review-runner.ts and the /api/mrs/review endpoints.
 
