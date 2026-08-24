@@ -1,8 +1,11 @@
-// Same harness as MrCard.test.ts / WorkspaceHeader.test.ts. Interactivity
-// (clicking a filter/sort/label chip, toggling an accordion) is covered at
-// the pure-logic level (ForgeLogic.test.ts, ForgePrefs.test.ts) and by
-// seeding the persisted prefs blob below: this file only checks what a given
-// prop bag (and, for the fold state, a given localStorage) renders.
+// ForgeBoard is the three-panel shell (controls / list / detail). Same
+// harness as elsewhere: SSR string rendering, no live DOM, so interaction is
+// exercised through props and a seeded `localStorage` blob rather than
+// simulated clicks; the detailed list/controls/detail content itself is
+// covered by ForgeListPanel.test.ts / ForgeControlsPanel.test.ts /
+// ForgeDetailPanel.test.ts. `initialSelection` (see the prop's own doc in
+// ForgeBoard.vue) is the seam that lets this file drive the detail panel's
+// appearance without a click.
 import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
@@ -11,7 +14,14 @@ import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
 import type { ForgeIssue, ForgeIssuesResult, ForgeMr } from '../../types'
-import { DEFAULT_FORGE_PREFS, type ForgePrefs } from './ForgePrefs'
+import type { ForgeSelection } from './ForgeLogic'
+import {
+  DEFAULT_FORGE_PREFS,
+  FORGE_CONTROLS_COLLAPSED_WIDTH,
+  FORGE_CONTROLS_WIDTH_DEFAULT,
+  FORGE_LIST_WIDTH_DEFAULT,
+  type ForgePrefs,
+} from './ForgePrefs'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -78,16 +88,20 @@ type RenderProps = {
   issuesState: ProjectIssuesState
   mrs: ForgeMr[]
   mrsState: MrsLoadState | null
+  initialSelection?: ForgeSelection | null
+  /** Defaults to 'demo': irrelevant to most tests, only the collapsed-band
+   * tests below actually vary it. */
+  projectName?: string
 }
 
 async function render(props: RenderProps): Promise<string> {
   const ForgeBoard = (await import('./ForgeBoard.vue')).default
-  const app = createSSRApp(ForgeBoard, props)
+  const app = createSSRApp(ForgeBoard, { projectName: 'demo', ...props })
   return renderToString(app)
 }
 
-/** Renders with a seeded persisted prefs blob (accordion open, sort, filter,
- * selected labels), restoring the real `localStorage` afterward. */
+/** Renders with a seeded persisted prefs blob, restoring the real
+ * `localStorage` afterward. */
 async function renderWithPrefs(
   prefsOverrides: Partial<ForgePrefs>,
   props: RenderProps,
@@ -108,476 +122,143 @@ async function renderWithPrefs(
   }
 }
 
-/** The Issues accordion's own markup, cut off before the Pull requests one:
- * `fa-count`/`fa-truncated` etc. are shared class names between both
- * sections, so an assertion about ONE section must not read the other's. */
-function issuesSectionOf(html: string): string {
-  return html.slice(0, html.indexOf('Pull requests'))
-}
+const noMrs: RenderProps = { issuesState: issuesState(), mrs: [], mrsState: null }
 
-/** Symmetric cut, starting at the Pull requests accordion. */
-function mrsSectionOf(html: string): string {
-  return html.slice(html.indexOf('Pull requests'))
-}
-
-/** The header badge's own text (the `fa-count` span's inner content), null
- * when absent: everything else in a section's HTML (URLs, the "→" glyph,
- * closing tags) also contains "/", so a "no slash" assertion must read only
- * this span, never the whole section. */
-function countBadgeOf(html: string): string | null {
-  return /<span class="fa-count">([^<]*)<\/span>/.exec(html)?.[1] ?? null
-}
-
-describe('issues: loading / error / unavailable / empty / list', () => {
-  test('no result yet: shows the loading message, no count badge', async () => {
-    const html = await render({
-      issuesState: issuesState({ loading: true }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html).toContain(t('forge.loading'))
-    expect(issuesSectionOf(html)).not.toContain('fa-count')
+describe('panel widths: reflected from the persisted prefs, falling back to the defaults', () => {
+  test('default widths (no persisted prefs) are the documented defaults', async () => {
+    const html = await render(noMrs)
+    expect(html).toContain(`--fb-controls-w:${FORGE_CONTROLS_WIDTH_DEFAULT}px`)
+    expect(html).toContain(`--fb-list-w:${FORGE_LIST_WIDTH_DEFAULT}px`)
   })
 
-  test('a transport error shows the error and a retry action, not a reason', async () => {
-    const html = await render({
-      issuesState: issuesState({ error: 'HTTP 500' }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html).toContain(t('forge.transportError', { error: 'HTTP 500' }))
-    expect(html).toContain(t('forge.retry'))
-  })
-
-  test.each([
-    ['no-remote', 'forge.issuesReasonNoRemote'],
-    ['no-cli', 'forge.issuesReasonNoCli'],
-    ['cli-error', 'forge.issuesReasonCliError'],
-    ['invalid-input', 'forge.issuesReasonInvalidInput'],
-    ['unsupported', 'forge.issuesReasonUnsupported'],
-  ] as const)('forge unavailable (%s) renders its own distinct message', async (reason, key) => {
-    const html = await render({
-      issuesState: issuesState({ result: { available: false, reason } }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html).toContain(t(key))
-    // Never confused with "no open issue" (a success), nor with the retry flow.
-    expect(html).not.toContain(t('forge.issuesEmpty'))
-    expect(html).not.toContain(t('forge.retry'))
-  })
-
-  test('an empty, AVAILABLE list is a success: "no open issue", never a reason', async () => {
-    const html = await render({
-      issuesState: issuesState({ result: available([]) }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html).toContain(t('forge.issuesEmpty'))
-    expect(html).toContain('>0<') // count badge shows the measured zero
-    expect(html).not.toContain(t('forge.issuesReasonNoRemote'))
-  })
-
-  test('an unavailable result shows no count badge at all (unknown, not zero)', async () => {
-    const html = await render({
-      issuesState: issuesState({ result: { available: false, reason: 'no-remote' } }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(issuesSectionOf(html)).not.toContain('fa-count')
-  })
-
-  test('a truncated list says so explicitly, with the number actually shown', async () => {
-    const html = await render({
-      issuesState: issuesState({
-        result: available([issue({ number: 1 }), issue({ number: 2 })], true),
-      }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html).toContain(t('forge.truncatedHint', { n: 2 }))
-  })
-
-  test('a non-truncated list carries no truncation caveat', async () => {
-    const html = await render({
-      issuesState: issuesState({ result: available([issue()], false) }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html).not.toContain('fa-truncated')
-  })
-
-  test('default sort is most-recently-updated first', async () => {
-    const older = issue({ number: 1, title: 'older', updatedAt: '2026-01-01T00:00:00Z' })
-    const newer = issue({ number: 2, title: 'newer', updatedAt: '2026-06-01T00:00:00Z' })
-    const html = await render({
-      issuesState: issuesState({ result: available([older, newer]) }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html.indexOf('newer')).toBeLessThan(html.indexOf('older'))
-  })
-
-  test('each issue links to its forge URL and carries the open-in-forge aria-label', async () => {
-    const html = await render({
-      issuesState: issuesState({
-        result: available([issue({ url: 'https://example.test/issues/9' })]),
-      }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(html).toContain('href="https://example.test/issues/9"')
-    expect(html).toContain('target="_blank"')
-  })
-
-  test('label chips render from the loaded issues, hidden on an empty list', async () => {
-    const withLabels = await render({
-      issuesState: issuesState({ result: available([issue({ labels: ['bug'] })]) }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(withLabels).toContain('bug')
-
-    const empty = await render({
-      issuesState: issuesState({ result: available([]) }),
-      mrs: [],
-      mrsState: null,
-    })
-    expect(empty).not.toContain('lc-chip')
+  test('a persisted controlsWidth/listWidth is honored', async () => {
+    const html = await renderWithPrefs({ controlsWidth: 340, listWidth: 420 }, noMrs)
+    expect(html).toContain('--fb-controls-w:340px')
+    expect(html).toContain('--fb-list-w:420px')
   })
 })
 
-describe('pull requests: transport error / forge unavailable / empty / list / truncated', () => {
-  test('a transport error shows the error, never a reason or the empty message', async () => {
-    const html = await render({
-      issuesState: issuesState(),
-      mrs: [],
-      mrsState: { status: 'error', error: 'HTTP 500' },
-    })
-    expect(html).toContain(t('forge.transportError', { error: 'HTTP 500' }))
-    expect(html).not.toContain(t('forge.mrsEmpty'))
-    expect(mrsSectionOf(html)).not.toContain('fa-count')
+describe('the controls panel collapses to its rail width, independent of the stored width to restore', () => {
+  test('collapsed: true pins the controls panel at the collapsed-rail width', async () => {
+    const html = await renderWithPrefs({ controlsCollapsed: true, controlsWidth: 340 }, noMrs)
+    expect(html).toContain(`--fb-controls-w:${FORGE_CONTROLS_COLLAPSED_WIDTH}px`)
   })
 
-  test.each([
-    ['no-remote', 'mrs.reasonNoRemote'],
-    ['no-cli', 'mrs.reasonNoCli'],
-    ['cli-error', 'mrs.reasonCliError'],
-  ] as const)(
-    'forge unavailable (%s) renders its own distinct message, hides the list and its controls',
-    async (reason, key) => {
-      const html = await render({
-        issuesState: issuesState(),
+  test('collapsed: true hides the controls resize handle, the list/detail one stays (the detail panel is always on screen)', async () => {
+    const html = await renderWithPrefs({ controlsCollapsed: true }, noMrs)
+    expect(html).not.toContain(t('forge.resizeControlsAria'))
+    expect(html).toContain(t('forge.resizeListAria'))
+  })
+
+  test('collapsed: false shows both resize handles', async () => {
+    const html = await renderWithPrefs({ controlsCollapsed: false }, noMrs)
+    expect(html).toContain(t('forge.resizeControlsAria'))
+    expect(html).toContain(t('forge.resizeListAria'))
+  })
+
+  // The collapsed band carries the selected project's name through from
+  // WorkspaceView (:project-name), not a bare toggle.
+  test('collapsed: the band carries the project name passed in', async () => {
+    const html = await renderWithPrefs(
+      { controlsCollapsed: true },
+      { ...noMrs, projectName: 'my-repo' },
+    )
+    expect(html).toContain('class="fcp-band"')
+    expect(html).toContain('>my-repo<')
+  })
+
+  test('expanded: no collapsed band, the section nav shows instead', async () => {
+    const html = await renderWithPrefs(
+      { controlsCollapsed: false },
+      { ...noMrs, projectName: 'my-repo' },
+    )
+    expect(html).not.toContain('fcp-band')
+  })
+})
+
+/** The list panel's own heading (`flp-heading`): the controls panel's
+ * section nav always names BOTH sections regardless of which is active, so
+ * an assertion about which section is actually SHOWN must read only this. */
+function listHeadingOf(html: string): string | null {
+  return /<span class="flp-heading">([^<]*)<\/span>/.exec(html)?.[1] ?? null
+}
+
+describe('the active section (persisted) picks which list the list panel shows', () => {
+  test('activeSection: issues shows the issues heading, not pull requests', async () => {
+    const html = await renderWithPrefs(
+      { activeSection: 'issues' },
+      { issuesState: issuesState({ result: available([issue()]) }), mrs: [mr()], mrsState: null },
+    )
+    expect(listHeadingOf(html)).toBe(t('forge.issuesTitle'))
+  })
+
+  test('activeSection: mrs shows the pull requests heading, not issues', async () => {
+    const html = await renderWithPrefs(
+      { activeSection: 'mrs' },
+      {
+        issuesState: issuesState({ result: available([issue()]) }),
         mrs: [mr()],
-        mrsState: { status: 'unavailable', reason },
-      })
-      expect(html).toContain(t(key))
-      expect(html).not.toContain(t('forge.mrsEmpty'))
-      expect(html).not.toContain('fb-filters')
-      // Unknown, not zero: no fabricated count for a list that could not be fetched.
-      expect(mrsSectionOf(html)).not.toContain('fa-count')
-    },
-  )
-
-  test('an unknown mrsState (not fetched yet) never claims unavailability, and shows no count badge', async () => {
-    const html = await render({ issuesState: issuesState(), mrs: [], mrsState: null })
-    expect(html).toContain(t('forge.mrsEmpty'))
-    expect(mrsSectionOf(html)).not.toContain('fa-count')
-  })
-
-  test('an empty, LOADED list is a success: "no open merge request", with the measured 0', async () => {
-    const html = await render({
-      issuesState: issuesState(),
-      mrs: [],
-      mrsState: { status: 'loaded', truncated: false },
-    })
-    expect(html).toContain(t('forge.mrsEmpty'))
-    expect(mrsSectionOf(html)).toContain('>0<')
-  })
-
-  test('a non-empty list renders the count, the status filter chips and each MR', async () => {
-    const html = await render({
-      issuesState: issuesState(),
-      mrs: [mr({ number: 1 }), mr({ number: 2 })],
-      mrsState: { status: 'loaded', truncated: false },
-    })
-    expect(html).toContain('>2<')
-    expect(html).toContain(t('forge.filterAll'))
-    expect(html).toContain(t('forge.filterDraft'))
-    expect(html).toContain(t('forge.filterReady'))
-    expect(html).toContain(t('mrs.number', { n: 1 }))
-    expect(html).toContain(t('mrs.number', { n: 2 }))
-  })
-
-  test('each MR links to its forge URL', async () => {
-    const html = await render({
-      issuesState: issuesState(),
-      mrs: [mr({ url: 'https://example.test/mr/99' })],
-      mrsState: { status: 'loaded', truncated: false },
-    })
-    expect(html).toContain('href="https://example.test/mr/99"')
-  })
-
-  test('a truncated MR list says so explicitly, with the number actually shown', async () => {
-    const html = await render({
-      issuesState: issuesState(),
-      mrs: [mr(), mr({ number: 2 })],
-      mrsState: { status: 'loaded', truncated: true },
-    })
-    expect(html).toContain(t('forge.truncatedHint', { n: 2 }))
-  })
-
-  test('a non-truncated MR list carries no truncation caveat', async () => {
-    const html = await render({
-      issuesState: issuesState(),
-      mrs: [mr(), mr({ number: 2 })],
-      mrsState: { status: 'loaded', truncated: false },
-    })
-    expect(html).not.toContain('fa-truncated')
+        mrsState: { status: 'loaded', truncated: false },
+      },
+    )
+    expect(listHeadingOf(html)).toBe(t('forge.mrsTitle'))
   })
 })
 
-describe('count badge: plain total unfiltered, "shown / total" once a filter is active', () => {
-  test('issues, no filter: the badge is the plain total, no "/" in it', async () => {
+// The detail panel stays on screen at all times, its splitter too. What
+// changes with the selection is its CONTENT: the empty state, or the
+// selected item's card.
+describe('the detail panel is always present, with an empty state until something is selected', () => {
+  test('no initial selection: the panel and its splitter are there, showing the empty state', async () => {
+    const html = await render(noMrs)
+    expect(html).toContain('fb-panel--detail')
+    expect(html).toContain(t('forge.resizeListAria'))
+    expect(html).toContain(t('forge.detailEmpty'))
+    expect(html).not.toContain(t('forge.detailTitle'))
+  })
+
+  test('a selection matching a loaded issue replaces the empty state with that issue', async () => {
     const html = await render({
       issuesState: issuesState({
-        result: available([issue({ number: 1 }), issue({ number: 2 }), issue({ number: 3 })]),
+        result: available([issue({ number: 3, title: 'the selected one' })]),
       }),
       mrs: [],
       mrsState: null,
+      initialSelection: { kind: 'issue', number: 3 },
     })
-    expect(countBadgeOf(issuesSectionOf(html))).toBe('3')
+    expect(html).toContain(t('forge.detailTitle'))
+    expect(html).toContain('the selected one')
+    expect(html).not.toContain(t('forge.detailEmpty'))
   })
 
-  test('issues, a label active and matching some items: "shown / total"', async () => {
-    const items = [
-      issue({ number: 1, labels: ['bug'] }),
-      issue({ number: 2, labels: ['ui'] }),
-      issue({ number: 3, labels: ['ui'] }),
-    ]
-    const html = await renderWithPrefs(
-      { issuesLabels: ['bug'] },
-      { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
-    )
-    expect(issuesSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
-  })
-
-  test('issues, a label active matching nothing: a real measured "0 / total", not null', async () => {
-    const items = [issue({ number: 1, labels: ['ui'] }), issue({ number: 2, labels: ['ui'] })]
-    const html = await renderWithPrefs(
-      { issuesLabels: ['bug'] },
-      { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
-    )
-    expect(issuesSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 0, total: 2 })}<`)
-  })
-
-  test('issues, a label active but the count itself is unknown: still no badge at all', async () => {
-    const html = await renderWithPrefs(
-      { issuesLabels: ['bug'] },
-      {
-        issuesState: issuesState({ result: { available: false, reason: 'no-remote' } }),
-        mrs: [],
-        mrsState: null,
-      },
-    )
-    expect(issuesSectionOf(html)).not.toContain('fa-count')
-  })
-
-  test('MRs, no filter: the badge is the plain total, no "/" in it', async () => {
+  test('a selection matching a loaded MR replaces the empty state with that MR', async () => {
     const html = await render({
       issuesState: issuesState(),
-      mrs: [mr({ number: 1 }), mr({ number: 2 }), mr({ number: 3 })],
+      mrs: [mr({ number: 8, title: 'the selected mr' })],
       mrsState: { status: 'loaded', truncated: false },
+      initialSelection: { kind: 'mr', number: 8 },
     })
-    expect(countBadgeOf(mrsSectionOf(html))).toBe('3')
+    expect(html).toContain('the selected mr')
+    expect(html).not.toContain(t('forge.detailEmpty'))
   })
 
-  test('MRs, the status filter active (draft): "shown / total"', async () => {
-    const items = [
-      mr({ number: 1, isDraft: true }),
-      mr({ number: 2, isDraft: false }),
-      mr({ number: 3, isDraft: false }),
-    ]
-    const html = await renderWithPrefs(
-      { mrsFilter: 'draft' },
-      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
-    )
-    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
-  })
-
-  test('MRs, a label active: "shown / total"', async () => {
-    const items = [
-      mr({ number: 1, labels: ['bug'] }),
-      mr({ number: 2, labels: ['ui'] }),
-      mr({ number: 3, labels: ['ui'] }),
-    ]
-    const html = await renderWithPrefs(
-      { mrsLabels: ['bug'] },
-      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
-    )
-    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
-  })
-
-  test('MRs, the status filter AND a label both active: combined narrowing, "shown / total"', async () => {
-    const items = [
-      mr({ number: 1, isDraft: true, labels: ['bug'] }),
-      mr({ number: 2, isDraft: true, labels: ['ui'] }),
-      mr({ number: 3, isDraft: false, labels: ['bug'] }),
-    ]
-    const html = await renderWithPrefs(
-      { mrsFilter: 'draft', mrsLabels: ['bug'] },
-      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
-    )
-    // Only #1 is both draft AND carries "bug": shown = 1, total unaffected = 3.
-    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
-  })
-
-  test('MRs, a filter active leaving nothing: a real measured "0 / total"', async () => {
-    const items = [mr({ number: 1, isDraft: false }), mr({ number: 2, isDraft: false })]
-    const html = await renderWithPrefs(
-      { mrsFilter: 'draft' },
-      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
-    )
-    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 0, total: 2 })}<`)
-  })
-
-  test('MRs, a filter active but nothing fetched yet: still no badge at all', async () => {
-    const html = await renderWithPrefs(
-      { mrsFilter: 'draft' },
-      { issuesState: issuesState(), mrs: [], mrsState: null },
-    )
-    expect(mrsSectionOf(html)).not.toContain('fa-count')
-  })
-})
-
-describe('filtered-empty state: distinct from "the forge has nothing"', () => {
-  test('issues: a genuinely empty forge list shows issuesEmpty, never the filtered message', async () => {
+  test('a selection whose item is not in the loaded list falls back to the empty state, never a stale card', async () => {
     const html = await render({
-      issuesState: issuesState({ result: available([]) }),
+      issuesState: issuesState({ result: available([issue({ number: 1 })]) }),
       mrs: [],
       mrsState: null,
+      initialSelection: { kind: 'issue', number: 999 },
     })
-    const section = issuesSectionOf(html)
-    expect(section).toContain(t('forge.issuesEmpty'))
-    expect(section).not.toContain(t('forge.issuesFilteredEmpty'))
-    expect(section).not.toContain(t('forge.clearFilters'))
+    expect(html).toContain(t('forge.detailEmpty'))
   })
 
-  test('issues: two disjoint labels (AND semantics) leave nothing: the filtered message shows, not issuesEmpty, and the badge stays a real "0 / total"', async () => {
-    const items = [issue({ number: 1, labels: ['bug'] }), issue({ number: 2, labels: ['ui'] })]
-    const html = await renderWithPrefs(
-      { issuesLabels: ['bug', 'ui'] },
-      { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
-    )
-    const section = issuesSectionOf(html)
-    expect(section).toContain(t('forge.issuesFilteredEmpty'))
-    expect(section).toContain(t('forge.clearFilters'))
-    expect(section).not.toContain(t('forge.issuesEmpty'))
-    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 2 }))
-  })
-
-  test('MRs: a genuinely empty forge list shows mrsEmpty, never a filtered message', async () => {
+  test('a selection made before the issues list has loaded falls back to the empty state, never a stale card', async () => {
     const html = await render({
       issuesState: issuesState(),
       mrs: [],
-      mrsState: { status: 'loaded', truncated: false },
+      mrsState: null,
+      initialSelection: { kind: 'issue', number: 1 },
     })
-    const section = mrsSectionOf(html)
-    expect(section).toContain(t('forge.mrsEmpty'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyLabels'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyBoth'))
-    expect(section).not.toContain(t('forge.clearFilters'))
-  })
-
-  test('MRs: the status filter alone leaves nothing: names the status filter specifically', async () => {
-    const items = [mr({ number: 1, isDraft: false })]
-    const html = await renderWithPrefs(
-      { mrsFilter: 'draft' },
-      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
-    )
-    const section = mrsSectionOf(html)
-    expect(section).toContain(t('forge.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyLabels'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyBoth'))
-    expect(section).not.toContain(t('forge.mrsEmpty'))
-    expect(section).toContain(t('forge.clearFilters'))
-    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 1 }))
-  })
-
-  test('MRs: two disjoint labels alone leave nothing: names the labels specifically', async () => {
-    const items = [mr({ number: 1, labels: ['bug'] }), mr({ number: 2, labels: ['ui'] })]
-    const html = await renderWithPrefs(
-      { mrsLabels: ['bug', 'ui'] },
-      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
-    )
-    const section = mrsSectionOf(html)
-    expect(section).toContain(t('forge.mrsFilteredEmptyLabels'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyBoth'))
-    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 2 }))
-  })
-
-  test('MRs: the status filter AND a label together leave nothing: names both', async () => {
-    const items = [
-      mr({ number: 1, isDraft: false, labels: ['bug'] }),
-      mr({ number: 2, isDraft: true, labels: ['ui'] }),
-    ]
-    const html = await renderWithPrefs(
-      { mrsFilter: 'draft', mrsLabels: ['bug'] },
-      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
-    )
-    const section = mrsSectionOf(html)
-    expect(section).toContain(t('forge.mrsFilteredEmptyBoth'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('forge.mrsFilteredEmptyLabels'))
-    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 2 }))
-  })
-
-  test('clearing MR filters is offered as a single action, resetting both dimensions at once', async () => {
-    // The button exists and reads the shared "clear filters" label; the actual
-    // click-driven reset is pure state covered by ForgePrefs/ForgeLogic tests.
-    const html = await renderWithPrefs(
-      { mrsFilter: 'draft', mrsLabels: ['bug'] },
-      {
-        issuesState: issuesState(),
-        mrs: [mr({ isDraft: false, labels: ['ui'] })],
-        mrsState: { status: 'loaded', truncated: false },
-      },
-    )
-    expect(mrsSectionOf(html)).toContain('<button class="fb-retry" type="button"')
-  })
-})
-
-describe('the two accordions fold independently, from the persisted prefs blob', () => {
-  test('issuesOpen: false hides the issues body while the MR accordion stays open', async () => {
-    const store = new Map<string, string>()
-    store.set(
-      'codesema-ws-forge-prefs',
-      JSON.stringify({
-        issuesOpen: false,
-        mrsOpen: true,
-        issuesSort: 'updated',
-        mrsSort: 'updated',
-        mrsFilter: 'all',
-        issuesLabels: [],
-        mrsLabels: [],
-      }),
-    )
-    const stub = { getItem: (key: string) => store.get(key) ?? null, setItem: () => {} }
-    const globals = globalThis as { localStorage?: unknown }
-    const previous = globals.localStorage
-    try {
-      globals.localStorage = stub
-      const html = await render({
-        issuesState: issuesState({ result: available([issue({ title: 'HIDDEN_ISSUE' })]) }),
-        mrs: [mr({ title: 'SHOWN_MR' })],
-        mrsState: { status: 'loaded', truncated: false },
-      })
-      expect(html).not.toContain('HIDDEN_ISSUE')
-      expect(html).toContain('SHOWN_MR')
-    } finally {
-      globals.localStorage = previous
-    }
+    expect(html).toContain(t('forge.detailEmpty'))
   })
 })

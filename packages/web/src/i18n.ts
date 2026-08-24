@@ -667,6 +667,17 @@ const en = {
   'forge.issuesReasonInvalidInput': 'This project could not be resolved to a forge issue list.',
   'forge.issuesReasonUnsupported': 'This forge does not support listing issues.',
   'forge.openItemAria': 'Open "{title}" in the forge',
+
+  // --- Forge board shell: three panels (controls / list / detail) ---
+  'forge.sectionNavAria': 'Forge board section',
+  'forge.controlsCollapse': 'Collapse the controls panel',
+  'forge.controlsExpand': 'Expand the controls panel',
+  'forge.resizeControlsAria': 'Resize the controls panel',
+  'forge.resizeListAria': 'Resize the list panel',
+  'forge.selectItemAria': 'Show details for "{title}"',
+  'forge.detailTitle': 'Details',
+  'forge.detailClose': 'Close the detail panel',
+  'forge.detailEmpty': 'Select an issue or a pull request to see its details here.',
 }
 
 export type MessageKey = keyof typeof en
@@ -1317,6 +1328,17 @@ const fr: Record<MessageKey, string> = {
   'forge.issuesReasonInvalidInput': "Ce projet n'a pas pu être résolu en liste d'issues de forge.",
   'forge.issuesReasonUnsupported': 'Cette forge ne prend pas en charge la liste des issues.',
   'forge.openItemAria': 'Ouvrir « {title} » dans la forge',
+
+  // --- Forge board shell: three panels (controls / list / detail) ---
+  'forge.sectionNavAria': 'Section du tableau de bord forge',
+  'forge.controlsCollapse': 'Replier le panneau de contrôles',
+  'forge.controlsExpand': 'Déplier le panneau de contrôles',
+  'forge.resizeControlsAria': 'Redimensionner le panneau de contrôles',
+  'forge.resizeListAria': 'Redimensionner le panneau de liste',
+  'forge.selectItemAria': 'Afficher les détails de « {title} »',
+  'forge.detailTitle': 'Détails',
+  'forge.detailClose': 'Fermer le panneau de détail',
+  'forge.detailEmpty': 'Sélectionne une issue ou une merge request pour voir ses détails ici.',
 }
 
 /**

@@ -1,7 +1,7 @@
 // Pure sort/filter/count logic shared by the two forge board lists (issues
 // and merge requests), plus the panel-resizing and selection math for the
-// three-panel shell (F1). Split out so it is testable on its own, with no
-// DOM and no fetch: ForgeBoard.vue only composes these functions.
+// three-panel shell. Split out so it is testable on its own, with no DOM and
+// no fetch: ForgeBoard.vue only composes these functions.
 
 import type { ForgeIssue, ForgeLabel, ForgeMr } from '../../types'
 
@@ -107,7 +107,7 @@ export function forgeFilterMrsByState<T extends Pick<ForgeMr, 'isDraft'>>(
   return items.filter((item) => matchesMrStateFilter(item, filter))
 }
 
-// ── Panel resizing (F1: three-panel forge board shell) ─────────────────────
+// ── Panel resizing (three-panel forge board shell) ──────────────────────────
 
 /** One keyboard/drag notch, in pixels, shared by every resizable divider. */
 export const FORGE_SPLITTER_STEP = 16
@@ -156,7 +156,7 @@ export function widthAfterDrag(
   return clampWidth(startWidth + deltaX, min, max)
 }
 
-// ── Selection (F1: the detail panel shows the item picked in the list) ─────
+// ── Selection (the detail panel shows the item picked in the list) ──────────
 
 export type ForgeSelection = { kind: 'issue'; number: number } | { kind: 'mr'; number: number }
 

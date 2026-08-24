@@ -1,36 +1,59 @@
 <script setup lang="ts">
-// The two accordions (issues, pull requests) shown in the focus zone in
-// place of the sober empty-state message once a project is selected. Pure
-// presentational orchestration: all fetching lives upstream (useIssues for
-// issues, useTasks' mrsByProject/mrsLoadByProject for MRs, already wired in
-// WorkspaceView); this component only sorts, filters, counts and persists
-// the UI prefs.
+// Forge board shell: three panels shown in the focus zone in place of the
+// sober empty-state once a project is selected. Controls (section nav,
+// collapsible), list (the active section's real issue/MR list), detail (the
+// item picked in the list, always present with its own clean empty state
+// while nothing is selected). This component owns the layout, the
+// resize/collapse/persist behavior and the selection; the panels' own
+// detailed content is either carried over as-is (the list, previously the
+// accordion bodies) or a deliberately minimal stub for a later lot to fill
+// in (controls nav aside, detail).
+//
+// Below 640px of ITS OWN width (a container query, not the viewport, since
+// this shell sits behind two other columns, so the viewport can stay wide
+// while this box is narrow) the three panels stack vertically and the whole
+// shell scrolls as one block instead of each panel scrolling on its own.
 import { computed, ref, watch } from 'vue'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
 import type { ForgeMr } from '../../types'
-import MrCard from '../mr/MrCard.vue'
-import ForgeAccordion from './ForgeAccordion.vue'
-import ForgeIssueCard from './ForgeIssueCard.vue'
+import ForgeControlsPanel from './ForgeControlsPanel.vue'
+import ForgeDetailPanel from './ForgeDetailPanel.vue'
+import ForgeListPanel from './ForgeListPanel.vue'
 import {
-  forgeFilterByLabels,
-  forgeFilterMrsByState,
-  forgeLabelCounts,
-  forgeSort,
+  resolveForgeSelection,
+  type ForgeSelection,
   type ForgeSortKey,
   type MrStateFilter,
 } from './ForgeLogic'
-import { readForgePrefs, writeForgePrefs } from './ForgePrefs'
-import LabelChips from './LabelChips.vue'
+import {
+  FORGE_CONTROLS_COLLAPSED_WIDTH,
+  FORGE_CONTROLS_WIDTH_DEFAULT,
+  FORGE_CONTROLS_WIDTH_MAX,
+  FORGE_CONTROLS_WIDTH_MIN,
+  FORGE_LIST_WIDTH_DEFAULT,
+  FORGE_LIST_WIDTH_MAX,
+  FORGE_LIST_WIDTH_MIN,
+  readForgePrefs,
+  writeForgePrefs,
+} from './ForgePrefs'
+import ForgeSplitter from './ForgeSplitter.vue'
 
 const props = defineProps<{
+  /** The selected project's display name: the only thing the collapsed
+   * controls panel shows (see ForgeControlsPanel.vue's vertical band). */
+  projectName: string
   issuesState: ProjectIssuesState
   mrs: ForgeMr[]
-  /** The fact behind the last GET /api/mrs of this project (useTasks.ts'
-   * mrsLoadByProject): null while nothing was fetched yet, distinct from
-   * both a loaded empty list and a forge that could not be reached. */
   mrsState: MrsLoadState | null
+  /** Seeds the initial selection (which item the detail panel opens on).
+   * Uncontrolled after mount, like a form field's `defaultValue`:
+   * WorkspaceView never sets it today (a fresh board opens with nothing
+   * selected, see the `:key` on the caller, which remounts this board on
+   * project switch); it exists for a future deep link and for tests that
+   * need a seeded selection without simulating a click. */
+  initialSelection?: ForgeSelection | null
 }>()
 
 const emit = defineEmits<{ 'retry-issues': [] }>()
@@ -40,13 +63,21 @@ const prefs = ref(readForgePrefs())
 
 watch(prefs, (next) => writeForgePrefs(next), { deep: true })
 
-const issuesOpen = computed({
-  get: () => prefs.value.issuesOpen,
-  set: (v) => (prefs.value = { ...prefs.value, issuesOpen: v }),
+const activeSection = computed({
+  get: () => prefs.value.activeSection,
+  set: (v: 'issues' | 'mrs') => (prefs.value = { ...prefs.value, activeSection: v }),
 })
-const mrsOpen = computed({
-  get: () => prefs.value.mrsOpen,
-  set: (v) => (prefs.value = { ...prefs.value, mrsOpen: v }),
+const controlsWidth = computed({
+  get: () => prefs.value.controlsWidth,
+  set: (v: number) => (prefs.value = { ...prefs.value, controlsWidth: v }),
+})
+const controlsCollapsed = computed({
+  get: () => prefs.value.controlsCollapsed,
+  set: (v: boolean) => (prefs.value = { ...prefs.value, controlsCollapsed: v }),
+})
+const listWidth = computed({
+  get: () => prefs.value.listWidth,
+  set: (v: number) => (prefs.value = { ...prefs.value, listWidth: v }),
 })
 const issuesSort = computed({
   get: () => prefs.value.issuesSort,
@@ -74,367 +105,162 @@ function toggleMrLabel(label: string): void {
 }
 
 /** Releases the only filter dimension issues have (labels): the fix offered
- * on the "your filter matches nothing" state below. */
+ * on the "your filter matches nothing" state. */
 function clearIssueFilters(): void {
   prefs.value = { ...prefs.value, issuesLabels: [] }
 }
 
 /** Releases both MR filter dimensions at once (status filter and labels):
- * the fix offered on the "your filter matches nothing" state below. */
+ * the fix offered on the "your filter matches nothing" state. */
 function clearMrFilters(): void {
   prefs.value = { ...prefs.value, mrsFilter: 'all', mrsLabels: [] }
 }
 
-// ── Issues: loading / transport error / forge unavailable / empty / list ──
-const issuesResult = computed(() => props.issuesState.result)
-const issuesLoaded = computed(() =>
-  issuesResult.value !== null && issuesResult.value.available ? issuesResult.value.issues : null,
-)
-const issuesTruncated = computed(
-  () => issuesResult.value !== null && issuesResult.value.available && issuesResult.value.truncated,
-)
-const issuesUnavailableReason = computed(() =>
-  issuesResult.value !== null && !issuesResult.value.available ? issuesResult.value.reason : null,
-)
+// ── Selection: which item (if any) the detail panel shows ─────────────────
+const selection = ref<ForgeSelection | null>(props.initialSelection ?? null)
 
-const ISSUES_REASON_KEY = {
-  'no-remote': 'forge.issuesReasonNoRemote',
-  'no-cli': 'forge.issuesReasonNoCli',
-  'cli-error': 'forge.issuesReasonCliError',
-  'invalid-input': 'forge.issuesReasonInvalidInput',
-  unsupported: 'forge.issuesReasonUnsupported',
-} as const
+function closeDetail(): void {
+  selection.value = null
+}
 
-// Only labels can narrow the issues list (see forgeFilterMrsByState's own
-// doc: nothing else legitimately discriminates an OPEN-only corpus here).
-const issuesFilterActive = computed(() => prefs.value.issuesLabels.length > 0)
-const issuesLabelCounts = computed(() => forgeLabelCounts(issuesLoaded.value ?? []))
-const issuesVisible = computed(() =>
-  issuesLoaded.value === null
-    ? []
-    : forgeSort(
-        forgeFilterByLabels(issuesLoaded.value, prefs.value.issuesLabels),
-        issuesSort.value,
-      ),
-)
-/**
- * The header badge: the whole corpus when nothing narrows it, "shown / total"
- * the moment a label selection is active, since a lone total would then
- * describe a list nobody is actually looking at any more. `null` (no badge at
- * all) stays reserved for the genuinely unknown count (loading, error, unavailable).
- */
-const issuesCount = computed(() => {
-  if (issuesLoaded.value === null) {
-    return null
-  }
-  const total = issuesLoaded.value.length
-  return issuesFilterActive.value
-    ? t('forge.countFiltered', { shown: issuesVisible.value.length, total })
-    : total
-})
-const issuesTruncatedHint = computed(() =>
-  issuesTruncated.value && issuesLoaded.value
-    ? t('forge.truncatedHint', { n: issuesLoaded.value.length })
-    : null,
-)
-
-// ── Pull requests: transport error / forge unavailable / empty / list ─────
-const MRS_REASON_KEY = {
-  'no-remote': 'mrs.reasonNoRemote',
-  'no-cli': 'mrs.reasonNoCli',
-  'cli-error': 'mrs.reasonCliError',
-} as const
-
-const mrsErrorMessage = computed(() =>
-  props.mrsState?.status === 'error'
-    ? t('forge.transportError', { error: props.mrsState.error })
-    : null,
-)
-const mrsUnavailableKey = computed(() =>
-  props.mrsState?.status === 'unavailable' ? MRS_REASON_KEY[props.mrsState.reason] : null,
-)
-const mrsDegraded = computed(
-  () => mrsErrorMessage.value !== null || mrsUnavailableKey.value !== null,
-)
-const mrsStateFiltered = computed(() => forgeFilterMrsByState(props.mrs, mrsFilter.value))
-const mrsLabelCounts = computed(() => forgeLabelCounts(mrsStateFiltered.value))
-const mrsVisible = computed(() =>
-  forgeSort(forgeFilterByLabels(mrsStateFiltered.value, prefs.value.mrsLabels), mrsSort.value),
-)
-const mrsFilterActive = computed(
-  () => mrsFilter.value !== 'all' || prefs.value.mrsLabels.length > 0,
-)
-/** Same doctrine as issuesCount above: a formatted "shown / total" the moment
- * the status filter or a label selection is active, null (no badge at all)
- * until a fetch actually resolved into a count. */
-const mrsCount = computed(() => {
-  if (props.mrsState?.status !== 'loaded') {
-    return null
-  }
-  const total = props.mrs.length
-  return mrsFilterActive.value
-    ? t('forge.countFiltered', { shown: mrsVisible.value.length, total })
-    : total
-})
-const mrsTruncatedHint = computed(() =>
-  props.mrsState?.status === 'loaded' && props.mrsState.truncated
-    ? t('forge.truncatedHint', { n: props.mrs.length })
-    : null,
-)
-/**
- * Which filter(s) to name in the "your filter matches nothing" message:
- * distinct wording per dimension actually engaged, so the reader is told
- * exactly what to release rather than a generic "try something else".
- */
-const mrsFilteredEmptyKey = computed(() => {
-  const statusActive = mrsFilter.value !== 'all'
-  const labelsActive = prefs.value.mrsLabels.length > 0
-  if (statusActive && labelsActive) {
-    return 'forge.mrsFilteredEmptyBoth'
-  }
-  return statusActive ? 'forge.mrsFilteredEmptyFilter' : 'forge.mrsFilteredEmptyLabels'
+const issuesLoaded = computed(() => {
+  const result = props.issuesState.result
+  return result !== null && result.available ? result.issues : null
 })
 
-const MR_FILTERS: readonly MrStateFilter[] = ['all', 'draft', 'ready']
-const MR_FILTER_LABEL_KEY = {
-  all: 'forge.filterAll',
-  draft: 'forge.filterDraft',
-  ready: 'forge.filterReady',
-} as const
+const detailItem = computed(() =>
+  resolveForgeSelection(selection.value, issuesLoaded.value, props.mrs),
+)
+
+// The controls panel's effective width: fixed to the collapsed rail width
+// while collapsed (never the persisted `controlsWidth`, which is the width
+// to RESTORE on expand), the persisted width otherwise.
+const controlsPanelWidth = computed(() =>
+  controlsCollapsed.value ? FORGE_CONTROLS_COLLAPSED_WIDTH : controlsWidth.value,
+)
 </script>
 
 <template>
-  <div class="fb-root">
-    <!-- ── Issues ──────────────────────────────────────────────────────── -->
-    <ForgeAccordion
-      v-model:open="issuesOpen"
-      :label="t('forge.issuesTitle')"
-      :count="issuesCount"
-      :truncated-hint="issuesTruncatedHint"
+  <div class="fb-shell">
+    <div
+      class="fb-panel fb-panel--controls"
+      :style="{ '--fb-controls-w': `${controlsPanelWidth}px` }"
     >
-      <template v-if="issuesLoaded && issuesLoaded.length > 0" #labels>
-        <LabelChips
-          :counts="issuesLabelCounts"
-          :selected="prefs.issuesLabels"
-          @toggle="toggleIssueLabel"
-        />
-      </template>
-      <template v-if="issuesLoaded && issuesLoaded.length > 0" #filters>
-        <label class="fb-sort">
-          <span class="fb-sort-label">{{ t('forge.sortLabel') }}</span>
-          <select v-model="issuesSort" class="fb-sort-select">
-            <option value="updated">{{ t('forge.sortUpdated') }}</option>
-            <option value="title">{{ t('forge.sortTitle') }}</option>
-          </select>
-        </label>
-      </template>
+      <ForgeControlsPanel
+        :active-section="activeSection"
+        :collapsed="controlsCollapsed"
+        :project-name="projectName"
+        @update:active-section="(v) => (activeSection = v)"
+        @update:collapsed="(v) => (controlsCollapsed = v)"
+      />
+    </div>
 
-      <p v-if="issuesState.error !== null" class="fb-degraded">
-        {{ t('forge.transportError', { error: issuesState.error }) }}
-        <button class="fb-retry" type="button" @click="emit('retry-issues')">
-          {{ t('forge.retry') }}
-        </button>
-      </p>
-      <p v-else-if="issuesUnavailableReason !== null" class="fb-degraded">
-        {{ t(ISSUES_REASON_KEY[issuesUnavailableReason]) }}
-      </p>
-      <p v-else-if="issuesLoaded === null" class="fb-loading">{{ t('forge.loading') }}</p>
-      <p v-else-if="issuesLoaded.length === 0" class="fb-empty">{{ t('forge.issuesEmpty') }}</p>
-      <!-- Distinct from the line above: the forge has issues, the LABEL
-           filter is what leaves nothing on screen. -->
-      <p v-else-if="issuesVisible.length === 0" class="fb-degraded">
-        {{ t('forge.issuesFilteredEmpty') }}
-        <button class="fb-retry" type="button" @click="clearIssueFilters">
-          {{ t('forge.clearFilters') }}
-        </button>
-      </p>
-      <a
-        v-for="issue in issuesVisible"
-        :key="issue.number"
-        class="fb-item"
-        :href="issue.url"
-        target="_blank"
-        rel="noopener noreferrer"
-        :aria-label="t('forge.openItemAria', { title: issue.title })"
-      >
-        <ForgeIssueCard :issue="issue" />
-      </a>
-    </ForgeAccordion>
+    <ForgeSplitter
+      v-if="!controlsCollapsed"
+      :model-value="controlsWidth"
+      :min="FORGE_CONTROLS_WIDTH_MIN"
+      :max="FORGE_CONTROLS_WIDTH_MAX"
+      :default-width="FORGE_CONTROLS_WIDTH_DEFAULT"
+      :ariaLabel="t('forge.resizeControlsAria')"
+      @update:model-value="(v) => (controlsWidth = v)"
+    />
 
-    <!-- ── Pull requests ───────────────────────────────────────────────── -->
-    <ForgeAccordion
-      v-model:open="mrsOpen"
-      :label="t('forge.mrsTitle')"
-      :count="mrsCount"
-      :truncated-hint="mrsTruncatedHint"
-    >
-      <template v-if="!mrsDegraded && mrs.length > 0" #labels>
-        <LabelChips :counts="mrsLabelCounts" :selected="prefs.mrsLabels" @toggle="toggleMrLabel" />
-      </template>
-      <template v-if="!mrsDegraded && mrs.length > 0" #filters>
-        <div class="fb-filters" role="group" :aria-label="t('forge.filterAria')">
-          <button
-            v-for="filter in MR_FILTERS"
-            :key="filter"
-            type="button"
-            class="fb-filter-chip"
-            :class="{ 'fb-filter-chip--on': mrsFilter === filter }"
-            :aria-pressed="mrsFilter === filter"
-            @click="mrsFilter = filter"
-          >
-            {{ t(MR_FILTER_LABEL_KEY[filter]) }}
-          </button>
-        </div>
-        <label class="fb-sort">
-          <span class="fb-sort-label">{{ t('forge.sortLabel') }}</span>
-          <select v-model="mrsSort" class="fb-sort-select">
-            <option value="updated">{{ t('forge.sortUpdated') }}</option>
-            <option value="title">{{ t('forge.sortTitle') }}</option>
-          </select>
-        </label>
-      </template>
+    <div class="fb-panel fb-panel--list" :style="{ '--fb-list-w': `${listWidth}px` }">
+      <ForgeListPanel
+        :section="activeSection"
+        :issues-state="issuesState"
+        :issues-sort="issuesSort"
+        :issues-labels="prefs.issuesLabels"
+        :mrs="mrs"
+        :mrs-state="mrsState"
+        :mrs-sort="mrsSort"
+        :mrs-filter="mrsFilter"
+        :mrs-labels="prefs.mrsLabels"
+        :selection="selection"
+        @update:issues-sort="(v) => (issuesSort = v)"
+        @update:mrs-sort="(v) => (mrsSort = v)"
+        @update:mrs-filter="(v) => (mrsFilter = v)"
+        @toggle-issue-label="toggleIssueLabel"
+        @toggle-mr-label="toggleMrLabel"
+        @clear-issue-filters="clearIssueFilters"
+        @clear-mr-filters="clearMrFilters"
+        @retry-issues="emit('retry-issues')"
+        @select="(sel) => (selection = sel)"
+      />
+    </div>
 
-      <p v-if="mrsErrorMessage !== null" class="fb-degraded">
-        {{ mrsErrorMessage }}
-      </p>
-      <p v-else-if="mrsUnavailableKey !== null" class="fb-degraded">
-        {{ t(mrsUnavailableKey) }}
-      </p>
-      <p v-else-if="mrs.length === 0" class="fb-empty">{{ t('forge.mrsEmpty') }}</p>
-      <!-- Distinct from the line above: the forge has MRs, the status filter
-           and/or a label selection is what leaves nothing on screen. -->
-      <p v-else-if="mrsVisible.length === 0" class="fb-degraded">
-        {{ t(mrsFilteredEmptyKey) }}
-        <button class="fb-retry" type="button" @click="clearMrFilters">
-          {{ t('forge.clearFilters') }}
-        </button>
-      </p>
-      <a
-        v-for="mr in mrsVisible"
-        :key="mr.number"
-        class="fb-item"
-        :href="mr.url"
-        target="_blank"
-        rel="noopener noreferrer"
-        :aria-label="t('forge.openItemAria', { title: mr.title })"
-      >
-        <MrCard :mr="mr" />
-      </a>
-    </ForgeAccordion>
+    <ForgeSplitter
+      :model-value="listWidth"
+      :min="FORGE_LIST_WIDTH_MIN"
+      :max="FORGE_LIST_WIDTH_MAX"
+      :default-width="FORGE_LIST_WIDTH_DEFAULT"
+      :ariaLabel="t('forge.resizeListAria')"
+      @update:model-value="(v) => (listWidth = v)"
+    />
+    <div class="fb-panel fb-panel--detail">
+      <ForgeDetailPanel :item="detailItem" @close="closeDetail" />
+    </div>
   </div>
 </template>
 
 <style scoped>
-.fb-root {
+.fb-shell {
+  container-type: inline-size;
+  container-name: fb-shell;
   display: flex;
-  flex-direction: column;
-  gap: 22px;
-  max-width: 720px;
+  flex-direction: row;
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
   width: 100%;
-  margin: 32px auto;
-  padding: 0 24px 40px;
 }
 
-.fb-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.fb-panel {
+  min-height: 0;
 }
 
-.fb-sort-label {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--cs-ghost);
+.fb-panel--controls {
+  flex: 0 0 var(--fb-controls-w);
+  width: var(--fb-controls-w);
+  border-right: 1px solid var(--cs-line-2);
 }
 
-.fb-sort-select {
-  font-family: inherit;
-  font-size: 11.5px;
-  color: var(--cs-text-2);
-  background: var(--cs-surface);
-  border: 1px solid var(--cs-line-2);
-  border-radius: 6px;
-  padding: 3px 7px;
+.fb-panel--list {
+  flex: 0 0 var(--fb-list-w);
+  width: var(--fb-list-w);
 }
 
-.fb-filters {
-  display: inline-flex;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.fb-filter-chip {
-  font-size: 11.5px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 4px 10px;
-  border: none;
-  background: var(--cs-surface);
-  color: var(--cs-muted);
-  cursor: pointer;
-}
-
-.fb-filter-chip + .fb-filter-chip {
+.fb-panel--detail {
+  flex: 1 1 auto;
+  min-width: 0;
   border-left: 1px solid var(--cs-line-2);
 }
 
-/* The active filter is a state: colored, per the doctrine. */
-.fb-filter-chip--on {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
-}
+/* Below 640px of the shell's OWN width: stack the panels and let the whole
+   shell scroll as one block instead of each panel scrolling on its own. */
+@container fb-shell (max-width: 640px) {
+  .fb-shell {
+    flex-direction: column;
+    height: auto;
+    min-height: 100%;
+  }
 
-.fb-degraded {
-  margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--cs-muted);
-  background: var(--cs-inset);
-  border-radius: 8px;
-  padding: 10px 12px;
-}
+  .fb-panel--controls,
+  .fb-panel--list {
+    flex: none;
+    width: 100%;
+    border-right: none;
+  }
 
-.fb-retry {
-  flex: none;
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--cs-text-2);
-  cursor: pointer;
-}
+  .fb-panel--detail {
+    border-left: none;
+    border-top: 1px solid var(--cs-line-2);
+  }
 
-.fb-retry:hover {
-  border-color: var(--cs-line-3);
-}
-
-.fb-loading,
-.fb-empty {
-  margin: 0;
-  font-size: 12px;
-  color: var(--cs-ghost);
-  padding: 4px 2px;
-}
-
-.fb-item {
-  display: block;
-  text-decoration: none;
-  padding: 12px 13px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 10px;
-  background: var(--cs-surface);
-}
-
-.fb-item:hover {
-  border-color: var(--cs-line-3);
+  /* Dragging a divider between stacked, full-width panels makes no sense:
+     hide it (still in the DOM, just out of the tab order via display:none). */
+  :deep(.fs-handle) {
+    display: none;
+  }
 }
 </style>

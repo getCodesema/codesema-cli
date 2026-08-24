@@ -109,3 +109,68 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
     expect(SOURCE).toContain(':initial-prompt="planRequests.promptOf(entry.key)"')
   })
 })
+
+// The forge board (ForgeBoard.vue) sits in the focus zone behind the deck
+// and behind the review view, gated on a project actually being selected.
+// What is pinned here is that wiring, on the source itself, for the same
+// reason as above.
+describe('the sober empty focus state still shows with no project selected', () => {
+  test('the forge board is still gated on a selected project with at least one registered', () => {
+    // The board's own v-else-if stays the literal condition (a TS narrowing
+    // requirement, see the comment on it), but `boardVisible` is defined to
+    // mirror it exactly and IS what gates the work queue below.
+    expect(SOURCE).toContain('v-else-if="filter !== null && projects.length > 0"')
+    expect(SOURCE).toContain('class="ws-forge-board"')
+    const boardVisibleFn = SOURCE.slice(
+      SOURCE.indexOf('const boardVisible = computed('),
+      SOURCE.indexOf('// ── Projects column'),
+    )
+    expect(boardVisibleFn).toContain('reviewRecord.value === null')
+    expect(boardVisibleFn).toContain('deckEntries.value.length === 0')
+    expect(boardVisibleFn).toContain('filter.value !== null')
+    expect(boardVisibleFn).toContain('projects.value.length > 0')
+  })
+
+  test('the empty-focus branch is still the final, unconditional fallback', () => {
+    const forgeBoardAt = SOURCE.indexOf('class="ws-forge-board"')
+    const emptyFocusAt = SOURCE.indexOf('class="ws-empty-focus"')
+    expect(forgeBoardAt).toBeGreaterThan(-1)
+    expect(emptyFocusAt).toBeGreaterThan(-1)
+    expect(forgeBoardAt).toBeLessThan(emptyFocusAt)
+    expect(SOURCE).toContain('workspace.noProject')
+    expect(SOURCE).toContain('workspace.focusEmpty')
+  })
+
+  test('the board remounts (selection and section state reset) on every project switch', () => {
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    expect(forgeBoardTag).toContain(':key="filter"')
+  })
+
+  // The collapsed controls panel shows the project's name (the vertical
+  // band): it has to come from somewhere, and the board itself has no
+  // notion of "which project" beyond the id-keyed data it's handed.
+  test("the board receives the selected project's display name", () => {
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    expect(forgeBoardTag).toContain(':project-name="projectNameById.get(filter) ?? filter"')
+  })
+})
+
+// The board's four-column layout (menu / controls / list / detail) needs the
+// work queue's own column gone, not just visually crowded out: the work
+// queue hides for exactly the branch the board renders in, and comes back
+// for every other one (review, the deck, the empty-focus fallback).
+describe('the work queue hides while the board is the focus zone, shows everywhere else', () => {
+  test('the work queue is gated on the same condition, negated', () => {
+    const workQueueTag = SOURCE.slice(
+      SOURCE.indexOf('<WorkQueue'),
+      SOURCE.indexOf(':states="queueStates"'),
+    )
+    expect(workQueueTag).toContain('v-if="!boardVisible"')
+  })
+})

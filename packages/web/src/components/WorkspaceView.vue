@@ -443,6 +443,21 @@ function backFromReview(): void {
   reviewRecord.value = null
 }
 
+/**
+ * Mirrors the forge board's own `v-else-if` below exactly: the board takes
+ * the full width of the desk (menu / controls / list / detail, four columns)
+ * only in the one focus-zone branch it actually renders in, since review and
+ * the deck both take priority over it, same as in the template. The work
+ * queue hides for exactly this branch and reappears everywhere else.
+ */
+const boardVisible = computed(
+  () =>
+    reviewRecord.value === null &&
+    deckEntries.value.length === 0 &&
+    filter.value !== null &&
+    projects.value.length > 0,
+)
+
 // ── Projects column: counters + the selected project's tree ───────────────
 const activity = computed(() => countProjectActivity(states.value))
 
@@ -576,7 +591,11 @@ async function onRemoveProject(id: string): Promise<void> {
         @branch-click="({ projectId, branch, mr }) => onBranchClick(projectId, branch, mr)"
       />
 
+      <!-- Hidden while the forge board is the focus zone's content: the
+           board then takes the full remaining width (menu / controls /
+           list / detail, four columns). -->
       <WorkQueue
+        v-if="!boardVisible"
         :states="queueStates"
         :project-names="projectNameById"
         :focused-keys="focusedKeys"
@@ -732,8 +751,19 @@ async function onRemoveProject(id: string): Promise<void> {
 
         <!-- Forge board: the selected project's open issues/MRs, in place of
              the sober empty-state once a project is actually chosen. -->
+        <!-- Kept as the literal condition (not `boardVisible`, which mirrors
+             it exactly for the work queue's own gate below): a computed
+             boolean loses the `filter !== null` narrowing Vue's template
+             compiler needs to type `filter` as `string` for the children
+             below (:key, issues.stateOf, mrsByProject.get, …). -->
         <div v-else-if="filter !== null && projects.length > 0" class="ws-forge-board">
+          <!-- Keyed on the project: remounts the board (and its internal
+               selection/section state, not just its persisted prefs) on
+               every project switch, so a detail-panel selection never
+               survives into a different project's items. -->
           <ForgeBoard
+            :key="filter"
+            :project-name="projectNameById.get(filter) ?? filter"
             :issues-state="issues.stateOf(filter)"
             :mrs="mrsByProject.get(filter) ?? []"
             :mrs-state="mrsLoadByProject.get(filter) ?? null"
