@@ -35,8 +35,13 @@ export type ForgeMr = {
   body: string | null
 }
 
+/**
+ * `truncated` is never optional on the success branch (same invariant as
+ * forge-issues.ts's `ForgeIssuesResult`): a caller cannot hold a capped list
+ * without being handed the fact that it is capped.
+ */
 export type ForgeMrsResult =
-  | { available: true; mrs: ForgeMr[] }
+  | { available: true; mrs: ForgeMr[]; truncated: boolean }
   | { available: false; reason: 'no-remote' | 'no-cli' | 'cli-error' }
 
 // prettier-ignore
@@ -44,12 +49,51 @@ const GH_JSON_FIELDS = 'number,title,author,headRefName,baseRefName,updatedAt,ur
 const EXEC_TIMEOUT_MS = 8000
 
 /**
+ * Hard cap on one `listOpenMrs` answer, same doctrine as forge-issues.ts's
+ * `ISSUE_LIST_MAX`: both `gh pr list` and `glab mr list` stop at 30 items by
+ * default (gh `-L/--limit`, glab `-P/--per-page`), exactly the SILENT
+ * truncation this cap replaces. The size is now asked for explicitly, and
+ * whatever the cap leaves out is reported as `truncated: true`, never dropped
+ * in silence. Same magnitude as `ISSUE_LIST_MAX` for the same reason: open
+ * MRs are typically far fewer than an issue backlog, but the cap exists to
+ * bound a pathological repo, not to describe a normal one.
+ */
+export const MR_LIST_MAX = 200
+/** One MR past the cap is what proves there are more; the extra one is never returned. */
+const GH_MR_LIMIT = String(MR_LIST_MAX + 1)
+/**
+ * GitLab's REST API clamps `per_page` at 100 whatever is asked for (same
+ * quirk forge-issues.ts documents for issues), so glab cannot answer "give me
+ * 201" in one go: it pages.
+ */
+const GLAB_PAGE_SIZE = 100
+const GLAB_PER_PAGE = String(GLAB_PAGE_SIZE)
+const GLAB_MAX_PAGES = Math.ceil((MR_LIST_MAX + 1) / GLAB_PAGE_SIZE)
+
+/**
+ * Same budget and reasoning as forge-issues.ts's `FORGE_MAX_BUFFER_BYTES`.
+ * Node's default `maxBuffer` is 1 MiB, and this contract's `commits` (the
+ * full commit list) and `body` (the full Markdown description) are its
+ * heaviest fields by far: a `pr list`/`mr list` answer can blow past the
+ * default as soon as MRs carry real descriptions. Past it, `execFile` kills
+ * the process, `runForgeCli` maps that to `{ kind: 'error' }`, and the WHOLE
+ * list would be reported unavailable even though the data existed: exactly
+ * the whole-list rejection the field-by-field degradation doctrine forbids.
+ */
+export const FORGE_MR_MAX_BUFFER_BYTES = 64 * 1024 * 1024
+
+/**
  * Bounds for the GitLab per-MR enrichment fan-out (see `enrichGlabMrs`).
  * `mr list` does not carry diff size or CI status the way `gh pr list --json`
  * does, so both need one `glab api` call per MR. CONCURRENCY caps how many of
  * those calls run at once; BUDGET_MS caps how long the whole enrichment phase
- * may run before the remaining MRs are returned unenriched rather than making
- * one slow repo stall the entire `/api/mrs` request.
+ * may run. CALL_TIMEOUT_MS is each call's own ceiling, but a call is never
+ * allowed to outlive the phase: every dispatch is timed with
+ * `min(CALL_TIMEOUT_MS, remaining budget)`, so a call started near the
+ * deadline gets a short leash instead of the full 5s, and the phase as a
+ * whole never runs meaningfully past BUDGET_MS. Whatever the deadline leaves
+ * unenriched is returned as-is, rather than making one slow repo stall the
+ * entire `/api/mrs` request.
  */
 const GLAB_ENRICH_CONCURRENCY = 4
 const GLAB_ENRICH_CALL_TIMEOUT_MS = 5000
@@ -594,29 +638,39 @@ export function runForgeCli(
   timeoutMs: number,
 ): Promise<CliOutcome> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutMs }, (err, stdout) => {
-      if (err) {
-        resolve(
-          (err as NodeJS.ErrnoException).code === 'ENOENT'
-            ? { kind: 'missing' }
-            : { kind: 'error' },
-        )
-        return
-      }
-      resolve({ kind: 'ok', stdout })
-    })
+    execFile(
+      cmd,
+      args,
+      { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: FORGE_MR_MAX_BUFFER_BYTES },
+      (err, stdout) => {
+        if (err) {
+          resolve(
+            (err as NodeJS.ErrnoException).code === 'ENOENT'
+              ? { kind: 'missing' }
+              : { kind: 'error' },
+          )
+          return
+        }
+        resolve({ kind: 'ok', stdout })
+      },
+    )
   })
 }
 
 const defaultExec: ForgeMrsExecFn = (cmd, args, cwd, timeoutMs) =>
   runForgeCli(cmd, args, cwd, timeoutMs)
 
-async function enrichOneGlabMr(mr: ForgeMr, cwd: string, execFn: ForgeMrsExecFn): Promise<ForgeMr> {
+async function enrichOneGlabMr(
+  mr: ForgeMr,
+  cwd: string,
+  execFn: ForgeMrsExecFn,
+  timeoutMs: number,
+): Promise<ForgeMr> {
   const outcome = await execFn(
     'glab',
     ['api', `projects/:fullpath/merge_requests/${mr.number}`],
     cwd,
-    GLAB_ENRICH_CALL_TIMEOUT_MS,
+    timeoutMs,
   )
   if (outcome.kind !== 'ok') {
     // Nothing measured for this MR: it is returned as-is, changedFiles/checks
@@ -638,9 +692,12 @@ type EnrichBudget = { concurrency: number; budgetMs: number }
  * call per MR, bounded by `budget.concurrency` workers and a global
  * `budget.budgetMs` wall-clock deadline (GLAB_ENRICH_CONCURRENCY /
  * GLAB_ENRICH_BUDGET_MS in production; overridable only from
- * ForgeMrsOptions, which only tests use). An MR whose call fails, times out,
- * or is never reached before the deadline simply keeps those two fields
- * null: it is never removed from the returned list.
+ * ForgeMrsOptions, which only tests use). Each dispatch is timed with
+ * `min(GLAB_ENRICH_CALL_TIMEOUT_MS, time left before the deadline)`, so a
+ * call started near the deadline cannot itself outlive it: the phase as a
+ * whole never runs meaningfully past `budget.budgetMs`. An MR whose call
+ * fails, times out, or is never reached before the deadline simply keeps
+ * those two fields null: it is never removed from the returned list.
  */
 async function enrichGlabMrs(
   mrs: ForgeMr[],
@@ -659,12 +716,14 @@ async function enrichGlabMrs(
       if (index >= mrs.length) {
         return
       }
-      if (Date.now() >= deadline) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) {
         return
       }
       const mr = mrs[index]
       if (mr !== undefined) {
-        results[index] = await enrichOneGlabMr(mr, cwd, execFn)
+        const callTimeoutMs = Math.min(GLAB_ENRICH_CALL_TIMEOUT_MS, remaining)
+        results[index] = await enrichOneGlabMr(mr, cwd, execFn, callTimeoutMs)
       }
     }
   }
@@ -674,16 +733,73 @@ async function enrichGlabMrs(
   return results
 }
 
+type MrPage = { mrs: ForgeMr[]; truncated: boolean }
+
+/** One MR past the cap is what proves there are more; the extra one is never returned. */
+function capMrs(all: ForgeMr[]): MrPage {
+  return { mrs: all.slice(0, MR_LIST_MAX), truncated: all.length > MR_LIST_MAX }
+}
+
+type CandidateOutcome = { kind: 'ok'; value: MrPage } | { kind: 'missing' } | { kind: 'error' }
+
 type Candidate = {
   cli: string
-  args: string[]
-  parse: (raw: string) => ForgeMr[] | null
+  run: (execFn: ForgeMrsExecFn, cwd: string) => Promise<CandidateOutcome>
   enrich?: (
     mrs: ForgeMr[],
     cwd: string,
     execFn: ForgeMrsExecFn,
     budget: EnrichBudget,
   ) => Promise<ForgeMr[]>
+}
+
+/** gh paginates internally: ask for one more than the cap and count what comes back. */
+function ghMrCandidate(): Candidate {
+  return {
+    cli: 'gh',
+    run: async (execFn, cwd) => {
+      const args = ['pr', 'list', '--json', GH_JSON_FIELDS, '--limit', GH_MR_LIMIT]
+      const outcome = await execFn('gh', args, cwd, EXEC_TIMEOUT_MS)
+      if (outcome.kind !== 'ok') {
+        return outcome
+      }
+      const mrs = parseGhMrList(outcome.stdout)
+      return mrs === null ? { kind: 'error' } : { kind: 'ok', value: capMrs(mrs) }
+    },
+  }
+}
+
+/** glab cannot: GitLab clamps a page at 100, so walk pages until one comes back short. */
+function glabMrCandidate(): Candidate {
+  return {
+    cli: 'glab',
+    run: async (execFn, cwd) => {
+      const all: ForgeMr[] = []
+      for (let page = 1; page <= GLAB_MAX_PAGES; page += 1) {
+        const paging = ['--per-page', GLAB_PER_PAGE, '--page', String(page), '--output', 'json']
+        const args = ['mr', 'list', ...paging]
+        const outcome = await execFn('glab', args, cwd, EXEC_TIMEOUT_MS)
+        if (outcome.kind !== 'ok') {
+          return outcome
+        }
+        const batch = parseGlabMrList(outcome.stdout)
+        if (batch === null) {
+          return { kind: 'error' }
+        }
+        all.push(...batch)
+        if (batch.length < GLAB_PAGE_SIZE) {
+          // A short page is the end of the list, but the pages before it can
+          // already have overshot the cap, so the cap is applied HERE too.
+          return { kind: 'ok', value: capMrs(all) }
+        }
+        if (all.length > MR_LIST_MAX) {
+          break
+        }
+      }
+      return { kind: 'ok', value: capMrs(all) }
+    },
+    enrich: enrichGlabMrs,
+  }
 }
 
 export async function listOpenMrs(
@@ -699,24 +815,15 @@ export async function listOpenMrs(
   const hint = detectForgeHint(cwd)
   const candidates: Candidate[] = []
   if (hint !== 'gitlab') {
-    candidates.push({
-      cli: 'gh',
-      args: ['pr', 'list', '--json', GH_JSON_FIELDS],
-      parse: parseGhMrList,
-    })
+    candidates.push(ghMrCandidate())
   }
   if (hint !== 'github') {
-    candidates.push({
-      cli: 'glab',
-      args: ['mr', 'list', '--output', 'json'],
-      parse: parseGlabMrList,
-      enrich: enrichGlabMrs,
-    })
+    candidates.push(glabMrCandidate())
   }
 
   let sawCliError = false
   for (const candidate of candidates) {
-    const outcome = await execFn(candidate.cli, candidate.args, cwd, EXEC_TIMEOUT_MS)
+    const outcome = await candidate.run(execFn, cwd)
     if (outcome.kind === 'missing') {
       continue
     }
@@ -724,18 +831,14 @@ export async function listOpenMrs(
       sawCliError = true
       continue
     }
-    const mrs = candidate.parse(outcome.stdout)
-    if (mrs === null) {
-      sawCliError = true
-      continue
+    const budget: EnrichBudget = {
+      concurrency: options.glabEnrichConcurrency ?? GLAB_ENRICH_CONCURRENCY,
+      budgetMs: options.glabEnrichBudgetMs ?? GLAB_ENRICH_BUDGET_MS,
     }
-    const enriched = candidate.enrich
-      ? await candidate.enrich(mrs, cwd, execFn, {
-          concurrency: options.glabEnrichConcurrency ?? GLAB_ENRICH_CONCURRENCY,
-          budgetMs: options.glabEnrichBudgetMs ?? GLAB_ENRICH_BUDGET_MS,
-        })
-      : mrs
-    return { available: true, mrs: enriched }
+    const mrs = candidate.enrich
+      ? await candidate.enrich(outcome.value.mrs, cwd, execFn, budget)
+      : outcome.value.mrs
+    return { available: true, mrs, truncated: outcome.value.truncated }
   }
   return { available: false, reason: sawCliError ? 'cli-error' : 'no-cli' }
 }

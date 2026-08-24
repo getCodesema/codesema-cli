@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import {
+  FORGE_MR_MAX_BUFFER_BYTES,
   listOpenMrs,
+  MR_LIST_MAX,
   parseGhMrList,
   parseGlabMrDetail,
   parseGlabMrList,
@@ -1096,6 +1098,210 @@ describe('listOpenMrs', () => {
         expect(maxInFlight).toBeLessThanOrEqual(2)
       } finally {
         cleanup()
+      }
+    })
+  })
+
+  describe('pagination and truncation', () => {
+    function ghMinimalMr(n: number): Record<string, unknown> {
+      return {
+        number: n,
+        title: `mr ${n}`,
+        author: { login: 'a' },
+        headRefName: `feat/${n}`,
+        baseRefName: 'main',
+        updatedAt: '2026-07-28T10:00:00Z',
+        url: `https://github.test/acme/repo/pull/${n}`,
+      }
+    }
+
+    function ghListStdout(count: number): string {
+      return JSON.stringify(Array.from({ length: count }, (_, i) => ghMinimalMr(i + 1)))
+    }
+
+    function glabMinimalMr(n: number): Record<string, unknown> {
+      return {
+        iid: n,
+        title: `mr ${n}`,
+        author: { username: 'a' },
+        source_branch: `feat/${n}`,
+        target_branch: 'main',
+        updated_at: '2026-07-28T09:30:00.123Z',
+        web_url: `https://gitlab.example.test/a/b/-/merge_requests/${n}`,
+      }
+    }
+
+    function glabPageStdout(startIid: number, count: number): string {
+      return JSON.stringify(Array.from({ length: count }, (_, i) => glabMinimalMr(startIid + i)))
+    }
+
+    test('gh is asked for one more than the cap, via --limit', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        let capturedArgs: string[] = []
+        const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            capturedArgs = args
+            return Promise.resolve({ kind: 'ok', stdout: '[]' })
+          }
+          return Promise.resolve({ kind: 'missing' })
+        }
+        await listOpenMrs(repo, { execFn })
+        const limitIndex = capturedArgs.indexOf('--limit')
+        expect(limitIndex).toBeGreaterThan(-1)
+        expect(capturedArgs[limitIndex + 1]).toBe(String(MR_LIST_MAX + 1))
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('glab is asked per page with the 100-item GitLab clamp, page number incrementing', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        const seenPages: (string | undefined)[] = []
+        const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'missing' })
+          }
+          expect(args).toContain('--per-page')
+          expect(args[args.indexOf('--per-page') + 1]).toBe('100')
+          expect(args).toContain('--output')
+          seenPages.push(args[args.indexOf('--page') + 1])
+          // A page shorter than 100 ends the walk immediately.
+          return Promise.resolve({ kind: 'ok', stdout: '[]' })
+        }
+        await listOpenMrs(repo, { execFn })
+        expect(seenPages).toEqual(['1'])
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('truncated is true when gh returns more than MR_LIST_MAX entries', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        const execFn: ForgeMrsExecFn = (cli): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'ok', stdout: ghListStdout(MR_LIST_MAX + 1) })
+          }
+          return Promise.resolve({ kind: 'missing' })
+        }
+        const result = await listOpenMrs(repo, { execFn })
+        expect(result.available).toBe(true)
+        if (!result.available) {
+          throw new Error('expected available')
+        }
+        expect(result.truncated).toBe(true)
+        expect(result.mrs).toHaveLength(MR_LIST_MAX)
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('truncated is false when gh returns exactly MR_LIST_MAX entries', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        const execFn: ForgeMrsExecFn = (cli): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'ok', stdout: ghListStdout(MR_LIST_MAX) })
+          }
+          return Promise.resolve({ kind: 'missing' })
+        }
+        const result = await listOpenMrs(repo, { execFn })
+        expect(result.available).toBe(true)
+        if (!result.available) {
+          throw new Error('expected available')
+        }
+        expect(result.truncated).toBe(false)
+        expect(result.mrs).toHaveLength(MR_LIST_MAX)
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('glab walks pages and truncates once a multi-page answer exceeds MR_LIST_MAX', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        let calls = 0
+        const execFn: ForgeMrsExecFn = (cli): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'missing' })
+          }
+          calls += 1
+          if (calls === 1) {
+            return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(1, 100) })
+          }
+          if (calls === 2) {
+            return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(101, 100) })
+          }
+          // Short page (1 < 100): ends the walk at 201 total.
+          return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(201, 1) })
+        }
+        // Enrichment budget 0 so the per-MR enrichment fan-out (up to 200
+        // calls) never fires and never pollutes the `calls` count this test
+        // asserts on: pagination is what is under test here, not enrichment.
+        const result = await listOpenMrs(repo, { execFn, glabEnrichBudgetMs: 0 })
+        expect(result.available).toBe(true)
+        if (!result.available) {
+          throw new Error('expected available')
+        }
+        expect(calls).toBe(3)
+        expect(result.truncated).toBe(true)
+        expect(result.mrs).toHaveLength(MR_LIST_MAX)
+      } finally {
+        cleanup()
+      }
+    })
+
+    test('glab does not truncate when a multi-page answer stays at or under MR_LIST_MAX', async () => {
+      const repo = tempRepoWithRemote()
+      try {
+        let calls = 0
+        const execFn: ForgeMrsExecFn = (cli): Promise<CliOutcome> => {
+          if (cli === 'gh') {
+            return Promise.resolve({ kind: 'missing' })
+          }
+          calls += 1
+          if (calls === 1) {
+            return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(1, 100) })
+          }
+          // Short page (99 < 100): ends the walk at 199 total.
+          return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(101, 99) })
+        }
+        const result = await listOpenMrs(repo, { execFn, glabEnrichBudgetMs: 0 })
+        expect(result.available).toBe(true)
+        if (!result.available) {
+          throw new Error('expected available')
+        }
+        expect(calls).toBe(2)
+        expect(result.truncated).toBe(false)
+        expect(result.mrs).toHaveLength(199)
+      } finally {
+        cleanup()
+      }
+    })
+  })
+
+  describe('output buffer', () => {
+    test('a payload past the default 1 MiB is not killed: FORGE_MR_MAX_BUFFER_BYTES covers it', async () => {
+      const repo = mkdtempSync(join(tmpdir(), 'codesema-forge-mrs-buf-'))
+      try {
+        execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' })
+        // Past node's 1 MiB default maxBuffer: `commits` (the full commit
+        // list) and `body` (the full Markdown description) are exactly the
+        // fields in this contract that can grow this large in a real answer.
+        const bigSize = 2_000_000
+        expect(bigSize).toBeLessThan(FORGE_MR_MAX_BUFFER_BYTES)
+        writeFileSync(join(repo, 'big.txt'), 'x'.repeat(bigSize))
+        const sha = execFileSync('git', ['hash-object', '-w', 'big.txt'], {
+          cwd: repo,
+          encoding: 'utf8',
+        }).trim()
+        const outcome = await runForgeCli('git', ['cat-file', '-p', sha], repo, 5000)
+        expect(outcome.kind).toBe('ok')
+        expect(outcome.kind === 'ok' && outcome.stdout.length).toBe(bigSize)
+      } finally {
+        rmSync(repo, { recursive: true, force: true })
       }
     })
   })

@@ -142,7 +142,11 @@ describe('createMrReviewRunner (MR source)', () => {
       session: createSession(),
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
-      listMrs: async (): Promise<ForgeMrsResult> => ({ available: true, mrs: [mr] }),
+      listMrs: async (): Promise<ForgeMrsResult> => ({
+        available: true,
+        mrs: [mr],
+        truncated: false,
+      }),
     })
 
     const result = await runner.start({ kind: 'mr', number: mr.number }, 'bogus' as never)
@@ -157,7 +161,11 @@ describe('createMrReviewRunner (MR source)', () => {
       session: createSession(),
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
-      listMrs: async (): Promise<ForgeMrsResult> => ({ available: true, mrs: [mr] }),
+      listMrs: async (): Promise<ForgeMrsResult> => ({
+        available: true,
+        mrs: [mr],
+        truncated: false,
+      }),
     })
 
     const result = await runner.start({ kind: 'mr', number: 999 }, 'simple')
@@ -186,7 +194,11 @@ describe('createMrReviewRunner (MR source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
-      listMrs: async (): Promise<ForgeMrsResult> => ({ available: true, mrs: [mr] }),
+      listMrs: async (): Promise<ForgeMrsResult> => ({
+        available: true,
+        mrs: [mr],
+        truncated: false,
+      }),
     })
 
     expect(runner.status()).toEqual({ available: true, phase: 'idle' })
@@ -215,7 +227,11 @@ describe('createMrReviewRunner (MR source)', () => {
       session,
       agentCommand: agentScriptFor(cwd, '', 1),
       timeoutMs: 15000,
-      listMrs: async (): Promise<ForgeMrsResult> => ({ available: true, mrs: [mr] }),
+      listMrs: async (): Promise<ForgeMrsResult> => ({
+        available: true,
+        mrs: [mr],
+        truncated: false,
+      }),
     })
 
     await runner.start({ kind: 'mr', number: mr.number }, 'simple')
@@ -232,7 +248,11 @@ describe('createMrReviewRunner (MR source)', () => {
       session: createSession(),
       agentCommand: agentScriptFor(cwd, REVIEW),
       timeoutMs: 15000,
-      listMrs: async (): Promise<ForgeMrsResult> => ({ available: true, mrs: [mr] }),
+      listMrs: async (): Promise<ForgeMrsResult> => ({
+        available: true,
+        mrs: [mr],
+        truncated: false,
+      }),
     })
 
     const first = await runner.start({ kind: 'mr', number: mr.number }, 'simple')

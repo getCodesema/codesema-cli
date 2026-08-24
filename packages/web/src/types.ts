@@ -201,8 +201,15 @@ export type ForgeMr = {
  */
 export type ForgeUnavailableReason = 'no-remote' | 'no-cli' | 'cli-error'
 
+/**
+ * `truncated` is never optional on the success branch, for the same reason as
+ * on the issue list: both forge porcelains stop at their own page size, and a
+ * caller that cannot tell a whole list from a capped one will present the cap
+ * as the total.
+ */
 export type ForgeMrsResult =
-  { available: true; mrs: ForgeMr[] } | { available: false; reason: ForgeUnavailableReason }
+  | { available: true; mrs: ForgeMr[]; truncated: boolean }
+  | { available: false; reason: ForgeUnavailableReason }
 
 // Mirrors packages/cli/src/forge-issues-parse.ts and the /api/issues endpoint.
 

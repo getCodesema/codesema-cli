@@ -726,6 +726,7 @@ describe('project-scoped repo routes (?project=)', () => {
         body: null,
       },
     ],
+    truncated: false,
   }
 
   function runGit(cwd: string, args: string[]): void {

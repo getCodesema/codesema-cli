@@ -285,7 +285,11 @@ describe('buildPreview', () => {
       commits: null,
       body: null,
     }
-    const listMrs = async (): Promise<ForgeMrsResult> => ({ available: true, mrs: [mr] })
+    const listMrs = async (): Promise<ForgeMrsResult> => ({
+      available: true,
+      mrs: [mr],
+      truncated: false,
+    })
     // fetchBranch (git fetch origin ...) is skipped here: there is no origin remote, so it would throw;
     // instead we exercise resolvePreviewRefs directly against a source branch reachable without a remote.
     await expect(buildPreview(repo, { kind: 'mr', number: 999 }, { listMrs })).rejects.toThrow(
