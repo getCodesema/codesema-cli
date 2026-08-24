@@ -182,9 +182,10 @@ describe('the work queue hides while the board is the focus zone, shows everywhe
 // move the menu.
 describe('the left rail is permanent, and the menu inside it never moves', () => {
   test('the rail is mounted unconditionally, outside every focus-zone branch', () => {
-    const railAt = SOURCE.indexOf('<aside class="ws-rail"')
+    const railAt = SOURCE.indexOf('class="ws-rail"')
     expect(railAt).toBeGreaterThan(-1)
-    const railTag = SOURCE.slice(railAt, SOURCE.indexOf('>', railAt))
+    // The whole opening tag, which now spans several lines.
+    const railTag = SOURCE.slice(SOURCE.lastIndexOf('<aside', railAt), SOURCE.indexOf('>', railAt))
     expect(railTag).not.toContain('v-if')
     // Before the focus zone, so it is a sibling of it and not inside it.
     expect(railAt).toBeLessThan(SOURCE.indexOf('<main class="ws-focus">'))
@@ -268,5 +269,32 @@ describe('the MR state filter actually reaches the forge', () => {
   test('the draft toggle stays client-side: it is handed down, never sent to the loader', () => {
     expect(SOURCE).toContain(':mrs-draft-only="mrsDraftOnly"')
     expect(SOURCE).not.toContain('loadMrsState(projectId, mrsDraftOnly')
+  })
+})
+
+// The rail's width animates when it JUMPS (the collapse button, a keyboard
+// step) and never while it is being dragged: a width that animates cannot
+// keep up with a pointer rewriting it every frame, so the rail visibly trails
+// the cursor. The reference interface animates neither, which is a side
+// effect of it only ever dragging, not an intention worth copying.
+describe('the rail animates its width, except while dragged', () => {
+  test('the rail carries a width transition, on tokens rather than literals', () => {
+    const rail = SOURCE.slice(SOURCE.indexOf('.ws-rail {'), SOURCE.indexOf('.ws-rail--dragging'))
+    expect(rail).toContain('transition:')
+    expect(rail).toContain('var(--cs-duration-base)')
+    expect(rail).toContain('var(--cs-ease-in)')
+    // flex-basis as well as width: the rail is a flex item, so animating
+    // only `width` would leave the basis to snap.
+    expect(rail).toContain('flex-basis')
+  })
+
+  test('dragging switches the transition off entirely', () => {
+    const dragging = SOURCE.slice(SOURCE.indexOf('.ws-rail--dragging'))
+    expect(dragging).toContain('transition: none;')
+  })
+
+  test('the dragging flag is driven by the handle itself, not guessed', () => {
+    expect(SOURCE).toContain('@update:dragging="(v) => (railDragging = v)"')
+    expect(SOURCE).toContain("'ws-rail--dragging': railDragging")
   })
 })

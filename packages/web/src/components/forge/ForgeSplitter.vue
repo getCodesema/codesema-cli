@@ -17,7 +17,13 @@ const props = defineProps<{
   ariaLabel: string
 }>()
 
-const emit = defineEmits<{ 'update:modelValue': [width: number] }>()
+const emit = defineEmits<{
+  'update:modelValue': [width: number]
+  /** Whether a pointer drag is in progress. The caller needs this to switch
+   * OFF any width transition while dragging: an animated width lags behind
+   * the pointer, so the handle appears to drift away from the cursor. */
+  'update:dragging': [dragging: boolean]
+}>()
 
 const dragging = ref(false)
 let dragStartX = 0
@@ -25,6 +31,7 @@ let dragStartWidth = 0
 
 function onPointerDown(event: PointerEvent): void {
   dragging.value = true
+  emit('update:dragging', true)
   dragStartX = event.clientX
   dragStartWidth = props.modelValue
   ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
@@ -45,15 +52,17 @@ function onPointerUp(event: PointerEvent): void {
     return
   }
   dragging.value = false
+  emit('update:dragging', false)
   ;(event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId)
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  const next = widthAfterKey(event.key, props.modelValue, {
-    min: props.min,
-    max: props.max,
-    defaultWidth: props.defaultWidth,
-  })
+  const next = widthAfterKey(
+    event.key,
+    props.modelValue,
+    { min: props.min, max: props.max, defaultWidth: props.defaultWidth },
+    event.shiftKey,
+  )
   if (next === null) {
     return
   }

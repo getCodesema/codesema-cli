@@ -125,6 +125,9 @@ export function forgeFilterMrsByDraft<T extends Pick<ForgeMr, 'isDraft'>>(
 
 /** One keyboard/drag notch, in pixels, shared by every resizable divider. */
 export const FORGE_SPLITTER_STEP = 16
+/** The coarse step, taken with Shift. Crossing a 220-460px rail one notch at
+ * a time is 15 keypresses; this makes it 4. */
+export const FORGE_SPLITTER_STEP_COARSE = 64
 
 /** Keeps a width inside [min, max]: the one rule every resize path (drag,
  * keyboard, and a persisted value read back from storage) shares. */
@@ -136,7 +139,8 @@ export type ForgeSplitterBounds = { min: number; max: number; defaultWidth: numb
 
 /**
  * The width after one keyboard interaction on a splitter (ARIA "window
- * splitter" pattern): ArrowLeft/ArrowRight move by one notch, Enter recalls
+ * splitter" pattern): ArrowLeft/ArrowRight move by one notch (a coarse one
+ * with Shift held), Enter recalls
  * the panel's default width. Any other key is not this splitter's concern:
  * `null` tells the caller to leave the event alone (no preventDefault, no
  * emit).
@@ -145,13 +149,15 @@ export function widthAfterKey(
   key: string,
   current: number,
   bounds: ForgeSplitterBounds,
+  coarse = false,
 ): number | null {
   const { min, max, defaultWidth } = bounds
+  const step = coarse ? FORGE_SPLITTER_STEP_COARSE : FORGE_SPLITTER_STEP
   if (key === 'ArrowLeft') {
-    return clampWidth(current - FORGE_SPLITTER_STEP, min, max)
+    return clampWidth(current - step, min, max)
   }
   if (key === 'ArrowRight') {
-    return clampWidth(current + FORGE_SPLITTER_STEP, min, max)
+    return clampWidth(current + step, min, max)
   }
   if (key === 'Enter') {
     return clampWidth(defaultWidth, min, max)

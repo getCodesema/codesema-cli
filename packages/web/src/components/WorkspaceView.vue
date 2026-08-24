@@ -589,6 +589,13 @@ const {
   clearMrFilters,
 } = useForgePrefs()
 
+/** True only while the rail's handle is under the pointer. The width
+ * transition is switched off for exactly that window: animating a width that
+ * is being rewritten every frame makes the rail lag behind the cursor. Every
+ * OTHER width change -- collapsing with the button, the keyboard step -- is a
+ * jump from one width to another, and those animate. */
+const railDragging = ref(false)
+
 /** The rail's collapsed band needs something to name itself with. With a
  * project selected that is the project; with none it is the menu's own
  * label, never an empty band. */
@@ -689,7 +696,11 @@ const projectsNavHandlers = {
            filter sections appear underneath only when a board is up. Picking
            a project therefore adds sections below the menu instead of moving
            or resizing the menu itself. -->
-      <aside class="ws-rail" :style="{ '--ws-rail-w': `${railPanelWidth}px` }">
+      <aside
+        class="ws-rail"
+        :class="{ 'ws-rail--dragging': railDragging }"
+        :style="{ '--ws-rail-w': `${railPanelWidth}px` }"
+      >
         <ForgeControlsPanel
           :has-board="boardVisible"
           :active-section="activeSection"
@@ -727,6 +738,7 @@ const projectsNavHandlers = {
         :default-width="FORGE_CONTROLS_WIDTH_DEFAULT"
         :ariaLabel="t('forge.resizeControlsAria')"
         @update:model-value="(v) => (railWidth = v)"
+        @update:dragging="(v) => (railDragging = v)"
       />
 
       <!-- Hidden while the forge board is the focus zone's content: the
@@ -970,6 +982,14 @@ const projectsNavHandlers = {
   width: var(--ws-rail-w);
   min-height: 0;
   border-right: 1px solid var(--cs-line-2);
+  transition:
+    flex-basis var(--cs-duration-base) var(--cs-ease-in),
+    width var(--cs-duration-base) var(--cs-ease-in);
+}
+
+/* Dragging: no transition at all, or the rail trails the pointer. */
+.ws-rail--dragging {
+  transition: none;
 }
 
 /* ── Focus zone: the column deck ──────────────────────────────────────── */

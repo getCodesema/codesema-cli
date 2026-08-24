@@ -369,3 +369,36 @@ describe('resolveForgeSelection', () => {
     })
   })
 })
+
+// The coarse keyboard step. Without it, crossing the rail's own 220-460px
+// range one 16px notch at a time takes fifteen keypresses, which makes the
+// keyboard path technically present and practically unusable.
+describe('widthAfterKey: the coarse step taken with Shift', () => {
+  const bounds = { min: 220, max: 460, defaultWidth: 288 }
+
+  test('the fine step stays the default when Shift is not held', () => {
+    expect(widthAfterKey('ArrowRight', 300, bounds)).toBe(316)
+    expect(widthAfterKey('ArrowLeft', 300, bounds)).toBe(284)
+    expect(widthAfterKey('ArrowRight', 300, bounds, false)).toBe(316)
+  })
+
+  test('Shift moves four notches at once, in both directions', () => {
+    expect(widthAfterKey('ArrowRight', 300, bounds, true)).toBe(364)
+    expect(widthAfterKey('ArrowLeft', 300, bounds, true)).toBe(236)
+  })
+
+  test('the coarse step is clamped like the fine one: it never overshoots the bounds', () => {
+    expect(widthAfterKey('ArrowRight', 440, bounds, true)).toBe(460)
+    expect(widthAfterKey('ArrowLeft', 240, bounds, true)).toBe(220)
+  })
+
+  test('Shift changes nothing for Enter, which recalls the default width either way', () => {
+    expect(widthAfterKey('Enter', 400, bounds, true)).toBe(288)
+    expect(widthAfterKey('Enter', 400, bounds, false)).toBe(288)
+  })
+
+  test('an unrelated key is still left alone, Shift or not', () => {
+    expect(widthAfterKey('a', 300, bounds, true)).toBeNull()
+    expect(widthAfterKey('Tab', 300, bounds, true)).toBeNull()
+  })
+})
