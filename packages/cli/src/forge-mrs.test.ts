@@ -1501,6 +1501,138 @@ describe('listOpenMrs', () => {
         cleanup()
       }
     })
+
+    describe('state filter', () => {
+      // gh runs FIRST on an unrecognised remote (hint is neither 'gitlab' nor
+      // 'github', so both candidates are tried in order) and a successful gh
+      // outcome ends the ladder there: glab is never reached. Each candidate
+      // is therefore isolated by making the OTHER one answer 'missing', the
+      // same technique the file's own 'falls back from gh (missing) to glab
+      // (ok)' test above already uses.
+      test.each([
+        ['open', 'open'],
+        ['closed', 'closed'],
+        ['merged', 'merged'],
+        ['all', 'all'],
+      ] as const)('gh candidate: state=%s is passed as --state %s', async (state) => {
+        const repo = tempRepoWithRemote()
+        try {
+          let ghArgs: string[] = []
+          const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+            if (cli === 'gh') {
+              ghArgs = args
+              return Promise.resolve({ kind: 'ok', stdout: '[]' })
+            }
+            return Promise.resolve({ kind: 'missing' })
+          }
+          await listOpenMrs(repo, { execFn, state })
+          expect(ghArgs[ghArgs.indexOf('--state') + 1]).toBe(state)
+        } finally {
+          cleanup()
+        }
+      })
+
+      test('glab candidate: the default open state carries no flag at all', async () => {
+        const repo = tempRepoWithRemote()
+        try {
+          let glabArgs: string[] = []
+          const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+            if (cli === 'gh') {
+              return Promise.resolve({ kind: 'missing' })
+            }
+            glabArgs = args
+            return Promise.resolve({ kind: 'ok', stdout: '[]' })
+          }
+          await listOpenMrs(repo, { execFn })
+          expect(glabArgs).not.toContain('--closed')
+          expect(glabArgs).not.toContain('--merged')
+          expect(glabArgs).not.toContain('--all')
+        } finally {
+          cleanup()
+        }
+      })
+
+      test.each([
+        ['closed', '--closed'],
+        ['merged', '--merged'],
+        ['all', '--all'],
+      ] as const)('glab candidate: state=%s is passed as %s', async (state, glabFlag) => {
+        const repo = tempRepoWithRemote()
+        try {
+          let glabArgs: string[] = []
+          const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+            if (cli === 'gh') {
+              return Promise.resolve({ kind: 'missing' })
+            }
+            glabArgs = args
+            return Promise.resolve({ kind: 'ok', stdout: '[]' })
+          }
+          await listOpenMrs(repo, { execFn, state })
+          expect(glabArgs).toContain(glabFlag)
+        } finally {
+          cleanup()
+        }
+      })
+
+      test('a non-open state still gets capped and reports truncated honestly (gh side)', async () => {
+        const repo = tempRepoWithRemote()
+        try {
+          const execFn: ForgeMrsExecFn = (cli): Promise<CliOutcome> => {
+            if (cli === 'gh') {
+              return Promise.resolve({ kind: 'ok', stdout: ghListStdout(MR_LIST_MAX + 1) })
+            }
+            return Promise.resolve({ kind: 'missing' })
+          }
+          const result = await listOpenMrs(repo, { execFn, state: 'all' })
+          expect(result.available).toBe(true)
+          if (!result.available) {
+            throw new Error('expected available')
+          }
+          expect(result.truncated).toBe(true)
+          expect(result.mrs).toHaveLength(MR_LIST_MAX)
+        } finally {
+          cleanup()
+        }
+      })
+
+      test('a non-open state still gets capped and reports truncated honestly (glab side)', async () => {
+        const repo = tempRepoWithRemote()
+        try {
+          let calls = 0
+          const execFn: ForgeMrsExecFn = (cli, args): Promise<CliOutcome> => {
+            if (cli === 'gh') {
+              return Promise.resolve({ kind: 'missing' })
+            }
+            calls += 1
+            // Every page of a `--closed` walk still carries the flag: only the
+            // first page's args are captured, the rest is unconstrained.
+            if (calls === 1) {
+              expect(args).toContain('--closed')
+            }
+            if (calls === 1) {
+              return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(1, 100) })
+            }
+            if (calls === 2) {
+              return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(101, 100) })
+            }
+            return Promise.resolve({ kind: 'ok', stdout: glabPageStdout(201, 1) })
+          }
+          const result = await listOpenMrs(repo, {
+            execFn,
+            state: 'closed',
+            glabEnrichBudgetMs: 0,
+          })
+          expect(result.available).toBe(true)
+          if (!result.available) {
+            throw new Error('expected available')
+          }
+          expect(result.truncated).toBe(true)
+          expect(result.mrs).toHaveLength(MR_LIST_MAX)
+        } finally {
+          cleanup()
+        }
+      })
+    })
   })
 
   describe('output buffer', () => {

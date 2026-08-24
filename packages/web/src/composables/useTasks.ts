@@ -15,6 +15,7 @@ import type {
   DiscoverResponse,
   ForgeMr,
   ForgeMrsResult,
+  ForgeMrStateFilter,
   ForgeUnavailableReason,
   LocalBranch,
   Project,
@@ -94,6 +95,9 @@ export type MrsLoadState =
   | { status: 'loaded'; truncated: boolean }
   | { status: 'unavailable'; reason: ForgeUnavailableReason }
   | { status: 'error'; error: string }
+
+/** The state `mrsByProject` fetches: mirrors the CLI probe's own default. */
+const DEFAULT_MR_STATE: ForgeMrStateFilter = 'open'
 
 export type CreateTaskInput = {
   title: string
@@ -569,6 +573,19 @@ function useProjectRegistry(token: string, store: TaskStore) {
   // empty" vs "forge unavailable" vs "request failed" on the MR side, none of
   // which the flattened list can distinguish. Absent entry = not fetched yet.
   const mrsLoadByProject = reactive(new Map<string, MrsLoadState>())
+  // MRs and their load state beyond the default open state above (D2): a
+  // controls panel asking for merged/closed/all MRs gets its own cache slot,
+  // keyed by project AND state so switching state never evicts, or is served,
+  // an already-loaded other state. UNLIKE `mrsByProject`, never eagerly
+  // populated by setActive/refreshMrs: only `loadMrsState` below fetches
+  // into it, and only when a state other than the default is actually asked
+  // for (the lazy-fetch policy this module's header describes, extended to
+  // every state rather than just the default one).
+  const mrsByProjectState = reactive(new Map<string, ForgeMr[]>())
+  const mrsLoadByProjectState = reactive(new Map<string, MrsLoadState>())
+  // In-flight (project, state) pairs, so a second loadMrsState() call arriving
+  // before the first settles is a no-op rather than a duplicate fetch.
+  const mrsStateInFlight = new Set<string>()
   // Local branches per project id, fetched alongside the MRs when a card
   // becomes active: the tree's "Branches (N)" disclosure and the draft
   // columns are the consumers. Errors cache an empty list silently.
@@ -584,29 +601,101 @@ function useProjectRegistry(token: string, store: TaskStore) {
   // later registry reloads only re-derive when the active card disappears.
   let activeSeeded = false
 
-  async function loadMrs(projectId: string): Promise<void> {
+  /** Composite cache key for the state-scoped MR caches above. */
+  function mrStateCacheKey(projectId: string, state: ForgeMrStateFilter): string {
+    return `${projectId} ${state}`
+  }
+
+  /** Writes a fetch outcome into the right cache pair: the plain per-project
+   *  one for the default 'open' state (unchanged since before state filtering
+   *  existed, the tree and every 'open'-only reader depend on it), the
+   *  composite project+state one otherwise. */
+  function setMrsResult(
+    projectId: string,
+    state: ForgeMrStateFilter,
+    mrs: ForgeMr[],
+    load: MrsLoadState,
+  ): void {
+    if (state === DEFAULT_MR_STATE) {
+      mrsByProject.set(projectId, mrs)
+      mrsLoadByProject.set(projectId, load)
+      return
+    }
+    const key = mrStateCacheKey(projectId, state)
+    mrsByProjectState.set(key, mrs)
+    mrsLoadByProjectState.set(key, load)
+  }
+
+  async function loadMrs(
+    projectId: string,
+    state: ForgeMrStateFilter = DEFAULT_MR_STATE,
+  ): Promise<void> {
     try {
-      const res = await fetch(`/api/mrs?project=${encodeURIComponent(projectId)}`)
+      const res = await fetch(
+        `/api/mrs?project=${encodeURIComponent(projectId)}&state=${encodeURIComponent(state)}`,
+      )
       if (!res.ok) {
-        mrsByProject.set(projectId, [])
-        mrsLoadByProject.set(projectId, { status: 'error', error: await errorFrom(res) })
+        setMrsResult(projectId, state, [], { status: 'error', error: await errorFrom(res) })
         return
       }
       const body = (await res.json()) as ForgeMrsResult
-      mrsByProject.set(projectId, body.available ? body.mrs : [])
-      mrsLoadByProject.set(
+      setMrsResult(
         projectId,
+        state,
+        body.available ? body.mrs : [],
         body.available
           ? { status: 'loaded', truncated: body.truncated }
           : { status: 'unavailable', reason: body.reason },
       )
     } catch (e) {
-      mrsByProject.set(projectId, [])
-      mrsLoadByProject.set(projectId, {
+      setMrsResult(projectId, state, [], {
         status: 'error',
         error: e instanceof Error ? e.message : String(e),
       })
     }
+  }
+
+  /** The MRs to render for a project and requested state (default: open). */
+  function mrsOf(projectId: string, state: ForgeMrStateFilter = DEFAULT_MR_STATE): ForgeMr[] {
+    return state === DEFAULT_MR_STATE
+      ? (mrsByProject.get(projectId) ?? [])
+      : (mrsByProjectState.get(mrStateCacheKey(projectId, state)) ?? [])
+  }
+
+  /** The load fact behind `mrsOf`'s answer; null = never fetched for this pair. */
+  function mrsLoadOf(
+    projectId: string,
+    state: ForgeMrStateFilter = DEFAULT_MR_STATE,
+  ): MrsLoadState | null {
+    return state === DEFAULT_MR_STATE
+      ? (mrsLoadByProject.get(projectId) ?? null)
+      : (mrsLoadByProjectState.get(mrStateCacheKey(projectId, state)) ?? null)
+  }
+
+  /**
+   * Lazy fetch policy for an explicitly requested (project, state) pair: a
+   * pair with a cached result (any MrsLoadState, including an error, see
+   * reloadMrsState for the retry path) or a fetch already in flight is left
+   * untouched. The default 'open' state is normally already warm by the time
+   * anything calls this (setActive/refreshMrs below fetch it eagerly on
+   * project activation), so this mostly guards the non-default states a
+   * controls panel asks for on demand, but it applies uniformly to every
+   * state rather than special-casing 'open'.
+   */
+  function loadMrsState(projectId: string, state: ForgeMrStateFilter): void {
+    const key = mrStateCacheKey(projectId, state)
+    if (mrsLoadOf(projectId, state) !== null || mrsStateInFlight.has(key)) {
+      return
+    }
+    mrsStateInFlight.add(key)
+    void loadMrs(projectId, state).finally(() => {
+      mrsStateInFlight.delete(key)
+    })
+  }
+
+  /** Always refetches the given (project, state) pair, keeping the previous result visible while it does. */
+  function reloadMrsState(projectId: string, state: ForgeMrStateFilter = DEFAULT_MR_STATE): void {
+    void loadMrs(projectId, state)
   }
 
   async function loadBranches(projectId: string): Promise<void> {
@@ -721,6 +810,16 @@ function useProjectRegistry(token: string, store: TaskStore) {
     }
     mrsByProject.delete(id)
     mrsLoadByProject.delete(id)
+    // Every non-default-state cache slot for this project (composite keys of
+    // the form "<id> <state>"): a Map has no prefix-delete, so the matching
+    // keys are collected first, then removed.
+    const statePrefix = `${id} `
+    for (const key of mrsByProjectState.keys()) {
+      if (key.startsWith(statePrefix)) {
+        mrsByProjectState.delete(key)
+        mrsLoadByProjectState.delete(key)
+      }
+    }
     branchesByProject.delete(id)
     await loadProjects()
     return { ok: true }
@@ -740,6 +839,16 @@ function useProjectRegistry(token: string, store: TaskStore) {
     refreshMrs,
     addProject,
     removeProject,
+    // MRs beyond the default open state (D2): mrsOf/mrsLoadOf read either
+    // cache transparently by state, loadMrsState fetches lazily and caches,
+    // reloadMrsState always refetches. 'open' itself still goes through
+    // mrsOf(id, 'open')/mrsLoadOf(id, 'open') here for a uniform API, backed
+    // by the very same mrsByProject/mrsLoadByProject the tree already reads
+    // directly.
+    mrsOf,
+    mrsLoadOf,
+    loadMrsState,
+    reloadMrsState,
   }
 }
 

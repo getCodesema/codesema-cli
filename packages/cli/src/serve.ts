@@ -9,8 +9,12 @@ import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './confi
 import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
-import { listIssues as probeIssues, type ForgeIssuesResult } from './forge-issues.js'
-import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
+import {
+  listIssues as probeIssues,
+  type ForgeIssuesResult,
+  type ForgeIssueStateFilter,
+} from './forge-issues.js'
+import { listOpenMrs, type ForgeMrsResult, type ForgeMrStateFilter } from './forge-mrs.js'
 import { t } from './i18n.js'
 import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
@@ -1143,25 +1147,63 @@ function serveTaskEvents(
 async function handleMrsList(
   res: ServerResponse,
   cwd: string,
-  listMrs: (cwd: string) => Promise<ForgeMrsResult>,
+  listMrs: (cwd: string, state?: ForgeMrStateFilter) => Promise<ForgeMrsResult>,
+  state: ForgeMrStateFilter | undefined,
 ): Promise<void> {
-  const result = await listMrs(cwd)
+  const result = await listMrs(cwd, state)
   sendJson(res, 200, result)
 }
 
 async function handleIssuesList(
   res: ServerResponse,
   cwd: string,
-  listIssues: (cwd: string) => Promise<ForgeIssuesResult>,
+  listIssues: (cwd: string, state?: ForgeIssueStateFilter) => Promise<ForgeIssuesResult>,
+  state: ForgeIssueStateFilter | undefined,
 ): Promise<void> {
-  const result = await listIssues(cwd)
+  const result = await listIssues(cwd, state)
   sendJson(res, 200, result)
 }
 
-/** Adapts forge-issues's `listIssues({cwd, state?})` to the plain `(cwd) => Promise<result>`
- *  shape every route handler and test seam here uses; open issues only, same default the
- *  underlying probe already applies. */
-const listIssuesDefault = (cwd: string): Promise<ForgeIssuesResult> => probeIssues({ cwd })
+/** Adapts forge-issues's `listIssues({cwd, state?})` to the plain `(cwd, state?) =>
+ *  Promise<result>` shape every route handler and test seam here uses; absent state falls
+ *  through to the underlying probe's own default (open). */
+const listIssuesDefault = (
+  cwd: string,
+  state?: ForgeIssueStateFilter,
+): Promise<ForgeIssuesResult> => probeIssues({ cwd, state })
+
+/** Same adaptation as `listIssuesDefault`, for forge-mrs's `listOpenMrs(cwd, {state?})`. */
+const listMrsDefault = (cwd: string, state?: ForgeMrStateFilter): Promise<ForgeMrsResult> =>
+  listOpenMrs(cwd, { state })
+
+const MR_STATE_FILTERS: ReadonlySet<string> = new Set(['open', 'merged', 'closed', 'all'])
+const ISSUE_STATE_FILTERS: ReadonlySet<string> = new Set(['open', 'closed', 'all'])
+
+type StateParamResult<T> = { ok: true; state: T | undefined } | { ok: false }
+
+/**
+ * Parses the optional `?state=` query param shared by /api/mrs and /api/issues.
+ * Absent → `undefined` (the underlying probe's own default, open); present but
+ * not one of `values` → refused outright, never silently folded back to the
+ * default: a caller asking for a state this server does not recognise must
+ * be told so, not served a different list than the one it asked for.
+ */
+function parseStateParam<T extends string>(
+  params: URLSearchParams,
+  values: ReadonlySet<string>,
+): StateParamResult<T> {
+  const raw = params.get('state')
+  if (raw === null) {
+    return { ok: true, state: undefined }
+  }
+  return values.has(raw) ? { ok: true, state: raw as T } : { ok: false }
+}
+
+const parseMrStateParam = (params: URLSearchParams): StateParamResult<ForgeMrStateFilter> =>
+  parseStateParam(params, MR_STATE_FILTERS)
+
+const parseIssueStateParam = (params: URLSearchParams): StateParamResult<ForgeIssueStateFilter> =>
+  parseStateParam(params, ISSUE_STATE_FILTERS)
 
 /** GET /api/preview?source=mr&number=N | ?source=branch&name=X: deterministic (no agent) MR/branch preview. */
 async function handlePreview(
@@ -1232,8 +1274,8 @@ function createRequestHandler(handlerOpts: {
   indexHtml: string
   cwd: string
   configToken: string
-  listMrs: (cwd: string) => Promise<ForgeMrsResult>
-  listIssues: (cwd: string) => Promise<ForgeIssuesResult>
+  listMrs: (cwd: string, state?: ForgeMrStateFilter) => Promise<ForgeMrsResult>
+  listIssues: (cwd: string, state?: ForgeIssueStateFilter) => Promise<ForgeIssuesResult>
   fix?: FixEndpoint | undefined
   mrReview?: MrReviewEndpoint | undefined
   tasks?: TasksEndpoint | undefined
@@ -1352,10 +1394,18 @@ function createRequestHandler(handlerOpts: {
           return sendText(res, 404, 'not found')
         }
         if (pathname === '/api/mrs') {
-          return void handleMrsList(res, scoped.cwd, listMrs)
+          const state = parseMrStateParam(searchParams)
+          if (!state.ok) {
+            return sendText(res, 400, 'bad request')
+          }
+          return void handleMrsList(res, scoped.cwd, listMrs, state.state)
         }
         if (pathname === '/api/issues') {
-          return void handleIssuesList(res, scoped.cwd, listIssues)
+          const state = parseIssueStateParam(searchParams)
+          if (!state.ok) {
+            return sendText(res, 400, 'bad request')
+          }
+          return void handleIssuesList(res, scoped.cwd, listIssues, state.state)
         }
         if (pathname === '/api/branches') {
           return sendJson(res, 200, listLocalBranches(scoped.cwd))
@@ -1550,9 +1600,10 @@ export async function startServer(
     /** Project auto-registered from the boot repo (GET /api/projects `current`). */
     currentProjectId?: string | null | undefined
     /** Test seam for GET /api/mrs (same shape as mr-review-runner's); defaults to the real forge CLI probe. */
-    listMrs?: ((cwd: string) => Promise<ForgeMrsResult>) | undefined
+    listMrs?: ((cwd: string, state?: ForgeMrStateFilter) => Promise<ForgeMrsResult>) | undefined
     /** Test seam for GET /api/issues; defaults to the real forge CLI probe. */
-    listIssues?: ((cwd: string) => Promise<ForgeIssuesResult>) | undefined
+    listIssues?:
+      ((cwd: string, state?: ForgeIssueStateFilter) => Promise<ForgeIssuesResult>) | undefined
   },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
   if (!existsSync(join(WEB_DIST, 'index.html'))) {
@@ -1590,7 +1641,7 @@ export async function startServer(
       indexHtml,
       cwd: opts.cwd,
       configToken,
-      listMrs: opts.listMrs ?? listOpenMrs,
+      listMrs: opts.listMrs ?? listMrsDefault,
       listIssues: opts.listIssues ?? listIssuesDefault,
       fix,
       mrReview,

@@ -863,3 +863,63 @@ describe('project-scoped repo routes (?project=)', () => {
     expect(mrsCalls[1]).toBe(repoA)
   })
 })
+
+// GET /api/mrs beyond the default open state (D2 states beyond open). Kept in
+// its own describe/repo rather than folded into the scoped describe above:
+// this one asserts on the `state` argument itself, which the scoped describe's
+// seam never records.
+describe('GET /api/mrs state filter', () => {
+  let repo: string
+  let port: number
+  let stop: () => Promise<void>
+  let calls: { cwd: string; state: string | undefined }[]
+
+  const STUB_MRS: ForgeMrsResult = { available: true, mrs: [], truncated: false }
+
+  beforeAll(async () => {
+    repo = mkdtempSync(join(tmpdir(), 'codesema-mrs-state-repo-'))
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' })
+    calls = []
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 4970,
+      listMrs: (cwd, state) => {
+        calls.push({ cwd, state })
+        return Promise.resolve(STUB_MRS)
+      },
+    })
+    port = started.port
+    stop = started.stop
+  })
+
+  afterAll(async () => {
+    await stop()
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  test('absent ?state= reaches the probe as undefined, the historical behavior', async () => {
+    calls.length = 0
+    const res = await rawRequest(port, '/api/mrs')
+    expect(res.status).toBe(200)
+    expect(calls).toEqual([{ cwd: repo, state: undefined }])
+  })
+
+  test.each(['open', 'merged', 'closed', 'all'])(
+    'accepts state=%s and forwards it to the probe verbatim',
+    async (state) => {
+      calls.length = 0
+      const res = await rawRequest(port, `/api/mrs?state=${state}`)
+      expect(res.status).toBe(200)
+      expect(calls).toEqual([{ cwd: repo, state }])
+    },
+  )
+
+  test('rejects an unknown state value instead of silently falling back to the default', async () => {
+    calls.length = 0
+    const res = await rawRequest(port, '/api/mrs?state=bogus')
+    expect(res.status).toBe(400)
+    // Refused before the probe is ever asked: a caller requesting a state
+    // this server does not recognise must not be silently served 'open'.
+    expect(calls).toEqual([])
+  })
+})

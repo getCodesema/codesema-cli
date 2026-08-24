@@ -145,6 +145,15 @@ export type PartialReview = {
 
 export type ForgeMrState = 'open' | 'merged' | 'closed'
 
+/**
+ * State filter GET /api/mrs accepts (mirrors packages/cli/src/forge-mrs.ts's
+ * `ForgeMrStateFilter`). Unlike issues, GitHub and GitLab agree on this
+ * vocabulary: `merged` and `closed` are mutually exclusive states on both
+ * forges, so no reconciliation table is needed the way `ForgeIssueStateFilter`
+ * needs one below.
+ */
+export type ForgeMrStateFilter = ForgeMrState | 'all'
+
 export type ForgeMrMergeable = 'mergeable' | 'conflicting' | 'unknown'
 
 /**
@@ -227,6 +236,12 @@ export type ForgeMrsResult =
 // Mirrors packages/cli/src/forge-issues-parse.ts and the /api/issues endpoint.
 
 export type ForgeIssueState = 'open' | 'closed'
+
+/**
+ * State filter GET /api/issues accepts (mirrors
+ * packages/cli/src/forge-issues.ts's `ForgeIssueStateFilter`).
+ */
+export type ForgeIssueStateFilter = ForgeIssueState | 'all'
 
 export type ForgeIssue = {
   number: number

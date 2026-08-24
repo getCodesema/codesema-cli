@@ -25,7 +25,9 @@ const ISSUES: ForgeIssuesResult = {
   ],
 }
 
-/** Lets each fetch call be answered by hand, in any order. */
+/** Lets each fetch call be answered by hand, in any order. `calls` records
+ *  `projectId state` pairs (space-joined) so a test can assert on the state
+ *  actually requested, not just the project. */
 function riggedFetch(): {
   fetchIssues: IssuesFetchFn
   calls: string[]
@@ -36,8 +38,8 @@ function riggedFetch(): {
   const pending: ((outcome: IssuesFetchOutcome) => void)[] = []
   return {
     calls,
-    fetchIssues: (projectId) => {
-      calls.push(projectId)
+    fetchIssues: (projectId, state) => {
+      calls.push(`${projectId} ${state}`)
       return new Promise((resolve) => pending.push(resolve))
     },
     answer: (n, result) => pending[n]?.({ ok: true, result }),
@@ -60,7 +62,7 @@ describe('useIssues', () => {
 
     store.load('p1')
     expect(store.stateOf('p1')).toEqual({ result: null, loading: true, error: null })
-    expect(rig.calls).toEqual(['p1'])
+    expect(rig.calls).toEqual(['p1 open'])
 
     rig.answer(0, ISSUES)
     await flush()
@@ -73,12 +75,12 @@ describe('useIssues', () => {
 
     store.load('p1')
     store.load('p1') // in flight: not a second call
-    expect(rig.calls).toEqual(['p1'])
+    expect(rig.calls).toEqual(['p1 open'])
 
     rig.answer(0, ISSUES)
     await flush()
     store.load('p1') // cached: not a second call either
-    expect(rig.calls).toEqual(['p1'])
+    expect(rig.calls).toEqual(['p1 open'])
   })
 
   test('reload() always refetches, keeping the previous result visible while it does', async () => {
@@ -90,7 +92,7 @@ describe('useIssues', () => {
     await flush()
 
     store.reload('p1')
-    expect(rig.calls).toEqual(['p1', 'p1'])
+    expect(rig.calls).toEqual(['p1 open', 'p1 open'])
     // The stale result stays visible under the new loading flag rather than
     // flashing back to empty while the refetch is in flight.
     expect(store.stateOf('p1')).toEqual({ result: ISSUES, loading: true, error: null })
@@ -120,7 +122,7 @@ describe('useIssues', () => {
     await flush()
 
     store.load('p1')
-    expect(rig.calls).toEqual(['p1', 'p1'])
+    expect(rig.calls).toEqual(['p1 open', 'p1 open'])
     rig.answer(1, ISSUES)
     await flush()
     expect(store.stateOf('p1')).toEqual({ result: ISSUES, loading: false, error: null })
@@ -143,11 +145,72 @@ describe('useIssues', () => {
 
     store.load('p1')
     store.load('p2')
-    expect(rig.calls).toEqual(['p1', 'p2'])
+    expect(rig.calls).toEqual(['p1 open', 'p2 open'])
 
     rig.answer(1, ISSUES)
     await flush()
     expect(store.stateOf('p2')).toEqual({ result: ISSUES, loading: false, error: null })
     expect(store.stateOf('p1')).toEqual({ result: null, loading: true, error: null })
+  })
+
+  test('stateOf/load/reload default to open, matching the pre-state-filter behavior', () => {
+    const store = useIssues(riggedFetch().fetchIssues)
+    expect(store.stateOf('p1')).toEqual(store.stateOf('p1', 'open'))
+  })
+
+  test('a project is cached independently per requested state: asking for closed never evicts or serves open', async () => {
+    const rig = riggedFetch()
+    const store = useIssues(rig.fetchIssues)
+    const closedIssues: ForgeIssuesResult = {
+      available: true,
+      truncated: false,
+      issues: [{ ...ISSUES.issues[0]!, number: 2, state: 'closed' }],
+    }
+
+    store.load('p1') // implicit 'open'
+    rig.answer(0, ISSUES)
+    await flush()
+
+    store.load('p1', 'closed')
+    expect(rig.calls).toEqual(['p1 open', 'p1 closed'])
+    rig.answer(1, closedIssues)
+    await flush()
+
+    expect(store.stateOf('p1')).toEqual({ result: ISSUES, loading: false, error: null })
+    expect(store.stateOf('p1', 'closed')).toEqual({
+      result: closedIssues,
+      loading: false,
+      error: null,
+    })
+  })
+
+  test('load() is lazy per state: a cached closed list is not refetched by a later load(closed)', async () => {
+    const rig = riggedFetch()
+    const store = useIssues(rig.fetchIssues)
+
+    store.load('p1', 'closed')
+    rig.answer(0, ISSUES)
+    await flush()
+
+    store.load('p1', 'closed') // cached: not a second call
+    store.load('p1') // a different state ('open'): a real second call
+    expect(rig.calls).toEqual(['p1 closed', 'p1 open'])
+  })
+
+  test('reload() refetches only the requested state, leaving the other cached states untouched', async () => {
+    const rig = riggedFetch()
+    const store = useIssues(rig.fetchIssues)
+
+    store.load('p1')
+    rig.answer(0, ISSUES)
+    await flush()
+    store.load('p1', 'all')
+    rig.answer(1, ISSUES)
+    await flush()
+
+    store.reload('p1', 'all')
+    expect(rig.calls).toEqual(['p1 open', 'p1 all', 'p1 all'])
+    // The 'open' cache was never touched by the 'all' reload.
+    expect(store.stateOf('p1')).toEqual({ result: ISSUES, loading: false, error: null })
   })
 })

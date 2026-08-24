@@ -7,6 +7,18 @@ export type { ForgeLabel } from './forge-issues-parse.js'
 export type ForgeMrState = 'open' | 'merged' | 'closed'
 export type ForgeMrMergeable = 'mergeable' | 'conflicting' | 'unknown'
 
+/**
+ * State filter `listOpenMrs` accepts (D2 same as forge-issues's
+ * `ForgeIssueStateFilter`). Unlike issues, GitHub and GitLab agree here: both
+ * treat `merged` and `closed` as mutually exclusive states, gh's own
+ * `PullRequestState` GraphQL enum is `OPEN`/`CLOSED`/`MERGED`, three distinct
+ * values (see `GH_STATE_MAP` below), and the GitLab REST API docs list `state`
+ * as one of `opened`/`closed`/`locked`/`merged`/`all` with `closed` and
+ * `merged` kept apart. So, unlike the issue list's asymmetric vocabulary
+ * (D8), this filter maps onto both forges with no reconciliation needed.
+ */
+export type ForgeMrStateFilter = ForgeMrState | 'all'
+
 export type ForgeCheckRollup = {
   passed: number
   failed: number
@@ -70,7 +82,11 @@ const EXEC_TIMEOUT_MS = 8000
  * whatever the cap leaves out is reported as `truncated: true`, never dropped
  * in silence. Same magnitude as `ISSUE_LIST_MAX` for the same reason: open
  * MRs are typically far fewer than an issue backlog, but the cap exists to
- * bound a pathological repo, not to describe a normal one.
+ * bound a pathological repo, not to describe a normal one. And, since the
+ * `state` filter above can now ask for `closed`/`merged`/`all`, `truncated`
+ * is expected to flip far more often on those than it ever did on `open`
+ * alone: an active repo accumulates closed/merged history at a rate its open
+ * queue never reaches.
  */
 export const MR_LIST_MAX = 200
 /** One MR past the cap is what proves there are more; the extra one is never returned. */
@@ -731,6 +747,8 @@ export type ForgeMrsExecFn = (
 
 export type ForgeMrsOptions = {
   execFn?: ForgeMrsExecFn | undefined
+  /** Which state to list; defaults to 'open', the historical behaviour. */
+  state?: ForgeMrStateFilter | undefined
   /** Test-only override of GLAB_ENRICH_CONCURRENCY; production never sets it. */
   glabEnrichConcurrency?: number | undefined
   /** Test-only override of GLAB_ENRICH_BUDGET_MS; production never sets it. */
@@ -938,12 +956,39 @@ type Candidate = {
   ) => Promise<ForgeMr[]>
 }
 
+/**
+ * glab has no `--state` flag: `open` is the porcelain's own default (no flag
+ * at all), and `closed`/`merged`/`all` each ride their own boolean shortcut.
+ * Verified against `glab mr list --help` (glab 1.105.0) and the GitLab CLI
+ * source (`internal/commands/mr/list/mr_list.go`, `complete()`): `--all` sets
+ * `state=all`, `--closed` sets `state=closed`, `--merged` sets `state=merged`,
+ * and none of the three sets `state=opened` (the porcelain's own default).
+ */
+const GLAB_MR_STATE_FLAGS: Record<ForgeMrStateFilter, string[]> = {
+  open: [],
+  merged: ['--merged'],
+  closed: ['--closed'],
+  all: ['--all'],
+}
+
 /** gh paginates internally: ask for one more than the cap and count what comes back. */
-function ghMrCandidate(): Candidate {
+function ghMrCandidate(state: ForgeMrStateFilter): Candidate {
   return {
     cli: 'gh',
     run: async (execFn, cwd) => {
-      const args = ['pr', 'list', '--json', GH_JSON_FIELDS, '--limit', GH_MR_LIMIT]
+      // gh's own `--state` values (`open|closed|merged|all`, `gh pr list
+      // --help`) are spelled exactly like `ForgeMrStateFilter`'s members: no
+      // translation table needed, unlike glab below.
+      const args = [
+        'pr',
+        'list',
+        '--json',
+        GH_JSON_FIELDS,
+        '--limit',
+        GH_MR_LIMIT,
+        '--state',
+        state,
+      ]
       const outcome = await execFn('gh', args, cwd, EXEC_TIMEOUT_MS)
       if (outcome.kind !== 'ok') {
         return outcome
@@ -955,14 +1000,14 @@ function ghMrCandidate(): Candidate {
 }
 
 /** glab cannot: GitLab clamps a page at 100, so walk pages until one comes back short. */
-function glabMrCandidate(): Candidate {
+function glabMrCandidate(state: ForgeMrStateFilter): Candidate {
   return {
     cli: 'glab',
     run: async (execFn, cwd) => {
       const all: ForgeMr[] = []
       for (let page = 1; page <= GLAB_MAX_PAGES; page += 1) {
         const paging = ['--per-page', GLAB_PER_PAGE, '--page', String(page), '--output', 'json']
-        const args = ['mr', 'list', ...paging]
+        const args = ['mr', 'list', ...GLAB_MR_STATE_FLAGS[state], ...paging]
         const outcome = await execFn('glab', args, cwd, EXEC_TIMEOUT_MS)
         if (outcome.kind !== 'ok') {
           return outcome
@@ -997,13 +1042,14 @@ export async function listOpenMrs(
     return { available: false, reason: 'no-remote' }
   }
 
+  const state = options.state ?? 'open'
   const hint = detectForgeHint(cwd)
   const candidates: Candidate[] = []
   if (hint !== 'gitlab') {
-    candidates.push(ghMrCandidate())
+    candidates.push(ghMrCandidate(state))
   }
   if (hint !== 'github') {
-    candidates.push(glabMrCandidate())
+    candidates.push(glabMrCandidate(state))
   }
 
   let sawCliError = false
