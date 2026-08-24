@@ -100,12 +100,7 @@ import {
 import { detectForgeHint, subprocessEnv, tryGit } from './git.js'
 import { taskReason } from './tasks-store.js'
 
-export type {
-  ForgeIssue,
-  ForgeIssueComment,
-  ForgeIssueState,
-  ForgeLabel,
-} from './forge-issues-parse.js'
+export type { ForgeIssue, ForgeIssueComment, ForgeIssueState } from './forge-issues-parse.js'
 
 /** Same budget as forge-mrs: one forge call must never hold the event loop for long. */
 export const FORGE_ISSUE_TIMEOUT_MS = 8000
