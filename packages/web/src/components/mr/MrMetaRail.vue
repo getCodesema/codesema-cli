@@ -6,6 +6,7 @@
 import { computed } from 'vue'
 import { t, type MessageKey } from '../../i18n'
 import type { ForgeMr } from '../../types'
+import { labelPillStyle } from '../forge/LabelColor'
 import { aggregateCheckStatus, type CheckAggregateStatus, type CheckBucket } from './Checks'
 
 const props = defineProps<{ mr: ForgeMr }>()
@@ -79,7 +80,14 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
       <h3 class="mrr-heading">{{ t('mrs.rail.labels') }}</h3>
       <p v-if="labels.length === 0" class="mrr-empty">{{ t('mrs.rail.labelsEmpty') }}</p>
       <ul v-else class="mrr-chips">
-        <li v-for="label in labels" :key="label" class="mrr-chip">{{ label }}</li>
+        <li
+          v-for="label in labels"
+          :key="label.name"
+          class="mrr-label-chip"
+          :style="labelPillStyle(label.color)"
+        >
+          {{ label.name }}
+        </li>
       </ul>
     </section>
 
@@ -201,6 +209,20 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   border: 1px solid var(--codesema-line-2);
   border-radius: 999px;
   padding: 3px 10px;
+}
+
+/* Non-interactive compact pill: same fill family as LabelChips' rest state
+   (see LabelColor.ts), --cs-* tokens only. Kept apart from .mrr-chip above
+   (reviewers, assignees), which never carries a forge color. */
+.mrr-label-chip {
+  --lp-rest-bg: var(--cs-line-2);
+
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--cs-text-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--lp-rest-bg);
 }
 
 .mrr-mergeable {

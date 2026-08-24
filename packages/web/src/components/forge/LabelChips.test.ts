@@ -27,8 +27,8 @@ describe('LabelChips', () => {
   test('renders one chip per label with its count', async () => {
     const html = await render(
       [
-        { label: 'bug', count: 3 },
-        { label: 'ui', count: 1 },
+        { label: 'bug', color: null, count: 3 },
+        { label: 'ui', color: null, count: 1 },
       ],
       [],
     )
@@ -38,11 +38,19 @@ describe('LabelChips', () => {
     expect(html).toContain('>1<')
   })
 
+  test('the count renders before the label name, not after', async () => {
+    const html = await render([{ label: 'bug', color: null, count: 3 }], [])
+    const countAt = html.indexOf('>3<')
+    const nameAt = html.indexOf('>bug<')
+    expect(countAt).toBeGreaterThan(-1)
+    expect(nameAt).toBeGreaterThan(countAt)
+  })
+
   test('a selected label is marked aria-pressed=true, others false', async () => {
     const html = await render(
       [
-        { label: 'bug', count: 3 },
-        { label: 'ui', count: 1 },
+        { label: 'bug', color: null, count: 3 },
+        { label: 'ui', color: null, count: 1 },
       ],
       ['bug'],
     )
@@ -59,5 +67,19 @@ describe('LabelChips', () => {
     const html = await render([], [])
     expect(html).not.toContain('lc-chip')
     expect(html).not.toContain('lc-root')
+  })
+
+  test('a label color drives the rest fill at 16% opacity and the full fill once selected', async () => {
+    const rest = await render([{ label: 'bug', color: 'd73a4a', count: 1 }], [])
+    expect(rest).toContain('rgba(215, 58, 74, 0.16)')
+
+    const selected = await render([{ label: 'bug', color: 'd73a4a', count: 1 }], ['bug'])
+    expect(selected).toContain('#d73a4a')
+  })
+
+  test('a null color falls back to the neutral --cs-* tokens, never an invented color', async () => {
+    const html = await render([{ label: 'bug', color: null, count: 1 }], [])
+    expect(html).toContain('var(--cs-line-2)')
+    expect(html).not.toContain('rgba(')
   })
 })

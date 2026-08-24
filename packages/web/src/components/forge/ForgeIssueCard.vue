@@ -6,6 +6,7 @@
 import { computed } from 'vue'
 import { t } from '../../i18n'
 import type { ForgeIssue } from '../../types'
+import { labelPillStyle } from './LabelColor'
 
 const props = defineProps<{ issue: ForgeIssue }>()
 
@@ -33,7 +34,13 @@ function formatUpdatedAt(iso: string): string {
     <p class="fic-meta">{{ issue.author }} · {{ formatUpdatedAt(issue.updatedAt) }}</p>
 
     <div v-if="labels.length > 0" class="fic-labels">
-      <span v-for="label in labels" :key="label" class="fic-label">{{ label }}</span>
+      <span
+        v-for="label in labels"
+        :key="label.name"
+        class="fic-label"
+        :style="labelPillStyle(label.color)"
+        >{{ label.name }}</span
+      >
     </div>
   </div>
 </template>
@@ -76,17 +83,22 @@ function formatUpdatedAt(iso: string): string {
 .fic-labels {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
   margin-top: 2px;
 }
 
-/* Neutral border: a label on a card is content, not a state on its own. */
+/* Non-interactive compact pill: same fill family as LabelChips' rest state
+   (see LabelColor.ts), never a colored border — a label on a card is content,
+   not a state. */
 .fic-label {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  color: var(--cs-muted);
-  padding: 1.5px 7px;
-  border: 1px solid var(--cs-line-2);
+  --lp-rest-bg: var(--cs-line-2);
+
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--cs-text-2);
+  padding: 2px 8px;
   border-radius: 999px;
+  background: var(--lp-rest-bg);
 }
 </style>

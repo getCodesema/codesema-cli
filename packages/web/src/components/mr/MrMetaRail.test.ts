@@ -29,7 +29,7 @@ function baseMr(overrides: Partial<ForgeMr> = {}): ForgeMr {
     url: 'https://example.test/mr/42',
     state: 'open',
     isDraft: false,
-    labels: ['ui'],
+    labels: [{ name: 'ui', color: null }],
     additions: 120,
     deletions: 40,
     changedFiles: 6,
@@ -63,10 +63,26 @@ describe('labels section', () => {
   })
 
   test('a populated list renders every label', async () => {
-    const html = await renderRail(baseMr({ labels: ['ui', 'backend'] }))
+    const html = await renderRail(
+      baseMr({
+        labels: [
+          { name: 'ui', color: null },
+          { name: 'backend', color: null },
+        ],
+      }),
+    )
     expect(html).toContain('ui')
     expect(html).toContain('backend')
     expect(html).not.toContain(t('mrs.rail.labelsEmpty'))
+  })
+
+  test('a label color drives the pill fill, a null color falls back to the neutral token', async () => {
+    const colored = await renderRail(baseMr({ labels: [{ name: 'bug', color: 'd73a4a' }] }))
+    expect(colored).toContain('rgba(215, 58, 74, 0.16)')
+
+    const neutral = await renderRail(baseMr({ labels: [{ name: 'bug', color: null }] }))
+    expect(neutral).toContain('var(--cs-line-2)')
+    expect(neutral).not.toContain('rgba(')
   })
 })
 

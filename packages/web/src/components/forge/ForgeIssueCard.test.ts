@@ -24,7 +24,10 @@ function baseIssue(overrides: Partial<ForgeIssue> = {}): ForgeIssue {
     title: 'Add forge board screen',
     body: '',
     state: 'open',
-    labels: ['ui', 'backend'],
+    labels: [
+      { name: 'ui', color: null },
+      { name: 'backend', color: null },
+    ],
     author: 'octocat',
     createdAt: '2026-08-14T00:00:00.000Z',
     updatedAt: '2026-08-20T10:00:00.000Z',
@@ -47,7 +50,14 @@ test('renders the number, title and author', async () => {
 })
 
 test('renders every label', async () => {
-  const html = await renderCard(baseIssue({ labels: ['ui', 'backend'] }))
+  const html = await renderCard(
+    baseIssue({
+      labels: [
+        { name: 'ui', color: null },
+        { name: 'backend', color: null },
+      ],
+    }),
+  )
   expect(html).toContain('ui')
   expect(html).toContain('backend')
 })
@@ -55,6 +65,15 @@ test('renders every label', async () => {
 test('an empty label list renders no label chip', async () => {
   const html = await renderCard(baseIssue({ labels: [] }))
   expect(html).not.toContain('fic-label"')
+})
+
+test('a labeled color drives the pill fill, a null color falls back to the neutral token', async () => {
+  const colored = await renderCard(baseIssue({ labels: [{ name: 'bug', color: 'd73a4a' }] }))
+  expect(colored).toContain('rgba(215, 58, 74, 0.16)')
+
+  const neutral = await renderCard(baseIssue({ labels: [{ name: 'bug', color: null }] }))
+  expect(neutral).toContain('var(--cs-line-2)')
+  expect(neutral).not.toContain('rgba(')
 })
 
 test('the empty string body is not rendered as a degradation of any kind', async () => {

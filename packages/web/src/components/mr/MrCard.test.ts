@@ -31,7 +31,7 @@ function baseMr(overrides: Partial<ForgeMr> = {}): ForgeMr {
     url: 'https://example.test/mr/42',
     state: 'open',
     isDraft: false,
-    labels: ['ui'],
+    labels: [{ name: 'ui', color: null }],
     additions: 120,
     deletions: 40,
     changedFiles: 6,
