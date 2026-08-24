@@ -634,6 +634,30 @@ const en = {
   'workspace.forgeReasonUnknown': 'for a reason this workspace could not name',
   'workspace.forgeUnavailableHint':
     'Conversations still run: a task can be created from a title and a prompt, and a task already bound to a ticket carries on with the copy it froze. What is off: binding a new issue, posting a recap on a merge request, and merging.',
+
+  // --- Issue Radar (C3): two accordions, issues and pull requests ---
+  'radar.issuesTitle': 'Issues',
+  'radar.mrsTitle': 'Pull requests',
+  'radar.sortLabel': 'Sort',
+  'radar.sortUpdated': 'Recently updated',
+  'radar.sortTitle': 'Title (A→Z)',
+  'radar.filterAria': 'Filter by status',
+  'radar.filterAll': 'All',
+  'radar.filterDraft': 'Draft',
+  'radar.filterReady': 'Ready',
+  'radar.labelsAria': 'Filter by label',
+  'radar.truncatedHint': '{n} shown, the forge has more.',
+  'radar.loading': 'Loading…',
+  'radar.retry': 'Retry',
+  'radar.transportError': 'Could not load ({error}).',
+  'radar.issuesEmpty': 'No open issue.',
+  'radar.mrsEmpty': 'No open merge request.',
+  'radar.issuesReasonNoRemote': 'No forge remote configured for this repo.',
+  'radar.issuesReasonNoCli': 'Install gh (GitHub) or glab (GitLab) to list issues.',
+  'radar.issuesReasonCliError': 'The forge CLI returned an unexpected response.',
+  'radar.issuesReasonInvalidInput': 'This project could not be resolved to a forge issue list.',
+  'radar.issuesReasonUnsupported': 'This forge does not support listing issues.',
+  'radar.openItemAria': 'Open "{title}" in the forge',
 }
 
 export type MessageKey = keyof typeof en
@@ -1252,6 +1276,30 @@ const fr: Record<MessageKey, string> = {
   'workspace.forgeReasonUnknown': "pour une raison que ce workspace n'a pas su nommer",
   'workspace.forgeUnavailableHint':
     "Les conversations continuent : on peut créer une tâche à partir d'un titre et d'un prompt, et une tâche déjà rattachée à un ticket poursuit sur la copie qu'elle a figée. Ce qui est coupé : rattacher une nouvelle issue, poster un récap sur une merge request, et merger.",
+
+  // --- Issue Radar (C3) : deux accordéons, issues et pull requests ---
+  'radar.issuesTitle': 'Issues',
+  'radar.mrsTitle': 'Pull requests',
+  'radar.sortLabel': 'Trier',
+  'radar.sortUpdated': 'Récemment mises à jour',
+  'radar.sortTitle': 'Titre (A→Z)',
+  'radar.filterAria': 'Filtrer par statut',
+  'radar.filterAll': 'Toutes',
+  'radar.filterDraft': 'Brouillon',
+  'radar.filterReady': 'Prêtes',
+  'radar.labelsAria': 'Filtrer par label',
+  'radar.truncatedHint': '{n} affichées, la forge en a davantage.',
+  'radar.loading': 'Chargement…',
+  'radar.retry': 'Réessayer',
+  'radar.transportError': 'Impossible de charger ({error}).',
+  'radar.issuesEmpty': 'Aucune issue ouverte.',
+  'radar.mrsEmpty': 'Aucune merge request ouverte.',
+  'radar.issuesReasonNoRemote': 'Aucun remote de forge configuré pour ce dépôt.',
+  'radar.issuesReasonNoCli': 'Installe gh (GitHub) ou glab (GitLab) pour lister les issues.',
+  'radar.issuesReasonCliError': 'La CLI de la forge a renvoyé une réponse inattendue.',
+  'radar.issuesReasonInvalidInput': "Ce projet n'a pas pu être résolu en liste d'issues de forge.",
+  'radar.issuesReasonUnsupported': 'Cette forge ne prend pas en charge la liste des issues.',
+  'radar.openItemAria': 'Ouvrir « {title} » dans la forge',
 }
 
 /**

@@ -29,6 +29,7 @@ import {
   isPinned,
   type FocusDeck,
 } from '../composables/useFocusDeck'
+import { useIssues } from '../composables/useIssues'
 import {
   buildProjectTree,
   countProjectActivity,
@@ -50,6 +51,7 @@ import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../comp
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
 import ProjectsNav from './ProjectsNav.vue'
+import IssueRadar from './radar/IssueRadar.vue'
 import RepoSettings from './RepoSettings.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
@@ -93,6 +95,10 @@ const {
   loadProjects,
   preview,
 } = useTasks(props.token)
+
+// Issue Radar (C3): lazy per-project issue fetch, same trigger as the MR/branch
+// lazy-fetch policy above, see selectFilter.
+const issues = useIssues()
 
 const agents = ref<AgentOption[]>([])
 const currentAgent = ref('')
@@ -163,6 +169,7 @@ function selectFilter(id: string | null): void {
   filter.value = id
   if (id !== null) {
     selectProject(id)
+    issues.load(id)
   }
 }
 
@@ -722,7 +729,18 @@ async function onRemoveProject(id: string): Promise<void> {
           </div>
         </div>
 
-        <!-- Empty focus: a sober invite. -->
+        <!-- Issue Radar: the selected project's open issues/MRs, in place of
+             the sober empty-state once a project is actually chosen. -->
+        <div v-else-if="filter !== null && projects.length > 0" class="ws-radar">
+          <IssueRadar
+            :issues-state="issues.stateOf(filter)"
+            :mrs="mrsByProject.get(filter) ?? []"
+            :workspace="headerWorkspace"
+            @retry-issues="issues.reload(filter)"
+          />
+        </div>
+
+        <!-- Empty focus: a sober invite (no project selected, or none registered). -->
         <div v-else class="ws-empty-focus">
           <p class="ws-empty">
             {{ projects.length === 0 ? t('workspace.noProject') : t('workspace.focusEmpty') }}
@@ -926,6 +944,13 @@ async function onRemoveProject(id: string): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Issue Radar ──────────────────────────────────────────────────────── */
+.ws-radar {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ── Empty focus ──────────────────────────────────────────────────────── */
