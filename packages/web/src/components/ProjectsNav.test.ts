@@ -135,9 +135,9 @@ describe('menu geometry: pixel-accurate track and row dimensions', () => {
 })
 
 describe('icons: one per row type, matching our own semantics', () => {
-  test('the four icons are imported from @lucide/vue', () => {
+  test('the five icons are imported from @lucide/vue', () => {
     expect(SOURCE).toContain(
-      "import { GitBranch, LayoutGrid, MessageSquare, Plus } from '@lucide/vue'",
+      "import { GitBranch, GitPullRequest, LayoutGrid, MessageSquare, Plus } from '@lucide/vue'",
     )
   })
 
@@ -148,33 +148,50 @@ describe('icons: one per row type, matching our own semantics', () => {
     expect(SOURCE.match(/<Plus /g)?.length).toBe(1)
   })
 
-  test('the conversations section and each of its rows carry the conversation icon', () => {
-    expect(SOURCE.match(/<MessageSquare /g)?.length).toBe(2)
+  test('the conversations section carries the conversation icon once, on its own header', () => {
+    expect(SOURCE.match(/<MessageSquare /g)?.length).toBe(1)
   })
 
-  test('the branches disclosure and each of its rows carry the branch icon', () => {
-    expect(SOURCE.match(/<GitBranch /g)?.length).toBe(2)
+  test('the branches disclosure, its rows, and a branch-kind tree node carry the branch icon', () => {
+    // 1: the "Branches (N)" disclosure header. 2: each plain branch row inside
+    // it. 3: a branch-kind node in the conversations tree (the fourth
+    // GitBranch appearance belongs to its v-else sibling of GitPullRequest).
+    expect(SOURCE.match(/<GitBranch /g)?.length).toBe(3)
+  })
+
+  test('a merge-request node in the conversations tree carries the merge-request icon, not the conversation one', () => {
+    expect(SOURCE.match(/<GitPullRequest /g)?.length).toBe(1)
+    const node = SOURCE.slice(
+      SOURCE.indexOf('<!-- The label is the branch itself'),
+      SOURCE.indexOf('<span class="pn-node-label">{{ nodeLabel(node) }}'),
+    )
+    expect(node).toContain('<GitPullRequest v-if="node.kind === \'mr\'"')
+    expect(node).toContain('<GitBranch v-else')
   })
 
   test('a project row keeps its identity dot instead of stacking a generic repo icon', () => {
     const projectRow = SOURCE.slice(SOURCE.indexOf('class="pn-project"'), SOURCE.indexOf('pn-name'))
     expect(projectRow).toContain('class="pn-dot"')
-    expect(projectRow).not.toMatch(/<(LayoutGrid|Plus|MessageSquare|GitBranch) /)
+    expect(projectRow).not.toMatch(/<(LayoutGrid|Plus|MessageSquare|GitBranch|GitPullRequest) /)
   })
 })
 
-describe('rows carry no border: normal is transparent ground, hover/active are fill only', () => {
-  test('"All projects" declares no border at all', () => {
+describe('rows carry no border: `border: none` is explicit, never a bare omission', () => {
+  // A native <button> falls back to the browser's own 2px outset border the
+  // instant `border` is left undeclared: this project imports no Tailwind
+  // preflight to reset that (see style.css). Every nav row must say
+  // `border: none` in the source, not just look borderless in a screenshot.
+  test('"All projects" declares `border: none`, not a bare omission', () => {
     const block = SOURCE.slice(SOURCE.indexOf('.pn-all {'), SOURCE.indexOf('.pn-all:hover'))
-    expect(block).not.toMatch(/\bborder:/)
+    expect(block).toContain('border: none;')
   })
 
-  test('a project row declares no border at all', () => {
+  test('a project row declares `border: none`, not a bare omission', () => {
     const block = SOURCE.slice(SOURCE.indexOf('.pn-project {'), SOURCE.indexOf('.pn-project:hover'))
-    expect(block).not.toMatch(/\bborder:/)
+    expect(block).toContain('border: none;')
   })
 
-  test('the add-project row declares no border color, only `border: none`', () => {
+  test('the add-project row declares `border: none`', () => {
     const block = SOURCE.slice(SOURCE.indexOf('.pn-add {'), SOURCE.indexOf('.pn-add:hover'))
     expect(block).toContain('border: none;')
   })

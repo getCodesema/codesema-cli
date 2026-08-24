@@ -8,7 +8,7 @@
 // the filter. The active project's MR/branch tree and its "Branches (N)"
 // disclosure live here too, compact, under the list. All data comes from
 // props, all mutations go up as events.
-import { GitBranch, LayoutGrid, MessageSquare, Plus } from '@lucide/vue'
+import { GitBranch, GitPullRequest, LayoutGrid, MessageSquare, Plus } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import {
   nameColor,
@@ -365,7 +365,8 @@ watch(
               "
               @click="onNodeClick(node)"
             >
-              <MessageSquare class="pn-node-glyph" aria-hidden="true" />
+              <GitPullRequest v-if="node.kind === 'mr'" class="pn-node-glyph" aria-hidden="true" />
+              <GitBranch v-else class="pn-node-glyph" aria-hidden="true" />
               <span class="pn-node-label">{{ nodeLabel(node) }}</span>
             </button>
           </div>
@@ -488,7 +489,10 @@ watch(
 
 /* "All projects": neutral row; active state is fill + text only, no border
    or side bar. Same anatomy as every other navigation row (36px, 14px/500
-   text, 16px icon). */
+   text, 16px icon). `border: none` is explicit, not omitted: this is a
+   native <button>, and the browser's own default border (2px outset) shows
+   through in the absence of Tailwind preflight, which this project does not
+   import (see style.css). */
 .pn-all {
   display: flex;
   align-items: center;
@@ -501,6 +505,7 @@ watch(
   line-height: 20px;
   color: var(--cs-text-2);
   padding: 8px 12px;
+  border: none;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
@@ -585,6 +590,7 @@ watch(
   line-height: 20px;
   color: var(--cs-text-2);
   padding: 8px 12px;
+  border: none;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
