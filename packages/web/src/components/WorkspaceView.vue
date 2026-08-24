@@ -68,6 +68,7 @@ const {
   connections,
   projects,
   mrsByProject,
+  mrsLoadByProject,
   branchesByProject,
   start,
   stop,
@@ -735,7 +736,7 @@ async function onRemoveProject(id: string): Promise<void> {
           <IssueRadar
             :issues-state="issues.stateOf(filter)"
             :mrs="mrsByProject.get(filter) ?? []"
-            :workspace="headerWorkspace"
+            :mrs-state="mrsLoadByProject.get(filter) ?? null"
             @retry-issues="issues.reload(filter)"
           />
         </div>

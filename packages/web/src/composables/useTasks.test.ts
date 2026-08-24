@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { ref } from 'vue'
-import type { TaskPlan, TaskRecord } from '../types'
+import type { ForgeMr, TaskPlan, TaskRecord } from '../types'
 import {
   applyTaskMetaFrame,
   taskKey,
@@ -207,6 +207,180 @@ describe('taskStreamHandlers (the stream wiring itself)', () => {
       frame({ project_id: 'p1', task_id: 'x', event: { name: 'task_checks', data: null } }),
     )
     expect(state.checks).toBeNull()
+  })
+})
+
+// mrsLoadByProject carries the FACT behind mrsByProject's flattened `[]`: a
+// loaded (possibly empty, possibly truncated) list, a forge the CLI could not
+// reach with its own motif, or the fetch itself failing. Driven through
+// loadProjects()'s auto-select of the derived active card, since loadMrs
+// itself is private (setActive's own lazy-fetch policy, mirrored by
+// selectProject), the same wiring WorkspaceView relies on.
+describe('loadMrs / mrsLoadByProject (selectProject/loadProjects lazy-fetch policy)', () => {
+  type Route = { status: number; body: unknown } | 'reject'
+
+  function mrFixture(overrides: Partial<ForgeMr> = {}): ForgeMr {
+    return {
+      number: 1,
+      title: 'first mr',
+      author: 'octocat',
+      sourceBranch: 'feat/x',
+      targetBranch: 'main',
+      updatedAt: '2026-08-14T00:00:00.000Z',
+      url: 'https://example.test/mr/1',
+      state: 'open',
+      isDraft: false,
+      labels: [],
+      additions: null,
+      deletions: null,
+      changedFiles: null,
+      checks: null,
+      reviewers: null,
+      assignees: null,
+      milestone: null,
+      mergeable: null,
+      commits: null,
+      body: null,
+      ...overrides,
+    }
+  }
+
+  function projectsResponse(id: string): unknown {
+    return {
+      projects: [{ id, path: `/repo/${id}`, name: id, added_at: '2026-08-14T00:00:00.000Z' }],
+      current: id,
+    }
+  }
+
+  /** Routes a GET/DELETE by its pathname (query string stripped); 'reject'
+   * simulates a network failure, an unrouted path is a test authoring bug. */
+  function installRoutedFetch(routes: Record<string, Route>): {
+    calls: string[]
+    restore: () => void
+  } {
+    const calls: string[] = []
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) => {
+      calls.push(url)
+      const path = url.split('?')[0] ?? url
+      const route = routes[path]
+      if (route === undefined) {
+        return Promise.reject(new Error(`unrouted fetch in test: ${url}`))
+      }
+      if (route === 'reject') {
+        return Promise.reject(new Error('network down'))
+      }
+      const { status, body } = route
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    return {
+      calls,
+      restore: () => {
+        globalThis.fetch = original
+      },
+    }
+  }
+
+  /** Lets the fetch/json promise chain inside loadMrs actually settle. */
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  /** Registers project 'p1' (the API's `current`, so loadProjects derives it
+   * as the active card and its lazy fetches fire on their own) and lets its
+   * MR load settle. Branches are routed to an empty list unconditionally:
+   * this describe block is about the MR side only. */
+  async function loadedProject(
+    mrsRoute: Route,
+  ): Promise<{ tasks: ReturnType<typeof useTasks>; calls: string[] }> {
+    const { calls, restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/branches': { status: 200, body: [] },
+      '/api/mrs': mrsRoute,
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      return { tasks, calls }
+    } finally {
+      restore()
+    }
+  }
+
+  test('a successful, non-truncated list: status "loaded", truncated false, the list carried over', async () => {
+    const { tasks } = await loadedProject({
+      status: 200,
+      body: { available: true, truncated: false, mrs: [mrFixture()] },
+    })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: false })
+    expect(tasks.mrsByProject.get('p1')).toEqual([mrFixture()])
+  })
+
+  test('a successful, truncated list: status "loaded", truncated true', async () => {
+    const { tasks } = await loadedProject({
+      status: 200,
+      body: { available: true, truncated: true, mrs: [mrFixture()] },
+    })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: true })
+  })
+
+  test('a successful, empty list: status "loaded", never confused with unavailable', async () => {
+    const { tasks } = await loadedProject({
+      status: 200,
+      body: { available: true, truncated: false, mrs: [] },
+    })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: false })
+    expect(tasks.mrsByProject.get('p1')).toEqual([])
+  })
+
+  test.each(['no-remote', 'no-cli', 'cli-error'] as const)(
+    'forge unavailable (%s): status "unavailable" with its motif, mrsByProject stays empty',
+    async (reason) => {
+      const { tasks } = await loadedProject({
+        status: 200,
+        body: { available: false, reason },
+      })
+      expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'unavailable', reason })
+      expect(tasks.mrsByProject.get('p1')).toEqual([])
+    },
+  )
+
+  test('an HTTP failure: status "error" with the server’s own words, mrsByProject stays empty', async () => {
+    const { tasks } = await loadedProject({ status: 500, body: { error: 'boom' } })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'error', error: 'boom' })
+    expect(tasks.mrsByProject.get('p1')).toEqual([])
+  })
+
+  test('a transport exception: status "error" with the exception’s message', async () => {
+    const { tasks } = await loadedProject('reject')
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'error', error: 'network down' })
+    expect(tasks.mrsByProject.get('p1')).toEqual([])
+  })
+
+  test('removing a project purges mrsLoadByProject alongside mrsByProject', async () => {
+    const { calls, restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/branches': { status: 200, body: [] },
+      '/api/mrs': { status: 200, body: { available: true, truncated: false, mrs: [] } },
+      '/api/projects/p1': { status: 200, body: {} },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: false })
+
+      const result = await tasks.removeProject('p1')
+      expect(result).toEqual({ ok: true })
+      expect(tasks.mrsLoadByProject.get('p1')).toBeUndefined()
+      expect(tasks.mrsByProject.get('p1')).toBeUndefined()
+      expect(calls).toContain('/api/projects/p1')
+    } finally {
+      restore()
+    }
   })
 })
 

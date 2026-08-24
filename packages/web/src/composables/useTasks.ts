@@ -15,6 +15,7 @@ import type {
   DiscoverResponse,
   ForgeMr,
   ForgeMrsResult,
+  ForgeUnavailableReason,
   LocalBranch,
   Project,
   ProjectCandidate,
@@ -78,6 +79,21 @@ export type TaskState = {
 }
 
 export type ApiResult = { ok: true } | { ok: false; status: number; error: string }
+
+/**
+ * Outcome of a project's last GET /api/mrs, kept ALONGSIDE `mrsByProject`
+ * rather than replacing it: the tree (buildProjectTree, otherBranches, branch
+ * click resolution) only ever needs the flat list, but the Issue Radar screen
+ * needs to tell apart the three facts that list collapses into the same `[]`:
+ * a forge that answered "no open MR" (loaded), a forge it could not reach
+ * (unavailable, with the CLI's own motif), and the request itself failing
+ * (error, transport-level). UI state, not a wire contract: it never leaves
+ * this composable's boundary with WorkspaceView/IssueRadar.
+ */
+export type MrsLoadState =
+  | { status: 'loaded'; truncated: boolean }
+  | { status: 'unavailable'; reason: ForgeUnavailableReason }
+  | { status: 'error'; error: string }
 
 export type CreateTaskInput = {
   title: string
@@ -548,6 +564,11 @@ function useProjectRegistry(token: string, store: TaskStore) {
   // demand. A repo without a forge (or a stopped CLI) caches an empty list
   // silently: the tree then degrades to branch nodes only.
   const mrsByProject = reactive(new Map<string, ForgeMr[]>())
+  // The FACT behind the last fetch into `mrsByProject` above, per project id
+  // (see MrsLoadState): the Issue Radar screen's only source for "loaded
+  // empty" vs "forge unavailable" vs "request failed" on the MR side, none of
+  // which the flattened list can distinguish. Absent entry = not fetched yet.
+  const mrsLoadByProject = reactive(new Map<string, MrsLoadState>())
   // Local branches per project id, fetched alongside the MRs when a card
   // becomes active: the tree's "Branches (N)" disclosure and the draft
   // columns are the consumers. Errors cache an empty list silently.
@@ -568,12 +589,23 @@ function useProjectRegistry(token: string, store: TaskStore) {
       const res = await fetch(`/api/mrs?project=${encodeURIComponent(projectId)}`)
       if (!res.ok) {
         mrsByProject.set(projectId, [])
+        mrsLoadByProject.set(projectId, { status: 'error', error: await errorFrom(res) })
         return
       }
       const body = (await res.json()) as ForgeMrsResult
       mrsByProject.set(projectId, body.available ? body.mrs : [])
-    } catch {
+      mrsLoadByProject.set(
+        projectId,
+        body.available
+          ? { status: 'loaded', truncated: body.truncated }
+          : { status: 'unavailable', reason: body.reason },
+      )
+    } catch (e) {
       mrsByProject.set(projectId, [])
+      mrsLoadByProject.set(projectId, {
+        status: 'error',
+        error: e instanceof Error ? e.message : String(e),
+      })
     }
   }
 
@@ -688,6 +720,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
       }
     }
     mrsByProject.delete(id)
+    mrsLoadByProject.delete(id)
     branchesByProject.delete(id)
     await loadProjects()
     return { ok: true }
@@ -697,6 +730,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
     projects,
     activeProject,
     mrsByProject,
+    mrsLoadByProject,
     branchesByProject,
     candidates,
     workspace,

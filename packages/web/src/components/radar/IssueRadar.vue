@@ -2,13 +2,14 @@
 // Issue Radar: the two accordions (issues, pull requests) shown in the focus
 // zone in place of the sober empty-state message once a project is selected.
 // Pure presentational orchestration: all fetching lives upstream (useIssues
-// for issues, useTasks' mrsByProject for MRs, already wired in WorkspaceView);
-// this component only sorts, filters, counts and persists the UI prefs.
+// for issues, useTasks' mrsByProject/mrsLoadByProject for MRs, already wired
+// in WorkspaceView); this component only sorts, filters, counts and persists
+// the UI prefs.
 import { computed, ref, watch } from 'vue'
 import type { ProjectIssuesState } from '../../composables/useIssues'
-import { forgeUnavailableKey } from '../../composables/useProjects'
+import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
-import type { ForgeMr, WorkspaceInfo } from '../../types'
+import type { ForgeMr } from '../../types'
 import MrCard from '../mr/MrCard.vue'
 import IssueCard from './IssueCard.vue'
 import LabelChips from './LabelChips.vue'
@@ -26,12 +27,10 @@ import { readRadarPrefs, writeRadarPrefs } from './RadarPrefs'
 const props = defineProps<{
   issuesState: ProjectIssuesState
   mrs: ForgeMr[]
-  /** Process-wide/project isolation facts (T1.4): the only surviving signal
-   * this screen has for "the forge could not be reached" on the MR side,
-   * since the shared mrsByProject cache (useTasks.ts, out of this chunk's
-   * scope) collapses both a genuinely empty list and an unreachable forge
-   * down to the same `[]`, see the component doc below for the tradeoff. */
-  workspace: WorkspaceInfo | null
+  /** The fact behind the last GET /api/mrs of this project (useTasks.ts'
+   * mrsLoadByProject): null while nothing was fetched yet, distinct from
+   * both a loaded empty list and a forge that could not be reached. */
+  mrsState: MrsLoadState | null
 }>()
 
 const emit = defineEmits<{ 'retry-issues': [] }>()
@@ -110,9 +109,31 @@ const issuesVisible = computed(() =>
       ),
 )
 
-// ── Pull requests: state filter, then labels, then sort ───────────────────
-const mrsForgeUnavailableKey = computed(() => forgeUnavailableKey(props.workspace))
-const mrsCount = computed(() => (mrsForgeUnavailableKey.value === null ? props.mrs.length : null))
+// ── Pull requests: transport error / forge unavailable / empty / list ─────
+const MRS_REASON_KEY = {
+  'no-remote': 'mrs.reasonNoRemote',
+  'no-cli': 'mrs.reasonNoCli',
+  'cli-error': 'mrs.reasonCliError',
+} as const
+
+const mrsErrorMessage = computed(() =>
+  props.mrsState?.status === 'error'
+    ? t('radar.transportError', { error: props.mrsState.error })
+    : null,
+)
+const mrsUnavailableKey = computed(() =>
+  props.mrsState?.status === 'unavailable' ? MRS_REASON_KEY[props.mrsState.reason] : null,
+)
+const mrsDegraded = computed(
+  () => mrsErrorMessage.value !== null || mrsUnavailableKey.value !== null,
+)
+// Null (never a fabricated 0) until a fetch actually resolved into a count.
+const mrsCount = computed(() => (props.mrsState?.status === 'loaded' ? props.mrs.length : null))
+const mrsTruncatedHint = computed(() =>
+  props.mrsState?.status === 'loaded' && props.mrsState.truncated
+    ? t('radar.truncatedHint', { n: props.mrs.length })
+    : null,
+)
 const mrsStateFiltered = computed(() => radarFilterMrsByState(props.mrs, mrsFilter.value))
 const mrsLabelCounts = computed(() => radarLabelCounts(mrsStateFiltered.value))
 const mrsVisible = computed(() =>
@@ -182,12 +203,12 @@ const MR_FILTER_LABEL_KEY = {
       v-model:open="mrsOpen"
       :label="t('radar.mrsTitle')"
       :count="mrsCount"
-      :truncated-hint="null"
+      :truncated-hint="mrsTruncatedHint"
     >
-      <template v-if="mrsForgeUnavailableKey === null && mrs.length > 0" #labels>
+      <template v-if="!mrsDegraded && mrs.length > 0" #labels>
         <LabelChips :counts="mrsLabelCounts" :selected="prefs.mrsLabels" @toggle="toggleMrLabel" />
       </template>
-      <template v-if="mrsForgeUnavailableKey === null && mrs.length > 0" #filters>
+      <template v-if="!mrsDegraded && mrs.length > 0" #filters>
         <div class="ir-filters" role="group" :aria-label="t('radar.filterAria')">
           <button
             v-for="filter in MR_FILTERS"
@@ -210,8 +231,11 @@ const MR_FILTER_LABEL_KEY = {
         </label>
       </template>
 
-      <p v-if="mrsForgeUnavailableKey !== null" class="ir-degraded">
-        {{ t(mrsForgeUnavailableKey) }}
+      <p v-if="mrsErrorMessage !== null" class="ir-degraded">
+        {{ mrsErrorMessage }}
+      </p>
+      <p v-else-if="mrsUnavailableKey !== null" class="ir-degraded">
+        {{ t(mrsUnavailableKey) }}
       </p>
       <p v-else-if="mrs.length === 0" class="ir-empty">{{ t('radar.mrsEmpty') }}</p>
       <a

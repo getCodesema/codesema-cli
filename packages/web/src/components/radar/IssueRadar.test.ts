@@ -8,8 +8,9 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { ProjectIssuesState } from '../../composables/useIssues'
+import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
-import type { ForgeIssue, ForgeIssuesResult, ForgeMr, WorkspaceInfo } from '../../types'
+import type { ForgeIssue, ForgeIssuesResult, ForgeMr } from '../../types'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -72,19 +73,10 @@ function available(issues: ForgeIssue[], truncated = false): ForgeIssuesResult {
   return { available: true, truncated, issues }
 }
 
-function workspace(overrides: Partial<WorkspaceInfo> = {}): WorkspaceInfo {
-  return {
-    isolation_available: true,
-    isolation_default: 'container',
-    isolation_reason: 'ok',
-    ...overrides,
-  }
-}
-
 async function render(props: {
   issuesState: ProjectIssuesState
   mrs: ForgeMr[]
-  workspace: WorkspaceInfo | null
+  mrsState: MrsLoadState | null
 }): Promise<string> {
   const IssueRadar = (await import('./IssueRadar.vue')).default
   const app = createSSRApp(IssueRadar, props)
@@ -98,12 +90,17 @@ function issuesSectionOf(html: string): string {
   return html.slice(0, html.indexOf('Pull requests'))
 }
 
+/** Symmetric cut, starting at the Pull requests accordion. */
+function mrsSectionOf(html: string): string {
+  return html.slice(html.indexOf('Pull requests'))
+}
+
 describe('issues: loading / error / unavailable / empty / list', () => {
   test('no result yet: shows the loading message, no count badge', async () => {
     const html = await render({
       issuesState: issuesState({ loading: true }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html).toContain(t('radar.loading'))
     expect(issuesSectionOf(html)).not.toContain('ra-count')
@@ -113,7 +110,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     const html = await render({
       issuesState: issuesState({ error: 'HTTP 500' }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html).toContain(t('radar.transportError', { error: 'HTTP 500' }))
     expect(html).toContain(t('radar.retry'))
@@ -129,7 +126,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     const html = await render({
       issuesState: issuesState({ result: { available: false, reason } }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html).toContain(t(key))
     // Never confused with "no open issue" (a success), nor with the retry flow.
@@ -141,7 +138,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     const html = await render({
       issuesState: issuesState({ result: available([]) }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html).toContain(t('radar.issuesEmpty'))
     expect(html).toContain('>0<') // count badge shows the measured zero
@@ -152,7 +149,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     const html = await render({
       issuesState: issuesState({ result: { available: false, reason: 'no-remote' } }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(issuesSectionOf(html)).not.toContain('ra-count')
   })
@@ -163,7 +160,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
         result: available([issue({ number: 1 }), issue({ number: 2 })], true),
       }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html).toContain(t('radar.truncatedHint', { n: 2 }))
   })
@@ -172,7 +169,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     const html = await render({
       issuesState: issuesState({ result: available([issue()], false) }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html).not.toContain('ra-truncated')
   })
@@ -183,7 +180,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     const html = await render({
       issuesState: issuesState({ result: available([older, newer]) }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html.indexOf('newer')).toBeLessThan(html.indexOf('older'))
   })
@@ -194,7 +191,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
         result: available([issue({ url: 'https://example.test/issues/9' })]),
       }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(html).toContain('href="https://example.test/issues/9"')
     expect(html).toContain('target="_blank"')
@@ -204,45 +201,72 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     const withLabels = await render({
       issuesState: issuesState({ result: available([issue({ labels: ['bug'] })]) }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(withLabels).toContain('bug')
 
     const empty = await render({
       issuesState: issuesState({ result: available([]) }),
       mrs: [],
-      workspace: null,
+      mrsState: null,
     })
     expect(empty).not.toContain('lc-chip')
   })
 })
 
-describe('pull requests: forge unavailable vs empty vs list', () => {
-  test('forge unavailable (workspace overlay) hides the list and its controls', async () => {
+describe('pull requests: transport error / forge unavailable / empty / list / truncated', () => {
+  test('a transport error shows the error, never a reason or the empty message', async () => {
     const html = await render({
       issuesState: issuesState(),
-      mrs: [mr()],
-      workspace: workspace({ forge_available: false, forge_reason: 'no-cli' }),
+      mrs: [],
+      mrsState: { status: 'error', error: 'HTTP 500' },
     })
-    expect(html).toContain(t('workspace.forgeReasonNoCli'))
-    expect(html).not.toContain('ir-filters')
+    expect(html).toContain(t('radar.transportError', { error: 'HTTP 500' }))
+    expect(html).not.toContain(t('radar.mrsEmpty'))
+    expect(mrsSectionOf(html)).not.toContain('ra-count')
   })
 
-  test('an unknown workspace (null) never claims unavailability', async () => {
-    const html = await render({ issuesState: issuesState(), mrs: [], workspace: null })
+  test.each([
+    ['no-remote', 'mrs.reasonNoRemote'],
+    ['no-cli', 'mrs.reasonNoCli'],
+    ['cli-error', 'mrs.reasonCliError'],
+  ] as const)(
+    'forge unavailable (%s) renders its own distinct message, hides the list and its controls',
+    async (reason, key) => {
+      const html = await render({
+        issuesState: issuesState(),
+        mrs: [mr()],
+        mrsState: { status: 'unavailable', reason },
+      })
+      expect(html).toContain(t(key))
+      expect(html).not.toContain(t('radar.mrsEmpty'))
+      expect(html).not.toContain('ir-filters')
+      // Unknown, not zero: no fabricated count for a list that could not be fetched.
+      expect(mrsSectionOf(html)).not.toContain('ra-count')
+    },
+  )
+
+  test('an unknown mrsState (not fetched yet) never claims unavailability, and shows no count badge', async () => {
+    const html = await render({ issuesState: issuesState(), mrs: [], mrsState: null })
     expect(html).toContain(t('radar.mrsEmpty'))
+    expect(mrsSectionOf(html)).not.toContain('ra-count')
   })
 
-  test('an empty, available MR list renders "no open merge request"', async () => {
-    const html = await render({ issuesState: issuesState(), mrs: [], workspace: workspace() })
+  test('an empty, LOADED list is a success: "no open merge request", with the measured 0', async () => {
+    const html = await render({
+      issuesState: issuesState(),
+      mrs: [],
+      mrsState: { status: 'loaded', truncated: false },
+    })
     expect(html).toContain(t('radar.mrsEmpty'))
+    expect(mrsSectionOf(html)).toContain('>0<')
   })
 
   test('a non-empty list renders the count, the status filter chips and each MR', async () => {
     const html = await render({
       issuesState: issuesState(),
       mrs: [mr({ number: 1 }), mr({ number: 2 })],
-      workspace: workspace(),
+      mrsState: { status: 'loaded', truncated: false },
     })
     expect(html).toContain('>2<')
     expect(html).toContain(t('radar.filterAll'))
@@ -256,16 +280,25 @@ describe('pull requests: forge unavailable vs empty vs list', () => {
     const html = await render({
       issuesState: issuesState(),
       mrs: [mr({ url: 'https://example.test/mr/99' })],
-      workspace: workspace(),
+      mrsState: { status: 'loaded', truncated: false },
     })
     expect(html).toContain('href="https://example.test/mr/99"')
   })
 
-  test('never claims a truncation the mrsByProject cache cannot report', async () => {
+  test('a truncated MR list says so explicitly, with the number actually shown', async () => {
     const html = await render({
       issuesState: issuesState(),
       mrs: [mr(), mr({ number: 2 })],
-      workspace: workspace(),
+      mrsState: { status: 'loaded', truncated: true },
+    })
+    expect(html).toContain(t('radar.truncatedHint', { n: 2 }))
+  })
+
+  test('a non-truncated MR list carries no truncation caveat', async () => {
+    const html = await render({
+      issuesState: issuesState(),
+      mrs: [mr(), mr({ number: 2 })],
+      mrsState: { status: 'loaded', truncated: false },
     })
     expect(html).not.toContain('ra-truncated')
   })
@@ -294,7 +327,7 @@ describe('the two accordions fold independently, from the persisted prefs blob',
       const html = await render({
         issuesState: issuesState({ result: available([issue({ title: 'HIDDEN_ISSUE' })]) }),
         mrs: [mr({ title: 'SHOWN_MR' })],
-        workspace: workspace(),
+        mrsState: { status: 'loaded', truncated: false },
       })
       expect(html).not.toContain('HIDDEN_ISSUE')
       expect(html).toContain('SHOWN_MR')
