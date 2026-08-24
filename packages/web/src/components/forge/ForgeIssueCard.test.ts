@@ -21,10 +21,10 @@ Bun.plugin({
 function baseIssue(overrides: Partial<ForgeIssue> = {}): ForgeIssue {
   return {
     number: 7,
-    title: 'Add issue radar screen',
+    title: 'Add forge board screen',
     body: '',
     state: 'open',
-    labels: ['ui', 'radar'],
+    labels: ['ui', 'backend'],
     author: 'octocat',
     createdAt: '2026-08-14T00:00:00.000Z',
     updatedAt: '2026-08-20T10:00:00.000Z',
@@ -34,27 +34,27 @@ function baseIssue(overrides: Partial<ForgeIssue> = {}): ForgeIssue {
 }
 
 async function renderCard(issue: ForgeIssue): Promise<string> {
-  const IssueCard = (await import('./IssueCard.vue')).default
-  const app = createSSRApp(IssueCard, { issue })
+  const ForgeIssueCard = (await import('./ForgeIssueCard.vue')).default
+  const app = createSSRApp(ForgeIssueCard, { issue })
   return renderToString(app)
 }
 
 test('renders the number, title and author', async () => {
   const html = await renderCard(baseIssue())
   expect(html).toContain(t('mrs.number', { n: 7 }))
-  expect(html).toContain('Add issue radar screen')
+  expect(html).toContain('Add forge board screen')
   expect(html).toContain('octocat')
 })
 
 test('renders every label', async () => {
-  const html = await renderCard(baseIssue({ labels: ['ui', 'radar'] }))
+  const html = await renderCard(baseIssue({ labels: ['ui', 'backend'] }))
   expect(html).toContain('ui')
-  expect(html).toContain('radar')
+  expect(html).toContain('backend')
 })
 
 test('an empty label list renders no label chip', async () => {
   const html = await renderCard(baseIssue({ labels: [] }))
-  expect(html).not.toContain('isc-label"')
+  expect(html).not.toContain('fic-label"')
 })
 
 test('the empty string body is not rendered as a degradation of any kind', async () => {

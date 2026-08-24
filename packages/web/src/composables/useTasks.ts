@@ -83,12 +83,12 @@ export type ApiResult = { ok: true } | { ok: false; status: number; error: strin
 /**
  * Outcome of a project's last GET /api/mrs, kept ALONGSIDE `mrsByProject`
  * rather than replacing it: the tree (buildProjectTree, otherBranches, branch
- * click resolution) only ever needs the flat list, but the Issue Radar screen
+ * click resolution) only ever needs the flat list, but the forge board screen
  * needs to tell apart the three facts that list collapses into the same `[]`:
  * a forge that answered "no open MR" (loaded), a forge it could not reach
  * (unavailable, with the CLI's own motif), and the request itself failing
  * (error, transport-level). UI state, not a wire contract: it never leaves
- * this composable's boundary with WorkspaceView/IssueRadar.
+ * this composable's boundary with WorkspaceView/ForgeBoard.
  */
 export type MrsLoadState =
   | { status: 'loaded'; truncated: boolean }
@@ -565,7 +565,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
   // silently: the tree then degrades to branch nodes only.
   const mrsByProject = reactive(new Map<string, ForgeMr[]>())
   // The FACT behind the last fetch into `mrsByProject` above, per project id
-  // (see MrsLoadState): the Issue Radar screen's only source for "loaded
+  // (see MrsLoadState): the forge board screen's only source for "loaded
   // empty" vs "forge unavailable" vs "request failed" on the MR side, none of
   // which the flattened list can distinguish. Absent entry = not fetched yet.
   const mrsLoadByProject = reactive(new Map<string, MrsLoadState>())

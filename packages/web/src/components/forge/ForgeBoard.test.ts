@@ -1,6 +1,6 @@
 // Same harness as MrCard.test.ts / WorkspaceHeader.test.ts. Interactivity
 // (clicking a filter/sort/label chip, toggling an accordion) is covered at
-// the pure-logic level (RadarLogic.test.ts, RadarPrefs.test.ts) and by
+// the pure-logic level (ForgeLogic.test.ts, ForgePrefs.test.ts) and by
 // seeding the persisted prefs blob below: this file only checks what a given
 // prop bag (and, for the fold state, a given localStorage) renders.
 import { describe, expect, test } from 'bun:test'
@@ -11,7 +11,7 @@ import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
 import type { ForgeIssue, ForgeIssuesResult, ForgeMr } from '../../types'
-import { DEFAULT_RADAR_PREFS, type RadarPrefs } from './RadarPrefs'
+import { DEFAULT_FORGE_PREFS, type ForgePrefs } from './ForgePrefs'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -81,21 +81,21 @@ type RenderProps = {
 }
 
 async function render(props: RenderProps): Promise<string> {
-  const IssueRadar = (await import('./IssueRadar.vue')).default
-  const app = createSSRApp(IssueRadar, props)
+  const ForgeBoard = (await import('./ForgeBoard.vue')).default
+  const app = createSSRApp(ForgeBoard, props)
   return renderToString(app)
 }
 
 /** Renders with a seeded persisted prefs blob (accordion open, sort, filter,
  * selected labels), restoring the real `localStorage` afterward. */
 async function renderWithPrefs(
-  prefsOverrides: Partial<RadarPrefs>,
+  prefsOverrides: Partial<ForgePrefs>,
   props: RenderProps,
 ): Promise<string> {
   const store = new Map<string, string>()
   store.set(
-    'codesema-ws-radar-prefs',
-    JSON.stringify({ ...DEFAULT_RADAR_PREFS, ...prefsOverrides }),
+    'codesema-ws-forge-prefs',
+    JSON.stringify({ ...DEFAULT_FORGE_PREFS, ...prefsOverrides }),
   )
   const stub = { getItem: (key: string) => store.get(key) ?? null, setItem: () => {} }
   const globals = globalThis as { localStorage?: unknown }
@@ -109,7 +109,7 @@ async function renderWithPrefs(
 }
 
 /** The Issues accordion's own markup, cut off before the Pull requests one:
- * `ra-count`/`ra-truncated` etc. are shared class names between both
+ * `fa-count`/`fa-truncated` etc. are shared class names between both
  * sections, so an assertion about ONE section must not read the other's. */
 function issuesSectionOf(html: string): string {
   return html.slice(0, html.indexOf('Pull requests'))
@@ -120,12 +120,12 @@ function mrsSectionOf(html: string): string {
   return html.slice(html.indexOf('Pull requests'))
 }
 
-/** The header badge's own text (the `ra-count` span's inner content), null
+/** The header badge's own text (the `fa-count` span's inner content), null
  * when absent: everything else in a section's HTML (URLs, the "→" glyph,
  * closing tags) also contains "/", so a "no slash" assertion must read only
  * this span, never the whole section. */
 function countBadgeOf(html: string): string | null {
-  return /<span class="ra-count">([^<]*)<\/span>/.exec(html)?.[1] ?? null
+  return /<span class="fa-count">([^<]*)<\/span>/.exec(html)?.[1] ?? null
 }
 
 describe('issues: loading / error / unavailable / empty / list', () => {
@@ -135,8 +135,8 @@ describe('issues: loading / error / unavailable / empty / list', () => {
       mrs: [],
       mrsState: null,
     })
-    expect(html).toContain(t('radar.loading'))
-    expect(issuesSectionOf(html)).not.toContain('ra-count')
+    expect(html).toContain(t('forge.loading'))
+    expect(issuesSectionOf(html)).not.toContain('fa-count')
   })
 
   test('a transport error shows the error and a retry action, not a reason', async () => {
@@ -145,16 +145,16 @@ describe('issues: loading / error / unavailable / empty / list', () => {
       mrs: [],
       mrsState: null,
     })
-    expect(html).toContain(t('radar.transportError', { error: 'HTTP 500' }))
-    expect(html).toContain(t('radar.retry'))
+    expect(html).toContain(t('forge.transportError', { error: 'HTTP 500' }))
+    expect(html).toContain(t('forge.retry'))
   })
 
   test.each([
-    ['no-remote', 'radar.issuesReasonNoRemote'],
-    ['no-cli', 'radar.issuesReasonNoCli'],
-    ['cli-error', 'radar.issuesReasonCliError'],
-    ['invalid-input', 'radar.issuesReasonInvalidInput'],
-    ['unsupported', 'radar.issuesReasonUnsupported'],
+    ['no-remote', 'forge.issuesReasonNoRemote'],
+    ['no-cli', 'forge.issuesReasonNoCli'],
+    ['cli-error', 'forge.issuesReasonCliError'],
+    ['invalid-input', 'forge.issuesReasonInvalidInput'],
+    ['unsupported', 'forge.issuesReasonUnsupported'],
   ] as const)('forge unavailable (%s) renders its own distinct message', async (reason, key) => {
     const html = await render({
       issuesState: issuesState({ result: { available: false, reason } }),
@@ -163,8 +163,8 @@ describe('issues: loading / error / unavailable / empty / list', () => {
     })
     expect(html).toContain(t(key))
     // Never confused with "no open issue" (a success), nor with the retry flow.
-    expect(html).not.toContain(t('radar.issuesEmpty'))
-    expect(html).not.toContain(t('radar.retry'))
+    expect(html).not.toContain(t('forge.issuesEmpty'))
+    expect(html).not.toContain(t('forge.retry'))
   })
 
   test('an empty, AVAILABLE list is a success: "no open issue", never a reason', async () => {
@@ -173,9 +173,9 @@ describe('issues: loading / error / unavailable / empty / list', () => {
       mrs: [],
       mrsState: null,
     })
-    expect(html).toContain(t('radar.issuesEmpty'))
+    expect(html).toContain(t('forge.issuesEmpty'))
     expect(html).toContain('>0<') // count badge shows the measured zero
-    expect(html).not.toContain(t('radar.issuesReasonNoRemote'))
+    expect(html).not.toContain(t('forge.issuesReasonNoRemote'))
   })
 
   test('an unavailable result shows no count badge at all (unknown, not zero)', async () => {
@@ -184,7 +184,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
       mrs: [],
       mrsState: null,
     })
-    expect(issuesSectionOf(html)).not.toContain('ra-count')
+    expect(issuesSectionOf(html)).not.toContain('fa-count')
   })
 
   test('a truncated list says so explicitly, with the number actually shown', async () => {
@@ -195,7 +195,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
       mrs: [],
       mrsState: null,
     })
-    expect(html).toContain(t('radar.truncatedHint', { n: 2 }))
+    expect(html).toContain(t('forge.truncatedHint', { n: 2 }))
   })
 
   test('a non-truncated list carries no truncation caveat', async () => {
@@ -204,7 +204,7 @@ describe('issues: loading / error / unavailable / empty / list', () => {
       mrs: [],
       mrsState: null,
     })
-    expect(html).not.toContain('ra-truncated')
+    expect(html).not.toContain('fa-truncated')
   })
 
   test('default sort is most-recently-updated first', async () => {
@@ -254,9 +254,9 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
       mrs: [],
       mrsState: { status: 'error', error: 'HTTP 500' },
     })
-    expect(html).toContain(t('radar.transportError', { error: 'HTTP 500' }))
-    expect(html).not.toContain(t('radar.mrsEmpty'))
-    expect(mrsSectionOf(html)).not.toContain('ra-count')
+    expect(html).toContain(t('forge.transportError', { error: 'HTTP 500' }))
+    expect(html).not.toContain(t('forge.mrsEmpty'))
+    expect(mrsSectionOf(html)).not.toContain('fa-count')
   })
 
   test.each([
@@ -272,17 +272,17 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
         mrsState: { status: 'unavailable', reason },
       })
       expect(html).toContain(t(key))
-      expect(html).not.toContain(t('radar.mrsEmpty'))
-      expect(html).not.toContain('ir-filters')
+      expect(html).not.toContain(t('forge.mrsEmpty'))
+      expect(html).not.toContain('fb-filters')
       // Unknown, not zero: no fabricated count for a list that could not be fetched.
-      expect(mrsSectionOf(html)).not.toContain('ra-count')
+      expect(mrsSectionOf(html)).not.toContain('fa-count')
     },
   )
 
   test('an unknown mrsState (not fetched yet) never claims unavailability, and shows no count badge', async () => {
     const html = await render({ issuesState: issuesState(), mrs: [], mrsState: null })
-    expect(html).toContain(t('radar.mrsEmpty'))
-    expect(mrsSectionOf(html)).not.toContain('ra-count')
+    expect(html).toContain(t('forge.mrsEmpty'))
+    expect(mrsSectionOf(html)).not.toContain('fa-count')
   })
 
   test('an empty, LOADED list is a success: "no open merge request", with the measured 0', async () => {
@@ -291,7 +291,7 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
       mrs: [],
       mrsState: { status: 'loaded', truncated: false },
     })
-    expect(html).toContain(t('radar.mrsEmpty'))
+    expect(html).toContain(t('forge.mrsEmpty'))
     expect(mrsSectionOf(html)).toContain('>0<')
   })
 
@@ -302,9 +302,9 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
       mrsState: { status: 'loaded', truncated: false },
     })
     expect(html).toContain('>2<')
-    expect(html).toContain(t('radar.filterAll'))
-    expect(html).toContain(t('radar.filterDraft'))
-    expect(html).toContain(t('radar.filterReady'))
+    expect(html).toContain(t('forge.filterAll'))
+    expect(html).toContain(t('forge.filterDraft'))
+    expect(html).toContain(t('forge.filterReady'))
     expect(html).toContain(t('mrs.number', { n: 1 }))
     expect(html).toContain(t('mrs.number', { n: 2 }))
   })
@@ -324,7 +324,7 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
       mrs: [mr(), mr({ number: 2 })],
       mrsState: { status: 'loaded', truncated: true },
     })
-    expect(html).toContain(t('radar.truncatedHint', { n: 2 }))
+    expect(html).toContain(t('forge.truncatedHint', { n: 2 }))
   })
 
   test('a non-truncated MR list carries no truncation caveat', async () => {
@@ -333,7 +333,7 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
       mrs: [mr(), mr({ number: 2 })],
       mrsState: { status: 'loaded', truncated: false },
     })
-    expect(html).not.toContain('ra-truncated')
+    expect(html).not.toContain('fa-truncated')
   })
 })
 
@@ -359,7 +359,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       { issuesLabels: ['bug'] },
       { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
     )
-    expect(issuesSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+    expect(issuesSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
   })
 
   test('issues, a label active matching nothing: a real measured "0 / total", not null', async () => {
@@ -368,7 +368,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       { issuesLabels: ['bug'] },
       { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
     )
-    expect(issuesSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 0, total: 2 })}<`)
+    expect(issuesSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 0, total: 2 })}<`)
   })
 
   test('issues, a label active but the count itself is unknown: still no badge at all', async () => {
@@ -380,7 +380,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
         mrsState: null,
       },
     )
-    expect(issuesSectionOf(html)).not.toContain('ra-count')
+    expect(issuesSectionOf(html)).not.toContain('fa-count')
   })
 
   test('MRs, no filter: the badge is the plain total, no "/" in it', async () => {
@@ -402,7 +402,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       { mrsFilter: 'draft' },
       { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
     )
-    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
   })
 
   test('MRs, a label active: "shown / total"', async () => {
@@ -415,7 +415,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       { mrsLabels: ['bug'] },
       { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
     )
-    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
   })
 
   test('MRs, the status filter AND a label both active: combined narrowing, "shown / total"', async () => {
@@ -429,7 +429,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
     )
     // Only #1 is both draft AND carries "bug": shown = 1, total unaffected = 3.
-    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 1, total: 3 })}<`)
   })
 
   test('MRs, a filter active leaving nothing: a real measured "0 / total"', async () => {
@@ -438,7 +438,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       { mrsFilter: 'draft' },
       { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
     )
-    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 0, total: 2 })}<`)
+    expect(mrsSectionOf(html)).toContain(`>${t('forge.countFiltered', { shown: 0, total: 2 })}<`)
   })
 
   test('MRs, a filter active but nothing fetched yet: still no badge at all', async () => {
@@ -446,7 +446,7 @@ describe('count badge: plain total unfiltered, "shown / total" once a filter is 
       { mrsFilter: 'draft' },
       { issuesState: issuesState(), mrs: [], mrsState: null },
     )
-    expect(mrsSectionOf(html)).not.toContain('ra-count')
+    expect(mrsSectionOf(html)).not.toContain('fa-count')
   })
 })
 
@@ -458,9 +458,9 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       mrsState: null,
     })
     const section = issuesSectionOf(html)
-    expect(section).toContain(t('radar.issuesEmpty'))
-    expect(section).not.toContain(t('radar.issuesFilteredEmpty'))
-    expect(section).not.toContain(t('radar.clearFilters'))
+    expect(section).toContain(t('forge.issuesEmpty'))
+    expect(section).not.toContain(t('forge.issuesFilteredEmpty'))
+    expect(section).not.toContain(t('forge.clearFilters'))
   })
 
   test('issues: two disjoint labels (AND semantics) leave nothing: the filtered message shows, not issuesEmpty, and the badge stays a real "0 / total"', async () => {
@@ -470,10 +470,10 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
     )
     const section = issuesSectionOf(html)
-    expect(section).toContain(t('radar.issuesFilteredEmpty'))
-    expect(section).toContain(t('radar.clearFilters'))
-    expect(section).not.toContain(t('radar.issuesEmpty'))
-    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 2 }))
+    expect(section).toContain(t('forge.issuesFilteredEmpty'))
+    expect(section).toContain(t('forge.clearFilters'))
+    expect(section).not.toContain(t('forge.issuesEmpty'))
+    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 2 }))
   })
 
   test('MRs: a genuinely empty forge list shows mrsEmpty, never a filtered message', async () => {
@@ -483,11 +483,11 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       mrsState: { status: 'loaded', truncated: false },
     })
     const section = mrsSectionOf(html)
-    expect(section).toContain(t('radar.mrsEmpty'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyLabels'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyBoth'))
-    expect(section).not.toContain(t('radar.clearFilters'))
+    expect(section).toContain(t('forge.mrsEmpty'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyLabels'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyBoth'))
+    expect(section).not.toContain(t('forge.clearFilters'))
   })
 
   test('MRs: the status filter alone leaves nothing: names the status filter specifically', async () => {
@@ -497,12 +497,12 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
     )
     const section = mrsSectionOf(html)
-    expect(section).toContain(t('radar.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyLabels'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyBoth'))
-    expect(section).not.toContain(t('radar.mrsEmpty'))
-    expect(section).toContain(t('radar.clearFilters'))
-    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 1 }))
+    expect(section).toContain(t('forge.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyLabels'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyBoth'))
+    expect(section).not.toContain(t('forge.mrsEmpty'))
+    expect(section).toContain(t('forge.clearFilters'))
+    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 1 }))
   })
 
   test('MRs: two disjoint labels alone leave nothing: names the labels specifically', async () => {
@@ -512,10 +512,10 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
     )
     const section = mrsSectionOf(html)
-    expect(section).toContain(t('radar.mrsFilteredEmptyLabels'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyBoth'))
-    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 2 }))
+    expect(section).toContain(t('forge.mrsFilteredEmptyLabels'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyBoth'))
+    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 2 }))
   })
 
   test('MRs: the status filter AND a label together leave nothing: names both', async () => {
@@ -528,15 +528,15 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
       { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
     )
     const section = mrsSectionOf(html)
-    expect(section).toContain(t('radar.mrsFilteredEmptyBoth'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyFilter'))
-    expect(section).not.toContain(t('radar.mrsFilteredEmptyLabels'))
-    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 2 }))
+    expect(section).toContain(t('forge.mrsFilteredEmptyBoth'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('forge.mrsFilteredEmptyLabels'))
+    expect(countBadgeOf(section)).toBe(t('forge.countFiltered', { shown: 0, total: 2 }))
   })
 
   test('clearing MR filters is offered as a single action, resetting both dimensions at once', async () => {
     // The button exists and reads the shared "clear filters" label; the actual
-    // click-driven reset is pure state covered by RadarPrefs/RadarLogic tests.
+    // click-driven reset is pure state covered by ForgePrefs/ForgeLogic tests.
     const html = await renderWithPrefs(
       { mrsFilter: 'draft', mrsLabels: ['bug'] },
       {
@@ -545,7 +545,7 @@ describe('filtered-empty state: distinct from "the forge has nothing"', () => {
         mrsState: { status: 'loaded', truncated: false },
       },
     )
-    expect(mrsSectionOf(html)).toContain('<button class="ir-retry" type="button"')
+    expect(mrsSectionOf(html)).toContain('<button class="fb-retry" type="button"')
   })
 })
 
@@ -553,7 +553,7 @@ describe('the two accordions fold independently, from the persisted prefs blob',
   test('issuesOpen: false hides the issues body while the MR accordion stays open', async () => {
     const store = new Map<string, string>()
     store.set(
-      'codesema-ws-radar-prefs',
+      'codesema-ws-forge-prefs',
       JSON.stringify({
         issuesOpen: false,
         mrsOpen: true,

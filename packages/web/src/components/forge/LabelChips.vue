@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // Cumulable label filter row: one chip per label carried by the currently
-// loaded items (radarLabelCounts), each with its own tally. Purely
+// loaded items (forgeLabelCounts), each with its own tally. Purely
 // presentational: the parent owns the selection and the toggle logic.
 import { t } from '../../i18n'
-import type { LabelCount } from './RadarLogic'
+import type { LabelCount } from './ForgeLogic'
 
 const props = defineProps<{
   counts: LabelCount[]
@@ -16,7 +16,7 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
 </script>
 
 <template>
-  <div v-if="counts.length > 0" class="lc-root" role="group" :aria-label="t('radar.labelsAria')">
+  <div v-if="counts.length > 0" class="lc-root" role="group" :aria-label="t('forge.labelsAria')">
     <button
       v-for="entry in counts"
       :key="entry.label"

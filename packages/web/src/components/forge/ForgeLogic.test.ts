@@ -1,15 +1,15 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  forgeFilterByLabels,
+  forgeFilterMrsByState,
+  forgeLabelCounts,
+  forgeSort,
   matchesLabels,
   matchesMrStateFilter,
-  radarFilterByLabels,
-  radarFilterMrsByState,
-  radarLabelCounts,
-  radarSort,
   sortByTitle,
   sortByUpdated,
   type LabelCount,
-} from './RadarLogic'
+} from './ForgeLogic'
 
 type Item = { title: string; updatedAt: string; labels: readonly string[] | null }
 
@@ -44,19 +44,19 @@ describe('sortByTitle', () => {
   })
 })
 
-describe('radarSort', () => {
+describe('forgeSort', () => {
   test('dispatches to sortByUpdated for "updated"', () => {
     const items = [item('a', '2026-01-01T00:00:00Z'), item('b', '2026-03-01T00:00:00Z')]
-    expect(radarSort(items, 'updated').map((i) => i.title)).toEqual(['b', 'a'])
+    expect(forgeSort(items, 'updated').map((i) => i.title)).toEqual(['b', 'a'])
   })
 
   test('dispatches to sortByTitle for "title"', () => {
     const items = [item('Zebra', '2026-01-01T00:00:00Z'), item('Apple', '2026-01-01T00:00:00Z')]
-    expect(radarSort(items, 'title').map((i) => i.title)).toEqual(['Apple', 'Zebra'])
+    expect(forgeSort(items, 'title').map((i) => i.title)).toEqual(['Apple', 'Zebra'])
   })
 })
 
-describe('radarLabelCounts', () => {
+describe('forgeLabelCounts', () => {
   test('tallies labels across items, descending by count then alphabetically', () => {
     const items = [
       item('a', '2026-01-01T00:00:00Z', ['bug', 'ui']),
@@ -64,7 +64,7 @@ describe('radarLabelCounts', () => {
       item('c', '2026-01-01T00:00:00Z', ['ui']),
       item('d', '2026-01-01T00:00:00Z', ['docs']),
     ]
-    const counts = radarLabelCounts(items)
+    const counts = forgeLabelCounts(items)
     expect(counts).toEqual<LabelCount[]>([
       { label: 'bug', count: 2 },
       { label: 'ui', count: 2 },
@@ -77,15 +77,15 @@ describe('radarLabelCounts', () => {
       item('a', '2026-01-01T00:00:00Z', null),
       item('b', '2026-01-01T00:00:00Z', ['x']),
     ]
-    expect(radarLabelCounts(items)).toEqual([{ label: 'x', count: 1 }])
+    expect(forgeLabelCounts(items)).toEqual([{ label: 'x', count: 1 }])
   })
 
   test('no items, no labels: an empty list, not an error', () => {
-    expect(radarLabelCounts([])).toEqual([])
+    expect(forgeLabelCounts([])).toEqual([])
   })
 })
 
-describe('matchesLabels / radarFilterByLabels', () => {
+describe('matchesLabels / forgeFilterByLabels', () => {
   test('an empty selection matches everything, including null labels', () => {
     expect(matchesLabels(null, [])).toBe(true)
     expect(matchesLabels(['a'], [])).toBe(true)
@@ -105,18 +105,18 @@ describe('matchesLabels / radarFilterByLabels', () => {
     expect(matchesLabels(null, ['bug'])).toBe(false)
   })
 
-  test('radarFilterByLabels narrows the list accordingly', () => {
+  test('forgeFilterByLabels narrows the list accordingly', () => {
     const items = [
       item('a', '2026-01-01T00:00:00Z', ['bug', 'ui']),
       item('b', '2026-01-01T00:00:00Z', ['bug']),
       item('c', '2026-01-01T00:00:00Z', null),
     ]
-    expect(radarFilterByLabels(items, ['bug', 'ui']).map((i) => i.title)).toEqual(['a'])
-    expect(radarFilterByLabels(items, []).map((i) => i.title)).toEqual(['a', 'b', 'c'])
+    expect(forgeFilterByLabels(items, ['bug', 'ui']).map((i) => i.title)).toEqual(['a'])
+    expect(forgeFilterByLabels(items, []).map((i) => i.title)).toEqual(['a', 'b', 'c'])
   })
 })
 
-describe('matchesMrStateFilter / radarFilterMrsByState', () => {
+describe('matchesMrStateFilter / forgeFilterMrsByState', () => {
   test('"all" matches every draft state, including unknown', () => {
     expect(matchesMrStateFilter({ isDraft: true }, 'all')).toBe(true)
     expect(matchesMrStateFilter({ isDraft: false }, 'all')).toBe(true)
@@ -143,10 +143,10 @@ describe('matchesMrStateFilter / radarFilterMrsByState', () => {
     }
   })
 
-  test('radarFilterMrsByState narrows the list accordingly', () => {
+  test('forgeFilterMrsByState narrows the list accordingly', () => {
     const mrs = [{ isDraft: true }, { isDraft: false }, { isDraft: null }]
-    expect(radarFilterMrsByState(mrs, 'draft')).toEqual([{ isDraft: true }])
-    expect(radarFilterMrsByState(mrs, 'ready')).toEqual([{ isDraft: false }, { isDraft: null }])
-    expect(radarFilterMrsByState(mrs, 'all')).toEqual(mrs)
+    expect(forgeFilterMrsByState(mrs, 'draft')).toEqual([{ isDraft: true }])
+    expect(forgeFilterMrsByState(mrs, 'ready')).toEqual([{ isDraft: false }, { isDraft: null }])
+    expect(forgeFilterMrsByState(mrs, 'all')).toEqual(mrs)
   })
 })

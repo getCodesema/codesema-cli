@@ -1,62 +1,62 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  DEFAULT_RADAR_PREFS,
-  parseRadarPrefs,
-  RADAR_PREFS_STORAGE_KEY,
-  readRadarPrefs,
-  serializeRadarPrefs,
-  writeRadarPrefs,
-  type RadarPrefs,
-} from './RadarPrefs'
+  DEFAULT_FORGE_PREFS,
+  FORGE_PREFS_STORAGE_KEY,
+  parseForgePrefs,
+  readForgePrefs,
+  serializeForgePrefs,
+  writeForgePrefs,
+  type ForgePrefs,
+} from './ForgePrefs'
 
-describe('parseRadarPrefs', () => {
+describe('parseForgePrefs', () => {
   test('absent (null) falls back to the defaults', () => {
-    expect(parseRadarPrefs(null)).toEqual(DEFAULT_RADAR_PREFS)
+    expect(parseForgePrefs(null)).toEqual(DEFAULT_FORGE_PREFS)
   })
 
   test('an empty object falls back to the defaults for every field', () => {
-    expect(parseRadarPrefs('{}')).toEqual(DEFAULT_RADAR_PREFS)
+    expect(parseForgePrefs('{}')).toEqual(DEFAULT_FORGE_PREFS)
   })
 
   test('a partial blob keeps its known fields and defaults the rest', () => {
-    const partial = parseRadarPrefs(JSON.stringify({ issuesSort: 'title', mrsLabels: ['ui'] }))
+    const partial = parseForgePrefs(JSON.stringify({ issuesSort: 'title', mrsLabels: ['ui'] }))
     expect(partial).toEqual({
-      ...DEFAULT_RADAR_PREFS,
+      ...DEFAULT_FORGE_PREFS,
       issuesSort: 'title',
       mrsLabels: ['ui'],
     })
   })
 
   test('a corrupted (non-JSON) blob falls back to the defaults', () => {
-    expect(parseRadarPrefs('{not json')).toEqual(DEFAULT_RADAR_PREFS)
+    expect(parseForgePrefs('{not json')).toEqual(DEFAULT_FORGE_PREFS)
   })
 
   test('a JSON value that is not an object falls back to the defaults', () => {
-    expect(parseRadarPrefs('42')).toEqual(DEFAULT_RADAR_PREFS)
-    expect(parseRadarPrefs('null')).toEqual(DEFAULT_RADAR_PREFS)
-    expect(parseRadarPrefs('"hello"')).toEqual(DEFAULT_RADAR_PREFS)
-    expect(parseRadarPrefs('[1,2,3]')).toEqual(DEFAULT_RADAR_PREFS)
+    expect(parseForgePrefs('42')).toEqual(DEFAULT_FORGE_PREFS)
+    expect(parseForgePrefs('null')).toEqual(DEFAULT_FORGE_PREFS)
+    expect(parseForgePrefs('"hello"')).toEqual(DEFAULT_FORGE_PREFS)
+    expect(parseForgePrefs('[1,2,3]')).toEqual(DEFAULT_FORGE_PREFS)
   })
 
   test('a mistyped field is ignored in favor of its default, others still honored', () => {
-    const parsed = parseRadarPrefs(
+    const parsed = parseForgePrefs(
       JSON.stringify({ issuesOpen: 'yes', mrsFilter: 'draft', issuesLabels: ['a', 2, 'b'] }),
     )
-    expect(parsed.issuesOpen).toBe(DEFAULT_RADAR_PREFS.issuesOpen)
+    expect(parsed.issuesOpen).toBe(DEFAULT_FORGE_PREFS.issuesOpen)
     expect(parsed.mrsFilter).toBe('draft')
-    expect(parsed.issuesLabels).toEqual(DEFAULT_RADAR_PREFS.issuesLabels)
+    expect(parsed.issuesLabels).toEqual(DEFAULT_FORGE_PREFS.issuesLabels)
   })
 
   test('an unknown sort key or filter value falls back to its default', () => {
-    const parsed = parseRadarPrefs(
+    const parsed = parseForgePrefs(
       JSON.stringify({ issuesSort: 'popularity', mrsFilter: 'closed' }),
     )
-    expect(parsed.issuesSort).toBe(DEFAULT_RADAR_PREFS.issuesSort)
-    expect(parsed.mrsFilter).toBe(DEFAULT_RADAR_PREFS.mrsFilter)
+    expect(parsed.issuesSort).toBe(DEFAULT_FORGE_PREFS.issuesSort)
+    expect(parsed.mrsFilter).toBe(DEFAULT_FORGE_PREFS.mrsFilter)
   })
 
-  test('round-trips through serializeRadarPrefs', () => {
-    const prefs: RadarPrefs = {
+  test('round-trips through serializeForgePrefs', () => {
+    const prefs: ForgePrefs = {
       issuesOpen: false,
       mrsOpen: true,
       issuesSort: 'title',
@@ -65,11 +65,11 @@ describe('parseRadarPrefs', () => {
       issuesLabels: ['bug'],
       mrsLabels: [],
     }
-    expect(parseRadarPrefs(serializeRadarPrefs(prefs))).toEqual(prefs)
+    expect(parseForgePrefs(serializeForgePrefs(prefs))).toEqual(prefs)
   })
 })
 
-describe('readRadarPrefs / writeRadarPrefs (localStorage wrappers)', () => {
+describe('readForgePrefs / writeForgePrefs (localStorage wrappers)', () => {
   test('reads and writes through a working localStorage, and survives a hostile one', () => {
     const store = new Map<string, string>()
     const stub = {
@@ -80,12 +80,12 @@ describe('readRadarPrefs / writeRadarPrefs (localStorage wrappers)', () => {
     const previous = globals.localStorage
     try {
       globals.localStorage = stub
-      expect(readRadarPrefs()).toEqual(DEFAULT_RADAR_PREFS)
+      expect(readForgePrefs()).toEqual(DEFAULT_FORGE_PREFS)
 
-      const prefs: RadarPrefs = { ...DEFAULT_RADAR_PREFS, issuesSort: 'title', mrsOpen: false }
-      writeRadarPrefs(prefs)
-      expect(store.get(RADAR_PREFS_STORAGE_KEY)).toBe(JSON.stringify(prefs))
-      expect(readRadarPrefs()).toEqual(prefs)
+      const prefs: ForgePrefs = { ...DEFAULT_FORGE_PREFS, issuesSort: 'title', mrsOpen: false }
+      writeForgePrefs(prefs)
+      expect(store.get(FORGE_PREFS_STORAGE_KEY)).toBe(JSON.stringify(prefs))
+      expect(readForgePrefs()).toEqual(prefs)
 
       globals.localStorage = {
         getItem: () => {
@@ -95,8 +95,8 @@ describe('readRadarPrefs / writeRadarPrefs (localStorage wrappers)', () => {
           throw new Error('denied')
         },
       }
-      expect(readRadarPrefs()).toEqual(DEFAULT_RADAR_PREFS)
-      expect(() => writeRadarPrefs(prefs)).not.toThrow()
+      expect(readForgePrefs()).toEqual(DEFAULT_FORGE_PREFS)
+      expect(() => writeForgePrefs(prefs)).not.toThrow()
     } finally {
       globals.localStorage = previous
     }

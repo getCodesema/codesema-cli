@@ -50,8 +50,8 @@ import {
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
+import ForgeBoard from './forge/ForgeBoard.vue'
 import ProjectsNav from './ProjectsNav.vue'
-import IssueRadar from './radar/IssueRadar.vue'
 import RepoSettings from './RepoSettings.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
@@ -97,7 +97,7 @@ const {
   preview,
 } = useTasks(props.token)
 
-// Issue Radar (C3): lazy per-project issue fetch, same trigger as the MR/branch
+// Forge board (C3): lazy per-project issue fetch, same trigger as the MR/branch
 // lazy-fetch policy above, see selectFilter.
 const issues = useIssues()
 
@@ -730,10 +730,10 @@ async function onRemoveProject(id: string): Promise<void> {
           </div>
         </div>
 
-        <!-- Issue Radar: the selected project's open issues/MRs, in place of
+        <!-- Forge board: the selected project's open issues/MRs, in place of
              the sober empty-state once a project is actually chosen. -->
-        <div v-else-if="filter !== null && projects.length > 0" class="ws-radar">
-          <IssueRadar
+        <div v-else-if="filter !== null && projects.length > 0" class="ws-forge-board">
+          <ForgeBoard
             :issues-state="issues.stateOf(filter)"
             :mrs="mrsByProject.get(filter) ?? []"
             :mrs-state="mrsLoadByProject.get(filter) ?? null"
@@ -947,8 +947,8 @@ async function onRemoveProject(id: string): Promise<void> {
   white-space: nowrap;
 }
 
-/* ── Issue Radar ──────────────────────────────────────────────────────── */
-.ws-radar {
+/* ── Forge board ──────────────────────────────────────────────────────── */
+.ws-forge-board {
   flex: 1;
   min-height: 0;
   overflow-y: auto;

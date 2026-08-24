@@ -29,9 +29,9 @@ async function render(
   props: Props,
   slots: { default?: () => string; filters?: () => string; labels?: () => string } = {},
 ): Promise<string> {
-  const RadarAccordion = (await import('./RadarAccordion.vue')).default
+  const ForgeAccordion = (await import('./ForgeAccordion.vue')).default
   const app = createSSRApp({
-    render: () => h(RadarAccordion, props, slots),
+    render: () => h(ForgeAccordion, props, slots),
   })
   return renderToString(app)
 }
@@ -71,12 +71,12 @@ describe('count', () => {
 
   test('a null count (unknown: loading, error, unavailable) renders no badge at all', async () => {
     const html = await render({ label: 'Issues', count: null, truncatedHint: null, open: true })
-    expect(html).not.toContain('ra-count')
+    expect(html).not.toContain('fa-count')
   })
 
   test('a measured zero still renders, distinct from null', async () => {
     const html = await render({ label: 'Issues', count: 0, truncatedHint: null, open: true })
-    expect(html).toContain('ra-count')
+    expect(html).toContain('fa-count')
     expect(html).toContain('>0<')
   })
 
@@ -89,7 +89,7 @@ describe('count', () => {
 describe('truncation caveat', () => {
   test('absent when truncatedHint is null', async () => {
     const html = await render({ label: 'Issues', count: 5, truncatedHint: null, open: true })
-    expect(html).not.toContain('ra-truncated')
+    expect(html).not.toContain('fa-truncated')
   })
 
   test('shown verbatim when truncatedHint is set', async () => {
@@ -109,7 +109,7 @@ describe('optional controls slots', () => {
       { label: 'Issues', count: 5, truncatedHint: null, open: true },
       { default: () => 'BODY_MARK' },
     )
-    expect(html).not.toContain('ra-controls')
+    expect(html).not.toContain('fa-controls')
     expect(html).toContain('BODY_MARK')
   })
 })

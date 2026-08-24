@@ -21,9 +21,9 @@ Bun.plugin({
 function baseMr(overrides: Partial<ForgeMr> = {}): ForgeMr {
   return {
     number: 42,
-    title: 'Add issue radar',
+    title: 'Add forge board',
     author: 'octocat',
-    sourceBranch: 'feat/issue-radar',
+    sourceBranch: 'feat/forge-board',
     targetBranch: 'main',
     updatedAt: '2026-08-20T10:00:00.000Z',
     url: 'https://example.test/mr/42',

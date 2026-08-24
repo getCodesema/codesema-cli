@@ -1,12 +1,12 @@
-// Pure sort/filter/count logic shared by the two Issue Radar lists (issues
+// Pure sort/filter/count logic shared by the two forge board lists (issues
 // and merge requests). Split out so it is testable on its own, with no DOM
-// and no fetch: IssueRadar.vue only composes these functions.
+// and no fetch: ForgeBoard.vue only composes these functions.
 
 import type { ForgeMr } from '../../types'
 
 /** The two sort criteria offered on both lists: both fields exist, unconditionally,
  * on ForgeIssue and ForgeMr alike, so neither can produce a "null" ordering gap. */
-export type RadarSortKey = 'updated' | 'title'
+export type ForgeSortKey = 'updated' | 'title'
 
 /** Stable descending sort on `updatedAt`: ties (equal timestamps) keep their
  * original relative order, per `toSorted`'s stability guarantee. */
@@ -19,9 +19,9 @@ export function sortByTitle<T extends { title: string }>(items: readonly T[]): T
   return items.toSorted((a, b) => a.title.localeCompare(b.title))
 }
 
-export function radarSort<T extends { updatedAt: string; title: string }>(
+export function forgeSort<T extends { updatedAt: string; title: string }>(
   items: readonly T[],
-  key: RadarSortKey,
+  key: ForgeSortKey,
 ): T[] {
   return key === 'title' ? sortByTitle(items) : sortByUpdated(items)
 }
@@ -33,7 +33,7 @@ export function radarSort<T extends { updatedAt: string; title: string }>(
  */
 export type LabelCount = { label: string; count: number }
 
-export function radarLabelCounts<T extends { labels: readonly string[] | null }>(
+export function forgeLabelCounts<T extends { labels: readonly string[] | null }>(
   items: readonly T[],
 ): LabelCount[] {
   const counts = new Map<string, number>()
@@ -64,7 +64,7 @@ export function matchesLabels(
   return selected.every((label) => labels.includes(label))
 }
 
-export function radarFilterByLabels<T extends { labels: readonly string[] | null }>(
+export function forgeFilterByLabels<T extends { labels: readonly string[] | null }>(
   items: readonly T[],
   selected: readonly string[],
 ): T[] {
@@ -90,7 +90,7 @@ export function matchesMrStateFilter(mr: Pick<ForgeMr, 'isDraft'>, filter: MrSta
   return mr.isDraft !== true
 }
 
-export function radarFilterMrsByState<T extends Pick<ForgeMr, 'isDraft'>>(
+export function forgeFilterMrsByState<T extends Pick<ForgeMr, 'isDraft'>>(
   items: readonly T[],
   filter: MrStateFilter,
 ): T[] {

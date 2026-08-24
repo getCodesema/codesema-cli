@@ -1,6 +1,6 @@
 // Client for GET /api/issues (packages/cli/src/serve.ts): lazy per-project
 // fetch of the forge issue list, mirrors the loadMrs() lazy-fetch policy in
-// useTasks.ts, but with the loading/error states an Issue Radar screen needs
+// useTasks.ts, but with the loading/error states a forge board screen needs
 // to render a spinner or a retry rather than a silently empty list.
 
 import { reactive } from 'vue'

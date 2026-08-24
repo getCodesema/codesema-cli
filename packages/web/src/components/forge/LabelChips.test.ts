@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
-import type { LabelCount } from './RadarLogic'
+import type { LabelCount } from './ForgeLogic'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',

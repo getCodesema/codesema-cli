@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Shared accordion chrome for one Issue Radar list (issues or pull requests):
+// Shared accordion chrome for one forge board list (issues or pull requests):
 // a foldable header with its count and, when the forge capped the list, an
 // explicit caveat line, never silence on a truncated result. The controls
 // row (sort / status filter / labels) and the item list are slots: this
@@ -24,23 +24,23 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 </script>
 
 <template>
-  <section class="ra-root">
-    <button class="ra-head" :aria-expanded="open" @click="emit('update:open', !open)">
-      <span class="ra-chevron" aria-hidden="true">{{ open ? '▾' : '▸' }}</span>
-      <span class="ra-label">{{ label }}</span>
-      <span v-if="count !== null" class="ra-count">{{ count }}</span>
+  <section class="fa-root">
+    <button class="fa-head" :aria-expanded="open" @click="emit('update:open', !open)">
+      <span class="fa-chevron" aria-hidden="true">{{ open ? '▾' : '▸' }}</span>
+      <span class="fa-label">{{ label }}</span>
+      <span v-if="count !== null" class="fa-count">{{ count }}</span>
     </button>
-    <p v-if="truncatedHint" class="ra-truncated">{{ truncatedHint }}</p>
+    <p v-if="truncatedHint" class="fa-truncated">{{ truncatedHint }}</p>
     <template v-if="open">
-      <div v-if="$slots.filters || $slots.labels" class="ra-controls">
-        <div v-if="$slots.filters" class="ra-controls-row">
+      <div v-if="$slots.filters || $slots.labels" class="fa-controls">
+        <div v-if="$slots.filters" class="fa-controls-row">
           <slot name="filters" />
         </div>
-        <div v-if="$slots.labels" class="ra-controls-row">
+        <div v-if="$slots.labels" class="fa-controls-row">
           <slot name="labels" />
         </div>
       </div>
-      <div class="ra-body">
+      <div class="fa-body">
         <slot />
       </div>
     </template>
@@ -48,13 +48,13 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 </template>
 
 <style scoped>
-.ra-root {
+.fa-root {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.ra-head {
+.fa-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -68,24 +68,24 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
   cursor: pointer;
 }
 
-.ra-head:hover {
+.fa-head:hover {
   background: var(--cs-hover);
 }
 
-.ra-chevron {
+.fa-chevron {
   flex: none;
   width: 10px;
   font-size: 10px;
   color: var(--cs-ghost);
 }
 
-.ra-label {
+.fa-label {
   font-size: 13.5px;
   font-weight: 700;
   color: var(--cs-text);
 }
 
-.ra-count {
+.fa-count {
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 600;
@@ -93,27 +93,27 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
   font-variant-numeric: tabular-nums;
 }
 
-.ra-truncated {
+.fa-truncated {
   margin: -4px 0 0;
   padding-left: 18px;
   font-size: 11px;
   color: var(--cs-ghost);
 }
 
-.ra-controls {
+.fa-controls {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.ra-controls-row {
+.fa-controls-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.ra-body {
+.fa-body {
   display: flex;
   flex-direction: column;
   gap: 8px;
