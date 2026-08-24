@@ -445,10 +445,16 @@ function backFromReview(): void {
 
 /**
  * Mirrors the forge board's own `v-else-if` below exactly: the board takes
- * the full width of the desk (menu / controls / list / detail, four columns)
- * only in the one focus-zone branch it actually renders in, since review and
- * the deck both take priority over it, same as in the template. The work
- * queue hides for exactly this branch and reappears everywhere else.
+ * the full width of the desk only in the one focus-zone branch it actually
+ * renders in, since review and the deck both take priority over it, same as
+ * in the template. The work queue hides for exactly this branch and
+ * reappears everywhere else.
+ *
+ * It also decides WHERE the project menu is mounted. With the board up the
+ * desk is three columns, not four: the menu moves into the head of the
+ * board's rail, so navigation and controls share one column (this mirrors
+ * the reference interface, whose left rail carries its filter accordions).
+ * Everywhere else the menu is the desk's own left column, as before.
  */
 const boardVisible = computed(
   () =>
@@ -549,6 +555,45 @@ async function onRemoveProject(id: string): Promise<void> {
   }
   deck.value = deckCloseProject(deck.value, id)
 }
+
+// ── The project menu's bindings, grouped ──────────────────────────────────
+// The menu is mounted in one of two places depending on `boardVisible` (the
+// desk's own left column, or the head of the board's rail). Grouping its ten
+// props and seven handlers here keeps that a one-line mount on each side:
+// spelling all seventeen out twice would mean every future prop has to be
+// added in two places, and the day someone updates only one of them the two
+// mounts drift apart silently.
+const projectsNavProps = computed(() => ({
+  projects: projects.value,
+  selected: filter.value,
+  activity: activity.value,
+  tree: tree.value,
+  extraBranches: extraBranches.value,
+  focusedKeys: focusedKeys.value,
+  addBusy: addBusy.value,
+  addError: addError.value,
+  removeError: removeError.value,
+  candidates: candidates.value,
+}))
+
+const projectsNavHandlers = {
+  select: selectFilter,
+  add: onAddProject,
+  remove: onRemoveProject,
+  discover: () => void discoverCandidates(),
+  'refresh-mrs': () => void refreshMrs(),
+  'open-task': (state: { projectId: string; record: { id: string } }) =>
+    openConversation(state.projectId, state.record.id),
+  'branch-click': ({
+    projectId,
+    branch,
+    mr,
+  }: {
+    projectId: string
+    branch: string
+    mr: ForgeMr | null
+  }) => onBranchClick(projectId, branch, mr),
+}
 </script>
 
 <template>
@@ -571,29 +616,15 @@ async function onRemoveProject(id: string): Promise<void> {
       <RepoSettings />
     </div>
     <div v-else class="ws-body">
-      <ProjectsNav
-        :projects="projects"
-        :selected="filter"
-        :activity="activity"
-        :tree="tree"
-        :extra-branches="extraBranches"
-        :focused-keys="focusedKeys"
-        :add-busy="addBusy"
-        :add-error="addError"
-        :remove-error="removeError"
-        :candidates="candidates"
-        @select="selectFilter"
-        @add="onAddProject"
-        @remove="onRemoveProject"
-        @discover="() => void discoverCandidates()"
-        @refresh-mrs="() => void refreshMrs()"
-        @open-task="(state) => openConversation(state.projectId, state.record.id)"
-        @branch-click="({ projectId, branch, mr }) => onBranchClick(projectId, branch, mr)"
-      />
+      <!-- The desk's left column, but only while the board is NOT up: with
+           the board up this same menu is mounted in the head of its rail
+           instead (see the `#rail-top` slot below), so the desk is three
+           columns rather than four. -->
+      <ProjectsNav v-if="!boardVisible" v-bind="projectsNavProps" v-on="projectsNavHandlers" />
 
       <!-- Hidden while the forge board is the focus zone's content: the
-           board then takes the full remaining width (menu / controls /
-           list / detail, four columns). -->
+           board then takes the full remaining width (rail / list / detail,
+           three columns). -->
       <WorkQueue
         v-if="!boardVisible"
         :states="queueStates"
@@ -768,7 +799,14 @@ async function onRemoveProject(id: string): Promise<void> {
             :mrs="mrsByProject.get(filter) ?? []"
             :mrs-state="mrsLoadByProject.get(filter) ?? null"
             @retry-issues="issues.reload(filter)"
-          />
+          >
+            <!-- The project menu, as the rail's head. Same component and
+                 same bindings as the desk's left column, just mounted in
+                 the one column the board keeps for navigation. -->
+            <template #rail-top>
+              <ProjectsNav v-bind="projectsNavProps" v-on="projectsNavHandlers" />
+            </template>
+          </ForgeBoard>
         </div>
 
         <!-- Empty focus: a sober invite (no project selected, or none registered). -->

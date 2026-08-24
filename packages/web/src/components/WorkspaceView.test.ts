@@ -174,3 +174,79 @@ describe('the work queue hides while the board is the focus zone, shows everywhe
     expect(workQueueTag).toContain('v-if="!boardVisible"')
   })
 })
+
+// The desk is three columns with the board up, not four: the project menu
+// moves into the head of the board's rail so that navigation and controls
+// share one column. What is pinned here is that the menu is mounted in BOTH
+// places under mutually exclusive conditions (never twice at once, never
+// nowhere), and that both mounts read the same grouped bindings rather than
+// spelling seventeen props and handlers out twice and drifting apart.
+describe('the project menu moves into the rail while the board is up', () => {
+  const mounts = SOURCE.split('<ProjectsNav').slice(1)
+
+  test('the menu is mounted in exactly two places', () => {
+    expect(mounts).toHaveLength(2)
+  })
+
+  test('the desk column is gated OFF while the board is up', () => {
+    const deskMount = mounts[0] ?? ''
+    expect(deskMount).toContain('v-if="!boardVisible"')
+  })
+
+  test('the rail mount sits inside the board, in its rail-top slot', () => {
+    const slotAt = SOURCE.indexOf('<template #rail-top>')
+    const boardAt = SOURCE.indexOf('<ForgeBoard')
+    const boardCloseAt = SOURCE.indexOf('</ForgeBoard>')
+    expect(slotAt).toBeGreaterThan(boardAt)
+    expect(slotAt).toBeLessThan(boardCloseAt)
+    // The second mount is the one in the slot.
+    expect(SOURCE.indexOf('<ProjectsNav', slotAt)).toBeGreaterThan(slotAt)
+    expect(SOURCE.indexOf('<ProjectsNav', slotAt)).toBeLessThan(boardCloseAt)
+  })
+
+  test('the rail mount carries no condition of its own: the board only renders when the board is up', () => {
+    const railMount = mounts[1] ?? ''
+    expect(railMount).not.toContain('v-if')
+  })
+
+  test('both mounts bind through the grouped props and handlers, never a spelled-out list', () => {
+    for (const mount of mounts) {
+      expect(mount).toContain('v-bind="projectsNavProps"')
+      expect(mount).toContain('v-on="projectsNavHandlers"')
+    }
+  })
+
+  test('every prop and handler the menu takes is in the grouped objects', () => {
+    const propsBlock = SOURCE.slice(
+      SOURCE.indexOf('const projectsNavProps'),
+      SOURCE.indexOf('const projectsNavHandlers'),
+    )
+    for (const key of [
+      'projects:',
+      'selected:',
+      'activity:',
+      'tree:',
+      'extraBranches:',
+      'focusedKeys:',
+      'addBusy:',
+      'addError:',
+      'removeError:',
+      'candidates:',
+    ]) {
+      expect(propsBlock).toContain(key)
+    }
+
+    const handlersBlock = SOURCE.slice(SOURCE.indexOf('const projectsNavHandlers'))
+    for (const key of [
+      'select:',
+      'add:',
+      'remove:',
+      'discover:',
+      "'refresh-mrs':",
+      "'open-task':",
+      "'branch-click':",
+    ]) {
+      expect(handlersBlock).toContain(key)
+    }
+  })
+})

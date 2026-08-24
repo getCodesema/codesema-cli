@@ -7,7 +7,7 @@
 // ForgeBoard.vue) is the seam that lets this file drive the detail panel's
 // appearance without a click.
 import { describe, expect, test } from 'bun:test'
-import { createSSRApp } from 'vue'
+import { createSSRApp, h } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { ProjectIssuesState } from '../../composables/useIssues'
@@ -260,5 +260,70 @@ describe('the detail panel is always present, with an empty state until somethin
       initialSelection: { kind: 'issue', number: 1 },
     })
     expect(html).toContain(t('forge.detailEmpty'))
+  })
+})
+
+// The rail's head: the shell hands the controls panel whatever belongs above
+// its sections (in the app, the project menu, so that navigation and controls
+// are ONE column instead of two). The board relays the slot rather than
+// carrying the menu's own props, so what is pinned here is that the relay
+// reaches the panel at all, and that it follows the panel's collapsed state.
+async function renderWithRailTop(
+  props: RenderProps,
+  prefsOverrides: Partial<ForgePrefs> = {},
+): Promise<string> {
+  const store = new Map<string, string>()
+  store.set(
+    'codesema-ws-forge-prefs',
+    JSON.stringify({ ...DEFAULT_FORGE_PREFS, ...prefsOverrides }),
+  )
+  const stub = { getItem: (key: string) => store.get(key) ?? null, setItem: () => {} }
+  const globals = globalThis as { localStorage?: unknown }
+  const previous = globals.localStorage
+  try {
+    globals.localStorage = stub
+    const ForgeBoard = (await import('./ForgeBoard.vue')).default
+    const app = createSSRApp({
+      render: () =>
+        h(
+          ForgeBoard,
+          { projectName: 'demo', ...props },
+          { 'rail-top': () => h('nav', {}, 'THE MENU') },
+        ),
+    })
+    return await renderToString(app)
+  } finally {
+    globals.localStorage = previous
+  }
+}
+
+describe('the rail-top slot reaches the controls panel', () => {
+  const base: RenderProps = { issuesState: issuesState(), mrs: [], mrsState: null }
+
+  test('slotted content lands in the controls panel head, above its sections', () => {
+    return renderWithRailTop(base).then((html) => {
+      expect(html).toContain('THE MENU')
+      const headAt = html.indexOf('fcp-top')
+      const sectionsAt = html.indexOf('fcp-sections')
+      expect(headAt).toBeGreaterThan(-1)
+      expect(sectionsAt).toBeGreaterThan(-1)
+      expect(headAt).toBeLessThan(sectionsAt)
+      expect(html.indexOf('THE MENU')).toBeLessThan(sectionsAt)
+    })
+  })
+
+  test('the head is gone with the panel collapsed: a vertical band shows the project name, nothing else', () => {
+    return renderWithRailTop(base, { controlsCollapsed: true }).then((html) => {
+      expect(html).not.toContain('THE MENU')
+      expect(html).not.toContain('fcp-top')
+      expect(html).toContain('fcp-band')
+    })
+  })
+
+  test('an unused slot costs nothing: no head content, and the panel still renders its sections', () => {
+    return render(base).then((html) => {
+      expect(html).not.toContain('THE MENU')
+      expect(html).toContain('fcp-sections')
+    })
   })
 })

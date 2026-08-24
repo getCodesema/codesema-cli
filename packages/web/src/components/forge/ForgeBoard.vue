@@ -165,7 +165,12 @@ const controlsPanelWidth = computed(() =>
         @update:mrs-filter="(v) => (mrsFilter = v)"
         @toggle-issue-label="toggleIssueLabel"
         @toggle-mr-label="toggleMrLabel"
-      />
+      >
+        <!-- Relayed straight through so the shell can hand the controls
+             panel its head without this board having to carry the project
+             menu's dozen props and events. -->
+        <template #top><slot name="rail-top" /></template>
+      </ForgeControlsPanel>
     </div>
 
     <ForgeSplitter

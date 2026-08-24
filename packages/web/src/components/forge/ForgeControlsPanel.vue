@@ -180,6 +180,16 @@ const mrsLabelCountsFiltered = computed(() =>
         <ChevronsLeft aria-hidden="true" />
       </button>
 
+      <!-- The rail's head: whatever the shell puts above the sections. The
+           board fills it with the project menu, so that navigation and
+           controls are ONE column instead of two (the reference interface
+           has three columns, not four: its left rail carries its filter
+           accordions). Empty when nothing is passed, which is why the
+           wrapper collapses to nothing rather than reserving space. -->
+      <div class="fcp-top">
+        <slot name="top" />
+      </div>
+
       <div class="fcp-sections" :aria-label="t('forge.sectionNavAria')">
         <!-- Issues section -->
         <section class="fcp-section">
@@ -507,6 +517,34 @@ const mrsLabelCountsFiltered = computed(() =>
     max-height: none;
     max-width: 100%;
   }
+}
+
+/* The rail's head. `flex: none` and an empty box when the slot is unused:
+   an unfilled head must cost zero height, not an empty gap above the
+   sections. */
+.fcp-top {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Adapts the project menu to living INSIDE the rail rather than being its
+   own column. Three overrides, all of them undoing "I am a standalone
+   column" so it becomes "I am a block in a column that scrolls":
+   the fixed 236px track gives way to the rail's own width, and neither the
+   track nor its card scrolls or stretches on its own, since `.fcp-root` is
+   the one scrolling. Scoped here rather than changed in ProjectsNav.vue,
+   which still IS a standalone column everywhere the board is not shown. */
+.fcp-top :deep(.pn-root) {
+  width: 100%;
+  flex: none;
+  overflow-y: visible;
+}
+
+.fcp-top :deep(.pn-card) {
+  flex: none;
+  overflow-y: visible;
 }
 
 .fcp-sections {

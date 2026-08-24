@@ -626,3 +626,43 @@ describe('label search: opening, typing, closing clears the query (interactive)'
     expect(reopened?.value).toBe('')
   })
 })
+
+// The rail's head. The project menu is a standalone column everywhere the
+// board is not shown, so it is NOT changed for this: the panel adapts it from
+// the outside instead. What is pinned here is that all three "stop being a
+// column" overrides are present, since dropping any one of them breaks the
+// rail in a way no unit test would otherwise catch: keeping the fixed 236px
+// track leaves a gap on the rail's right, and keeping either scroll or
+// stretch gives the menu a scrollbar of its own inside a column that already
+// scrolls.
+describe('the rail head adapts the project menu to living inside the rail', () => {
+  test('the head exists and costs no height when the slot is unused', () => {
+    expect(SOURCE).toContain('<slot name="top" />')
+    const head = SOURCE.slice(SOURCE.indexOf('.fcp-top {'), SOURCE.indexOf('.fcp-top :deep'))
+    expect(head).toContain('flex: none;')
+  })
+
+  test("the menu's fixed 236px track gives way to the rail's own width", () => {
+    const track = SOURCE.slice(
+      SOURCE.indexOf('.fcp-top :deep(.pn-root)'),
+      SOURCE.indexOf('.fcp-top :deep(.pn-card)'),
+    )
+    expect(track).toContain('width: 100%;')
+    expect(track).toContain('flex: none;')
+    expect(track).toContain('overflow-y: visible;')
+  })
+
+  test('neither the track nor its card scrolls on its own: the rail is the one scrolling', () => {
+    const card = SOURCE.slice(
+      SOURCE.indexOf('.fcp-top :deep(.pn-card)'),
+      SOURCE.indexOf('.fcp-sections {'),
+    )
+    expect(card).toContain('flex: none;')
+    expect(card).toContain('overflow-y: visible;')
+    expect(SOURCE).toContain('overflow-y: auto;') // still on .fcp-root itself
+  })
+
+  test('the head sits above the sections, never below them', () => {
+    expect(SOURCE.indexOf('class="fcp-top"')).toBeLessThan(SOURCE.indexOf('class="fcp-sections"'))
+  })
+})
