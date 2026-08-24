@@ -20,7 +20,7 @@ Bun.plugin({
 
 type Props = {
   label: string
-  count: number | null
+  count: number | string | null
   truncatedHint: string | null
   open: boolean
 }
@@ -78,6 +78,11 @@ describe('count', () => {
     const html = await render({ label: 'Issues', count: 0, truncatedHint: null, open: true })
     expect(html).toContain('ra-count')
     expect(html).toContain('>0<')
+  })
+
+  test('a caller-formatted string count (a filtered "shown / total") renders verbatim', async () => {
+    const html = await render({ label: 'Issues', count: '1 / 25', truncatedHint: null, open: true })
+    expect(html).toContain('>1 / 25<')
   })
 })
 

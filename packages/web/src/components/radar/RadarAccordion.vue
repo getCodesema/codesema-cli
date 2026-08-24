@@ -6,9 +6,15 @@
 // component owns no fetch, no filter, no sort, only the fold state display.
 defineProps<{
   label: string
-  /** Null when the count is not actually known yet (loading, transport error,
-   * forge unavailable): never a fabricated 0 that would read as "empty". */
-  count: number | null
+  /**
+   * Null when the count is not actually known yet (loading, transport error,
+   * forge unavailable): never a fabricated 0 that would read as "empty". A
+   * plain number is the whole corpus, unfiltered. A string is a caller-formatted
+   * "shown / total" (or equivalent), used once a filter or a label selection
+   * narrows what is actually on screen: a lone total would then describe a
+   * list nobody sees any more, not the one the reader is looking at.
+   */
+  count: number | string | null
   /** Set only when the forge's own `truncated` flag is true; null otherwise. */
   truncatedHint: string | null
   open: boolean

@@ -11,6 +11,7 @@ import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
 import { t } from '../../i18n'
 import type { ForgeIssue, ForgeIssuesResult, ForgeMr } from '../../types'
+import { DEFAULT_RADAR_PREFS, type RadarPrefs } from './RadarPrefs'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -73,14 +74,38 @@ function available(issues: ForgeIssue[], truncated = false): ForgeIssuesResult {
   return { available: true, truncated, issues }
 }
 
-async function render(props: {
+type RenderProps = {
   issuesState: ProjectIssuesState
   mrs: ForgeMr[]
   mrsState: MrsLoadState | null
-}): Promise<string> {
+}
+
+async function render(props: RenderProps): Promise<string> {
   const IssueRadar = (await import('./IssueRadar.vue')).default
   const app = createSSRApp(IssueRadar, props)
   return renderToString(app)
+}
+
+/** Renders with a seeded persisted prefs blob (accordion open, sort, filter,
+ * selected labels), restoring the real `localStorage` afterward. */
+async function renderWithPrefs(
+  prefsOverrides: Partial<RadarPrefs>,
+  props: RenderProps,
+): Promise<string> {
+  const store = new Map<string, string>()
+  store.set(
+    'codesema-ws-radar-prefs',
+    JSON.stringify({ ...DEFAULT_RADAR_PREFS, ...prefsOverrides }),
+  )
+  const stub = { getItem: (key: string) => store.get(key) ?? null, setItem: () => {} }
+  const globals = globalThis as { localStorage?: unknown }
+  const previous = globals.localStorage
+  try {
+    globals.localStorage = stub
+    return await render(props)
+  } finally {
+    globals.localStorage = previous
+  }
 }
 
 /** The Issues accordion's own markup, cut off before the Pull requests one:
@@ -93,6 +118,14 @@ function issuesSectionOf(html: string): string {
 /** Symmetric cut, starting at the Pull requests accordion. */
 function mrsSectionOf(html: string): string {
   return html.slice(html.indexOf('Pull requests'))
+}
+
+/** The header badge's own text (the `ra-count` span's inner content), null
+ * when absent: everything else in a section's HTML (URLs, the "→" glyph,
+ * closing tags) also contains "/", so a "no slash" assertion must read only
+ * this span, never the whole section. */
+function countBadgeOf(html: string): string | null {
+  return /<span class="ra-count">([^<]*)<\/span>/.exec(html)?.[1] ?? null
 }
 
 describe('issues: loading / error / unavailable / empty / list', () => {
@@ -301,6 +334,218 @@ describe('pull requests: transport error / forge unavailable / empty / list / tr
       mrsState: { status: 'loaded', truncated: false },
     })
     expect(html).not.toContain('ra-truncated')
+  })
+})
+
+describe('count badge: plain total unfiltered, "shown / total" once a filter is active', () => {
+  test('issues, no filter: the badge is the plain total, no "/" in it', async () => {
+    const html = await render({
+      issuesState: issuesState({
+        result: available([issue({ number: 1 }), issue({ number: 2 }), issue({ number: 3 })]),
+      }),
+      mrs: [],
+      mrsState: null,
+    })
+    expect(countBadgeOf(issuesSectionOf(html))).toBe('3')
+  })
+
+  test('issues, a label active and matching some items: "shown / total"', async () => {
+    const items = [
+      issue({ number: 1, labels: ['bug'] }),
+      issue({ number: 2, labels: ['ui'] }),
+      issue({ number: 3, labels: ['ui'] }),
+    ]
+    const html = await renderWithPrefs(
+      { issuesLabels: ['bug'] },
+      { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
+    )
+    expect(issuesSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+  })
+
+  test('issues, a label active matching nothing: a real measured "0 / total", not null', async () => {
+    const items = [issue({ number: 1, labels: ['ui'] }), issue({ number: 2, labels: ['ui'] })]
+    const html = await renderWithPrefs(
+      { issuesLabels: ['bug'] },
+      { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
+    )
+    expect(issuesSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 0, total: 2 })}<`)
+  })
+
+  test('issues, a label active but the count itself is unknown: still no badge at all', async () => {
+    const html = await renderWithPrefs(
+      { issuesLabels: ['bug'] },
+      {
+        issuesState: issuesState({ result: { available: false, reason: 'no-remote' } }),
+        mrs: [],
+        mrsState: null,
+      },
+    )
+    expect(issuesSectionOf(html)).not.toContain('ra-count')
+  })
+
+  test('MRs, no filter: the badge is the plain total, no "/" in it', async () => {
+    const html = await render({
+      issuesState: issuesState(),
+      mrs: [mr({ number: 1 }), mr({ number: 2 }), mr({ number: 3 })],
+      mrsState: { status: 'loaded', truncated: false },
+    })
+    expect(countBadgeOf(mrsSectionOf(html))).toBe('3')
+  })
+
+  test('MRs, the status filter active (draft): "shown / total"', async () => {
+    const items = [
+      mr({ number: 1, isDraft: true }),
+      mr({ number: 2, isDraft: false }),
+      mr({ number: 3, isDraft: false }),
+    ]
+    const html = await renderWithPrefs(
+      { mrsFilter: 'draft' },
+      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
+    )
+    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+  })
+
+  test('MRs, a label active: "shown / total"', async () => {
+    const items = [
+      mr({ number: 1, labels: ['bug'] }),
+      mr({ number: 2, labels: ['ui'] }),
+      mr({ number: 3, labels: ['ui'] }),
+    ]
+    const html = await renderWithPrefs(
+      { mrsLabels: ['bug'] },
+      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
+    )
+    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+  })
+
+  test('MRs, the status filter AND a label both active: combined narrowing, "shown / total"', async () => {
+    const items = [
+      mr({ number: 1, isDraft: true, labels: ['bug'] }),
+      mr({ number: 2, isDraft: true, labels: ['ui'] }),
+      mr({ number: 3, isDraft: false, labels: ['bug'] }),
+    ]
+    const html = await renderWithPrefs(
+      { mrsFilter: 'draft', mrsLabels: ['bug'] },
+      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
+    )
+    // Only #1 is both draft AND carries "bug": shown = 1, total unaffected = 3.
+    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 1, total: 3 })}<`)
+  })
+
+  test('MRs, a filter active leaving nothing: a real measured "0 / total"', async () => {
+    const items = [mr({ number: 1, isDraft: false }), mr({ number: 2, isDraft: false })]
+    const html = await renderWithPrefs(
+      { mrsFilter: 'draft' },
+      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
+    )
+    expect(mrsSectionOf(html)).toContain(`>${t('radar.countFiltered', { shown: 0, total: 2 })}<`)
+  })
+
+  test('MRs, a filter active but nothing fetched yet: still no badge at all', async () => {
+    const html = await renderWithPrefs(
+      { mrsFilter: 'draft' },
+      { issuesState: issuesState(), mrs: [], mrsState: null },
+    )
+    expect(mrsSectionOf(html)).not.toContain('ra-count')
+  })
+})
+
+describe('filtered-empty state: distinct from "the forge has nothing"', () => {
+  test('issues: a genuinely empty forge list shows issuesEmpty, never the filtered message', async () => {
+    const html = await render({
+      issuesState: issuesState({ result: available([]) }),
+      mrs: [],
+      mrsState: null,
+    })
+    const section = issuesSectionOf(html)
+    expect(section).toContain(t('radar.issuesEmpty'))
+    expect(section).not.toContain(t('radar.issuesFilteredEmpty'))
+    expect(section).not.toContain(t('radar.clearFilters'))
+  })
+
+  test('issues: two disjoint labels (AND semantics) leave nothing: the filtered message shows, not issuesEmpty, and the badge stays a real "0 / total"', async () => {
+    const items = [issue({ number: 1, labels: ['bug'] }), issue({ number: 2, labels: ['ui'] })]
+    const html = await renderWithPrefs(
+      { issuesLabels: ['bug', 'ui'] },
+      { issuesState: issuesState({ result: available(items) }), mrs: [], mrsState: null },
+    )
+    const section = issuesSectionOf(html)
+    expect(section).toContain(t('radar.issuesFilteredEmpty'))
+    expect(section).toContain(t('radar.clearFilters'))
+    expect(section).not.toContain(t('radar.issuesEmpty'))
+    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 2 }))
+  })
+
+  test('MRs: a genuinely empty forge list shows mrsEmpty, never a filtered message', async () => {
+    const html = await render({
+      issuesState: issuesState(),
+      mrs: [],
+      mrsState: { status: 'loaded', truncated: false },
+    })
+    const section = mrsSectionOf(html)
+    expect(section).toContain(t('radar.mrsEmpty'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyLabels'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyBoth'))
+    expect(section).not.toContain(t('radar.clearFilters'))
+  })
+
+  test('MRs: the status filter alone leaves nothing: names the status filter specifically', async () => {
+    const items = [mr({ number: 1, isDraft: false })]
+    const html = await renderWithPrefs(
+      { mrsFilter: 'draft' },
+      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
+    )
+    const section = mrsSectionOf(html)
+    expect(section).toContain(t('radar.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyLabels'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyBoth'))
+    expect(section).not.toContain(t('radar.mrsEmpty'))
+    expect(section).toContain(t('radar.clearFilters'))
+    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 1 }))
+  })
+
+  test('MRs: two disjoint labels alone leave nothing: names the labels specifically', async () => {
+    const items = [mr({ number: 1, labels: ['bug'] }), mr({ number: 2, labels: ['ui'] })]
+    const html = await renderWithPrefs(
+      { mrsLabels: ['bug', 'ui'] },
+      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
+    )
+    const section = mrsSectionOf(html)
+    expect(section).toContain(t('radar.mrsFilteredEmptyLabels'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyBoth'))
+    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 2 }))
+  })
+
+  test('MRs: the status filter AND a label together leave nothing: names both', async () => {
+    const items = [
+      mr({ number: 1, isDraft: false, labels: ['bug'] }),
+      mr({ number: 2, isDraft: true, labels: ['ui'] }),
+    ]
+    const html = await renderWithPrefs(
+      { mrsFilter: 'draft', mrsLabels: ['bug'] },
+      { issuesState: issuesState(), mrs: items, mrsState: { status: 'loaded', truncated: false } },
+    )
+    const section = mrsSectionOf(html)
+    expect(section).toContain(t('radar.mrsFilteredEmptyBoth'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyFilter'))
+    expect(section).not.toContain(t('radar.mrsFilteredEmptyLabels'))
+    expect(countBadgeOf(section)).toBe(t('radar.countFiltered', { shown: 0, total: 2 }))
+  })
+
+  test('clearing MR filters is offered as a single action, resetting both dimensions at once', async () => {
+    // The button exists and reads the shared "clear filters" label; the actual
+    // click-driven reset is pure state covered by RadarPrefs/RadarLogic tests.
+    const html = await renderWithPrefs(
+      { mrsFilter: 'draft', mrsLabels: ['bug'] },
+      {
+        issuesState: issuesState(),
+        mrs: [mr({ isDraft: false, labels: ['ui'] })],
+        mrsState: { status: 'loaded', truncated: false },
+      },
+    )
+    expect(mrsSectionOf(html)).toContain('<button class="ir-retry" type="button"')
   })
 })
 

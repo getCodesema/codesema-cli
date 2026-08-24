@@ -73,6 +73,18 @@ function toggleMrLabel(label: string): void {
   prefs.value = { ...prefs.value, mrsLabels: next }
 }
 
+/** Releases the only filter dimension issues have (labels): the fix offered
+ * on the "your filter matches nothing" state below. */
+function clearIssueFilters(): void {
+  prefs.value = { ...prefs.value, issuesLabels: [] }
+}
+
+/** Releases both MR filter dimensions at once (status filter and labels):
+ * the fix offered on the "your filter matches nothing" state below. */
+function clearMrFilters(): void {
+  prefs.value = { ...prefs.value, mrsFilter: 'all', mrsLabels: [] }
+}
+
 // ── Issues: loading / transport error / forge unavailable / empty / list ──
 const issuesResult = computed(() => props.issuesState.result)
 const issuesLoaded = computed(() =>
@@ -93,12 +105,9 @@ const ISSUES_REASON_KEY = {
   unsupported: 'radar.issuesReasonUnsupported',
 } as const
 
-const issuesCount = computed(() => issuesLoaded.value?.length ?? null)
-const issuesTruncatedHint = computed(() =>
-  issuesTruncated.value && issuesLoaded.value
-    ? t('radar.truncatedHint', { n: issuesLoaded.value.length })
-    : null,
-)
+// Only labels can narrow the issues list (see radarFilterMrsByState's own
+// doc: nothing else legitimately discriminates an OPEN-only corpus here).
+const issuesFilterActive = computed(() => prefs.value.issuesLabels.length > 0)
 const issuesLabelCounts = computed(() => radarLabelCounts(issuesLoaded.value ?? []))
 const issuesVisible = computed(() =>
   issuesLoaded.value === null
@@ -107,6 +116,26 @@ const issuesVisible = computed(() =>
         radarFilterByLabels(issuesLoaded.value, prefs.value.issuesLabels),
         issuesSort.value,
       ),
+)
+/**
+ * The header badge: the whole corpus when nothing narrows it, "shown / total"
+ * the moment a label selection is active, since a lone total would then
+ * describe a list nobody is actually looking at any more. `null` (no badge at
+ * all) stays reserved for the genuinely unknown count (loading, error, unavailable).
+ */
+const issuesCount = computed(() => {
+  if (issuesLoaded.value === null) {
+    return null
+  }
+  const total = issuesLoaded.value.length
+  return issuesFilterActive.value
+    ? t('radar.countFiltered', { shown: issuesVisible.value.length, total })
+    : total
+})
+const issuesTruncatedHint = computed(() =>
+  issuesTruncated.value && issuesLoaded.value
+    ? t('radar.truncatedHint', { n: issuesLoaded.value.length })
+    : null,
 )
 
 // ── Pull requests: transport error / forge unavailable / empty / list ─────
@@ -127,18 +156,44 @@ const mrsUnavailableKey = computed(() =>
 const mrsDegraded = computed(
   () => mrsErrorMessage.value !== null || mrsUnavailableKey.value !== null,
 )
-// Null (never a fabricated 0) until a fetch actually resolved into a count.
-const mrsCount = computed(() => (props.mrsState?.status === 'loaded' ? props.mrs.length : null))
-const mrsTruncatedHint = computed(() =>
-  props.mrsState?.status === 'loaded' && props.mrsState.truncated
-    ? t('radar.truncatedHint', { n: props.mrs.length })
-    : null,
-)
 const mrsStateFiltered = computed(() => radarFilterMrsByState(props.mrs, mrsFilter.value))
 const mrsLabelCounts = computed(() => radarLabelCounts(mrsStateFiltered.value))
 const mrsVisible = computed(() =>
   radarSort(radarFilterByLabels(mrsStateFiltered.value, prefs.value.mrsLabels), mrsSort.value),
 )
+const mrsFilterActive = computed(
+  () => mrsFilter.value !== 'all' || prefs.value.mrsLabels.length > 0,
+)
+/** Same doctrine as issuesCount above: a formatted "shown / total" the moment
+ * the status filter or a label selection is active, null (no badge at all)
+ * until a fetch actually resolved into a count. */
+const mrsCount = computed(() => {
+  if (props.mrsState?.status !== 'loaded') {
+    return null
+  }
+  const total = props.mrs.length
+  return mrsFilterActive.value
+    ? t('radar.countFiltered', { shown: mrsVisible.value.length, total })
+    : total
+})
+const mrsTruncatedHint = computed(() =>
+  props.mrsState?.status === 'loaded' && props.mrsState.truncated
+    ? t('radar.truncatedHint', { n: props.mrs.length })
+    : null,
+)
+/**
+ * Which filter(s) to name in the "your filter matches nothing" message:
+ * distinct wording per dimension actually engaged, so the reader is told
+ * exactly what to release rather than a generic "try something else".
+ */
+const mrsFilteredEmptyKey = computed(() => {
+  const statusActive = mrsFilter.value !== 'all'
+  const labelsActive = prefs.value.mrsLabels.length > 0
+  if (statusActive && labelsActive) {
+    return 'radar.mrsFilteredEmptyBoth'
+  }
+  return statusActive ? 'radar.mrsFilteredEmptyFilter' : 'radar.mrsFilteredEmptyLabels'
+})
 
 const MR_FILTERS: readonly MrStateFilter[] = ['all', 'draft', 'ready']
 const MR_FILTER_LABEL_KEY = {
@@ -185,6 +240,14 @@ const MR_FILTER_LABEL_KEY = {
       </p>
       <p v-else-if="issuesLoaded === null" class="ir-loading">{{ t('radar.loading') }}</p>
       <p v-else-if="issuesLoaded.length === 0" class="ir-empty">{{ t('radar.issuesEmpty') }}</p>
+      <!-- Distinct from the line above: the forge has issues, the LABEL
+           filter is what leaves nothing on screen. -->
+      <p v-else-if="issuesVisible.length === 0" class="ir-degraded">
+        {{ t('radar.issuesFilteredEmpty') }}
+        <button class="ir-retry" type="button" @click="clearIssueFilters">
+          {{ t('radar.clearFilters') }}
+        </button>
+      </p>
       <a
         v-for="issue in issuesVisible"
         :key="issue.number"
@@ -238,6 +301,14 @@ const MR_FILTER_LABEL_KEY = {
         {{ t(mrsUnavailableKey) }}
       </p>
       <p v-else-if="mrs.length === 0" class="ir-empty">{{ t('radar.mrsEmpty') }}</p>
+      <!-- Distinct from the line above: the forge has MRs, the status filter
+           and/or a label selection is what leaves nothing on screen. -->
+      <p v-else-if="mrsVisible.length === 0" class="ir-degraded">
+        {{ t(mrsFilteredEmptyKey) }}
+        <button class="ir-retry" type="button" @click="clearMrFilters">
+          {{ t('radar.clearFilters') }}
+        </button>
+      </p>
       <a
         v-for="mr in mrsVisible"
         :key="mr.number"
