@@ -135,9 +135,10 @@ describe('the header', () => {
     expect(html).toContain('rel="noopener noreferrer"')
   })
 
-  test('the secondary control closes the panel, labeled', async () => {
+  test('the nav band back control closes the panel, labeled', async () => {
     const html = await render({ kind: 'issue', issue: issue() })
-    expect(html).toContain(t('forge.detailClose'))
+    expect(html).toContain('class="fdp-back"')
+    expect(html).toContain(htmlEscapeAttr(t('forge.detailClose')))
   })
 
   describe('state badges', () => {
@@ -180,6 +181,108 @@ describe('the header', () => {
       const html = await render({ kind: 'mr', mr: mr({ state: null }) })
       expect(html).not.toContain('fdp-state--')
     })
+  })
+})
+
+// The head is three bands: a sticky nav band (back + title echo), the real
+// title (scrolls normally), and a toolbar band (sticky on narrow widths,
+// static past 640px). Most of this is geometry no DOM-less SSR render can
+// see (scoped <style> never reaches renderToString output), so it is read
+// from source the same way the pre-existing "layout geometry" describe
+// blocks below already do.
+describe('the head: three bands', () => {
+  test('band 1 (nav) is sticky, pinned to the very top of the scroll container, 44px minimum height', () => {
+    expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*position: sticky;/)
+    expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*top: 0;/)
+    expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*min-height: var\(--fdp-nav-h\);/)
+    expect(SOURCE).toContain('--fdp-nav-h: 44px;')
+  })
+
+  test('band 1 renders the back control and a title echo, both always in the markup', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ title: 'reticulate the splines' }),
+    })
+    expect(html).toContain('class="fdp-nav"')
+    expect(html).toContain('class="fdp-back"')
+    expect(html).toContain('reticulate the splines')
+  })
+
+  test('the echo is decorative and starts hidden: SSR never runs the IntersectionObserver that would reveal it', async () => {
+    const html = await render({ kind: 'issue', issue: issue() })
+    const echoTag = /<span class="fdp-title-echo"[^>]*>/.exec(html)
+    expect(echoTag).not.toBeNull()
+    expect(echoTag?.[0]).toContain('aria-hidden="true"')
+    expect(html).not.toContain('fdp-title-echo--visible')
+  })
+
+  test('the echo fades by an opacity transition, 150ms', () => {
+    expect(SOURCE).toMatch(/\.fdp-title-echo\s*\{[^}]*transition: opacity 150ms ease;/)
+  })
+
+  test('band 2 (title band) is not sticky, and the title itself carries no line cap', () => {
+    expect(SOURCE).not.toMatch(/\.fdp-title-band\s*\{[^}]*position: sticky;/)
+    expect(SOURCE).not.toContain('-webkit-line-clamp')
+    expect(SOURCE).not.toContain('line-clamp')
+  })
+
+  test('band 2 padding: 16px top / 12px bottom by default, 20px top / 0 bottom past 640px', () => {
+    expect(SOURCE).toContain('padding: 16px 0 12px;')
+    expect(SOURCE).toContain('padding: 20px 0 0;')
+  })
+
+  test('band 3 (toolbar) is sticky right under band 1 on narrow widths, static past 640px', () => {
+    expect(SOURCE).toMatch(/\.fdp-toolbar\s*\{[^}]*position: sticky;/)
+    expect(SOURCE).toMatch(/\.fdp-toolbar\s*\{[^}]*top: var\(--fdp-nav-h\);/)
+    expect(SOURCE).toMatch(
+      /@container fb-shell \(min-width: 640px\) \{\s*\.fdp-toolbar \{\s*position: static;/,
+    )
+  })
+
+  test('band 3 padding: 8px vertical by default, 16px vertical past 640px', () => {
+    expect(SOURCE).toContain('padding: 8px 0;')
+    expect(SOURCE).toContain('padding: 16px 0;')
+  })
+
+  test('band 3 renders the state badge, number and open action', async () => {
+    const html = await render({ kind: 'issue', issue: issue({ state: 'open' }) })
+    expect(html).toContain('class="fdp-toolbar"')
+    expect(html).toContain('fdp-state--open')
+    expect(html).toContain('class="fdp-number"')
+    expect(html).toContain('class="fdp-open"')
+  })
+
+  test('the stacking breakpoint (max-width: 640px) is still the only max-width query: the band overrides use min-width instead', () => {
+    const maxWidthQueries = SOURCE.match(/@container fb-shell \(max-width: \d+px\)/g) ?? []
+    expect(maxWidthQueries).toHaveLength(1)
+    expect(maxWidthQueries[0]).toBe('@container fb-shell (max-width: 640px)')
+  })
+})
+
+// The echo's visibility is driven by an IntersectionObserver, not
+// observable under this SSR-only harness: `shouldShowTitleEcho` is the
+// pure predicate extracted from its callback so the toggle logic itself
+// stays under direct test.
+describe('shouldShowTitleEcho: the pure predicate behind the nav band echo', () => {
+  test('no entries yet: hidden (the echo starts hidden, not visible-by-default)', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([])).toBe(false)
+  })
+
+  test('the title sentinel is still intersecting the scroll container: hidden', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([{ isIntersecting: true }])).toBe(false)
+  })
+
+  test('the title sentinel has left the scroll container entirely: visible', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([{ isIntersecting: false }])).toBe(true)
+  })
+
+  test('the last entry decides, in case the callback signature ever delivers more than one', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([{ isIntersecting: true }, { isIntersecting: false }])).toBe(true)
+    expect(shouldShowTitleEcho([{ isIntersecting: false }, { isIntersecting: true }])).toBe(false)
   })
 })
 
@@ -393,5 +496,22 @@ describe('layout geometry (read from source: scoped CSS never reaches SSR output
     const stackingQueries = SOURCE.match(/@container fb-shell \(max-width: \d+px\)/g) ?? []
     expect(stackingQueries).toHaveLength(1)
     expect(stackingQueries[0]).toBe('@container fb-shell (max-width: 640px)')
+  })
+})
+
+// The control in the first band closes the panel, it does not navigate back.
+// The list it would "return" to is the column immediately beside it, still on
+// screen: a back arrow would promise a navigation that never happens, and
+// would contradict its own label, which says "close".
+describe('the first band closes the panel rather than going back', () => {
+  test('the control carries a cross, never a back arrow', () => {
+    expect(SOURCE).toContain('<X class="fdp-back-icon"')
+    expect(SOURCE).not.toContain('ArrowLeft')
+  })
+
+  test('its label and its behaviour agree: it says close, and it closes', () => {
+    const button = SOURCE.slice(SOURCE.indexOf('class="fdp-back"'), SOURCE.indexOf('</button>'))
+    expect(button).toContain("t('forge.detailClose')")
+    expect(button).toContain("emit('close')")
   })
 })

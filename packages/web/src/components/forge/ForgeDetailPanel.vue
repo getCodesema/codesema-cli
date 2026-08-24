@@ -1,3 +1,19 @@
+<script lang="ts">
+/**
+ * Pure predicate behind the sticky nav band's title echo, extracted for
+ * direct unit testing: IntersectionObserver itself is not observable
+ * under the SSR-only test harness (see ForgeDetailPanel.test.ts). Takes
+ * the callback's entries array (only ever one entry here, one observed
+ * target) and decides whether the compact echo should show: true once the
+ * title band has left the scroll container entirely, false otherwise
+ * (including the initial "no entries yet" case, so the echo starts hidden).
+ */
+export function shouldShowTitleEcho(entries: readonly { isIntersecting: boolean }[]): boolean {
+  const entry = entries[entries.length - 1]
+  return entry !== undefined && !entry.isIntersecting
+}
+</script>
+
 <script setup lang="ts">
 // The forge board's detail panel: always visible, not conditioned on a
 // selection, with a clean empty state while nothing is selected in the list
@@ -6,6 +22,16 @@
 // The MR rail reuses MrMetaRail.vue as-is; an issue's rail is built inline
 // here since ForgeIssue carries only labels and dates, not the reviewer/
 // milestone/mergeable fields MrMetaRail depends on.
+//
+// The head is three bands, not one. A sticky nav band (back + a compact
+// title echo) pinned to the top of the scroll container; the real title,
+// which scrolls away normally with no cap on its lines; and a toolbar band
+// (state + actions) sticky right under the nav band on narrow widths,
+// static once the panel is wide enough that the echo matters less. The
+// echo's visibility is driven by an IntersectionObserver on the title band
+// itself, rooted at the scroll container with a zero threshold: a
+// pixel-based scroll-offset trigger would be wrong the moment the title
+// wraps to more than one line.
 import {
   CircleCheck,
   CircleDot,
@@ -18,7 +44,7 @@ import {
   Tag,
   X,
 } from '@lucide/vue'
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { t, type MessageKey } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import MrMetaRail from '../mr/MrMetaRail.vue'
@@ -34,6 +60,54 @@ import { labelPillStyle } from './LabelColor'
 const props = defineProps<{ item: ForgeDetailItem | null }>()
 
 const emit = defineEmits<{ close: [] }>()
+
+// ── Sticky nav band: title echo, toggled by an IntersectionObserver on the
+// title band below. Set up only from client lifecycle hooks (onMounted,
+// and a non-immediate watch), never eagerly during setup(): setup() itself
+// runs during SSR, where `IntersectionObserver` does not exist. ──────────
+const scrollRootEl = ref<HTMLElement | null>(null)
+const titleSentinelEl = ref<HTMLElement | null>(null)
+const showTitleEcho = ref(false)
+let titleObserver: IntersectionObserver | null = null
+
+function disconnectTitleObserver(): void {
+  titleObserver?.disconnect()
+  titleObserver = null
+}
+
+function connectTitleObserver(): void {
+  disconnectTitleObserver()
+  if (scrollRootEl.value === null || titleSentinelEl.value === null) {
+    return
+  }
+  titleObserver = new IntersectionObserver(
+    (entries) => {
+      showTitleEcho.value = shouldShowTitleEcho(entries)
+    },
+    { root: scrollRootEl.value, threshold: 0 },
+  )
+  titleObserver.observe(titleSentinelEl.value)
+}
+
+onMounted(connectTitleObserver)
+onBeforeUnmount(disconnectTitleObserver)
+
+// Handles selection appearing/disappearing after the panel is already
+// mounted (the common case: picking or closing an item in the list). The
+// initial-mount case (an item already selected when the panel first
+// renders) is covered by onMounted above instead.
+watch(
+  () => props.item !== null,
+  async (hasItem) => {
+    if (!hasItem) {
+      disconnectTitleObserver()
+      showTitleEcho.value = false
+      return
+    }
+    await nextTick()
+    connectTitleObserver()
+  },
+)
 
 const title = computed(() => {
   if (props.item === null) {
@@ -160,10 +234,41 @@ const issueUpdatedAge = computed(() =>
 <template>
   <div class="fdp-root">
     <div v-if="item !== null" class="fdp-columns">
-      <div class="fdp-main">
+      <div ref="scrollRootEl" class="fdp-main">
         <header class="fdp-head" :aria-label="t('forge.detailTitle')">
-          <div class="fdp-head-main">
+          <!-- Band 1: sticky nav. Back control, always present, plus a
+               compact title echo that fades in once the real title (band 2)
+               has scrolled entirely out of view. -->
+          <div class="fdp-nav">
+            <!-- A CROSS, not a back arrow. This button closes the panel:
+                 the list it would "go back" to is the column right next to
+                 it, still on screen, so an arrow would promise a navigation
+                 that does not happen and contradict its own label. -->
+            <button
+              type="button"
+              class="fdp-back"
+              :aria-label="t('forge.detailClose')"
+              @click="emit('close')"
+            >
+              <X class="fdp-back-icon" aria-hidden="true" />
+            </button>
+            <span
+              class="fdp-title-echo"
+              :class="{ 'fdp-title-echo--visible': showTitleEcho }"
+              aria-hidden="true"
+              >{{ title }}</span
+            >
+          </div>
+
+          <!-- Band 2: the real title. Scrolls normally, no line cap; the
+               observed sentinel for the nav band's echo. -->
+          <div ref="titleSentinelEl" class="fdp-title-band">
             <h2 class="fdp-title">{{ title }}</h2>
+          </div>
+
+          <!-- Band 3: toolbar. Sticky right under the nav band on narrow
+               widths, static (scrolls with the body) once wide. -->
+          <div class="fdp-toolbar">
             <div class="fdp-badge-row">
               <span v-if="badge" class="fdp-state" :class="`fdp-state--${badge.variant}`">
                 <GitPullRequest
@@ -202,8 +307,6 @@ const issueUpdatedAge = computed(() =>
                 >{{ t('mrs.number', { n: number }) }}</a
               >
             </div>
-          </div>
-          <div class="fdp-head-actions">
             <a
               class="fdp-open"
               :href="url ?? undefined"
@@ -214,14 +317,6 @@ const issueUpdatedAge = computed(() =>
               <ExternalLink class="fdp-open-icon" aria-hidden="true" />
               {{ t('forge.detailOpenLabel') }}
             </a>
-            <button
-              type="button"
-              class="fdp-close"
-              :aria-label="t('forge.detailClose')"
-              @click="emit('close')"
-            >
-              <X class="fdp-close-icon" aria-hidden="true" />
-            </button>
           </div>
         </header>
 
@@ -340,13 +435,80 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-head {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  flex-direction: column;
+  /* Shared sticky offset: the nav band's own min-height, reused as the
+     toolbar band's sticky top so it docks flush under the nav band rather
+     than at a second, hand-picked number that could drift out of sync. */
+  --fdp-nav-h: 44px;
 }
 
-.fdp-head-main {
-  flex: 1;
+/* ── Band 1: sticky nav (back + title echo) ───────────────────────────── */
+.fdp-nav {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--fdp-nav-h);
+  background: var(--cs-bg);
+}
+
+.fdp-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cs-muted);
+  cursor: pointer;
+}
+
+.fdp-back:hover {
+  border-color: var(--cs-line-3);
+  color: var(--cs-text-2);
+}
+
+.fdp-back-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Hidden by default, faded in once the title band (band 2) has scrolled
+   entirely out of view (see the IntersectionObserver in the script). A
+   plain opacity transition, deliberately not a keyframe animation with a
+   fill mode: the global reduced-motion guard (style.css) clamps transition
+   duration for users who asked for less motion, which only works because
+   nothing here would freeze on a held keyframe. */
+.fdp-title-echo {
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cs-text);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.fdp-title-echo--visible {
+  opacity: 1;
+}
+
+/* ── Band 2: the title itself, scrolls normally ───────────────────────── */
+.fdp-title-band {
+  padding: 16px 0 12px;
+}
+
+@container fb-shell (min-width: 640px) {
+  .fdp-title-band {
+    padding: 20px 0 0;
+  }
 }
 
 .fdp-title {
@@ -359,12 +521,33 @@ const issueUpdatedAge = computed(() =>
   word-break: break-word;
 }
 
+/* ── Band 3: toolbar, sticky right under the nav band on narrow widths,
+   static (scrolls with the body) once wide ───────────────────────────── */
+.fdp-toolbar {
+  position: sticky;
+  top: var(--fdp-nav-h);
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  background: var(--cs-bg);
+}
+
+@container fb-shell (min-width: 640px) {
+  .fdp-toolbar {
+    position: static;
+    padding: 16px 0;
+  }
+}
+
 .fdp-badge-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 12px;
   font-size: 12.5px;
   color: var(--cs-muted);
 }
@@ -415,13 +598,6 @@ const issueUpdatedAge = computed(() =>
   color: var(--cs-green-text);
 }
 
-.fdp-head-actions {
-  flex: none;
-  display: flex;
-  align-items: stretch;
-  gap: 8px;
-}
-
 .fdp-open {
   display: inline-flex;
   align-items: center;
@@ -448,30 +624,6 @@ const issueUpdatedAge = computed(() =>
   flex: none;
   width: 13px;
   height: 13px;
-}
-
-.fdp-close {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: inherit;
-  padding: 4px 6px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--cs-muted);
-  cursor: pointer;
-}
-
-.fdp-close:hover {
-  border-color: var(--cs-line-3);
-  color: var(--cs-text-2);
-}
-
-.fdp-close-icon {
-  width: 14px;
-  height: 14px;
 }
 
 .fdp-md {
