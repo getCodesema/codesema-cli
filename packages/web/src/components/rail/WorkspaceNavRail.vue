@@ -8,7 +8,14 @@
 // icon are the only exemption, and every row here has one). `border: none`
 // stays explicit on every native <button>, since this project imports no
 // Tailwind preflight to reset the browser's own default (see style.css).
-import { FolderGit2, MessageSquare, PanelLeftClose, PanelLeftOpen, Settings } from '@lucide/vue'
+import {
+  FolderGit2,
+  MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings,
+  ShieldCheck,
+} from '@lucide/vue'
 import type { NavCategory } from '../../composables/useWorkspaceNav'
 import { t } from '../../i18n'
 
@@ -76,6 +83,21 @@ const emit = defineEmits<{
           <FolderGit2 class="wnr-row-icon" aria-hidden="true" />
         </span>
         <span v-if="!collapsed" class="wnr-cat-label">{{ t('rail.repositories') }}</span>
+      </button>
+
+      <button
+        type="button"
+        class="wnr-cat"
+        :class="{ 'wnr-cat--active': category === 'codeReview' }"
+        :aria-pressed="category === 'codeReview'"
+        :title="t('rail.codeReview')"
+        :aria-label="collapsed ? t('rail.codeReview') : undefined"
+        @click="emit('update:category', 'codeReview')"
+      >
+        <span class="wnr-icon-slot">
+          <ShieldCheck class="wnr-row-icon" aria-hidden="true" />
+        </span>
+        <span v-if="!collapsed" class="wnr-cat-label">{{ t('rail.codeReview') }}</span>
       </button>
     </div>
 

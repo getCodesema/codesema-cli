@@ -20,13 +20,16 @@ import type {
 import ForgeDetailPanel from '../forge/ForgeDetailPanel.vue'
 import PreviewPanel from '../PreviewPanel.vue'
 
+/** One discriminated prop rather than a `source` + nullable `mr` + name
+ * trio: those three had to agree, nothing enforced it, and the header read
+ * `source.kind` while the body read whether `mr` was null — two answers to
+ * the same question, free to disagree. */
+export type ReviewTarget = { kind: 'mr'; mr: ForgeMr } | { kind: 'branch'; name: string }
+
 const props = defineProps<{
   projectId: string
   projectName: string
-  source: ReviewSource
-  /** The forge record when the target is a merge request, null for a branch. */
-  mr: ForgeMr | null
-  branchName: string
+  target: ReviewTarget
   /** Null while the archives have not been read yet, never an empty array
    * standing in for "none": the two say different things. */
   history: ReviewArchiveSummary[] | null
@@ -44,6 +47,12 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const source = computed<ReviewSource>(() =>
+  props.target.kind === 'mr'
+    ? { kind: 'mr', number: props.target.mr.number }
+    : { kind: 'branch', name: props.target.name },
+)
+
 const running = computed(() =>
   props.runStatus?.available === true && props.runStatus.phase === 'running'
     ? props.runStatus
@@ -54,7 +63,7 @@ const runningHere = computed(
   () =>
     running.value !== null &&
     running.value.project_id === props.projectId &&
-    sameReviewSource(running.value.source, props.source),
+    sameReviewSource(running.value.source, source.value),
 )
 
 const modeLabel = (mode: MrReviewMode): string =>
@@ -75,11 +84,11 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
     <header class="rtp-head">
       <span class="rtp-project">{{ projectName }}</span>
       <h1 class="rtp-title">
-        <GitBranch v-if="source.kind === 'branch'" class="rtp-glyph" aria-hidden="true" />
-        <span v-else class="rtp-number">#{{ source.number }}</span>
-        {{ mr ? mr.title : branchName }}
+        <GitBranch v-if="target.kind === 'branch'" class="rtp-glyph" aria-hidden="true" />
+        <span v-else class="rtp-number">#{{ target.mr.number }}</span>
+        {{ target.kind === 'mr' ? target.mr.title : target.name }}
       </h1>
-      <p v-if="source.kind === 'branch'" class="rtp-hint">
+      <p v-if="target.kind === 'branch'" class="rtp-hint">
         {{ t('codeReview.branchTargetHint') }}
       </p>
 
@@ -130,7 +139,11 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
     </section>
 
     <div class="rtp-body">
-      <ForgeDetailPanel v-if="mr" :item="{ kind: 'mr', mr }" @close="emit('close')" />
+      <ForgeDetailPanel
+        v-if="target.kind === 'mr'"
+        :item="{ kind: 'mr', mr: target.mr }"
+        @close="emit('close')"
+      />
       <PreviewPanel v-else :source="source" :project="projectId" />
     </div>
   </section>

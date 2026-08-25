@@ -869,7 +869,8 @@ const en = {
   'codeReview.busyElsewhere': 'A review is already running',
   'codeReview.openRunning': 'Open the running review',
   'codeReview.runFailed': 'The review failed: {error}',
-  'codeReview.branchTargetHint': 'A branch with no merge request is reviewed against its detected target.',
+  'codeReview.branchTargetHint':
+    'A branch with no merge request is reviewed against its detected target.',
 
   // --- Relative timestamp, five regimes (conversations column §9) ---
   'time.yesterdayAt': 'yesterday {t}',
@@ -1732,7 +1733,8 @@ const fr: Record<MessageKey, string> = {
   'codeReview.busyElsewhere': 'Une revue tourne déjà',
   'codeReview.openRunning': 'Ouvrir la revue en cours',
   'codeReview.runFailed': 'La revue a échoué : {error}',
-  'codeReview.branchTargetHint': 'Une branche sans merge request est révisée contre sa cible détectée.',
+  'codeReview.branchTargetHint':
+    'Une branche sans merge request est révisée contre sa cible détectée.',
 
   // --- Horodatage relatif, cinq régimes (colonne des conversations §9) ---
   'time.yesterdayAt': 'hier {t}',
