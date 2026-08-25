@@ -24,9 +24,7 @@ import {
   deckOpenTask,
   deckPromoteDraft,
   deckSwapDraft,
-  deckTogglePin,
   EMPTY_DECK,
-  isPinned,
   type FocusDeck,
 } from '../composables/useFocusDeck'
 import { useForgePrefs } from '../composables/useForgePrefs'
@@ -305,10 +303,6 @@ function openConversation(projectId: string, taskId: string): void {
   deck.value = deckOpenTask(deck.value, projectId, taskId)
   reviewRecord.value = null
   void hydrate(projectId, taskId)
-}
-
-function togglePin(key: string): void {
-  deck.value = deckTogglePin(deck.value, key)
 }
 
 // Events emitted while the stream was down are not replayed: re-hydrate every
@@ -769,7 +763,6 @@ const projectsNavHandlers = {
               :project-name="projectNameById.get(entry.projectId) ?? entry.projectId"
               :project-kind="projectKindById.get(entry.projectId) ?? 'repo'"
               :repo-projects="repoProjects"
-              :pinned="isPinned(deck, entry.key)"
               :reply="(m) => reply(entry.projectId, entry.taskId, m)"
               :attach="(repoProjectId) => attach(entry.projectId, entry.taskId, repoProjectId)"
               :interrupt="() => interrupt(entry.projectId, entry.taskId)"
@@ -784,7 +777,6 @@ const projectsNavHandlers = {
               :apply-checks-proposal="() => applyChecksProposal(entry.projectId)"
               :dismiss-checks-proposal="() => dismissChecksProposal(entry.projectId)"
               @open-review="openReview"
-              @toggle-pin="togglePin(entry.key)"
             />
 
             <!-- Draft column: a composer in fork mode (new branch from a
