@@ -430,7 +430,6 @@ const en = {
     'An unusable merge setting was ignored and its default applied',
 
   // --- workspace multi-project (A3, B2) ---
-  'workspace.projectLabel': 'Projects',
   'workspace.addProject': 'Add a project',
   'workspace.detectedProjects': 'Detected repos',
   'workspace.addProjectPath': 'Absolute path to a git repo…',
@@ -452,7 +451,6 @@ const en = {
   'workspace.cardActive': '{n} conversation in progress | {n} conversations in progress',
 
   // --- T4 workspace layout (header / projects nav / work queue / focus) ---
-  'workspace.searchPlaceholder': 'Search…',
   'workspace.needsYouBadge': '{n} agent needs you | {n} agents need you',
   'workspace.openOldestWaiting': 'Open the conversation that has waited the longest',
   'workspace.agentsCount': '{n} agent | {n} agents',
@@ -1283,7 +1281,6 @@ const fr: Record<MessageKey, string> = {
     'Un réglage de fusion inutilisable a été ignoré et son défaut appliqué',
 
   // --- workspace multi-project (A3, B2) ---
-  'workspace.projectLabel': 'Projets',
   'workspace.addProject': 'Ajouter un projet',
   'workspace.detectedProjects': 'Dépôts détectés',
   'workspace.addProjectPath': 'Chemin absolu vers un dépôt git…',
@@ -1307,7 +1304,6 @@ const fr: Record<MessageKey, string> = {
   'workspace.cardActive': '{n} conversation en cours | {n} conversations en cours',
 
   // --- T4 workspace layout (header / projects nav / work queue / focus) ---
-  'workspace.searchPlaceholder': 'Rechercher…',
   'workspace.needsYouBadge': '{n} agent a besoin de vous | {n} agents ont besoin de vous',
   'workspace.openOldestWaiting': 'Ouvrir la conversation qui attend depuis le plus longtemps',
   'workspace.agentsCount': '{n} agent | {n} agents',
@@ -1641,7 +1637,7 @@ const fr: Record<MessageKey, string> = {
   'conversations.checksRunning': 'Vérifications en cours',
   'conversations.checksConflict': 'Conflit de fusion',
 
-  // --- Rail de navigation : deux catégories, une colonne de liste, un pied fixe ---
+  // --- Navigation rail: two categories, a list column, a pinned footer ---
   'rail.conversations': 'Conversation',
   'rail.repositories': 'Dépôt',
   'rail.collapse': 'Replier le menu',
@@ -1652,7 +1648,7 @@ const fr: Record<MessageKey, string> = {
   'rail.repositoriesEmpty': 'Aucun dépôt enregistré.',
   'rail.repositoriesSearchEmpty': 'Aucun dépôt ne correspond à cette recherche.',
 
-  // --- Vue dépôt : trois onglets, quatre tuiles, le tableau des branches ---
+  // --- Repository view: three tabs, four tiles, the branch table ---
   'repository.tabBranches': 'Branches',
   'repository.tabIssues': 'Tickets',
   'repository.tabMrs': 'Merge requests',

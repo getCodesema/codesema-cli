@@ -18,14 +18,19 @@ import type { ForgeSortKey } from '../forge/ForgeLogic'
 import {
   FORGE_CONTROLS_COLLAPSED_WIDTH,
   FORGE_CONTROLS_WIDTH_DEFAULT,
+  FORGE_CONTROLS_WIDTH_MAX,
+  FORGE_CONTROLS_WIDTH_MIN,
   type ForgeSection,
 } from '../forge/ForgePrefs'
+import ForgeSplitter from '../forge/ForgeSplitter.vue'
 
 const props = defineProps<{
   projectName: string
   tab: RepoTab
   /** Collapse state of the inner forge controls rail. */
   controlsCollapsed: boolean
+  /** Open width of that rail, restored when it expands. */
+  controlsWidth: number
   issuesState: ProjectIssuesState
   issuesSort: ForgeSortKey
   issuesLabels: string[]
@@ -41,6 +46,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:tab': [tab: RepoTab]
   'update:controlsCollapsed': [collapsed: boolean]
+  'update:controlsWidth': [width: number]
   'update:issuesSort': [sort: ForgeSortKey]
   'update:mrsSort': [sort: ForgeSortKey]
   'update:mrsStateFilter': [state: ForgeMrStateFilter]
@@ -75,7 +81,7 @@ function panelId(tab: RepoTab): string {
 const activeSection = computed<ForgeSection>(() => (props.tab === 'mrs' ? 'mrs' : 'issues'))
 
 const railWidth = computed(() =>
-  props.controlsCollapsed ? FORGE_CONTROLS_COLLAPSED_WIDTH : FORGE_CONTROLS_WIDTH_DEFAULT,
+  props.controlsCollapsed ? FORGE_CONTROLS_COLLAPSED_WIDTH : props.controlsWidth,
 )
 </script>
 
@@ -143,6 +149,15 @@ const railWidth = computed(() =>
             @toggle-mr-label="(label) => emit('toggle-mr-label', label)"
           />
         </aside>
+        <ForgeSplitter
+          v-if="!controlsCollapsed"
+          :model-value="controlsWidth"
+          :min="FORGE_CONTROLS_WIDTH_MIN"
+          :max="FORGE_CONTROLS_WIDTH_MAX"
+          :default-width="FORGE_CONTROLS_WIDTH_DEFAULT"
+          :ariaLabel="t('forge.resizeControlsAria')"
+          @update:model-value="(v: number) => emit('update:controlsWidth', v)"
+        />
         <div class="rv-forge-board">
           <ForgeBoard
             :section="activeSection"

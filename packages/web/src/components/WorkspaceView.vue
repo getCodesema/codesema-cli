@@ -8,17 +8,29 @@
 // functions.
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useForgePrefs } from '../composables/useForgePrefs'
-import { EMPTY_ISSUES_STATE, useIssues } from '../composables/useIssues'
+import { useIssues } from '../composables/useIssues'
 import {
-  buildProjectTree,
   countProjectActivity,
   isolationForProject,
   isTrunkBranch,
-  otherBranches,
   resolveBranchClick,
-  type ConversationNode,
 } from '../composables/useProjects'
-import { agentCounts, matchesQuery, oldestWaiting } from '../composables/useTaskBoard'
+import {
+  RAIL_LIST_WIDTH_DEFAULT,
+  RAIL_LIST_WIDTH_MAX,
+  RAIL_LIST_WIDTH_MIN,
+  readRailPrefs,
+  writeRailPrefs,
+} from '../composables/useRailPrefs'
+import {
+  buildBranchRows,
+  buildRepositoryTiles,
+  filterBranchRows,
+  sortBranchRows,
+  type BranchRow,
+  type BranchSortKey,
+} from '../composables/useRepository'
+import { agentCounts, oldestWaiting } from '../composables/useTaskBoard'
 import {
   createPlanRequests,
   planRequestBody,
@@ -35,26 +47,27 @@ import {
   EMPTY_FOCUS,
   focusFromBranchResolution,
   forkDraft,
+  openRepository,
   promoteDraft,
   openReview as reviewView,
   scratchDraft,
+  switchRepoTab,
   workonDraft,
   type DraftTarget,
   type FocusView,
+  type NavCategory,
+  type RepoTab,
 } from '../composables/useWorkspaceNav'
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
-import ConversationsColumn from './conversations/ConversationsColumn.vue'
-import ForgeBoard from './forge/ForgeBoard.vue'
-import ForgeControlsPanel from './forge/ForgeControlsPanel.vue'
-import {
-  FORGE_CONTROLS_WIDTH_DEFAULT,
-  FORGE_CONTROLS_WIDTH_MAX,
-  FORGE_CONTROLS_WIDTH_MIN,
-} from './forge/ForgePrefs'
 import ForgeSplitter from './forge/ForgeSplitter.vue'
-import ProjectsNav from './ProjectsNav.vue'
+import ConversationsList from './rail/ConversationsList.vue'
+import RepositoriesList from './rail/RepositoriesList.vue'
+import WorkspaceNavRail from './rail/WorkspaceNavRail.vue'
 import RepoSettings from './RepoSettings.vue'
+import BranchTable from './repository/BranchTable.vue'
+import RepositoryTiles from './repository/RepositoryTiles.vue'
+import RepositoryView from './repository/RepositoryView.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
@@ -73,6 +86,7 @@ const {
   mrsLoadOf,
   loadMrsState,
   branchesByProject,
+  worktreesByProject,
   start,
   stop,
   hydrate,
@@ -177,29 +191,20 @@ const scratchProjectId = computed(
   () => projects.value.find((project) => project.kind === 'scratch')?.id ?? null,
 )
 
-// ── Project filter: a project id, or null for "All projects" ──────────────
-// Selecting a project also makes it the registry's active card, which lazily
-// loads its MRs/branches for the tree; "All" only clears the filter.
+// ── The selected repository: what the Repository category points at ───────
+// Selecting one also makes it the registry's active card, which lazily loads
+// its MRs, branches and worktrees.
 const filter = ref<string | null>(null)
 
-function selectFilter(id: string | null): void {
+function selectRepository(id: string): void {
   filter.value = id
-  if (id !== null) {
-    selectProject(id)
-    issues.load(id)
-  }
+  selectProject(id)
+  issues.load(id)
+  focus.value = openRepository(id, railPrefs.activeRepoTab)
 }
 
-/** States scoped to the filter — the queue's and the header's world. */
-const scopedStates = computed(() =>
-  filter.value === null
-    ? states.value
-    : states.value.filter((state) => state.projectId === filter.value),
-)
-
-// ── Header: search + live counters over the scoped states ─────────────────
-const query = ref('')
-const counters = computed(() => agentCounts(scopedStates.value))
+// ── Header: live counters over every conversation ─────────────────────────
+const counters = computed(() => agentCounts(states.value))
 
 /**
  * The workspace facts of the world the header describes — the filtered
@@ -212,10 +217,9 @@ const headerWorkspace = computed(() =>
   isolationForProject(filter.value, projects.value, workspace.value),
 )
 
-/** The queue additionally filters by the header search (title or branch). */
-const queueStates = computed(() =>
-  scopedStates.value.filter((state) => matchesQuery(state.record, query.value)),
-)
+/** Every conversation, all projects: the list column groups them by project
+ * and searches them itself. */
+const queueStates = computed(() => states.value)
 
 // Attention cards show the agent's question without being opened: hydrate
 // each conversation once when it enters the attention zone (the stream only
@@ -248,7 +252,7 @@ watch(
 
 /** Bell click: open the conversation that has waited the longest. */
 function openOldestWaiting(): void {
-  const state = oldestWaiting(scopedStates.value)
+  const state = oldestWaiting(states.value)
   if (state) {
     openConversation(state.projectId, state.record.id)
   }
@@ -310,7 +314,7 @@ const draftEntry = computed(() => {
 })
 
 /** Every prop of the open conversation, bound in one object (the shape
- * ProjectsNav already uses below): the per-action closures capture the ids
+ * the repository list uses too): the per-action closures capture the ids
  * once here, where the entry is narrowed, instead of in template callbacks
  * that would each have to re-check it. */
 const conversationProps = computed(() => {
@@ -579,54 +583,8 @@ function backFromReview(): void {
   focus.value = closeReview(focus.value)
 }
 
-/**
- * Mirrors the forge board's own `v-else-if` below exactly: the board takes
- * the full width of the desk only in the one focus-zone branch it actually
- * renders in, since review and the deck both take priority over it, same as
- * in the template. The work queue hides for exactly this branch and
- * reappears everywhere else.
- *
- * It also decides WHERE the project menu is mounted. With the board up the
- * desk is three columns, not four: the menu moves into the head of the
- * board's rail, so navigation and controls share one column (this mirrors
- * the reference interface, whose left rail carries its filter accordions).
- * Everywhere else the menu is the desk's own left column, as before.
- */
-const boardVisible = computed(
-  () =>
-    reviewRecord.value === null &&
-    focusEntry.value === null &&
-    filter.value !== null &&
-    projects.value.length > 0,
-)
-
-// ── Projects column: counters + the selected project's tree ───────────────
+// ── Repository list: per-project activity counters ────────────────────────
 const activity = computed(() => countProjectActivity(states.value))
-
-const tree = computed<ConversationNode[]>(() => {
-  const projectId = filter.value
-  if (projectId === null) {
-    return []
-  }
-  return buildProjectTree(
-    states.value.filter((state) => state.projectId === projectId),
-    mrsByProject.get(projectId) ?? [],
-  )
-})
-
-/** Local branches of the selected project the tree does not already show:
- * the "Branches (N)" disclosure, each entry a draft target. */
-const extraBranches = computed<string[]>(() => {
-  const projectId = filter.value
-  if (projectId === null) {
-    return []
-  }
-  return otherBranches(
-    branchesByProject.get(projectId) ?? [],
-    tree.value,
-    mrsByProject.get(projectId) ?? [],
-  )
-})
 
 // ── Project registry actions ──────────────────────────────────────────────
 const addBusy = ref(false)
@@ -659,15 +617,91 @@ async function onRemoveProject(id: string): Promise<void> {
   }
 }
 
-// ── The permanent left rail ───────────────────────────────────────────────
-// The rail is on screen at all times: it carries the project menu whether or
-// not a board is up, and grows its filter sections only when one is. That
-// permanence is the point. When the menu was mounted inside the board it
-// moved and resized the instant a project was picked, so the screen jumped
-// under the pointer for what is supposed to be a plain navigation click.
+// ── Navigation rail and list column, persisted as one blob ────────────────
+const railPrefs = reactive(readRailPrefs())
+watch(railPrefs, (next) => writeRailPrefs({ ...next }), { deep: true })
+
+function selectCategory(category: NavCategory): void {
+  railPrefs.category = category
+}
+
+type SearchableList = { focusSearch: () => void }
+const conversationsList = ref<SearchableList | null>(null)
+const repositoriesList = ref<SearchableList | null>(null)
+
+/** ⌘K / Ctrl+K focuses the list column's own search — the shell owns the
+ * shortcut because which list is up is the shell's own state. */
+function onGlobalKeydown(e: KeyboardEvent): void {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    conversationsList.value?.focusSearch()
+    repositoriesList.value?.focusSearch()
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
+
+/** The repository the stage is showing, null when it is showing anything
+ * else. Its tab rides with it so switching away and back comes back to the
+ * tab that was open. */
+const repositoryEntry = computed(() => (focus.value.kind === 'repository' ? focus.value : null))
+
+function selectRepoTab(tab: RepoTab): void {
+  railPrefs.activeRepoTab = tab
+  focus.value = switchRepoTab(focus.value, tab)
+}
+
+// ── The Branches tab: its own toolbar state, and the rows it derives ──────
+const branchQuery = ref('')
+const branchSort = ref<BranchSortKey>('status')
+const expandedBranchRows = ref<ReadonlySet<string>>(new Set())
+
+function toggleBranchRow(key: string): void {
+  const next = new Set(expandedBranchRows.value)
+  if (!next.delete(key)) {
+    next.add(key)
+  }
+  expandedBranchRows.value = next
+}
+
+const repositoryRows = computed<BranchRow[]>(() => {
+  const entry = repositoryEntry.value
+  if (entry === null) {
+    return []
+  }
+  return buildBranchRows({
+    repoProjectId: entry.projectId,
+    branches: branchesByProject.get(entry.projectId) ?? [],
+    worktrees: worktreesByProject.get(entry.projectId) ?? [],
+    mrs: mrsByProject.get(entry.projectId) ?? [],
+    states: states.value,
+  })
+})
+
+const repositoryVisibleRows = computed(() =>
+  sortBranchRows(filterBranchRows(repositoryRows.value, branchQuery.value), branchSort.value),
+)
+
+const repositoryTiles = computed(() =>
+  buildRepositoryTiles(repositoryRows.value, states.value, repositoryEntry.value?.projectId ?? ''),
+)
+
+/** A branch row's create action: the same routing a branch click has always
+ * had (open the conversation that already holds it, else draft one). */
+function onNewConversationOnRow(row: BranchRow): void {
+  const entry = repositoryEntry.value
+  if (entry === null || row.kind !== 'branch') {
+    return
+  }
+  onBranchClick(entry.projectId, row.name, row.openMr)
+}
+
+// ── Forge preferences: sorts, filters and label selections of the two
+// forge tabs, plus the collapse state of their controls rail (now inside the
+// repository view, no longer a column of the desk). ───────────────────────
 const {
   prefs: forgePrefs,
-  activeSection,
   railWidth,
   railCollapsed,
   listWidth,
@@ -675,41 +709,11 @@ const {
   mrsSort,
   mrsStateFilter,
   mrsDraftOnly,
-  railPanelWidth,
   toggleIssueLabel,
   toggleMrLabel,
   clearIssueFilters,
   clearMrFilters,
 } = useForgePrefs()
-
-/** True only while the rail's handle is under the pointer. The width
- * transition is switched off for exactly that window: animating a width that
- * is being rewritten every frame makes the rail lag behind the cursor. Every
- * OTHER width change -- collapsing with the button, the keyboard step -- is a
- * jump from one width to another, and those animate. */
-const railDragging = ref(false)
-
-/** The rail's collapsed band needs something to name itself with. With a
- * project selected that is the project; with none it is the menu's own
- * label, never an empty band. */
-const railLabel = computed(() =>
-  filter.value === null
-    ? t('workspace.projectLabel')
-    : (projectNameById.value.get(filter.value) ?? filter.value),
-)
-
-// The forge data the rail's sections read. They are only rendered when a
-// board is up, but the props are always bound, so these fall back to the
-// same empty values the composables use rather than to invented ones.
-const railIssuesState = computed(() =>
-  filter.value === null ? EMPTY_ISSUES_STATE : issues.stateOf(filter.value),
-)
-const railMrs = computed(() =>
-  filter.value === null ? [] : mrsOf(filter.value, mrsStateFilter.value),
-)
-const railMrsState = computed(() =>
-  filter.value === null ? null : mrsLoadOf(filter.value, mrsStateFilter.value),
-)
 
 // Fetching the chosen state is lazy and idempotent: `loadMrsState` is a
 // no-op for a pair already loaded or in flight, so firing it on every change
@@ -723,51 +727,11 @@ watch(
   },
   { immediate: true },
 )
-
-// ── The project menu's bindings, grouped ──────────────────────────────────
-// The menu is mounted in one of two places depending on `boardVisible` (the
-// desk's own left column, or the head of the board's rail). Grouping its ten
-// props and seven handlers here keeps that a one-line mount on each side:
-// spelling all seventeen out twice would mean every future prop has to be
-// added in two places, and the day someone updates only one of them the two
-// mounts drift apart silently.
-const projectsNavProps = computed(() => ({
-  projects: projects.value,
-  selected: filter.value,
-  activity: activity.value,
-  tree: tree.value,
-  extraBranches: extraBranches.value,
-  focusedKeys: focusedKeys.value,
-  addBusy: addBusy.value,
-  addError: addError.value,
-  removeError: removeError.value,
-  candidates: candidates.value,
-}))
-
-const projectsNavHandlers = {
-  select: selectFilter,
-  add: onAddProject,
-  remove: onRemoveProject,
-  discover: () => void discoverCandidates(),
-  'refresh-mrs': () => void refreshMrs(),
-  'open-task': (state: { projectId: string; record: { id: string } }) =>
-    openConversation(state.projectId, state.record.id),
-  'branch-click': ({
-    projectId,
-    branch,
-    mr,
-  }: {
-    projectId: string
-    branch: string
-    mr: ForgeMr | null
-  }) => onBranchClick(projectId, branch, mr),
-}
 </script>
 
 <template>
   <div class="ws-root">
     <WorkspaceHeader
-      v-model:query="query"
       :needs-you="counters.needsYou"
       :agents="counters.agents"
       :settings-open="showSettings"
@@ -784,66 +748,49 @@ const projectsNavHandlers = {
       <RepoSettings />
     </div>
     <div v-else class="ws-body">
-      <!-- The permanent left rail. It is on screen at all times and always
-           looks the same: the project menu sits in its head, and the board's
-           filter sections appear underneath only when a board is up. Picking
-           a project therefore adds sections below the menu instead of moving
-           or resizing the menu itself. -->
-      <aside
-        class="ws-rail"
-        :class="{ 'ws-rail--dragging': railDragging }"
-        :style="{ '--ws-rail-w': `${railPanelWidth}px` }"
-      >
-        <ForgeControlsPanel
-          :has-board="boardVisible"
-          :active-section="activeSection"
-          :collapsed="railCollapsed"
-          :project-name="railLabel"
-          :issues-state="railIssuesState"
-          :issues-sort="issuesSort"
-          :issues-labels="forgePrefs.issuesLabels"
-          :mrs="railMrs"
-          :mrs-state="railMrsState"
-          :mrs-sort="mrsSort"
-          :mrs-state-filter="mrsStateFilter"
-          :mrs-draft-only="mrsDraftOnly"
-          :mrs-labels="forgePrefs.mrsLabels"
-          @update:active-section="(v) => (activeSection = v)"
-          @update:collapsed="(v) => (railCollapsed = v)"
-          @update:issues-sort="(v) => (issuesSort = v)"
-          @update:mrs-sort="(v) => (mrsSort = v)"
-          @update:mrs-state-filter="(v) => (mrsStateFilter = v)"
-          @update:mrs-draft-only="(v) => (mrsDraftOnly = v)"
-          @toggle-issue-label="toggleIssueLabel"
-          @toggle-mr-label="toggleMrLabel"
-        >
-          <template #top>
-            <ProjectsNav v-bind="projectsNavProps" v-on="projectsNavHandlers" />
-          </template>
-        </ForgeControlsPanel>
+      <WorkspaceNavRail
+        :category="railPrefs.category"
+        :collapsed="railPrefs.navCollapsed"
+        :needs-you="counters.needsYou"
+        @update:category="selectCategory"
+        @update:collapsed="(v) => (railPrefs.navCollapsed = v)"
+        @settings="toggleSettings"
+      />
+
+      <aside class="ws-list" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
+        <ConversationsList
+          v-if="railPrefs.category === 'conversations'"
+          ref="conversationsList"
+          :states="queueStates"
+          :project-names="projectNameById"
+          :focused-keys="focusedKeys"
+          @select="(state) => openConversation(state.projectId, state.record.id)"
+          @create="onNewConversation"
+        />
+        <RepositoriesList
+          v-else
+          ref="repositoriesList"
+          :projects="repoProjects"
+          :selected="filter"
+          :activity="activity"
+          :add-busy="addBusy"
+          :add-error="addError"
+          :remove-error="removeError"
+          :candidates="candidates"
+          @select="selectRepository"
+          @add="onAddProject"
+          @remove="onRemoveProject"
+          @discover="() => void discoverCandidates()"
+        />
       </aside>
 
       <ForgeSplitter
-        v-if="!railCollapsed"
-        :model-value="railWidth"
-        :min="FORGE_CONTROLS_WIDTH_MIN"
-        :max="FORGE_CONTROLS_WIDTH_MAX"
-        :default-width="FORGE_CONTROLS_WIDTH_DEFAULT"
-        :ariaLabel="t('forge.resizeControlsAria')"
-        @update:model-value="(v) => (railWidth = v)"
-        @update:dragging="(v) => (railDragging = v)"
-      />
-
-      <!-- Hidden while the forge board is the focus zone's content: the
-           board then takes the full remaining width (rail / list / detail,
-           three columns). -->
-      <ConversationsColumn
-        v-if="!boardVisible"
-        :states="queueStates"
-        :project-names="projectNameById"
-        :focused-keys="focusedKeys"
-        @select="(state) => openConversation(state.projectId, state.record.id)"
-        @create="onNewConversation"
+        :model-value="railPrefs.listWidth"
+        :min="RAIL_LIST_WIDTH_MIN"
+        :max="RAIL_LIST_WIDTH_MAX"
+        :default-width="RAIL_LIST_WIDTH_DEFAULT"
+        :ariaLabel="t('rail.resizeAria')"
+        @update:model-value="(v: number) => (railPrefs.listWidth = v)"
       />
 
       <main class="ws-focus">
@@ -854,159 +801,182 @@ const projectsNavHandlers = {
         </div>
 
         <!-- The focus zone: one conversation, or one draft composer. -->
-        <div v-else-if="focusEntry" class="ws-deck">
-          <div class="ws-col">
-            <TaskConversation
-              v-if="conversationProps"
-              v-bind="conversationProps"
-              @open-review="openReview"
-            />
+        <div v-else-if="focusEntry" class="ws-stage">
+          <TaskConversation
+            v-if="conversationProps"
+            v-bind="conversationProps"
+            @open-review="openReview"
+          />
 
-            <!-- Draft: a composer with no repository at all (scratch), or in
+          <!-- Draft: a composer with no repository at all (scratch), or in
                  fork mode (a new branch from a base), or in work-on mode
                  (directly on an existing branch); the create turns this into
                  the real conversation, in place. -->
-            <div v-else-if="draftEntry" class="ws-draft-wrap">
-              <div class="ws-draft">
-                <header class="ws-draft-head">
-                  <h2 class="ws-draft-title">
-                    {{
-                      draftEntry.draft.mode === 'scratch'
-                        ? t('workspace.draftScratchTitle')
-                        : draftEntry.draft.mode === 'fork'
-                          ? t('workspace.draftForkTitle', { base: draftEntry.draft.base })
-                          : t('workspace.draftWorkonTitle', { branch: draftEntry.draft.branch })
-                    }}
-                  </h2>
-                  <span class="ws-draft-project">
-                    {{ projectNameById.get(draftEntry.projectId) ?? draftEntry.projectId }}
-                  </span>
-                  <button
-                    class="ws-draft-close"
-                    :aria-label="t('workspace.addProjectCancel')"
-                    :title="t('workspace.addProjectCancel')"
-                    @click="onFocusDraftClose"
-                  >
-                    ✕
-                  </button>
-                </header>
-                <!-- No repository at all: neither a work-on/fork mode nor a
+          <div v-else-if="draftEntry" class="ws-draft-wrap">
+            <div class="ws-draft">
+              <header class="ws-draft-head">
+                <h2 class="ws-draft-title">
+                  {{
+                    draftEntry.draft.mode === 'scratch'
+                      ? t('workspace.draftScratchTitle')
+                      : draftEntry.draft.mode === 'fork'
+                        ? t('workspace.draftForkTitle', { base: draftEntry.draft.base })
+                        : t('workspace.draftWorkonTitle', { branch: draftEntry.draft.branch })
+                  }}
+                </h2>
+                <span class="ws-draft-project">
+                  {{ projectNameById.get(draftEntry.projectId) ?? draftEntry.projectId }}
+                </span>
+                <button
+                  class="ws-draft-close"
+                  :aria-label="t('workspace.addProjectCancel')"
+                  :title="t('workspace.addProjectCancel')"
+                  @click="onFocusDraftClose"
+                >
+                  ✕
+                </button>
+              </header>
+              <!-- No repository at all: neither a work-on/fork mode nor a
                      branch/base chip means anything, so this scratch draft
                      shows none of it (only the composer's own sober notice). -->
-                <div
-                  v-if="draftEntry.draft.mode !== 'scratch'"
-                  class="ws-draft-modes"
-                  role="group"
-                  :aria-label="t('workspace.draftModeLabel')"
+              <div
+                v-if="draftEntry.draft.mode !== 'scratch'"
+                class="ws-draft-modes"
+                role="group"
+                :aria-label="t('workspace.draftModeLabel')"
+              >
+                <button
+                  class="ws-draft-mode"
+                  :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'workon' }"
+                  type="button"
+                  @click="draftEntry.draft.mode === 'fork' && onFocusToggleDraftMode()"
                 >
-                  <button
-                    class="ws-draft-mode"
-                    :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'workon' }"
-                    type="button"
-                    @click="draftEntry.draft.mode === 'fork' && onFocusToggleDraftMode()"
-                  >
-                    {{ t('workspace.draftModeWorkon') }}
-                  </button>
-                  <button
-                    class="ws-draft-mode"
-                    :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'fork' }"
-                    type="button"
-                    @click="draftEntry.draft.mode === 'workon' && onFocusToggleDraftMode()"
-                  >
-                    {{ t('workspace.draftModeFork') }}
-                  </button>
-                </div>
-                <p
-                  v-if="
-                    draftEntry.draft.mode === 'workon' && isTrunkBranch(draftEntry.draft.branch)
-                  "
-                  class="ws-draft-warning"
+                  {{ t('workspace.draftModeWorkon') }}
+                </button>
+                <button
+                  class="ws-draft-mode"
+                  :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'fork' }"
+                  type="button"
+                  @click="draftEntry.draft.mode === 'workon' && onFocusToggleDraftMode()"
                 >
-                  {{ t('workspace.draftTrunkWarning', { branch: draftEntry.draft.branch }) }}
-                </p>
-                <div v-if="draftEntry.draft.mode !== 'scratch'" class="ws-draft-chips">
-                  <span
-                    class="ws-draft-chip"
-                    :title="
-                      draftEntry.draft.mode === 'fork'
-                        ? t('workspace.draftBaseHint', { branch: draftEntry.draft.base })
-                        : t('workspace.draftWorkonHint', { branch: draftEntry.draft.branch })
-                    "
-                  >
-                    <span aria-hidden="true">⎇</span>
-                    {{
-                      draftEntry.draft.mode === 'fork'
-                        ? draftEntry.draft.base
-                        : draftEntry.draft.branch
-                    }}
-                  </span>
-                  <!-- Work-on from an MR node: the merge target rides along. -->
-                  <span
-                    v-if="draftEntry.draft.mode === 'workon' && draftEntry.draft.target !== null"
-                    class="ws-draft-chip"
-                    :title="t('workspace.draftTargetHint', { target: draftEntry.draft.target })"
-                  >
-                    <span aria-hidden="true">→</span> {{ draftEntry.draft.target }}
-                  </span>
-                </div>
-                <TaskComposer
-                  compact
-                  :creating="runOf(draftEntry.projectId, draftEntry.draft).creating"
-                  :error="runOf(draftEntry.projectId, draftEntry.draft).error"
-                  :agents="agents"
-                  :current-agent="
-                    isolationForProject(draftEntry.projectId, projects, workspace)?.agent ??
-                    currentAgent
-                  "
-                  :isolation="
-                    isolationForProject(draftEntry.projectId, projects, workspace)
-                      ?.isolation_default ?? null
-                  "
-                  :project-kind="projectKindById.get(draftEntry.projectId) ?? 'repo'"
-                  :draft="draftEntry.draft"
-                  :plan="planOf(draftEntry.projectId, draftEntry.draft).plan"
-                  :plan-error="planOf(draftEntry.projectId, draftEntry.draft).error"
-                  :plan-pending="planOf(draftEntry.projectId, draftEntry.draft).pending"
-                  :initial-prompt="planRequests.promptOf(draftEntry.key)"
-                  @create="onFocusDraftCreate"
-                  @plan-input="onFocusPlanInput"
-                  @retarget="onFocusDraftRetarget"
-                />
+                  {{ t('workspace.draftModeFork') }}
+                </button>
               </div>
+              <p
+                v-if="draftEntry.draft.mode === 'workon' && isTrunkBranch(draftEntry.draft.branch)"
+                class="ws-draft-warning"
+              >
+                {{ t('workspace.draftTrunkWarning', { branch: draftEntry.draft.branch }) }}
+              </p>
+              <div v-if="draftEntry.draft.mode !== 'scratch'" class="ws-draft-chips">
+                <span
+                  class="ws-draft-chip"
+                  :title="
+                    draftEntry.draft.mode === 'fork'
+                      ? t('workspace.draftBaseHint', { branch: draftEntry.draft.base })
+                      : t('workspace.draftWorkonHint', { branch: draftEntry.draft.branch })
+                  "
+                >
+                  <span aria-hidden="true">⎇</span>
+                  {{
+                    draftEntry.draft.mode === 'fork'
+                      ? draftEntry.draft.base
+                      : draftEntry.draft.branch
+                  }}
+                </span>
+                <!-- Work-on from an MR node: the merge target rides along. -->
+                <span
+                  v-if="draftEntry.draft.mode === 'workon' && draftEntry.draft.target !== null"
+                  class="ws-draft-chip"
+                  :title="t('workspace.draftTargetHint', { target: draftEntry.draft.target })"
+                >
+                  <span aria-hidden="true">→</span> {{ draftEntry.draft.target }}
+                </span>
+              </div>
+              <TaskComposer
+                compact
+                :creating="runOf(draftEntry.projectId, draftEntry.draft).creating"
+                :error="runOf(draftEntry.projectId, draftEntry.draft).error"
+                :agents="agents"
+                :current-agent="
+                  isolationForProject(draftEntry.projectId, projects, workspace)?.agent ??
+                  currentAgent
+                "
+                :isolation="
+                  isolationForProject(draftEntry.projectId, projects, workspace)
+                    ?.isolation_default ?? null
+                "
+                :project-kind="projectKindById.get(draftEntry.projectId) ?? 'repo'"
+                :draft="draftEntry.draft"
+                :plan="planOf(draftEntry.projectId, draftEntry.draft).plan"
+                :plan-error="planOf(draftEntry.projectId, draftEntry.draft).error"
+                :plan-pending="planOf(draftEntry.projectId, draftEntry.draft).pending"
+                :initial-prompt="planRequests.promptOf(draftEntry.key)"
+                @create="onFocusDraftCreate"
+                @plan-input="onFocusPlanInput"
+                @retarget="onFocusDraftRetarget"
+              />
             </div>
           </div>
         </div>
 
-        <!-- Forge board: the selected project's open issues/MRs, in place of
-             the sober empty-state once a project is actually chosen. -->
-        <!-- Kept as the literal condition (not `boardVisible`, which mirrors
-             it exactly for the work queue's own gate below): a computed
-             boolean loses the `filter !== null` narrowing Vue's template
-             compiler needs to type `filter` as `string` for the children
-             below (:key, issues.stateOf, mrsByProject.get, …). -->
-        <div v-else-if="filter !== null && projects.length > 0" class="ws-forge-board">
-          <!-- Keyed on the project: remounts the board (and its internal
-               selection/section state, not just its persisted prefs) on
-               every project switch, so a detail-panel selection never
-               survives into a different project's items. -->
-          <ForgeBoard
-            :key="filter"
-            :section="activeSection"
-            :issues-state="issues.stateOf(filter)"
-            :issues-sort="issuesSort"
-            :issues-labels="forgePrefs.issuesLabels"
-            :mrs="mrsOf(filter, mrsStateFilter)"
-            :mrs-state="mrsLoadOf(filter, mrsStateFilter)"
-            :mrs-sort="mrsSort"
-            :mrs-draft-only="mrsDraftOnly"
-            :mrs-labels="forgePrefs.mrsLabels"
-            :list-width="listWidth"
-            @retry-issues="issues.reload(filter)"
-            @clear-issue-filters="clearIssueFilters"
-            @clear-mr-filters="clearMrFilters"
-            @update:list-width="(v) => (listWidth = v)"
-          />
-        </div>
+        <!-- A repository's own view: its branches and worktrees, its issues
+             and its merge requests, under one tab bar. Keyed on the project
+             so switching repositories remounts the forge board's internal
+             selection instead of carrying it into another repository's
+             items. -->
+        <RepositoryView
+          v-else-if="repositoryEntry"
+          :key="repositoryEntry.projectId"
+          :project-name="
+            projectNameById.get(repositoryEntry.projectId) ?? repositoryEntry.projectId
+          "
+          :tab="repositoryEntry.tab"
+          :controls-collapsed="railCollapsed"
+          :controls-width="railWidth"
+          :issues-state="issues.stateOf(repositoryEntry.projectId)"
+          :issues-sort="issuesSort"
+          :issues-labels="forgePrefs.issuesLabels"
+          :mrs="mrsOf(repositoryEntry.projectId, mrsStateFilter)"
+          :mrs-state="mrsLoadOf(repositoryEntry.projectId, mrsStateFilter)"
+          :mrs-sort="mrsSort"
+          :mrs-state-filter="mrsStateFilter"
+          :mrs-draft-only="mrsDraftOnly"
+          :mrs-labels="forgePrefs.mrsLabels"
+          :list-width="listWidth"
+          @update:tab="selectRepoTab"
+          @update:controls-collapsed="(v: boolean) => (railCollapsed = v)"
+          @update:controls-width="(v: number) => (railWidth = v)"
+          @update:issues-sort="(v) => (issuesSort = v)"
+          @update:mrs-sort="(v) => (mrsSort = v)"
+          @update:mrs-state-filter="(v) => (mrsStateFilter = v)"
+          @update:mrs-draft-only="(v) => (mrsDraftOnly = v)"
+          @update:list-width="(v: number) => (listWidth = v)"
+          @toggle-issue-label="toggleIssueLabel"
+          @toggle-mr-label="toggleMrLabel"
+          @retry-issues="issues.reload(repositoryEntry.projectId)"
+          @clear-issue-filters="clearIssueFilters"
+          @clear-mr-filters="clearMrFilters"
+        >
+          <template #branches>
+            <RepositoryTiles :tiles="repositoryTiles" />
+            <BranchTable
+              :rows="repositoryRows"
+              :project-names="projectNameById"
+              :visible-rows="repositoryVisibleRows"
+              :query="branchQuery"
+              :sort="branchSort"
+              :expanded="expandedBranchRows"
+              :loading="false"
+              @update:query="(v: string) => (branchQuery = v)"
+              @update:sort="(v: BranchSortKey) => (branchSort = v)"
+              @refresh="() => void refreshMrs()"
+              @toggle-expanded="toggleBranchRow"
+              @open-conversation="(state) => openConversation(state.projectId, state.record.id)"
+              @new-conversation="onNewConversationOnRow"
+            />
+          </template>
+        </RepositoryView>
 
         <!-- Empty focus: a sober invite (no project selected, or none registered). -->
         <div v-else class="ws-empty-focus">
@@ -1052,25 +1022,18 @@ const projectsNavHandlers = {
   align-items: stretch;
 }
 
-/* The permanent left rail. Its width is the ONE thing about it that ever
-   changes, and it changes only when the user drags the handle or collapses
-   it, never because a project was picked. */
-.ws-rail {
-  flex: 0 0 var(--ws-rail-w);
-  width: var(--ws-rail-w);
+/* Zone 2: the list column. The nav rail (zone 1) sizes itself; this one is
+   dragged, so its width is the one layout value the desk owns. */
+.ws-list {
+  flex: 0 0 var(--ws-list-w);
+  width: var(--ws-list-w);
   min-height: 0;
+  min-width: 0;
+  display: flex;
   border-right: 1px solid var(--cs-line-2);
-  transition:
-    flex-basis var(--cs-duration-base) var(--cs-ease-in),
-    width var(--cs-duration-base) var(--cs-ease-in);
 }
 
-/* Dragging: no transition at all, or the rail trails the pointer. */
-.ws-rail--dragging {
-  transition: none;
-}
-
-/* ── Focus zone: the column deck ──────────────────────────────────────── */
+/* ── Zone 3: the stage ────────────────────────────────────────────────── */
 .ws-focus {
   flex: 1;
   min-width: 0;
@@ -1079,26 +1042,15 @@ const projectsNavHandlers = {
   background: var(--cs-inset);
 }
 
-.ws-deck {
+.ws-stage {
   flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: stretch;
-}
-
-.ws-col {
-  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.ws-col + .ws-col {
-  border-left: 1px solid var(--cs-line);
-}
-
-/* ── Draft column ─────────────────────────────────────────────────────── */
+/* ── Draft panel ──────────────────────────────────────────────────────── */
 .ws-draft-wrap {
   flex: 1;
   min-height: 0;
@@ -1232,13 +1184,6 @@ const projectsNavHandlers = {
   white-space: nowrap;
 }
 
-/* ── Forge board ──────────────────────────────────────────────────────── */
-.ws-forge-board {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
 /* ── Empty focus ──────────────────────────────────────────────────────── */
 .ws-empty-focus {
   flex: 1;
@@ -1281,12 +1226,10 @@ const projectsNavHandlers = {
   border-color: var(--cs-muted);
 }
 
-/* The conversations column sets its own 260px width but, by its own header
-   comment, leaves the flex behaviour to whoever mounts it, the same split
-   ForgeBoard.vue already has with ForgeSplitter.vue. Without this the column
-   would shrink under flex's default alongside the focus zone; `min-width: 0`
-   on `.ws-focus` is what absorbs a narrow desk instead. */
-.ws-body :deep(.cvc-root) {
-  flex: none;
+/* Both list components fill the column the desk gives them; `min-width: 0`
+   on `.ws-focus` is what absorbs a narrow desk instead of squeezing them. */
+.ws-list > * {
+  flex: 1;
+  min-width: 0;
 }
 </style>

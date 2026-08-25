@@ -232,6 +232,12 @@ export function filterBranchRows(rows: readonly BranchRow[], query: string): rea
   )
 }
 
+/** Stable identity of a row, for expansion state and :key. Prefixed per
+ * variant: a branch named like a worktree path would otherwise collide. */
+export function branchRowKey(row: BranchRow): string {
+  return row.kind === 'branch' ? `branch/${row.name}` : `worktree/${row.worktreePath}`
+}
+
 /** KPI tile counters for the band above the table. */
 export type RepositoryTiles = {
   branchCount: number

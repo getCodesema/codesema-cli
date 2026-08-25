@@ -1,4 +1,4 @@
-// Same harness as ConversationsColumn.test.ts, this component's own source.
+// Same harness as the other rail tests, on this component's own source.
 // Container query thresholds and the grid-based collapse are CSS-only,
 // unreachable through an SSR string render, so those are pinned by slicing
 // the raw source instead.
@@ -135,7 +135,7 @@ describe('empty states: no conversation at all vs. a search matching nothing', (
 
   // `query` is internal state with no prop entry point: reaching isSearchEmpty
   // needs a simulated keystroke, unavailable to an SSR string render (no
-  // @vue/test-utils/jsdom in this package). Same gap ConversationsColumn.test.ts
+  // @vue/test-utils/jsdom in this package). Same gap the rail tests
   // itself already accepts for the identical reason; pinned on source instead.
   test('the no-match branch is wired to its own key, distinct from the empty-column one', () => {
     expect(SOURCE).toContain("t('conversations.searchEmpty')")
@@ -143,7 +143,7 @@ describe('empty states: no conversation at all vs. a search matching nothing', (
   })
 })
 
-describe('grouping: by project, unchanged from ConversationsColumn.vue', () => {
+describe('grouping: by project, one group per registered project', () => {
   test('one group per project, named from the project map, counting its own rows', async () => {
     const html = await render({
       states: [

@@ -121,11 +121,6 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
   color: var(--cs-muted);
 }
 
-
-
-
-
-
 .wh-right {
   margin-left: auto;
   display: flex;

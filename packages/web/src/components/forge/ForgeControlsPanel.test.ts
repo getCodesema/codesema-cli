@@ -485,7 +485,7 @@ describe('collapsed: a full-band reopen control carrying the project name, no se
 })
 
 // The writing-mode flip is CSS-only, unreachable through an SSR string
-// render (same limitation as ProjectsNav.test.ts's own geometry pins).
+// render (same limitation as rail/RepositoriesList.test.ts's geometry pins).
 describe('the band orientation: CSS-pinned', () => {
   test('the name is vertical, top-to-bottom, by default', () => {
     const bandName = SOURCE.slice(

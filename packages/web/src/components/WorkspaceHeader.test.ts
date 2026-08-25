@@ -134,8 +134,8 @@ describe('and stays silent when there is nothing to state', () => {
   // overlapping third thing.
   test('the header carries no search field of its own', async () => {
     const html = await renderHeader(info({}))
-    expect(html).not.toContain(t('workspace.searchPlaceholder'))
     expect(html).not.toContain('wh-search')
+    expect(html).not.toContain('<input')
     expect(html).not.toContain('⌘K')
   })
 })

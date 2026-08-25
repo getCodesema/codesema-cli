@@ -35,6 +35,7 @@ type Props = {
   projectName: string
   tab: RepoTab
   controlsCollapsed: boolean
+  controlsWidth: number
   issuesState: ProjectIssuesState
   issuesSort: ForgeSortKey
   issuesLabels: string[]
@@ -52,6 +53,7 @@ function props(overrides: Partial<Props> = {}): Props {
     projectName: 'demo',
     tab: 'branches',
     controlsCollapsed: false,
+    controlsWidth: 288,
     issuesState: issuesState(),
     issuesSort: 'updated',
     issuesLabels: [],
@@ -177,5 +179,26 @@ describe('design: color is a state, never a hardcoded one', () => {
   test('the style block only references --cs-* tokens, never a hardcoded color', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(styleBlock.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([])
+  })
+})
+
+// The forge controls rail was resizable before it moved in here, and moving
+// it must not quietly cost that: the handle comes back with it, and folds
+// away with the rail rather than sitting against a 48px band.
+describe('the forge controls rail keeps its resize handle', () => {
+  test('the handle is mounted between the rail and the board, under issues', async () => {
+    const html = await render(props({ tab: 'issues' }))
+    expect(html).toContain(t('forge.resizeControlsAria'))
+    expect(html.indexOf('fcp-root')).toBeLessThan(html.indexOf(t('forge.resizeControlsAria')))
+  })
+
+  test('a collapsed rail carries no handle at all', async () => {
+    const html = await render(props({ tab: 'issues', controlsCollapsed: true }))
+    expect(html).not.toContain(t('forge.resizeControlsAria'))
+  })
+
+  test('the branches tab has neither rail nor handle', async () => {
+    const html = await render(props({ tab: 'branches' }))
+    expect(html).not.toContain(t('forge.resizeControlsAria'))
   })
 })

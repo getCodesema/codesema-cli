@@ -1,4 +1,4 @@
-// Same harness as ProjectsNav.test.ts, this component's own source and
+// Same harness as the other rail tests, on this component's own source and
 // closest relative. Two families of state live behind internal refs with no
 // prop entry point (formOpen, confirmRemoveId): opening the add-form or
 // arming a removal requires a click, which an SSR string render cannot

@@ -1,4 +1,4 @@
-// Same harness as ProjectsNav.test.ts: SSR-string render via createSSRApp +
+// Same harness as the other rail tests: SSR-string render via createSSRApp +
 // renderToString + the Bun plugin that compiles .vue with vue/compiler-sfc.
 // Scoped-style values (widths, tokens) are not visible in SSR output, so
 // those are pinned by slicing the raw source instead, like that file does

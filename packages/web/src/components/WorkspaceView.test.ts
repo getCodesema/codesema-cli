@@ -121,34 +121,59 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
   })
 })
 
-// The forge board (ForgeBoard.vue) sits in the focus zone behind the open
-// conversation or draft, and behind the review view, gated on a project
-// actually being selected.
-// What is pinned here is that wiring, on the source itself, for the same
-// reason as above.
-describe('the sober empty focus state still shows with no project selected', () => {
-  test('the forge board is still gated on a selected project with at least one registered', () => {
-    // The board's own v-else-if stays the literal condition (a TS narrowing
-    // requirement, see the comment on it), but `boardVisible` is defined to
-    // mirror it exactly and IS what gates the work queue below.
-    expect(SOURCE).toContain('v-else-if="filter !== null && projects.length > 0"')
-    expect(SOURCE).toContain('class="ws-forge-board"')
-    const boardVisibleFn = SOURCE.slice(
-      SOURCE.indexOf('const boardVisible = computed('),
-      SOURCE.indexOf('// ── Projects column'),
-    )
-    expect(boardVisibleFn).toContain('reviewRecord.value === null')
-    expect(boardVisibleFn).toContain('focusEntry.value === null')
-    expect(boardVisibleFn).toContain('filter.value !== null')
-    expect(boardVisibleFn).toContain('projects.value.length > 0')
+// Three zones, in this order and never nested: the category rail, the list
+// column, the stage. The rail and the column are siblings OF the stage, not
+// children of it, which is what keeps a navigation click from ever resizing
+// or moving the navigation itself.
+describe('the desk is three sibling zones', () => {
+  const bodyAt = SOURCE.indexOf('<div v-else class="ws-body">')
+  const stageAt = SOURCE.indexOf('<main class="ws-focus">')
+
+  test('the rail and the list column both sit before the stage, unconditionally', () => {
+    const railAt = SOURCE.indexOf('<WorkspaceNavRail')
+    const listAt = SOURCE.indexOf('<aside class="ws-list"')
+    expect(bodyAt).toBeLessThan(railAt)
+    expect(railAt).toBeLessThan(listAt)
+    expect(listAt).toBeLessThan(stageAt)
+    const railTag = SOURCE.slice(railAt, SOURCE.indexOf('/>', railAt))
+    expect(railTag).not.toContain('v-if')
   })
 
-  test('the empty-focus branch is still the final, unconditional fallback', () => {
-    const forgeBoardAt = SOURCE.indexOf('class="ws-forge-board"')
-    const emptyFocusAt = SOURCE.indexOf('class="ws-empty-focus"')
-    expect(forgeBoardAt).toBeGreaterThan(-1)
-    expect(emptyFocusAt).toBeGreaterThan(-1)
-    expect(forgeBoardAt).toBeLessThan(emptyFocusAt)
+  test('the list column shows exactly one list, chosen by the active category', () => {
+    const column = SOURCE.slice(SOURCE.indexOf('<aside class="ws-list"'), stageAt)
+    expect(column).toContain(`v-if="railPrefs.category === 'conversations'"`)
+    expect(column).toContain('<ConversationsList')
+    expect(column).toContain('<RepositoriesList')
+    // v-else, not a second v-if: the two can never be on screen together.
+    expect(column).toContain('v-else')
+  })
+
+  test('only the list column is draggable, and it declares the rail bounds', () => {
+    expect(SOURCE).toContain("'--ws-list-w': `${railPrefs.listWidth}px`")
+    expect(SOURCE).toContain(':min="RAIL_LIST_WIDTH_MIN"')
+    expect(SOURCE).toContain(':max="RAIL_LIST_WIDTH_MAX"')
+    expect(SOURCE).toContain(':default-width="RAIL_LIST_WIDTH_DEFAULT"')
+    expect(SOURCE).toContain("t('rail.resizeAria')")
+  })
+})
+
+// The stage renders one thing at a time, and the order of its branches IS
+// the priority: a review covers whatever it was opened from, an open
+// conversation or draft comes next, a repository view after that, and the
+// sober invite is the unconditional fallback.
+describe('the stage shows exactly one thing, in a fixed priority', () => {
+  test('the four branches appear in priority order', () => {
+    const reviewAt = SOURCE.indexOf('v-if="reviewRecord"')
+    const focusAt = SOURCE.indexOf('v-else-if="focusEntry"')
+    const repositoryAt = SOURCE.indexOf('v-else-if="repositoryEntry"')
+    const emptyAt = SOURCE.indexOf('class="ws-empty-focus"')
+    expect(reviewAt).toBeGreaterThan(-1)
+    expect(reviewAt).toBeLessThan(focusAt)
+    expect(focusAt).toBeLessThan(repositoryAt)
+    expect(repositoryAt).toBeLessThan(emptyAt)
+  })
+
+  test('the empty branch is the final, unconditional fallback', () => {
     // One message, unconditional: the scratch project is always in the list,
     // so the old "add a project to get started" branch could never be reached
     // again, and it promised a prerequisite that no longer exists.
@@ -156,99 +181,39 @@ describe('the sober empty focus state still shows with no project selected', () 
     expect(SOURCE).not.toContain('workspace.noProject')
   })
 
-  test('the board remounts (selection and section state reset) on every project switch', () => {
-    const forgeBoardTag = SOURCE.slice(
-      SOURCE.indexOf('<ForgeBoard'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+  test('the repository view remounts on every repository switch', () => {
+    const tag = SOURCE.slice(
+      SOURCE.indexOf('<RepositoryView'),
+      SOURCE.indexOf('>', SOURCE.indexOf('<RepositoryView')),
     )
-    expect(forgeBoardTag).toContain(':key="filter"')
-  })
-
-  // The rail's collapsed band names itself: with a project that is the
-  // project, with none it is the menu's own label, never an empty band.
-  test('the rail label falls back to the menu label when no project is selected', () => {
-    const railLabel = SOURCE.slice(
-      SOURCE.indexOf('const railLabel'),
-      SOURCE.indexOf('const railIssuesState'),
-    )
-    expect(railLabel).toContain("t('workspace.projectLabel')")
-    expect(railLabel).toContain('projectNameById')
+    expect(tag).toContain(':key="repositoryEntry.projectId"')
   })
 })
 
-// The board's layout needs the conversations column's own column gone, not
-// just visually crowded out: the column hides for exactly the branch the
-// board renders in, and comes back for every other one (review, the deck,
-// the empty-focus fallback).
-describe('the conversations column hides while the board is the focus zone, shows everywhere else', () => {
-  test('the conversations column is gated on the same condition, negated', () => {
-    const columnTag = SOURCE.slice(
-      SOURCE.indexOf('<ConversationsColumn'),
-      SOURCE.indexOf(':states="queueStates"'),
+// Selecting a repository is one gesture with three consequences, and all
+// three have to happen: the list highlights it, the registry lazily fetches
+// its MRs/branches/worktrees, and the stage opens its view. Dropping any one
+// of them leaves the screen describing a repository it has not read.
+describe('selecting a repository loads it and stages it', () => {
+  const fn = SOURCE.slice(
+    SOURCE.indexOf('function selectRepository('),
+    SOURCE.indexOf('// ── Header:'),
+  )
+
+  test('it marks the selection, warms the registry, and opens the view', () => {
+    expect(fn).toContain('filter.value = id')
+    expect(fn).toContain('selectProject(id)')
+    expect(fn).toContain('issues.load(id)')
+    expect(fn).toContain('openRepository(id, railPrefs.activeRepoTab)')
+  })
+
+  test('the tab it opens on is the one the reader last used', () => {
+    const tabFn = SOURCE.slice(
+      SOURCE.indexOf('function selectRepoTab('),
+      SOURCE.indexOf('// ── The Branches tab'),
     )
-    expect(columnTag).toContain('v-if="!boardVisible"')
-  })
-})
-
-// The left rail is PERMANENT and always looks the same. That is the whole
-// point of it: when the menu was mounted inside the board it moved and
-// resized the instant a project was picked, so a plain navigation click made
-// the screen jump. Picking a project must add sections BELOW the menu, never
-// move the menu.
-describe('the left rail is permanent, and the menu inside it never moves', () => {
-  test('the rail is mounted unconditionally, outside every focus-zone branch', () => {
-    const railAt = SOURCE.indexOf('class="ws-rail"')
-    expect(railAt).toBeGreaterThan(-1)
-    // The whole opening tag, which now spans several lines.
-    const railTag = SOURCE.slice(SOURCE.lastIndexOf('<aside', railAt), SOURCE.indexOf('>', railAt))
-    expect(railTag).not.toContain('v-if')
-    // Before the focus zone, so it is a sibling of it and not inside it.
-    expect(railAt).toBeLessThan(SOURCE.indexOf('<main class="ws-focus">'))
-  })
-
-  test('the menu is mounted in exactly one place: the rail head', () => {
-    const mountAt = SOURCE.indexOf('<ProjectsNav')
-    expect(mountAt).toBeGreaterThan(-1)
-    expect(SOURCE.indexOf('<ProjectsNav', mountAt + 1)).toBe(-1)
-    const slotAt = SOURCE.indexOf('<template #top>')
-    expect(slotAt).toBeGreaterThan(-1)
-    expect(mountAt).toBeGreaterThan(slotAt)
-    // The tag itself, not everything that follows it.
-    const mountTag = SOURCE.slice(mountAt, SOURCE.indexOf('/>', mountAt))
-    expect(mountTag).not.toContain('v-if')
-  })
-
-  test('only the SECTIONS follow the board, through has-board', () => {
-    const panelTag = SOURCE.slice(
-      SOURCE.indexOf('<ForgeControlsPanel'),
-      SOURCE.indexOf('>', SOURCE.indexOf('<ForgeControlsPanel')),
-    )
-    expect(SOURCE).toContain(':has-board="boardVisible"')
-    expect(panelTag).not.toContain('v-if')
-  })
-
-  test('the rail owns its own width and collapsed state, and the board no longer does', () => {
-    expect(SOURCE).toContain("'--ws-rail-w': `${railPanelWidth}px`")
-    expect(SOURCE).toContain('v-if="!railCollapsed"')
-    expect(SOURCE).toContain("t('forge.resizeControlsAria')")
-    const forgeBoardTag = SOURCE.slice(
-      SOURCE.indexOf('<ForgeBoard'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
-    )
-    expect(forgeBoardTag).not.toContain('collapsed')
-    expect(forgeBoardTag).not.toContain('controls')
-  })
-
-  test('the shared preferences come from the composable, not from the board', () => {
-    expect(SOURCE).toContain('useForgePrefs()')
-    // The board is handed the list-side preferences it renders with.
-    const forgeBoardTag = SOURCE.slice(
-      SOURCE.indexOf('<ForgeBoard'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
-    )
-    for (const binding of [':section="activeSection"', ':list-width="listWidth"']) {
-      expect(forgeBoardTag).toContain(binding)
-    }
+    expect(tabFn).toContain('railPrefs.activeRepoTab = tab')
+    expect(tabFn).toContain('switchRepoTab(focus.value, tab)')
   })
 })
 
@@ -259,22 +224,20 @@ describe('the left rail is permanent, and the menu inside it never moves', () =>
 // show open MRs under a "merged" label.
 describe('the MR state filter actually reaches the forge', () => {
   test('the list and its load state are read per (project, state), not from the open-only cache', () => {
-    expect(SOURCE).toContain('mrsOf(filter.value, mrsStateFilter.value)')
-    expect(SOURCE).toContain('mrsLoadOf(filter.value, mrsStateFilter.value)')
-    const forgeBoardTag = SOURCE.slice(
-      SOURCE.indexOf('<ForgeBoard'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    const tag = SOURCE.slice(
+      SOURCE.indexOf('<RepositoryView'),
+      SOURCE.indexOf('<template #branches>'),
     )
-    expect(forgeBoardTag).toContain(':mrs="mrsOf(filter, mrsStateFilter)"')
-    expect(forgeBoardTag).toContain(':mrs-state="mrsLoadOf(filter, mrsStateFilter)"')
-    // The eager, open-only map must not be what feeds the board any more.
-    expect(forgeBoardTag).not.toContain('mrsByProject')
+    expect(tag).toContain(':mrs="mrsOf(repositoryEntry.projectId, mrsStateFilter)"')
+    expect(tag).toContain(':mrs-state="mrsLoadOf(repositoryEntry.projectId, mrsStateFilter)"')
+    // The eager, open-only map must not be what feeds the view any more.
+    expect(tag).not.toContain('mrsByProject')
   })
 
   test('a change of project OR of state triggers the fetch, immediately on mount', () => {
     const watcher = SOURCE.slice(
       SOURCE.indexOf('watch(\n  [filter, mrsStateFilter]'),
-      SOURCE.indexOf('// ── The project menu'),
+      SOURCE.indexOf('</script>'),
     )
     expect(watcher).toContain('loadMrsState(projectId, state)')
     expect(watcher).toContain('projectId !== null')
@@ -287,30 +250,49 @@ describe('the MR state filter actually reaches the forge', () => {
   })
 })
 
-// The rail's width animates when it JUMPS (the collapse button, a keyboard
-// step) and never while it is being dragged: a width that animates cannot
-// keep up with a pointer rewriting it every frame, so the rail visibly trails
-// the cursor. The reference interface animates neither, which is a side
-// effect of it only ever dragging, not an intention worth copying.
-describe('the rail animates its width, except while dragged', () => {
-  test('the rail carries a width transition, on tokens rather than literals', () => {
-    const rail = SOURCE.slice(SOURCE.indexOf('.ws-rail {'), SOURCE.indexOf('.ws-rail--dragging'))
-    expect(rail).toContain('transition:')
-    expect(rail).toContain('var(--cs-duration-base)')
-    expect(rail).toContain('var(--cs-ease-in)')
-    // flex-basis as well as width: the rail is a flex item, so animating
-    // only `width` would leave the basis to snap.
-    expect(rail).toContain('flex-basis')
+// The branches table filters and sorts OUTSIDE the component that renders
+// it: the table receives the corpus and the visible rows separately, so it
+// can tell "this repository has no branch" from "this filter leaves none".
+describe('the branches table is handed both the corpus and the visible rows', () => {
+  test('the two lists are distinct, and only one of them is filtered and sorted', () => {
+    const tag = SOURCE.slice(
+      SOURCE.indexOf('<BranchTable'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<BranchTable')),
+    )
+    expect(tag).toContain(':rows="repositoryRows"')
+    expect(tag).toContain(':visible-rows="repositoryVisibleRows"')
+    const visible = SOURCE.slice(
+      SOURCE.indexOf('const repositoryVisibleRows'),
+      SOURCE.indexOf('const repositoryTiles'),
+    )
+    expect(visible).toContain('sortBranchRows(filterBranchRows(')
   })
 
-  test('dragging switches the transition off entirely', () => {
-    const dragging = SOURCE.slice(SOURCE.indexOf('.ws-rail--dragging'))
-    expect(dragging).toContain('transition: none;')
+  test('the rows come from the staged repository, never from the highlighted one', () => {
+    const rows = SOURCE.slice(
+      SOURCE.indexOf('const repositoryRows'),
+      SOURCE.indexOf('const repositoryVisibleRows'),
+    )
+    // `filter` is what the list column highlights; `repositoryEntry` is what
+    // the stage is actually showing. They agree today, and the table must
+    // follow the second so they cannot silently disagree tomorrow.
+    expect(rows).toContain('repositoryEntry.value')
+    expect(rows).not.toContain('filter.value')
+    for (const source of ['branchesByProject', 'worktreesByProject', 'mrsByProject']) {
+      expect(rows).toContain(source)
+    }
   })
+})
 
-  test('the dragging flag is driven by the handle itself, not guessed', () => {
-    expect(SOURCE).toContain('@update:dragging="(v) => (railDragging = v)"')
-    expect(SOURCE).toContain("'ws-rail--dragging': railDragging")
+// ⌘K belongs to the shell, not to a field: which list is on screen is the
+// shell's own state, and the shortcut has to reach whichever one it is.
+describe('the search shortcut reaches the list column', () => {
+  test('the shell owns the listener and focuses both list refs', () => {
+    expect(SOURCE).toContain("e.key.toLowerCase() === 'k'")
+    expect(SOURCE).toContain('conversationsList.value?.focusSearch()')
+    expect(SOURCE).toContain('repositoriesList.value?.focusSearch()')
+    expect(SOURCE).toContain("window.addEventListener('keydown', onGlobalKeydown)")
+    expect(SOURCE).toContain("window.removeEventListener('keydown', onGlobalKeydown)")
   })
 })
 
