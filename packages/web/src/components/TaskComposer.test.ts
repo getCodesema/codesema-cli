@@ -9,8 +9,8 @@ import {
   pickerAgents,
   taskComposerPayload,
 } from '../composables/taskComposer'
-import { forkDraft, workonDraft, type DraftTarget } from '../composables/useColumns'
 import type { PlanComposerInput } from '../composables/useTaskPlan'
+import { forkDraft, workonDraft, type DraftTarget } from '../composables/useWorkspaceNav'
 import { catalogs, t } from '../i18n'
 import type { AgentOption, TaskPlan } from '../types'
 

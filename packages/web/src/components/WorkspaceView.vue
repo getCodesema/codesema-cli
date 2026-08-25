@@ -1,32 +1,12 @@
 <script setup lang="ts">
-// Workspace shell, T4 layout: a global 52px header (search, attention bell,
-// agents counter), the projects column on the left (filter + the selected
-// project's MR/branch tree), the work queue in the center-left (composer +
-// status sections), and the focus zone on the right — a DECK of columns
-// (useFocusDeck, pure): one conversation by default, pinned conversations
-// side by side (max 3), fork/work-on drafts keeping their own column; the
-// full-screen review view covers the focus zone only. Owns the single
+// Workspace shell: a global 52px header (search, attention bell, agents
+// counter), the projects column on the left, the conversations column in the
+// center-left, and the focus zone on the right. The focus zone shows ONE
+// thing at a time, named by a single FocusView value (useWorkspaceNav, pure)
+// rather than deduced from several independent refs. Owns the single
 // useTasks stream; every child stays presentational and derives from pure
 // functions.
-import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
-import {
-  columnKey,
-  draftBranch,
-  draftColumnKey,
-  forkDraft,
-  workonDraft,
-  type DraftTarget,
-} from '../composables/useColumns'
-import {
-  deckCloseDraft,
-  deckCloseProject,
-  deckOpenDraft,
-  deckOpenTask,
-  deckPromoteDraft,
-  deckSwapDraft,
-  EMPTY_DECK,
-  type FocusDeck,
-} from '../composables/useFocusDeck'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useForgePrefs } from '../composables/useForgePrefs'
 import { EMPTY_ISSUES_STATE, useIssues } from '../composables/useIssues'
 import {
@@ -47,6 +27,21 @@ import {
   type PlanComposerInput,
 } from '../composables/useTaskPlan'
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
+import {
+  closeReview,
+  openConversation as conversationView,
+  draftBranch,
+  draftKey,
+  EMPTY_FOCUS,
+  focusFromBranchResolution,
+  forkDraft,
+  promoteDraft,
+  openReview as reviewView,
+  scratchDraft,
+  workonDraft,
+  type DraftTarget,
+  type FocusView,
+} from '../composables/useWorkspaceNav'
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
 import ConversationsColumn from './conversations/ConversationsColumn.vue'
@@ -176,12 +171,6 @@ const projectKindById = computed(
 // conversation alike, never scoped to one conversation's own attachments.
 const repoProjects = computed(() => projects.value.filter((project) => project.kind === 'repo'))
 
-/** Whether `projectId` names the repo-less scratch project: a draft targeting
- * it forks no branch, so it shows none of the branch/base chrome. */
-function isScratchProject(projectId: string): boolean {
-  return projectKindById.value.get(projectId) === 'scratch'
-}
-
 /** The scratch project, which the server synthesizes on every read of
  * GET /api/projects — null only before that first read has landed. */
 const scratchProjectId = computed(
@@ -265,64 +254,161 @@ function openOldestWaiting(): void {
   }
 }
 
-// ── Focus deck: one conversation, pinned ones side by side, drafts kept ───
-const deck = ref<FocusDeck>(EMPTY_DECK)
+// ── Focus zone: one view at a time ───────────────────────────────────────
+const focus = ref<FocusView>(EMPTY_FOCUS)
 
-const focusedKeys = computed(() => deck.value.cols.columns.map(columnKey))
+/** The open item, for the lists that tint their selected row. At most one. */
+const focusedKeys = computed<string[]>(() => {
+  const view = focus.value
+  if (view.kind === 'conversation') {
+    return [taskKey(view.projectId, view.taskId)]
+  }
+  if (view.kind === 'draft') {
+    return [draftKey(view.projectId, view.draft)]
+  }
+  return []
+})
 
-/** What each deck slot renders: the task column with its live state (a stale
- * id renders nothing and falls out without disturbing the other slots), or
- * the draft composer. Flattened here so the template stays cast-free. */
-type DeckEntry =
+/** What the focus zone renders: the conversation with its live state (a
+ * stale id renders nothing rather than an empty shell), or the draft
+ * composer. Flattened here so the template stays cast-free. */
+type FocusEntry =
   | { kind: 'task'; key: string; projectId: string; taskId: string; state: TaskState }
   | { kind: 'draft'; key: string; projectId: string; draft: DraftTarget }
 
-const deckEntries = computed<DeckEntry[]>(() => {
-  const entries: DeckEntry[] = []
-  for (const column of deck.value.cols.columns) {
-    const key = columnKey(column)
-    if (column.ref.kind === 'task') {
-      const state = store.get(taskKey(column.projectId, column.ref.taskId))
-      if (state) {
-        entries.push({
-          kind: 'task',
-          key,
-          projectId: column.projectId,
-          taskId: column.ref.taskId,
-          state,
-        })
-      }
-    } else {
-      entries.push({ kind: 'draft', key, projectId: column.projectId, draft: column.ref })
+const focusEntry = computed<FocusEntry | null>(() => {
+  const view = focus.value
+  if (view.kind === 'conversation') {
+    const key = taskKey(view.projectId, view.taskId)
+    const state = store.get(key)
+    return state
+      ? { kind: 'task', key, projectId: view.projectId, taskId: view.taskId, state }
+      : null
+  }
+  if (view.kind === 'draft') {
+    return {
+      kind: 'draft',
+      key: draftKey(view.projectId, view.draft),
+      projectId: view.projectId,
+      draft: view.draft,
     }
   }
-  return entries
+  return null
+})
+
+/** Narrowed halves of `focusEntry`: the template needs a value it can
+ * v-if on directly, since a discriminant read off a computed does not
+ * narrow the computed itself for the accesses that follow. */
+const taskEntry = computed(() => {
+  const entry = focusEntry.value
+  return entry !== null && entry.kind === 'task' ? entry : null
+})
+
+const draftEntry = computed(() => {
+  const entry = focusEntry.value
+  return entry !== null && entry.kind === 'draft' ? entry : null
+})
+
+/** Every prop of the open conversation, bound in one object (the shape
+ * ProjectsNav already uses below): the per-action closures capture the ids
+ * once here, where the entry is narrowed, instead of in template callbacks
+ * that would each have to re-check it. */
+const conversationProps = computed(() => {
+  const entry = taskEntry.value
+  if (entry === null) {
+    return null
+  }
+  const { projectId, taskId, key, state } = entry
+  return {
+    key,
+    state,
+    projectName: projectNameById.value.get(projectId) ?? projectId,
+    projectKind: projectKindById.value.get(projectId) ?? 'repo',
+    repoProjects: repoProjects.value,
+    reply: (message: string) => reply(projectId, taskId, message),
+    attach: (repoProjectId: string) => attach(projectId, taskId, repoProjectId),
+    interrupt: () => interrupt(projectId, taskId),
+    resume: () => resume(projectId, taskId),
+    ship: () => ship(projectId, taskId),
+    abandon: () => abandon(projectId, taskId),
+    runChecks: () => runChecks(projectId, taskId),
+    loadChecks: () => hydrateChecks(projectId, taskId),
+    checksSetup: checksSetup.get(projectId),
+    loadChecksSetup: () => loadChecksSetup(projectId),
+    runChecksSetup: () => runChecksSetup(projectId),
+    applyChecksProposal: () => applyChecksProposal(projectId),
+    dismissChecksProposal: () => dismissChecksProposal(projectId),
+  }
+})
+
+/** The draft handlers the template binds: reading `draftEntry` here rather
+ * than closing over it in the template keeps every callback narrowed. */
+function onFocusDraftClose(): void {
+  const entry = draftEntry.value
+  if (entry) {
+    closeDraft(entry.projectId, entry.draft)
+  }
+}
+
+function onFocusToggleDraftMode(): void {
+  const entry = draftEntry.value
+  if (entry) {
+    toggleDraftMode(entry.projectId, entry.draft)
+  }
+}
+
+function onFocusDraftCreate(input: CreateTaskInput): void {
+  const entry = draftEntry.value
+  if (entry) {
+    void onDraftCreate(entry.projectId, entry.draft, input)
+  }
+}
+
+function onFocusPlanInput(input: PlanComposerInput): void {
+  const entry = draftEntry.value
+  if (entry) {
+    onPlanInput(entry.projectId, entry.draft, input)
+  }
+}
+
+function onFocusDraftRetarget(branch: string, prompt: string): void {
+  const entry = draftEntry.value
+  if (entry) {
+    onDraftRetarget(entry.projectId, entry.draft, branch, prompt)
+  }
+}
+
+/** The project the focus zone belongs to, null when it belongs to none. */
+const focusProjectId = computed<string | null>(() => {
+  const view = focus.value
+  if (view.kind === 'conversation' || view.kind === 'draft' || view.kind === 'repository') {
+    return view.projectId
+  }
+  return null
 })
 
 function openConversation(projectId: string, taskId: string): void {
-  deck.value = deckOpenTask(deck.value, projectId, taskId)
-  reviewRecord.value = null
+  focus.value = conversationView(projectId, taskId)
   void hydrate(projectId, taskId)
 }
 
-// Events emitted while the stream was down are not replayed: re-hydrate every
-// open conversation on each reconnect (drafts have nothing to fetch).
+// Events emitted while the stream was down are not replayed: re-hydrate the
+// open conversation on each reconnect (a draft has nothing to fetch).
 watch(connections, () => {
-  for (const column of deck.value.cols.columns) {
-    if (column.ref.kind === 'task') {
-      void hydrate(column.projectId, column.ref.taskId)
-    }
+  const view = focus.value
+  if (view.kind === 'conversation') {
+    void hydrate(view.projectId, view.taskId)
   }
 })
 
-// ── Draft columns: an empty composer in fork or work-on mode ──────────────
+// ── Draft: an empty composer in scratch, fork or work-on mode ─────────────
 type DraftRun = { creating: boolean; error: string | null }
 
 /** Per-column create state, keyed by the draft column's identity. */
 const draftRuns = reactive(new Map<string, DraftRun>())
 
 function runOf(projectId: string, draft: DraftTarget): DraftRun {
-  return draftRuns.get(draftColumnKey(projectId, draft)) ?? { creating: false, error: null }
+  return draftRuns.get(draftKey(projectId, draft)) ?? { creating: false, error: null }
 }
 
 // ── T2.6: the plan of what a draft WOULD create ───────────────────────────
@@ -334,7 +420,7 @@ function runOf(projectId: string, draft: DraftTarget): DraftRun {
 const planRequests = createPlanRequests((body) => preview(body))
 
 function planOf(projectId: string, draft: DraftTarget): DraftPlan {
-  return planRequests.planOf(draftColumnKey(projectId, draft))
+  return planRequests.planOf(draftKey(projectId, draft))
 }
 
 /**
@@ -344,7 +430,7 @@ function planOf(projectId: string, draft: DraftTarget): DraftPlan {
  */
 function onPlanInput(projectId: string, draft: DraftTarget, input: PlanComposerInput): void {
   planRequests.request(
-    draftColumnKey(projectId, draft),
+    draftKey(projectId, draft),
     planRequestBody(projectId, draft, input),
     input.prompt,
   )
@@ -366,24 +452,26 @@ function onDraftRetarget(
   if (next === draft) {
     return
   }
-  const from = draftColumnKey(projectId, draft)
+  const from = draftKey(projectId, draft)
   planRequests.forget(from)
   draftRuns.delete(from)
-  deck.value = deckSwapDraft(deck.value, projectId, draft, next)
-  planRequests.carry(draftColumnKey(projectId, next), prompt)
+  focus.value = { kind: 'draft', projectId, draft: next }
+  planRequests.carry(draftKey(projectId, next), prompt)
 }
 
 function openDraft(projectId: string, draft: DraftTarget): void {
-  deck.value = deckOpenDraft(deck.value, projectId, draft)
-  reviewRecord.value = null
-  draftRuns.delete(draftColumnKey(projectId, draft))
-  planRequests.forget(draftColumnKey(projectId, draft))
+  focus.value = { kind: 'draft', projectId, draft }
+  draftRuns.delete(draftKey(projectId, draft))
+  planRequests.forget(draftKey(projectId, draft))
 }
 
 /** The draft's mode switch: work-on <-> fork-from, same column slot. When
  * flipping to work-on, an open MR of the branch contributes its target. */
 function toggleDraftMode(projectId: string, draft: DraftTarget): void {
   const branch = draftBranch(draft)
+  if (branch === null) {
+    return
+  }
   const other =
     draft.mode === 'fork'
       ? workonDraft(
@@ -392,28 +480,28 @@ function toggleDraftMode(projectId: string, draft: DraftTarget): void {
             ?.targetBranch ?? null,
         )
       : forkDraft(branch)
-  deck.value = deckSwapDraft(deck.value, projectId, draft, other)
-  draftRuns.delete(draftColumnKey(projectId, draft))
-  planRequests.forget(draftColumnKey(projectId, draft))
+  draftRuns.delete(draftKey(projectId, draft))
+  planRequests.forget(draftKey(projectId, draft))
+  focus.value = { kind: 'draft', projectId, draft: other }
 }
 
 function closeDraft(projectId: string, draft: DraftTarget): void {
-  deck.value = deckCloseDraft(deck.value, projectId, draft)
-  draftRuns.delete(draftColumnKey(projectId, draft))
-  planRequests.forget(draftColumnKey(projectId, draft))
+  draftRuns.delete(draftKey(projectId, draft))
+  planRequests.forget(draftKey(projectId, draft))
+  focus.value = EMPTY_FOCUS
 }
 
 /** Every branch/MR click of the projects column routes through the pure
  * resolveBranchClick: open the branch's active conversation, or draft. */
 function onBranchClick(projectId: string, branch: string, mr: ForgeMr | null): void {
   const projectStates = states.value.filter((state) => state.projectId === projectId)
-  const resolution = resolveBranchClick(branch, mr, projectStates)
-  if (resolution.kind === 'open') {
-    openConversation(projectId, resolution.taskId)
-  } else if (resolution.kind === 'draft-fork') {
-    openDraft(projectId, forkDraft(resolution.base))
-  } else {
-    openDraft(projectId, workonDraft(resolution.branch, resolution.target))
+  const next = focusFromBranchResolution(projectId, resolveBranchClick(branch, mr, projectStates))
+  if (next.kind === 'conversation') {
+    openConversation(next.projectId, next.taskId)
+    return
+  }
+  if (next.kind === 'draft') {
+    openDraft(next.projectId, next.draft)
   }
 }
 
@@ -430,32 +518,41 @@ function onNewConversation(): void {
   if (projectId === null) {
     return
   }
-  openDraft(projectId, forkDraft(''))
+  openDraft(projectId, scratchDraft())
+}
+
+/** A scratch draft names NO repository, so it sends neither base nor branch:
+ * POST /api/tasks answers 400 on either one for a repo-less project. */
+function draftPayload(draft: DraftTarget, input: CreateTaskInput): CreateTaskInput {
+  if (draft.mode === 'scratch') {
+    return input
+  }
+  return draft.mode === 'fork'
+    ? { ...input, base: draft.base }
+    : { ...input, branch: draft.branch, ...(draft.target !== null && { target: draft.target }) }
 }
 
 /** Launches the real conversation from the draft: the POST carries base
- * (fork) or branch+target (work-on); on success — or on the 409 "already has
- * a conversation" — the column becomes that conversation IN PLACE. */
+ * (fork) or branch+target (work-on), or neither for a scratch draft; on
+ * success — or on the 409 "already has a conversation" — the focus zone
+ * becomes that conversation IN PLACE. */
 async function onDraftCreate(
   projectId: string,
   draft: DraftTarget,
   input: CreateTaskInput,
 ): Promise<void> {
-  const key = draftColumnKey(projectId, draft)
+  const key = draftKey(projectId, draft)
   if (draftRuns.get(key)?.creating) {
     return
   }
   draftRuns.set(key, { creating: true, error: null })
-  const payload: CreateTaskInput =
-    draft.mode === 'fork'
-      ? { ...input, base: draft.base }
-      : { ...input, branch: draft.branch, ...(draft.target !== null && { target: draft.target }) }
+  const payload: CreateTaskInput = draftPayload(draft, input)
   const result = await create(projectId, payload)
   if (!result.ok) {
     if (result.existingTaskId !== null) {
       // 409 uniqueness guard: the branch's ACTIVE conversation takes the slot.
       draftRuns.delete(key)
-      deck.value = deckPromoteDraft(deck.value, projectId, draft, result.existingTaskId)
+      focus.value = promoteDraft(focus.value, result.existingTaskId)
       void hydrate(projectId, result.existingTaskId)
       return
     }
@@ -466,20 +563,20 @@ async function onDraftCreate(
   }
   draftRuns.delete(key)
   planRequests.forget(key)
-  deck.value = deckPromoteDraft(deck.value, projectId, draft, result.record.id)
+  focus.value = promoteDraft(focus.value, result.record.id)
   void hydrate(projectId, result.record.id)
 }
 
 // ── Review view: full screen over the focus zone only ─────────────────────
-const reviewRecord = shallowRef<ReviewRecord | null>(null)
+const reviewRecord = computed(() => (focus.value.kind === 'review' ? focus.value.record : null))
 
 function openReview(record: ReviewRecord): void {
-  reviewRecord.value = record
+  focus.value = reviewView(record, focus.value)
 }
 
 function backFromReview(): void {
-  // The deck was never touched: the conversations are still where they were.
-  reviewRecord.value = null
+  // The view underneath was carried along: closing lands back on it.
+  focus.value = closeReview(focus.value)
 }
 
 /**
@@ -498,7 +595,7 @@ function backFromReview(): void {
 const boardVisible = computed(
   () =>
     reviewRecord.value === null &&
-    deckEntries.value.length === 0 &&
+    focusEntry.value === null &&
     filter.value !== null &&
     projects.value.length > 0,
 )
@@ -553,11 +650,13 @@ async function onRemoveProject(id: string): Promise<void> {
     removeError.value = result.error
     return
   }
-  // Its store states are gone: drop its filter and columns too.
+  // Its store states are gone: drop its filter and its open view too.
   if (filter.value === id) {
     filter.value = null
   }
-  deck.value = deckCloseProject(deck.value, id)
+  if (focusProjectId.value === id) {
+    focus.value = EMPTY_FOCUS
+  }
 }
 
 // ── The permanent left rail ───────────────────────────────────────────────
@@ -754,54 +853,39 @@ const projectsNavHandlers = {
           <ReviewShell :record="reviewRecord" />
         </div>
 
-        <!-- The deck: conversations (pinned side by side) and draft columns. -->
-        <div v-else-if="deckEntries.length > 0" class="ws-deck">
-          <div v-for="entry in deckEntries" :key="entry.key" class="ws-col">
+        <!-- The focus zone: one conversation, or one draft composer. -->
+        <div v-else-if="focusEntry" class="ws-deck">
+          <div class="ws-col">
             <TaskConversation
-              v-if="entry.kind === 'task'"
-              :state="entry.state"
-              :project-name="projectNameById.get(entry.projectId) ?? entry.projectId"
-              :project-kind="projectKindById.get(entry.projectId) ?? 'repo'"
-              :repo-projects="repoProjects"
-              :reply="(m) => reply(entry.projectId, entry.taskId, m)"
-              :attach="(repoProjectId) => attach(entry.projectId, entry.taskId, repoProjectId)"
-              :interrupt="() => interrupt(entry.projectId, entry.taskId)"
-              :resume="() => resume(entry.projectId, entry.taskId)"
-              :ship="() => ship(entry.projectId, entry.taskId)"
-              :abandon="() => abandon(entry.projectId, entry.taskId)"
-              :run-checks="() => runChecks(entry.projectId, entry.taskId)"
-              :load-checks="() => hydrateChecks(entry.projectId, entry.taskId)"
-              :checks-setup="checksSetup.get(entry.projectId)"
-              :load-checks-setup="() => loadChecksSetup(entry.projectId)"
-              :run-checks-setup="() => runChecksSetup(entry.projectId)"
-              :apply-checks-proposal="() => applyChecksProposal(entry.projectId)"
-              :dismiss-checks-proposal="() => dismissChecksProposal(entry.projectId)"
+              v-if="conversationProps"
+              v-bind="conversationProps"
               @open-review="openReview"
             />
 
-            <!-- Draft column: a composer in fork mode (new branch from a
-                 base) or work-on mode (directly on an existing branch); the
-                 create turns this column into the real conversation. -->
-            <div v-else class="ws-draft-wrap">
+            <!-- Draft: a composer with no repository at all (scratch), or in
+                 fork mode (a new branch from a base), or in work-on mode
+                 (directly on an existing branch); the create turns this into
+                 the real conversation, in place. -->
+            <div v-else-if="draftEntry" class="ws-draft-wrap">
               <div class="ws-draft">
                 <header class="ws-draft-head">
                   <h2 class="ws-draft-title">
                     {{
-                      isScratchProject(entry.projectId)
+                      draftEntry.draft.mode === 'scratch'
                         ? t('workspace.draftScratchTitle')
-                        : entry.draft.mode === 'fork'
-                          ? t('workspace.draftForkTitle', { base: entry.draft.base })
-                          : t('workspace.draftWorkonTitle', { branch: entry.draft.branch })
+                        : draftEntry.draft.mode === 'fork'
+                          ? t('workspace.draftForkTitle', { base: draftEntry.draft.base })
+                          : t('workspace.draftWorkonTitle', { branch: draftEntry.draft.branch })
                     }}
                   </h2>
                   <span class="ws-draft-project">
-                    {{ projectNameById.get(entry.projectId) ?? entry.projectId }}
+                    {{ projectNameById.get(draftEntry.projectId) ?? draftEntry.projectId }}
                   </span>
                   <button
                     class="ws-draft-close"
                     :aria-label="t('workspace.addProjectCancel')"
                     :title="t('workspace.addProjectCancel')"
-                    @click="closeDraft(entry.projectId, entry.draft)"
+                    @click="onFocusDraftClose"
                   >
                     ✕
                   </button>
@@ -810,82 +894,83 @@ const projectsNavHandlers = {
                      branch/base chip means anything, so this scratch draft
                      shows none of it (only the composer's own sober notice). -->
                 <div
-                  v-if="!isScratchProject(entry.projectId)"
+                  v-if="draftEntry.draft.mode !== 'scratch'"
                   class="ws-draft-modes"
                   role="group"
                   :aria-label="t('workspace.draftModeLabel')"
                 >
                   <button
                     class="ws-draft-mode"
-                    :class="{ 'ws-draft-mode--on': entry.draft.mode === 'workon' }"
+                    :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'workon' }"
                     type="button"
-                    @click="
-                      entry.draft.mode === 'fork' && toggleDraftMode(entry.projectId, entry.draft)
-                    "
+                    @click="draftEntry.draft.mode === 'fork' && onFocusToggleDraftMode()"
                   >
                     {{ t('workspace.draftModeWorkon') }}
                   </button>
                   <button
                     class="ws-draft-mode"
-                    :class="{ 'ws-draft-mode--on': entry.draft.mode === 'fork' }"
+                    :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'fork' }"
                     type="button"
-                    @click="
-                      entry.draft.mode === 'workon' && toggleDraftMode(entry.projectId, entry.draft)
-                    "
+                    @click="draftEntry.draft.mode === 'workon' && onFocusToggleDraftMode()"
                   >
                     {{ t('workspace.draftModeFork') }}
                   </button>
                 </div>
                 <p
-                  v-if="entry.draft.mode === 'workon' && isTrunkBranch(draftBranch(entry.draft))"
+                  v-if="
+                    draftEntry.draft.mode === 'workon' && isTrunkBranch(draftEntry.draft.branch)
+                  "
                   class="ws-draft-warning"
                 >
-                  {{ t('workspace.draftTrunkWarning', { branch: draftBranch(entry.draft) }) }}
+                  {{ t('workspace.draftTrunkWarning', { branch: draftEntry.draft.branch }) }}
                 </p>
-                <div v-if="!isScratchProject(entry.projectId)" class="ws-draft-chips">
+                <div v-if="draftEntry.draft.mode !== 'scratch'" class="ws-draft-chips">
                   <span
                     class="ws-draft-chip"
                     :title="
-                      entry.draft.mode === 'fork'
-                        ? t('workspace.draftBaseHint', { branch: entry.draft.base })
-                        : t('workspace.draftWorkonHint', { branch: entry.draft.branch })
+                      draftEntry.draft.mode === 'fork'
+                        ? t('workspace.draftBaseHint', { branch: draftEntry.draft.base })
+                        : t('workspace.draftWorkonHint', { branch: draftEntry.draft.branch })
                     "
                   >
-                    <span aria-hidden="true">⎇</span> {{ draftBranch(entry.draft) }}
+                    <span aria-hidden="true">⎇</span>
+                    {{
+                      draftEntry.draft.mode === 'fork'
+                        ? draftEntry.draft.base
+                        : draftEntry.draft.branch
+                    }}
                   </span>
                   <!-- Work-on from an MR node: the merge target rides along. -->
                   <span
-                    v-if="entry.draft.mode === 'workon' && entry.draft.target !== null"
+                    v-if="draftEntry.draft.mode === 'workon' && draftEntry.draft.target !== null"
                     class="ws-draft-chip"
-                    :title="t('workspace.draftTargetHint', { target: entry.draft.target })"
+                    :title="t('workspace.draftTargetHint', { target: draftEntry.draft.target })"
                   >
-                    <span aria-hidden="true">→</span> {{ entry.draft.target }}
+                    <span aria-hidden="true">→</span> {{ draftEntry.draft.target }}
                   </span>
                 </div>
                 <TaskComposer
                   compact
-                  :creating="runOf(entry.projectId, entry.draft).creating"
-                  :error="runOf(entry.projectId, entry.draft).error"
+                  :creating="runOf(draftEntry.projectId, draftEntry.draft).creating"
+                  :error="runOf(draftEntry.projectId, draftEntry.draft).error"
                   :agents="agents"
                   :current-agent="
-                    isolationForProject(entry.projectId, projects, workspace)?.agent ?? currentAgent
+                    isolationForProject(draftEntry.projectId, projects, workspace)?.agent ??
+                    currentAgent
                   "
                   :isolation="
-                    isolationForProject(entry.projectId, projects, workspace)?.isolation_default ??
-                    null
+                    isolationForProject(draftEntry.projectId, projects, workspace)
+                      ?.isolation_default ?? null
                   "
-                  :project-kind="projectKindById.get(entry.projectId) ?? 'repo'"
-                  :draft="entry.draft"
-                  :plan="planOf(entry.projectId, entry.draft).plan"
-                  :plan-error="planOf(entry.projectId, entry.draft).error"
-                  :plan-pending="planOf(entry.projectId, entry.draft).pending"
-                  :initial-prompt="planRequests.promptOf(entry.key)"
-                  @create="(input) => onDraftCreate(entry.projectId, entry.draft, input)"
-                  @plan-input="(input) => onPlanInput(entry.projectId, entry.draft, input)"
-                  @retarget="
-                    (branch, prompt) =>
-                      onDraftRetarget(entry.projectId, entry.draft, branch, prompt)
-                  "
+                  :project-kind="projectKindById.get(draftEntry.projectId) ?? 'repo'"
+                  :draft="draftEntry.draft"
+                  :plan="planOf(draftEntry.projectId, draftEntry.draft).plan"
+                  :plan-error="planOf(draftEntry.projectId, draftEntry.draft).error"
+                  :plan-pending="planOf(draftEntry.projectId, draftEntry.draft).pending"
+                  :initial-prompt="planRequests.promptOf(draftEntry.key)"
+                  @create="onFocusDraftCreate"
+                  @plan-input="onFocusPlanInput"
+                  @retarget="onFocusDraftRetarget"
                 />
               </div>
             </div>

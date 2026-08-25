@@ -28,7 +28,7 @@
 import { reactive } from 'vue'
 import { t } from '../i18n'
 import type { TaskIssueRef, TaskPlan } from '../types'
-import { draftBranch, forkDraft, workonDraft, type DraftTarget } from './useColumns'
+import { draftBranch, forkDraft, workonDraft, type DraftTarget } from './useWorkspaceNav'
 
 /** What the composer contributes: it owns the prompt, the agent and auto-ship. */
 export type PlanComposerInput = {
@@ -40,10 +40,10 @@ export type PlanComposerInput = {
 }
 
 /**
- * The preview request body for a draft column — the SAME mapping
- * `onDraftCreate` uses for the creation (fork sends `base`, work-on sends
- * `branch` and its optional `target`), so the plan describes the very request
- * the Launch button will send.
+ * The preview request body for a draft — the SAME mapping `onDraftCreate`
+ * uses for the creation (fork sends `base`, work-on sends `branch` and its
+ * optional `target`, scratch sends neither), so the plan describes the very
+ * request the Launch button will send.
  */
 export function planRequestBody(
   projectId: string,
@@ -56,9 +56,20 @@ export function planRequestBody(
     prompt: input.prompt,
     autoShip: input.autoShip,
     ...(input.agent ? { agent: input.agent } : {}),
-    ...(draft.mode === 'fork'
-      ? { base: draft.base }
-      : { branch: draft.branch, ...(draft.target !== null ? { target: draft.target } : {}) }),
+    ...planTargetFields(draft),
+  }
+}
+
+/** A scratch draft names no repository: naming a base or a branch on one is
+ * a 400, not a silently ignored field. */
+function planTargetFields(draft: DraftTarget): Record<string, unknown> {
+  switch (draft.mode) {
+    case 'scratch':
+      return {}
+    case 'fork':
+      return { base: draft.base }
+    case 'workon':
+      return { branch: draft.branch, ...(draft.target !== null ? { target: draft.target } : {}) }
   }
 }
 
@@ -72,7 +83,7 @@ export function planRequestBody(
  */
 export function retargetDraft(draft: DraftTarget, branch: string): DraftTarget {
   const next = branch.trim()
-  if (!next || next === draftBranch(draft)) {
+  if (draft.mode === 'scratch' || !next || next === draftBranch(draft)) {
     return draft
   }
   return draft.mode === 'fork' ? forkDraft(next) : workonDraft(next, draft.target)
@@ -81,6 +92,12 @@ export function retargetDraft(draft: DraftTarget, branch: string): DraftTarget {
 /** Label of the correctable field, which names two different things per mode. */
 export function retargetLabel(draft: DraftTarget): string {
   return draft.mode === 'fork' ? t('workspace.planBaseLabel') : t('workspace.planBranchLabel')
+}
+
+/** Whether the draft has a correctable target at all: a scratch draft has
+ * none, so the composer offers no field rather than one that does nothing. */
+export function isRetargetable(draft: DraftTarget): boolean {
+  return draft.mode !== 'scratch'
 }
 
 const str = (value: unknown, max: number): string =>

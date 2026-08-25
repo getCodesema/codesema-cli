@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { catalogs, t } from '../i18n'
 import type { TaskPlan } from '../types'
-import { forkDraft, workonDraft } from './useColumns'
 import {
   createPlanRequests,
   EMPTY_PLAN,
@@ -17,6 +16,7 @@ import {
   retargetLabel,
   type PlanPreviewFn,
 } from './useTaskPlan'
+import { forkDraft, workonDraft } from './useWorkspaceNav'
 
 const PLAN: TaskPlan = {
   mode: 'fork',

@@ -3,10 +3,10 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 
 /**
- * WorkspaceView owns the stream, the registry and the deck: it cannot be
- * rendered off a prop bag the way TaskComposer can (its setup builds
- * `useTasks`, and an empty registry renders no draft column at all). What is
- * pinned here is the WIRING of the draft column, on the source itself.
+ * WorkspaceView owns the stream, the registry and the focus view: it cannot
+ * be rendered off a prop bag the way TaskComposer can (its setup builds
+ * `useTasks`, and an empty registry renders no draft at all). What is pinned
+ * here is the WIRING of the draft panel, on the source itself.
  *
  * The reason this file exists is T2.6's own risk: the plan panel was added to
  * `TaskComposer.vue`, while the trunk warning and the `⎇`/`→` chips live
@@ -22,7 +22,10 @@ describe('the draft column keeps what it already showed (T2.6 IV.3)', () => {
     expect(SOURCE).toContain('ws-draft-warning')
     // Still conditioned on the DRAFT's own branch being a trunk, not on
     // anything the plan says: the warning is about where the commits land.
-    expect(SOURCE).toContain('isTrunkBranch(draftBranch(entry.draft))')
+    // Read off the draft's own narrowed work-on branch: `draftBranch` is
+    // nullable now that a scratch draft names none, and a warning about
+    // `null` would be a warning about nothing.
+    expect(SOURCE).toContain('isTrunkBranch(draftEntry.draft.branch)')
   })
 
   test('the two chips are still there, with their glyphs and their hints', () => {
@@ -48,7 +51,12 @@ describe('the draft column keeps what it already showed (T2.6 IV.3)', () => {
 
 describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.2/IV.4)', () => {
   test('the composer receives the draft itself and its plan', () => {
-    for (const binding of [':draft="entry.draft"', ':plan=', ':plan-error=', ':plan-pending=']) {
+    for (const binding of [
+      ':draft="draftEntry.draft"',
+      ':plan=',
+      ':plan-error=',
+      ':plan-pending=',
+    ]) {
       expect(SOURCE).toContain(binding)
     }
   })
@@ -56,10 +64,10 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
   test('the corrections and the plan requests are handled, both without creating', () => {
     expect(SOURCE).toContain('@plan-input=')
     expect(SOURCE).toContain('@retarget=')
-    // The correction goes through the deck's OWN draft swap — the same
+    // The correction replaces the focus view's own draft in place — the same
     // mechanism the fork/work-on toggle uses — not a second draft model.
     expect(SOURCE).toContain('retargetDraft(draft, branch)')
-    expect(SOURCE).toContain('deckSwapDraft(deck.value, projectId, draft, next)')
+    expect(SOURCE).toContain("focus.value = { kind: 'draft', projectId, draft: next }")
   })
 
   test('only the Launch path ever calls create; the plan path only previews', () => {
@@ -105,16 +113,17 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
       SOURCE.indexOf('/** Every branch/MR click'),
     )
     // To the NEW key (`next`), never the old one: the old column is gone.
-    expect(retargetFn).toContain('planRequests.carry(draftColumnKey(projectId, next), prompt)')
+    expect(retargetFn).toContain('planRequests.carry(draftKey(projectId, next), prompt)')
     expect(retargetFn).toContain('planRequests.forget(from)')
     // …and the column reads it back on mount, which is what makes the carry
     // worth anything.
-    expect(SOURCE).toContain(':initial-prompt="planRequests.promptOf(entry.key)"')
+    expect(SOURCE).toContain(':initial-prompt="planRequests.promptOf(draftEntry.key)"')
   })
 })
 
-// The forge board (ForgeBoard.vue) sits in the focus zone behind the deck
-// and behind the review view, gated on a project actually being selected.
+// The forge board (ForgeBoard.vue) sits in the focus zone behind the open
+// conversation or draft, and behind the review view, gated on a project
+// actually being selected.
 // What is pinned here is that wiring, on the source itself, for the same
 // reason as above.
 describe('the sober empty focus state still shows with no project selected', () => {
@@ -129,7 +138,7 @@ describe('the sober empty focus state still shows with no project selected', () 
       SOURCE.indexOf('// ── Projects column'),
     )
     expect(boardVisibleFn).toContain('reviewRecord.value === null')
-    expect(boardVisibleFn).toContain('deckEntries.value.length === 0')
+    expect(boardVisibleFn).toContain('focusEntry.value === null')
     expect(boardVisibleFn).toContain('filter.value !== null')
     expect(boardVisibleFn).toContain('projects.value.length > 0')
   })
@@ -324,7 +333,7 @@ describe('a new conversation never targets a repository', () => {
   })
 
   test('no base branch is derived, guessed, or defaulted', () => {
-    expect(fn).toContain("forkDraft('')")
+    expect(fn).toContain('scratchDraft()')
     expect(fn).not.toContain('isCurrent')
     expect(fn).not.toContain('isTrunkBranch')
     expect(fn).not.toContain("'main'")
@@ -343,28 +352,33 @@ describe('a new conversation never targets a repository', () => {
 // The scratch draft targets no branch: the column must not claim otherwise.
 // TaskComposer.test.ts covers what it shows INSTEAD (the sober notice); what
 // is pinned here is that the branch-only chrome around it is gone.
-describe('a scratch draft column shows no branch/base chrome', () => {
+describe('a scratch draft shows no branch/base chrome', () => {
   const draftColumn = SOURCE.slice(
     SOURCE.indexOf('<header class="ws-draft-head">'),
     SOURCE.indexOf('<TaskComposer'),
   )
 
-  test('the title falls back to a plain, branchless title for the scratch project', () => {
-    expect(draftColumn).toContain('isScratchProject(entry.projectId)')
+  // Gated on the DRAFT's own mode, not on the project's kind: the two used
+  // to be kept in step by hand, and the mode is the fact that decides what
+  // the panel can honestly show.
+  test('the title falls back to a plain, branchless title for a scratch draft', () => {
+    expect(draftColumn).toContain("draftEntry.draft.mode === 'scratch'")
     expect(draftColumn).toContain("t('workspace.draftScratchTitle')")
     // Checked first, ahead of the fork/work-on ternary it replaces.
-    expect(draftColumn.indexOf('isScratchProject(entry.projectId)')).toBeLessThan(
-      draftColumn.indexOf("entry.draft.mode === 'fork'"),
+    expect(draftColumn.indexOf("draftEntry.draft.mode === 'scratch'")).toBeLessThan(
+      draftColumn.indexOf("draftEntry.draft.mode === 'fork'"),
     )
   })
 
   test('the fork/work-on mode toggle and the branch/target chips are both hidden for it', () => {
-    expect(draftColumn.split('v-if="!isScratchProject(entry.projectId)"').length - 1).toBe(2)
+    expect(draftColumn.split(`v-if="draftEntry.draft.mode !== 'scratch'"`).length - 1).toBe(2)
     expect(draftColumn).toContain('class="ws-draft-modes"')
     expect(draftColumn).toContain('ws-draft-chips')
   })
 
   test('the composer is told which project kind it is drafting for', () => {
-    expect(SOURCE).toContain(':project-kind="projectKindById.get(entry.projectId) ?? \'repo\'"')
+    expect(SOURCE).toContain(
+      ':project-kind="projectKindById.get(draftEntry.projectId) ?? \'repo\'"',
+    )
   })
 })
