@@ -305,32 +305,38 @@ describe('the rail animates its width, except while dragged', () => {
   })
 })
 
-// A new conversation used to default to `projects.value[0]`, which the
-// scratch project now always occupies (the server lists it first): without a
-// filter, [+ new conversation] landed on scratch even with real repos
-// registered. `deriveComposeTarget` (useProjects.ts, already unit-tested on
-// its own) is the fix: filter wins while it still names a known project,
-// otherwise the first repo, and only scratch when there is no repo at all.
-describe('a new conversation prefers a real repo over the scratch project', () => {
+// [+ new conversation] used to derive a repository and a base branch from
+// the active filter, so with any repo registered it opened a fork of that
+// repo's current branch — `develop` on a repo sitting on develop. A
+// conversation that has not been given code costs no branch and no
+// worktree: the target is the scratch project, unconditionally, and a
+// repository is attached later from the conversation itself.
+describe('a new conversation never targets a repository', () => {
   const fn = SOURCE.slice(
     SOURCE.indexOf('function onNewConversation('),
     SOURCE.indexOf('async function onDraftCreate('),
   )
 
-  test('the target project goes through the shared filter/repo/scratch precedence', () => {
-    expect(fn).toContain('deriveComposeTarget(filter.value, projects.value)')
-    // Not the old expression, which put the server-first scratch project
-    // ahead of a real repo whenever no filter was active.
-    expect(fn).not.toContain('projects.value[0]?.id ?? null')
+  test('the target is the scratch project, with no precedence to arbitrate', () => {
+    expect(fn).toContain('scratchProjectId.value')
+    expect(fn).not.toContain('deriveComposeTarget')
+    expect(fn).not.toContain('filter.value')
   })
 
-  test('the scratch project gets an empty base, checked before any branch is derived', () => {
-    expect(fn).toContain('isScratchProject(projectId)')
+  test('no base branch is derived, guessed, or defaulted', () => {
     expect(fn).toContain("forkDraft('')")
-    const scratchAt = fn.indexOf("forkDraft('')")
-    const derivedBaseAt = fn.indexOf('branches.find((b) => b.isCurrent)')
-    expect(scratchAt).toBeGreaterThan(-1)
-    expect(derivedBaseAt).toBeGreaterThan(scratchAt)
+    expect(fn).not.toContain('isCurrent')
+    expect(fn).not.toContain('isTrunkBranch')
+    expect(fn).not.toContain("'main'")
+  })
+
+  test('the scratch project is read off the registry, never assumed to be first', () => {
+    const derivation = SOURCE.slice(
+      SOURCE.indexOf('const scratchProjectId = computed('),
+      SOURCE.indexOf('const scratchProjectId = computed(') + 200,
+    )
+    expect(derivation).toContain("project.kind === 'scratch'")
+    expect(derivation).not.toContain('projects.value[0]')
   })
 })
 

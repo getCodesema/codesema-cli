@@ -4,7 +4,6 @@ import {
   buildProjectTree,
   countProjectActivity,
   deriveActiveProject,
-  deriveComposeTarget,
   isolationForProject,
   isTrunkBranch,
   migrateActiveProject,
@@ -106,32 +105,6 @@ describe('deriveActiveProject', () => {
 
   test('null on an empty registry', () => {
     expect(deriveActiveProject('aaaa1111', 'aaaa1111', [])).toBeNull()
-  })
-})
-
-describe('deriveComposeTarget', () => {
-  const scratch = project({ id: 'scratch1', kind: 'scratch' })
-  const withRepos = [scratch, project({ id: 'aaaa1111' }), project({ id: 'bbbb2222' })]
-
-  test('the chosen id wins while it still names a known project', () => {
-    expect(deriveComposeTarget('bbbb2222', withRepos)).toBe('bbbb2222')
-  })
-
-  test('a chosen id gone from the list falls back instead of sticking', () => {
-    expect(deriveComposeTarget('gone0000', withRepos)).toBe('aaaa1111')
-  })
-
-  test('nothing chosen defaults to the first repo, not the scratch project leading the list', () => {
-    expect(deriveComposeTarget(null, withRepos)).toBe('aaaa1111')
-  })
-
-  test('with no repo registered, the scratch project is the only destination', () => {
-    expect(deriveComposeTarget(null, [scratch])).toBe('scratch1')
-    expect(deriveComposeTarget('gone0000', [scratch])).toBe('scratch1')
-  })
-
-  test('null on an empty list', () => {
-    expect(deriveComposeTarget(null, [])).toBeNull()
   })
 })
 

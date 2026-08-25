@@ -34,7 +34,6 @@ import { EMPTY_ISSUES_STATE, useIssues } from '../composables/useIssues'
 import {
   buildProjectTree,
   countProjectActivity,
-  deriveComposeTarget,
   isolationForProject,
   isTrunkBranch,
   otherBranches,
@@ -184,6 +183,12 @@ const repoProjects = computed(() => projects.value.filter((project) => project.k
 function isScratchProject(projectId: string): boolean {
   return projectKindById.value.get(projectId) === 'scratch'
 }
+
+/** The scratch project, which the server synthesizes on every read of
+ * GET /api/projects — null only before that first read has landed. */
+const scratchProjectId = computed(
+  () => projects.value.find((project) => project.kind === 'scratch')?.id ?? null,
+)
 
 // ── Project filter: a project id, or null for "All projects" ──────────────
 // Selecting a project also makes it the registry's active card, which lazily
@@ -419,36 +424,19 @@ function onBranchClick(projectId: string, branch: string, mr: ForgeMr | null): v
 }
 
 /**
- * [+ new conversation] in the conversations column: opens a draft column,
- * the SAME mechanism a trunk branch click already uses, never a second
- * composer. The column carries no project picker of its own, so the target
- * is the filtered project while it still names a known one, otherwise the
- * first registered repo, and only the repo-less scratch project when there
- * is no repo at all (deriveComposeTarget): a repo always wins over scratch,
- * even though the server lists scratch first.
- *
- * The scratch project forks no branch, so its draft carries an empty base
- * rather than a guess: the base is otherwise that project's current branch
- * when its branches are already known (a project the human has looked at),
- * else its first trunk branch, else the conventional 'main'. All three are
- * one click away from a correction in the draft's own retarget field, so a
- * wrong guess here costs nothing.
+ * [+ new conversation]: always the repo-less scratch project, never a
+ * repository and never a guessed base. A conversation that has not been
+ * given any code costs no branch and no worktree, and the repository it
+ * ends up needing is attached from the conversation itself once it exists.
+ * Deriving a target from the filtered project is what used to open every
+ * new conversation on a fork of that repo's current branch.
  */
 function onNewConversation(): void {
-  const projectId = deriveComposeTarget(filter.value, projects.value)
+  const projectId = scratchProjectId.value
   if (projectId === null) {
     return
   }
-  if (isScratchProject(projectId)) {
-    openDraft(projectId, forkDraft(''))
-    return
-  }
-  const branches = branchesByProject.get(projectId) ?? []
-  const base =
-    branches.find((b) => b.isCurrent)?.name ??
-    branches.find((b) => isTrunkBranch(b.name))?.name ??
-    'main'
-  openDraft(projectId, forkDraft(base))
+  openDraft(projectId, forkDraft(''))
 }
 
 /** Launches the real conversation from the draft: the POST carries base
