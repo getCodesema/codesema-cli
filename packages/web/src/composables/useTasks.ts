@@ -17,6 +17,7 @@ import type {
   ForgeMrsResult,
   ForgeMrStateFilter,
   ForgeUnavailableReason,
+  GitWorktree,
   LocalBranch,
   Project,
   ProjectCandidate,
@@ -590,6 +591,9 @@ function useProjectRegistry(token: string, store: TaskStore) {
   // becomes active: the tree's "Branches (N)" disclosure and the draft
   // columns are the consumers. Errors cache an empty list silently.
   const branchesByProject = reactive(new Map<string, LocalBranch[]>())
+  // Git worktrees per project id, fetched alongside the MRs and branches when
+  // a card becomes active. Errors cache an empty list silently.
+  const worktreesByProject = reactive(new Map<string, GitWorktree[]>())
   // Git repos detected around the launch directory, refreshed on demand when
   // the add-project form opens: one-click registration instead of typing paths.
   const candidates = ref<ProjectCandidate[]>([])
@@ -707,11 +711,23 @@ function useProjectRegistry(token: string, store: TaskStore) {
     }
   }
 
-  /** Re-fetches the open MRs (and local branches) of the active project. */
+  async function loadWorktrees(projectId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/worktrees?project=${encodeURIComponent(projectId)}`)
+      worktreesByProject.set(projectId, res.ok ? ((await res.json()) as GitWorktree[]) : [])
+    } catch {
+      worktreesByProject.set(projectId, [])
+    }
+  }
+
+  /** Re-fetches the open MRs, local branches, and worktrees of the active project. */
   async function refreshMrs(): Promise<void> {
     if (activeProject.value !== null) {
-      // Both feed the same tree: refresh them together.
-      await Promise.all([loadMrs(activeProject.value), loadBranches(activeProject.value)])
+      await Promise.all([
+        loadMrs(activeProject.value),
+        loadBranches(activeProject.value),
+        loadWorktrees(activeProject.value),
+      ])
     }
   }
 
@@ -722,6 +738,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
       // Lazy fetch policy: the card becoming active is the only trigger.
       void loadMrs(id)
       void loadBranches(id)
+      void loadWorktrees(id)
     }
   }
 
@@ -821,6 +838,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
       }
     }
     branchesByProject.delete(id)
+    worktreesByProject.delete(id)
     await loadProjects()
     return { ok: true }
   }
@@ -831,6 +849,7 @@ function useProjectRegistry(token: string, store: TaskStore) {
     mrsByProject,
     mrsLoadByProject,
     branchesByProject,
+    worktreesByProject,
     candidates,
     workspace,
     loadProjects,
