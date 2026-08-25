@@ -847,6 +847,30 @@ const en = {
   'repository.detachedHint':
     'A detached worktree carries no branch, so no conversation can start on it.',
 
+  // --- Code review category: the list, a target's panel, its history ---
+  'rail.codeReview': 'Code review',
+  'codeReview.title': 'Code review',
+  'codeReview.searchPlaceholder': 'Search merge requests and branches…',
+  'codeReview.empty': 'Nothing to review yet.',
+  'codeReview.searchEmpty': 'Nothing matches this search.',
+  'codeReview.neverReviewed': 'Never reviewed',
+  'codeReview.running': 'Review running',
+  'codeReview.expandAria': 'Show the reviews of {target}',
+  'codeReview.collapseAria': 'Hide the reviews of {target}',
+  'codeReview.historyTitle': 'Reviews',
+  'codeReview.historyLoading': 'Reading the archived reviews…',
+  'codeReview.historyEmpty': 'No archived review yet.',
+  'codeReview.historyError': 'Could not read the archived reviews.',
+  'codeReview.runSimple': 'Review',
+  'codeReview.runDual': 'Dual review',
+  'codeReview.modeSimple': 'simple',
+  'codeReview.modeDual': 'dual',
+  'codeReview.startError': 'Could not start the review.',
+  'codeReview.busyElsewhere': 'A review is already running',
+  'codeReview.openRunning': 'Open the running review',
+  'codeReview.runFailed': 'The review failed: {error}',
+  'codeReview.branchTargetHint': 'A branch with no merge request is reviewed against its detected target.',
+
   // --- Relative timestamp, five regimes (conversations column §9) ---
   'time.yesterdayAt': 'yesterday {t}',
   'time.weekdayAt': '{day} {t}',
@@ -1685,6 +1709,30 @@ const fr: Record<MessageKey, string> = {
   'repository.noConversationsOnBranch': 'Aucune conversation sur cette branche.',
   'repository.detachedHint':
     'Un worktree détaché ne porte pas de branche : aucune conversation ne peut y démarrer.',
+
+  // --- Catégorie revue de code : la liste, le panneau d'une cible, son historique ---
+  'rail.codeReview': 'Revue de code',
+  'codeReview.title': 'Revue de code',
+  'codeReview.searchPlaceholder': 'Rechercher une merge request ou une branche…',
+  'codeReview.empty': 'Rien à réviser pour l’instant.',
+  'codeReview.searchEmpty': 'Rien ne correspond à cette recherche.',
+  'codeReview.neverReviewed': 'Jamais révisée',
+  'codeReview.running': 'Revue en cours',
+  'codeReview.expandAria': 'Afficher les revues de {target}',
+  'codeReview.collapseAria': 'Masquer les revues de {target}',
+  'codeReview.historyTitle': 'Revues',
+  'codeReview.historyLoading': 'Lecture des revues archivées…',
+  'codeReview.historyEmpty': 'Aucune revue archivée.',
+  'codeReview.historyError': 'Impossible de lire les revues archivées.',
+  'codeReview.runSimple': 'Réviser',
+  'codeReview.runDual': 'Revue duale',
+  'codeReview.modeSimple': 'simple',
+  'codeReview.modeDual': 'duale',
+  'codeReview.startError': 'Impossible de lancer la revue.',
+  'codeReview.busyElsewhere': 'Une revue tourne déjà',
+  'codeReview.openRunning': 'Ouvrir la revue en cours',
+  'codeReview.runFailed': 'La revue a échoué : {error}',
+  'codeReview.branchTargetHint': 'Une branche sans merge request est révisée contre sa cible détectée.',
 
   // --- Horodatage relatif, cinq régimes (colonne des conversations §9) ---
   'time.yesterdayAt': 'hier {t}',

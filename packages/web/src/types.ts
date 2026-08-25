@@ -280,18 +280,50 @@ export type MrReviewMode = 'simple' | 'dual'
 
 export type ReviewSource = { kind: 'mr'; number: number } | { kind: 'branch'; name: string }
 
+/** `project_id` is null for a run started without `?project=` (the launch
+ * directory), and names the registered project otherwise. Without it two
+ * projects each holding an MR #7 would be indistinguishable here. */
 export type MrReviewStatus =
   | { available: false }
   | { available: true; phase: 'idle' }
   | {
       available: true
       phase: 'running'
+      project_id: string | null
       source: ReviewSource
       mode: MrReviewMode
       started_at: string
     }
-  | { available: true; phase: 'done'; source: ReviewSource; mode: MrReviewMode }
-  | { available: true; phase: 'error'; source: ReviewSource; mode: MrReviewMode; error: string }
+  | {
+      available: true
+      phase: 'done'
+      project_id: string | null
+      source: ReviewSource
+      mode: MrReviewMode
+    }
+  | {
+      available: true
+      phase: 'error'
+      project_id: string | null
+      source: ReviewSource
+      mode: MrReviewMode
+      error: string
+    }
+
+// Mirrors packages/cli/src/record.ts and the /api/reviews* endpoints.
+
+/** One archived review, without its diff: a ReviewRecord carries the whole
+ * diff, so a list of twenty would be megabytes. `ref` addresses the archive
+ * on GET /api/reviews/record. */
+export type ReviewArchiveSummary = {
+  ref: string
+  branch: string
+  target: string
+  created_at: string
+  verdict: 'approve' | 'request_changes' | 'comment'
+  mode: MrReviewMode
+  findings_total: number
+}
 
 // Mirrors packages/cli/src/branches.ts and the /api/branches endpoint.
 
