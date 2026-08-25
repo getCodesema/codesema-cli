@@ -160,7 +160,7 @@ export type ForgeCli = 'gh' | 'glab'
  * DIVERGES from `ForgeMrsResult` (`forge-mrs.ts:14`) by one member:
  * `invalid-input`. The three others mean exactly what they mean there —
  * `no-remote`, `no-cli`, `cli-error` — and the web keeps mapping them the same
- * way (`MrSidebar.vue:24-26`).
+ * way (`forge/ForgeListPanel.vue:155-157`).
  *
  * `invalid-input` exists because this module WRITES: an issue number that is
  * not a positive integer, a title that sanitises to nothing, a label no forge

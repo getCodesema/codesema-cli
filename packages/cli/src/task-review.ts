@@ -9,7 +9,6 @@
 // back by GET /api/tasks/:id/review (readTaskReview), so a conversation can
 // open the review of ANY of its turns, not just the last one.
 
-import { join, resolve, sep } from 'node:path'
 import { ensureWorkDir, type ReviewMode } from './config.js'
 import {
   sanitizeRecord,
@@ -23,7 +22,7 @@ import { buildAgentFixPrompt, isFixable } from './fix.js'
 import { isAncestor, refExists, tryGit } from './git.js'
 import { createLoadCap, DEFAULT_MAX_CONCURRENT_AGENTS, type LoadCap } from './load-cap.js'
 import { prep } from './prep.js'
-import { archiveRecord, readJson } from './record.js'
+import { archiveRecord, readJson, resolveArchivePath } from './record.js'
 import {
   buildFullReviewPrompt,
   runDualFlow,
@@ -176,18 +175,6 @@ export function buildAutoFixTurnPrompt(task: TaskRecord): string | null {
 }
 
 /**
- * An archive path is servable only when it lands INSIDE the project's
- * .codesema/reviews: a `ref` comes from the client (the review_done event it
- * read), so it is resolved against that directory and rejected the moment it
- * escapes it — a relative "../../" or an absolute path elsewhere never reads.
- */
-function archiveInProject(cwd: string, ref: string): string | null {
-  const dir = resolve(join(cwd, '.codesema', 'reviews'))
-  const path = resolve(dir, ref)
-  return path.startsWith(`${dir}${sep}`) ? path : null
-}
-
-/**
  * The archived review of ONE task, for GET /api/tasks/:id/review. `ref` (the
  * archive path a review_done event carries) opens the review of THAT turn;
  * without one — or when it points outside the project's reviews directory —
@@ -204,7 +191,7 @@ export function readTaskReview(
   if (!task) {
     return null
   }
-  const path = ref ? archiveInProject(cwd, ref) : task.review_ref
+  const path = ref ? resolveArchivePath(cwd, ref) : task.review_ref
   if (!path) {
     return null
   }

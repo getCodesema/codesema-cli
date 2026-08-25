@@ -6,7 +6,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { listLocalBranches, listWorktrees } from './branches.js'
 import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './config.js'
-import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
+import { isTaskId, sanitizeRecord, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
 import {
@@ -16,7 +16,13 @@ import {
 } from './forge-issues.js'
 import { listOpenMrs, type ForgeMrsResult, type ForgeMrStateFilter } from './forge-mrs.js'
 import { t } from './i18n.js'
-import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
+import type {
+  MrReviewMode,
+  MrReviewRunner,
+  MrReviewScope,
+  MrReviewStatus,
+  ReviewSource,
+} from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
 import { buildFileDiff, buildPreview, parsePreviewPath, parsePreviewSource } from './preview.js'
 import {
@@ -27,6 +33,7 @@ import {
   listWorkspaceProjects,
   removeProject,
 } from './projects.js'
+import { listLatestReviews, listReviewHistory, readJson, resolveArchivePath } from './record.js'
 import {
   readRulesContent,
   readSyncAutoPush,
@@ -408,6 +415,8 @@ async function handleMrReviewStart(
   req: IncomingMessage,
   res: ServerResponse,
   mrReview: MrReviewEndpoint | undefined,
+  searchParams: URLSearchParams,
+  cwd: string,
 ): Promise<void> {
   if (!mrReview) {
     return sendJson(res, 501, { error: 'MR review runner unavailable' })
@@ -426,7 +435,13 @@ async function handleMrReviewStart(
   if (!source || (b?.mode !== 'simple' && b?.mode !== 'dual')) {
     return sendText(res, 400, 'bad request')
   }
-  const started = await mrReview.runner.start(source, b?.mode as MrReviewMode)
+  const scoped = resolveProjectCwd(searchParams, cwd)
+  if ('error' in scoped) {
+    return sendText(res, 404, 'not found')
+  }
+  const projectId = searchParams.get('project')?.trim() || null
+  const scope: MrReviewScope | undefined = projectId ? { projectId, cwd: scoped.cwd } : undefined
+  const started = await mrReview.runner.start(source, b?.mode as MrReviewMode, scope)
   if (!started.ok) {
     return sendJson(res, started.code, { error: started.error })
   }
@@ -723,6 +738,32 @@ export function resolveProjectCwd(
     return { error: 404 }
   }
   return { cwd: project.path }
+}
+
+/**
+ * The single MR review runner is shared by every project, so a status whose
+ * `project_id` belongs to a DIFFERENT project than the one asked for must not
+ * leak through as if it were this project's own — the caller sees 'idle'
+ * instead. `projectId: null` (no `?project=`) keeps today's behavior: the
+ * raw, unfiltered status.
+ */
+export function mrReviewStatusForProject(
+  status: MrReviewStatus,
+  projectId: string | null,
+): MrReviewStatus {
+  if (projectId === null || status.phase === 'idle' || status.project_id === projectId) {
+    return status
+  }
+  return { available: true, phase: 'idle' }
+}
+
+/** Null on a missing or corrupt archive: the caller turns that into a 404, never a crash. */
+function readReviewRecord(path: string): ReviewRecord | null {
+  try {
+    return sanitizeRecord(readJson(path))
+  } catch {
+    return null
+  }
 }
 
 /** A parsed task-creation request, ready for either the real create or its dry-run. */
@@ -1328,7 +1369,7 @@ function createRequestHandler(handlerOpts: {
         return void handleFixStart(req, res, fix)
       }
       if (pathname === '/api/mrs/review') {
-        return void handleMrReviewStart(req, res, mrReview)
+        return void handleMrReviewStart(req, res, mrReview, searchParams, cwd)
       }
       if (pathname === '/api/tasks') {
         return void handleTaskCreate(req, res, tasks)
@@ -1403,6 +1444,9 @@ function createRequestHandler(handlerOpts: {
         pathname === '/api/issues' ||
         pathname === '/api/branches' ||
         pathname === '/api/worktrees' ||
+        pathname === '/api/reviews/latest' ||
+        pathname === '/api/reviews' ||
+        pathname === '/api/reviews/record' ||
         pathname === '/api/preview' ||
         pathname === '/api/preview/diff'
       ) {
@@ -1430,6 +1474,32 @@ function createRequestHandler(handlerOpts: {
         if (pathname === '/api/worktrees') {
           return sendJson(res, 200, listWorktrees(scoped.cwd))
         }
+        if (pathname === '/api/reviews/latest') {
+          return sendJson(res, 200, { latest: listLatestReviews(scoped.cwd) })
+        }
+        if (pathname === '/api/reviews/record') {
+          const branch = searchParams.get('branch')?.trim()
+          const ref = searchParams.get('ref')?.trim()
+          if (!branch || !ref) {
+            return sendText(res, 400, 'bad request')
+          }
+          const archivePath = resolveArchivePath(scoped.cwd, ref)
+          const record = archivePath ? readReviewRecord(archivePath) : null
+          // A `ref` that resolves inside the project's reviews dir but belongs
+          // to a DIFFERENT branch is refused too: a valid ref alone must never
+          // serve another branch's review.
+          if (!record || record.meta.branch !== branch) {
+            return sendText(res, 404, 'not found')
+          }
+          return sendJson(res, 200, record)
+        }
+        if (pathname === '/api/reviews') {
+          const branch = searchParams.get('branch')?.trim()
+          if (!branch) {
+            return sendText(res, 400, 'bad request')
+          }
+          return sendJson(res, 200, { branch, entries: listReviewHistory(scoped.cwd, branch) })
+        }
         if (pathname === '/api/preview') {
           return void handlePreview(res, scoped.cwd, searchParams)
         }
@@ -1445,7 +1515,12 @@ function createRequestHandler(handlerOpts: {
         if (!mrReview) {
           return sendJson(res, 200, { available: false })
         }
-        return sendJson(res, 200, mrReview.runner.status())
+        const scoped = resolveProjectCwd(searchParams, cwd)
+        if ('error' in scoped) {
+          return sendText(res, 404, 'not found')
+        }
+        const projectId = searchParams.get('project')?.trim() || null
+        return sendJson(res, 200, mrReviewStatusForProject(mrReview.runner.status(), projectId))
       }
       if (pathname === '/api/events') {
         if (sseClients >= MAX_SSE_CLIENTS) {

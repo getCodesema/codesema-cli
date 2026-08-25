@@ -17,23 +17,54 @@ export type MrReviewPhase = 'idle' | 'running' | 'done' | 'error'
 
 export type ReviewSource = { kind: 'mr'; number: number } | { kind: 'branch'; name: string }
 
+/**
+ * A multi-project workspace shares ONE runner across every registered repo:
+ * scope is what points a single start() at one of them instead of the
+ * runner's own construction cwd.
+ */
+export type MrReviewScope = { projectId: string | null; cwd: string }
+
+/**
+ * `project_id` rides every non-idle phase: two projects can each have their
+ * own MR #7, and a status with no project attached would make them
+ * indistinguishable to a client polling this single, shared runner.
+ */
 export type MrReviewStatus =
   | { available: true; phase: 'idle' }
   | {
       available: true
       phase: 'running'
+      project_id: string | null
       source: ReviewSource
       mode: MrReviewMode
       started_at: string
     }
-  | { available: true; phase: 'done'; source: ReviewSource; mode: MrReviewMode }
-  | { available: true; phase: 'error'; source: ReviewSource; mode: MrReviewMode; error: string }
+  | {
+      available: true
+      phase: 'done'
+      project_id: string | null
+      source: ReviewSource
+      mode: MrReviewMode
+    }
+  | {
+      available: true
+      phase: 'error'
+      project_id: string | null
+      source: ReviewSource
+      mode: MrReviewMode
+      error: string
+    }
 
 export type MrReviewStartResult = { ok: true } | { ok: false; code: number; error: string }
 
 export type MrReviewRunner = {
   status: () => MrReviewStatus
-  start: (source: ReviewSource, mode: MrReviewMode) => Promise<MrReviewStartResult>
+  /** No `scope`: today's behavior, the runner's own construction cwd and a null project_id. */
+  start: (
+    source: ReviewSource,
+    mode: MrReviewMode,
+    scope?: MrReviewScope,
+  ) => Promise<MrReviewStartResult>
 }
 
 type ResolvedSource = { kind: 'mr'; mr: ForgeMr } | { kind: 'branch'; name: string }
@@ -131,10 +162,12 @@ export function createMrReviewRunner(opts: {
   const listMrs = opts.listMrs ?? listOpenMrs
 
   let phase: MrReviewPhase = 'idle'
-  let current: { source: ReviewSource; mode: MrReviewMode; started_at: string } | undefined
+  let current:
+    | { source: ReviewSource; mode: MrReviewMode; started_at: string; projectId: string | null }
+    | undefined
   let error: string | undefined
 
-  async function run(resolved: ResolvedSource, mode: MrReviewMode): Promise<void> {
+  async function run(resolved: ResolvedSource, mode: MrReviewMode, cwd: string): Promise<void> {
     opts.session.reset()
     opts.session.setAgent(opts.agentCommand)
     opts.session.setMode(mode)
@@ -147,28 +180,26 @@ export function createMrReviewRunner(opts: {
     let targetForPrep: string
 
     if (resolved.kind === 'mr') {
-      fetchMrBranch(opts.cwd, resolved.mr.sourceBranch)
-      await underRepoLock(opts.cwd, () =>
-        addMrWorktree(opts.cwd, worktreeDir, resolved.mr.sourceBranch),
-      )
+      fetchMrBranch(cwd, resolved.mr.sourceBranch)
+      await underRepoLock(cwd, () => addMrWorktree(cwd, worktreeDir, resolved.mr.sourceBranch))
       branchForPrep = resolved.mr.sourceBranch
       targetForPrep = resolved.mr.targetBranch
     } else {
       const refs = await resolvePreviewRefs(
-        opts.cwd,
+        cwd,
         { kind: 'branch', name: resolved.name },
         { execFn: opts.execFn },
       )
-      await underRepoLock(opts.cwd, () => {
+      await underRepoLock(cwd, () => {
         // Both the "is it checked out" probe and the add write/read the same
         // registry: they belong INSIDE the lock, or the answer can go stale
         // between them.
-        const alreadyCheckedOut = listWorktrees(opts.cwd).some((wt) => wt.branch === resolved.name)
+        const alreadyCheckedOut = listWorktrees(cwd).some((wt) => wt.branch === resolved.name)
         if (alreadyCheckedOut) {
-          const sha = git(['rev-parse', `refs/heads/${resolved.name}`], opts.cwd)
-          addDetachedWorktree(opts.cwd, worktreeDir, sha)
+          const sha = git(['rev-parse', `refs/heads/${resolved.name}`], cwd)
+          addDetachedWorktree(cwd, worktreeDir, sha)
         } else {
-          addLocalBranchWorktree(opts.cwd, worktreeDir, resolved.name)
+          addLocalBranchWorktree(cwd, worktreeDir, resolved.name)
         }
       })
       branchForPrep = resolved.name
@@ -219,9 +250,9 @@ export function createMrReviewRunner(opts: {
         throw new Error(outcome.message)
       }
 
-      // Archived in the MAIN repo (opts.cwd), never in the disposable worktree:
+      // Archived in the TARGET repo (`cwd`), never in the disposable worktree:
       // `codesema show` reads .codesema/reviews from the repo the server was started in.
-      archiveRecord(outcome.record, opts.cwd)
+      archiveRecord(outcome.record, cwd)
       opts.session.setDone(outcome.record)
     } finally {
       // A cleanup path must never mask the outcome it is cleaning up after, so
@@ -232,7 +263,7 @@ export function createMrReviewRunner(opts: {
       // wait sits between the user and the exit.
       let lock: WorktreeLockHandle | null = null
       try {
-        lock = await acquireWorktreeLock(opts.cwd, {
+        lock = await acquireWorktreeLock(cwd, {
           timeoutMs: CLEANUP_LOCK_TIMEOUT_MS,
           ...(opts.shutdownSignal ? { signal: opts.shutdownSignal } : {}),
         })
@@ -240,7 +271,7 @@ export function createMrReviewRunner(opts: {
         lock = null
       }
       try {
-        removeMrWorktree(opts.cwd, worktreeDir)
+        removeMrWorktree(cwd, worktreeDir)
       } finally {
         lock?.release()
       }
@@ -252,16 +283,30 @@ export function createMrReviewRunner(opts: {
       if (phase === 'idle' || current === undefined) {
         return { available: true, phase: 'idle' }
       }
-      const { source, mode, started_at } = current
+      const { source, mode, started_at, projectId } = current
       if (phase === 'running') {
-        return { available: true, phase: 'running', source, mode, started_at }
+        return {
+          available: true,
+          phase: 'running',
+          project_id: projectId,
+          source,
+          mode,
+          started_at,
+        }
       }
       if (phase === 'done') {
-        return { available: true, phase: 'done', source, mode }
+        return { available: true, phase: 'done', project_id: projectId, source, mode }
       }
-      return { available: true, phase: 'error', source, mode, error: error ?? 'unknown error' }
+      return {
+        available: true,
+        phase: 'error',
+        project_id: projectId,
+        source,
+        mode,
+        error: error ?? 'unknown error',
+      }
     },
-    async start(source, mode) {
+    async start(source, mode, scope) {
       if (phase === 'running') {
         return { ok: false, code: 409, error: 'a review is already running' }
       }
@@ -275,24 +320,31 @@ export function createMrReviewRunner(opts: {
         return { ok: false, code: 400, error: 'invalid branch name' }
       }
 
+      const cwd = scope?.cwd ?? opts.cwd
+
       // Reserve the runner before the async lookup: a second concurrent
       // start() must hit the 409 above, not slip past it during the await.
       const previousPhase = phase
       phase = 'running'
-      current = { source, mode, started_at: new Date().toISOString() }
+      current = {
+        source,
+        mode,
+        started_at: new Date().toISOString(),
+        projectId: scope?.projectId ?? null,
+      }
       error = undefined
 
       let resolved: ResolvedSource | undefined
       try {
         if (source.kind === 'mr') {
-          const mrsResult = await listMrs(opts.cwd)
+          const mrsResult = await listMrs(cwd)
           const mr = mrsResult.available
             ? mrsResult.mrs.find((m) => m.number === source.number)
             : undefined
           if (mr) {
             resolved = { kind: 'mr', mr }
           }
-        } else if (refExists(`refs/heads/${source.name}`, opts.cwd)) {
+        } else if (refExists(`refs/heads/${source.name}`, cwd)) {
           resolved = { kind: 'branch', name: source.name }
         }
       } finally {
@@ -306,7 +358,7 @@ export function createMrReviewRunner(opts: {
         return { ok: false, code: 404, error: notFound }
       }
 
-      void run(resolved, mode)
+      void run(resolved, mode, cwd)
         .then(() => {
           phase = 'done'
         })
