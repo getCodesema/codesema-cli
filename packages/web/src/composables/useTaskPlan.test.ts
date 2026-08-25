@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { catalogs, t } from '../i18n'
 import type { TaskPlan } from '../types'
-import { forkDraft, workonDraft } from './useColumns'
 import {
   createPlanRequests,
   EMPTY_PLAN,
@@ -17,6 +16,7 @@ import {
   retargetLabel,
   type PlanPreviewFn,
 } from './useTaskPlan'
+import { forkDraft, workonDraft } from './useWorkspaceNav'
 
 const PLAN: TaskPlan = {
   mode: 'fork',
@@ -267,7 +267,7 @@ describe('T2.6 plan labels are actually translated', () => {
   })
 })
 
-// T2.6 review round 1, M75. The per-column request machinery used to live
+// T2.6 review round 1, M75. The per-draft request machinery used to live
 // inside WorkspaceView.vue, which cannot be mounted in a test (its setup
 // builds `useTasks`) — so its one non-obvious rule, "a slow answer never
 // overwrites a newer one", was pinned by a `toContain` on the source and by
@@ -295,8 +295,8 @@ function riggedPreview(): {
 /** Lets the 0 ms debounce timer, and the promise callbacks, actually run. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-describe('createPlanRequests — one column, many questions, one answer', () => {
-  test('an untouched column has no plan, no error and nothing in flight', () => {
+describe('createPlanRequests — one draft, many questions, one answer', () => {
+  test('an untouched draft has no plan, no error and nothing in flight', () => {
     const requests = createPlanRequests(riggedPreview().preview, 0)
     expect(requests.planOf('p/#draft/fork/develop')).toEqual(EMPTY_PLAN)
     expect(requests.promptOf('p/#draft/fork/develop')).toBe('')
@@ -321,7 +321,7 @@ describe('createPlanRequests — one column, many questions, one answer', () => 
     expect(requests.planOf(key).plan).toEqual(newer)
 
     // …and the older one lands afterwards, as a slow server perfectly well
-    // can. It describes a branch this column is no longer targeting, so it is
+    // can. It describes a branch this draft is no longer targeting, so it is
     // dropped rather than rendered.
     rig.answer(0, older)
     await settle()
@@ -364,7 +364,7 @@ describe('createPlanRequests — one column, many questions, one answer', () => 
     expect(requests.planOf(key).error).toBeNull()
   })
 
-  test('a column that is forgotten stops listening: its answer belongs to nobody', async () => {
+  test('a draft that is forgotten stops listening: its answer belongs to nobody', async () => {
     const rig = riggedPreview()
     const requests = createPlanRequests(rig.preview, 0)
     const key = 'p/#draft/fork/develop'
@@ -420,7 +420,7 @@ describe('createPlanRequests — one column, many questions, one answer', () => 
     expect(requests.promptOf('p/#draft/fork/develop')).toBe('')
   })
 
-  test('two columns never answer for each other', async () => {
+  test('two drafts never answer for each other', async () => {
     const rig = riggedPreview()
     const requests = createPlanRequests(rig.preview, 0)
     const a = 'p/#draft/fork/develop'

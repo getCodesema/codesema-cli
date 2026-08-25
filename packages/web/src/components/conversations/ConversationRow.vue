@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // One conversation row: pure presentational, props in, nothing owned, nothing
-// fetched. The caller (ConversationsColumn.vue) wraps this in the clickable
+// fetched. The caller (rail/ConversationsList.vue) wraps this in the clickable
 // element and decides what a click does, same split as ForgeIssueCard.vue /
 // ForgeListPanel.vue.
 //
@@ -170,7 +170,7 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
   line-height: 20px;
   font-weight: 600;
   /* Row state (rest/hover/selected) governs the title's own weight and
-     color from the wrapping button in ConversationsColumn.vue: dimmed at
+     color from the wrapping button in rail/ConversationsList.vue: dimmed at
      rest, full on hover, reinforced when selected. */
   color: var(--cs-text-2);
 }

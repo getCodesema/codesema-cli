@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { listLocalBranches } from './branches.js'
+import { listLocalBranches, listWorktrees } from './branches.js'
 import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './config.js'
 import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
@@ -1402,6 +1402,7 @@ function createRequestHandler(handlerOpts: {
         pathname === '/api/mrs' ||
         pathname === '/api/issues' ||
         pathname === '/api/branches' ||
+        pathname === '/api/worktrees' ||
         pathname === '/api/preview' ||
         pathname === '/api/preview/diff'
       ) {
@@ -1425,6 +1426,9 @@ function createRequestHandler(handlerOpts: {
         }
         if (pathname === '/api/branches') {
           return sendJson(res, 200, listLocalBranches(scoped.cwd))
+        }
+        if (pathname === '/api/worktrees') {
+          return sendJson(res, 200, listWorktrees(scoped.cwd))
         }
         if (pathname === '/api/preview') {
           return void handlePreview(res, scoped.cwd, searchParams)

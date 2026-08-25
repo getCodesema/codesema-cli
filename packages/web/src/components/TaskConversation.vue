@@ -82,7 +82,6 @@ const props = defineProps<{
    * already carries in `state.record.attachments`. */
   repoProjects: Project[]
   /** Pinned in the focus deck: the 📌 toggle reflects and flips it. */
-  pinned: boolean
   reply: (message: string) => Promise<ApiResult>
   /** POST …/attach: gives a scratch conversation one more repository. */
   attach: (repoProjectId: string) => Promise<ApiResult>
@@ -108,7 +107,7 @@ const props = defineProps<{
   dismissChecksProposal: () => void
 }>()
 
-const emit = defineEmits<{ 'open-review': [record: ReviewRecord]; 'toggle-pin': [] }>()
+const emit = defineEmits<{ 'open-review': [record: ReviewRecord] }>()
 
 const record = computed(() => props.state.record)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
@@ -802,17 +801,6 @@ const wait = computed(() =>
         <h1 class="cv-title">{{ record.title }}</h1>
         <span class="cv-actions">
           <button
-            class="cv-pin"
-            :class="{ 'cv-pin--on': pinned }"
-            type="button"
-            :aria-pressed="pinned"
-            :aria-label="pinned ? t('workspace.unpin') : t('workspace.pin')"
-            :title="pinned ? t('workspace.unpin') : t('workspace.pin')"
-            @click="emit('toggle-pin')"
-          >
-            📌
-          </button>
-          <button
             v-if="canCleanup"
             class="cv-btn cv-btn--ghost-danger"
             :class="{ 'cv-btn--armed': cleanupArmed }"
@@ -1384,31 +1372,6 @@ const wait = computed(() =>
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.cv-pin {
-  font-size: 13px;
-  line-height: 1;
-  padding: 5px 8px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  cursor: pointer;
-  filter: grayscale(1);
-  opacity: 0.55;
-}
-
-.cv-pin:hover {
-  border-color: var(--cs-line-3);
-  opacity: 0.85;
-}
-
-/* Pinned is a STATE: the pin wears the green. */
-.cv-pin--on {
-  filter: none;
-  opacity: 1;
-  border-color: var(--cs-green-ring);
-  background: var(--cs-green-soft);
 }
 
 .cv-btn {

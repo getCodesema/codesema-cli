@@ -303,6 +303,14 @@ export type LocalBranch = {
   worktreePath: string | null
 }
 
+/** A checkout `git worktree list` reports. `branch` is null on a detached
+ * HEAD, which is why this cannot be derived from LocalBranch: that one walks
+ * refs/heads, where a detached worktree has no entry at all. */
+export type GitWorktree = {
+  path: string
+  branch: string | null
+}
+
 // Mirrors packages/cli/src/preview.ts and the /api/preview* endpoints.
 
 export type PreviewFileStatus = 'added' | 'deleted' | 'modified' | 'renamed'

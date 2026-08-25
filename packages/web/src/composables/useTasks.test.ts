@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { ref } from 'vue'
-import type { ForgeMr, TaskPlan, TaskRecord } from '../types'
+import type { ForgeMr, GitWorktree, TaskPlan, TaskRecord } from '../types'
 import {
   applyTaskMetaFrame,
   taskKey,
@@ -378,6 +378,135 @@ describe('loadMrs / mrsLoadByProject (selectProject/loadProjects lazy-fetch poli
       expect(tasks.mrsLoadByProject.get('p1')).toBeUndefined()
       expect(tasks.mrsByProject.get('p1')).toBeUndefined()
       expect(calls).toContain('/api/projects/p1')
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('loadWorktrees / worktreesByProject (selectProject/loadProjects lazy-fetch policy)', () => {
+  type Route = { status: number; body: unknown } | 'reject'
+
+  const WORKTREE: GitWorktree = { path: '/repo/p1', branch: 'main' }
+
+  function projectsResponse(id: string): unknown {
+    return {
+      projects: [{ id, path: `/repo/${id}`, name: id, added_at: '2026-08-14T00:00:00.000Z' }],
+      current: id,
+    }
+  }
+
+  /** Routes a GET/DELETE by its pathname (query string stripped); 'reject'
+   * simulates a network failure, an unrouted path is a test authoring bug. */
+  function installRoutedFetch(routes: Record<string, Route>): {
+    calls: string[]
+    restore: () => void
+  } {
+    const calls: string[] = []
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) => {
+      calls.push(url)
+      const path = url.split('?')[0] ?? url
+      const route = routes[path]
+      if (route === undefined) {
+        return Promise.reject(new Error(`unrouted fetch in test: ${url}`))
+      }
+      if (route === 'reject') {
+        return Promise.reject(new Error('network down'))
+      }
+      const { status, body } = route
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    return {
+      calls,
+      restore: () => {
+        globalThis.fetch = original
+      },
+    }
+  }
+
+  /** Lets the fetch/json promise chain inside loadWorktrees actually settle. */
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  test('a successful load populates worktreesByProject', async () => {
+    const { restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': { status: 200, body: [WORKTREE] },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.worktreesByProject.get('p1')).toEqual([WORKTREE])
+    } finally {
+      restore()
+    }
+  })
+
+  test('an HTTP failure caches an empty list', async () => {
+    const { restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': { status: 500, body: { error: 'boom' } },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.worktreesByProject.get('p1')).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  test('a transport exception caches an empty list', async () => {
+    const { restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': 'reject',
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.worktreesByProject.get('p1')).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  test('selecting a project as active triggers its worktrees load', async () => {
+    const { calls, restore } = installRoutedFetch({
+      '/api/projects': {
+        status: 200,
+        body: {
+          projects: [
+            { id: 'p1', path: '/repo/p1', name: 'p1', added_at: '2026-08-14T00:00:00.000Z' },
+            { id: 'p2', path: '/repo/p2', name: 'p2', added_at: '2026-08-14T00:00:00.000Z' },
+          ],
+          current: 'p1',
+        },
+      },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': { status: 200, body: [WORKTREE] },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      tasks.selectProject('p2')
+      await flush()
+      expect(calls).toContain('/api/worktrees?project=p2')
+      expect(tasks.worktreesByProject.get('p2')).toEqual([WORKTREE])
     } finally {
       restore()
     }

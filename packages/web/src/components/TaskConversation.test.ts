@@ -107,7 +107,6 @@ async function renderConversation(options: RenderOptions = {}): Promise<string> 
       checks: options.checks ?? null,
     },
     projectName: 'repo',
-    pinned: false,
     reply: ok,
     interrupt: ok,
     resume: ok,

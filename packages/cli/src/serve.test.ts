@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -546,6 +553,12 @@ describe('startServer', () => {
     expect(JSON.parse(res.body)).toEqual([])
   })
 
+  test('reports no worktrees outside a git repo', async () => {
+    const res = await rawRequest(port, '/api/worktrees')
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual([])
+  })
+
   test('rejects a malformed preview source', async () => {
     expect((await rawRequest(port, '/api/preview')).status).toBe(400)
     expect((await rawRequest(port, '/api/preview?source=branch')).status).toBe(400)
@@ -628,6 +641,14 @@ describe('preview and branches endpoints', () => {
     expect(main).toMatchObject({ isCurrent: true })
     expect(main?.worktreePath).not.toBeNull()
     expect(feature).toMatchObject({ isCurrent: false, worktreePath: null })
+  })
+
+  test('lists worktrees, the main worktree included', async () => {
+    const res = await rawRequest(previewPort, '/api/worktrees')
+    expect(res.status).toBe(200)
+    const worktrees = JSON.parse(res.body) as { path: string; branch: string | null }[]
+    expect(worktrees).toHaveLength(1)
+    expect(worktrees[0]?.branch).toBe('main')
   })
 
   test('builds a deterministic preview for a local branch, without the full diff', async () => {
@@ -793,6 +814,7 @@ describe('project-scoped repo routes (?project=)', () => {
   test('404s an unknown project on every scoped route', async () => {
     expect((await rawRequest(scopedPort, '/api/mrs?project=deadbeef')).status).toBe(404)
     expect((await rawRequest(scopedPort, '/api/branches?project=deadbeef')).status).toBe(404)
+    expect((await rawRequest(scopedPort, '/api/worktrees?project=deadbeef')).status).toBe(404)
     expect(
       (await rawRequest(scopedPort, '/api/preview?project=deadbeef&source=branch&name=main'))
         .status,
@@ -825,6 +847,26 @@ describe('project-scoped repo routes (?project=)', () => {
     const names = (JSON.parse(res.body) as { name: string }[]).map((b) => b.name)
     expect(names).toContain('feature/alpha')
     expect(names).not.toContain('feature/beta')
+  })
+
+  test('lists the worktrees of the project named by ?project=', async () => {
+    const resB = await rawRequest(scopedPort, `/api/worktrees?project=${projectBId}`)
+    expect(resB.status).toBe(200)
+    const pathsB = (JSON.parse(resB.body) as { path: string }[]).map((w) => w.path)
+    expect(pathsB).toContain(realpathSync(repoB))
+    expect(pathsB).not.toContain(realpathSync(repoA))
+
+    const resA = await rawRequest(scopedPort, `/api/worktrees?project=${projectAId}`)
+    const pathsA = (JSON.parse(resA.body) as { path: string }[]).map((w) => w.path)
+    expect(pathsA).toContain(realpathSync(repoA))
+    expect(pathsA).not.toContain(realpathSync(repoB))
+  })
+
+  test('keeps the launch-cwd behavior for worktrees when the param is absent', async () => {
+    const res = await rawRequest(scopedPort, '/api/worktrees')
+    const paths = (JSON.parse(res.body) as { path: string }[]).map((w) => w.path)
+    expect(paths).toContain(realpathSync(repoA))
+    expect(paths).not.toContain(realpathSync(repoB))
   })
 
   test('builds the preview and file diff against the scoped project repo', async () => {

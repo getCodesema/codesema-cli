@@ -11,7 +11,6 @@ import {
   pickerAgents,
   taskComposerPayload,
 } from '../composables/taskComposer'
-import { draftBranch, type DraftTarget } from '../composables/useColumns'
 import { titleFromPrompt } from '../composables/useTaskBoard'
 import {
   planBaseLine,
@@ -24,6 +23,7 @@ import {
   type PlanComposerInput,
 } from '../composables/useTaskPlan'
 import type { CreateTaskInput } from '../composables/useTasks'
+import { draftBranch, type DraftTarget } from '../composables/useWorkspaceNav'
 import { t } from '../i18n'
 import type { AgentOption, Project, TaskIsolation, TaskPlan } from '../types'
 
@@ -102,9 +102,13 @@ function submit(): void {
 
 // ── T2.6 the plan panel ───────────────────────────────────────────────────
 
-/** No repository at all: the scratch project forks no branch, so there is
- * nothing here for a preview to describe. */
-const noRepo = computed(() => props.projectKind === 'scratch')
+/** No repository at all: a scratch draft forks no branch, so there is
+ * nothing here for a preview to describe. The draft's own mode is the fact
+ * that decides; the project kind only answers for a composer mounted with no
+ * draft at all. */
+const noRepo = computed(() =>
+  props.draft ? props.draft.mode === 'scratch' : props.projectKind === 'scratch',
+)
 
 /** The composer's half of the plan request: the parent adds the draft's own. */
 const planInput = computed<PlanComposerInput>(() => ({
@@ -140,13 +144,19 @@ watch(
   { immediate: true },
 )
 
-const retargetInput = ref(props.draft ? draftBranch(props.draft) : '')
+const retargetInput = ref(draftBranchOrEmpty(props.draft))
 watch(
   () => props.draft,
   (draft) => {
-    retargetInput.value = draft ? draftBranch(draft) : ''
+    retargetInput.value = draftBranchOrEmpty(draft)
   },
 )
+
+/** A scratch draft names no branch, and neither does an absent one: the
+ * field then starts empty rather than on a name nothing would accept. */
+function draftBranchOrEmpty(draft: DraftTarget | null | undefined): string {
+  return draft ? (draftBranch(draft) ?? '') : ''
+}
 
 const retargetFieldLabel = computed(() =>
   props.draft ? retargetLabel(props.draft) : t('workspace.planBranchLabel'),
@@ -157,7 +167,7 @@ const retargetChanged = computed(
     props.draft !== null &&
     props.draft !== undefined &&
     retargetInput.value.trim() !== '' &&
-    retargetInput.value.trim() !== draftBranch(props.draft),
+    retargetInput.value.trim() !== draftBranchOrEmpty(props.draft),
 )
 
 function applyRetarget(): void {
