@@ -94,12 +94,6 @@ export function retargetLabel(draft: DraftTarget): string {
   return draft.mode === 'fork' ? t('workspace.planBaseLabel') : t('workspace.planBranchLabel')
 }
 
-/** Whether the draft has a correctable target at all: a scratch draft has
- * none, so the composer offers no field rather than one that does nothing. */
-export function isRetargetable(draft: DraftTarget): boolean {
-  return draft.mode !== 'scratch'
-}
-
 const str = (value: unknown, max: number): string =>
   typeof value === 'string' ? value.slice(0, max) : ''
 

@@ -102,9 +102,13 @@ function submit(): void {
 
 // ── T2.6 the plan panel ───────────────────────────────────────────────────
 
-/** No repository at all: the scratch project forks no branch, so there is
- * nothing here for a preview to describe. */
-const noRepo = computed(() => props.projectKind === 'scratch')
+/** No repository at all: a scratch draft forks no branch, so there is
+ * nothing here for a preview to describe. The draft's own mode is the fact
+ * that decides; the project kind only answers for a composer mounted with no
+ * draft at all. */
+const noRepo = computed(() =>
+  props.draft ? props.draft.mode === 'scratch' : props.projectKind === 'scratch',
+)
 
 /** The composer's half of the plan request: the parent adds the draft's own. */
 const planInput = computed<PlanComposerInput>(() => ({

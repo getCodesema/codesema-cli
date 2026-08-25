@@ -10,7 +10,12 @@ import {
   taskComposerPayload,
 } from '../composables/taskComposer'
 import type { PlanComposerInput } from '../composables/useTaskPlan'
-import { forkDraft, workonDraft, type DraftTarget } from '../composables/useWorkspaceNav'
+import {
+  forkDraft,
+  scratchDraft,
+  workonDraft,
+  type DraftTarget,
+} from '../composables/useWorkspaceNav'
 import { catalogs, t } from '../i18n'
 import type { AgentOption, TaskPlan } from '../types'
 
@@ -333,11 +338,13 @@ describe('TaskComposer plan panel', () => {
   })
 })
 
-// The scratch project forks no branch: its draft must not claim otherwise.
+// A scratch draft forks no branch: it must not claim otherwise. The draft's
+// own mode carries that fact — it used to be an empty-base fork paired with a
+// scratch projectKind, two values that had to be kept in step by hand.
 describe('TaskComposer for a draft with no repository (scratch target)', () => {
   test('shows the sober no-repository notice instead of any branch/base field', async () => {
     const html = await renderComposer({
-      draft: forkDraft(''),
+      draft: scratchDraft(),
       projectKind: 'scratch',
       plan: PLAN,
     })
@@ -354,6 +361,19 @@ describe('TaskComposer for a draft with no repository (scratch target)', () => {
   test('a repo draft renders exactly as before: the notice is scratch-only', async () => {
     const html = await renderComposer({ draft: forkDraft('develop'), plan: PLAN })
     expect(html).not.toContain(t('workspace.draftNoRepo'))
+  })
+
+  // The mode decides, not the project kind: a repo draft mounted under a
+  // scratch kind would be a bug upstream, and the panel must not paper over it
+  // by hiding the field the draft actually has.
+  test('a fork draft keeps its base field even under a scratch project kind', async () => {
+    const html = await renderComposer({
+      draft: forkDraft('develop'),
+      projectKind: 'scratch',
+      plan: PLAN,
+    })
+    expect(html).not.toContain(t('workspace.draftNoRepo'))
+    expect(html).toContain('tc-retarget')
   })
 })
 
@@ -513,7 +533,7 @@ describe('a draft column asks for its plan without waiting for a keystroke', () 
 
   test('a scratch draft asks for nothing either: there is no branch or base to preview', async () => {
     const mounted = await mountComposer({
-      draft: forkDraft(''),
+      draft: scratchDraft(),
       projectKind: 'scratch',
       initialPrompt: 'already typed',
     })
