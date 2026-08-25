@@ -3,6 +3,22 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.14.0] - unreleased
+
+### Added
+
+- **A conversation no longer needs a repository to exist.** Opening the workspace anywhere now offers a **scratch project**: a destination that is not a git repository, where a conversation lives before it has been given any code. Creating one materializes a plain working directory and nothing else. No `git worktree add`, no `codesema/task-*` branch, no `.codesema/` written into a repository the user never pointed at. Until now the first message of a conversation always cost a branch and a checkout, whether or not it was ever going to produce a commit, and a workspace launched outside a repository could not start a conversation at all: `addProject` refuses anything but a git root, so with an empty registry the compose button did nothing, silently. The scratch project is **synthesized on every read and never persisted** in `projects.json` (it is a property of the workspace, not something the user registered), which is what lets `listProjects` keep meaning "the registry alone" for everything that writes to that file. It carries `kind: 'scratch'`; every registry entry now carries `kind: 'repo'`. Naming a `branch` or a `base` on such a conversation is a **400**, not a silently ignored field: there is no repository for either to name something in.
+
+- **Repositories can be handed to a conversation after it started**, one or several, through `POST /api/tasks/:id/attach` with `{ repo_project_id }`. The worktree is materialized **inside the conversation's own working directory**, not under the repository's `.codesema/worktrees/`, and that placement is the whole point rather than a detail: **the directory the agent runs in never changes**, whatever is attached to it later. A provider that keys its transcripts by working directory (Claude Code does) would otherwise lose the conversation the moment a repository arrived, and `--resume` would silently start a fresh one. The branch still belongs to the attached repository, is created there, and is taken under **that repository's worktree lock**, so a concurrent codesema process racing the same index is refused exactly as before. Attaching what is already attached is the same request answered twice, never a conflict; two repositories sharing a basename get distinct directories (`web`, then `web-2`); a conversation that already lives inside a repository refuses one (**409**), since that would nest a second repository under the first. `TaskRecord` gains an optional `attachments` array and `@codesema/contract` a `TaskAttachment` type, both absent when nothing was ever attached.
+
+- **Attached repositories keep their git inside the cage.** A linked worktree's `.git` is a one-line file pointing at a HOST path, which is why a caged turn already mounts the repository's shared git directory read-only at `/gitcommon` and lays a generated pointer over `/work/.git`. An attached repository is a linked worktree too, one level down, so it gets the same treatment under a name of its own (`/gitcommon-<name>`), and `safe.directory` now carries an entry per path rather than a fixed pair: it is not recursive, so a repository under the work dir needs its own. Without this, git inside the container answered `not a git repository` for every attached repository while working fine for the conversation itself.
+
+- **The agent is told what it can read, on every turn.** A conversation given a repository mid-flight now opens each prompt with the directories it actually has, and their branches. Restating it every turn is deliberate: a resumed provider session replays what was **said**, not the filesystem the agent now finds itself in, so an agent told once would go on believing it has nothing to read for the rest of the conversation.
+
+### Known limitation
+
+- Conversations of the scratch project still queue behind one another, because the admission guard holds **one active task per project** and the scratch project is one project. Nothing is shared between them (each has its own directory, and there is no git index to race), so the serialization buys no safety there. Lifting it means reworking an admission API built around a single slot per project, and it was left out rather than done carelessly.
+
 ## [0.13.0] - 2026-08-21
 
 ### Added
