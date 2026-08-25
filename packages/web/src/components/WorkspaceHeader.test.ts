@@ -127,7 +127,16 @@ describe('and stays silent when there is nothing to state', () => {
   test('the counters the header always showed are untouched', async () => {
     const html = await renderHeader(info({ forge_available: false, forge_reason: 'no-cli' }))
     expect(html).toContain(t('workspace.agentsCount', { n: 0 }))
-    expect(html).toContain(t('workspace.searchPlaceholder'))
+  })
+
+  // The search moved into the list column, where each list searches its own
+  // corpus. A field here on top of those would be a second box over an
+  // overlapping third thing.
+  test('the header carries no search field of its own', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).not.toContain(t('workspace.searchPlaceholder'))
+    expect(html).not.toContain('wh-search')
+    expect(html).not.toContain('⌘K')
   })
 })
 

@@ -43,6 +43,11 @@ const dotStyle = (name: string): Record<string, string> => ({
 // ── Search: local name filter over the registered list only (never the
 // detected candidates, which live behind the add form) ────────────────────
 const query = ref('')
+const searchInput = ref<HTMLInputElement | null>(null)
+
+/** Exposed for the shell's ⌘K, which focuses whichever list is up
+ * rather than a search box of its own. */
+defineExpose({ focusSearch: () => searchInput.value?.focus() })
 
 const filteredProjects = computed(() => {
   const needle = query.value.trim().toLowerCase()
@@ -122,6 +127,7 @@ function requestRemove(id: string): void {
     <div class="rpl-search">
       <Search class="rpl-search-icon" aria-hidden="true" />
       <input
+        ref="searchInput"
         v-model="query"
         type="text"
         class="rpl-search-input"

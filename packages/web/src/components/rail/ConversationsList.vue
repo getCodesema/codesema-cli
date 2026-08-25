@@ -33,6 +33,11 @@ const emit = defineEmits<{
 }>()
 
 const query = ref('')
+const searchInput = ref<HTMLInputElement | null>(null)
+
+/** Exposed for the shell's ⌘K, which focuses whichever list is up
+ * rather than a search box of its own. */
+defineExpose({ focusSearch: () => searchInput.value?.focus() })
 
 const filteredStates = computed(() =>
   query.value.trim() === ''
@@ -84,6 +89,7 @@ function isSelected(state: TaskState): boolean {
     <div class="cvl-search">
       <Search class="cvl-search-icon" aria-hidden="true" />
       <input
+        ref="searchInput"
         v-model="query"
         type="text"
         class="cvl-search-input"
