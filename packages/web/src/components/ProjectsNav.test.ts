@@ -33,6 +33,7 @@ function project(overrides: Partial<Project> = {}): Project {
     id: 'p1',
     path: '/repo/one',
     name: 'one',
+    kind: 'repo',
     added_at: '2026-08-14T00:00:00.000Z',
     ...overrides,
   }

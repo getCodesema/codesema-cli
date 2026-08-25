@@ -46,7 +46,12 @@ import {
   type WatchdogBudgets,
 } from './agent.js'
 import type { IsolationMode } from './config.js'
-import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
+import {
+  gitSafeDirectoryEnvArgs,
+  prepareAttachedContainerGit,
+  prepareContainerGit,
+  type ContainerGitAttachment,
+} from './container-git.js'
 import { isTaskId, type TaskIsolation } from './contract.js'
 import { t } from './i18n.js'
 import type { ChecksConfig } from './repo-config.js'
@@ -1618,6 +1623,12 @@ export type ContainerRunSpec = {
    * already carries its `.git` inside the mount.
    */
   gitMounts?: readonly string[]
+  /**
+   * Container paths that need a safe.directory entry beyond the work dir and
+   * `/gitcommon`: one attached repository contributes its own checkout and its
+   * own mounted git directory, and safe.directory is not recursive.
+   */
+  gitSafeDirectories?: readonly string[]
   memory?: string
   cpus?: string
   /**
@@ -1649,7 +1660,7 @@ export function containerRunArgs(spec: ContainerRunSpec): string[] {
     '-v',
     `${spec.homeVolume}:${CAGE_HOME_DIR}`,
     ...(spec.gitMounts ?? []),
-    ...gitSafeDirectoryEnvArgs(CAGE_WORK_DIR),
+    ...gitSafeDirectoryEnvArgs(CAGE_WORK_DIR, spec.gitSafeDirectories ?? []),
     '-e',
     `HTTP_PROXY=${proxy}`,
     '-e',
@@ -1930,6 +1941,12 @@ export type RunContainerTurnOptions = {
   taskId: string
   /** The task worktree: the only host path the cage ever sees. */
   worktree: string
+  /**
+   * Repositories attached to this conversation, as directories inside
+   * `worktree`. Each needs its shared git directory mounted too, or git is
+   * dead inside it exactly as it would be on the worktree itself.
+   */
+  attachments?: readonly ContainerGitAttachment[]
   /** Raw agent command line to run inside the cage (already flagged). */
   command: string
   prompt: string
@@ -2007,6 +2024,7 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
   // host path the cage cannot see, and every git command inside dies with
   // "not a git repository".
   const git = prepareContainerGit({ worktree: opts.worktree, workDir: CAGE_WORK_DIR })
+  const attachedGit = prepareAttachedContainerGit(opts.attachments ?? [], CAGE_WORK_DIR)
   const args = containerRunArgs({
     runtime,
     podman,
@@ -2018,7 +2036,8 @@ export async function runContainerTurn(opts: RunContainerTurnOptions): Promise<s
     proxyUrl: proxy.url,
     command: opts.command,
     forwardEnv: cageForwardedEnv(opts.command).filter((key) => env[key]),
-    ...(git ? { gitMounts: git.mountArgs } : {}),
+    gitMounts: [...(git?.mountArgs ?? []), ...attachedGit.mountArgs],
+    gitSafeDirectories: attachedGit.safeDirectories,
   })
   const spawnFn = opts.spawnFn ?? spawnContainer
   return spawnFn({

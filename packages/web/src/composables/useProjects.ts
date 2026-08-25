@@ -86,6 +86,25 @@ export function deriveActiveProject(
 }
 
 /**
+ * Where a new task lands when the composer's "All projects" select has not
+ * been touched: the chosen id while it still names a known project,
+ * otherwise the first repo project, otherwise the scratch project. Repo
+ * beats scratch on purpose, so a workspace with at least one registered repo
+ * keeps defaulting new conversations there instead of silently switching to
+ * scratch just because the server lists it first. Null only on an empty
+ * list, which a live workspace never actually serves (scratch always
+ * answers GET /api/projects), but the type stays honest about it.
+ */
+export function deriveComposeTarget(chosen: string | null, projects: Project[]): string | null {
+  if (chosen !== null && projects.some((project) => project.id === chosen)) {
+    return chosen
+  }
+  const firstRepo = projects.find((project) => project.kind === 'repo')
+  const scratch = projects.find((project) => project.kind === 'scratch')
+  return (firstRepo ?? scratch)?.id ?? null
+}
+
+/**
  * Isolation facts for the card the human is looking at (T1.4). Each project
  * carries its overlay on GET /api/projects; older CLIs omit it and we fall
  * back to the process-wide blob (launch repo).

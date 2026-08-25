@@ -897,6 +897,12 @@ export function useTasks(token: string) {
     preview: (body: Record<string, unknown>) => previewTask(token, body),
     reply: (projectId: string, id: string, message: string) =>
       postAction(token, actionPath(projectId, id, 'reply'), { message }),
+    // Gives a scratch conversation a repo after the fact. 409 when the
+    // conversation's own project already is one, or a turn is in progress;
+    // idempotent server-side on a repo already attached: this call never
+    // special-cases that, the next 'task' frame simply repeats it.
+    attach: (projectId: string, id: string, repoProjectId: string) =>
+      postAction(token, actionPath(projectId, id, 'attach'), { repo_project_id: repoProjectId }),
     interrupt: (projectId: string, id: string) =>
       postAction(token, actionPath(projectId, id, 'interrupt')),
     // T8: restarts the turn an interrupted conversation died on — no message,

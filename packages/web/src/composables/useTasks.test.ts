@@ -476,3 +476,91 @@ describe('useTasks().preview', () => {
     expect(result).toMatchObject({ ok: false })
   })
 })
+
+// Gives a scratch conversation a repo after the fact. What matters here is
+// the wire shape (route, token, `repo_project_id` body) and that every
+// refusal the server can send (400 malformed id, 404 unknown repo, 409 own
+// repo already set or a turn in progress) reaches the caller with its status
+// and words intact, never swallowed into a generic failure.
+describe('useTasks().attach', () => {
+  type Call = { url: string; init: RequestInit }
+
+  async function withFetch<T>(
+    reply: (call: Call) => { status: number; body: unknown },
+    run: (attach: ReturnType<typeof useTasks>['attach']) => Promise<T>,
+  ): Promise<{ result: T; calls: Call[] }> {
+    const calls: Call[] = []
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      const { status, body } = reply({ url, init })
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    try {
+      const tasks = useTasks('tok-123')
+      const result = await run(tasks.attach)
+      return { result, calls }
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+
+  test('posts repo_project_id to the scoped attach route, with the tasks token', async () => {
+    const { calls, result } = await withFetch(
+      () => ({ status: 200, body: { ok: true } }),
+      (attach) => attach('p1', 'task-1', 'repo-9'),
+    )
+    expect(calls).toHaveLength(1)
+    const call = calls[0]
+    if (!call) {
+      throw new Error('no request was made')
+    }
+    expect(call.url).toBe('/api/tasks/task-1/attach?project=p1')
+    expect(call.init.method).toBe('POST')
+    expect((call.init.headers as Record<string, string>)['x-codesema-tasks-token']).toBe('tok-123')
+    expect(JSON.parse(call.init.body as string)).toEqual({ repo_project_id: 'repo-9' })
+    expect(result).toEqual({ ok: true })
+  })
+
+  test('a 409 (own repo already set, or a turn in progress) keeps the server’s words', async () => {
+    const { result } = await withFetch(
+      () => ({ status: 409, body: { error: 'a turn is in progress' } }),
+      (attach) => attach('p1', 'task-1', 'repo-9'),
+    )
+    expect(result).toEqual({ ok: false, status: 409, error: 'a turn is in progress' })
+  })
+
+  test('a 404 (unknown repository) keeps the server’s words', async () => {
+    const { result } = await withFetch(
+      () => ({ status: 404, body: { error: 'unknown repository' } }),
+      (attach) => attach('p1', 'task-1', 'ghost'),
+    )
+    expect(result).toEqual({ ok: false, status: 404, error: 'unknown repository' })
+  })
+
+  test('a 400 (malformed repo id) keeps its status, not folded into 404', async () => {
+    const { result } = await withFetch(
+      () => ({ status: 400, body: { error: 'bad request' } }),
+      (attach) => attach('p1', 'task-1', 'not-an-id'),
+    )
+    expect(result).toEqual({ ok: false, status: 400, error: 'bad request' })
+  })
+
+  test('a network failure never throws: status 0, the thrown message as the error', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = (() => {
+      throw new Error('fetch failed')
+    }) as unknown as typeof fetch
+    try {
+      const tasks = useTasks('tok-123')
+      const result = await tasks.attach('p1', 'task-1', 'repo-9')
+      expect(result).toEqual({ ok: false, status: 0, error: 'fetch failed' })
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+})

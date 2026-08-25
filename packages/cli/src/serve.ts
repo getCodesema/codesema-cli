@@ -23,7 +23,8 @@ import {
   addProject,
   discoverProjects,
   getProject,
-  listProjects,
+  isProjectId,
+  listWorkspaceProjects,
   removeProject,
 } from './projects.js'
 import {
@@ -896,7 +897,8 @@ async function handleTaskPreview(
   return sendJson(res, 200, previewed.plan)
 }
 
-type TaskActionKind = 'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume' | 'criteria'
+type TaskActionKind =
+  'reply' | 'ship' | 'interrupt' | 'abandon' | 'checks' | 'resume' | 'criteria' | 'attach'
 
 /**
  * The mutations that carry NO request body: everything they need is already
@@ -937,7 +939,7 @@ function taskActionBody(result: TaskActionResult): Record<string, unknown> {
     : { error: result.error, ...(result.reason_code ? { reason_code: result.reason_code } : {}) }
 }
 
-/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume|criteria)?project=, all under the tasks CSRF token. */
+/** POST /api/tasks/:id/(reply|ship|interrupt|abandon|checks|resume|criteria|attach)?project=, all under the tasks CSRF token. */
 async function handleTaskAction(
   req: IncomingMessage,
   res: ServerResponse,
@@ -993,6 +995,20 @@ async function handleTaskAction(
     return result.ok
       ? sendJson(res, 202, { ok: true })
       : sendJson(res, result.code, { error: result.error })
+  }
+  if (action.kind === 'attach') {
+    let body: unknown
+    try {
+      body = await readJsonBody(req, MAX_TASK_BODY_BYTES)
+    } catch {
+      return sendText(res, 400, 'bad request')
+    }
+    const repoProjectId = (body as { repo_project_id?: unknown } | null)?.repo_project_id
+    if (!isProjectId(repoProjectId)) {
+      return sendText(res, 400, 'bad request')
+    }
+    const attached = await tasks.manager.attach(projectId, action.id, repoProjectId)
+    return sendJson(res, attached.ok ? 200 : attached.code, taskActionBody(attached))
   }
   if (action.kind !== 'reply') {
     const result = await BODYLESS_TASK_ACTIONS[action.kind](tasks.manager, projectId, action.id)
@@ -1261,7 +1277,7 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
 }
 
 const TASK_ACTION_RE =
-  /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume|criteria)$/
+  /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume|criteria|attach)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
 const TASK_REVIEW_RE = /^\/api\/tasks\/([^/]+)\/review$/
@@ -1445,7 +1461,9 @@ function createRequestHandler(handlerOpts: {
         // for older UIs. selectProject is client-local, so the UI reads
         // `project.isolation` for the active card instead of refetching.
         return sendJson(res, 200, {
-          projects: listProjects().map((project) => ({
+          // Workspace projects, not the registry: the scratch project is a
+          // destination the UI must be able to name, and it is in no file.
+          projects: listWorkspaceProjects().map((project) => ({
             ...project,
             isolation: tasks.manager.workspaceInfo(project.id),
           })),

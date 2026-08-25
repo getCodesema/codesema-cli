@@ -57,7 +57,12 @@ import type { ForgeIssuesExecFn } from './forge-issues.js'
 import { refExists, tryGit, tryGitAsync } from './git.js'
 import { t } from './i18n.js'
 import { createLoadCap, type LoadCap, type LoadCapSnapshot } from './load-cap.js'
-import { listProjects, listProjectsDetailed, type Project } from './projects.js'
+import {
+  listProjectsDetailed,
+  listWorkspaceProjects,
+  scratchProject,
+  type Project,
+} from './projects.js'
 import { readChecksConfig } from './repo-config.js'
 import { runChecks } from './task-checks.js'
 import {
@@ -380,6 +385,14 @@ export type TaskManager = {
     /** Resolved agent command a NEW unspecified task of this project would run. */
     agent: string
   }
+  /**
+   * Gives a registered repository to a conversation that started without one.
+   * `repoProjectId` names a project in the registry; the scratch project is
+   * not one, and neither is an id nothing claims (404). The worktree lands
+   * inside the conversation's own workspace, so the directory its agent runs
+   * in is unchanged.
+   */
+  attach: (projectId: string, taskId: string, repoProjectId: string) => Promise<TaskActionResult>
   /**
    * Writes the ready proposal to the project's .codesema/config.json — the
    * ONLY path from a proposal to disk. 409 when nothing is proposed.
@@ -1153,7 +1166,9 @@ async function runWithConcurrency<T>(
 }
 
 export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
-  const registered = opts.listProjectsFn ?? listProjects
+  // Workspace projects, not the registry: the scratch project is a destination
+  // a conversation can be created against, and it is in no file.
+  const registered = opts.listProjectsFn ?? listWorkspaceProjects
   const notice = opts.onNotice ?? ((message: string) => console.warn(message))
   /**
    * Machine-wide load cap (T1.3, D4): ONE instance for the whole manager,
@@ -1298,8 +1313,19 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // that will not resolve forbids the WHOLE sweep, same as an unparsable
     // registry or a tasks/ that will not list.
     let pathUnresolved = false
-    for (const project of registry.projects) {
+    // The scratch project holds conversations like any other and their HOME
+    // volumes are claimed like any other: leaving it out of this walk would
+    // read every one of them as orphaned the moment a single repository is
+    // registered alongside. It is deliberately NOT counted in projectCount,
+    // which guards "we know of no project at all, so sweep nothing" and must
+    // keep meaning exactly that.
+    for (const project of [scratchProject(), ...registry.projects]) {
       if (!existsSync(project.path)) {
+        // The scratch directory is created on first use: not existing yet is
+        // a project holding nothing, not a project we failed to read.
+        if (project.kind === 'scratch') {
+          continue
+        }
         pathUnresolved = true
         continue
       }
@@ -1433,6 +1459,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const runtime = projectRuntime(project.path)
     return {
       cwd: project.path,
+      ...(project.kind === 'scratch' ? { scratch: true } : {}),
       runtime: { command: runtime.command, isolationMode: runtime.isolationMode },
       probe,
       tasks: () => listTasks(project.path),
@@ -2467,6 +2494,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       timeoutMs,
       ...(watchdog ? { watchdog } : {}),
       projectId,
+      ...(project.kind === 'scratch' ? { scratch: true } : {}),
       onTurnDone,
       // A degradation of queue.json met OUTSIDE the boot pass: journaled on
       // the tasks the rebuilt queue holds, and said out loud. The rebuild
@@ -3114,7 +3142,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // "poll until the registry looks readable and then delete things".
     async sweepOrphanedVolumes() {
       const first = projectClaimedIds()
-      if (!first.complete || first.projectCount === 0) {
+      // Two different facts, and conflating them told every workspace with an
+      // empty registry that something was unreadable. Nothing is: there is
+      // simply nothing registered to compare volumes against yet, which is now
+      // an ordinary state rather than a workspace that cannot be used at all.
+      if (first.projectCount === 0) {
+        notice('orphaned HOME volume sweep skipped: no repository registered to claim them')
+        return
+      }
+      if (!first.complete) {
         notice(
           "orphaned HOME volume sweep skipped: the project registry or a project's task store could not be read completely",
         )
@@ -3493,6 +3529,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         isolation_configured: overlaid.configured,
         agent,
       }
+    },
+
+    async attach(projectId, taskId, repoProjectId) {
+      const ctx = context(projectId)
+      if (!ctx) {
+        return unknownProject
+      }
+      const repo = findProject(repoProjectId)
+      // The scratch project is a destination, never a source: attaching the
+      // conversation's own workspace to itself would nest it in itself.
+      if (!repo || repo.kind !== 'repo') {
+        return { ok: false, code: 404, error: 'unknown repository' }
+      }
+      return ctx.runner.attach(taskId, { project_id: repo.id, path: repo.path })
     },
 
     checksApply(projectId) {

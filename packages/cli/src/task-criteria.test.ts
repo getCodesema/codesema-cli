@@ -264,6 +264,7 @@ function unusedTaskManager(): TaskManager {
       isolation_configured: 'auto',
       agent: 'claude -p',
     }),
+    attach: () => Promise.resolve(refused),
     checksApply: () => refused,
     startPending: async () => [],
     sweepOrphanedVolumes: async () => {},

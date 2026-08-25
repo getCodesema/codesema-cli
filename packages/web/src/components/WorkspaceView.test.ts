@@ -140,8 +140,11 @@ describe('the sober empty focus state still shows with no project selected', () 
     expect(forgeBoardAt).toBeGreaterThan(-1)
     expect(emptyFocusAt).toBeGreaterThan(-1)
     expect(forgeBoardAt).toBeLessThan(emptyFocusAt)
-    expect(SOURCE).toContain('workspace.noProject')
+    // One message, unconditional: the scratch project is always in the list,
+    // so the old "add a project to get started" branch could never be reached
+    // again, and it promised a prerequisite that no longer exists.
     expect(SOURCE).toContain('workspace.focusEmpty')
+    expect(SOURCE).not.toContain('workspace.noProject')
   })
 
   test('the board remounts (selection and section state reset) on every project switch', () => {

@@ -85,6 +85,7 @@ const {
   hydrate,
   create,
   reply,
+  attach,
   interrupt,
   resume,
   ship,
@@ -170,6 +171,12 @@ onUnmounted(stop)
 const projectNameById = computed(
   () => new Map(projects.value.map((project) => [project.id, project.name])),
 )
+const projectKindById = computed(
+  () => new Map(projects.value.map((project) => [project.id, project.kind])),
+)
+// The attach picker's options: every registered repo, for every scratch
+// conversation alike, never scoped to one conversation's own attachments.
+const repoProjects = computed(() => projects.value.filter((project) => project.kind === 'repo'))
 
 // ── Project filter: a project id, or null for "All projects" ──────────────
 // Selecting a project also makes it the registry's active card, which lazily
@@ -755,8 +762,11 @@ const projectsNavHandlers = {
               v-if="entry.kind === 'task'"
               :state="entry.state"
               :project-name="projectNameById.get(entry.projectId) ?? entry.projectId"
+              :project-kind="projectKindById.get(entry.projectId) ?? 'repo'"
+              :repo-projects="repoProjects"
               :pinned="isPinned(deck, entry.key)"
               :reply="(m) => reply(entry.projectId, entry.taskId, m)"
+              :attach="(repoProjectId) => attach(entry.projectId, entry.taskId, repoProjectId)"
               :interrupt="() => interrupt(entry.projectId, entry.taskId)"
               :resume="() => resume(entry.projectId, entry.taskId)"
               :ship="() => ship(entry.projectId, entry.taskId)"
@@ -912,7 +922,7 @@ const projectsNavHandlers = {
         <!-- Empty focus: a sober invite (no project selected, or none registered). -->
         <div v-else class="ws-empty-focus">
           <p class="ws-empty">
-            {{ projects.length === 0 ? t('workspace.noProject') : t('workspace.focusEmpty') }}
+            {{ t('workspace.focusEmpty') }}
           </p>
         </div>
       </main>

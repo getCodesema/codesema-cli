@@ -472,6 +472,9 @@ const en = {
   'workspace.shipAction': 'Ship',
   'workspace.diffAction': 'Diff',
   'workspace.projectTarget': 'Target project',
+  /** The composer's target select, for the scratch project: never its raw
+   * name ('scratch'), so it reads as a real choice, not a stray repo. */
+  'workspace.noRepoOption': 'No repository',
   'workspace.focusEmpty': 'Open a conversation from the work queue.',
 
   // --- F2 focus zone (tabs / status phrases / quick replies / pin) ---
@@ -479,6 +482,18 @@ const en = {
   'workspace.tabDiff': 'Diff',
   'workspace.tabDiffCount': 'Diff · {n} file | Diff · {n} files',
   'workspace.tabChecks': 'Checks',
+  /** Scratch conversation header: replaces the "project · ⎇ branch" chip,
+   * since there is neither. */
+  'workspace.noRepoAttached': 'No repository attached: the agent cannot see any code.',
+  /** The picker next to the notice above, and once some are attached,
+   * alongside their chips too: a conversation can take more than one repo. */
+  'workspace.attachRepoPlaceholder': 'Choose a repository…',
+  'workspace.attachRepo': 'Attach',
+  'workspace.attaching': 'Attaching…',
+  /** No project of kind 'repo' is registered at all: the picker cannot even
+   * be shown, so this says what to do instead of staying silent. */
+  'workspace.attachRepoNone':
+    'No repository is registered yet. Add one from the projects panel first.',
   'workspace.agentLabel': 'Agent',
   'workspace.agentBuildHint':
     'The first task with this agent builds a container image (~1.4 GB); later tasks reuse it.',
@@ -1264,6 +1279,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.shipAction': 'Shipper',
   'workspace.diffAction': 'Diff',
   'workspace.projectTarget': 'Projet cible',
+  'workspace.noRepoOption': 'Sans dépôt',
   'workspace.focusEmpty': 'Ouvre une conversation depuis la file de travail.',
 
   // --- F2 focus zone (tabs / status phrases / quick replies / pin) ---
@@ -1271,6 +1287,12 @@ const fr: Record<MessageKey, string> = {
   'workspace.tabDiff': 'Diff',
   'workspace.tabDiffCount': 'Diff · {n} fichier | Diff · {n} fichiers',
   'workspace.tabChecks': 'Checks',
+  'workspace.noRepoAttached': "Aucun dépôt attaché : l'agent ne voit aucun code.",
+  'workspace.attachRepoPlaceholder': 'Choisir un dépôt…',
+  'workspace.attachRepo': 'Attacher',
+  'workspace.attaching': 'Attachement…',
+  'workspace.attachRepoNone':
+    "Aucun dépôt n'est encore enregistré. Ajoutez-en un depuis le panneau des projets d'abord.",
   'workspace.agentLabel': 'Agent',
   'workspace.agentBuildHint':
     'La première tâche avec cet agent construit une image de container (~1,4 Go) ; les suivantes la réutilisent.',

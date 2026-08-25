@@ -13,9 +13,12 @@ import {
   type WatchdogBudgets,
 } from './agent.js'
 import {
+  attachedGitCommonDir,
   CAGE_GIT_COMMON_DIR,
   containerGitStateDir,
   gitPointerContent,
+  gitSafeDirectoryEnvArgs,
+  prepareAttachedContainerGit,
   prepareContainerGit,
   resolveWorktreeGitLink,
 } from './container-git.js'
@@ -2425,5 +2428,50 @@ describe('spawnContainer semantic watchdog', () => {
     const err = await promise.catch((e: unknown) => e)
     expect(agentReasonCode(err)).toBeNull()
     expect((err as Error).message).toMatch(/interrupted|interrompu/)
+  })
+})
+
+describe('git of the repositories attached to a conversation', () => {
+  test('each gets its own mounted git directory and its own pointer', () => {
+    const first = makeLinkedWorktree()
+    const second = makeLinkedWorktree()
+    const stateDir = makeDir('codesema-attached-git-')
+
+    const prepared = prepareAttachedContainerGit(
+      [
+        { name: 'api', worktree: first.worktree },
+        { name: 'web', worktree: second.worktree },
+      ],
+      '/work',
+      stateDir,
+    )
+
+    expect(prepared.mountArgs).toContain(`${join(first.repo, '.git')}:${'/gitcommon-api'}:ro`)
+    expect(prepared.mountArgs).toContain(`${join(second.repo, '.git')}:${'/gitcommon-web'}:ro`)
+    expect(prepared.mountArgs).toContain(`${join(stateDir, 'dotgit-api')}:/work/api/.git:ro`)
+    expect(prepared.mountArgs).toContain(`${join(stateDir, 'dotgit-web')}:/work/web/.git:ro`)
+    // safe.directory is not recursive: the checkout AND its git directory.
+    expect(prepared.safeDirectories).toEqual([
+      '/work/api',
+      '/gitcommon-api',
+      '/work/web',
+      '/gitcommon-web',
+    ])
+    expect(attachedGitCommonDir('api')).toBe('/gitcommon-api')
+  })
+
+  test('a directory that is not a linked worktree is skipped, never mounted blind', () => {
+    const plain = makeDir('codesema-plain-')
+    const prepared = prepareAttachedContainerGit([{ name: 'x', worktree: plain }], '/work')
+    expect(prepared).toEqual({ mountArgs: [], safeDirectories: [] })
+  })
+
+  test('every attached path earns a safe.directory entry of its own', () => {
+    const args = gitSafeDirectoryEnvArgs('/work', ['/work/api', '/gitcommon-api'])
+    expect(args).toContain('GIT_CONFIG_COUNT=4')
+    expect(args).toContain('GIT_CONFIG_VALUE_0=/work')
+    expect(args).toContain(`GIT_CONFIG_VALUE_1=${CAGE_GIT_COMMON_DIR}`)
+    expect(args).toContain('GIT_CONFIG_VALUE_2=/work/api')
+    expect(args).toContain('GIT_CONFIG_VALUE_3=/gitcommon-api')
   })
 })

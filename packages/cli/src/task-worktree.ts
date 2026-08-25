@@ -12,7 +12,7 @@
 // never renamed, without saying so out loud when the attempt is refused or
 // when a caller chooses to keep one that carries work.
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { listWorktrees } from './branches.js'
 import { ensureWorkDir, taskWorktreesDir } from './config.js'
@@ -346,7 +346,12 @@ export function branchCheckoutPath(cwd: string, branch: string): string | null {
  * is cleaned before the in-use check — pruning it may be exactly what frees
  * the branch — and nothing else is created before both checks pass.
  */
-function createWorkOnWorktree(cwd: string, taskId: string, branch: string): MaterializedWorktree {
+function createWorkOnWorktree(
+  cwd: string,
+  taskId: string,
+  branch: string,
+  worktreePath?: string,
+): MaterializedWorktree {
   // The refs/heads/ qualification neutralizes option-lookalike names ('-evil').
   let created = false
   if (!refExists(`refs/heads/${branch}`, cwd)) {
@@ -366,7 +371,7 @@ function createWorkOnWorktree(cwd: string, taskId: string, branch: string): Mate
       throw new Error(t('task.unknownBranch', { branch }))
     }
   }
-  const worktree = taskWorktreePath(cwd, taskId)
+  const worktree = worktreePath ?? taskWorktreePath(cwd, taskId)
   // Unconditional: a crashed run may have left the directory (remove drops
   // it) OR only a dangling git registration of a deleted directory (prune
   // drops that) — either would keep the branch looking checked out.
@@ -401,17 +406,17 @@ function createForkWorktree(
   cwd: string,
   taskId: string,
   title: string,
-  base?: string,
+  where: { base?: string | undefined; worktreePath?: string | undefined } = {},
 ): MaterializedWorktree {
   // Base and start point are resolved BEFORE any directory or ref is created:
   // a typo (or a repo with no trunk at all) must leave the repo untouched.
   // Same call the dry-run plan makes, so the two can never disagree.
-  const { base: resolvedBase, startPoint } = resolveForkBase(cwd, base)
+  const { base: resolvedBase, startPoint } = resolveForkBase(cwd, where.base)
   // .codesema/ must exist self-gitignored before git materializes anything in it.
   ensureWorkDir(cwd)
   mkdirSync(taskWorktreesDir(cwd), { recursive: true })
   const branch = freeBranchName(cwd, taskId, title)
-  const worktree = taskWorktreePath(cwd, taskId)
+  const worktree = where.worktreePath ?? taskWorktreePath(cwd, taskId)
   // Unconditional, for the same reason as the work-on path: a crashed run may
   // have left the DIRECTORY (remove drops it) or only a dangling git
   // registration of a directory that is already gone (prune drops that).
@@ -454,10 +459,52 @@ const defaultLockFn: WorktreeLockFn = (cwd, signal) => acquireWorktreeLock(cwd, 
 export type CreateTaskWorktreeOptions = {
   base?: string
   branch?: string
+  /**
+   * Where the worktree goes, when it must NOT go under this repository's
+   * `.codesema/worktrees/`: a repository attached to a conversation is
+   * materialized inside THAT CONVERSATION's working directory, so the
+   * directory its agent runs in never changes as repositories come and go.
+   * The branch still belongs to this repository, and so does the lock.
+   */
+  worktreePath?: string
   /** Gives up the wait for the repo lock as soon as the caller is interrupted. */
   signal?: AbortSignal | undefined
   /** Test seam: the repo lock the whole creation runs under. */
   lockFn?: WorktreeLockFn | undefined
+}
+
+/**
+ * Working directory for a conversation that has been given no repository: a
+ * plain directory, in the same place a worktree would have gone, so retention
+ * and the orphan sweep keep finding tasks where they always have.
+ *
+ * Nothing here is git, and that is the point: no branch to name, no base to
+ * fork from, and no lock to take, since a directory nothing else can reach is
+ * shared with nobody. The doctrine at the top of this file does not apply
+ * either, because there is no branch for work to survive on: what such a
+ * conversation produces lives in its transcript, or in a repository attached
+ * to it later.
+ */
+export function createScratchWorkdir(cwd: string, taskId: string): string {
+  ensureWorkDir(cwd)
+  const dir = join(taskWorktreesDir(cwd), taskId)
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/**
+ * Counterpart of createScratchWorkdir, and best-effort like removeTaskWorktree:
+ * a directory that could not be removed must never turn its caller's outcome
+ * into an error. Nothing git-tracked can be lost here, so there is no branch
+ * fate to weigh first.
+ */
+export function removeScratchWorkdir(cwd: string, taskId: string): boolean {
+  try {
+    rmSync(join(taskWorktreesDir(cwd), taskId), { recursive: true, force: true })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -493,8 +540,11 @@ export async function createTaskWorktree(
     const uncommitted = countUncommitted(cwd)
     const made =
       opts.branch !== undefined
-        ? createWorkOnWorktree(cwd, taskId, shortBranchName(opts.branch))
-        : createForkWorktree(cwd, taskId, title, opts.base)
+        ? createWorkOnWorktree(cwd, taskId, shortBranchName(opts.branch), opts.worktreePath)
+        : createForkWorktree(cwd, taskId, title, {
+            base: opts.base,
+            worktreePath: opts.worktreePath,
+          })
     return {
       ...made,
       uncommitted_files: uncommitted,
