@@ -532,10 +532,17 @@ const en = {
   // --- branch = conversation (amendment 4) ---
   'workspace.draftForkTitle': 'New conversation from {base}',
   'workspace.draftWorkonTitle': 'Work on {branch}',
+  /** A draft targeting the repo-less scratch project: no branch is ever
+   * forked, so the title names neither a base nor a branch. */
+  'workspace.draftScratchTitle': 'New conversation',
   'workspace.draftModeLabel': 'Conversation mode',
   'workspace.draftModeWorkon': 'Work on the branch',
   'workspace.draftModeFork': 'New branch from it',
   'workspace.draftTrunkWarning': 'Commits will land directly on {branch}.',
+  /** Replaces the plan panel's branch/base rows and retarget field for a
+   * scratch draft, which will never fork a branch. */
+  'workspace.draftNoRepo':
+    'No repository: the agent will not see any code. One can be attached once the conversation starts.',
   'workspace.cleanupBranch': 'Delete branch',
   'workspace.cleanupWorktree': 'Delete worktree',
   'workspace.cleanupConfirm': 'Confirm deletion?',
@@ -1331,10 +1338,13 @@ const fr: Record<MessageKey, string> = {
   // --- branch = conversation (amendment 4) ---
   'workspace.draftForkTitle': 'Nouvelle conversation depuis {base}',
   'workspace.draftWorkonTitle': 'Travailler sur {branch}',
+  'workspace.draftScratchTitle': 'Nouvelle conversation',
   'workspace.draftModeLabel': 'Mode de la conversation',
   'workspace.draftModeWorkon': 'Travailler sur la branche',
   'workspace.draftModeFork': 'Nouvelle branche depuis',
   'workspace.draftTrunkWarning': 'Les commits iront directement sur {branch}.',
+  'workspace.draftNoRepo':
+    "Aucun dépôt : l'agent ne verra aucun code. Un dépôt pourra lui être attaché une fois la conversation lancée.",
   'workspace.cleanupBranch': 'Supprimer la branche',
   'workspace.cleanupWorktree': 'Supprimer le worktree',
   'workspace.cleanupConfirm': 'Confirmer la suppression ?',

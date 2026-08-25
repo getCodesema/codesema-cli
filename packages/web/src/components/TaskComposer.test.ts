@@ -56,6 +56,7 @@ async function renderComposer(
     currentAgent?: string
     isolation?: 'container' | 'policy' | null
     draft?: DraftTarget | null
+    projectKind?: 'repo' | 'scratch'
     plan?: TaskPlan | null
     planError?: string | null
     planPending?: boolean
@@ -69,6 +70,7 @@ async function renderComposer(
     currentAgent: overrides.currentAgent ?? 'claude -p',
     isolation: overrides.isolation ?? null,
     draft: overrides.draft ?? null,
+    projectKind: overrides.projectKind ?? 'repo',
     plan: overrides.plan ?? null,
     planError: overrides.planError ?? null,
     planPending: overrides.planPending ?? false,
@@ -331,6 +333,30 @@ describe('TaskComposer plan panel', () => {
   })
 })
 
+// The scratch project forks no branch: its draft must not claim otherwise.
+describe('TaskComposer for a draft with no repository (scratch target)', () => {
+  test('shows the sober no-repository notice instead of any branch/base field', async () => {
+    const html = await renderComposer({
+      draft: forkDraft(''),
+      projectKind: 'scratch',
+      plan: PLAN,
+    })
+    expect(html).toContain(t('workspace.planTitle'))
+    expect(html).toContain(t('workspace.draftNoRepo'))
+    expect(html).not.toContain(t('workspace.planBaseLabel'))
+    expect(html).not.toContain(t('workspace.planBranchLabel'))
+    expect(html).not.toContain(t('workspace.planRetarget'))
+    expect(html).not.toContain(t('workspace.planBase'))
+    expect(html).not.toContain(t('workspace.planBranch'))
+    expect(html).not.toContain('tc-retarget')
+  })
+
+  test('a repo draft renders exactly as before: the notice is scratch-only', async () => {
+    const html = await renderComposer({ draft: forkDraft('develop'), plan: PLAN })
+    expect(html).not.toContain(t('workspace.draftNoRepo'))
+  })
+})
+
 // ── The plan panel's own MECHANISM (T2.6 review round 1, MAJEUR 3) ────────
 //
 // The tests above render the panel to a string: they prove what a human reads,
@@ -419,6 +445,7 @@ type MountedComposer = {
 
 async function mountComposer(overrides: {
   draft: DraftTarget | null
+  projectKind?: 'repo' | 'scratch'
   initialPrompt?: string
 }): Promise<MountedComposer> {
   const TaskComposer = (await import('./TaskComposer.vue')).default
@@ -431,6 +458,7 @@ async function mountComposer(overrides: {
     currentAgent: 'claude -p',
     isolation: null,
     draft: overrides.draft,
+    projectKind: overrides.projectKind ?? 'repo',
     plan: null,
     planError: null,
     planPending: false,
@@ -477,6 +505,18 @@ describe('a draft column asks for its plan without waiting for a keystroke', () 
 
   test('the standalone composer targets no branch, so it asks for nothing — ever', async () => {
     const mounted = await mountComposer({ draft: null, initialPrompt: 'typed already' })
+    expect(mounted.emissions).toEqual([])
+    mounted.reset()
+    await nextTick()
+    expect(mounted.emissions).toEqual([])
+  })
+
+  test('a scratch draft asks for nothing either: there is no branch or base to preview', async () => {
+    const mounted = await mountComposer({
+      draft: forkDraft(''),
+      projectKind: 'scratch',
+      initialPrompt: 'already typed',
+    })
     expect(mounted.emissions).toEqual([])
     mounted.reset()
     await nextTick()

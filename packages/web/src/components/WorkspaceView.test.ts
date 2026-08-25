@@ -304,3 +304,61 @@ describe('the rail animates its width, except while dragged', () => {
     expect(SOURCE).toContain("'ws-rail--dragging': railDragging")
   })
 })
+
+// A new conversation used to default to `projects.value[0]`, which the
+// scratch project now always occupies (the server lists it first): without a
+// filter, [+ new conversation] landed on scratch even with real repos
+// registered. `deriveComposeTarget` (useProjects.ts, already unit-tested on
+// its own) is the fix: filter wins while it still names a known project,
+// otherwise the first repo, and only scratch when there is no repo at all.
+describe('a new conversation prefers a real repo over the scratch project', () => {
+  const fn = SOURCE.slice(
+    SOURCE.indexOf('function onNewConversation('),
+    SOURCE.indexOf('async function onDraftCreate('),
+  )
+
+  test('the target project goes through the shared filter/repo/scratch precedence', () => {
+    expect(fn).toContain('deriveComposeTarget(filter.value, projects.value)')
+    // Not the old expression, which put the server-first scratch project
+    // ahead of a real repo whenever no filter was active.
+    expect(fn).not.toContain('projects.value[0]?.id ?? null')
+  })
+
+  test('the scratch project gets an empty base, checked before any branch is derived', () => {
+    expect(fn).toContain('isScratchProject(projectId)')
+    expect(fn).toContain("forkDraft('')")
+    const scratchAt = fn.indexOf("forkDraft('')")
+    const derivedBaseAt = fn.indexOf('branches.find((b) => b.isCurrent)')
+    expect(scratchAt).toBeGreaterThan(-1)
+    expect(derivedBaseAt).toBeGreaterThan(scratchAt)
+  })
+})
+
+// The scratch draft targets no branch: the column must not claim otherwise.
+// TaskComposer.test.ts covers what it shows INSTEAD (the sober notice); what
+// is pinned here is that the branch-only chrome around it is gone.
+describe('a scratch draft column shows no branch/base chrome', () => {
+  const draftColumn = SOURCE.slice(
+    SOURCE.indexOf('<header class="ws-draft-head">'),
+    SOURCE.indexOf('<TaskComposer'),
+  )
+
+  test('the title falls back to a plain, branchless title for the scratch project', () => {
+    expect(draftColumn).toContain('isScratchProject(entry.projectId)')
+    expect(draftColumn).toContain("t('workspace.draftScratchTitle')")
+    // Checked first, ahead of the fork/work-on ternary it replaces.
+    expect(draftColumn.indexOf('isScratchProject(entry.projectId)')).toBeLessThan(
+      draftColumn.indexOf("entry.draft.mode === 'fork'"),
+    )
+  })
+
+  test('the fork/work-on mode toggle and the branch/target chips are both hidden for it', () => {
+    expect(draftColumn.split('v-if="!isScratchProject(entry.projectId)"').length - 1).toBe(2)
+    expect(draftColumn).toContain('class="ws-draft-modes"')
+    expect(draftColumn).toContain('ws-draft-chips')
+  })
+
+  test('the composer is told which project kind it is drafting for', () => {
+    expect(SOURCE).toContain(':project-kind="projectKindById.get(entry.projectId) ?? \'repo\'"')
+  })
+})

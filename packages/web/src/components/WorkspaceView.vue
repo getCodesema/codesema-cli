@@ -34,6 +34,7 @@ import { EMPTY_ISSUES_STATE, useIssues } from '../composables/useIssues'
 import {
   buildProjectTree,
   countProjectActivity,
+  deriveComposeTarget,
   isolationForProject,
   isTrunkBranch,
   otherBranches,
@@ -177,6 +178,12 @@ const projectKindById = computed(
 // The attach picker's options: every registered repo, for every scratch
 // conversation alike, never scoped to one conversation's own attachments.
 const repoProjects = computed(() => projects.value.filter((project) => project.kind === 'repo'))
+
+/** Whether `projectId` names the repo-less scratch project: a draft targeting
+ * it forks no branch, so it shows none of the branch/base chrome. */
+function isScratchProject(projectId: string): boolean {
+  return projectKindById.value.get(projectId) === 'scratch'
+}
 
 // ── Project filter: a project id, or null for "All projects" ──────────────
 // Selecting a project also makes it the registry's active card, which lazily
@@ -415,15 +422,25 @@ function onBranchClick(projectId: string, branch: string, mr: ForgeMr | null): v
  * [+ new conversation] in the conversations column: opens a draft column,
  * the SAME mechanism a trunk branch click already uses, never a second
  * composer. The column carries no project picker of its own, so the target
- * is the filtered project, or the first registered one; the base is that
- * project's current branch when its branches are already known (a project
- * the human has looked at), else its first trunk branch, else the
- * conventional 'main'. All three are one click away from a correction in the
- * draft's own retarget field, so a wrong guess here costs nothing.
+ * is the filtered project while it still names a known one, otherwise the
+ * first registered repo, and only the repo-less scratch project when there
+ * is no repo at all (deriveComposeTarget): a repo always wins over scratch,
+ * even though the server lists scratch first.
+ *
+ * The scratch project forks no branch, so its draft carries an empty base
+ * rather than a guess: the base is otherwise that project's current branch
+ * when its branches are already known (a project the human has looked at),
+ * else its first trunk branch, else the conventional 'main'. All three are
+ * one click away from a correction in the draft's own retarget field, so a
+ * wrong guess here costs nothing.
  */
 function onNewConversation(): void {
-  const projectId = filter.value ?? projects.value[0]?.id ?? null
+  const projectId = deriveComposeTarget(filter.value, projects.value)
   if (projectId === null) {
+    return
+  }
+  if (isScratchProject(projectId)) {
+    openDraft(projectId, forkDraft(''))
     return
   }
   const branches = branchesByProject.get(projectId) ?? []
@@ -790,9 +807,11 @@ const projectsNavHandlers = {
                 <header class="ws-draft-head">
                   <h2 class="ws-draft-title">
                     {{
-                      entry.draft.mode === 'fork'
-                        ? t('workspace.draftForkTitle', { base: entry.draft.base })
-                        : t('workspace.draftWorkonTitle', { branch: entry.draft.branch })
+                      isScratchProject(entry.projectId)
+                        ? t('workspace.draftScratchTitle')
+                        : entry.draft.mode === 'fork'
+                          ? t('workspace.draftForkTitle', { base: entry.draft.base })
+                          : t('workspace.draftWorkonTitle', { branch: entry.draft.branch })
                     }}
                   </h2>
                   <span class="ws-draft-project">
@@ -807,7 +826,11 @@ const projectsNavHandlers = {
                     ✕
                   </button>
                 </header>
+                <!-- No repository at all: neither a work-on/fork mode nor a
+                     branch/base chip means anything, so this scratch draft
+                     shows none of it (only the composer's own sober notice). -->
                 <div
+                  v-if="!isScratchProject(entry.projectId)"
                   class="ws-draft-modes"
                   role="group"
                   :aria-label="t('workspace.draftModeLabel')"
@@ -839,7 +862,7 @@ const projectsNavHandlers = {
                 >
                   {{ t('workspace.draftTrunkWarning', { branch: draftBranch(entry.draft) }) }}
                 </p>
-                <div class="ws-draft-chips">
+                <div v-if="!isScratchProject(entry.projectId)" class="ws-draft-chips">
                   <span
                     class="ws-draft-chip"
                     :title="
@@ -871,6 +894,7 @@ const projectsNavHandlers = {
                     isolationForProject(entry.projectId, projects, workspace)?.isolation_default ??
                     null
                   "
+                  :project-kind="projectKindById.get(entry.projectId) ?? 'repo'"
                   :draft="entry.draft"
                   :plan="planOf(entry.projectId, entry.draft).plan"
                   :plan-error="planOf(entry.projectId, entry.draft).error"

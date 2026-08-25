@@ -229,3 +229,14 @@ describe('the attach-a-repo labels are actually translated, not copied', () => {
     }
   })
 })
+
+describe('the scratch draft labels are actually translated, not copied', () => {
+  const keys = ['workspace.draftScratchTitle', 'workspace.draftNoRepo'] as const
+
+  test('every one of them differs from its English source', () => {
+    for (const key of keys) {
+      expect(catalogs.fr?.[key]).toBeDefined()
+      expect(catalogs.fr?.[key]).not.toBe(catalogs.en?.[key])
+    }
+  })
+})

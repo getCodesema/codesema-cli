@@ -93,6 +93,16 @@ describe('openDraftColumn', () => {
     expect(openDraftColumn(state, 'p1', forkDraft('main'))).toBe(state)
   })
 
+  test('a scratch draft (empty base) still opens and dedupes like any other', () => {
+    const state = openDraftColumn(deckOf(['p1', 't1']), 'p1', forkDraft(''))
+    expect(keys(state)).toEqual(['p1/t1', draftColumnKey('p1', forkDraft(''))])
+    expect(openDraftColumn(state, 'p1', forkDraft(''))).toBe(state)
+    // Distinct from a fork with a real base, and from the scratch draft of
+    // another project.
+    expect(draftColumnKey('p1', forkDraft(''))).not.toBe(draftColumnKey('p1', forkDraft('main')))
+    expect(draftColumnKey('p1', forkDraft(''))).not.toBe(draftColumnKey('p2', forkDraft('')))
+  })
+
   test('workon drafts dedupe by branch: a different target is still a twin', () => {
     const state = openDraftColumn(EMPTY_COLUMNS, 'p1', workonDraft('feature/x', null))
     expect(openDraftColumn(state, 'p1', workonDraft('feature/x', 'main'))).toBe(state)
@@ -299,6 +309,10 @@ describe('draftBranch', () => {
   test('fork dedupes on its base, workon on its branch', () => {
     expect(draftBranch(forkDraft('main'))).toBe('main')
     expect(draftBranch(workonDraft('feature/x', 'main'))).toBe('feature/x')
+  })
+
+  test('a scratch fork (no repository) dedupes on an empty base', () => {
+    expect(draftBranch(forkDraft(''))).toBe('')
   })
 })
 
