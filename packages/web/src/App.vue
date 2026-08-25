@@ -1,77 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
-import BranchSidebar from './components/BranchSidebar.vue'
-import MrDetailPanel, { type DetailSource } from './components/MrDetailPanel.vue'
-import MrSidebar from './components/MrSidebar.vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
 import WorkspaceView from './components/WorkspaceView.vue'
 import { useReviewSession } from './composables/useReviewSession'
-import type { ForgeMr, LocalBranch, MrReviewMode, ReviewSource } from './types'
 
 // The tasks token doubles as the mode detector: the server only injects it
 // when a TaskManager runs (codesema workspace), so its presence flips the UI
-// to the agent workspace. Without it, the review experience is unchanged.
+// to the agent workspace. Without it, this reads the ONE review this process
+// is serving — what `codesema review` opens, and what CI keeps. Browsing
+// merge requests and starting a review live in the workspace now.
 const tasksToken =
   typeof window !== 'undefined'
     ? (window as { __CODESEMA_TASKS_TOKEN__?: string }).__CODESEMA_TASKS_TOKEN__
     : undefined
 const workspaceMode = typeof tasksToken === 'string' && tasksToken.length > 0
 
-const view = ref<'review' | 'settings' | 'detail'>('review')
-const selectedDetail = shallowRef<DetailSource | null>(null)
+const view = ref<'review' | 'settings'>('review')
 
-function selectMr(mr: ForgeMr) {
-  selectedDetail.value = { kind: 'mr', mr }
-  view.value = 'detail'
-}
-
-function selectBranch(branch: LocalBranch) {
-  selectedDetail.value = { kind: 'branch', branch }
-  view.value = 'detail'
-}
-
-function backFromDetail() {
-  view.value = 'review'
-}
-
-const {
-  record,
-  status,
-  partial,
-  partialB,
-  judge,
-  error,
-  mrReviewRunning,
-  mrReviewStartError,
-  runningSource,
-  load,
-  start,
-  stop,
-  runReview,
-} = useReviewSession()
-
-const mrReviewRunningNumber = computed(() =>
-  runningSource.value?.kind === 'mr' ? runningSource.value.number : null,
-)
-const branchReviewRunningName = computed(() =>
-  runningSource.value?.kind === 'branch' ? runningSource.value.name : null,
-)
-
-async function handleRun(mode: MrReviewMode) {
-  if (!selectedDetail.value) {
-    return
-  }
-  const source: ReviewSource =
-    selectedDetail.value.kind === 'mr'
-      ? { kind: 'mr', number: selectedDetail.value.mr.number }
-      : { kind: 'branch', name: selectedDetail.value.branch.name }
-  const launched = await runReview(source, mode)
-  if (launched) {
-    view.value = 'review'
-  }
-}
+const { record, status, partial, partialB, judge, error, load, start, stop } = useReviewSession()
 
 // In workspace mode the review session endpoints stay idle: WorkspaceView
 // owns its own stream, nothing to load or poll here.
@@ -86,24 +34,6 @@ onUnmounted(stop)
 <template>
   <WorkspaceView v-if="workspaceMode && tasksToken" :token="tasksToken" />
   <div v-else class="app-layout">
-    <aside class="app-sidebar">
-      <MrSidebar
-        :selected-number="
-          view === 'detail' && selectedDetail?.kind === 'mr' ? selectedDetail.mr.number : null
-        "
-        :running-number="mrReviewRunningNumber"
-        @select="selectMr"
-      />
-      <div class="app-sidebar-divider" />
-      <BranchSidebar
-        :selected-name="
-          view === 'detail' && selectedDetail?.kind === 'branch' ? selectedDetail.branch.name : null
-        "
-        :running-name="branchReviewRunningName"
-        @select="selectBranch"
-      />
-    </aside>
-
     <div class="app-main">
       <nav class="app-nav">
         <button class="app-nav-btn" @click="view = view === 'settings' ? 'review' : 'settings'">
@@ -111,15 +41,7 @@ onUnmounted(stop)
         </button>
       </nav>
 
-      <MrDetailPanel
-        v-if="view === 'detail' && selectedDetail"
-        :source="selectedDetail"
-        :running="mrReviewRunning"
-        :run-error="mrReviewStartError"
-        @back="backFromDetail"
-        @run="handleRun"
-      />
-      <RepoSettings v-else-if="view === 'settings'" />
+      <RepoSettings v-if="view === 'settings'" />
       <template v-else>
         <ReviewShell v-if="record" :record="record" />
         <ReviewLive
@@ -149,22 +71,6 @@ onUnmounted(stop)
   display: flex;
   align-items: stretch;
   min-height: 100vh;
-}
-
-.app-sidebar {
-  width: 280px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.app-sidebar-divider {
-  height: 1px;
-  background: var(--codesema-line);
-  margin: 0 12px;
 }
 
 .app-main {
