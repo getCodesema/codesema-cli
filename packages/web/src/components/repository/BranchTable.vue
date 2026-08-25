@@ -117,18 +117,18 @@ function mostUrgentStatus(conversations: readonly TaskState[]): TaskStatus | nul
   return best
 }
 
-// ── Sort control: option labels reuse the matching column header ──────────
+// ── Sort control ──────────────────────────────────────────────────────────
 
 /**
- * `repository.sortStatus` does not exist yet (flagged in the handoff
- * report): the cast is a placeholder confined to this one entry so the other
- * two real keys stay strictly typed. `t()` falls back to the raw key at
- * runtime rather than throwing, so this degrades safely until the key lands.
+ * Each option names what it sorts BY, never the column it looks like: the
+ * `updated` sort orders by the most recent conversation activity, while the
+ * Updated column shows the last commit's age. Borrowing that column's label
+ * here would promise a sort on the number the reader can see.
  */
 const SORT_OPTION_LABEL_KEYS: Record<BranchSortKey, MessageKey> = {
-  status: 'repository.sortStatus' as MessageKey,
-  updated: 'repository.colUpdated',
-  name: 'repository.colBranch',
+  status: 'repository.sortStatus',
+  updated: 'repository.sortActivity',
+  name: 'repository.sortName',
 }
 
 // ── Row view model: derived display data, computed once per render ────────
