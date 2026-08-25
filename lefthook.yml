@@ -4,9 +4,14 @@ pre-commit:
       run: gitleaks protect --staged --redact
     format:
       glob: '*'
-      run: bunx prettier --write --ignore-unknown {staged_files}
+      # --cache is free here and occasionally not: a rebase or a checkout
+      # restages files prettier has already seen unchanged.
+      run: bunx prettier --write --cache --ignore-unknown {staged_files}
       stage_fixed: true
     lint:
+      # Staged files only, though oxlint scans the whole repo in 0.3s: the point
+      # is not the time, it is that a commit must not be blocked by a warning
+      # sitting in a file it does not touch. `bun run lint` in CI owns the repo.
       glob: '*.{ts,mjs,vue}'
       run: bunx oxlint {staged_files}
 
@@ -52,8 +57,10 @@ pre-push:
           - name: knip
             run: bun run knip
           - name: test
-            # Only the test files affected by what is about to be pushed; the
-            # full suite and the coverage gate run in CI on every pull request.
+            # The whole suite in parallel (21s here, against 66s serial), with a
+            # deadline and a serial retry around the intermittent --parallel
+            # hang. scripts/pre-push-tests.mjs carries the measurements and the
+            # reasoning. The coverage gate stays in CI.
             #
             # git exports its repo-location vars (GIT_DIR, GIT_WORK_TREE, ...) to
             # the hooks it runs; the test suite spawns git inside throwaway
@@ -62,4 +69,4 @@ pre-push:
             # and config land in the repo you are pushing from). Strip them
             # before running the tests — same doctrine as subprocessEnv in
             # packages/cli/src/git.ts.
-            run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_PREFIX -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH bun scripts/test-changed.mjs
+            run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_PREFIX -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH bun scripts/pre-push-tests.mjs

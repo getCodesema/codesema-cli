@@ -13,14 +13,19 @@ refuses to start without the embedded web UI that `build` produces.
 
 ## The scripts
 
+Costs measured on 16 cores, caches warm; they are there to tell the cheap
+checks from the expensive ones, not to be hit exactly.
+
 | Script         | What it does                                     | Cost  |
 | -------------- | ------------------------------------------------ | ----- |
-| `lint`         | oxlint over the workspace                        | ~0.2s |
-| `format:check` | prettier, with its cache                         | ~0.8s |
-| `typecheck`    | builds the contract, then tsc ×2 + vue-tsc       | ~5.8s |
+| `lint`         | oxlint over the workspace                        | ~0.3s |
+| `audit`        | known advisories against the installed tree      | ~0.3s |
+| `knip`         | unused files, exports and dependencies           | ~2.7s |
+| `format:check` | prettier, with its cache                         | ~5s   |
+| `typecheck`    | builds the contract, then tsc ×2 + vue-tsc       | ~9.4s |
 | `build`        | contract, then web, then cli                     | ~2.8s |
-| `test`         | builds the contract, then the suite              | ~10s  |
-| `verify`       | typecheck + test, building the contract **once** | ~15s  |
+| `test`         | builds the contract, then the suite in parallel  | ~23s  |
+| `verify`       | typecheck + test, building the contract **once** | ~31s  |
 
 `typecheck:only` and `test:only` skip the contract build, for when you know it
 is already current. `typecheck` and `test` keep it, so both stay usable on
@@ -32,7 +37,7 @@ cached (`node_modules/.cache/prettier/`). Both caches live under
 worktree pays full price, every run after is fast.
 
 The suite runs in parallel **locally only**, on half the cores, computed at run
-time — about 8s instead of 30s. One worker per core sounds better and is not:
+time — 21s instead of 66s. One worker per core sounds better and is not:
 each worker spawns real `git` subprocesses, so the real load runs well past the
 core count, and tests start failing on their timeout rather than on their
 assertions.
@@ -48,13 +53,29 @@ more than the twenty seconds it saved.
 
 Lefthook runs them; `bun run prepare` installs it.
 
-- **pre-commit** — gitleaks on the staged diff, prettier on the staged files
-  (restaged after), oxlint on the staged `.ts`/`.mjs`/`.vue`
-- **pre-push** — `typecheck`, then `test`
+- **pre-commit** (~4s) — gitleaks on the staged diff, prettier on the staged
+  files (restaged after), oxlint on the staged `.ts`/`.mjs`/`.vue`
+- **commit-msg** (~1s): commitlint, cf. `commitlint.config.mjs`
+- **pre-push** (~40s): the contract build, then gitleaks, `typecheck:only`,
+  `knip` and the full suite, all four at once
+
+What sits in which hook follows one rule: a check belongs to the earliest hook
+it can pay for itself in. Anything under a second and scoped to what you staged
+goes in pre-commit; anything that needs the whole workspace, or costs seconds,
+waits for the push; anything that needs the network, the whole history or a
+published artefact stays in CI. That is why `audit`, `format:check` over the
+repo, `publint` and the coverage gate are not in a hook, and why the pre-push
+jobs run as a group: the hook costs what its slowest job costs, so the secret
+scan and `knip` disappear behind the test run.
 
 The pre-push hook is the local gate. There is no need to run the battery by
 hand before pushing; the hook runs it and refuses the push if it fails. Never
 reach for `--no-verify` to get around it.
+
+The one check that also exists server-side is the secret scan: the `secrets` job
+in the `quality` workflow rescans the full history on every pull request, so a
+push that skipped the hooks (or came from a machine where `bun run prepare`
+failed) still gets caught.
 
 ## Branches and merging
 
