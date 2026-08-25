@@ -325,14 +325,6 @@ export type ReviewArchiveSummary = {
   findings_total: number
 }
 
-/** One row's archived reviews, as the list column holds them. `entries`
- * stays null until they have been read: "not read yet" and "there are none"
- * are different facts and must not share the empty array. */
-export type ReviewHistoryState = {
-  entries: ReviewArchiveSummary[] | null
-  error: string | null
-}
-
 // Mirrors packages/cli/src/branches.ts and the /api/branches endpoint.
 
 export type LocalBranch = {
