@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 import type { ForgeMr, GitWorktree, LocalBranch, TaskRecord, TaskStatus } from '../types'
-import { buildBranchRows, buildRepositoryTiles, type BuildBranchRowsInput } from './useRepository'
+import {
+  BRANCH_SORT_KEYS,
+  buildBranchRows,
+  buildRepositoryTiles,
+  filterBranchRows,
+  sortBranchRows,
+  type BranchRow,
+  type BuildBranchRowsInput,
+} from './useRepository'
 import type { TaskState } from './useTasks'
 
 const REPO = 'repo-aaaa'
@@ -92,7 +100,7 @@ function input(partial: Partial<BuildBranchRowsInput>): BuildBranchRowsInput {
   }
 }
 
-function branchNames(rows: ReturnType<typeof buildBranchRows>): (string | null)[] {
+function branchNames(rows: readonly BranchRow[]): (string | null)[] {
   return rows.map((row) => (row.kind === 'branch' ? row.name : null))
 }
 
@@ -519,5 +527,170 @@ describe('buildRepositoryTiles', () => {
       activeConversationCount: 5,
       waitingOnYouCount: 3,
     })
+  })
+})
+
+// ── filterBranchRows ─────────────────────────────────────────────────────────
+
+describe('filterBranchRows', () => {
+  test('an empty query returns the exact same reference', () => {
+    const rows = buildBranchRows(input({ branches: [branch({ name: 'feature-x' })] }))
+    expect(filterBranchRows(rows, '')).toBe(rows)
+  })
+
+  test('a whitespace-only query returns the exact same reference', () => {
+    const rows = buildBranchRows(input({ branches: [branch({ name: 'feature-x' })] }))
+    expect(filterBranchRows(rows, '   ')).toBe(rows)
+  })
+
+  test('matches on the branch name', () => {
+    const rows = buildBranchRows(
+      input({ branches: [branch({ name: 'feature-login' }), branch({ name: 'main' })] }),
+    )
+    expect(branchNames(filterBranchRows(rows, 'login'))).toEqual(['feature-login'])
+  })
+
+  test('matches on the last commit subject', () => {
+    const rows = buildBranchRows(
+      input({
+        branches: [
+          branch({ name: 'feature-x', subject: 'fix the payment retry loop' }),
+          branch({ name: 'feature-y', subject: 'add dark mode toggle' }),
+        ],
+      }),
+    )
+    expect(branchNames(filterBranchRows(rows, 'payment'))).toEqual(['feature-x'])
+  })
+
+  test('matches on the worktree path of a detached row', () => {
+    const rows = buildBranchRows(input({ worktrees: [worktree({ path: '/wt/spike-42' })] }))
+    expect(filterBranchRows(rows, 'spike-42')).toEqual(rows)
+  })
+
+  test('is case-insensitive', () => {
+    const rows = buildBranchRows(input({ branches: [branch({ name: 'Feature-Login' })] }))
+    expect(branchNames(filterBranchRows(rows, 'LOGIN'))).toEqual(['Feature-Login'])
+  })
+
+  test('a query matching nothing yields an empty array', () => {
+    const rows = buildBranchRows(input({ branches: [branch({ name: 'feature-x' })] }))
+    expect(filterBranchRows(rows, 'no-such-text')).toEqual([])
+  })
+
+  test('preserves the order of matching rows', () => {
+    const rows = buildBranchRows(
+      input({
+        branches: [
+          branch({ name: 'zeta-topic' }),
+          branch({ name: 'alpha-topic' }),
+          branch({ name: 'mu-other' }),
+        ],
+      }),
+    )
+    expect(branchNames(filterBranchRows(rows, 'topic'))).toEqual(['zeta-topic', 'alpha-topic'])
+  })
+
+  test('the MR number is not searched', () => {
+    const rows = buildBranchRows(
+      input({
+        branches: [branch({ name: 'feature-x' })],
+        mrs: [mr({ number: 4242, sourceBranch: 'feature-x' })],
+      }),
+    )
+    expect(filterBranchRows(rows, '4242')).toEqual([])
+  })
+})
+
+// ── sortBranchRows ────────────────────────────────────────────────────────────
+
+describe('sortBranchRows', () => {
+  test('BRANCH_SORT_KEYS lists exactly the three sort keys', () => {
+    expect(BRANCH_SORT_KEYS).toEqual(['status', 'updated', 'name'])
+  })
+
+  test("'status' reproduces buildBranchRows' own order", () => {
+    const active = state(REPO, {
+      id: 't1',
+      branch: 'feature-old',
+      status: 'running',
+      updated_at: '2026-08-14T09:00:00.000Z',
+    })
+    const rows = buildBranchRows(
+      input({
+        branches: [
+          branch({ name: 'zeta' }),
+          branch({ name: 'feature-old' }),
+          branch({ name: 'current', isCurrent: true }),
+        ],
+        worktrees: [worktree({ path: '/wt/detached' })],
+        states: [active],
+      }),
+    )
+    expect(sortBranchRows(rows, 'status')).toEqual(rows)
+  })
+
+  test("'updated': most recent conversation activity first, then no-conversation rows in arrival order", () => {
+    const older = state(REPO, {
+      id: 't1',
+      branch: 'b-older',
+      status: 'running',
+      updated_at: '2026-08-14T09:00:00.000Z',
+    })
+    const newer = state(REPO, {
+      id: 't2',
+      branch: 'a-newer',
+      status: 'waiting_for_you',
+      updated_at: '2026-08-14T12:00:00.000Z',
+    })
+    const rows = buildBranchRows(
+      input({
+        branches: [
+          branch({ name: 'z-idle' }),
+          branch({ name: 'b-older' }),
+          branch({ name: 'a-newer' }),
+          branch({ name: 'm-idle' }),
+        ],
+        states: [older, newer],
+      }),
+    )
+    expect(branchNames(sortBranchRows(rows, 'updated'))).toEqual([
+      'a-newer',
+      'b-older',
+      'z-idle',
+      'm-idle',
+    ])
+  })
+
+  test("'name': alphabetical on branch name via localeCompare", () => {
+    const rows = buildBranchRows(
+      input({
+        branches: [branch({ name: 'zeta' }), branch({ name: 'alpha' }), branch({ name: 'mu' })],
+      }),
+    )
+    expect(branchNames(sortBranchRows(rows, 'name'))).toEqual(['alpha', 'mu', 'zeta'])
+  })
+
+  test('detached worktrees sort last, in all three sort keys', () => {
+    const active = state(REPO, { id: 't1', branch: 'feature-x', status: 'running' })
+    const rows = buildBranchRows(
+      input({
+        branches: [branch({ name: 'zeta' }), branch({ name: 'feature-x' })],
+        worktrees: [worktree({ path: '/wt/detached' })],
+        states: [active],
+      }),
+    )
+    for (const key of BRANCH_SORT_KEYS) {
+      const sorted = sortBranchRows(rows, key)
+      expect(sorted[sorted.length - 1]?.kind).toBe('detached-worktree')
+    }
+  })
+
+  test('does not mutate its input', () => {
+    const rows = buildBranchRows(
+      input({ branches: [branch({ name: 'zeta' }), branch({ name: 'alpha' })] }),
+    )
+    const before = branchNames(rows)
+    sortBranchRows(rows, 'name')
+    expect(branchNames(rows)).toEqual(before)
   })
 })

@@ -113,23 +113,20 @@ function buildBranchRow(
   }
 }
 
-function latestActivity(row: BranchRow): number {
-  if (row.kind !== 'branch') {
-    return Number.NEGATIVE_INFINITY
-  }
+type BranchOnlyRow = Extract<BranchRow, { kind: 'branch' }>
+
+function latestActivity(row: BranchOnlyRow): number {
   return row.conversations.reduce((max, state) => {
     const at = Date.parse(state.record.updated_at)
     return Number.isNaN(at) ? max : Math.max(max, at)
   }, Number.NEGATIVE_INFINITY)
 }
 
-/** Sort tiers, lowest first: 0 a non-terminal conversation holds the branch,
- * 1 an open MR or the current checkout, 2 everything else, 3 detached
- * worktrees, always last. */
-function rowTier(row: BranchRow): 0 | 1 | 2 | 3 {
-  if (row.kind === 'detached-worktree') {
-    return 3
-  }
+/** Priority tiers among branch rows, lowest first: 0 a non-terminal
+ * conversation holds the branch, 1 an open MR or the current checkout, 2
+ * everything else. Detached worktrees have no tier of their own here —
+ * withDetachedLast is the one place that sinks them below every tier. */
+function branchPriorityTier(row: BranchOnlyRow): 0 | 1 | 2 {
   if (row.conversations.some((state) => ACTIVE_TASK_STATUSES.has(state.record.status))) {
     return 0
   }
@@ -140,18 +137,62 @@ function rowTier(row: BranchRow): 0 | 1 | 2 | 3 {
 }
 
 /**
+ * Wraps a branch-vs-branch comparator so every sort agrees, in one place, on
+ * where detached worktrees land: last, since none of the three sort criteria
+ * (status, activity, name) has anything on a detached row to compare.
+ */
+function withDetachedLast(
+  compareBranches: (a: BranchOnlyRow, b: BranchOnlyRow) => number,
+): (a: BranchRow, b: BranchRow) => number {
+  return (a, b) => {
+    if (a.kind === 'detached-worktree' || b.kind === 'detached-worktree') {
+      return Number(a.kind === 'detached-worktree') - Number(b.kind === 'detached-worktree')
+    }
+    return compareBranches(a, b)
+  }
+}
+
+/**
  * Tier 0 sorts by most recent activity; every other tier keeps the order it
  * arrived in, which the stable sort guarantees on a tie (0 returned). For
  * branch rows that order is the server's `--sort=-committerdate` — re-sorting
  * it here would be redundant and could disagree with the server on ties.
  */
-function compareBranchRows(a: BranchRow, b: BranchRow): number {
-  const tierA = rowTier(a)
-  const tierB = rowTier(b)
+const compareByStatus = withDetachedLast((a, b) => {
+  const tierA = branchPriorityTier(a)
+  const tierB = branchPriorityTier(b)
   if (tierA !== tierB) {
     return tierA - tierB
   }
   return tierA === 0 ? latestActivity(b) - latestActivity(a) : 0
+})
+
+/** Rows with no conversation at all share the oldest possible activity
+ * (negative infinity): subtracting two of them is NaN, an invalid sort
+ * result, so that tie is called explicitly rather than left to arithmetic. */
+const compareByUpdated = withDetachedLast((a, b) => {
+  const activityA = latestActivity(a)
+  const activityB = latestActivity(b)
+  if (activityA === Number.NEGATIVE_INFINITY && activityB === Number.NEGATIVE_INFINITY) {
+    return 0
+  }
+  return activityB - activityA
+})
+
+const compareByName = withDetachedLast((a, b) => a.name.localeCompare(b.name))
+
+export type BranchSortKey = 'status' | 'updated' | 'name'
+
+export const BRANCH_SORT_KEYS: readonly BranchSortKey[] = ['status', 'updated', 'name']
+
+const SORT_COMPARATORS: Record<BranchSortKey, (a: BranchRow, b: BranchRow) => number> = {
+  status: compareByStatus,
+  updated: compareByUpdated,
+  name: compareByName,
+}
+
+export function sortBranchRows(rows: readonly BranchRow[], sort: BranchSortKey): BranchRow[] {
+  return rows.toSorted(SORT_COMPARATORS[sort])
 }
 
 /**
@@ -168,7 +209,27 @@ export function buildBranchRows(input: BuildBranchRowsInput): BranchRow[] {
   const detachedRows: BranchRow[] = worktrees
     .filter((worktree) => worktree.branch === null)
     .map((worktree) => ({ kind: 'detached-worktree' as const, worktreePath: worktree.path }))
-  return [...branchRows, ...detachedRows].toSorted(compareBranchRows)
+  return sortBranchRows([...branchRows, ...detachedRows], 'status')
+}
+
+function rowSearchText(row: BranchRow): readonly string[] {
+  return row.kind === 'detached-worktree' ? [row.worktreePath] : [row.name, row.subject]
+}
+
+/**
+ * Case-insensitive substring match over the row's own text: the branch name,
+ * the last commit subject, and — all a detached row has — its worktree path.
+ * The MR number is left out: it is a numeric identifier, not descriptive text
+ * the row reads as prose.
+ */
+export function filterBranchRows(rows: readonly BranchRow[], query: string): readonly BranchRow[] {
+  const trimmed = query.trim().toLowerCase()
+  if (trimmed === '') {
+    return rows
+  }
+  return rows.filter((row) =>
+    rowSearchText(row).some((text) => text.toLowerCase().includes(trimmed)),
+  )
 }
 
 /** KPI tile counters for the band above the table. */
