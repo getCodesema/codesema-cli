@@ -26,7 +26,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import { t } from '../i18n'
-import type { TaskChecks, TaskEvent, TaskRecord } from '../types'
+import type { Project, TaskChecks, TaskEvent, TaskRecord } from '../types'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -89,6 +89,19 @@ type RenderOptions = {
   events?: TaskEvent[]
   checks?: TaskChecks | null
   liveLoadCap?: { occupied: number; max: number; queued: number; waitingForSlot: boolean } | null
+  projectKind?: Project['kind']
+  repoProjects?: Project[]
+}
+
+function project(partial: Partial<Project> = {}): Project {
+  return {
+    id: 'r1',
+    path: '/repos/r1',
+    name: 'r1',
+    kind: 'repo',
+    added_at: '2026-08-13T10:00:00.000Z',
+    ...partial,
+  }
 }
 
 /** Server-renders one conversation to HTML. No DOM, no fetch, no timers. */
@@ -107,8 +120,11 @@ async function renderConversation(options: RenderOptions = {}): Promise<string> 
       checks: options.checks ?? null,
     },
     projectName: 'repo',
+    projectKind: options.projectKind ?? 'repo',
+    repoProjects: options.repoProjects ?? [],
     pinned: false,
     reply: ok,
+    attach: ok,
     interrupt: ok,
     resume: ok,
     ship: ok,
@@ -218,6 +234,133 @@ describe('TaskConversation renders the header phrase (AC-12)', () => {
       record: { status: 'queued', reason: { code: 'resource_busy', detail } },
     })
     expect(html).not.toContain(detail)
+  })
+})
+
+describe('TaskConversation header: a scratch conversation has no repository', () => {
+  test('shows the no-repo notice instead of the project/branch chip', async () => {
+    const html = await renderConversation({
+      record: { branch: '', base: '' },
+      projectKind: 'scratch',
+    })
+    expect(html).toContain(t('workspace.noRepoAttached'))
+    // Neither half of the chip it replaces: not the branch glyph, not the
+    // raw project name standing in for a repo that does not exist.
+    expect(html).not.toContain('⎇')
+  })
+
+  test('a repo conversation keeps the project/branch chip, never the no-repo notice', async () => {
+    const html = await renderConversation({ projectKind: 'repo' })
+    expect(html).toContain('⎇')
+    expect(html).toContain('codesema/task-x')
+    expect(html).not.toContain(t('workspace.noRepoAttached'))
+  })
+
+  // The Diff tab's own gate (record.branch.length > 0, focusTabs) is
+  // untouched by projectKind: a scratch conversation disables it for
+  // exactly the same reason any not-yet-started repo task does.
+  test('keeps the Diff tab disabled, the same gate as any branchless task', async () => {
+    const html = await renderConversation({
+      record: { branch: '', base: '' },
+      projectKind: 'scratch',
+    })
+    expect(html).toContain(t('workspace.noBranchYet'))
+  })
+})
+
+describe('TaskConversation header: attaching a repo to a scratch conversation', () => {
+  test('a registered repo shows the picker next to the no-repo notice, disabled until one is chosen', async () => {
+    const html = await renderConversation({
+      projectKind: 'scratch',
+      repoProjects: [project({ id: 'r1', name: 'api' })],
+    })
+    expect(html).toContain(t('workspace.noRepoAttached'))
+    expect(html).toContain('api')
+    expect(html).toContain(t('workspace.attachRepo'))
+    expect(buttonWith(html, 'cv-attach-btn')).toContain('disabled')
+  })
+
+  test('no repository registered at all: explains what to do instead of showing an empty picker', async () => {
+    const html = await renderConversation({ projectKind: 'scratch', repoProjects: [] })
+    expect(html).toContain(t('workspace.noRepoAttached'))
+    expect(html).toContain(t('workspace.attachRepoNone'))
+    expect(html).not.toContain('cv-attach-select')
+    expect(html).not.toContain('cv-attach-btn')
+  })
+
+  test('attached repos are listed by folder name and branch, replacing the no-repo notice', async () => {
+    const html = await renderConversation({
+      projectKind: 'scratch',
+      record: {
+        attachments: [
+          {
+            project_id: 'r1',
+            repo: '/repos/api',
+            name: 'api',
+            worktree: '/work/api',
+            branch: 'codesema/task-fix-it',
+            base: 'main',
+          },
+        ],
+      },
+    })
+    expect(html).toContain('api')
+    expect(html).toContain('codesema/task-fix-it')
+    expect(html).toContain('⎇')
+    expect(html).not.toContain(t('workspace.noRepoAttached'))
+  })
+
+  // TaskAttachment is a list: a conversation that already has one repo can
+  // still take another, so the picker must not disappear once the first one
+  // landed.
+  test('the picker stays reachable once a repo is already attached', async () => {
+    const html = await renderConversation({
+      projectKind: 'scratch',
+      repoProjects: [project({ id: 'r2', name: 'infra' })],
+      record: {
+        attachments: [
+          {
+            project_id: 'r1',
+            repo: '/repos/api',
+            name: 'api',
+            worktree: '/work/api',
+            branch: 'codesema/task-fix-it',
+            base: 'main',
+          },
+        ],
+      },
+    })
+    expect(html).toContain('api')
+    expect(html).toContain('infra')
+    expect(html).toContain(t('workspace.attachRepo'))
+  })
+
+  test('a repo already attached is not offered again: attaching it would do nothing', async () => {
+    const attached = {
+      project_id: 'r1',
+      repo: '/repos/api',
+      name: 'api',
+      worktree: '/work/api',
+      branch: 'codesema/task-fix-it',
+      base: 'main',
+    }
+    const html = await renderConversation({
+      projectKind: 'scratch',
+      repoProjects: [project({ id: 'r1', name: 'api' })],
+      record: { attachments: [attached] },
+    })
+    expect(html).toContain('codesema/task-fix-it')
+    expect(html).not.toContain(t('workspace.attachRepo'))
+    expect(html).not.toContain(t('workspace.attachRepoNone'))
+  })
+
+  test('a repo conversation never shows the picker, however many repos are registered', async () => {
+    const html = await renderConversation({
+      projectKind: 'repo',
+      repoProjects: [project({ id: 'r1', name: 'api' })],
+    })
+    expect(html).not.toContain(t('workspace.attachRepo'))
+    expect(html).not.toContain('cv-attach-select')
   })
 })
 

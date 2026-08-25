@@ -109,3 +109,28 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
     expect(SOURCE).toContain(':initial-prompt="planRequests.promptOf(entry.key)"')
   })
 })
+
+describe('TaskConversation learns whether its project is the scratch one', () => {
+  // Same shape as projectNameById, on purpose: TaskConversation cannot tell
+  // a scratch conversation from an ordinary one by itself (it only sees the
+  // record), so the column has to hand it the project's kind explicitly, the
+  // same way it already hands down the display name.
+  test('project-kind comes from its own per-id map, defaulting to repo', () => {
+    expect(SOURCE).toContain('const projectKindById = computed(')
+    expect(SOURCE).toContain(`:project-kind="projectKindById.get(entry.projectId) ?? 'repo'"`)
+  })
+})
+
+describe('the attach picker is wired to every registered repo, not one conversation’s own', () => {
+  test('repoProjects filters the whole registry, and every conversation gets the same list', () => {
+    expect(SOURCE).toContain('const repoProjects = computed(')
+    expect(SOURCE).toContain(`project.kind === 'repo'`)
+    expect(SOURCE).toContain(':repo-projects="repoProjects"')
+  })
+
+  test('attach is scoped to its own conversation, the same way reply and ship are', () => {
+    expect(SOURCE).toContain(
+      ':attach="(repoProjectId) => attach(entry.projectId, entry.taskId, repoProjectId)"',
+    )
+  })
+})

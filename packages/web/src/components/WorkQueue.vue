@@ -24,7 +24,7 @@ import {
   shouldOfferIsolationUpgrade,
   showIsolationDot,
 } from '../composables/useIsolation'
-import { isolationForProject } from '../composables/useProjects'
+import { deriveComposeTarget, isolationForProject } from '../composables/useProjects'
 import {
   formatDuration,
   groupQueue,
@@ -49,7 +49,8 @@ const props = defineProps<{
   projectNames: ReadonlyMap<string, string>
   /** Keys (taskKey) of the conversations open in the focus deck. */
   focusedKeys: readonly string[]
-  /** Registered projects: the composer's target select ("All" mode only). */
+  /** Workspace projects (scratch, always first, then every registered
+   * repo): the composer's target select ("All" mode only). */
   projects: Project[]
   /** The selected project filter; null = "All projects". */
   filter: string | null
@@ -78,17 +79,13 @@ const projectName = (state: TaskState): string =>
 const composer = ref<InstanceType<typeof TaskComposer> | null>(null)
 const target = ref<string | null>(null)
 
-/** The repo a new task lands in: the filter when one is selected, else the
- * select's choice, seeded with the first registered project. */
-const effectiveTarget = computed(() => {
-  if (props.filter !== null) {
-    return props.filter
-  }
-  if (target.value !== null && props.projects.some((p) => p.id === target.value)) {
-    return target.value
-  }
-  return props.projects[0]?.id ?? null
-})
+/** The project a new task lands in: the filter when one is selected, else
+ * the select's choice, seeded with the first repo (deriveComposeTarget), so
+ * the workspace never silently starts a fresh conversation in scratch just
+ * because it happens to lead the project list. */
+const effectiveTarget = computed(() =>
+  props.filter !== null ? props.filter : deriveComposeTarget(target.value, props.projects),
+)
 
 function onCreate(input: CreateTaskInput): void {
   if (effectiveTarget.value !== null) {
@@ -191,7 +188,7 @@ const SECTION_LABEL: Record<Exclude<QueueSection, 'done'>, string> = {
           @change="target = ($event.target as HTMLSelectElement).value"
         >
           <option v-for="project in projects" :key="project.id" :value="project.id">
-            {{ project.name }}
+            {{ project.kind === 'scratch' ? t('workspace.noRepoOption') : project.name }}
           </option>
         </select>
       </label>

@@ -476,6 +476,25 @@ export type TaskEvent = {
   reason_code?: ReasonCode | string
 }
 
+/**
+ * A repository handed to a conversation that did not start with one (mirrors
+ * the contract). `branch` and `base` mean what they mean on TaskRecord,
+ * except they belong to THIS repository: several attachments each carry
+ * their own.
+ */
+export type TaskAttachment = {
+  /** Registry id of the attached project. */
+  project_id: string
+  /** Absolute root of the attached repository. */
+  repo: string
+  /** Directory name inside the conversation's workspace: the repo's basename. */
+  name: string
+  /** Absolute path of the worktree, inside the conversation's workspace. */
+  worktree: string
+  branch: string
+  base: string
+}
+
 export type TaskRecord = {
   version: 1
   id: string
@@ -495,6 +514,14 @@ export type TaskRecord = {
    * work from commits a third party pushed while the worktree was gone. Absent on
    * records that never knew it. */
   head_sha?: string
+  /**
+   * Repositories handed to this conversation after it started, in the order
+   * they were attached. Absent means the conversation was never given one:
+   * either it works on the single repository named by `base`/`branch` above
+   * (the ordinary case), or it has no repository at all; the two are told
+   * apart by the project's own `kind`, never by this field.
+   */
+  attachments?: TaskAttachment[]
   agent_session_id: string | null
   turns: TaskTurn[]
   review_ref: string | null
@@ -777,12 +804,20 @@ export type TaskEnvelope =
 // /api/projects endpoints.
 
 export type Project = {
-  /** Stable 8-hex identifier of the registered repo. */
+  /** Stable 8-hex identifier, derived from the path. */
   id: string
-  /** Absolute git toplevel path. */
+  /** Absolute git toplevel path, or the scratch directory when kind is 'scratch'. */
   path: string
-  /** Display name (basename of the path). */
+  /** Display name (basename of the path). The scratch project's is 'scratch'. */
   name: string
+  /**
+   * 'scratch' names the one project that is NOT a git repository: the
+   * workspace's own directory, where a conversation lives before it is given
+   * any repo. Always present, always first in GET /api/projects, never in
+   * the registry file. Code that assumes `path` is a repo root (branches,
+   * worktrees, MRs) must check this first.
+   */
+  kind: 'repo' | 'scratch'
   added_at: string
   /**
    * Isolation overlay for THIS repo (T1.4). Optional: older CLIs omit it and

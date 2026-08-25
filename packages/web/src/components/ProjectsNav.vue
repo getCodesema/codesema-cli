@@ -201,12 +201,14 @@ watch(
       <button
         class="pn-project"
         :class="{ 'pn-project--active': project.id === selected }"
-        :title="project.path"
+        :title="project.kind === 'scratch' ? t('workspace.noRepoAttached') : project.path"
         :aria-pressed="project.id === selected"
         @click="emit('select', project.id)"
       >
         <span class="pn-dot" :style="dotStyle(project.name)" aria-hidden="true" />
-        <span class="pn-name">{{ project.name }}</span>
+        <span class="pn-name">{{
+          project.kind === 'scratch' ? t('workspace.noRepoOption') : project.name
+        }}</span>
         <span class="pn-badges">
           <!-- Strong amber: conversations blocked on the human. -->
           <span
@@ -227,6 +229,7 @@ watch(
         </span>
       </button>
       <button
+        v-if="project.kind !== 'scratch'"
         class="pn-remove"
         :class="{ 'pn-remove--armed': confirmRemoveId === project.id }"
         :title="

@@ -231,6 +231,7 @@ describe('WorkQueue renders isolation PER PROJECT, not per launch repo', () => {
     id,
     path: `/repos/${id}`,
     name: id,
+    kind: 'repo',
     added_at: '2026-08-13T10:00:00.000Z',
     isolation,
   })
@@ -262,6 +263,54 @@ describe('WorkQueue renders isolation PER PROJECT, not per launch repo', () => {
     })
     expect(html).not.toContain(t('workspace.isolationUpgradeTitle'))
     expect(html).toContain('wq-iso--policy')
+  })
+})
+
+describe('WorkQueue composer target select and the scratch project', () => {
+  const makeProject = (id: string, kind: Project['kind']): Project => ({
+    id,
+    path: `/repos/${id}`,
+    name: id,
+    kind,
+    added_at: '2026-08-13T10:00:00.000Z',
+  })
+  const scratch = makeProject('scratch1', 'scratch')
+  const repoA = makeProject('aaaa1111', 'repo')
+  const repoB = makeProject('bbbb2222', 'repo')
+
+  /** The rendered `<select …>` opening tag, or throws if the composer target
+   * select is absent from the queue. */
+  function selectTag(html: string): string {
+    const match = html.match(/<select[^>]*>/)
+    if (!match) {
+      throw new Error('no target <select> in the rendered queue')
+    }
+    return match[0]
+  }
+
+  test('a single scratch project (no repo registered) hides the target select', async () => {
+    const html = await renderQueue([], { projects: [scratch], filter: null })
+    expect(html).not.toContain('wq-target-select')
+  })
+
+  test('a repo alongside scratch shows the select, scratch first and never under its raw name', async () => {
+    const html = await renderQueue([], { projects: [scratch, repoA], filter: null })
+    // Sliced from the first <option>, not the <select> tag itself: the tag
+    // carries its own `value="aaaa1111"` (the resolved default target),
+    // which would otherwise be mistaken for the option list's own order.
+    const optionsBlock = html.slice(html.indexOf('<option'), html.indexOf('</select>'))
+    expect(optionsBlock).toContain(t('workspace.noRepoOption'))
+    expect(optionsBlock.indexOf(t('workspace.noRepoOption'))).toBeLessThan(
+      optionsBlock.indexOf('aaaa1111'),
+    )
+    // The raw registry name ('scratch') never reaches the option text: it
+    // would read as an ordinary, oddly-named repo instead of "no repo".
+    expect(optionsBlock).not.toContain('>scratch<')
+  })
+
+  test('with a repo registered, an untouched select still defaults to the repo, not to scratch', async () => {
+    const html = await renderQueue([], { projects: [scratch, repoA, repoB], filter: null })
+    expect(selectTag(html)).toContain('value="aaaa1111"')
   })
 })
 
