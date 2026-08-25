@@ -29,6 +29,8 @@ import {
   isPinned,
   type FocusDeck,
 } from '../composables/useFocusDeck'
+import { useForgePrefs } from '../composables/useForgePrefs'
+import { EMPTY_ISSUES_STATE, useIssues } from '../composables/useIssues'
 import {
   buildProjectTree,
   countProjectActivity,
@@ -49,12 +51,20 @@ import {
 import { taskKey, useTasks, type CreateTaskInput, type TaskState } from '../composables/useTasks'
 import { t } from '../i18n'
 import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
+import ConversationsColumn from './conversations/ConversationsColumn.vue'
+import ForgeBoard from './forge/ForgeBoard.vue'
+import ForgeControlsPanel from './forge/ForgeControlsPanel.vue'
+import {
+  FORGE_CONTROLS_WIDTH_DEFAULT,
+  FORGE_CONTROLS_WIDTH_MAX,
+  FORGE_CONTROLS_WIDTH_MIN,
+} from './forge/ForgePrefs'
+import ForgeSplitter from './forge/ForgeSplitter.vue'
 import ProjectsNav from './ProjectsNav.vue'
 import RepoSettings from './RepoSettings.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
-import WorkQueue from './WorkQueue.vue'
 import WorkspaceHeader from './WorkspaceHeader.vue'
 
 const props = defineProps<{ token: string }>()
@@ -66,6 +76,9 @@ const {
   connections,
   projects,
   mrsByProject,
+  mrsOf,
+  mrsLoadOf,
+  loadMrsState,
   branchesByProject,
   start,
   stop,
@@ -93,6 +106,10 @@ const {
   loadProjects,
   preview,
 } = useTasks(props.token)
+
+// Forge board (C3): lazy per-project issue fetch, same trigger as the MR/branch
+// lazy-fetch policy above, see selectFilter.
+const issues = useIssues()
 
 const agents = ref<AgentOption[]>([])
 const currentAgent = ref('')
@@ -163,6 +180,7 @@ function selectFilter(id: string | null): void {
   filter.value = id
   if (id !== null) {
     selectProject(id)
+    issues.load(id)
   }
 }
 
@@ -386,6 +404,29 @@ function onBranchClick(projectId: string, branch: string, mr: ForgeMr | null): v
   }
 }
 
+/**
+ * [+ new conversation] in the conversations column: opens a draft column,
+ * the SAME mechanism a trunk branch click already uses, never a second
+ * composer. The column carries no project picker of its own, so the target
+ * is the filtered project, or the first registered one; the base is that
+ * project's current branch when its branches are already known (a project
+ * the human has looked at), else its first trunk branch, else the
+ * conventional 'main'. All three are one click away from a correction in the
+ * draft's own retarget field, so a wrong guess here costs nothing.
+ */
+function onNewConversation(): void {
+  const projectId = filter.value ?? projects.value[0]?.id ?? null
+  if (projectId === null) {
+    return
+  }
+  const branches = branchesByProject.get(projectId) ?? []
+  const base =
+    branches.find((b) => b.isCurrent)?.name ??
+    branches.find((b) => isTrunkBranch(b.name))?.name ??
+    'main'
+  openDraft(projectId, forkDraft(base))
+}
+
 /** Launches the real conversation from the draft: the POST carries base
  * (fork) or branch+target (work-on); on success — or on the 409 "already has
  * a conversation" — the column becomes that conversation IN PLACE. */
@@ -435,6 +476,27 @@ function backFromReview(): void {
   reviewRecord.value = null
 }
 
+/**
+ * Mirrors the forge board's own `v-else-if` below exactly: the board takes
+ * the full width of the desk only in the one focus-zone branch it actually
+ * renders in, since review and the deck both take priority over it, same as
+ * in the template. The work queue hides for exactly this branch and
+ * reappears everywhere else.
+ *
+ * It also decides WHERE the project menu is mounted. With the board up the
+ * desk is three columns, not four: the menu moves into the head of the
+ * board's rail, so navigation and controls share one column (this mirrors
+ * the reference interface, whose left rail carries its filter accordions).
+ * Everywhere else the menu is the desk's own left column, as before.
+ */
+const boardVisible = computed(
+  () =>
+    reviewRecord.value === null &&
+    deckEntries.value.length === 0 &&
+    filter.value !== null &&
+    projects.value.length > 0,
+)
+
 // ── Projects column: counters + the selected project's tree ───────────────
 const activity = computed(() => countProjectActivity(states.value))
 
@@ -462,41 +524,6 @@ const extraBranches = computed<string[]>(() => {
     mrsByProject.get(projectId) ?? [],
   )
 })
-
-// ── Create (queue composer) ───────────────────────────────────────────────
-const creating = ref(false)
-const createError = ref<string | null>(null)
-
-async function onCreate(projectId: string, input: CreateTaskInput): Promise<void> {
-  creating.value = true
-  createError.value = null
-  const result = await create(projectId, input)
-  creating.value = false
-  if (!result.ok) {
-    if (result.existingTaskId !== null) {
-      // 409 uniqueness guard: open the branch's existing conversation.
-      openConversation(projectId, result.existingTaskId)
-      return
-    }
-    createError.value = result.error
-    return
-  }
-  openConversation(projectId, result.record.id)
-}
-
-/** [Ship] on a ready card: the existing ship action, with the conversation
- * brought into focus so the outcome is visible. */
-function onQueueShip(state: TaskState): void {
-  openConversation(state.projectId, state.record.id)
-  void ship(state.projectId, state.record.id)
-}
-
-/** [Resume] on a stopped card (T8): same shape as [Ship] — the conversation
- * opens, so the restarted turn is watched live instead of guessed at. */
-function onQueueResume(state: TaskState): void {
-  openConversation(state.projectId, state.record.id)
-  void resume(state.projectId, state.record.id)
-}
 
 // ── Project registry actions ──────────────────────────────────────────────
 const addBusy = ref(false)
@@ -526,6 +553,110 @@ async function onRemoveProject(id: string): Promise<void> {
   }
   deck.value = deckCloseProject(deck.value, id)
 }
+
+// ── The permanent left rail ───────────────────────────────────────────────
+// The rail is on screen at all times: it carries the project menu whether or
+// not a board is up, and grows its filter sections only when one is. That
+// permanence is the point. When the menu was mounted inside the board it
+// moved and resized the instant a project was picked, so the screen jumped
+// under the pointer for what is supposed to be a plain navigation click.
+const {
+  prefs: forgePrefs,
+  activeSection,
+  railWidth,
+  railCollapsed,
+  listWidth,
+  issuesSort,
+  mrsSort,
+  mrsStateFilter,
+  mrsDraftOnly,
+  railPanelWidth,
+  toggleIssueLabel,
+  toggleMrLabel,
+  clearIssueFilters,
+  clearMrFilters,
+} = useForgePrefs()
+
+/** True only while the rail's handle is under the pointer. The width
+ * transition is switched off for exactly that window: animating a width that
+ * is being rewritten every frame makes the rail lag behind the cursor. Every
+ * OTHER width change -- collapsing with the button, the keyboard step -- is a
+ * jump from one width to another, and those animate. */
+const railDragging = ref(false)
+
+/** The rail's collapsed band needs something to name itself with. With a
+ * project selected that is the project; with none it is the menu's own
+ * label, never an empty band. */
+const railLabel = computed(() =>
+  filter.value === null
+    ? t('workspace.projectLabel')
+    : (projectNameById.value.get(filter.value) ?? filter.value),
+)
+
+// The forge data the rail's sections read. They are only rendered when a
+// board is up, but the props are always bound, so these fall back to the
+// same empty values the composables use rather than to invented ones.
+const railIssuesState = computed(() =>
+  filter.value === null ? EMPTY_ISSUES_STATE : issues.stateOf(filter.value),
+)
+const railMrs = computed(() =>
+  filter.value === null ? [] : mrsOf(filter.value, mrsStateFilter.value),
+)
+const railMrsState = computed(() =>
+  filter.value === null ? null : mrsLoadOf(filter.value, mrsStateFilter.value),
+)
+
+// Fetching the chosen state is lazy and idempotent: `loadMrsState` is a
+// no-op for a pair already loaded or in flight, so firing it on every change
+// of project OR state costs one request per pair and never a duplicate.
+watch(
+  [filter, mrsStateFilter],
+  ([projectId, state]) => {
+    if (projectId !== null) {
+      loadMrsState(projectId, state)
+    }
+  },
+  { immediate: true },
+)
+
+// ── The project menu's bindings, grouped ──────────────────────────────────
+// The menu is mounted in one of two places depending on `boardVisible` (the
+// desk's own left column, or the head of the board's rail). Grouping its ten
+// props and seven handlers here keeps that a one-line mount on each side:
+// spelling all seventeen out twice would mean every future prop has to be
+// added in two places, and the day someone updates only one of them the two
+// mounts drift apart silently.
+const projectsNavProps = computed(() => ({
+  projects: projects.value,
+  selected: filter.value,
+  activity: activity.value,
+  tree: tree.value,
+  extraBranches: extraBranches.value,
+  focusedKeys: focusedKeys.value,
+  addBusy: addBusy.value,
+  addError: addError.value,
+  removeError: removeError.value,
+  candidates: candidates.value,
+}))
+
+const projectsNavHandlers = {
+  select: selectFilter,
+  add: onAddProject,
+  remove: onRemoveProject,
+  discover: () => void discoverCandidates(),
+  'refresh-mrs': () => void refreshMrs(),
+  'open-task': (state: { projectId: string; record: { id: string } }) =>
+    openConversation(state.projectId, state.record.id),
+  'branch-click': ({
+    projectId,
+    branch,
+    mr,
+  }: {
+    projectId: string
+    branch: string
+    mr: ForgeMr | null
+  }) => onBranchClick(projectId, branch, mr),
+}
 </script>
 
 <template>
@@ -548,41 +679,66 @@ async function onRemoveProject(id: string): Promise<void> {
       <RepoSettings />
     </div>
     <div v-else class="ws-body">
-      <ProjectsNav
-        :projects="projects"
-        :selected="filter"
-        :activity="activity"
-        :tree="tree"
-        :extra-branches="extraBranches"
-        :focused-keys="focusedKeys"
-        :add-busy="addBusy"
-        :add-error="addError"
-        :remove-error="removeError"
-        :candidates="candidates"
-        @select="selectFilter"
-        @add="onAddProject"
-        @remove="onRemoveProject"
-        @discover="() => void discoverCandidates()"
-        @refresh-mrs="() => void refreshMrs()"
-        @open-task="(state) => openConversation(state.projectId, state.record.id)"
-        @branch-click="({ projectId, branch, mr }) => onBranchClick(projectId, branch, mr)"
+      <!-- The permanent left rail. It is on screen at all times and always
+           looks the same: the project menu sits in its head, and the board's
+           filter sections appear underneath only when a board is up. Picking
+           a project therefore adds sections below the menu instead of moving
+           or resizing the menu itself. -->
+      <aside
+        class="ws-rail"
+        :class="{ 'ws-rail--dragging': railDragging }"
+        :style="{ '--ws-rail-w': `${railPanelWidth}px` }"
+      >
+        <ForgeControlsPanel
+          :has-board="boardVisible"
+          :active-section="activeSection"
+          :collapsed="railCollapsed"
+          :project-name="railLabel"
+          :issues-state="railIssuesState"
+          :issues-sort="issuesSort"
+          :issues-labels="forgePrefs.issuesLabels"
+          :mrs="railMrs"
+          :mrs-state="railMrsState"
+          :mrs-sort="mrsSort"
+          :mrs-state-filter="mrsStateFilter"
+          :mrs-draft-only="mrsDraftOnly"
+          :mrs-labels="forgePrefs.mrsLabels"
+          @update:active-section="(v) => (activeSection = v)"
+          @update:collapsed="(v) => (railCollapsed = v)"
+          @update:issues-sort="(v) => (issuesSort = v)"
+          @update:mrs-sort="(v) => (mrsSort = v)"
+          @update:mrs-state-filter="(v) => (mrsStateFilter = v)"
+          @update:mrs-draft-only="(v) => (mrsDraftOnly = v)"
+          @toggle-issue-label="toggleIssueLabel"
+          @toggle-mr-label="toggleMrLabel"
+        >
+          <template #top>
+            <ProjectsNav v-bind="projectsNavProps" v-on="projectsNavHandlers" />
+          </template>
+        </ForgeControlsPanel>
+      </aside>
+
+      <ForgeSplitter
+        v-if="!railCollapsed"
+        :model-value="railWidth"
+        :min="FORGE_CONTROLS_WIDTH_MIN"
+        :max="FORGE_CONTROLS_WIDTH_MAX"
+        :default-width="FORGE_CONTROLS_WIDTH_DEFAULT"
+        :ariaLabel="t('forge.resizeControlsAria')"
+        @update:model-value="(v) => (railWidth = v)"
+        @update:dragging="(v) => (railDragging = v)"
       />
 
-      <WorkQueue
+      <!-- Hidden while the forge board is the focus zone's content: the
+           board then takes the full remaining width (rail / list / detail,
+           three columns). -->
+      <ConversationsColumn
+        v-if="!boardVisible"
         :states="queueStates"
         :project-names="projectNameById"
         :focused-keys="focusedKeys"
-        :projects="projects"
-        :filter="filter"
-        :creating="creating"
-        :create-error="createError"
-        :workspace="workspace"
-        :agents="agents"
-        :current-agent="currentAgent"
-        @open="(state) => openConversation(state.projectId, state.record.id)"
-        @ship="onQueueShip"
-        @resume="onQueueResume"
-        @create="onCreate"
+        @select="(state) => openConversation(state.projectId, state.record.id)"
+        @create="onNewConversation"
       />
 
       <main class="ws-focus">
@@ -722,7 +878,38 @@ async function onRemoveProject(id: string): Promise<void> {
           </div>
         </div>
 
-        <!-- Empty focus: a sober invite. -->
+        <!-- Forge board: the selected project's open issues/MRs, in place of
+             the sober empty-state once a project is actually chosen. -->
+        <!-- Kept as the literal condition (not `boardVisible`, which mirrors
+             it exactly for the work queue's own gate below): a computed
+             boolean loses the `filter !== null` narrowing Vue's template
+             compiler needs to type `filter` as `string` for the children
+             below (:key, issues.stateOf, mrsByProject.get, …). -->
+        <div v-else-if="filter !== null && projects.length > 0" class="ws-forge-board">
+          <!-- Keyed on the project: remounts the board (and its internal
+               selection/section state, not just its persisted prefs) on
+               every project switch, so a detail-panel selection never
+               survives into a different project's items. -->
+          <ForgeBoard
+            :key="filter"
+            :section="activeSection"
+            :issues-state="issues.stateOf(filter)"
+            :issues-sort="issuesSort"
+            :issues-labels="forgePrefs.issuesLabels"
+            :mrs="mrsOf(filter, mrsStateFilter)"
+            :mrs-state="mrsLoadOf(filter, mrsStateFilter)"
+            :mrs-sort="mrsSort"
+            :mrs-draft-only="mrsDraftOnly"
+            :mrs-labels="forgePrefs.mrsLabels"
+            :list-width="listWidth"
+            @retry-issues="issues.reload(filter)"
+            @clear-issue-filters="clearIssueFilters"
+            @clear-mr-filters="clearMrFilters"
+            @update:list-width="(v) => (listWidth = v)"
+          />
+        </div>
+
+        <!-- Empty focus: a sober invite (no project selected, or none registered). -->
         <div v-else class="ws-empty-focus">
           <p class="ws-empty">
             {{ projects.length === 0 ? t('workspace.noProject') : t('workspace.focusEmpty') }}
@@ -764,6 +951,24 @@ async function onRemoveProject(id: string): Promise<void> {
   min-height: 0;
   display: flex;
   align-items: stretch;
+}
+
+/* The permanent left rail. Its width is the ONE thing about it that ever
+   changes, and it changes only when the user drags the handle or collapses
+   it, never because a project was picked. */
+.ws-rail {
+  flex: 0 0 var(--ws-rail-w);
+  width: var(--ws-rail-w);
+  min-height: 0;
+  border-right: 1px solid var(--cs-line-2);
+  transition:
+    flex-basis var(--cs-duration-base) var(--cs-ease-in),
+    width var(--cs-duration-base) var(--cs-ease-in);
+}
+
+/* Dragging: no transition at all, or the rail trails the pointer. */
+.ws-rail--dragging {
+  transition: none;
 }
 
 /* ── Focus zone: the column deck ──────────────────────────────────────── */
@@ -928,6 +1133,13 @@ async function onRemoveProject(id: string): Promise<void> {
   white-space: nowrap;
 }
 
+/* ── Forge board ──────────────────────────────────────────────────────── */
+.ws-forge-board {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* ── Empty focus ──────────────────────────────────────────────────────── */
 .ws-empty-focus {
   flex: 1;
@@ -970,10 +1182,12 @@ async function onRemoveProject(id: string): Promise<void> {
   border-color: var(--cs-muted);
 }
 
-/* Narrow desk: the projects column folds first, then the queue narrows. */
-@media (max-width: 1100px) {
-  .ws-body :deep(.wq-root) {
-    width: 360px;
-  }
+/* The conversations column sets its own 260px width but, by its own header
+   comment, leaves the flex behaviour to whoever mounts it, the same split
+   ForgeBoard.vue already has with ForgeSplitter.vue. Without this the column
+   would shrink under flex's default alongside the focus zone; `min-width: 0`
+   on `.ws-focus` is what absorbs a narrow desk instead. */
+.ws-body :deep(.cvc-root) {
+  flex: none;
 }
 </style>

@@ -9,7 +9,12 @@ import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './confi
 import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
-import { listOpenMrs, type ForgeMrsResult } from './forge-mrs.js'
+import {
+  listIssues as probeIssues,
+  type ForgeIssuesResult,
+  type ForgeIssueStateFilter,
+} from './forge-issues.js'
+import { listOpenMrs, type ForgeMrsResult, type ForgeMrStateFilter } from './forge-mrs.js'
 import { t } from './i18n.js'
 import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
@@ -1142,11 +1147,63 @@ function serveTaskEvents(
 async function handleMrsList(
   res: ServerResponse,
   cwd: string,
-  listMrs: (cwd: string) => Promise<ForgeMrsResult>,
+  listMrs: (cwd: string, state?: ForgeMrStateFilter) => Promise<ForgeMrsResult>,
+  state: ForgeMrStateFilter | undefined,
 ): Promise<void> {
-  const result = await listMrs(cwd)
+  const result = await listMrs(cwd, state)
   sendJson(res, 200, result)
 }
+
+async function handleIssuesList(
+  res: ServerResponse,
+  cwd: string,
+  listIssues: (cwd: string, state?: ForgeIssueStateFilter) => Promise<ForgeIssuesResult>,
+  state: ForgeIssueStateFilter | undefined,
+): Promise<void> {
+  const result = await listIssues(cwd, state)
+  sendJson(res, 200, result)
+}
+
+/** Adapts forge-issues's `listIssues({cwd, state?})` to the plain `(cwd, state?) =>
+ *  Promise<result>` shape every route handler and test seam here uses; absent state falls
+ *  through to the underlying probe's own default (open). */
+const listIssuesDefault = (
+  cwd: string,
+  state?: ForgeIssueStateFilter,
+): Promise<ForgeIssuesResult> => probeIssues({ cwd, state })
+
+/** Same adaptation as `listIssuesDefault`, for forge-mrs's `listOpenMrs(cwd, {state?})`. */
+const listMrsDefault = (cwd: string, state?: ForgeMrStateFilter): Promise<ForgeMrsResult> =>
+  listOpenMrs(cwd, { state })
+
+const MR_STATE_FILTERS: ReadonlySet<string> = new Set(['open', 'merged', 'closed', 'all'])
+const ISSUE_STATE_FILTERS: ReadonlySet<string> = new Set(['open', 'closed', 'all'])
+
+type StateParamResult<T> = { ok: true; state: T | undefined } | { ok: false }
+
+/**
+ * Parses the optional `?state=` query param shared by /api/mrs and /api/issues.
+ * Absent → `undefined` (the underlying probe's own default, open); present but
+ * not one of `values` → refused outright, never silently folded back to the
+ * default: a caller asking for a state this server does not recognise must
+ * be told so, not served a different list than the one it asked for.
+ */
+function parseStateParam<T extends string>(
+  params: URLSearchParams,
+  values: ReadonlySet<string>,
+): StateParamResult<T> {
+  const raw = params.get('state')
+  if (raw === null) {
+    return { ok: true, state: undefined }
+  }
+  return values.has(raw) ? { ok: true, state: raw as T } : { ok: false }
+}
+
+const parseMrStateParam = (params: URLSearchParams): StateParamResult<ForgeMrStateFilter> =>
+  parseStateParam(params, MR_STATE_FILTERS)
+
+const parseIssueStateParam = (params: URLSearchParams): StateParamResult<ForgeIssueStateFilter> =>
+  parseStateParam(params, ISSUE_STATE_FILTERS)
 
 /** GET /api/preview?source=mr&number=N | ?source=branch&name=X: deterministic (no agent) MR/branch preview. */
 async function handlePreview(
@@ -1217,12 +1274,14 @@ function createRequestHandler(handlerOpts: {
   indexHtml: string
   cwd: string
   configToken: string
-  listMrs: (cwd: string) => Promise<ForgeMrsResult>
+  listMrs: (cwd: string, state?: ForgeMrStateFilter) => Promise<ForgeMrsResult>
+  listIssues: (cwd: string, state?: ForgeIssueStateFilter) => Promise<ForgeIssuesResult>
   fix?: FixEndpoint | undefined
   mrReview?: MrReviewEndpoint | undefined
   tasks?: TasksEndpoint | undefined
 }) {
-  const { session, indexHtml, cwd, configToken, listMrs, fix, mrReview, tasks } = handlerOpts
+  const { session, indexHtml, cwd, configToken, listMrs, listIssues, fix, mrReview, tasks } =
+    handlerOpts
   // One cap for BOTH streams (review session + tasks): each browser tab holds
   // at most one of each, the cap only guards against runaway clients.
   let sseClients = 0
@@ -1325,6 +1384,7 @@ function createRequestHandler(handlerOpts: {
       }
       if (
         pathname === '/api/mrs' ||
+        pathname === '/api/issues' ||
         pathname === '/api/branches' ||
         pathname === '/api/preview' ||
         pathname === '/api/preview/diff'
@@ -1334,7 +1394,18 @@ function createRequestHandler(handlerOpts: {
           return sendText(res, 404, 'not found')
         }
         if (pathname === '/api/mrs') {
-          return void handleMrsList(res, scoped.cwd, listMrs)
+          const state = parseMrStateParam(searchParams)
+          if (!state.ok) {
+            return sendText(res, 400, 'bad request')
+          }
+          return void handleMrsList(res, scoped.cwd, listMrs, state.state)
+        }
+        if (pathname === '/api/issues') {
+          const state = parseIssueStateParam(searchParams)
+          if (!state.ok) {
+            return sendText(res, 400, 'bad request')
+          }
+          return void handleIssuesList(res, scoped.cwd, listIssues, state.state)
         }
         if (pathname === '/api/branches') {
           return sendJson(res, 200, listLocalBranches(scoped.cwd))
@@ -1517,6 +1588,54 @@ async function listen(
   throw new Error(t('serve.noFreePort', { start: startPort, end: startPort + 19 }))
 }
 
+/**
+ * Dev-only: the Vite dev server origin to load the UI from, or undefined for the
+ * embedded `web-dist` build. Set by `CODESEMA_DEV_VITE` so nothing can switch a
+ * published install into dev mode implicitly. Loopback only: the value ends up as
+ * a `<script src>` in the served page, so a remote origin here would be a remote
+ * script running against the local server.
+ */
+export function resolveDevViteOrigin(raw: string | undefined): string | undefined {
+  const value = raw?.trim()
+  if (!value) {
+    return undefined
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(t('serve.devViteInvalid', { value }))
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !isLoopbackHost(url.host)) {
+    throw new Error(t('serve.devViteInvalid', { value }))
+  }
+  return url.origin
+}
+
+/**
+ * Dev-only page shell pointing at the Vite dev server, per Vite's backend
+ * integration mode (https://vite.dev/guide/backend-integration): the CLI keeps
+ * serving the page (so `/api` stays same-origin and the boot script injection
+ * below is unchanged) while Vite serves the modules and drives HMR. Mirrors
+ * `packages/web/index.html`; keep both in step.
+ */
+export function devIndexHtml(viteOrigin: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>codesema</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="${viteOrigin}/@vite/client"></script>
+    <script type="module" src="${viteOrigin}/src/main.ts"></script>
+  </body>
+</html>
+`
+}
+
 export async function startServer(
   session: LiveSession,
   opts: {
@@ -1529,10 +1648,14 @@ export async function startServer(
     /** Project auto-registered from the boot repo (GET /api/projects `current`). */
     currentProjectId?: string | null | undefined
     /** Test seam for GET /api/mrs (same shape as mr-review-runner's); defaults to the real forge CLI probe. */
-    listMrs?: ((cwd: string) => Promise<ForgeMrsResult>) | undefined
+    listMrs?: ((cwd: string, state?: ForgeMrStateFilter) => Promise<ForgeMrsResult>) | undefined
+    /** Test seam for GET /api/issues; defaults to the real forge CLI probe. */
+    listIssues?:
+      ((cwd: string, state?: ForgeIssueStateFilter) => Promise<ForgeIssuesResult>) | undefined
   },
 ): Promise<{ url: string; port: number; stop: () => Promise<void> }> {
-  if (!existsSync(join(WEB_DIST, 'index.html'))) {
+  const devViteOrigin = resolveDevViteOrigin(process.env.CODESEMA_DEV_VITE)
+  if (!devViteOrigin && !existsSync(join(WEB_DIST, 'index.html'))) {
     throw new Error(t('serve.noWebUi', { path: WEB_DIST }))
   }
   const configToken = randomBytes(16).toString('hex')
@@ -1556,10 +1679,10 @@ export async function startServer(
     ...(mrReview ? [`window.__CODESEMA_MRREVIEW_TOKEN__=${JSON.stringify(mrReview.token)}`] : []),
     ...(tasks ? [`window.__CODESEMA_TASKS_TOKEN__=${JSON.stringify(tasks.token)}`] : []),
   ].join(';')
-  const indexHtml = readFileSync(join(WEB_DIST, 'index.html'), 'utf8').replace(
-    '</head>',
-    `<script>${bootScript}</script></head>`,
-  )
+  const indexSource = devViteOrigin
+    ? devIndexHtml(devViteOrigin)
+    : readFileSync(join(WEB_DIST, 'index.html'), 'utf8')
+  const indexHtml = indexSource.replace('</head>', `<script>${bootScript}</script></head>`)
 
   const { server, port } = await listen(
     createRequestHandler({
@@ -1567,7 +1690,8 @@ export async function startServer(
       indexHtml,
       cwd: opts.cwd,
       configToken,
-      listMrs: opts.listMrs ?? listOpenMrs,
+      listMrs: opts.listMrs ?? listMrsDefault,
+      listIssues: opts.listIssues ?? listIssuesDefault,
       fix,
       mrReview,
       tasks,

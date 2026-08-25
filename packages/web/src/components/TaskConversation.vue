@@ -58,6 +58,7 @@ import { t } from '../i18n'
 import { TASK_EVENT_COMPONENTS, type TaskEventCtx } from '../task-event-registry'
 import type { PreviewResult, ReviewRecord, TaskEvent, TaskStatus as TaskStatus2 } from '../types'
 import PreviewPanel from './PreviewPanel.vue'
+import TaskEventUser from './task-events/TaskEventUser.vue'
 
 const props = defineProps<{
   state: TaskState
@@ -866,9 +867,7 @@ const wait = computed(() =>
             :key="item.kind === 'tools' ? `tools-${item.key}` : item.event.seq"
           >
             <template v-if="item.kind === 'single'">
-              <div v-if="item.prompt !== null" class="cv-user">
-                <p class="cv-user-text">{{ item.prompt }}</p>
-              </div>
+              <TaskEventUser v-if="item.prompt !== null" :text="item.prompt" />
               <component
                 :is="TASK_EVENT_COMPONENTS[item.event.type]"
                 :event="item.event"
@@ -1539,27 +1538,6 @@ const wait = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-/* User turn: sober green-tinted bubble, right-aligned (maquette). */
-.cv-user {
-  align-self: flex-end;
-  max-width: 72%;
-  margin: 4px 0;
-  padding: 10px 13px;
-  border: 1px solid var(--cs-green-ring);
-  border-radius: 10px 10px 3px 10px;
-  background: var(--cs-green-soft);
-}
-
-.cv-user-text {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--cs-text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  min-width: 0;
 }
 
 .cv-live {

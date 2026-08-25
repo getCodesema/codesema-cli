@@ -1,12 +1,14 @@
 <script setup lang="ts">
-// Left projects column (~210px): "All projects" on top (total counter, green
-// ring when active), then one row per registered repo — identity dot whose
-// hue derives from the name (nameColor, pure), amber counters (⚠ waiting for
-// the human, N agents at work) — then the add-project form (manual path +
-// detected repos). Selecting a row filters the whole UI; "All" clears the
-// filter. The active project's MR/branch tree and its "Branches (N)"
+// Left projects column, 236px track (see the inner "card" wrapper below):
+// "All projects" on top (total counter, green pill when active), then one
+// row per registered repo: identity dot whose hue derives from the name
+// (nameColor, pure), amber counters (⚠ waiting for the human, N agents at
+// work), then the add-project form (manual path + detected repos), set off
+// as the menu's footer. Selecting a row filters the whole UI; "All" clears
+// the filter. The active project's MR/branch tree and its "Branches (N)"
 // disclosure live here too, compact, under the list. All data comes from
 // props, all mutations go up as events.
+import { GitBranch, GitPullRequest, LayoutGrid, MessageSquare, Plus } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import {
   nameColor,
@@ -184,234 +186,327 @@ watch(
 
 <template>
   <nav class="pn-root" :aria-label="t('workspace.projectLabel')">
-    <!-- All projects: no filter. Active = green ring (ready-to-scan state). -->
-    <button
-      class="pn-all"
-      :class="{ 'pn-all--active': selected === null }"
-      :aria-pressed="selected === null"
-      @click="emit('select', null)"
-    >
-      {{ t('workspace.allProjects') }}
-      <span class="pn-all-count">{{ total }}</span>
-    </button>
+    <!-- Inner card: the raised surface (8px inset, 16px radius, hairline,
+         elevated ground, subtle shadow). `.pn-root` is only the 236px track
+         it floats in. -->
+    <div class="pn-card">
+      <!-- Header: brand mark + name. No collapse control (no persisted state
+           exists yet to drive one; a dead button would be worse than none). -->
+      <div class="pn-header">
+        <div class="pn-brand">
+          <span class="pn-brand-mark" aria-hidden="true">C</span>
+          <span class="pn-brand-name">codesema</span>
+        </div>
+      </div>
 
-    <span class="pn-label">{{ t('workspace.projectLabel') }}</span>
-
-    <div v-for="project in projects" :key="project.id" class="pn-row">
+      <!-- All projects: no filter. Active = accent fill (ready-to-scan state). -->
       <button
-        class="pn-project"
-        :class="{ 'pn-project--active': project.id === selected }"
-        :title="project.path"
-        :aria-pressed="project.id === selected"
-        @click="emit('select', project.id)"
+        class="pn-all"
+        :class="{ 'pn-all--active': selected === null }"
+        :aria-pressed="selected === null"
+        @click="emit('select', null)"
       >
-        <span class="pn-dot" :style="dotStyle(project.name)" aria-hidden="true" />
-        <span class="pn-name">{{ project.name }}</span>
-        <span class="pn-badges">
-          <!-- Strong amber: conversations blocked on the human. -->
-          <span
-            v-if="countsOf(project.id).waiting > 0"
-            class="pn-badge pn-badge--waiting"
-            :title="t('workspace.cardWaiting', { n: countsOf(project.id).waiting })"
-          >
-            ⚠ {{ countsOf(project.id).waiting }}
-          </span>
-          <!-- Plain amber count: agents at work, nothing asked of the human. -->
-          <span
-            v-if="countsOf(project.id).active > 0"
-            class="pn-badge pn-badge--running"
-            :title="t('workspace.cardActive', { n: countsOf(project.id).active })"
-          >
-            {{ countsOf(project.id).active }}
-          </span>
+        <span class="pn-icon-slot">
+          <LayoutGrid class="pn-row-icon" aria-hidden="true" />
         </span>
+        <span class="pn-all-label">{{ t('workspace.allProjects') }}</span>
+        <span class="pn-count-pill pn-all-count">{{ total }}</span>
       </button>
-      <button
-        class="pn-remove"
-        :class="{ 'pn-remove--armed': confirmRemoveId === project.id }"
-        :title="
-          confirmRemoveId === project.id
-            ? t('workspace.removeProjectConfirm')
-            : t('workspace.removeProjectHint')
-        "
-        :aria-label="
-          confirmRemoveId === project.id
-            ? t('workspace.removeProjectConfirm')
-            : t('workspace.removeProject')
-        "
-        @click="requestRemove(project.id)"
-      >
-        ✕
-      </button>
-    </div>
 
-    <button v-if="!formOpen" class="pn-add" @click="openForm">
-      + {{ t('workspace.addProject') }}
-    </button>
+      <span class="pn-label">{{ t('workspace.projectLabel') }}</span>
 
-    <!-- Add form: detected repos first (one click), manual path as fallback. -->
-    <form v-if="formOpen" class="pn-add-form" @submit.prevent="submitAdd">
-      <div v-if="offerable.length > 0" class="pn-detected">
-        <span class="pn-detected-label">{{ t('workspace.detectedProjects') }}</span>
-        <button
-          v-for="candidate in offerable"
-          :key="candidate.path"
-          class="pn-detected-item"
-          type="button"
-          :title="candidate.path"
-          :disabled="addBusy"
-          @click="addCandidate(candidate)"
-        >
-          <span class="pn-detected-plus" aria-hidden="true">+</span>
-          <span class="pn-detected-name">{{ candidate.name }}</span>
-        </button>
-      </div>
-      <input
-        v-model="pathDraft"
-        class="pn-add-input"
-        type="text"
-        :placeholder="t('workspace.addProjectPath')"
-        spellcheck="false"
-      />
-      <div class="pn-add-actions">
-        <button class="pn-add-submit" type="submit" :disabled="addBusy || !pathDraft.trim()">
-          {{ addBusy ? t('workspace.addProjectBusy') : t('workspace.addProjectSubmit') }}
-        </button>
-        <button class="pn-add-cancel" type="button" @click="cancelForm">
-          {{ t('workspace.addProjectCancel') }}
-        </button>
-      </div>
-      <p v-if="addError" class="pn-error">{{ t('workspace.addProjectError') }} ({{ addError }})</p>
-    </form>
-
-    <p v-if="removeError" class="pn-error">
-      {{ t('workspace.removeProjectError') }} ({{ removeError }})
-    </p>
-
-    <!-- Compact tree of the selected project: open MRs + active branches. -->
-    <div v-if="selected !== null" class="pn-tree">
-      <div class="pn-tree-head">
-        <span class="pn-label pn-label--inline">{{ t('workspace.conversations') }}</span>
-        <button
-          class="pn-icon-btn"
-          :title="t('workspace.refreshMrs')"
-          :aria-label="t('workspace.refreshMrs')"
-          @click="emit('refresh-mrs')"
-        >
-          ↻
-        </button>
-      </div>
-
-      <p v-if="tree.length === 0" class="pn-tree-empty">{{ t('workspace.treeEmpty') }}</p>
-
-      <div v-for="node in tree" :key="nodeKey(node)" class="pn-node">
-        <div class="pn-node-row">
+      <div class="pn-list">
+        <div v-for="project in projects" :key="project.id" class="pn-row">
           <button
-            class="pn-node-toggle"
-            :aria-expanded="node.states.length > 0 ? isOpen(node) : undefined"
-            :aria-label="
-              node.states.length > 0
-                ? t('workspace.toggleConversations')
-                : t('workspace.startOnBranch')
-            "
-            @click="onChevronClick(node)"
+            class="pn-project"
+            :class="{ 'pn-project--active': project.id === selected }"
+            :title="project.path"
+            :aria-pressed="project.id === selected"
+            @click="emit('select', project.id)"
           >
-            <span class="pn-node-chevron" aria-hidden="true">
-              {{ node.states.length === 0 ? '+' : isOpen(node) ? '▾' : '▸' }}
+            <span class="pn-icon-slot">
+              <span class="pn-dot" :style="dotStyle(project.name)" aria-hidden="true" />
+            </span>
+            <span class="pn-name">{{ project.name }}</span>
+            <span class="pn-badges">
+              <!-- Strong amber: conversations blocked on the human. -->
+              <span
+                v-if="countsOf(project.id).waiting > 0"
+                class="pn-count-pill pn-badge pn-badge--waiting"
+                :title="t('workspace.cardWaiting', { n: countsOf(project.id).waiting })"
+              >
+                ⚠ {{ countsOf(project.id).waiting }}
+              </span>
+              <!-- Plain amber count: agents at work, nothing asked of the human. -->
+              <span
+                v-if="countsOf(project.id).active > 0"
+                class="pn-count-pill pn-badge pn-badge--running"
+                :title="t('workspace.cardActive', { n: countsOf(project.id).active })"
+              >
+                {{ countsOf(project.id).active }}
+              </span>
             </span>
           </button>
-          <!-- The label is the branch itself: open its conversation or draft. -->
           <button
-            class="pn-node-btn"
+            class="pn-remove"
+            :class="{ 'pn-remove--armed': confirmRemoveId === project.id }"
             :title="
-              node.states.length === 0
-                ? t('workspace.startOnBranch')
-                : node.kind === 'mr'
-                  ? node.mr.title
-                  : node.name
+              confirmRemoveId === project.id
+                ? t('workspace.removeProjectConfirm')
+                : t('workspace.removeProjectHint')
             "
-            @click="onNodeClick(node)"
+            :aria-label="
+              confirmRemoveId === project.id
+                ? t('workspace.removeProjectConfirm')
+                : t('workspace.removeProject')
+            "
+            @click="requestRemove(project.id)"
           >
-            <span class="pn-node-glyph" aria-hidden="true">
-              {{ node.kind === 'mr' ? '⇄' : '⎇' }}
-            </span>
-            <span class="pn-node-label">{{ nodeLabel(node) }}</span>
+            ✕
           </button>
         </div>
-        <template v-if="isOpen(node)">
-          <button
-            v-for="state in node.states"
-            :key="state.record.id"
-            class="pn-conv"
-            :class="{
-              'pn-conv--open': focusedKeys.includes(taskKey(state.projectId, state.record.id)),
-            }"
-            @click="emit('open-task', state)"
-          >
-            <span
-              class="pn-conv-glyph"
-              :style="{ color: EXECUTION_STATUS[state.record.status].text }"
-              :title="t(EXECUTION_STATUS[state.record.status].labelKey)"
-              aria-hidden="true"
-            >
-              {{ EXECUTION_STATUS[state.record.status].icon }}
-            </span>
-            <span class="pn-conv-title">{{ state.record.title }}</span>
-          </button>
-        </template>
       </div>
 
-      <!-- The remaining local branches, folded: each entry starts a draft. -->
-      <div v-if="extraBranches.length > 0" class="pn-node pn-others">
-        <button class="pn-node-btn" :aria-expanded="othersOpen" @click="othersOpen = !othersOpen">
-          <span class="pn-node-chevron" aria-hidden="true">{{ othersOpen ? '▾' : '▸' }}</span>
-          <span class="pn-node-label pn-others-label">
-            {{ t('workspace.otherBranches', { n: extraBranches.length }) }}
+      <!-- Menu footer: the add-project control, set off by a hairline above. -->
+      <div class="pn-footer">
+        <button v-if="!formOpen" class="pn-add" @click="openForm">
+          <span class="pn-icon-slot">
+            <Plus class="pn-row-icon" aria-hidden="true" />
           </span>
+          <span>{{ t('workspace.addProject') }}</span>
         </button>
-        <template v-if="othersOpen">
+
+        <!-- Add form: detected repos first (one click), manual path as fallback. -->
+        <form v-if="formOpen" class="pn-add-form" @submit.prevent="submitAdd">
+          <div v-if="offerable.length > 0" class="pn-detected">
+            <span class="pn-detected-label">{{ t('workspace.detectedProjects') }}</span>
+            <button
+              v-for="candidate in offerable"
+              :key="candidate.path"
+              class="pn-detected-item"
+              type="button"
+              :title="candidate.path"
+              :disabled="addBusy"
+              @click="addCandidate(candidate)"
+            >
+              <span class="pn-detected-plus" aria-hidden="true">+</span>
+              <span class="pn-detected-name">{{ candidate.name }}</span>
+            </button>
+          </div>
+          <input
+            v-model="pathDraft"
+            class="pn-add-input"
+            type="text"
+            :placeholder="t('workspace.addProjectPath')"
+            spellcheck="false"
+          />
+          <div class="pn-add-actions">
+            <button class="pn-add-submit" type="submit" :disabled="addBusy || !pathDraft.trim()">
+              {{ addBusy ? t('workspace.addProjectBusy') : t('workspace.addProjectSubmit') }}
+            </button>
+            <button class="pn-add-cancel" type="button" @click="cancelForm">
+              {{ t('workspace.addProjectCancel') }}
+            </button>
+          </div>
+          <p v-if="addError" class="pn-error">
+            {{ t('workspace.addProjectError') }} ({{ addError }})
+          </p>
+        </form>
+      </div>
+
+      <p v-if="removeError" class="pn-error">
+        {{ t('workspace.removeProjectError') }} ({{ removeError }})
+      </p>
+
+      <!-- Compact tree of the selected project: open MRs + active branches. -->
+      <div v-if="selected !== null" class="pn-tree">
+        <div class="pn-tree-head">
+          <span class="pn-label pn-label--inline">
+            <MessageSquare class="pn-node-glyph" aria-hidden="true" />
+            {{ t('workspace.conversations') }}
+          </span>
           <button
-            v-for="name in extraBranches"
-            :key="name"
-            class="pn-conv"
-            :title="t('workspace.startOnBranch')"
-            @click="clickBranch(name, null)"
+            class="pn-icon-btn"
+            :title="t('workspace.refreshMrs')"
+            :aria-label="t('workspace.refreshMrs')"
+            @click="emit('refresh-mrs')"
           >
-            <span class="pn-conv-glyph" aria-hidden="true">⎇</span>
-            <span class="pn-conv-title">{{ name }}</span>
+            ↻
           </button>
-        </template>
+        </div>
+
+        <p v-if="tree.length === 0" class="pn-tree-empty">{{ t('workspace.treeEmpty') }}</p>
+
+        <div v-for="node in tree" :key="nodeKey(node)" class="pn-node">
+          <div class="pn-node-row">
+            <button
+              class="pn-node-toggle"
+              :aria-expanded="node.states.length > 0 ? isOpen(node) : undefined"
+              :aria-label="
+                node.states.length > 0
+                  ? t('workspace.toggleConversations')
+                  : t('workspace.startOnBranch')
+              "
+              @click="onChevronClick(node)"
+            >
+              <span class="pn-node-chevron" aria-hidden="true">
+                {{ node.states.length === 0 ? '+' : isOpen(node) ? '▾' : '▸' }}
+              </span>
+            </button>
+            <!-- The label is the branch itself: open its conversation or draft. -->
+            <button
+              class="pn-node-btn"
+              :title="
+                node.states.length === 0
+                  ? t('workspace.startOnBranch')
+                  : node.kind === 'mr'
+                    ? node.mr.title
+                    : node.name
+              "
+              @click="onNodeClick(node)"
+            >
+              <GitPullRequest v-if="node.kind === 'mr'" class="pn-node-glyph" aria-hidden="true" />
+              <GitBranch v-else class="pn-node-glyph" aria-hidden="true" />
+              <span class="pn-node-label">{{ nodeLabel(node) }}</span>
+            </button>
+          </div>
+          <template v-if="isOpen(node)">
+            <button
+              v-for="state in node.states"
+              :key="state.record.id"
+              class="pn-conv"
+              :class="{
+                'pn-conv--open': focusedKeys.includes(taskKey(state.projectId, state.record.id)),
+              }"
+              @click="emit('open-task', state)"
+            >
+              <span
+                class="pn-conv-glyph"
+                :style="{ color: EXECUTION_STATUS[state.record.status].text }"
+                :title="t(EXECUTION_STATUS[state.record.status].labelKey)"
+                aria-hidden="true"
+              >
+                {{ EXECUTION_STATUS[state.record.status].icon }}
+              </span>
+              <span class="pn-conv-title">{{ state.record.title }}</span>
+            </button>
+          </template>
+        </div>
+
+        <!-- The remaining local branches, folded: each entry starts a draft. -->
+        <div v-if="extraBranches.length > 0" class="pn-node pn-others">
+          <button class="pn-node-btn" :aria-expanded="othersOpen" @click="othersOpen = !othersOpen">
+            <span class="pn-node-chevron" aria-hidden="true">{{ othersOpen ? '▾' : '▸' }}</span>
+            <GitBranch class="pn-node-glyph" aria-hidden="true" />
+            <span class="pn-node-label pn-others-label">
+              {{ t('workspace.otherBranches', { n: extraBranches.length }) }}
+            </span>
+          </button>
+          <template v-if="othersOpen">
+            <button
+              v-for="name in extraBranches"
+              :key="name"
+              class="pn-conv"
+              :title="t('workspace.startOnBranch')"
+              @click="clickBranch(name, null)"
+            >
+              <GitBranch class="pn-conv-glyph" aria-hidden="true" />
+              <span class="pn-conv-title">{{ name }}</span>
+            </button>
+          </template>
+        </div>
       </div>
     </div>
   </nav>
 </template>
 
 <style scoped>
+/* The 236px track the card floats in: bare ground, not a bordered/filled
+   rail (the card below carries its own surface, hairline and shadow). A
+   74px collapsed state is not built: no toggle exists yet to drive it. */
 .pn-root {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  width: 210px;
+  width: 236px;
   flex: none;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 10px;
-  border-right: 1px solid var(--cs-line);
-  background: var(--cs-panel-deep);
+  background: var(--cs-bg);
 }
 
-/* "All projects": neutral row; active state wears the green ring. */
+/* The inner card: 8px inset all round, 16px radius, 1px hairline, elevated
+   surface, discreet shadow. */
+.pn-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-height: 0;
+  margin: 8px;
+  padding: 12px 8px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 16px;
+  background: var(--cs-surface);
+  box-shadow: var(--cs-shadow-panel);
+  overflow-y: auto;
+}
+
+/* Header: brand mark + name, set off from the rest of the menu by a
+   hairline. One of only two hairlines in the whole menu (the other sits
+   above the footer): every other group boundary uses spacing alone. */
+.pn-header {
+  display: flex;
+  align-items: center;
+  padding: 4px 4px 12px;
+  border-bottom: 1px solid var(--cs-line);
+}
+
+.pn-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pn-brand-mark {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--cs-green-soft);
+  color: var(--cs-green-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pn-brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cs-text);
+}
+
+/* "All projects": neutral row; active state is fill + text only, no border
+   or side bar. Same anatomy as every other navigation row (36px, 14px/500
+   text, 16px icon). `border: none` is explicit, not omitted: this is a
+   native <button>, and the browser's own default border (2px outset) shows
+   through in the absence of Tailwind preflight, which this project does not
+   import (see style.css). */
 .pn-all {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
+  height: 36px;
   text-align: left;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
   color: var(--cs-text-2);
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 7px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
 }
@@ -422,32 +517,65 @@ watch(
 
 .pn-all--active {
   background: var(--cs-green-soft);
-  border-color: var(--cs-green-ring);
   color: var(--cs-text);
   font-weight: 600;
 }
 
-.pn-all-count {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--cs-green);
-  font-variant-numeric: tabular-nums;
+/* Active rows accent their own icon, on top of the tinted fill above: this
+   is what reads at a glance without a border. Rows without a real icon
+   (a project row's identity dot, a status glyph) are exempt: those colors
+   already carry other information and are not a decoration to accent. */
+.pn-all--active .pn-row-icon {
+  color: var(--cs-green-text);
 }
 
-.pn-label {
+/* Shared "count pastille" anatomy: min-width 18px, height 16px, full pill,
+   12px bold text. Color/background per variant below: neutral pill
+   baseline, a filled color only where the count already carries state
+   (waiting = strong amber, the one asking for the human). */
+.pn-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--cs-ghost);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.pn-all-count {
+  margin-left: auto;
+  background: var(--cs-green-soft);
+  color: var(--cs-green-text);
+}
+
+/* Group subheader: normal case, not the tracked mono caps this used to be. */
+.pn-label {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cs-muted);
   padding: 12px 8px 8px;
 }
 
 .pn-label--inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 4px;
+}
+
+/* The repeating project rows: 2px apart from each other, a rhythm distinct
+   from the card's own looser gap between sections. */
+.pn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .pn-row {
@@ -461,14 +589,17 @@ watch(
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  height: 36px;
   text-align: left;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
   color: var(--cs-text-2);
-  padding: 7px 10px;
-  border: 1px solid transparent;
-  border-radius: 7px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
 }
@@ -477,11 +608,34 @@ watch(
   background: var(--cs-hover);
 }
 
+/* Active state: fill + text only, no border or side bar. The tinted fill
+   matches every other active row in this menu (--cs-green-soft, not the
+   neutral --cs-active veil); the identity dot keeps its own color, which
+   names the repo and is not a state to accent. */
 .pn-project--active {
-  background: var(--cs-active);
-  border-color: var(--cs-line-3);
+  background: var(--cs-green-soft);
   color: var(--cs-text);
   font-weight: 600;
+}
+
+/* The icon slot every nav row reserves before its label: 16px, with a 10px
+   gap to the label (the row's own `gap: 10px` above). The identity dot
+   itself stays a small color swatch, centered in that slot. */
+.pn-icon-slot {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Leading row icon: fills the 16px slot above, decorative (the adjacent
+   label already carries the meaning). */
+.pn-row-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 
 /* Identity dot: stable hue from the project name (nameColor). */
@@ -505,20 +659,19 @@ watch(
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
 }
 
-/* Strong amber: the human blocks these conversations. */
+/* Strong amber: the human blocks these conversations, the one pastille
+   that carries a colored fill, per the doctrine (color is a state). */
 .pn-badge--waiting {
-  font-weight: 700;
+  background: var(--cs-amber-soft);
   color: var(--cs-amber-text);
 }
 
-/* Plain amber count: the machine works, nothing is asked of the human. */
+/* Plain amber count: the machine works, nothing is asked of the human;
+   neutral pill, amber text only. */
 .pn-badge--running {
-  font-weight: 600;
+  background: var(--cs-inset);
   color: var(--cs-amber);
 }
 
@@ -558,14 +711,32 @@ watch(
   background: var(--cs-red-soft);
 }
 
+/* Menu footer: set off from the project list by a hairline above it,
+   regardless of which of its two states (the button, or the open form) is
+   currently showing. */
+.pn-footer {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--cs-line);
+}
+
+/* Same anatomy as every other navigation row: 36px, 8px/12px padding, 8px
+   radius, 14px/500/20px text, 16px icon with a 10px gap. */
 .pn-add {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
   text-align: left;
-  font-size: 12px;
   font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
   color: var(--cs-ghost);
-  padding: 7px 10px;
+  padding: 8px 12px;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
 }
@@ -696,13 +867,13 @@ watch(
 }
 
 /* ── Compact tree of the selected project ─────────────────────────────── */
+/* Set off from the groups above by spacing alone: the reference menu keeps
+   hairlines to two total (under the header, above the footer). */
 .pn-tree {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--cs-line);
+  margin-top: 16px;
   min-height: 0;
 }
 
@@ -750,7 +921,7 @@ watch(
 }
 
 /* A tree node row: the fold chevron and the branch label are SEPARATE
-   buttons — the label click routes to the branch's conversation or draft. */
+   buttons: the label click routes to the branch's conversation or draft. */
 .pn-node-row {
   display: flex;
   align-items: stretch;
@@ -802,9 +973,7 @@ watch(
 .pn-node-glyph {
   flex: none;
   width: 13px;
-  text-align: center;
-  font-size: 11px;
-  font-family: var(--font-mono);
+  height: 13px;
   color: var(--cs-muted);
 }
 
@@ -836,18 +1005,24 @@ watch(
   background: var(--cs-hover);
 }
 
-/* Marked: this conversation is the one currently in focus. */
+/* Marked: this conversation is the one currently in focus. Same tinted fill
+   as every other active row; its glyph carries the execution status, an
+   inline color, and stays as-is: that color is data, not a decoration to
+   accent. */
 .pn-conv--open {
-  background: var(--cs-active);
+  background: var(--cs-green-soft);
 }
 
-/* The glyph is the colored carrier of the execution state (shared table). */
+/* Shared between an execution-state glyph (inline color overrides the one
+   below) and a plain branch icon (uses the color below as-is). */
 .pn-conv-glyph {
   flex: none;
   width: 13px;
+  height: 13px;
   text-align: center;
   font-size: 11px;
   font-family: var(--font-mono);
+  color: var(--cs-muted);
 }
 
 .pn-conv-title {

@@ -25,6 +25,19 @@ const LABEL_QUOTE_MAX = 60
 
 export type ForgeIssueState = 'open' | 'closed'
 
+/**
+ * A label as either forge attributes it: a name plus its display colour.
+ * `color` is six lowercase hex digits with no leading `#`, whichever way the
+ * source forge spelled it (GitHub bare, GitLab `#`-prefixed): normalised
+ * once here rather than carried in two different shapes downstream. `null`
+ * when the forge did not say, or said something this module could not read
+ * as a colour: never an empty string, never an invented default.
+ */
+export type ForgeLabel = {
+  name: string
+  color: string | null
+}
+
 export type ForgeIssue = {
   number: number
   title: string
@@ -35,7 +48,7 @@ export type ForgeIssue = {
    */
   body: string
   state: ForgeIssueState
-  labels: string[]
+  labels: ForgeLabel[]
   author: string
   createdAt: string
   updatedAt: string
@@ -221,35 +234,111 @@ function optionalText(raw: unknown): string | null {
   return typeof raw === 'string' ? raw : null
 }
 
+/** Exactly six hex digits, case-insensitive, normalised to lowercase: anything
+ * else (wrong length, a stray `#`, a non-hex character) degrades to null
+ * rather than being propagated or guessed at. */
+const HEX_COLOR = /^[0-9a-f]{6}$/i
+
+function normalizeHexColor(value: string): string | null {
+  return HEX_COLOR.test(value) ? value.toLowerCase() : null
+}
+
+/** GitHub's own label colour is bare hex (verified: `gh issue list --json
+ * labels` on a real repo answers `{"color":"d73a4a", …}`, no `#`). A value
+ * that does not match that shape, including one carrying GitLab's `#`, is
+ * not this forge's colour and degrades to null, never guessed at. */
+function ghLabelColor(raw: unknown): string | null {
+  return typeof raw === 'string' ? normalizeHexColor(raw) : null
+}
+
+/** GitLab's REST colour is always `#`-prefixed (GitLab API docs, labels:
+ * "6-digit hex notation with leading '#' sign"), verified live against
+ * `glab label list --output json` on a public project (`"color":"#34495E"`).
+ * The `#` is GitLab's own convention, stripped here rather than carried
+ * downstream in two different shapes. */
+function glabLabelColor(raw: unknown): string | null {
+  if (typeof raw !== 'string') {
+    return null
+  }
+  return normalizeHexColor(raw.startsWith('#') ? raw.slice(1) : raw)
+}
+
 /** GitHub: `labels: [{name, color, …}]`. */
-function ghLabelNames(raw: unknown): string[] | null {
+function ghLabelsFrom(raw: unknown): ForgeLabel[] | null {
   if (!Array.isArray(raw)) {
     return null
   }
-  const names: string[] = []
+  const labels: ForgeLabel[] = []
   for (const entry of raw) {
     const name = readNested(entry, 'name')
     if (!isNonEmptyString(name)) {
       return null
     }
-    names.push(name)
+    labels.push({ name, color: ghLabelColor(readNested(entry, 'color')) })
   }
-  return names
+  return labels
 }
 
-/** GitLab: `labels: ["bug", "ui"]` — plain strings, not objects. */
-function glabLabelNames(raw: unknown): string[] | null {
+/**
+ * GitLab: `labels: ["bug", "ui"]`, plain strings, not objects, so `color`
+ * always comes back null here. `glab issue list`/`glab mr list` never carry
+ * the colour on the list payload itself (verified live: `glab issue list
+ * --output json` on a labelled public project answers bare label strings);
+ * a caller that wants colour for GitLab enriches separately, from the
+ * project's own label catalog (see forge-issues.ts / forge-mrs.ts).
+ */
+function glabLabelsFrom(raw: unknown): ForgeLabel[] | null {
   if (!Array.isArray(raw)) {
     return null
   }
-  const names: string[] = []
+  const labels: ForgeLabel[] = []
   for (const entry of raw) {
     if (!isNonEmptyString(entry)) {
       return null
     }
-    names.push(entry)
+    labels.push({ name: entry, color: null })
   }
-  return names
+  return labels
+}
+
+/**
+ * The repository's own label catalog, WITH colour: `glab label list
+ * --output json`, the same porcelain `parseLabelNames` below reduces to bare
+ * names for the existence-check catalog (T3.7), read again here for its
+ * `color` field (verified live: `{"name":"bug","color":"#34495E", …}`). A
+ * separate reader because `parseLabelNames`'s callers only ever needed the
+ * name, and widening its return shape would ripple into every one of them;
+ * one bad entry rejects the WHOLE array like every other list here.
+ */
+export function parseGlabLabelCatalog(raw: string): ForgeLabel[] | null {
+  const data = parseJson(raw)
+  if (!Array.isArray(data)) {
+    return null
+  }
+  const labels: ForgeLabel[] = []
+  for (const entry of data) {
+    const name = readNested(entry, 'name')
+    if (!isNonEmptyString(name)) {
+      return null
+    }
+    labels.push({ name, color: glabLabelColor(readNested(entry, 'color')) })
+  }
+  return labels
+}
+
+/** Colours a label list from a name to colour catalog (case-sensitive,
+ * exact match on the name a forge already gave back). A name absent from the
+ * catalog (a truncated catalog, a label deleted between the two reads)
+ * keeps whatever colour it already carried (null, on every caller today)
+ * rather than being treated as an error: this is strictly additive. */
+export function applyLabelColors(
+  labels: readonly ForgeLabel[],
+  catalog: ReadonlyMap<string, string>,
+): ForgeLabel[] {
+  return labels.map((label) => ({
+    name: label.name,
+    color: catalog.get(label.name) ?? label.color,
+  }))
 }
 
 /**
@@ -267,7 +356,7 @@ type IssueDraft = {
   /** Already normalised by the caller; null means "reject the whole entry". */
   body: string | null
   state: ForgeIssueState | null
-  labels: string[] | null
+  labels: ForgeLabel[] | null
 }
 
 function buildIssue(draft: IssueDraft): ForgeIssue | null {
@@ -303,7 +392,7 @@ export function ghIssueFrom(entry: unknown): ForgeIssue | null {
     url: readRecordProp(e, 'url'),
     body: optionalText(readRecordProp(e, 'body')),
     state: normalizeState(readRecordProp(e, 'state')),
-    labels: ghLabelNames(readRecordProp(e, 'labels')),
+    labels: ghLabelsFrom(readRecordProp(e, 'labels')),
   })
 }
 
@@ -321,7 +410,7 @@ export function glabIssueFrom(entry: unknown): ForgeIssue | null {
     url: readRecordProp(e, 'web_url'),
     body: optionalText(readRecordProp(e, 'description')),
     state: normalizeState(readRecordProp(e, 'state')),
-    labels: glabLabelNames(readRecordProp(e, 'labels')),
+    labels: glabLabelsFrom(readRecordProp(e, 'labels')),
   })
 }
 
@@ -369,7 +458,7 @@ export function parseGlabIssueList(raw: string): ForgeIssue[] | null {
  * `glab label list --output json` — reduced to plain names (T3.7). The one
  * read where the two forges do NOT diverge: both print an array of objects
  * carrying a `name`, unlike an issue payload, where GitHub's labels are
- * objects and GitLab's are bare strings (`ghLabelNames` / `glabLabelNames`
+ * objects and GitLab's are bare strings (`ghLabelsFrom` / `glabLabelsFrom`
  * above). A bare string is accepted all the same, for that exact reason: this
  * catalog answers ONE question — "is this name already taken" — and a forge
  * that answers it in the simpler shape answers it correctly.
@@ -554,7 +643,7 @@ export function ghRestIssueFrom(entry: unknown): ForgeIssue | null {
     url: readRecordProp(e, 'html_url'),
     body: optionalText(readRecordProp(e, 'body')),
     state: normalizeState(readRecordProp(e, 'state')),
-    labels: ghLabelNames(readRecordProp(e, 'labels')),
+    labels: ghLabelsFrom(readRecordProp(e, 'labels')),
   })
 }
 
@@ -638,22 +727,32 @@ export function ghIssueNumberFromRest(raw: string): number | null {
   return isIssueNumber(number) ? number : null
 }
 
-/** GitLab's GraphQL `Label` exposes `title`, never the REST API's `name` —
- * one more asymmetry the read side keeps rather than papering over. */
-function glabGraphqlLabelTitles(raw: unknown): string[] | null {
+/**
+ * GitLab's GraphQL `Label` exposes `title`, never the REST API's `name`:
+ * one more asymmetry the read side keeps rather than papering over. `color`
+ * is deliberately NOT requested here: unlike the REST label catalog (verified
+ * live against `glab label list --output json`), this module could not
+ * verify the GraphQL `Label` type carries a `color` field in this schema
+ * context, and adding an unverified field to `GLAB_HIERARCHY_CHILDREN_QUERY`
+ * risks breaking the whole query with a schema error rather than degrading
+ * one field: the rule against asserting an unverified fact wins over
+ * completeness here. A child issue's labels therefore always answer
+ * `color: null`, same posture as an issue/MR list's bare-string labels.
+ */
+function glabGraphqlLabelsFrom(raw: unknown): ForgeLabel[] | null {
   const nodes = readNested(raw, 'nodes')
   if (!Array.isArray(nodes)) {
     return null
   }
-  const titles: string[] = []
+  const labels: ForgeLabel[] = []
   for (const entry of nodes) {
     const title = readNested(entry, 'title')
     if (!isNonEmptyString(title)) {
       return null
     }
-    titles.push(title)
+    labels.push({ name: title, color: null })
   }
-  return titles
+  return labels
 }
 
 /**
@@ -704,8 +803,8 @@ function glabWorkItemChildFrom(entry: unknown, origin: string): ForgeIssue | nul
     state: normalizeState(readRecordProp(e, 'state')),
     // The Labels widget being ABSENT reads as "no labels" (an optional
     // facet, same posture as an absent description); present-but-malformed
-    // still rejects the whole entry, via glabGraphqlLabelTitles.
-    labels: labelsWidget === undefined ? [] : glabGraphqlLabelTitles(labelsWidget.labels),
+    // still rejects the whole entry, via glabGraphqlLabelsFrom.
+    labels: labelsWidget === undefined ? [] : glabGraphqlLabelsFrom(labelsWidget.labels),
   })
 }
 

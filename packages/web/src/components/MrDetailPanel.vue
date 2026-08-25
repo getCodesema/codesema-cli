@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ForgeMr, LocalBranch, ReviewSource } from '../types'
+import MrMetaRail from './mr/MrMetaRail.vue'
 import PreviewPanel from './PreviewPanel.vue'
 
 export type DetailSource = { kind: 'mr'; mr: ForgeMr } | { kind: 'branch'; branch: LocalBranch }
@@ -77,6 +78,10 @@ const reviewSource = computed<ReviewSource>(() =>
       <p v-if="runError" class="mrd-error">{{ runError }}</p>
     </section>
 
+    <section v-if="source.kind === 'mr'" class="mrd-section mrd-rail">
+      <MrMetaRail :mr="source.mr" />
+    </section>
+
     <section class="mrd-section mrd-preview">
       <PreviewPanel :source="reviewSource" />
     </section>
@@ -133,6 +138,10 @@ const reviewSource = computed<ReviewSource>(() =>
 .mrd-title-mono {
   font-family: var(--font-mono);
   font-size: 16px;
+}
+
+.mrd-rail {
+  margin-top: 20px;
 }
 
 .mrd-preview {

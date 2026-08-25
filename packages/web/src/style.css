@@ -1,3 +1,9 @@
+/* Granular Tailwind v4 import: theme.css + utilities.css only, NO preflight.css.
+   The 20+ existing components rely on browser default styles inside their own
+   scoped <style> blocks; Preflight's reset would visibly break them. */
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
 /* Vendored fonts (no CDN at runtime): latin variable subsets, served from
    /fonts by the CLI. One woff2 per family covers every weight we use. */
 @font-face {
@@ -82,6 +88,13 @@ body {
   background: var(--codesema-bg);
   color: var(--codesema-ink);
   font-family: var(--font-sans);
+  /* 14px on 21.7px. Both halves matter and the second one is the one that
+     gets forgotten: a dense working screen reads at 14px, but its air comes
+     from the 1.55 leading, not from the size. Left to the browser this was
+     16px on roughly 1.2, which is simultaneously too big and too tight.
+     Anything without a font-size of its own inherits from here. */
+  font-size: 14px;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -134,6 +147,18 @@ body {
   --cs-red-text: #c96a5a;
   --cs-red-soft: rgba(217, 100, 89, 0.12);
   --cs-red-line: #3a2a26;
+  /* Three hues the traffic-light trio cannot carry, kept OUT of it on purpose:
+     they qualify a kind of remark, or a terminal outcome nobody must act on,
+     and green would collide with "this passes". Hue comes from DESIGN.md's
+     light secondary accents; lightness and saturation are raised into the
+     band the -text tokens above already occupy (57 to 66 percent lightness),
+     so they read on the dark ground without inventing a new hue. */
+  --cs-lavender: #9b8bda;
+  --cs-lavender-soft: rgba(155, 139, 218, 0.14);
+  --cs-water: #8bb8da;
+  --cs-water-soft: rgba(139, 184, 218, 0.14);
+  --cs-ochre: #daab8b;
+  --cs-ochre-soft: rgba(218, 171, 139, 0.14);
   /* Focus ring stays blue so keyboard focus is never mistaken for a state */
   --cs-blue: #5b9dd9;
   --cs-focus-ring: #5b9dd9;
@@ -146,6 +171,123 @@ body {
   --cs-diff-del-gut: rgba(217, 100, 89, 0.18);
   --cs-shadow-panel: 0 10px 30px -16px rgba(0, 0, 0, 0.45);
   --cs-shadow-card: 0 10px 24px -18px rgba(0, 0, 0, 0.55);
+  /* The third shadow: what lifts a card off its ground WITHOUT making it
+     float. The two above are both deep drop shadows, and a dense list of
+     cards needs the shallow one instead. */
+  --cs-shadow-hairline: 0 1px 2px rgba(0, 0, 0, 0.2);
+
+  /* ── Motion ───────────────────────────────────────────────────────────
+     Two curves rather than one, and the asymmetry is the whole point:
+     something arriving decelerates into place, something leaving is cut
+     short. A single ease for both makes exits read as reluctance.
+     `--cs-ease-overshoot` passes its target and comes back, so it belongs
+     to an element CHANGING PLACE, never to one appearing or disappearing. */
+  --cs-ease-in: cubic-bezier(0.16, 1, 0.3, 1);
+  --cs-ease-out: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --cs-ease-overshoot: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --cs-duration-fast: 0.2s;
+  --cs-duration-base: 0.24s;
+  --cs-duration-slow: 0.32s;
+}
+
+/* Wire our existing tokens as Tailwind theme variables so the bg, text,
+   border and font utilities are generated for them. `inline` (not plain
+   @theme) is required here: it makes generated utilities reference
+   var(--codesema-bg) etc. directly, so they still resolve through the
+   .ws-root remap below: plain @theme would freeze the value read at :root
+   instead. No value here is redefined, every line only re-points a Tailwind
+   theme variable at an existing codesema or cs custom property. */
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+
+  --color-codesema-bg: var(--codesema-bg);
+  --color-codesema-panel: var(--codesema-panel);
+  --color-codesema-ink: var(--codesema-ink);
+  --color-codesema-ink-2: var(--codesema-ink-2);
+  --color-codesema-ink-3: var(--codesema-ink-3);
+  --color-codesema-line: var(--codesema-line);
+  --color-codesema-line-2: var(--codesema-line-2);
+  --color-codesema-accent: var(--codesema-accent);
+  --color-codesema-accent-soft: var(--codesema-accent-soft);
+  --color-codesema-amber: var(--codesema-amber);
+  --color-codesema-amber-soft: var(--codesema-amber-soft);
+
+  --color-codesema-risk-high: var(--codesema-risk-high);
+  --color-codesema-risk-high-soft: var(--codesema-risk-high-soft);
+  --color-codesema-risk-med: var(--codesema-risk-med);
+  --color-codesema-risk-med-soft: var(--codesema-risk-med-soft);
+  --color-codesema-risk-low: var(--codesema-risk-low);
+  --color-codesema-risk-low-soft: var(--codesema-risk-low-soft);
+
+  --color-codesema-kind-security: var(--codesema-kind-security);
+  --color-codesema-kind-security-soft: var(--codesema-kind-security-soft);
+  --color-codesema-kind-perf: var(--codesema-kind-perf);
+  --color-codesema-kind-perf-soft: var(--codesema-kind-perf-soft);
+  --color-codesema-kind-convention: var(--codesema-kind-convention);
+  --color-codesema-kind-convention-soft: var(--codesema-kind-convention-soft);
+  --color-codesema-kind-design: var(--codesema-kind-design);
+  --color-codesema-kind-design-soft: var(--codesema-kind-design-soft);
+  --color-codesema-kind-praise: var(--codesema-kind-praise);
+  --color-codesema-kind-praise-soft: var(--codesema-kind-praise-soft);
+  --color-codesema-kind-why: var(--codesema-kind-why);
+  --color-codesema-kind-why-soft: var(--codesema-kind-why-soft);
+
+  --color-codesema-signal-go: var(--codesema-signal-go);
+  --color-codesema-signal-check: var(--codesema-signal-check);
+  --color-codesema-signal-stop: var(--codesema-signal-stop);
+  --color-codesema-dot-idle: var(--codesema-dot-idle);
+  --color-codesema-line-idle: var(--codesema-line-idle);
+
+  --color-codesema-diff-add: var(--codesema-diff-add);
+  --color-codesema-diff-add-gut: var(--codesema-diff-add-gut);
+  --color-codesema-diff-del: var(--codesema-diff-del);
+  --color-codesema-diff-del-gut: var(--codesema-diff-del-gut);
+
+  --color-cs-bg: var(--cs-bg);
+  --color-cs-panel: var(--cs-panel);
+  --color-cs-panel-deep: var(--cs-panel-deep);
+  --color-cs-surface: var(--cs-surface);
+  --color-cs-surface-2: var(--cs-surface-2);
+  --color-cs-inset: var(--cs-inset);
+  --color-cs-head: var(--cs-head);
+  --color-cs-line: var(--cs-line);
+  --color-cs-line-2: var(--cs-line-2);
+  --color-cs-line-3: var(--cs-line-3);
+  --color-cs-text: var(--cs-text);
+  --color-cs-text-2: var(--cs-text-2);
+  --color-cs-muted: var(--cs-muted);
+  --color-cs-ghost: var(--cs-ghost);
+
+  --color-cs-green: var(--cs-green);
+  --color-cs-green-hover: var(--cs-green-hover);
+  --color-cs-green-text: var(--cs-green-text);
+  --color-cs-on-green: var(--cs-on-green);
+  --color-cs-green-soft: var(--cs-green-soft);
+  --color-cs-green-ring: var(--cs-green-ring);
+
+  --color-cs-amber: var(--cs-amber);
+  --color-cs-amber-text: var(--cs-amber-text);
+  --color-cs-amber-soft: var(--cs-amber-soft);
+  --color-cs-amber-card: var(--cs-amber-card);
+  --color-cs-amber-line: var(--cs-amber-line);
+
+  --color-cs-red: var(--cs-red);
+  --color-cs-red-text: var(--cs-red-text);
+  --color-cs-red-soft: var(--cs-red-soft);
+  --color-cs-red-line: var(--cs-red-line);
+
+  --color-cs-blue: var(--cs-blue);
+  --color-cs-focus-ring: var(--cs-focus-ring);
+  --color-cs-dot-idle: var(--cs-dot-idle);
+  --color-cs-hover: var(--cs-hover);
+  --color-cs-active: var(--cs-active);
+
+  --color-cs-diff-add: var(--cs-diff-add);
+  --color-cs-diff-add-gut: var(--cs-diff-add-gut);
+  --color-cs-diff-del: var(--cs-diff-del);
+  --color-cs-diff-del-gut: var(--cs-diff-del-gut);
 }
 
 /* Inside the workspace, remap the legacy --codesema-* palette onto the cs
@@ -170,6 +312,22 @@ body {
   --codesema-risk-med-soft: var(--cs-amber-soft);
   --codesema-risk-low: var(--cs-green-text);
   --codesema-risk-low-soft: var(--cs-green-soft);
+  /* kind-security/perf/praise mirror risk-high/med/low exactly in the light
+     theme, so the same dark equivalents apply. kind-convention/design/why
+     got their own dark tokens (water / lavender / ochre), so every light
+     token now has a dark counterpart and the remap test has no exception. */
+  --codesema-kind-security: var(--cs-red-text);
+  --codesema-kind-security-soft: var(--cs-red-soft);
+  --codesema-kind-perf: var(--cs-amber-text);
+  --codesema-kind-perf-soft: var(--cs-amber-soft);
+  --codesema-kind-praise: var(--cs-green-text);
+  --codesema-kind-praise-soft: var(--cs-green-soft);
+  --codesema-kind-convention: var(--cs-water);
+  --codesema-kind-convention-soft: var(--cs-water-soft);
+  --codesema-kind-design: var(--cs-lavender);
+  --codesema-kind-design-soft: var(--cs-lavender-soft);
+  --codesema-kind-why: var(--cs-ochre);
+  --codesema-kind-why-soft: var(--cs-ochre-soft);
   --codesema-signal-go: var(--cs-green);
   --codesema-signal-check: var(--cs-amber);
   --codesema-signal-stop: var(--cs-red);

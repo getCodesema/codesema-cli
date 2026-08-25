@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { ForgeMr, ForgeMrsResult } from '../types'
+import MrCard from './mr/MrCard.vue'
 
 const props = defineProps<{ selectedNumber: number | null; runningNumber?: number | null }>()
 const emit = defineEmits<{ select: [mr: ForgeMr] }>()
@@ -43,16 +44,6 @@ async function load() {
   }
 }
 
-function formatUpdatedAt(iso: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
-      new Date(iso),
-    )
-  } catch {
-    return iso
-  }
-}
-
 onMounted(load)
 
 defineExpose({ reload: load })
@@ -90,14 +81,7 @@ defineExpose({ reload: load })
           :class="{ 'mrs-item--selected': mr.number === props.selectedNumber }"
           @click="emit('select', mr)"
         >
-          <span class="mrs-item-top">
-            <span class="mrs-item-number">{{ $t('mrs.number', { n: mr.number }) }}</span>
-            <span class="mrs-item-branch">{{ mr.sourceBranch }}</span>
-          </span>
-          <span class="mrs-item-title">{{ mr.title }}</span>
-          <span class="mrs-item-meta codesema-muted"
-            >{{ mr.author }} · {{ formatUpdatedAt(mr.updatedAt) }}</span
-          >
+          <MrCard :mr="mr" />
           <span v-if="mr.number === props.runningNumber" class="mrs-item-running">{{
             $t('mrs.reviewRunning')
           }}</span>
@@ -222,40 +206,6 @@ defineExpose({ reload: load })
 .mrs-item--selected {
   border-color: color-mix(in srgb, var(--codesema-accent) 45%, transparent);
   background: var(--codesema-accent-soft);
-}
-
-.mrs-item-top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.mrs-item-number {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--codesema-accent);
-}
-
-.mrs-item-branch {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--codesema-ink-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 140px;
-}
-
-.mrs-item-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--codesema-ink);
-  line-height: 1.35;
-}
-
-.mrs-item-meta {
-  font-size: 11px;
 }
 
 .mrs-item-running {

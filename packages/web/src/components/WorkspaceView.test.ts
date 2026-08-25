@@ -63,11 +63,14 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
   })
 
   test('only the Launch path ever calls create; the plan path only previews', () => {
-    // `create(` reaches the API in exactly the two places that launch a
-    // conversation. A third call site appearing here is the regression this
-    // asserts against.
+    // `create(` reaches the API in exactly the one place that launches a
+    // conversation: every draft, fork or work-on, promotes through
+    // `onDraftCreate`. A second call site appearing here is the regression
+    // this asserts against: the standalone queue composer that used to be
+    // the other one is gone, replaced by opening a draft column instead of
+    // duplicating it (see `onNewConversation`).
     const createCalls = SOURCE.match(/await create\(/g) ?? []
-    expect(createCalls).toHaveLength(2)
+    expect(createCalls).toHaveLength(1)
     const planFn = SOURCE.slice(
       SOURCE.indexOf('function onPlanInput('),
       SOURCE.indexOf('function onDraftRetarget('),
@@ -107,5 +110,194 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
     // …and the column reads it back on mount, which is what makes the carry
     // worth anything.
     expect(SOURCE).toContain(':initial-prompt="planRequests.promptOf(entry.key)"')
+  })
+})
+
+// The forge board (ForgeBoard.vue) sits in the focus zone behind the deck
+// and behind the review view, gated on a project actually being selected.
+// What is pinned here is that wiring, on the source itself, for the same
+// reason as above.
+describe('the sober empty focus state still shows with no project selected', () => {
+  test('the forge board is still gated on a selected project with at least one registered', () => {
+    // The board's own v-else-if stays the literal condition (a TS narrowing
+    // requirement, see the comment on it), but `boardVisible` is defined to
+    // mirror it exactly and IS what gates the work queue below.
+    expect(SOURCE).toContain('v-else-if="filter !== null && projects.length > 0"')
+    expect(SOURCE).toContain('class="ws-forge-board"')
+    const boardVisibleFn = SOURCE.slice(
+      SOURCE.indexOf('const boardVisible = computed('),
+      SOURCE.indexOf('// ── Projects column'),
+    )
+    expect(boardVisibleFn).toContain('reviewRecord.value === null')
+    expect(boardVisibleFn).toContain('deckEntries.value.length === 0')
+    expect(boardVisibleFn).toContain('filter.value !== null')
+    expect(boardVisibleFn).toContain('projects.value.length > 0')
+  })
+
+  test('the empty-focus branch is still the final, unconditional fallback', () => {
+    const forgeBoardAt = SOURCE.indexOf('class="ws-forge-board"')
+    const emptyFocusAt = SOURCE.indexOf('class="ws-empty-focus"')
+    expect(forgeBoardAt).toBeGreaterThan(-1)
+    expect(emptyFocusAt).toBeGreaterThan(-1)
+    expect(forgeBoardAt).toBeLessThan(emptyFocusAt)
+    expect(SOURCE).toContain('workspace.noProject')
+    expect(SOURCE).toContain('workspace.focusEmpty')
+  })
+
+  test('the board remounts (selection and section state reset) on every project switch', () => {
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    expect(forgeBoardTag).toContain(':key="filter"')
+  })
+
+  // The rail's collapsed band names itself: with a project that is the
+  // project, with none it is the menu's own label, never an empty band.
+  test('the rail label falls back to the menu label when no project is selected', () => {
+    const railLabel = SOURCE.slice(
+      SOURCE.indexOf('const railLabel'),
+      SOURCE.indexOf('const railIssuesState'),
+    )
+    expect(railLabel).toContain("t('workspace.projectLabel')")
+    expect(railLabel).toContain('projectNameById')
+  })
+})
+
+// The board's layout needs the conversations column's own column gone, not
+// just visually crowded out: the column hides for exactly the branch the
+// board renders in, and comes back for every other one (review, the deck,
+// the empty-focus fallback).
+describe('the conversations column hides while the board is the focus zone, shows everywhere else', () => {
+  test('the conversations column is gated on the same condition, negated', () => {
+    const columnTag = SOURCE.slice(
+      SOURCE.indexOf('<ConversationsColumn'),
+      SOURCE.indexOf(':states="queueStates"'),
+    )
+    expect(columnTag).toContain('v-if="!boardVisible"')
+  })
+})
+
+// The left rail is PERMANENT and always looks the same. That is the whole
+// point of it: when the menu was mounted inside the board it moved and
+// resized the instant a project was picked, so a plain navigation click made
+// the screen jump. Picking a project must add sections BELOW the menu, never
+// move the menu.
+describe('the left rail is permanent, and the menu inside it never moves', () => {
+  test('the rail is mounted unconditionally, outside every focus-zone branch', () => {
+    const railAt = SOURCE.indexOf('class="ws-rail"')
+    expect(railAt).toBeGreaterThan(-1)
+    // The whole opening tag, which now spans several lines.
+    const railTag = SOURCE.slice(SOURCE.lastIndexOf('<aside', railAt), SOURCE.indexOf('>', railAt))
+    expect(railTag).not.toContain('v-if')
+    // Before the focus zone, so it is a sibling of it and not inside it.
+    expect(railAt).toBeLessThan(SOURCE.indexOf('<main class="ws-focus">'))
+  })
+
+  test('the menu is mounted in exactly one place: the rail head', () => {
+    const mountAt = SOURCE.indexOf('<ProjectsNav')
+    expect(mountAt).toBeGreaterThan(-1)
+    expect(SOURCE.indexOf('<ProjectsNav', mountAt + 1)).toBe(-1)
+    const slotAt = SOURCE.indexOf('<template #top>')
+    expect(slotAt).toBeGreaterThan(-1)
+    expect(mountAt).toBeGreaterThan(slotAt)
+    // The tag itself, not everything that follows it.
+    const mountTag = SOURCE.slice(mountAt, SOURCE.indexOf('/>', mountAt))
+    expect(mountTag).not.toContain('v-if')
+  })
+
+  test('only the SECTIONS follow the board, through has-board', () => {
+    const panelTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeControlsPanel'),
+      SOURCE.indexOf('>', SOURCE.indexOf('<ForgeControlsPanel')),
+    )
+    expect(SOURCE).toContain(':has-board="boardVisible"')
+    expect(panelTag).not.toContain('v-if')
+  })
+
+  test('the rail owns its own width and collapsed state, and the board no longer does', () => {
+    expect(SOURCE).toContain("'--ws-rail-w': `${railPanelWidth}px`")
+    expect(SOURCE).toContain('v-if="!railCollapsed"')
+    expect(SOURCE).toContain("t('forge.resizeControlsAria')")
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    expect(forgeBoardTag).not.toContain('collapsed')
+    expect(forgeBoardTag).not.toContain('controls')
+  })
+
+  test('the shared preferences come from the composable, not from the board', () => {
+    expect(SOURCE).toContain('useForgePrefs()')
+    // The board is handed the list-side preferences it renders with.
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    for (const binding of [':section="activeSection"', ':list-width="listWidth"']) {
+      expect(forgeBoardTag).toContain(binding)
+    }
+  })
+})
+
+// The state filter is server-side: picking "merged" does not sieve the open
+// list, it fetches a different one. The whole capability (route, per-state
+// cache, loader) already existed and NOTHING consumed it, which is the bug
+// this pins against: reading the eager open-only cache here would silently
+// show open MRs under a "merged" label.
+describe('the MR state filter actually reaches the forge', () => {
+  test('the list and its load state are read per (project, state), not from the open-only cache', () => {
+    expect(SOURCE).toContain('mrsOf(filter.value, mrsStateFilter.value)')
+    expect(SOURCE).toContain('mrsLoadOf(filter.value, mrsStateFilter.value)')
+    const forgeBoardTag = SOURCE.slice(
+      SOURCE.indexOf('<ForgeBoard'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<ForgeBoard')),
+    )
+    expect(forgeBoardTag).toContain(':mrs="mrsOf(filter, mrsStateFilter)"')
+    expect(forgeBoardTag).toContain(':mrs-state="mrsLoadOf(filter, mrsStateFilter)"')
+    // The eager, open-only map must not be what feeds the board any more.
+    expect(forgeBoardTag).not.toContain('mrsByProject')
+  })
+
+  test('a change of project OR of state triggers the fetch, immediately on mount', () => {
+    const watcher = SOURCE.slice(
+      SOURCE.indexOf('watch(\n  [filter, mrsStateFilter]'),
+      SOURCE.indexOf('// ── The project menu'),
+    )
+    expect(watcher).toContain('loadMrsState(projectId, state)')
+    expect(watcher).toContain('projectId !== null')
+    expect(watcher).toContain('{ immediate: true }')
+  })
+
+  test('the draft toggle stays client-side: it is handed down, never sent to the loader', () => {
+    expect(SOURCE).toContain(':mrs-draft-only="mrsDraftOnly"')
+    expect(SOURCE).not.toContain('loadMrsState(projectId, mrsDraftOnly')
+  })
+})
+
+// The rail's width animates when it JUMPS (the collapse button, a keyboard
+// step) and never while it is being dragged: a width that animates cannot
+// keep up with a pointer rewriting it every frame, so the rail visibly trails
+// the cursor. The reference interface animates neither, which is a side
+// effect of it only ever dragging, not an intention worth copying.
+describe('the rail animates its width, except while dragged', () => {
+  test('the rail carries a width transition, on tokens rather than literals', () => {
+    const rail = SOURCE.slice(SOURCE.indexOf('.ws-rail {'), SOURCE.indexOf('.ws-rail--dragging'))
+    expect(rail).toContain('transition:')
+    expect(rail).toContain('var(--cs-duration-base)')
+    expect(rail).toContain('var(--cs-ease-in)')
+    // flex-basis as well as width: the rail is a flex item, so animating
+    // only `width` would leave the basis to snap.
+    expect(rail).toContain('flex-basis')
+  })
+
+  test('dragging switches the transition off entirely', () => {
+    const dragging = SOURCE.slice(SOURCE.indexOf('.ws-rail--dragging'))
+    expect(dragging).toContain('transition: none;')
+  })
+
+  test('the dragging flag is driven by the handle itself, not guessed', () => {
+    expect(SOURCE).toContain('@update:dragging="(v) => (railDragging = v)"')
+    expect(SOURCE).toContain("'ws-rail--dragging': railDragging")
   })
 })
