@@ -37,7 +37,7 @@ import {
 import type { ForgeCli, ForgeCliOutcome, ForgeIssuesExecFn } from './forge-issues.js'
 import { t as translate } from './i18n.js'
 import { createLoadCap } from './load-cap.js'
-import { addProject, listProjects, projectsPath, type Project } from './projects.js'
+import { addProject, listProjects, projectsPath, scratchProject, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
@@ -223,6 +223,7 @@ type FakeRunnerRig = {
   resumes: string[]
   /** Task ids the runner reports as having an abandon in flight. */
   abandoning: Set<string>
+  attaches: { id: string; repo: { project_id: string; path: string } }[]
 }
 
 /**
@@ -248,6 +249,7 @@ function fakeRunner(opts: { replyResult?: TaskActionResult } = {}): FakeRunnerRi
     abandons: [],
     resumes: [],
     abandoning: new Set<string>(),
+    attaches: [] as { id: string; repo: { project_id: string; path: string } }[],
     runnerOptions: () => {
       const last = rig.allRunnerOptions.at(-1)
       if (!last) {
@@ -279,6 +281,10 @@ function fakeRunner(opts: { replyResult?: TaskActionResult } = {}): FakeRunnerRi
           return Promise.resolve({ ok: true as const })
         },
         isAbandoning: (id) => rig.abandoning.has(id),
+        attach: (id, repo) => {
+          rig.attaches.push({ id, repo })
+          return Promise.resolve({ ok: true as const })
+        },
         shutdown: () => Promise.resolve(),
         runningCount: () => 0,
       }
@@ -1681,9 +1687,17 @@ describe('createTaskManager', () => {
     const b2 = seedTask(projectB.path, 'in B two')
 
     const all = manager.listAll()
-    expect(all.map((entry) => entry.project.id)).toEqual([projectA.id, projectB.id])
-    expect(all[0]?.records.map((r) => r.id)).toEqual([a.id])
-    expect(new Set(all[1]?.records.map((r) => r.id))).toEqual(new Set([b1.id, b2.id]))
+    // The scratch project leads every workspace listing, task-less here: the
+    // SSE replay has to carry it too, or a conversation held there would be
+    // invisible until the client refetched.
+    expect(all.map((entry) => entry.project.id)).toEqual([
+      scratchProject().id,
+      projectA.id,
+      projectB.id,
+    ])
+    expect(all[0]?.records).toEqual([])
+    expect(all[1]?.records.map((r) => r.id)).toEqual([a.id])
+    expect(new Set(all[2]?.records.map((r) => r.id))).toEqual(new Set([b1.id, b2.id]))
   })
 })
 
@@ -3979,6 +3993,7 @@ describe('task routes with a stub manager', () => {
       abandons: [] as string[],
       checksStarts: [] as string[],
       checksSetups: [] as string[],
+      attaches: [] as { projectId: string; taskId: string; repoProjectId: string }[],
       checksApplies: [] as string[],
       resumes: [] as { project: string; id: string }[],
     }
@@ -4064,6 +4079,13 @@ describe('task routes with a stub manager', () => {
       startPending: () => Promise.resolve([]),
       sweepOrphanedVolumes: async () => {},
       applyRetention: async () => {},
+      attach: (projectId, taskId, repoProjectId) => {
+        if (!known(projectId)) {
+          return Promise.resolve({ ok: false as const, code: 404, error: 'unknown project' })
+        }
+        calls.attaches.push({ projectId, taskId, repoProjectId })
+        return Promise.resolve({ ok: true as const })
+      },
       checksApply: (projectId) => {
         if (!known(projectId)) {
           return { ok: false, code: 404, error: 'unknown project' }
@@ -4930,6 +4952,7 @@ describe('project routes', () => {
       // `no-remote` is the motif either way (it wins over the machine probe,
       // like the forge client's own ladder decides it).
       const forgeFacts = { forge_available: false, forge_reason: 'no-remote' }
+      const scratch = scratchProject()
       expect(JSON.parse(initial.body)).toEqual({
         current: current.id,
         workspace: {
@@ -4941,10 +4964,28 @@ describe('project routes', () => {
           ...forgeFacts,
         },
         projects: [
+          // The scratch project leads the list and carries NO forge verdict:
+          // it has no repository, so `forgeRemote` answers 'unknown' rather
+          // than the 'no-remote' a remote-less repo earns.
+          {
+            id: scratch.id,
+            path: scratch.path,
+            name: scratch.name,
+            kind: 'scratch',
+            added_at: scratch.added_at,
+            isolation: {
+              isolation_available: false,
+              isolation_default: 'policy',
+              isolation_reason: 'container isolation was not probed',
+              isolation_configured: 'policy',
+              agent: 'claude -p',
+            },
+          },
           {
             id: current.id,
             path: current.path,
             name: current.name,
+            kind: 'repo',
             added_at: current.added_at,
             isolation: {
               isolation_available: false,
@@ -7383,6 +7424,51 @@ describe('manager.sweepOrphanedVolumes', () => {
     expect(notices).toEqual(outcome.notices)
   })
 
+  // Without the scratch project in the walk, registering a SINGLE repository
+  // would make every conversation held outside one read as orphaned, and the
+  // sweep would take its HOME volume out from under a live task.
+  test('conversations of the scratch project claim their ids too', async () => {
+    const project = register(makeRepo())
+    const inRepo = seedTask(project.path, 'a task')
+    const scratch = scratchProject()
+    mkdirSync(scratch.path, { recursive: true })
+    const outsideRepo = seedTask(scratch.path, 'just talking')
+    const seenClaimed: ReadonlySet<string>[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      sweepOrphanedVolumesFn: (opts) => {
+        seenClaimed.push(opts.claimedIds)
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(seenClaimed).toEqual([new Set([outsideRepo.id, inRepo.id])])
+  })
+
+  test('an empty registry says exactly that, never that something could not be read', async () => {
+    const notices: string[] = []
+    const swept: unknown[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sweepOrphanedVolumesFn: (opts) => {
+        swept.push(opts)
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedVolumes()
+
+    expect(swept).toHaveLength(0)
+    expect(notices).toEqual([
+      'orphaned HOME volume sweep skipped: no repository registered to claim them',
+    ])
+  })
+
   // T1.9 review round 1, Critique 1: listTasks/loadTask drops an unparsable
   // task.json IN SILENCE (no onStoreUnreadable call — the directory listed
   // fine, only the file's content didn't parse). Building claimedIds from it
@@ -7706,11 +7792,17 @@ describe('manager.applyRetention', () => {
 
     await manager.applyRetention()
 
+    // Retention covers the scratch project too: conversations held there pile
+    // up exactly like a repo's, and nothing else would ever purge them.
+    const scratch = scratchProject()
     expect(seen).toEqual([
+      { cwd: scratch.path, keep: 5 },
       { cwd: projectA.path, keep: 5 },
       { cwd: projectB.path, keep: 5 },
     ])
     expect(notices).toEqual([
+      `${scratch.name}: ${outcome.notices[0]}`,
+      `${scratch.name}: retention purged 1 task(s)`,
       `${projectA.name}: ${outcome.notices[0]}`,
       `${projectA.name}: retention purged 1 task(s)`,
       `${projectB.name}: ${outcome.notices[0]}`,
@@ -7751,7 +7843,7 @@ describe('manager.applyRetention', () => {
 
     await manager.applyRetention()
 
-    expect(seen).toEqual([20]) // DEFAULT_TASK_RETENTION
+    expect(seen).toEqual([20, 20]) // DEFAULT_TASK_RETENTION, scratch then repo
   })
 
   test('one project failing does not stop the others (fenced per project, like boot recovery)', async () => {
@@ -7774,7 +7866,7 @@ describe('manager.applyRetention', () => {
 
     await manager.applyRetention()
 
-    expect(ran).toEqual([projectA.path, projectB.path])
+    expect(ran).toEqual([scratchProject().path, projectA.path, projectB.path])
     expect(notices.some((line) => line.includes('disk full'))).toBe(true)
   })
 })
@@ -10407,5 +10499,68 @@ describe('cycle labels and the recap, wired onto a real run', () => {
     const at = (op: string) => forge.writes.indexOf(op)
     expect(at('labels codesema:merged')).toBeGreaterThanOrEqual(0)
     expect(at('labels codesema:merged')).toBeLessThan(at('close'))
+  })
+})
+
+// ── Conversations with no repository (the scratch project) ─────────────────
+
+describe('scratch conversations over HTTP', () => {
+  test('a workspace with no repo registered can still open a conversation', async () => {
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const started = await startServer(createSession(), {
+      cwd: makeDir(),
+      port: 5187,
+      taskManager: manager,
+      currentProjectId: null,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const scratch = scratchProject()
+
+      const listed = await rawRequest(started.port, '/api/projects')
+      expect(JSON.parse(listed.body).projects).toHaveLength(1)
+      expect(JSON.parse(listed.body).projects[0]).toMatchObject({
+        id: scratch.id,
+        kind: 'scratch',
+      })
+
+      const created = await rawRequest(started.port, '/api/tasks', {
+        method: 'POST',
+        headers: { 'x-codesema-tasks-token': token },
+        body: JSON.stringify({ project_id: scratch.id, title: 'just talking', prompt: 'hello' }),
+      })
+      expect(created.status).toBe(201)
+      const id = JSON.parse(created.body).id as string
+
+      const fetched = await rawRequest(started.port, `/api/tasks/${id}?project=${scratch.id}`)
+      expect(fetched.status).toBe(200)
+      expect(JSON.parse(fetched.body)).toMatchObject({ record: { id, branch: '', base: '' } })
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('naming a branch or a base is refused: there is no repository to name one in', async () => {
+    const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+    const started = await startServer(createSession(), {
+      cwd: makeDir(),
+      port: 5188,
+      taskManager: manager,
+      currentProjectId: null,
+    })
+    try {
+      const token = await tasksToken(started.port)
+      const scratch = scratchProject()
+      for (const extra of [{ branch: 'feat/x' }, { base: 'main' }]) {
+        const refused = await rawRequest(started.port, '/api/tasks', {
+          method: 'POST',
+          headers: { 'x-codesema-tasks-token': token },
+          body: JSON.stringify({ project_id: scratch.id, title: 't', prompt: 'p', ...extra }),
+        })
+        expect(refused.status).toBe(400)
+      }
+    } finally {
+      await started.stop()
+    }
   })
 })

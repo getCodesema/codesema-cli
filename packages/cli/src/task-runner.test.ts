@@ -1,7 +1,7 @@
 import { execFileSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
   AGENT_KILL_GRACE_MS,
@@ -4912,5 +4912,218 @@ describe('turn cost', () => {
     const record = loadTask(repo, task.id)
     expect(record && 'cost_ticks' in record).toBe(false)
     expect(costEvents(repo, task.id)).toEqual([])
+  })
+})
+
+// --- scratch conversations: a project that is not a repository -------------
+
+/** A plain directory: the shape of the scratch project's own path. */
+function makePlainDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'codesema-scratch-'))
+  cleanups.push(dir)
+  return dir
+}
+
+describe('scratch conversations', () => {
+  test('get a plain working directory: no worktree, no branch, no git at all', async () => {
+    const dir = makePlainDir()
+    const task = makeTask(dir, 'just talking', 'explain something')
+    const runner = createTaskRunner({
+      cwd: dir,
+      scratch: true,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'here you go').run,
+    })
+
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(dir, task.id) === 'waiting_for_you')
+
+    const record = loadTask(dir, task.id)
+    expect(record?.worktree).toBe(join(dir, '.codesema', 'worktrees', task.id))
+    expect(existsSync(record?.worktree ?? '')).toBe(true)
+    // The pointer file a real worktree carries: its absence is what proves
+    // nothing here was handed to git.
+    expect(existsSync(join(record?.worktree ?? '', '.git'))).toBe(false)
+    expect(record?.branch).toBe('')
+    expect(record?.base).toBe('')
+  })
+
+  test('the turn runs in that directory, so the agent sees no code', async () => {
+    const dir = makePlainDir()
+    const task = makeTask(dir, 'just talking', 'explain something')
+    const seenCwd: string[] = []
+    const runner = createTaskRunner({
+      cwd: dir,
+      scratch: true,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        seenCwd.push(options.cwd)
+        return Promise.resolve('answered')
+      },
+    })
+
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(dir, task.id) === 'waiting_for_you')
+
+    expect(seenCwd).toEqual([join(dir, '.codesema', 'worktrees', task.id)])
+  })
+
+  test('abandon removes the directory and reports no branch fate', async () => {
+    const dir = makePlainDir()
+    const task = makeTask(dir, 'just talking', 'explain something')
+    const runner = createTaskRunner({
+      cwd: dir,
+      scratch: true,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'here you go').run,
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(dir, task.id) === 'waiting_for_you')
+    const workdir = loadTask(dir, task.id)?.worktree ?? ''
+    expect(existsSync(workdir)).toBe(true)
+
+    const outcome = await runner.abandon(task.id)
+
+    expect(outcome).toEqual({ ok: true })
+    expect(existsSync(workdir)).toBe(false)
+    expect(status(dir, task.id)).toBe('failed')
+  })
+})
+
+describe('attaching a repository to a conversation', () => {
+  const startedScratch = async (dir: string, title = 'talk then code') => {
+    const task = makeTask(dir, title, 'explain something')
+    const runner = createTaskRunner({
+      cwd: dir,
+      scratch: true,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'here you go').run,
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(dir, task.id) === 'waiting_for_you')
+    return { task, runner }
+  }
+
+  test('the worktree lands inside the conversation, never in the repository', async () => {
+    const dir = makePlainDir()
+    const repo = makeRepo()
+    const { task, runner } = await startedScratch(dir)
+
+    expect(await runner.attach(task.id, { project_id: projectIdFor(repo), path: repo })).toEqual({
+      ok: true,
+    })
+
+    const record = loadTask(dir, task.id)
+    const workspace = join(dir, '.codesema', 'worktrees', task.id)
+    // The directory the agent runs in is the SAME before and after: that is
+    // what keeps a provider transcript keyed by cwd findable.
+    expect(record?.worktree).toBe(workspace)
+    const attached = record?.attachments ?? []
+    expect(attached).toHaveLength(1)
+    expect(attached[0]?.worktree).toBe(join(workspace, basename(repo)))
+    expect(attached[0]?.repo).toBe(repo)
+    expect(attached[0]?.branch.startsWith('codesema/task-')).toBe(true)
+    // A real checkout of the repository, and the branch exists in it.
+    expect(existsSync(join(attached[0]?.worktree ?? '', 'base.txt'))).toBe(true)
+    expect(refExists(`refs/heads/${attached[0]?.branch}`, repo)).toBe(true)
+    // And the repository's own worktrees directory was never used.
+    expect(existsSync(join(repo, '.codesema', 'worktrees', task.id))).toBe(false)
+  })
+
+  test('attaching the same repository twice is the same request, not a conflict', async () => {
+    const dir = makePlainDir()
+    const repo = makeRepo()
+    const { task, runner } = await startedScratch(dir)
+    const target = { project_id: projectIdFor(repo), path: repo }
+
+    expect(await runner.attach(task.id, target)).toEqual({ ok: true })
+    expect(await runner.attach(task.id, target)).toEqual({ ok: true })
+
+    expect(loadTask(dir, task.id)?.attachments).toHaveLength(1)
+  })
+
+  test('two repositories sharing a basename get distinct directories', async () => {
+    const dir = makePlainDir()
+    const first = makeRepo()
+    const second = makeRepo()
+    const { task, runner } = await startedScratch(dir)
+
+    await runner.attach(task.id, { project_id: projectIdFor(first), path: first })
+    await runner.attach(task.id, { project_id: projectIdFor(second), path: second })
+
+    const attached = loadTask(dir, task.id)?.attachments ?? []
+    expect(attached).toHaveLength(2)
+    expect(attached[0]?.worktree).not.toBe(attached[1]?.worktree)
+    expect(existsSync(attached[0]?.worktree ?? '')).toBe(true)
+    expect(existsSync(attached[1]?.worktree ?? '')).toBe(true)
+  })
+
+  test('a conversation that already lives in a repository refuses one', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'ordinary', 'do work')
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'done').run,
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+
+    const other = makeRepo()
+    expect(
+      await runner.attach(task.id, { project_id: projectIdFor(other), path: other }),
+    ).toMatchObject({ ok: false, code: 409 })
+  })
+
+  test('an unknown task is a 404, not a directory quietly created', async () => {
+    const dir = makePlainDir()
+    const repo = makeRepo()
+    const runner = createTaskRunner({
+      cwd: dir,
+      scratch: true,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: fakeClaude(() => 'x').run,
+    })
+    expect(
+      await runner.attach('ffffffffffff', { project_id: projectIdFor(repo), path: repo }),
+    ).toMatchObject({ ok: false, code: 404 })
+  })
+})
+
+describe('what an agent is told about attached repositories', () => {
+  test('every turn names them, because a resumed session replays words, not directories', async () => {
+    const dir = makePlainDir()
+    const repo = makeRepo()
+    const prompts: string[] = []
+    const task = makeTask(dir, 'talk then code', 'explain something')
+    const runner = createTaskRunner({
+      cwd: dir,
+      scratch: true,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      runAgentFn: (options) => {
+        prompts.push(options.prompt)
+        return Promise.resolve('ok')
+      },
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(dir, task.id) === 'waiting_for_you')
+    expect(prompts[0]).not.toContain('Repositories available')
+
+    await runner.attach(task.id, { project_id: projectIdFor(repo), path: repo })
+    expect(runner.reply(task.id, 'now look at the code')).toEqual({ ok: true })
+    await until(() => (loadTask(dir, task.id)?.turns.length ?? 0) >= 2)
+    await until(() => status(dir, task.id) === 'waiting_for_you')
+
+    const second = prompts[1] ?? ''
+    expect(second).toContain('Repositories available in your working directory:')
+    expect(second).toContain(`./${basename(repo)}`)
+    expect(second).toContain('now look at the code')
   })
 })

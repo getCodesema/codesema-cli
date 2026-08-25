@@ -12,6 +12,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import {
   AGENT_WATCHDOG_DEFAULTS,
   agentEnv,
@@ -33,6 +34,7 @@ import {
   EARS_TRIGGER,
   isTerminalReason,
   reasonCodeOf,
+  TASK_ATTACHMENTS_MAX,
   TICKET_CRITERIA_MIN,
   type AcceptanceCriterion,
   type ReasonCode,
@@ -78,7 +80,9 @@ import { createTaskQueue, type EnqueueResult, type TaskQueueIo } from './task-qu
 import {
   branchHasOwnCommits,
   BranchInUseError,
+  createScratchWorkdir,
   createTaskWorktree,
+  removeScratchWorkdir,
   removeTaskWorktree,
   renameTaskBranch,
   resolveBranchRef,
@@ -732,6 +736,14 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
     ? await (opts.runContainerTurnFn ?? runContainerTurn)({
         taskId: opts.task.id,
         worktree: opts.cwd,
+        ...(opts.task.attachments?.length
+          ? {
+              attachments: opts.task.attachments.map((a) => ({
+                name: a.name,
+                worktree: a.worktree,
+              })),
+            }
+          : {}),
         command,
         prompt: opts.prompt,
         timeoutMs: absoluteCapMs,
@@ -1070,6 +1082,12 @@ export type TaskRunnerOptions = {
    * holds instead of re-hashing the path.
    */
   projectId?: string
+  /**
+   * This runner drives the scratch project: `cwd` is a plain directory, not a
+   * repository. Its turns get a working directory instead of a worktree, and
+   * no branch is ever named, so nothing on this path reaches for git.
+   */
+  scratch?: boolean
   /** Raw configured agent command. */
   command: string
   /** Last-resort absolute ceiling of a turn; the watchdog is what detects a dead one. */
@@ -1215,6 +1233,14 @@ export type TaskRunner = {
    */
   isAbandoning: (taskId: string) => boolean
   /**
+   * Gives a repository to a conversation that started without one: its
+   * worktree is materialized INSIDE the conversation's own workspace, so the
+   * directory the agent runs in is the same before and after. Idempotent on a
+   * repository already attached, refused (409) while a turn is in flight.
+   * NEVER rejects, for the same reason abandon() never does.
+   */
+  attach: (taskId: string, repo: { project_id: string; path: string }) => Promise<TaskActionResult>
+  /**
    * Graceful process exit: aborts every running agent, persists 'interrupted'
    * with an event {reason:'shutdown'} for the turns that were IN FLIGHT, keeps
    * the worktrees, and resolves once every one of them AND every in-flight
@@ -1230,6 +1256,28 @@ export type TaskRunner = {
 }
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/** How many `-n` suffixes an attached repo directory tries before a timestamp. */
+const ATTACHMENT_SUFFIX_MAX = 99
+
+/**
+ * Directory name an attached repository takes inside a conversation's
+ * workspace. Two repositories can share a basename (`api/web` and `admin/web`)
+ * and would then fight for the same directory: the second one gets `web-2`.
+ */
+function freeAttachmentName(workspace: string, wanted: string): string {
+  const safe = wanted || 'repo'
+  if (!existsSync(join(workspace, safe))) {
+    return safe
+  }
+  for (let n = 2; n <= ATTACHMENT_SUFFIX_MAX; n++) {
+    const candidate = `${safe}-${n}`
+    if (!existsSync(join(workspace, candidate))) {
+      return candidate
+    }
+  }
+  return `${safe}-${Date.now().toString(36)}`
+}
 
 /**
  * Folds ONE attempt's measurement into the turn, then RECOMPUTES the record's
@@ -1309,24 +1357,45 @@ function transcript(record: TaskRecord): string {
 }
 
 /**
+ * Repositories handed to this conversation, named the way the agent sees them:
+ * directories inside the one it runs in.
+ *
+ * Restated on EVERY turn rather than announced once when the repository
+ * arrives. A resumed provider session replays what was SAID, not the
+ * filesystem the agent now finds itself in, so an agent told once would go on
+ * believing it has nothing to read for the rest of the conversation.
+ */
+function attachedRepositoriesNote(record: TaskRecord): string {
+  const attached = record.attachments ?? []
+  if (attached.length === 0) {
+    return ''
+  }
+  const lines = attached.map((a) => `- ./${a.name} (on branch ${a.branch}, from ${a.base})`)
+  return ['Repositories available in your working directory:', ...lines].join('\n')
+}
+
+/**
  * First turn: standing instructions + the task prompt. Later turns: claude
  * resumes its session so the reply alone is enough; other providers get a
  * one-shot run with the transcript replayed.
  */
 function composeTurnPrompt(record: TaskRecord, command: string): string {
   const message = record.turns.at(-1)?.prompt ?? ''
+  const repositories = attachedRepositoriesNote(record)
+  const withRepositories = (text: string): string =>
+    repositories ? `${repositories}\n\n${text}` : text
   if (record.turns.length <= 1) {
     // A work-on conversation is not asked to name anything: it works on the
     // user's own pre-existing branch, which is never renamed.
     const standing = buildTaskPrompt(record, { askBranchName: !record.work_on })
     const draft = taskCriteria(record).length === 0 ? `\n\n${criteriaDraftInstruction()}` : ''
-    return `${standing}${draft}\n\n${message}`
+    return withRepositories(`${standing}${draft}\n\n${message}`)
   }
   if (supportsSessionResume(command) && record.agent_session_id) {
-    return message
+    return withRepositories(message)
   }
-  return [buildTaskPrompt(record), '', transcript(record), '', `New instruction: ${message}`].join(
-    '\n',
+  return withRepositories(
+    [buildTaskPrompt(record), '', transcript(record), '', `New instruction: ${message}`].join('\n'),
   )
 }
 
@@ -1974,6 +2043,14 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     }
     // No worktree ever named on this record = nothing can be on its branch yet.
     const first = record.worktree === ''
+    if (opts.scratch) {
+      // No repository, so nothing below applies: no base to fork from, no
+      // branch to adopt back, no lineage to anchor. `base` and `branch` stay
+      // empty, which is what tells every reader downstream that this
+      // conversation has no deliverable on any branch.
+      record.worktree = createScratchWorkdir(opts.cwd, record.id)
+      return
+    }
     if (record.work_on) {
       // Work-on task (POST /api/tasks branch=…): the conversation identifies
       // with its pre-existing branch — check the branch itself out, first
@@ -2952,13 +3029,29 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // removeTaskWorktree runs — the worktree lock does not protect a
         // decision already made, and nothing about the branch's shape can
         // change while no lock is held, this call included.
-        const fate = decideBranchFate(opts.cwd, taskId, record, emit)
+        // A scratch conversation never had a branch, so there is no fate to
+        // decide: every answer below is the empty one, and `createdOrAdopted`
+        // false keeps the whole reporting path quiet about a branch that never
+        // existed.
+        const fate: BranchFateDecision = opts.scratch
+          ? {
+              deleteBranch: false,
+              hasOwnCommits: false,
+              ownCommitsCount: null,
+              branchStillExists: false,
+              createdOrAdopted: false,
+            }
+          : decideBranchFate(opts.cwd, taskId, record, emit)
         let removal: WorktreeRemoval
         try {
-          removal = await removeTaskWorktree(opts.cwd, taskId, record.branch, {
-            deleteBranch: fate.deleteBranch,
-            ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
-          })
+          // A scratch conversation has no branch and no worktree to weigh: its
+          // directory is the whole of what it leaves behind.
+          removal = opts.scratch
+            ? { serialized: true, worktree_removed: removeScratchWorkdir(opts.cwd, taskId) }
+            : await removeTaskWorktree(opts.cwd, taskId, record.branch, {
+                deleteBranch: fate.deleteBranch,
+                ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
+              })
         } catch (err) {
           // TOTAL, like ship one layer up: this result is dispatched by an
           // HTTP handler that does not catch, and an unhandled rejection kills
@@ -3109,6 +3202,63 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
 
     isAbandoning(taskId) {
       return abandoning.has(taskId)
+    },
+
+    async attach(taskId, repo) {
+      // Only a conversation whose working directory is its OWN can take a
+      // repository in: one already living inside a repo's .codesema/ would be
+      // nesting a second repository under the first.
+      if (!opts.scratch) {
+        return { ok: false, code: 409, error: 'this conversation already has a repository' }
+      }
+      if (active.has(taskId) || abandoning.has(taskId)) {
+        return { ok: false, code: 409, error: 'task is busy' }
+      }
+      const record = loadTask(opts.cwd, taskId)
+      if (!record) {
+        return { ok: false, code: 404, error: 'task not found' }
+      }
+      const attachments = record.attachments ?? []
+      // Idempotent: attaching what is already attached is the same request
+      // answered twice, not a conflict.
+      if (attachments.some((a) => a.project_id === repo.project_id)) {
+        return { ok: true }
+      }
+      if (attachments.length >= TASK_ATTACHMENTS_MAX) {
+        return { ok: false, code: 409, error: 'too many repositories attached' }
+      }
+      // The turn may never have run, in which case the conversation has no
+      // directory yet: the repository is what creates it here.
+      const workspace = record.worktree || createScratchWorkdir(opts.cwd, record.id)
+      const name = freeAttachmentName(workspace, basename(repo.path))
+      try {
+        const wt = await createTaskWorktree(repo.path, record.id, record.title, {
+          worktreePath: join(workspace, name),
+          ...(opts.worktreeLockFn ? { lockFn: opts.worktreeLockFn } : {}),
+        })
+        record.worktree = workspace
+        record.attachments = [
+          ...attachments,
+          {
+            project_id: repo.project_id,
+            repo: repo.path,
+            name,
+            worktree: wt.worktree,
+            branch: wt.branch,
+            base: wt.base,
+          },
+        ]
+        persist(record)
+        emit(record.id, {
+          type: 'resource',
+          data: { name: 'repository_attached', repo: name, branch: wt.branch },
+        })
+        return { ok: true }
+      } catch (err) {
+        // TOTAL, like abandon one layer up: the HTTP handler that dispatches
+        // this does not catch, and an unhandled rejection kills the server.
+        return { ok: false, code: 500, error: errorMessage(err) }
+      }
     },
 
     async shutdown() {

@@ -410,7 +410,7 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
     'another codesema workspace is already running (pid {pid}, port {port}) — stop it first, or delete {path} if it is stale',
   'workspace.projects': 'projects:',
   'workspace.noProjects':
-    'no project registered yet — launch codesema from a git repository, or add one from the web UI',
+    'no repository registered: you can start a conversation right away, and give it one later (or launch codesema from a git repository to register it)',
   'workspace.resumable':
     '{n} interrupted task can be resumed — click Resume in the web UI: | {n} interrupted tasks can be resumed — click Resume in the web UI:',
   'workspace.queueResumed':
@@ -870,7 +870,7 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
     'un autre workspace codesema tourne déjà (pid {pid}, port {port}) — arrêtez-le, ou supprimez {path} s’il est périmé',
   'workspace.projects': 'projets :',
   'workspace.noProjects':
-    "aucun projet enregistré — lancez codesema depuis un dépôt git, ou ajoutez-en un depuis l'UI web",
+    "aucun dépôt enregistré : vous pouvez démarrer une conversation tout de suite, et lui en donner un ensuite (ou lancez codesema depuis un dépôt git pour l'enregistrer)",
   'workspace.resumable':
     "{n} tâche interrompue peut reprendre — cliquez Reprendre dans l'UI web : | {n} tâches interrompues peuvent reprendre — cliquez Reprendre dans l'UI web :",
   'workspace.queueResumed':

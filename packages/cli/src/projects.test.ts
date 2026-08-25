@@ -16,11 +16,14 @@ import {
   discoverProjects,
   getProject,
   isProjectId,
+  isScratchProjectId,
   listProjects,
   listProjectsDetailed,
+  listWorkspaceProjects,
   projectIdFor,
   projectsPath,
   removeProject,
+  scratchProject,
 } from './projects.js'
 
 // The registry is global state: redirected to a fresh tmpdir per test via
@@ -313,5 +316,57 @@ describe('discoverProjects', () => {
 
   test('unreadable base degrades to empty, never a crash', () => {
     expect(discoverProjects(join(tmpdir(), 'codesema-does-not-exist-xyz'))).toEqual([])
+  })
+})
+
+describe('scratch project', () => {
+  test('lives under the global config dir, outside every repo', () => {
+    const scratch = scratchProject()
+    expect(scratch.path).toBe(join(configDir, 'scratch'))
+    expect(scratch.kind).toBe('scratch')
+    expect(isProjectId(scratch.id)).toBe(true)
+    expect(scratch.id).toBe(projectIdFor(scratch.path))
+  })
+
+  test('never enters the registry, so no write can persist it', () => {
+    addProject(makeRepo())
+    expect(listProjects().map((p) => p.kind)).toEqual(['repo'])
+    const saved = JSON.parse(readFileSync(projectsPath(), 'utf8')) as { projects: unknown[] }
+    expect(saved.projects).toHaveLength(1)
+  })
+
+  test('listWorkspaceProjects puts it first, ahead of registered repos', () => {
+    const repo = makeRepo()
+    addProject(repo)
+    const all = listWorkspaceProjects()
+    expect(all).toHaveLength(2)
+    expect(all[0]?.kind).toBe('scratch')
+    expect(all[1]?.path).toBe(realpathSync(repo))
+  })
+
+  test('is the only project with no registry at all', () => {
+    expect(listProjects()).toEqual([])
+    expect(listWorkspaceProjects()).toHaveLength(1)
+  })
+
+  test('resolves by id even though it is in no file', () => {
+    const scratch = scratchProject()
+    expect(getProject(scratch.id)).toEqual(scratch)
+    expect(isScratchProjectId(scratch.id)).toBe(true)
+    expect(isScratchProjectId(projectIdFor(makeRepo()))).toBe(false)
+  })
+
+  test('cannot be unregistered: removeProject leaves the registry untouched', () => {
+    const repo = makeRepo()
+    addProject(repo)
+    expect(removeProject(scratchProject().id)).toBe(false)
+    expect(listProjects()).toHaveLength(1)
+    expect(listWorkspaceProjects()).toHaveLength(2)
+  })
+
+  test('registered repos are tagged as repos', () => {
+    const added = addProject(makeRepo())
+    expect(added.ok && added.project.kind).toBe('repo')
+    expect(listProjects()[0]?.kind).toBe('repo')
   })
 })
