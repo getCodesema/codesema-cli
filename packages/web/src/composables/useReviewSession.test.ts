@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import type { ReviewRecord } from '../types'
-import { useReviewSession } from './useReviewSession'
+import { ref } from 'vue'
+import type { JudgeLive, LiveStatus, PartialReview, ReviewRecord } from '../types'
+import { reviewStreamHandlers, useReviewSession } from './useReviewSession'
 
 const RECORD: ReviewRecord = {
   version: 1,
@@ -343,5 +344,34 @@ describe('stop()', () => {
       timersRig.restore()
       sseRig.restore()
     }
+  })
+})
+
+describe('reviewStreamHandlers', () => {
+  test('each named event feeds its target ref; done only calls back', () => {
+    const status = ref<LiveStatus | null>(null)
+    const partial = ref<PartialReview | null>(null)
+    const partialB = ref<PartialReview | null>(null)
+    const judge = ref<JudgeLive | null>(null)
+    let doneCalls = 0
+    const handlers = reviewStreamHandlers({ status, partial, partialB, judge }, () => {
+      doneCalls += 1
+    })
+    const send = (name: string, data: unknown): void =>
+      handlers[name]!({ data: JSON.stringify(data) } as unknown as Event)
+
+    send('status', { phase: 'reviewing' })
+    send('partial', { findings: [{ file: 'a.ts' }] })
+    send('partial_b', { findings: [{ file: 'b.ts' }] })
+    send('judge', { merged: 1 })
+
+    expect(status.value).toEqual({ phase: 'reviewing' } as unknown as LiveStatus)
+    expect(partial.value).toEqual({ findings: [{ file: 'a.ts' }] } as unknown as PartialReview)
+    expect(partialB.value).toEqual({ findings: [{ file: 'b.ts' }] } as unknown as PartialReview)
+    expect(judge.value).toEqual({ merged: 1 } as unknown as JudgeLive)
+    expect(doneCalls).toBe(0)
+
+    handlers['done']!({} as Event)
+    expect(doneCalls).toBe(1)
   })
 })
