@@ -543,7 +543,7 @@ describe('row order: exactly what buildCodeReviewRows produced, never re-sorted'
       expect(index).toBeGreaterThan(-1)
       return index
     })
-    expect(positions).toEqual([...positions].sort((a, b) => a - b))
+    expect(positions).toEqual(positions.toSorted((a, b) => a - b))
   })
 })
 

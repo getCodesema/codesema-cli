@@ -26,12 +26,15 @@ const MR_REVIEW_POLL_INTERVAL_MS = 1500
  * touches `EventSource`, so a test drives them with a `{ data }` object.
  */
 export function reviewStreamHandlers(
-  status: Ref<LiveStatus | null>,
-  partial: Ref<PartialReview | null>,
-  partialB: Ref<PartialReview | null>,
-  judge: Ref<JudgeLive | null>,
+  targets: {
+    status: Ref<LiveStatus | null>
+    partial: Ref<PartialReview | null>
+    partialB: Ref<PartialReview | null>
+    judge: Ref<JudgeLive | null>
+  },
   onDone: () => void,
 ): Record<string, (e: Event) => void> {
+  const { status, partial, partialB, judge } = targets
   return {
     status: (e) => {
       status.value = JSON.parse((e as MessageEvent).data) as LiveStatus
@@ -135,7 +138,7 @@ export function useReviewSession(): ReviewSessionApi {
   function openEvents() {
     events = new EventSource('/api/events')
     for (const [name, handler] of Object.entries(
-      reviewStreamHandlers(status, partial, partialB, judge, () => void handleDone()),
+      reviewStreamHandlers({ status, partial, partialB, judge }, () => void handleDone()),
     )) {
       events.addEventListener(name, handler)
     }

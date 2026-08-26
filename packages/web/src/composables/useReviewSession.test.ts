@@ -223,10 +223,10 @@ describe('runReview()', () => {
       const launch = fetchRig.requests.find((r) => r.url === '/api/mrs/review')
       expect(launch).toBeDefined()
       expect(launch!.init?.method).toBe('POST')
-      expect((launch!.init?.headers as Record<string, string>)['x-codesema-mrreview-token']).toBe(
+      expect((launch!.init!.headers as Record<string, string>)['x-codesema-mrreview-token']).toBe(
         'tok-abc',
       )
-      expect((launch!.init?.headers as Record<string, string>)['content-type']).toBe(
+      expect((launch!.init!.headers as Record<string, string>)['content-type']).toBe(
         'application/json',
       )
       expect(JSON.parse(launch!.init?.body as string)).toEqual({
