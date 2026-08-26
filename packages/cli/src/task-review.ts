@@ -12,6 +12,7 @@
 import { ensureWorkDir, type ReviewMode } from './config.js'
 import {
   sanitizeRecord,
+  type ArmTransition,
   type Finding,
   type ReviewRecord,
   type TaskChecks,
@@ -31,8 +32,11 @@ import {
   type SimpleOutcome,
 } from './review.js'
 import { createSession } from './serve.js'
+import { autoPushReview } from './sync.js'
+import { reportBrainTransition } from './task-brain.js'
 import {
   buildCriteriaChapter,
+  criteriaGateWaivable,
   criteriaUnmetDetail,
   resolveCriteria,
   unmetCriteriaFixChapter,
@@ -69,10 +73,14 @@ export function taskReviewVerdict(record: ReviewRecord): 'review_ok' | 'review_k
   if (verdict === 'request_changes') {
     return 'review_ko'
   }
-  // `isFixable` (fix.ts) rather than a second copy of the same predicate: the
-  // bar that makes a 'comment' block has to be the bar the fix prompt then
-  // carries, or a task blocks on a finding nobody is ever asked to fix.
-  return findings.some(isFixable) ? 'review_ko' : 'review_ok'
+  // D25: the bar that BLOCKS a 'comment' is critical/major only, while the
+  // bar that PROPOSES a fix stays `isFixable` (fix.ts) untouched. A lone
+  // minor used to flip 'comment' to review_ko, which made the D18 waiver
+  // (gated on review_ok) structurally unreachable and looped a task for
+  // turns; a minor now ships as an MR finding instead of blocking.
+  return findings.some((finding) => isFixable(finding) && isBlockingSeverity(finding.severity))
+    ? 'review_ko'
+    : 'review_ok'
 }
 
 /**
@@ -82,6 +90,9 @@ export function taskReviewVerdict(record: ReviewRecord): 'review_ok' | 'review_k
  * could be indexed; `major` never was.
  */
 const BLOCKING_SEVERITIES = ['critical', 'major'] as const
+
+const isBlockingSeverity = (severity: Finding['severity']): boolean =>
+  (BLOCKING_SEVERITIES as readonly string[]).includes(severity)
 
 /**
  * Whether a review still carries a finding no `approve` may override: a
@@ -290,6 +301,46 @@ export function applyChecksGate(record: TaskRecord, checks: TaskChecks | null | 
 }
 
 /**
+ * The arm/brain fact a settled turn reports, decided from what the turn
+ * actually produced rather than from `status` alone. `status: 'review_ko'`
+ * covers two different situations, and the brain must not read them as the
+ * same fact:
+ *
+ *  - a `reviewOutcome` is present: a reviewer ran and returned a verdict,
+ *    later possibly overridden to KO by a deterministic guard-rail (a
+ *    blocking finding, an unmet criterion). A real verdict was produced, so
+ *    this is `review_result`.
+ *  - no `reviewOutcome`: the review FLOW itself failed (a bad agent
+ *    response, an exception) or never ran to a verdict at all. Reporting
+ *    `review_result / request_changes` here would be indistinguishable from
+ *    a reviewer that actually looked at the work and rejected it. This is
+ *    `failed`, the same fact `settleInterrupted` already reports for a
+ *    shutdown mid-review.
+ *
+ * Pure and exported so this distinction is tested directly, with no fetch or
+ * outbox to mock.
+ */
+export function brainSettleTransition(opts: {
+  status: 'review_ok' | 'review_ko'
+  reviewOutcome?: ReviewRecord
+  reason?: TaskReason
+  costTicks?: number
+}): Omit<ArmTransition, 'idempotency_key' | 'at'> {
+  if (opts.status === 'review_ko' && !opts.reviewOutcome) {
+    return {
+      type: 'failed',
+      ...(opts.reason?.detail ? { error_message: opts.reason.detail } : {}),
+    }
+  }
+  return {
+    type: 'review_result',
+    verdict: opts.status === 'review_ok' ? 'approve' : 'request_changes',
+    ...(opts.reviewOutcome ? { findings_total: opts.reviewOutcome.review.findings.length } : {}),
+    ...(opts.costTicks !== undefined ? { cost_ticks: opts.costTicks } : {}),
+  }
+}
+
+/**
  * Final transition of the automatic review, and its ONLY owner. A KO states
  * WHY in the record — the code plus the producer's own message in `detail` —
  * while an OK clears any reason a previous turn left behind: a record that
@@ -310,16 +361,41 @@ const settle = (
   record: TaskRecord,
   io: TaskTurnIo,
   status: 'review_ok' | 'review_ko',
-  /** Why a KO blocks; defaults to a bare `review_blocked`. Ignored on an OK. */
-  blocked?: TaskReason,
+  opts: {
+    /** MAIN repo root: only used for the arm/brain report below, never for I/O on `record` itself. */
+    cwd: string
+    /** Why a KO blocks; defaults to a bare `review_blocked`. Ignored on an OK. */
+    blocked?: TaskReason
+    /** The review that just settled, when one ran (absent on a flow failure). Read for `findings_total` only. */
+    reviewOutcome?: ReviewRecord
+  },
 ): void => {
   record.status = status
   if (status === 'review_ko') {
-    record.reason = blocked ?? taskReason('review_blocked')
+    record.reason = opts.blocked ?? taskReason('review_blocked')
   } else {
     delete record.reason
   }
   io.persist()
+  // Arm/brain integration: reported AFTER the persist, never instead of it,
+  // same discipline as every other fire-and-forget effect a settled turn
+  // triggers (task-labels.ts's cycle label). Never awaited: a brain round
+  // trip must not hold up the turn this settle ends.
+  if (record.brain_ticket) {
+    void reportBrainTransition(
+      opts.cwd,
+      record,
+      brainSettleTransition({
+        status,
+        ...(opts.reviewOutcome ? { reviewOutcome: opts.reviewOutcome } : {}),
+        ...(record.reason ? { reason: record.reason } : {}),
+        ...(record.cost_ticks !== undefined ? { costTicks: record.cost_ticks } : {}),
+      }),
+    )
+    if (opts.reviewOutcome) {
+      void autoPushReview(opts.reviewOutcome, opts.cwd)
+    }
+  }
 }
 
 /**
@@ -364,11 +440,11 @@ export function baselineFallbackReason(record: TaskRecord): string | null {
  * `data.name` through the web's own translated key, so a sentence built here
  * would either be ignored or served to a French UI in English.
  */
-const emitCriteriaGate = (io: TaskTurnIo, gate: CriteriaOutcome): void => {
+const emitCriteriaGate = (io: TaskTurnIo, gate: CriteriaOutcome, waived: boolean): void => {
   io.emit({
     type: 'criteria',
     data: {
-      name: gate.satisfied ? 'gate_passed' : 'gate_blocked',
+      name: gate.satisfied ? 'gate_passed' : waived ? 'gate_waived' : 'gate_blocked',
       met: gate.counts.met,
       unmet: gate.counts.unmet,
       unclear: gate.counts.unclear,
@@ -391,7 +467,7 @@ const emitCriteriaGate = (io: TaskTurnIo, gate: CriteriaOutcome): void => {
       ...(gate.demoted > 0 ? { demoted: gate.demoted } : {}),
       ...(gate.overflowed ? { overflowed: true } : {}),
     },
-    ...(gate.satisfied ? {} : { reason_code: 'criteria_unmet' as const }),
+    ...(gate.satisfied || waived ? {} : { reason_code: 'criteria_unmet' as const }),
   })
 }
 
@@ -403,7 +479,7 @@ const emitCriteriaGate = (io: TaskTurnIo, gate: CriteriaOutcome): void => {
  * 'interrupted', with the human-interruption code, its work committed and its
  * worktree kept. A reply (or a later turn) picks it back up.
  */
-const settleInterrupted = (record: TaskRecord, io: TaskTurnIo): void => {
+const settleInterrupted = (record: TaskRecord, io: TaskTurnIo, cwd: string): void => {
   io.emit({
     type: 'interrupted',
     data: { reason: 'shutdown' },
@@ -412,6 +488,9 @@ const settleInterrupted = (record: TaskRecord, io: TaskTurnIo): void => {
   record.status = 'interrupted'
   record.reason = taskReason('interrupted_by_user', REVIEW_CUT_DETAIL)
   io.persist()
+  if (record.brain_ticket) {
+    void reportBrainTransition(cwd, record, { type: 'failed', error_message: REVIEW_CUT_DETAIL })
+  }
 }
 
 export type CreateTaskReviewerOptions = {
@@ -547,7 +626,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
     if (io.signal.aborted) {
       // The shutdown beat us to the start line: never spawn an agent this
       // process is about to abandon.
-      settleInterrupted(record, io)
+      settleInterrupted(record, io, opts.cwd)
       return
     }
     try {
@@ -576,7 +655,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       const changed = tryGit(['diff', '--name-only', range], record.worktree)
       if (changed !== null && !changed.trim()) {
         io.emit({ type: 'message', data: { text: 'no changes' } })
-        settle(record, io, 'review_ok')
+        settle(record, io, 'review_ok', { cwd: opts.cwd })
         return
       }
 
@@ -602,7 +681,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         // spawn a review agent (two, in dual mode) only to kill it on the next
         // tick: "no review is ever launched for nothing" is the promise, and
         // this is the gap where it was not kept.
-        settleInterrupted(record, io)
+        settleInterrupted(record, io, opts.cwd)
         return
       }
       // T1.3 (D4): the review agent is a heavy consumer of the machine load
@@ -629,7 +708,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           // fired WHILE it was queued, in which case `acquire` already handed
           // this back immediately instead of leaving it parked (see the
           // `loadCap` option doc above). Either way nothing was ever spawned.
-          settleInterrupted(record, io)
+          settleInterrupted(record, io, opts.cwd)
           return
         }
         outcome = await runReviewFlow(
@@ -648,7 +727,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       if (io.signal.aborted) {
         // The agent was killed by the shutdown: whatever came back is a
         // half-run, not a verdict.
-        settleInterrupted(record, io)
+        settleInterrupted(record, io, opts.cwd)
         return
       }
       if (!outcome.ok) {
@@ -656,7 +735,10 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         // the record repeats that same message in reason.detail.
         const message = `review failed: ${outcome.message}`
         io.emit({ type: 'error', data: { message }, reason_code: 'review_blocked' })
-        settle(record, io, 'review_ko', taskReason('review_blocked', message))
+        settle(record, io, 'review_ko', {
+          cwd: opts.cwd,
+          blocked: taskReason('review_blocked', message),
+        })
         return
       }
 
@@ -693,10 +775,21 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           ...findingSeverityCounts(outcome.record.review.findings),
         },
       })
-      if (gate) {
-        emitCriteriaGate(io, gate)
-      }
       const verdict = taskReviewVerdict(outcome.record)
+      // D18: an unclear-only gate is LIFTED by a review the reviewer settled
+      // as OK. The waiver never applies over a blocking finding (the branch
+      // below still turns those into a KO) and never touches `satisfied`
+      // itself; it is journaled on the gate line and in a message naming the
+      // criteria it lifted.
+      const criteriaWaived =
+        gate !== null &&
+        !gate.satisfied &&
+        verdict === 'review_ok' &&
+        !hasBlockingFindings(outcome.record) &&
+        criteriaGateWaivable(gate)
+      if (gate) {
+        emitCriteriaGate(io, gate, criteriaWaived)
+      }
       // T3.3, and BEFORE the criteria gate: the deterministic guard-rail.
       // `groundReview` already escalates an `approve` that carries a
       // `critical` — but only when it could index the diff — and it has never
@@ -716,29 +809,50 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           data: { text: detail, name: 'review_verdict_overridden' },
           reason_code: 'review_blocked',
         })
-        settle(record, io, 'review_ko', taskReason('review_blocked', detail))
+        settle(record, io, 'review_ko', {
+          cwd: opts.cwd,
+          blocked: taskReason('review_blocked', detail),
+          reviewOutcome: outcome.record,
+        })
         return
       }
-      // The HARD gate (D11): one criterion that is not `met` blocks "ready to
-      // merge", with no weighting and no exception. It only ever turns an OK
-      // into a KO — a review that already blocks keeps its own, more
-      // actionable reason rather than being relabelled.
-      if (gate && !gate.satisfied && verdict === 'review_ok') {
-        settle(record, io, 'review_ko', taskReason('criteria_unmet', criteriaUnmetDetail(gate)))
+      // The HARD gate (D11, softened by D18): an `unmet` or unjudged
+      // criterion, or an unreadable diff, blocks "ready to merge" with no
+      // weighting and no exception. It only ever turns an OK into a KO — a
+      // review that already blocks keeps its own, more actionable reason
+      // rather than being relabelled.
+      if (criteriaWaived && gate) {
+        io.emit({
+          type: 'message',
+          data: {
+            text: `the settled review lifts ${gate.counts.unclear} 'unclear' criterion/criteria (evidence outside the diff or requiring execution); nothing is unmet`,
+            name: 'criteria_unclear_waived',
+          },
+        })
+      }
+      if (gate && !gate.satisfied && !criteriaWaived && verdict === 'review_ok') {
+        settle(record, io, 'review_ko', {
+          cwd: opts.cwd,
+          blocked: taskReason('criteria_unmet', criteriaUnmetDetail(gate)),
+          reviewOutcome: outcome.record,
+        })
         return
       }
-      settle(record, io, verdict)
+      settle(record, io, verdict, { cwd: opts.cwd, reviewOutcome: outcome.record })
     } catch (err) {
       if (io.signal.aborted) {
         // The rejection IS the abort (a killed agent, an interrupted prep):
         // reporting it as a blocked review would blame the reviewer for the
         // shutdown.
-        settleInterrupted(record, io)
+        settleInterrupted(record, io, opts.cwd)
         return
       }
       const message = `review failed: ${errorMessage(err)}`
       io.emit({ type: 'error', data: { message }, reason_code: 'review_blocked' })
-      settle(record, io, 'review_ko', taskReason('review_blocked', message))
+      settle(record, io, 'review_ko', {
+        cwd: opts.cwd,
+        blocked: taskReason('review_blocked', message),
+      })
     }
   }
 }

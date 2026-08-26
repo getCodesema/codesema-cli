@@ -572,6 +572,23 @@ export type TaskRecord = {
    * always means "no criteria".
    */
   criteria?: AcceptanceCriterion[]
+  /**
+   * The brain ticket this task was created from, when it was (arm/brain
+   * integration): a stable pointer back to the ticket that owns this task, so
+   * a reader can open it without knowing the brain's own routing. WRITE-ONCE,
+   * same discipline as `issue`: fixed at creation, never re-decided by a
+   * later turn.
+   *
+   * OPTIONAL, and absence is the honest default: a record predating this
+   * field, and a task never claimed from a brain ticket (title+prompt, or a
+   * forge issue per T2.4/T2.5), name no ticket, exactly what "no
+   * brain_ticket" always meant before this field existed.
+   */
+  brain_ticket?: {
+    id: string
+    title: string
+    url?: string
+  }
   created_at: string
   updated_at: string
 }
@@ -602,6 +619,8 @@ export const TASK_EVENT_DATA_STRING_MAX = 2_000
 export const TASK_ISSUE_PROJECT_MAX = 200
 /** Bound of `TaskIssueRef.url`: a forge issue URL, never long in practice. */
 export const TASK_ISSUE_URL_MAX = 500
+/** Bound of `TaskRecord.brain_ticket.id`: an id from an external system, not this store's own 12-hex TASK_ID_RE. */
+export const TASK_BRAIN_TICKET_ID_MAX = 64
 
 const TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'queued',
@@ -799,7 +818,7 @@ export function isTaskId(value: unknown): value is string {
 }
 
 const str = (v: unknown, max: number): string =>
-  typeof v === 'string' ? v.trim().slice(0, max) : ''
+  typeof v === 'string' ? v.trim().slice(0, max).trim() : ''
 
 const nullableStr = (v: unknown, max: number): string | null => {
   const s = str(v, max)
@@ -949,6 +968,31 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
 }
 
 /**
+ * Whitelist and truncate, never throw: a non-object, or one whose `id` is
+ * missing or blank, drops the WHOLE field, same doctrine as `sanitizeIssueRef`
+ * above, since a brain ticket pointer nobody can identify is worse than none.
+ * `title` degrades to an empty string rather than nulling the field, and
+ * `url` is kept only when it is an http(s) URL, same rule `isHttpUrl` applies
+ * everywhere else in this module.
+ */
+function sanitizeBrainTicket(raw: unknown): { id: string; title: string; url?: string } | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  const id = str(r.id, TASK_BRAIN_TICKET_ID_MAX)
+  if (!id) {
+    return null
+  }
+  const url = str(r.url, TASK_ISSUE_URL_MAX)
+  return {
+    id,
+    title: str(r.title, TASK_TITLE_MAX),
+    ...(url && isHttpUrl(url) ? { url } : {}),
+  }
+}
+
+/**
  * Revalidates a TaskRecord read back from disk. Returns null when the input
  * has no usable identity (missing or malformed id); every other field is
  * normalized to a safe default. An unknown status degrades to 'failed': a
@@ -991,6 +1035,7 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
   const issue = sanitizeIssueRef(r.issue)
   const issueSnapshot = sanitizeIssueSnapshot(r.issue_snapshot)
   const criteria = sanitizeAcceptanceCriteria(r.criteria)
+  const brainTicket = sanitizeBrainTicket(r.brain_ticket)
   return {
     version: 1,
     id,
@@ -1065,6 +1110,7 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // than trusted.
     ...(issue ? { issue } : {}),
     ...(issueSnapshot ? { issue_snapshot: issueSnapshot } : {}),
+    ...(brainTicket ? { brain_ticket: brainTicket } : {}),
     // Optional, whitelist-and-truncate, never throw: a missing or unusable
     // list is "no criteria", which is the honest default for every record
     // written before T2.5 and every task that still has none. An empty list

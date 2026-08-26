@@ -3,9 +3,11 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
-## [0.14.0] - unreleased
+## [0.15.0] - unreleased
 
 ### Added
+
+- **Brain mode: a local brain can now hand the workspace tickets to work on, hands-off.** `codesema brain connect --url <url> --token <token>` points a workspace at a brain (the same account `codesema sync`/`codesema link` already use, sharing its stored credentials); `codesema brain status` shows what it knows about this repo; `codesema brain ticket --issue <n>` (or `--title`/`--prompt`) runs the configured agent once, off the interactive workspace, to draft a ticket body in the grammar the brain requires, lints it, retries once with the lint's own reasons folded back into the prompt, then publishes it. `codesema workspace --brain` (or its alias `codesema brain serve`) additionally runs a background daemon on the same task manager the web UI drives: it drafts and submits any ticket request the brain has queued for this repo, and — once the workspace has no task already running — claims the next published ticket and starts a task from it exactly as if it had been typed by hand, keeping the claim alive with a heartbeat every 45 seconds and replaying through an outbox anything a network hiccup left unsent. `GET /api/brain/tickets` exposes the brain's own view of in-flight tickets for a future dashboard. `brainAutoMerge` (on by default) is now a toggle in `codesema config`, not only a config-file key.
 
 - **Code review is a place in the workspace now, not a separate application.** A third rail category lists every open merge request and every local branch worth reviewing, across all registered projects at once — one line each, carrying its project's name, the verdict of its last review and how long ago that was. Picking one stages it: a merge request shows the forge's own detail (body, labels, reviewers, milestone, check rollup) and a branch shows the deterministic preview git alone can compute, each under the same band of launch controls and archived reviews. Starting a review from the browser was never the missing piece — `POST /api/mrs/review` has run one in a throwaway worktree since `0.13.0`, streaming into the same SSE session — but only the standalone review page ever offered the button, and the workspace does not mount that page. What was missing was the screen, and the history behind it.
 

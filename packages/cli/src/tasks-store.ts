@@ -22,6 +22,7 @@ import {
   sanitizeTaskEvent,
   sanitizeTaskRecord,
   TASK_REASON_DETAIL_MAX,
+  type AcceptanceCriterion,
   type ReasonCode,
   type TaskChecks,
   type TaskEvent,
@@ -33,9 +34,54 @@ import {
   type TaskReason,
   type TaskRecord,
 } from './contract.js'
+import { queueBrainEvent } from './task-brain.js'
 
 export function tasksDir(cwd: string): string {
   return join(cwd, '.codesema', 'tasks')
+}
+
+/**
+ * Per-process cache of `record.brain_ticket?.id`, keyed by `${cwd}\0${id}`.
+ * `brain_ticket` is WRITE-ONCE (see `CreateTaskInput.brainTicket`'s own doc
+ * comment), so a cache entry never goes stale for the lifetime of its task.
+ * `appendTaskEvent` is on the hot path of a chatty turn (tens of thousands
+ * of `tool_use`/`tool_result` lines), and reloading task.json on every
+ * single append just to answer "does this task have a brain_ticket" would
+ * cost exactly what the journal cursor cache below exists to avoid.
+ * `createTask` warms it directly for every task (brain-ticket or not, so
+ * `null` is cached rather than leaving a gap); a task written by an earlier
+ * process gets one lazy `loadTask` the first time one of its events is
+ * appended in THIS process.
+ */
+const brainTicketIdCache = new Map<string, string | null>()
+
+/**
+ * A separator that cannot appear in a `cwd` (an absolute path) or a 12-hex
+ * task id: NUL, built at RUNTIME with `fromCharCode` rather than written as
+ * a literal escape in a template string, because source-shape.test.ts
+ * requires every source file to stay byte-for-byte plain text, and a literal
+ * escape here risks being saved as the raw byte instead (same runtime
+ * character, but a file `rg` then treats as binary and silently stops
+ * scanning).
+ */
+const KEY_SEP = String.fromCharCode(0)
+
+function brainTicketCacheKey(cwd: string, id: string): string {
+  return `${cwd}${KEY_SEP}${id}`
+}
+
+/** Test hygiene: drops the cache, i.e. simulates a fresh process. */
+export function resetBrainTicketIdCache(): void {
+  brainTicketIdCache.clear()
+}
+
+/**
+ * Test hygiene: the cache's raw entry for one task, with the same
+ * undefined/null distinction `appendTaskEvent` reads it with: `undefined`
+ * (never touched) versus `null` (touched, cached as "no ticket").
+ */
+export function peekBrainTicketIdCache(cwd: string, id: string): string | null | undefined {
+  return brainTicketIdCache.get(brainTicketCacheKey(cwd, id))
 }
 
 export function taskDir(cwd: string, id: string): string {
@@ -65,6 +111,12 @@ export function removeTaskDir(cwd: string, id: string): boolean {
   }
   try {
     rmSync(taskDir(cwd, id), { recursive: true, force: true })
+    // Arm/brain integration: the ONE eviction `brainTicketIdCache` needs.
+    // WRITE-ONCE means a live task's entry never goes stale, but a removed
+    // task's directory is gone for good (this function's own doc comment):
+    // an entry for it staying in the cache forever would be the one leak in
+    // an otherwise process-lifetime-bounded cache.
+    brainTicketIdCache.delete(brainTicketCacheKey(cwd, id))
     return true
   } catch {
     return false
@@ -95,6 +147,20 @@ export type CreateTaskInput = {
    */
   issue?: TaskIssueRef
   issueSnapshot?: TaskIssueSnapshot
+  /**
+   * Arm/brain integration: the brain ticket this task was created from, when
+   * it was one. WRITE-ONCE, same discipline as `issue`: fixed here, at
+   * creation, never re-decided by a later turn.
+   */
+  brainTicket?: { id: string; title: string; url?: string }
+  /**
+   * The brain's already-validated acceptance criteria, frozen onto the
+   * record in this SAME write. Never posed as a second write through
+   * `applyTaskCriteria` (task-criteria.ts): the task's very first turn reads
+   * `taskCriteria(record)` (task-runner.ts) to build its prompt, and
+   * criteria landing even one write later would race that read.
+   */
+  criteria?: AcceptanceCriterion[]
 }
 
 /**
@@ -139,10 +205,13 @@ export function createTask(cwd: string, input: CreateTaskInput): TaskRecord {
     ...(input.issue && input.issueSnapshot
       ? { issue: input.issue, issue_snapshot: input.issueSnapshot }
       : {}),
+    ...(input.brainTicket ? { brain_ticket: input.brainTicket } : {}),
+    ...(input.criteria && input.criteria.length > 0 ? { criteria: input.criteria } : {}),
     created_at: now,
     updated_at: now,
   }
   saveTask(cwd, record)
+  brainTicketIdCache.set(brainTicketCacheKey(cwd, id), input.brainTicket?.id ?? null)
   return record
 }
 
@@ -552,6 +621,20 @@ export function appendTaskEvent(cwd: string, id: string, input: AppendTaskEventI
     size: cursor.size + Buffer.byteLength(line, 'utf8'),
     needsNewline: false,
   })
+  // Arm/brain integration: fire-and-forget, cache-gated (see
+  // `brainTicketIdCache`'s own doc comment) so a chatty turn's tens of
+  // thousands of tool_use/tool_result lines never cost an extra task.json
+  // read each: only the FIRST event of a task this process has not yet
+  // touched pays for one.
+  const cacheKey = brainTicketCacheKey(cwd, id)
+  let ticketId = brainTicketIdCache.get(cacheKey)
+  if (ticketId === undefined) {
+    ticketId = loadTask(cwd, id)?.brain_ticket?.id ?? null
+    brainTicketIdCache.set(cacheKey, ticketId)
+  }
+  if (ticketId) {
+    queueBrainEvent({ cwd, taskId: id, ticketId, event })
+  }
   return event
 }
 
