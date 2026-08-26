@@ -141,6 +141,35 @@ export type ArmClaimResult = {
   lease_expires_at: string
 }
 
+/** What a human decided, from the dashboard, about a ticket the arm reported waiting on (D19). */
+export type ArmOrderAction = 'ship' | 'reply' | 'abandon'
+
+/**
+ * The decision itself, as the brain's heartbeat response hands it back to the
+ * arm: what to do, and the instruction to carry out when that is `'reply'`.
+ * `instruction` and `issued_at` are REQUIRED keys, same convention as
+ * `ArmTicket` above (this module's own doc comment) rather than tasks.ts's
+ * usual "absent means unset": this mirrors an order that, once issued, always
+ * carries all three facts together.
+ */
+export type ArmOrder = {
+  action: ArmOrderAction
+  /** The human's own words, for `'reply'`. `null` for `'ship'`/`'abandon'`. */
+  instruction: string | null
+  issued_at: string
+}
+
+/**
+ * What the brain's heartbeat route hands back to the arm (D19): the lease
+ * extension every heartbeat already grants, plus the order a human decided
+ * from the dashboard while this ticket was waiting on one. `null` on every
+ * ordinary tick nothing is waiting on.
+ */
+export type ArmHeartbeatResponse = {
+  lease_expires_at: string
+  order: ArmOrder | null
+}
+
 export const ARM_ID_MAX = 64
 export const ARM_REPO_URL_MAX = 500
 export const ARM_TITLE_MAX = 200
@@ -181,6 +210,8 @@ const ARM_TRANSITION_TYPES: ReadonlySet<ArmTransitionType> = new Set([
 
 type ArmVerdict = 'approve' | 'request_changes' | 'comment'
 const ARM_VERDICTS: ReadonlySet<ArmVerdict> = new Set(['approve', 'request_changes', 'comment'])
+
+const ARM_ORDER_ACTIONS: ReadonlySet<ArmOrderAction> = new Set(['ship', 'reply', 'abandon'])
 
 /** A git object name: hex only, from an abbreviated 7 up to a sha256 repo's 64. Whitelisted, not merely bounded. */
 const ARM_SHA_PATTERN = '^[0-9a-f]{7,64}$'
@@ -464,6 +495,58 @@ export function sanitizeArmClaimResult(raw: unknown): ArmClaimResult | null {
 }
 
 /**
+ * Revalidates an `ArmOrder` read off the brain's heartbeat response. Gated on
+ * `action`: same never-fabricate rule as `ArmTicket.status` and
+ * `ArmTransition.type`, an order outside this closed set is not safe to
+ * dispatch, so the whole order is refused rather than guessed at.
+ * `instruction` degrades to `null`, never to an empty string, so a `'reply'`
+ * that arrives with no usable instruction stays tellable from one that
+ * legitimately carries none.
+ */
+export function sanitizeArmOrder(raw: unknown): ArmOrder | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  const action = ARM_ORDER_ACTIONS.has(r.action as ArmOrderAction)
+    ? (r.action as ArmOrderAction)
+    : null
+  if (!action) {
+    return null
+  }
+  return {
+    action,
+    instruction: nullableStr(r.instruction, ARM_PROMPT_MAX),
+    issued_at: isoOrNow(r.issued_at),
+  }
+}
+
+/**
+ * Revalidates the brain's heartbeat response. Gated on `lease_expires_at`,
+ * same reasoning as `sanitizeArmClaimResult`: a heartbeat that cannot say
+ * when the lease it just renewed expires is not a usable response, and unlike
+ * `created_at`/`updated_at` elsewhere in this module, a lease deadline must
+ * never fall back to "now": that would either claim an already-expired lease
+ * or fabricate an extension the brain never granted. A malformed `order`
+ * degrades to `null` rather than sinking the whole response, the same
+ * never-fabricate rule `sanitizeArmOrder` itself applies.
+ */
+export function sanitizeArmHeartbeatResponse(raw: unknown): ArmHeartbeatResponse | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  const leaseExpiresAt = str(r.lease_expires_at, ARM_TIMESTAMP_MAX)
+  if (!leaseExpiresAt) {
+    return null
+  }
+  return {
+    lease_expires_at: leaseExpiresAt,
+    order: sanitizeArmOrder(r.order),
+  }
+}
+
+/**
  * JSON Schema (draft 2020-12) for an `ArmTicket`, on the same pattern as
  * `reviewRecordSchema` (index.ts), `ticketBodySchema` and `recapRecordSchema`
  * (this package): every `sanitizeArmTicket` output validates here (forward),
@@ -574,5 +657,25 @@ export const armTransitionSchema = {
     merge_sha: { type: 'string', pattern: ARM_SHA_PATTERN },
     error_message: { type: 'string', maxLength: ARM_ERROR_MESSAGE_MAX, pattern: NON_BLANK },
     cost_ticks: { type: 'integer', minimum: 0, maximum: 9_007_199_254_740_991 },
+  },
+} as const
+
+/**
+ * JSON Schema (draft 2020-12) for an `ArmOrder`, same pattern and same
+ * forward/backward guarantee as `armTicketSchema` above.
+ */
+export const armOrderSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  $id: 'https://codesema.com/schemas/arm-order.json',
+  title: 'Codesema arm order',
+  type: 'object',
+  additionalProperties: false,
+  required: ['action', 'instruction', 'issued_at'],
+  properties: {
+    action: { enum: ['ship', 'reply', 'abandon'] },
+    instruction: {
+      anyOf: [{ type: 'null' }, { type: 'string', maxLength: ARM_PROMPT_MAX, pattern: NON_BLANK }],
+    },
+    issued_at: { type: 'string', maxLength: ARM_TIMESTAMP_MAX, pattern: NON_BLANK },
   },
 } as const

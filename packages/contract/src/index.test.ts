@@ -173,6 +173,59 @@ describe('sanitizeFindings', () => {
     const [f] = sanitizeFindings([{ file: 'f'.repeat(9000), message: 'm', severity: 'minor' }])
     expect(f?.file.length).toBe(500)
   })
+
+  test('repro: absent by default', () => {
+    const [f] = sanitizeFindings([{ file: 'a.ts', message: 'm', severity: 'major' }])
+    expect(f?.repro).toBeUndefined()
+  })
+
+  test('repro: a valid pair is kept, trimmed', () => {
+    const [f] = sanitizeFindings([
+      {
+        file: 'a.ts',
+        message: 'm',
+        severity: 'major',
+        repro: { command: '  npm test  ', expected: '  exit 0  ' },
+      },
+    ])
+    expect(f?.repro).toEqual({ command: 'npm test', expected: 'exit 0' })
+  })
+
+  test('repro: command and expected are truncated to their own bounds', () => {
+    const [f] = sanitizeFindings([
+      {
+        file: 'a.ts',
+        message: 'm',
+        severity: 'major',
+        repro: { command: 'c'.repeat(9000), expected: 'e'.repeat(9000) },
+      },
+    ])
+    expect(f?.repro?.command.length).toBe(500)
+    expect(f?.repro?.expected.length).toBe(300)
+  })
+
+  test('repro: a blank command drops the WHOLE pair, never a repro with nothing to run', () => {
+    for (const command of ['', '   ', '\n\t']) {
+      const [f] = sanitizeFindings([
+        { file: 'a.ts', message: 'm', severity: 'major', repro: { command, expected: 'exit 0' } },
+      ])
+      expect(f?.repro).toBeUndefined()
+    }
+  })
+
+  test('repro: expected may be blank, the pair still survives on a usable command', () => {
+    const [f] = sanitizeFindings([
+      { file: 'a.ts', message: 'm', severity: 'major', repro: { command: 'npm test' } },
+    ])
+    expect(f?.repro).toEqual({ command: 'npm test', expected: '' })
+  })
+
+  test('repro: a non-object, or one with a non-string command, is dropped entirely', () => {
+    for (const repro of ['nope', 42, null, [], { command: 42 }]) {
+      const [f] = sanitizeFindings([{ file: 'a.ts', message: 'm', severity: 'major', repro }])
+      expect(f?.repro).toBeUndefined()
+    }
+  })
 })
 
 describe('sanitizeNarrative', () => {
@@ -1226,6 +1279,11 @@ const withCriteria = (criteria: unknown): unknown => ({
   review: { ...RECORD_BASE.review, criteria },
 })
 
+const withFindings = (findings: unknown): unknown => ({
+  ...RECORD_BASE,
+  review: { ...RECORD_BASE.review, findings },
+})
+
 describe('cross test: sanitizeRecord output validates against reviewRecordSchema', () => {
   test('a full record — narrative, findings, files_reviewed, criteria, dual — validates', () => {
     const record = sanitizeRecord({
@@ -1247,6 +1305,7 @@ describe('cross test: sanitizeRecord output validates against reviewRecordSchema
             message: 'm',
             suggestion: 'do this',
             consensus: true,
+            repro: { command: 'npm test', expected: 'exit 0' },
           },
         ],
         narrative: {
@@ -1274,6 +1333,7 @@ describe('cross test: sanitizeRecord output validates against reviewRecordSchema
       },
     })
     expect(schemaErrors(record)).toEqual([])
+    expect(record?.review.findings[0]?.repro).toEqual({ command: 'npm test', expected: 'exit 0' })
   })
 
   test('the minimal record — everything the sanitizer defaults — validates', () => {
@@ -1407,5 +1467,35 @@ describe('reverse cross test: reviewRecordSchema is not looser than sanitizeRevi
       schemaErrors({ ...RECORD_BASE, review: { ...RECORD_BASE.review, verdict: 'ship-it' } }),
     ).not.toEqual([])
     expect(schemaErrors({ ...RECORD_BASE, version: 2 })).not.toEqual([])
+  })
+
+  test('a repro with a blank command is schema-invalid: the sanitizer OMITS the whole repro object', () => {
+    const finding = {
+      file: 'a.ts',
+      message: 'm',
+      severity: 'major',
+      repro: { command: '   ', expected: 'x' },
+    }
+    expect(schemaErrors(withFindings([finding]))).not.toEqual([])
+    expect(sanitizeFindings([finding])[0]?.repro).toBeUndefined()
+  })
+
+  test('a repro.command past the published bound is schema-invalid: the sanitizer truncates to it', () => {
+    const tooLong = { command: 'x'.repeat(501), expected: '' }
+    const exact = { command: 'x'.repeat(500), expected: '' }
+    expect(
+      schemaErrors(
+        withFindings([{ file: 'a.ts', message: 'm', severity: 'major', repro: tooLong }]),
+      ),
+    ).not.toEqual([])
+    expect(
+      schemaErrors(withFindings([{ file: 'a.ts', message: 'm', severity: 'major', repro: exact }])),
+    ).toEqual([])
+  })
+
+  test('a finding with an undeclared key is schema-invalid: additionalProperties is false', () => {
+    const finding = { file: 'a.ts', message: 'm', severity: 'major', confidence: 0.9 }
+    expect(schemaErrors(withFindings([finding]))).not.toEqual([])
+    expect(sanitizeFindings([finding])[0]).not.toHaveProperty('confidence')
   })
 })

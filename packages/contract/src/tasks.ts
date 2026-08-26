@@ -234,6 +234,17 @@ export type TaskEventType =
    * five that answers "may this branch land".
    */
   | 'merge'
+  /**
+   * D22 (minimal): the result of replaying this task's checks on the default
+   * branch AFTER its merge landed, a best-effort confirmation that what
+   * merged still passes once combined with everything else that landed
+   * beside it, since `checks` alone only ever proved the branch green in
+   * isolation. NEUTRAL like `checks`, never `error`: a failed replay is news
+   * about the default branch, not about this task, and nothing here re-opens
+   * or blocks the task it is journaled against. Fired at most once,
+   * fire-and-forget, after the merge step itself is already settled.
+   */
+  | 'post_merge_checks'
 
 /**
  * How a task's agent turns are contained.
@@ -369,6 +380,13 @@ export type TaskEvent = {
 export function isActiveTaskStatus(status: TaskStatus): boolean {
   return status !== 'shipped' && status !== 'failed'
 }
+
+/**
+ * Which half of the post-review pipeline a task is currently inside, when it
+ * is inside one (D20): `'ship'` while the ship step runs, `'merge'` while the
+ * merge step runs.
+ */
+export type CycleStep = 'ship' | 'merge'
 
 export type TaskRecord = {
   version: 1
@@ -589,6 +607,18 @@ export type TaskRecord = {
     title: string
     url?: string
   }
+  /**
+   * Which half of ship/merge this task is currently inside, when it is
+   * (D20). Written at the start of that step and cleared at its end, success
+   * or failure alike, and on every reply, resume or abandon, so a stale value
+   * can never outlive the step it named. Read back at boot so a crash between
+   * the step finishing and the record's next write resumes the step instead
+   * of losing it.
+   *
+   * OPTIONAL, and absence is the honest default: a record written before D20,
+   * and a task that is not currently shipping or merging, are the same fact.
+   */
+  cycle_step?: CycleStep
   created_at: string
   updated_at: string
 }
@@ -634,6 +664,19 @@ const TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'interrupted',
 ])
 
+/**
+ * The closed set of `TaskStatus` values, as an array: the published surface a
+ * consumer outside this module reads to validate a status without
+ * hand-copying `TASK_STATUSES`. Derived from that same Set, so the two can
+ * never drift apart.
+ */
+export const TASK_STATUS_VALUES: readonly TaskStatus[] = [...TASK_STATUSES]
+
+/** Type guard over the same closed set, for a value arriving as `unknown`. */
+export function isTaskStatus(value: unknown): value is TaskStatus {
+  return TASK_STATUSES.has(value as TaskStatus)
+}
+
 /** Terminal checks statuses a TaskRecord may carry. `running` is never a result. */
 const TASK_RECORD_CHECKS_STATUSES: ReadonlySet<Exclude<TaskChecksStatus, 'running'>> = new Set([
   'passed',
@@ -664,9 +707,11 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'prep',
   'criteria',
   'merge',
+  'post_merge_checks',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
+const CYCLE_STEPS: ReadonlySet<CycleStep> = new Set(['ship', 'merge'])
 const ISSUE_FORGES: ReadonlySet<IssueForge> = new Set(['github', 'gitlab'])
 
 /**
@@ -1111,6 +1156,12 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     ...(issue ? { issue } : {}),
     ...(issueSnapshot ? { issue_snapshot: issueSnapshot } : {}),
     ...(brainTicket ? { brain_ticket: brainTicket } : {}),
+    // Optional and whitelisted, same doctrine as `checks_status`: absence is
+    // "not currently shipping or merging", which is also what an unknown or
+    // stale token degrades to rather than being trusted as a step in progress.
+    ...(typeof r.cycle_step === 'string' && CYCLE_STEPS.has(r.cycle_step as CycleStep)
+      ? { cycle_step: r.cycle_step as CycleStep }
+      : {}),
     // Optional, whitelist-and-truncate, never throw: a missing or unusable
     // list is "no criteria", which is the honest default for every record
     // written before T2.5 and every task that still has none. An empty list

@@ -65,6 +65,17 @@ export type Verdict = 'approve' | 'request_changes' | 'comment'
 export type FindingSeverity = 'critical' | 'major' | 'minor' | 'info'
 export type FindingKind = 'security' | 'perf' | 'convention' | 'design' | 'praise' | 'why'
 
+/**
+ * How a `major` finding claims to reproduce (D24): the command to run, and
+ * what a human should expect to see. `expected` is documentation for a
+ * person, never parsed by anything downstream: the only machine-readable
+ * signal a repro run produces is its exit code.
+ */
+export type FindingRepro = {
+  command: string
+  expected: string
+}
+
 export type Finding = {
   file: string
   line?: number
@@ -76,6 +87,8 @@ export type Finding = {
   suggestion?: string
   /** Dual review: true when both independent reviewers raised this finding. */
   consensus?: boolean
+  /** D24: how to reproduce the finding, when the reviewer stated one. */
+  repro?: FindingRepro
 }
 
 export type ReviewedFileStatus = 'clean' | 'findings'
@@ -153,6 +166,10 @@ const CHECK_MAX = 300
 const TITLE_MAX = 200
 const MESSAGE_MAX = 2000
 const SUGGESTION_MAX = 4000
+/** Bound of `FindingRepro.command`: a shell command, not a script. */
+const FINDING_REPRO_COMMAND_MAX = 500
+/** Bound of `FindingRepro.expected`: a one-line human expectation, not a transcript. */
+const FINDING_REPRO_EXPECTED_MAX = 300
 
 function sanitizeReviewFirst(raw: unknown, stepsCount: number): ReviewFirstItem[] {
   if (!Array.isArray(raw)) {
@@ -296,6 +313,28 @@ const KINDS: ReadonlySet<FindingKind> = new Set([
   'why',
 ])
 
+/**
+ * Whitelist and truncate, never throw, same doctrine as `sanitizeFindings`
+ * itself: a `command` that is empty after trimming drops the WHOLE repro
+ * (nothing to run is worse than no repro claimed at all), while `expected`
+ * degrades to an empty string rather than dropping the pair, since it is
+ * documentation for a human, not a condition anything checks.
+ */
+function sanitizeFindingRepro(raw: unknown): FindingRepro | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
+  const r = raw as Record<string, unknown>
+  const command =
+    typeof r.command === 'string' ? r.command.trim().slice(0, FINDING_REPRO_COMMAND_MAX) : ''
+  if (!command) {
+    return undefined
+  }
+  const expected =
+    typeof r.expected === 'string' ? r.expected.trim().slice(0, FINDING_REPRO_EXPECTED_MAX) : ''
+  return { command, expected }
+}
+
 export function sanitizeFindings(raw: unknown): Finding[] {
   if (!Array.isArray(raw)) {
     return []
@@ -331,6 +370,7 @@ export function sanitizeFindings(raw: unknown): Finding[] {
       typeof f.suggestion === 'string'
         ? f.suggestion.slice(0, SUGGESTION_MAX) || undefined
         : undefined
+    const repro = sanitizeFindingRepro(f.repro)
     out.push({
       file,
       message,
@@ -341,6 +381,7 @@ export function sanitizeFindings(raw: unknown): Finding[] {
       ...(title !== undefined ? { title } : {}),
       ...(suggestion !== undefined ? { suggestion } : {}),
       ...(f.consensus === true ? { consensus: true } : {}),
+      ...(repro !== undefined ? { repro } : {}),
     })
   }
   return out
@@ -1138,6 +1179,20 @@ export const reviewRecordSchema = {
         message: { type: 'string' },
         suggestion: { type: 'string' },
         consensus: { type: 'boolean' },
+        repro: { $ref: '#/$defs/findingRepro' },
+      },
+    },
+    // `command` carries `NON_BLANK`: `sanitizeFindingRepro` drops the WHOLE
+    // repro rather than keep a blank command (see its own doc comment), so a
+    // finding this schema admits must never claim a repro with nothing to
+    // run. `expected` has no such guarantee: the sanitizer keeps an empty one.
+    findingRepro: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['command', 'expected'],
+      properties: {
+        command: { type: 'string', maxLength: FINDING_REPRO_COMMAND_MAX, pattern: NON_BLANK },
+        expected: { type: 'string', maxLength: FINDING_REPRO_EXPECTED_MAX },
       },
     },
     narrative: {

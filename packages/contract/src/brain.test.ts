@@ -1,4 +1,10 @@
+import { randomBytes, randomUUID } from 'node:crypto'
+import Ajv from 'ajv'
 import { describe, expect, test } from 'bun:test'
+import claimBodySchema from '../fixtures/cerveau-schemas/claim.schema.json'
+import eventsBodySchema from '../fixtures/cerveau-schemas/events.schema.json'
+import heartbeatBodySchema from '../fixtures/cerveau-schemas/heartbeat.schema.json'
+import transitionsBodySchema from '../fixtures/cerveau-schemas/transitions.schema.json'
 import {
   ARM_BODY_MAX,
   ARM_BRANCH_MAX,
@@ -17,20 +23,26 @@ import {
   ARM_STATUS_MAX,
   ARM_TIMESTAMP_MAX,
   ARM_TITLE_MAX,
+  armOrderSchema,
   armTicketSchema,
   armTransitionSchema,
   sanitizeArmClaimResult,
   sanitizeArmEvent,
+  sanitizeArmHeartbeatResponse,
+  sanitizeArmOrder,
   sanitizeArmTicket,
   sanitizeArmTicketRequest,
   sanitizeArmTransition,
   type ArmClaimResult,
   type ArmEvent,
+  type ArmHeartbeatResponse,
   type ArmIssueRef,
+  type ArmOrder,
   type ArmTicket,
   type ArmTicketRequest,
   type ArmTransition,
 } from './brain.js'
+import { TASK_STATUS_VALUES } from './tasks.js'
 
 // --- Fixtures ----------------------------------------------------------------
 
@@ -95,6 +107,23 @@ const validEvent: ArmEvent = {
 const validClaimResult: ArmClaimResult = {
   ticket: validTicket,
   lease_expires_at: '2026-08-14T11:00:00.000Z',
+}
+
+const shipOrder: ArmOrder = {
+  action: 'ship',
+  instruction: null,
+  issued_at: '2026-08-14T10:00:00.000Z',
+}
+
+const replyOrder: ArmOrder = {
+  action: 'reply',
+  instruction: 'Add a test for the empty-branch case before shipping.',
+  issued_at: '2026-08-14T10:00:00.000Z',
+}
+
+const validHeartbeatResponse: ArmHeartbeatResponse = {
+  lease_expires_at: '2026-08-14T11:00:00.000Z',
+  order: replyOrder,
 }
 
 test('published bounds are locked to their literal values', () => {
@@ -575,6 +604,91 @@ describe('sanitizeArmClaimResult', () => {
   })
 })
 
+// --- sanitizeArmOrder / sanitizeArmHeartbeatResponse (D19) --------------------
+
+describe('sanitizeArmOrder', () => {
+  test('a valid ship order round-trips unchanged', () => {
+    expect(sanitizeArmOrder(structuredClone(shipOrder))).toEqual(shipOrder)
+  })
+
+  test('a valid reply order keeps its instruction', () => {
+    expect(sanitizeArmOrder(structuredClone(replyOrder))).toEqual(replyOrder)
+  })
+
+  test('non-object input: null', () => {
+    expect(sanitizeArmOrder(null)).toBeNull()
+    expect(sanitizeArmOrder(undefined)).toBeNull()
+    expect(sanitizeArmOrder('junk')).toBeNull()
+    expect(sanitizeArmOrder(42)).toBeNull()
+    expect(sanitizeArmOrder([])).toBeNull()
+  })
+
+  test('an unrecognized action is refused, never fabricated into a known one', () => {
+    expect(sanitizeArmOrder({ ...shipOrder, action: 'delete' })).toBeNull()
+    expect(sanitizeArmOrder({ instruction: null, issued_at: shipOrder.issued_at })).toBeNull()
+  })
+
+  test('instruction: absent or blank degrades to null, never to an empty string', () => {
+    for (const instruction of [undefined, null, '', '   ']) {
+      expect(sanitizeArmOrder({ ...shipOrder, instruction })?.instruction).toBeNull()
+    }
+  })
+
+  test('instruction is truncated to ARM_PROMPT_MAX, never rejected for length', () => {
+    const long = 'x'.repeat(ARM_PROMPT_MAX + 5_000)
+    const order = sanitizeArmOrder({ ...replyOrder, instruction: long })
+    expect(order?.instruction?.length).toBe(ARM_PROMPT_MAX)
+  })
+
+  test('a missing or unusable issued_at falls back to now, same as ArmTransition.at', () => {
+    const order = sanitizeArmOrder({ action: 'ship', instruction: null })
+    expect(typeof order?.issued_at).toBe('string')
+    expect(order?.issued_at.length).toBeGreaterThan(0)
+  })
+})
+
+describe('sanitizeArmHeartbeatResponse', () => {
+  test('a valid response carrying an order round-trips unchanged', () => {
+    expect(sanitizeArmHeartbeatResponse(structuredClone(validHeartbeatResponse))).toEqual(
+      validHeartbeatResponse,
+    )
+  })
+
+  test('a valid response with no order keeps order null', () => {
+    const response: ArmHeartbeatResponse = {
+      lease_expires_at: '2026-08-14T11:00:00.000Z',
+      order: null,
+    }
+    expect(sanitizeArmHeartbeatResponse(structuredClone(response))).toEqual(response)
+  })
+
+  test('order absent (never sent) reads the same as order null', () => {
+    const response = sanitizeArmHeartbeatResponse({ lease_expires_at: '2026-08-14T11:00:00.000Z' })
+    expect(response?.order).toBeNull()
+  })
+
+  test('non-object input: null', () => {
+    expect(sanitizeArmHeartbeatResponse(null)).toBeNull()
+    expect(sanitizeArmHeartbeatResponse(undefined)).toBeNull()
+    expect(sanitizeArmHeartbeatResponse('junk')).toBeNull()
+    expect(sanitizeArmHeartbeatResponse(42)).toBeNull()
+  })
+
+  test('a missing or unusable lease_expires_at refuses the WHOLE response, never falls back to now', () => {
+    expect(sanitizeArmHeartbeatResponse({ order: null })).toBeNull()
+    expect(sanitizeArmHeartbeatResponse({ lease_expires_at: '', order: null })).toBeNull()
+    expect(sanitizeArmHeartbeatResponse({ lease_expires_at: 42, order: null })).toBeNull()
+  })
+
+  test('a malformed order degrades to null rather than sinking the whole response', () => {
+    const response = sanitizeArmHeartbeatResponse({
+      lease_expires_at: '2026-08-14T11:00:00.000Z',
+      order: { action: 'delete' },
+    })
+    expect(response).toEqual({ lease_expires_at: '2026-08-14T11:00:00.000Z', order: null })
+  })
+})
+
 // --- The published schemas ----------------------------------------------------
 
 describe('armTicketSchema / armTransitionSchema', () => {
@@ -583,6 +697,8 @@ describe('armTicketSchema / armTransitionSchema', () => {
     expect(armTicketSchema.$id).toBe('https://codesema.com/schemas/arm-ticket.json')
     expect(armTransitionSchema.$schema).toBe('https://json-schema.org/draft/2020-12/schema')
     expect(armTransitionSchema.$id).toBe('https://codesema.com/schemas/arm-transition.json')
+    expect(armOrderSchema.$schema).toBe('https://json-schema.org/draft/2020-12/schema')
+    expect(armOrderSchema.$id).toBe('https://codesema.com/schemas/arm-order.json')
   })
 
   test('every $ref in armTicketSchema resolves to a defined $def', () => {
@@ -607,8 +723,8 @@ describe('armTicketSchema / armTransitionSchema', () => {
     }
   })
 
-  test('every required key exists in properties, on both schemas', () => {
-    for (const schema of [armTicketSchema, armTransitionSchema]) {
+  test('every required key exists in properties, on all three schemas', () => {
+    for (const schema of [armTicketSchema, armTransitionSchema, armOrderSchema]) {
       const props = new Set(Object.keys(schema.properties))
       for (const key of schema.required) {
         expect(props.has(key)).toBe(true)
@@ -765,6 +881,9 @@ const transitionSchemaErrors = (value: unknown): string[] =>
     armTransitionSchema as unknown as Schema,
     armTransitionSchema as unknown as Schema,
   )
+
+const orderSchemaErrors = (value: unknown): string[] =>
+  validate(value, armOrderSchema as unknown as Schema, armOrderSchema as unknown as Schema)
 
 describe('cross test: sanitizeArmTicket output validates against armTicketSchema', () => {
   test('the full nominal ticket validates', () => {
@@ -928,5 +1047,270 @@ describe('reverse cross test: armTransitionSchema is not looser than sanitizeArm
 
   test('an extra unknown key is schema-invalid: additionalProperties is false', () => {
     expect(transitionSchemaErrors({ ...BASE, extra: 'nope' })).not.toEqual([])
+  })
+})
+
+describe('cross test: sanitizeArmOrder output validates against armOrderSchema', () => {
+  test('a ship order (instruction null) validates', () => {
+    expect(orderSchemaErrors(sanitizeArmOrder(structuredClone(shipOrder)))).toEqual([])
+  })
+
+  test('a reply order (instruction set) validates', () => {
+    expect(orderSchemaErrors(sanitizeArmOrder(structuredClone(replyOrder)))).toEqual([])
+  })
+
+  test('every valid action produces a validating order', () => {
+    for (const action of ['ship', 'reply', 'abandon'] as const) {
+      expect(orderSchemaErrors(sanitizeArmOrder({ ...shipOrder, action }))).toEqual([])
+    }
+  })
+
+  test('hostile input, once sanitized, still validates', () => {
+    const hostile = sanitizeArmOrder({
+      action: 'reply',
+      instruction: 42,
+      issued_at: 'x'.repeat(500),
+    })
+    expect(orderSchemaErrors(hostile)).toEqual([])
+  })
+})
+
+describe('reverse cross test: armOrderSchema is not looser than sanitizeArmOrder accepts', () => {
+  const BASE = {
+    action: 'ship',
+    instruction: null,
+    issued_at: '2026-08-14T10:00:00.000Z',
+  }
+
+  test('an unknown action is schema-invalid: sanitizeArmOrder never emits one', () => {
+    expect(orderSchemaErrors({ ...BASE, action: 'not-an-action' })).not.toEqual([])
+  })
+
+  test('an empty-string instruction is schema-invalid: sanitizeArmOrder only ever emits null or a non-blank string', () => {
+    expect(orderSchemaErrors({ ...BASE, instruction: '' })).not.toEqual([])
+  })
+
+  test('a missing key is schema-invalid: every key of ArmOrder is always present', () => {
+    const { instruction: _drop, ...missingInstruction } = BASE
+    expect(orderSchemaErrors(missingInstruction)).not.toEqual([])
+  })
+
+  test('an extra unknown key is schema-invalid: additionalProperties is false', () => {
+    expect(orderSchemaErrors({ ...BASE, extra: 'nope' })).not.toEqual([])
+  })
+})
+
+// --- Cross-repo: brain schemas (D-contrat, asymmetric arbitration) --------
+//
+// The brain (a separate repo) exports its own TypeBox body schemas for the
+// four `/api/cli` routes this package's sanitizers exist to talk to, as
+// plain JSON Schema files synced here BY HAND (never over the network, never
+// wired into CI: scripts/sync-brain-schemas.mjs, see this package's README)
+// into fixtures/cerveau-schemas/. Everything above this point proves a
+// sanitizer's output against THIS package's own published schema; the tests
+// below prove the same output against the BRAIN's independently-maintained
+// schema, the only thing that can catch the two repos' copies of a shape
+// drifting apart.
+//
+// Concrete motivation: a 422 that crossed both repos' own test suites,
+// because the brain once required `run_id` to look like a uuid while the arm
+// generates one as a 12-hex string (`randomBytes(6).toString('hex')`,
+// packages/cli/src/tasks-store.ts, reused below as `armRunId`). Each repo's
+// tests only ever checked its own copy of the shape, so neither caught the
+// mismatch. The tests below require the brain's copied schema to accept
+// exactly that shape, so a regression on either side fails here instead of
+// on a production heartbeat.
+
+const ajv = new Ajv({ allErrors: true })
+ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+
+const validateClaimBody = ajv.compile(claimBodySchema)
+const validateHeartbeatBody = ajv.compile(heartbeatBodySchema)
+const validateTransitionBody = ajv.compile(transitionsBodySchema)
+const validateEventsBody = ajv.compile(eventsBodySchema)
+
+/** packages/cli/src/tasks-store.ts: a task id, reused on the wire as `run_id`. */
+const armRunId = randomBytes(6).toString('hex')
+
+function sanitizedValidEvent(overrides: Partial<ArmEvent> = {}): ArmEvent {
+  const event = sanitizeArmEvent({ ...validEvent, ...overrides })
+  if (!event) {
+    throw new Error('test fixture: expected this override to still sanitize to a valid event')
+  }
+  return event
+}
+
+/**
+ * The envelope POSTed to `/api/cli/tickets/:id/events`: `remote_url`/`run_id`/
+ * `ticket_id` alongside the batch, on top of each item's own `run_id`
+ * (cli-tickets.ts's `cliEventsBodySchema`, brain repo). Not a type this
+ * package publishes (only the per-item `ArmEvent` is), so built here
+ * directly. Override fields are typed `unknown`, not `ArmEvent`-shaped:
+ * several tests below deliberately pass a shape sanitizeArmEvent would never
+ * produce, to prove the BRAIN schema also refuses it.
+ */
+function eventEnvelope(
+  overrides: {
+    remote_url?: unknown
+    run_id?: unknown
+    ticket_id?: unknown
+    events?: unknown
+  } = {},
+): Record<string, unknown> {
+  return {
+    remote_url: 'https://github.com/getCodesema/codesema-cli.git',
+    run_id: armRunId,
+    events: [sanitizedValidEvent()],
+    ...overrides,
+  }
+}
+
+describe('cross-repo: claim and heartbeat request bodies (no dedicated sanitizer in this package)', () => {
+  // Mirrors the brain's own MAX_LEASE_SECONDS and 1-second floor
+  // (backend/src/modules/tickets/adapters/ticket-claim.ts), duplicated here
+  // rather than imported: same asymmetric arbitration as the rest of this
+  // block, this package has no dependency on the brain repo.
+  const BRAIN_LEASE_SECONDS_MIN = 1
+  const BRAIN_LEASE_SECONDS_MAX = 900
+
+  test('an empty claim body (lease_seconds omitted) validates', () => {
+    expect(validateClaimBody({})).toBe(true)
+  })
+
+  test('a lease_seconds within the brain-documented bail range validates', () => {
+    for (const lease_seconds of [BRAIN_LEASE_SECONDS_MIN, 180, BRAIN_LEASE_SECONDS_MAX]) {
+      expect(validateClaimBody({ lease_seconds })).toBe(true)
+    }
+  })
+
+  test('a lease_seconds outside the brain-documented bail range is refused', () => {
+    for (const lease_seconds of [BRAIN_LEASE_SECONDS_MIN - 1, BRAIN_LEASE_SECONDS_MAX + 1, 0, -1]) {
+      expect(validateClaimBody({ lease_seconds })).toBe(false)
+    }
+  })
+
+  test('every TASK_STATUS_VALUES entry is an acceptable heartbeat local_status', () => {
+    for (const local_status of TASK_STATUS_VALUES) {
+      expect(validateHeartbeatBody({ lease_seconds: 180, local_status })).toBe(true)
+    }
+  })
+
+  test('heartbeat with local_status omitted (a CLI predating D19) still validates', () => {
+    expect(validateHeartbeatBody({ lease_seconds: 180 })).toBe(true)
+  })
+
+  test('a local_status at the brain bound (40) validates, one over it is refused', () => {
+    expect(validateHeartbeatBody({ local_status: 'x'.repeat(40) })).toBe(true)
+    expect(validateHeartbeatBody({ local_status: 'x'.repeat(41) })).toBe(false)
+  })
+})
+
+describe('cross-repo: sanitizeArmTransition output validates against the brain schema', () => {
+  test('the minimal transition validates', () => {
+    expect(validateTransitionBody(sanitizeArmTransition(structuredClone(minimalTransition)))).toBe(
+      true,
+    )
+  })
+
+  test('the full transition validates', () => {
+    expect(validateTransitionBody(sanitizeArmTransition(structuredClone(fullTransition)))).toBe(
+      true,
+    )
+  })
+
+  test('every valid transition type produces a brain-schema-valid transition', () => {
+    const types = ['mr_opened', 'review_result', 'merged', 'failed'] as const
+    for (const type of types) {
+      expect(validateTransitionBody(sanitizeArmTransition({ ...minimalTransition, type }))).toBe(
+        true,
+      )
+    }
+  })
+})
+
+describe('reverse cross-repo: the brain schema is not looser than sanitizeArmTransition on the fields it constrains', () => {
+  test('a blank idempotency_key: refused by sanitizeArmTransition (null) and by the brain schema', () => {
+    expect(sanitizeArmTransition({ ...minimalTransition, idempotency_key: '' })).toBeNull()
+    expect(validateTransitionBody({ ...minimalTransition, idempotency_key: '' })).toBe(false)
+  })
+
+  test('an unrecognized type: refused by sanitizeArmTransition (null) and by the brain schema', () => {
+    expect(sanitizeArmTransition({ ...minimalTransition, type: 'not-a-type' })).toBeNull()
+    expect(validateTransitionBody({ ...minimalTransition, type: 'not-a-type' })).toBe(false)
+  })
+
+  test('a missing idempotency_key: refused by sanitizeArmTransition (null) and by the brain schema', () => {
+    const { idempotency_key: _drop, ...withoutKey } = minimalTransition
+    expect(sanitizeArmTransition(withoutKey)).toBeNull()
+    expect(validateTransitionBody(withoutKey)).toBe(false)
+  })
+})
+
+describe('cross-repo: closes the run_id class (12-hex arm task id vs the brain schema)', () => {
+  test('a 12-hex run_id, the shape the arm actually generates, validates at the envelope level', () => {
+    expect(validateEventsBody(eventEnvelope())).toBe(true)
+  })
+
+  test('the same 12-hex run_id, inside a sanitized event item, also validates', () => {
+    const item = sanitizedValidEvent({ run_id: armRunId })
+    expect(validateEventsBody(eventEnvelope({ events: [item] }))).toBe(true)
+  })
+
+  // Mirrors sanitizeArmEvent's own "a missing or blank run_id: no usable
+  // identity, null" table (above), at the ENVELOPE level, where the original
+  // incident actually lived: an empty run_id has length 0, so the brain's
+  // own `minLength: 1` catches it exactly like sanitizeArmEvent does.
+  test('an empty run_id: refused by sanitizeArmEvent (null) and by the brain schema (minLength 1)', () => {
+    expect(sanitizeArmEvent({ ...validEvent, run_id: '' })).toBeNull()
+    expect(validateEventsBody(eventEnvelope({ run_id: '' }))).toBe(false)
+  })
+
+  // A DIFFERENT case from the empty string above, and deliberately NOT
+  // asserted as refused: `minLength` counts raw characters, it does not trim
+  // first, so a whitespace-only run_id (length 3) satisfies the brain's
+  // `minLength: 1` even though sanitizeArmEvent refuses it as blank. Brain
+  // schema looser than this package's sanitizer is fine per the D-contrat
+  // arbitration (only the reverse, brain stricter than what the arm actually
+  // produces, is the bug class this suite exists to catch), and
+  // sanitizeArmEvent never lets a whitespace-only run_id reach the wire in
+  // the first place, so this asymmetry has no real payload to bite on.
+  test('a whitespace-only run_id: refused by sanitizeArmEvent (null), but the brain schema does not trim, so it accepts the raw shape', () => {
+    expect(sanitizeArmEvent({ ...validEvent, run_id: '   ' })).toBeNull()
+    expect(validateEventsBody(eventEnvelope({ run_id: '   ' }))).toBe(true)
+  })
+
+  test('a run_id over the brain envelope bound (64) is refused', () => {
+    expect(validateEventsBody(eventEnvelope({ run_id: 'a'.repeat(65) }))).toBe(false)
+  })
+
+  // Documents a real asymmetry rather than asserting a failure for it: the
+  // brain's ITEM-level run_id has no maxLength, unlike its own envelope-level
+  // run_id (64) or this package's own ARM_RUN_ID_MAX (64) truncation. A
+  // brain schema looser than this package's sanitizer is fine per the
+  // D-contrat arbitration; only the reverse (brain stricter than what the arm
+  // actually produces) is the bug class this suite exists to catch.
+  test('the brain schema is looser than this package at the item level: an over-length item run_id still validates there', () => {
+    const item = sanitizedValidEvent({ run_id: armRunId })
+    const overLength = { ...item, run_id: 'x'.repeat(200) }
+    expect(validateEventsBody(eventEnvelope({ events: [overLength] }))).toBe(true)
+  })
+})
+
+describe('cross-repo: ticket_id, when present, must be a real uuid (brain-side format check)', () => {
+  test('a real uuid ticket_id validates', () => {
+    expect(validateEventsBody(eventEnvelope({ ticket_id: randomUUID() }))).toBe(true)
+  })
+
+  // ArmTicket.id (sanitizeArmTicket, above) only requires a non-blank string
+  // up to ARM_ID_MAX: it does NOT enforce a uuid shape. `ticket_id` here is
+  // exactly that id, echoed back by packages/cli's task-brain.ts
+  // (`ticketId = record.brain_ticket?.id`) when it reports events for a
+  // claimed ticket. Verified structurally today, since every ticket id the
+  // brain currently hands out IS a uuid, but nothing in this package's own
+  // sanitizer enforces that, so this is the same class of risk as the
+  // run_id incident, one hop over: noted here rather than silently assumed
+  // away.
+  test('a non-uuid ticket_id is refused by the brain schema', () => {
+    expect(validateEventsBody(eventEnvelope({ ticket_id: 'not-a-uuid' }))).toBe(false)
   })
 })

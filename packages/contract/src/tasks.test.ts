@@ -3,6 +3,7 @@ import {
   acceptanceCriterionId,
   isActiveTaskStatus,
   isTaskId,
+  isTaskStatus,
   sanitizeTaskChecks,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
@@ -16,6 +17,7 @@ import {
   TASK_EVENT_DATA_STRING_MAX,
   TASK_ISSUE_PROJECT_MAX,
   TASK_ISSUE_URL_MAX,
+  TASK_STATUS_VALUES,
   TASK_TIMESTAMP_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
@@ -323,6 +325,23 @@ describe('sanitizeTaskRecord', () => {
     expect(
       sanitizeTaskRecord({ ...validRecord, checks_status: 'green' }) &&
         'checks_status' in sanitizeTaskRecord({ ...validRecord, checks_status: 'green' })!,
+    ).toBe(false)
+  })
+
+  test('cycle_step: optional, whitelisted, unknown dropped', () => {
+    expect(
+      sanitizeTaskRecord(validRecord) && 'cycle_step' in sanitizeTaskRecord(validRecord)!,
+    ).toBe(false)
+    for (const step of ['ship', 'merge'] as const) {
+      expect(sanitizeTaskRecord({ ...validRecord, cycle_step: step })?.cycle_step).toBe(step)
+    }
+    expect(
+      sanitizeTaskRecord({ ...validRecord, cycle_step: 'review' }) &&
+        'cycle_step' in sanitizeTaskRecord({ ...validRecord, cycle_step: 'review' })!,
+    ).toBe(false)
+    expect(
+      sanitizeTaskRecord({ ...validRecord, cycle_step: 42 }) &&
+        'cycle_step' in sanitizeTaskRecord({ ...validRecord, cycle_step: 42 })!,
     ).toBe(false)
   })
 
@@ -1031,6 +1050,32 @@ describe('isActiveTaskStatus', () => {
   })
 })
 
+describe('TASK_STATUS_VALUES / isTaskStatus', () => {
+  test('TASK_STATUS_VALUES names exactly the nine TaskStatus values', () => {
+    const allStatuses: TaskStatus[] = [
+      'queued',
+      'running',
+      'waiting_for_you',
+      'reviewing',
+      'review_ok',
+      'review_ko',
+      'shipped',
+      'failed',
+      'interrupted',
+    ]
+    expect([...TASK_STATUS_VALUES].toSorted()).toEqual(allStatuses.toSorted())
+  })
+
+  test('isTaskStatus accepts every value TASK_STATUS_VALUES names, and nothing else', () => {
+    for (const status of TASK_STATUS_VALUES) {
+      expect(isTaskStatus(status)).toBe(true)
+    }
+    for (const junk of ['done', 'blocked', '', 42, null, undefined, {}]) {
+      expect(isTaskStatus(junk)).toBe(false)
+    }
+  })
+})
+
 describe('sanitizeTaskEvent', () => {
   const validEvent: TaskEvent = {
     seq: 3,
@@ -1097,6 +1142,7 @@ describe('sanitizeTaskEvent', () => {
       'queue',
       'issue',
       'criteria',
+      'post_merge_checks',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

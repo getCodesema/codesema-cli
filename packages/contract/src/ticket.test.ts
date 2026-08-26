@@ -13,6 +13,8 @@ import {
   lintCriteria,
   lintTicketBody,
   normalizeCriterionText,
+  parseCriterionProof,
+  PROOF_METHODS,
   readAcceptanceCriteria,
   sanitizeAcceptanceCriteria,
   sanitizeAcceptanceCriterion,
@@ -31,8 +33,10 @@ import {
   type AcceptanceCriterion,
   type CriterionVerdict,
   type TicketBody,
+  type TicketLintOptions,
   type TicketLintResult,
   type TicketProblem,
+  type TicketProblemCode,
   type TicketSectionHeading,
 } from './ticket.js'
 
@@ -69,8 +73,8 @@ function markdown(parts: Parts = {}): string {
     .join('\n\n')
 }
 
-function lintOk(raw: string): TicketBody {
-  const result = lintTicketBody(raw)
+function lintOk(raw: string, opts?: TicketLintOptions): TicketBody {
+  const result = lintTicketBody(raw, opts)
   expect(result.ok).toBe(true)
   if (!result.ok) {
     throw new Error('unreachable')
@@ -78,8 +82,8 @@ function lintOk(raw: string): TicketBody {
   return result.body
 }
 
-function lintKo(raw: unknown): TicketProblem[] {
-  const result: TicketLintResult = lintTicketBody(raw)
+function lintKo(raw: unknown, opts?: TicketLintOptions): TicketProblem[] {
+  const result: TicketLintResult = lintTicketBody(raw, opts)
   expect(result.ok).toBe(false)
   if (result.ok) {
     throw new Error('unreachable')
@@ -87,8 +91,8 @@ function lintKo(raw: unknown): TicketProblem[] {
   return result.problems
 }
 
-function criteriaOk(raw: unknown): AcceptanceCriterion[] {
-  const result = lintCriteria(raw)
+function criteriaOk(raw: unknown, opts?: TicketLintOptions): AcceptanceCriterion[] {
+  const result = lintCriteria(raw, opts)
   expect(result.ok).toBe(true)
   if (!result.ok) {
     throw new Error('unreachable')
@@ -96,8 +100,8 @@ function criteriaOk(raw: unknown): AcceptanceCriterion[] {
   return result.criteria
 }
 
-function criteriaKo(raw: unknown): TicketProblem[] {
-  const result = lintCriteria(raw)
+function criteriaKo(raw: unknown, opts?: TicketLintOptions): TicketProblem[] {
+  const result = lintCriteria(raw, opts)
   expect(result.ok).toBe(false)
   if (result.ok) {
     throw new Error('unreachable')
@@ -328,6 +332,7 @@ describe('exported bounds', () => {
       'criteria_duplicated',
       'criterion_not_ears',
       'criterion_too_long',
+      'criterion_missing_proof',
     ])
   })
 })
@@ -478,6 +483,83 @@ describe('stable ids (the formatRules precedent, not reproduced)', () => {
       lintOk(markdown({ criteria: CRITERIA.toReversed() })),
     )
     expect(new Set(reversed.map((c) => c.id))).toEqual(new Set(straight.map((c) => c.id)))
+  })
+})
+
+// --- parseCriterionProof (D17) -----------------------------------------------
+
+describe('parseCriterionProof', () => {
+  test('a valid command tag at the end is read: method and argument', () => {
+    expect(parseCriterionProof('WHEN x THE SYSTEM SHALL y [proof:command npm test]')).toEqual({
+      method: 'command',
+      argument: 'npm test',
+    })
+  })
+
+  test('every proof method parses', () => {
+    for (const method of PROOF_METHODS) {
+      const arg = method === 'judgment' ? '' : ' something'
+      expect(parseCriterionProof(`WHEN x THE SYSTEM SHALL y [proof:${method}${arg}]`)?.method).toBe(
+        method,
+      )
+    }
+  })
+
+  test('no tag at all: absent', () => {
+    expect(parseCriterionProof('WHEN x THE SYSTEM SHALL y')).toBeNull()
+  })
+
+  test('an unknown method is invalid, never fabricated into a known one', () => {
+    expect(parseCriterionProof('WHEN x THE SYSTEM SHALL y [proof:eyeball it]')).toBeNull()
+  })
+
+  test('a tag that is not at the end is invalid: trailing prose is never absorbed', () => {
+    expect(parseCriterionProof('[proof:command npm test] WHEN x THE SYSTEM SHALL y')).toBeNull()
+    expect(
+      parseCriterionProof('WHEN x THE SYSTEM SHALL y [proof:command npm test] and more'),
+    ).toBeNull()
+  })
+
+  test('command/diff/read with no argument (or a blank one) is invalid', () => {
+    for (const method of ['command', 'diff', 'read'] as const) {
+      expect(parseCriterionProof(`WHEN x THE SYSTEM SHALL y [proof:${method}]`)).toBeNull()
+      expect(parseCriterionProof(`WHEN x THE SYSTEM SHALL y [proof:${method}   ]`)).toBeNull()
+    }
+  })
+
+  test('judgment with no argument is valid: argument is null, not an empty string', () => {
+    expect(parseCriterionProof('WHEN x THE SYSTEM SHALL y [proof:judgment]')).toEqual({
+      method: 'judgment',
+      argument: null,
+    })
+  })
+
+  test('judgment with an argument keeps it', () => {
+    expect(parseCriterionProof('WHEN x THE SYSTEM SHALL y [proof:judgment obviously]')).toEqual({
+      method: 'judgment',
+      argument: 'obviously',
+    })
+  })
+
+  test('tolerates extra internal whitespace around the method and the argument', () => {
+    expect(
+      parseCriterionProof('WHEN x THE SYSTEM SHALL y [proof:   command    npm test   ]'),
+    ).toEqual({ method: 'command', argument: 'npm test' })
+  })
+
+  test('an argument containing a literal "]" is kept whole, closed at the LAST bracket', () => {
+    expect(
+      parseCriterionProof('WHEN x THE SYSTEM SHALL y [proof:command grep "[unit]" out.log]'),
+    ).toEqual({ method: 'command', argument: 'grep "[unit]" out.log' })
+  })
+
+  test('stays compatible with EARS_RE: a tagged criterion still lints as an ordinary EARS sentence', () => {
+    // D17: the tag lives inside the response clause's own trailing `.+`, so it
+    // must never be stripped, and must never make an otherwise-conforming
+    // criterion fail the EARS check.
+    const tagged = `${CRITERIA[0] ?? ''} [proof:command npm test]`
+    const body = lintOk(markdown({ criteria: [tagged, CRITERIA[1] ?? '', CRITERIA[2] ?? ''] }))
+    expect(body.acceptance_criteria.map((c) => c.text)).toContain(tagged)
   })
 })
 
@@ -2254,6 +2336,73 @@ describe('lintCriteria', () => {
   test('is deterministic, like the body lint', () => {
     const list = ['not ears', CRITERIA[1] ?? '']
     expect(lintCriteria(list)).toEqual(lintCriteria(list))
+  })
+})
+
+// --- requireProofMethod (D17) -------------------------------------------------
+
+describe('lintTicketBody / lintCriteria: requireProofMethod (D17)', () => {
+  const PROVEN_CRITERIA = [
+    `${CRITERIA[0] ?? ''} [proof:command npm test]`,
+    `${CRITERIA[1] ?? ''} [proof:diff src/ticket.ts]`,
+    `${CRITERIA[2] ?? ''} [proof:judgment]`,
+  ]
+
+  test('unset, {} and false are the very same lint: the pre-D17 default, byte for byte', () => {
+    for (const raw of [markdown(), markdown({ criteria: ['not ears', CRITERIA[1] ?? ''] })]) {
+      expect(lintTicketBody(raw)).toEqual(lintTicketBody(raw, {}))
+      expect(lintTicketBody(raw)).toEqual(lintTicketBody(raw, { requireProofMethod: false }))
+    }
+    expect(lintCriteria(CRITERIA)).toEqual(lintCriteria(CRITERIA, {}))
+    expect(lintCriteria(CRITERIA)).toEqual(lintCriteria(CRITERIA, { requireProofMethod: false }))
+  })
+
+  test('false (the default): a body with no proof tags anywhere still lints clean', () => {
+    expect(lintTicketBody(markdown()).ok).toBe(true)
+    expect(lintCriteria(CRITERIA).ok).toBe(true)
+  })
+
+  test('true: every criterion missing a valid tag is refused by name, one problem each', () => {
+    const problems = lintKo(markdown(), { requireProofMethod: true })
+    const missing = problems.filter((p) => p.code === 'criterion_missing_proof')
+    expect(missing.map((p) => p.criterion)).toEqual(CRITERIA)
+  })
+
+  test('true: lintCriteria refuses the same way, on the bare list', () => {
+    const problems = criteriaKo(CRITERIA, { requireProofMethod: true })
+    expect(problems.map((p) => p.code)).toEqual(CRITERIA.map(() => 'criterion_missing_proof'))
+  })
+
+  test('true: a body where every criterion carries a valid tag is accepted', () => {
+    const body = lintOk(markdown({ criteria: PROVEN_CRITERIA }), { requireProofMethod: true })
+    expect(body.acceptance_criteria.map((c) => c.text)).toEqual(PROVEN_CRITERIA)
+  })
+
+  test('true: lintCriteria accepts the same proven list', () => {
+    expect(criteriaOk(PROVEN_CRITERIA, { requireProofMethod: true }).map((c) => c.text)).toEqual(
+      PROVEN_CRITERIA,
+    )
+  })
+
+  test('true: a tag with an unknown method still counts as missing', () => {
+    const problems = criteriaKo(
+      [
+        `${CRITERIA[0] ?? ''} [proof:eyeball it]`,
+        PROVEN_CRITERIA[1] ?? '',
+        PROVEN_CRITERIA[2] ?? '',
+      ],
+      { requireProofMethod: true },
+    )
+    expect(problems.map((p) => p.code)).toEqual(['criterion_missing_proof'])
+  })
+
+  test('true: EARS and proof are independent refusals, a criterion can carry both', () => {
+    const problems = criteriaKo(['not ears at all', CRITERIA[1] ?? '', CRITERIA[2] ?? ''], {
+      requireProofMethod: true,
+    })
+    const forOffender = problems.filter((p) => p.criterion === 'not ears at all')
+    const expectedCodes: TicketProblemCode[] = ['criterion_missing_proof', 'criterion_not_ears']
+    expect(forOffender.map((p) => p.code).toSorted()).toEqual(expectedCodes.toSorted())
   })
 })
 
