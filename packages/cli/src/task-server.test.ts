@@ -2275,6 +2275,325 @@ describe('manager.ship', () => {
     const event = readTaskEvents(cwd, record.id).find((e) => e.type === 'resource')
     expect(event?.data.name).toBe('container_runtime_absent')
   })
+
+  // D20: `cycle_step` is a crash-recovery marker, not a normal ship() concern
+  // — these prove it is posed and cleared exactly where the plan says, in the
+  // SAME writes ship() already makes.
+  test('D20: a ship that will auto-merge afterward advances cycle_step to merge in the same write', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null })
+    const manager = createTaskManager({
+      ...managerOpts,
+      shipTaskFn: stub.fn,
+      ...fakeRunner(),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+    })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(loadTask(cwd, record.id)?.cycle_step).toBe('merge')
+  })
+
+  test('D20: an ordinary ship under mergePolicy human never sets cycle_step', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+    expect(loadTask(cwd, record.id)?.cycle_step).toBeUndefined()
+  })
+
+  test('D20: a stale cycle_step does not survive a shipRefusal', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: true, mrUrl: null, note: null })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const shipped = seedShippable(cwd)
+    shipped.status = 'shipped'
+    shipped.cycle_step = 'merge'
+    saveTask(cwd, shipped)
+
+    expect(await manager.ship(project.id, shipped.id)).toEqual({
+      ok: false,
+      code: 409,
+      error: 'task is already shipped',
+    })
+    expect(stub.calls).toHaveLength(0)
+    // A stale marker a refusal saw must not outlive the refusal, or a
+    // resumed boot would keep calling ship() on this exact refusal forever.
+    expect(loadTask(cwd, shipped.id)?.cycle_step).toBeUndefined()
+  })
+
+  test('D20: a stale cycle_step does not survive a push failure', async () => {
+    const project = register(makeRepo())
+    const cwd = project.path
+    const stub = shipStub({ pushed: false, error: 'git push failed: permission denied' })
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+    const record = seedShippable(cwd)
+    record.cycle_step = 'ship'
+    saveTask(cwd, record)
+
+    expect(await manager.ship(project.id, record.id)).toEqual({
+      ok: false,
+      code: 502,
+      error: 'git push failed: permission denied',
+    })
+    expect(loadTask(cwd, record.id)?.status).toBe('review_ok')
+    expect(loadTask(cwd, record.id)?.cycle_step).toBeUndefined()
+  })
+})
+
+// --- D20: cycle_step ship/merge --------------------------------------------
+
+describe('D20: cycle_step boot recovery, idempotence and reentrancy', () => {
+  test('a crash between review_ok and ship resumes the ship on the next boot', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.auto_ship = true
+    seeded.cycle_step = 'ship'
+    saveTask(repo, seeded)
+
+    const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1', note: null })
+    // A fresh manager over the SAME .codesema/: nothing here remembers the
+    // process that set cycle_step, only the disk does.
+    const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+
+    await manager.startPending()
+
+    expect(stub.calls).toMatchObject([{ task: { id: seeded.id } }])
+    const record = loadTask(repo, seeded.id)
+    expect(record?.status).toBe('shipped')
+    // Default mergePolicy is human: nothing to chain into, so the resumed
+    // ship clears the marker outright rather than advancing it.
+    expect(record?.cycle_step).toBeUndefined()
+  })
+
+  test('a crash between shipped and merge resumes the merge on the next boot', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.status = 'shipped'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+
+    const mergeCalls: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: (options) => {
+        mergeCalls.push(options.task.id)
+        return Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: 'https://github.com/o/r/pull/2',
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        })
+      },
+    })
+
+    await manager.startPending()
+
+    expect(mergeCalls).toEqual([seeded.id])
+    const record = loadTask(repo, seeded.id)
+    expect(record?.status).toBe('shipped')
+    expect(record?.cycle_step).toBeUndefined()
+    expect(
+      readTaskEvents(repo, seeded.id).some(
+        (event) => event.type === 'merge' && event.data.name === 'merged',
+      ),
+    ).toBe(true)
+  })
+
+  test('a cycle_step resumed on an already-merged ticket never calls mergeTaskFn again', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.status = 'shipped'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+    // The earlier, crashed call's own line: the merge landed, but the process
+    // died before it cleared cycle_step.
+    appendTaskEvent(repo, seeded.id, { type: 'merge', data: { name: 'merged', cli: 'gh' } })
+
+    let calls = 0
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: () => {
+        calls += 1
+        return Promise.resolve({
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [],
+        })
+      },
+    })
+
+    await manager.startPending()
+
+    expect(calls).toBe(0)
+    expect(loadTask(repo, seeded.id)?.cycle_step).toBeUndefined()
+  })
+
+  test("runMergeStep's merging guard refuses a second concurrent resume for the same task", async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.status = 'shipped'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+
+    let calls = 0
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: async () => {
+        calls += 1
+        // Widens the in-flight window: if the guard were absent, a second
+        // concurrent resume would land its own mergeTaskFn call well inside it.
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return {
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }
+      },
+    })
+
+    await Promise.all([manager.startPending(), manager.startPending()])
+
+    expect(calls).toBe(1)
+    expect(loadTask(repo, seeded.id)?.cycle_step).toBeUndefined()
+  })
+
+  test('reply is refused with 409 while a resumed merge is in flight, and purges nothing while refused', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.status = 'shipped'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+
+    let entered = false
+    let releaseMerge: () => void = () => {}
+    const inFlight = new Promise<void>((resolve) => {
+      releaseMerge = resolve
+    })
+    const rig = fakeRunner()
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...rig,
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: async () => {
+        entered = true
+        await inFlight
+        return {
+          kind: 'merged' as const,
+          cli: 'gh' as const,
+          url: null,
+          readiness: { ready: true, conditions: [], blockers: [] },
+          events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+        }
+      },
+    })
+
+    const pending = manager.startPending()
+    await until(() => entered)
+
+    expect(manager.reply(project.id, seeded.id, 'try again')).toEqual({
+      ok: false,
+      code: 409,
+      error: 'merge in progress',
+    })
+    expect(rig.replies).toEqual([])
+
+    releaseMerge()
+    await pending
+    expect(loadTask(repo, seeded.id)?.cycle_step).toBeUndefined()
+  })
+})
+
+describe('D20: reply/resume/abandon purge a stale cycle_step', () => {
+  test('reply purges cycle_step before delegating to the runner', () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedTask(repo, 'stale marker')
+    seeded.status = 'waiting_for_you'
+    seeded.cycle_step = 'ship'
+    saveTask(repo, seeded)
+    const rig = fakeRunner({ replyResult: { ok: true } })
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    const result = manager.reply(project.id, seeded.id, 'try again')
+
+    expect(result.ok).toBe(true)
+    expect(rig.replies).toEqual([{ id: seeded.id, message: 'try again' }])
+    expect(loadTask(repo, seeded.id)?.cycle_step).toBeUndefined()
+  })
+
+  test('resume purges cycle_step before delegating to the runner', () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedTask(repo, 'stale marker')
+    seeded.status = 'interrupted'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    const result = manager.resume(project.id, seeded.id)
+
+    expect(result.ok).toBe(true)
+    expect(rig.resumes).toEqual([seeded.id])
+    expect(loadTask(repo, seeded.id)?.cycle_step).toBeUndefined()
+  })
+
+  test('abandon purges cycle_step before delegating to the runner', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedTask(repo, 'stale marker')
+    seeded.status = 'waiting_for_you'
+    seeded.cycle_step = 'ship'
+    saveTask(repo, seeded)
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    const result = await manager.abandon(project.id, seeded.id)
+
+    expect(result.ok).toBe(true)
+    expect(rig.abandons).toEqual([seeded.id])
+    expect(loadTask(repo, seeded.id)?.cycle_step).toBeUndefined()
+  })
+
+  test('a task carrying no cycle_step at all is left exactly as it was (no needless write)', () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedTask(repo, 'nothing stale')
+    seeded.status = 'waiting_for_you'
+    saveTask(repo, seeded)
+    const before = loadTask(repo, seeded.id)?.updated_at
+    const rig = fakeRunner()
+    const manager = createTaskManager({ ...managerOpts, ...rig })
+
+    manager.reply(project.id, seeded.id, 'go')
+
+    // reply() itself still runs (the runner stub records it); only the
+    // defensive purge is a no-op when there is nothing to purge.
+    expect(rig.replies).toEqual([{ id: seeded.id, message: 'go' }])
+    expect(loadTask(repo, seeded.id)?.updated_at).toBe(before)
+  })
 })
 
 // --- manager.checks -------------------------------------------------------
@@ -2306,6 +2625,128 @@ function seedCommittedTask(projectPath: string): { record: TaskRecord; worktree:
   })
   return { record, worktree }
 }
+
+// --- D22 (minimal): post-merge checks replay -------------------------------
+
+/** A landed-merge outcome `mergeTaskFn` can resolve with, shared by the D22 tests below. */
+function mergedOutcome() {
+  return Promise.resolve({
+    kind: 'merged' as const,
+    cli: 'gh' as const,
+    url: null,
+    readiness: { ready: true, conditions: [], blockers: [] },
+    events: [{ type: 'merge' as const, data: { name: 'merged', cli: 'gh' } }],
+  })
+}
+
+describe('D22 (minimal): post-merge checks replay', () => {
+  test('a landed merge journals post_merge_checks without waiting for it to complete the turn', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.status = 'shipped'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+
+    let releaseReplay: () => void = () => {}
+    const replayGate = new Promise<void>((resolve) => {
+      releaseReplay = resolve
+    })
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: mergedOutcome,
+      replayPostMergeChecksFn: async () => {
+        await replayGate
+        return finishedChecks({
+          status: 'failed',
+          checks: [
+            {
+              command: 'bun test',
+              status: 'failed',
+              exit_code: 1,
+              duration_ms: 500,
+              tail: 'boom\n',
+            },
+          ],
+        })
+      },
+    })
+
+    await manager.startPending()
+
+    // The merge step already completed the task — still gated behind
+    // `replayGate` — with no post_merge_checks line yet: completion never
+    // awaited the replay.
+    expect(loadTask(repo, seeded.id)?.status).toBe('shipped')
+    expect(loadTask(repo, seeded.id)?.cycle_step).toBeUndefined()
+    expect(readTaskEvents(repo, seeded.id).some((e) => e.type === 'post_merge_checks')).toBe(false)
+
+    releaseReplay()
+    await until(() => readTaskEvents(repo, seeded.id).some((e) => e.type === 'post_merge_checks'))
+
+    const event = readTaskEvents(repo, seeded.id).find((e) => e.type === 'post_merge_checks')
+    // `record.base` is 'origin/main' (seedShippable): the event names the
+    // bare target the replay actually fetched.
+    expect(event?.data).toMatchObject({ status: 'failed', passed: 0, failed: 1, target: 'main' })
+    expect(event?.reason_code).toBe('checks_failed')
+  })
+
+  test('a replay that could not even run (null) is logged, never journaled, never crashes', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.status = 'shipped'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message) => notices.push(message),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: mergedOutcome,
+      replayPostMergeChecksFn: async () => null,
+    })
+
+    await manager.startPending()
+    expect(loadTask(repo, seeded.id)?.status).toBe('shipped')
+
+    await until(() => notices.some((m) => m.includes('post-merge checks replay')))
+    expect(readTaskEvents(repo, seeded.id).some((e) => e.type === 'post_merge_checks')).toBe(false)
+  })
+
+  test('the replay hook itself throwing is caught and never crashes the merge step', async () => {
+    const project = register(makeRepo())
+    const repo = project.path
+    const seeded = seedShippable(repo)
+    seeded.status = 'shipped'
+    seeded.cycle_step = 'merge'
+    saveTask(repo, seeded)
+
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      ...fakeRunner(),
+      onNotice: (message) => notices.push(message),
+      mergeSettings: { policy: 'auto', deleteBranch: false, allowMergeWithoutChecks: false },
+      mergeTaskFn: mergedOutcome,
+      replayPostMergeChecksFn: () => {
+        throw new Error('boom: broken seam')
+      },
+    })
+
+    await manager.startPending()
+    expect(loadTask(repo, seeded.id)?.status).toBe('shipped')
+
+    await until((): boolean =>
+      notices.some((m) => m.includes('post-merge checks replay hook failed unexpectedly')),
+    )
+    expect(readTaskEvents(repo, seeded.id).some((e) => e.type === 'post_merge_checks')).toBe(false)
+  })
+})
 
 describe('manager.checks', () => {
   test('guards: no commit is a 409, unknown task/project are 404, gone worktree is a 409', () => {

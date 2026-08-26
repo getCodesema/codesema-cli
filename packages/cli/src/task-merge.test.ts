@@ -18,6 +18,7 @@ import { PROBE_TIMEOUT_MS } from './git.js'
 import {
   branchAncestry,
   criteriaDraftProposed,
+  effectiveMergePolicyIsAuto,
   isMergeConflictError,
   MERGE_GIT_TIMEOUT_MS,
   mergeReadiness,
@@ -1132,6 +1133,36 @@ describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a tick
   })
 })
 
+// D20: extracted from mergeTask's own inline calc so task-server.ts's ship()
+// can ask the SAME question before mergeTask ever runs. The four cases below
+// are the exact ones the describe block above already exercises through
+// mergeTask's observable behavior — this is the same truth table, asserted
+// directly against the exported function.
+describe('effectiveMergePolicyIsAuto: the exact question mergeTask answers, exported', () => {
+  test('an explicit auto policy is auto, brain_ticket or not', () => {
+    expect(effectiveMergePolicyIsAuto(greenTask(), settings({ policy: 'auto' }), false)).toBe(true)
+  })
+
+  test('a human policy with no brain_ticket is never auto', () => {
+    expect(effectiveMergePolicyIsAuto(greenTask(), settings({ policy: 'human' }), true)).toBe(false)
+  })
+
+  test('a brain ticket with brainAutoMerge overrides a human policy to auto', () => {
+    const ticketed = greenTask({ brain_ticket: { id: 'tkt-1', title: 'x' } })
+    expect(effectiveMergePolicyIsAuto(ticketed, settings({ policy: 'human' }), true)).toBe(true)
+  })
+
+  test('a brain ticket WITHOUT brainAutoMerge does not override a human policy', () => {
+    const ticketed = greenTask({ brain_ticket: { id: 'tkt-1', title: 'x' } })
+    expect(effectiveMergePolicyIsAuto(ticketed, settings({ policy: 'human' }), false)).toBe(false)
+  })
+
+  test('a repo-wide auto policy is untouched by brainAutoMerge either way', () => {
+    const ticketed = greenTask({ brain_ticket: { id: 'tkt-1', title: 'x' } })
+    expect(effectiveMergePolicyIsAuto(ticketed, settings({ policy: 'auto' }), false)).toBe(true)
+  })
+})
+
 describe('what the merge never does', () => {
   test('a conflict is merge_conflict, and the branch and worktree are untouched', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
@@ -1214,6 +1245,97 @@ describe('what the merge never does', () => {
       ),
     ).toBe(true)
     expect(isMergeConflictError('could not resolve host: github.com')).toBe(false)
+  })
+})
+
+// D20: a crash between an EARLIER call's forge merge landing and the caller
+// (task-server.ts's runMergeStep) recording it resumes on the SAME branch —
+// mergeTask must not ask the forge to merge an already-merged branch a
+// second time without at least checking first.
+describe('D20 idempotence: a branch the forge already merged is never merged twice', () => {
+  test('a forge error is re-read as merged when the branch is already merged there', async () => {
+    const repo = makeRepoWithOrigin('git@github.com:o/r.git')
+    const calls: string[][] = []
+    const execForge: ShipForgeExecFn = (_cli, args) => {
+      calls.push(args)
+      if (args.includes('merge')) {
+        return Promise.resolve({ kind: 'error', message: 'GraphQL: pull request is not open' })
+      }
+      return Promise.resolve({ kind: 'ok', stdout: JSON.stringify([{ number: 42 }]) })
+    }
+    const task = greenTask()
+    const outcome = await mergeTask({
+      brainAutoMerge: true,
+      cwd: repo,
+      task,
+      settings: settings({ policy: 'auto' }),
+      inputs: greenInputs(),
+      execForge,
+    })
+    expect(outcome.kind).toBe('merged')
+    expect(outcome.kind === 'merged' && outcome.cli).toBe('gh')
+    // No URL: this call never merged anything, an EARLIER one did.
+    expect(outcome.kind === 'merged' && outcome.url).toBeNull()
+    // Exactly two calls: the merge attempt, then the read-only check — never a
+    // second merge attempt, and never a third call once the first two agree.
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toEqual([
+      'pr',
+      'list',
+      `--head=${task.branch}`,
+      '--state',
+      'merged',
+      '--limit',
+      '1',
+      '--json',
+      'number',
+    ])
+    const mergedEvent = outcome.events.find((event) => event.data.name === 'merged')
+    expect(mergedEvent?.data.already_merged).toBe(true)
+  })
+
+  test('a real conflict never asks whether the branch already merged', async () => {
+    const repo = makeRepoWithOrigin('git@github.com:o/r.git')
+    const forge = recordingForge({
+      kind: 'error',
+      message: 'Pull request is not mergeable: the merge commit cannot be cleanly created',
+    })
+    const outcome = await mergeTask({
+      brainAutoMerge: true,
+      cwd: repo,
+      task: greenTask(),
+      settings: settings({ policy: 'auto' }),
+      inputs: greenInputs(),
+      execForge: forge.exec,
+    })
+    expect(outcome.kind).toBe('failed')
+    expect(outcome.kind === 'failed' && outcome.reason.code).toBe('merge_conflict')
+    // The one call: a conflict is a fact about the branch, not a reason to
+    // wonder whether it already landed.
+    expect(forge.calls).toHaveLength(1)
+  })
+
+  test('an unreadable already-merged check falls through to the ordinary failure', async () => {
+    const repo = makeRepoWithOrigin('git@github.com:o/r.git')
+    let call = 0
+    const execForge: ShipForgeExecFn = () => {
+      call += 1
+      return Promise.resolve(
+        call === 1
+          ? { kind: 'error', message: 'GraphQL: pull request is not open' }
+          : { kind: 'error', message: 'rate limited' },
+      )
+    }
+    const outcome = await mergeTask({
+      brainAutoMerge: true,
+      cwd: repo,
+      task: greenTask(),
+      settings: settings({ policy: 'auto' }),
+      inputs: greenInputs(),
+      execForge,
+    })
+    expect(outcome.kind).toBe('failed')
+    expect(outcome.kind === 'failed' && outcome.reason.code).toBe('forge_unreachable')
   })
 })
 
