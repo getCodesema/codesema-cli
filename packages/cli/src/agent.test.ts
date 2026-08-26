@@ -8,6 +8,7 @@ import {
   agentEnv,
   agentReasonCode,
   AgentWatchdogError,
+  boundedReadOnlyReviewCommand,
   cageableAgent,
   claudeStreamCommand,
   createAgentStreamParser,
@@ -143,6 +144,102 @@ describe('hardenedReviewCommand', () => {
 
   test('a flag name as a prefix of another word does not count as present', () => {
     expect(hardenedReviewCommand('claude -p --toolset x')).toContain('--tools ""')
+  })
+
+  // D15 non-regression: checks-setup.ts hardens its command through this
+  // function directly, and boundedReadOnlyReviewCommand's codex/gemini/
+  // opencode/unknown branches delegate to it — it must keep producing
+  // exactly what it produced before D15.
+  test('D15 non-regression: output for a known agent is unchanged', () => {
+    expect(hardenedReviewCommand('claude -p --model sonnet')).toBe(
+      'claude -p --model sonnet --tools "" --strict-mcp-config --setting-sources user',
+    )
+    expect(hardenedReviewCommand('codex exec -')).toBe(
+      'codex exec --sandbox read-only --ask-for-approval never -c project_doc_max_bytes=0 -',
+    )
+    expect(hardenedReviewCommand('grok --prompt-file {promptFile}')).toBe(
+      "grok --prompt-file {promptFile} --deny '*'",
+    )
+  })
+})
+
+describe('boundedReadOnlyReviewCommand', () => {
+  const WORKTREE = '/repo/worktree'
+
+  test('claude: Read/Grep/Glob allowed, MCP locked, a private --settings file scopes them to the worktree', () => {
+    const result = boundedReadOnlyReviewCommand('claude -p --model sonnet', WORKTREE)
+    const match =
+      /^claude -p --model sonnet --tools "Read,Grep,Glob" --strict-mcp-config --setting-sources user --settings "([^"]+)"$/.exec(
+        result.command,
+      )
+    const path = match?.[1] ?? ''
+    expect(path).not.toBe('')
+    expect(existsSync(path)).toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+      permissions: {
+        defaultMode: 'dontAsk',
+        allow: [`Read(/${WORKTREE}/**)`, `Grep(/${WORKTREE}/**)`, `Glob(/${WORKTREE}/**)`],
+      },
+    })
+    result.cleanup()
+    expect(existsSync(path)).toBe(false)
+  })
+
+  test('claude: flags already set by the user are not duplicated, the settings file is still created', () => {
+    const result = boundedReadOnlyReviewCommand(
+      'claude -p --tools "Read" --setting-sources user,project',
+      WORKTREE,
+    )
+    const match =
+      /^claude -p --tools "Read" --setting-sources user,project --strict-mcp-config --settings "([^"]+)"$/.exec(
+        result.command,
+      )
+    const path = match?.[1] ?? ''
+    expect(path).not.toBe('')
+    expect(existsSync(path)).toBe(true)
+    result.cleanup()
+    expect(existsSync(path)).toBe(false)
+  })
+
+  test('claude: a user --settings flag wins, no private file is created', () => {
+    const result = boundedReadOnlyReviewCommand('claude -p --settings /my/settings.json', WORKTREE)
+    expect(result.command).toBe(
+      'claude -p --settings /my/settings.json --tools "Read,Grep,Glob" --strict-mcp-config --setting-sources user',
+    )
+    expect(() => result.cleanup()).not.toThrow()
+  })
+
+  test('codex: identical to hardenedReviewCommand — its read-only sandbox already satisfies D15', () => {
+    const command = 'codex exec -'
+    expect(boundedReadOnlyReviewCommand(command, WORKTREE).command).toBe(
+      hardenedReviewCommand(command),
+    )
+    expect(() => boundedReadOnlyReviewCommand(command, WORKTREE).cleanup()).not.toThrow()
+  })
+
+  test('grok: --allow widens the tool-empty deny to a read-only set', () => {
+    const result = boundedReadOnlyReviewCommand(
+      'grok --prompt-file {promptFile} -m grok-4.6',
+      WORKTREE,
+    )
+    expect(result.command).toBe(
+      "grok --prompt-file {promptFile} -m grok-4.6 --allow 'Read,Grep' --deny '*'",
+    )
+  })
+
+  test('grok: a permission choice of the user is left alone', () => {
+    const bypass = 'grok --prompt-file {promptFile} --always-approve'
+    expect(boundedReadOnlyReviewCommand(bypass, WORKTREE).command).toBe(bypass)
+    const narrowed = 'grok --prompt-file {promptFile} --tools read_file'
+    expect(boundedReadOnlyReviewCommand(narrowed, WORKTREE).command).toBe(narrowed)
+  })
+
+  test('gemini, opencode and custom commands fall back to hardenedReviewCommand unchanged', () => {
+    for (const command of ['gemini -m gemini-2.5-pro', 'opencode run', 'my-agent run']) {
+      expect(boundedReadOnlyReviewCommand(command, WORKTREE).command).toBe(
+        hardenedReviewCommand(command),
+      )
+    }
   })
 })
 

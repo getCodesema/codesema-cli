@@ -62,9 +62,9 @@ packages/x.
 
 **Acceptance criteria**
 
-- WHEN a THE SYSTEM SHALL b
-- WHEN c THE SYSTEM SHALL d
-- WHEN e THE SYSTEM SHALL f
+- WHEN a THE SYSTEM SHALL b [proof:command bun test]
+- WHEN c THE SYSTEM SHALL d [proof:diff packages/x/thing.ts]
+- WHEN e THE SYSTEM SHALL f [proof:judgment]
 
 **Out of scope**
 
@@ -188,6 +188,21 @@ describe('brain-draft', () => {
         { runAgentFn: agent.fn },
       )
       expect(result).toEqual({ ok: false, reason: 'drafting agent failed: boom' })
+    })
+
+    test('rejects a criterion with no proof tag even though it is valid EARS, and the retry names it (D17)', async () => {
+      const noProofBody = VALID_BODY.replace(/ \[proof:[^\]]+]/g, '')
+      const agent = runAgentSequence([noProofBody, VALID_BODY])
+      const result = await draftTicketBody(
+        { cwd, title: 'T', promptContext: 'x' },
+        { runAgentFn: agent.fn },
+      )
+      expect(result).toEqual({ ok: true, title: 'T', body: VALID_BODY })
+      expect(agent.calls.length).toBe(2)
+      expect(agent.calls[1]?.prompt).toContain('criterion_missing_proof')
+      expect(agent.calls[1]?.prompt).toContain(
+        'must end with its own "[proof:<method> <argument>]" tag',
+      )
     })
 
     test('missing the TITLE line when no title is known fails after both attempts', async () => {

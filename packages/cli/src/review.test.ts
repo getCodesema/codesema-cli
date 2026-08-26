@@ -1,15 +1,25 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import type { Finding, GroundingReport, SanitizedReview, Verdict } from './contract.js'
+import type {
+  Finding,
+  GroundingReport,
+  ReviewRecord,
+  SanitizedReview,
+  Verdict,
+} from './contract.js'
 import type { PrepInput } from './prep.js'
 import {
   AgentOutputError,
   agentVisibleInput,
   buildFullReviewPrompt,
+  buildIncrementalPrompt,
+  buildRepeatReviewPrompt,
   extractReviewJson,
+  FINDING_REPRO_RULE,
   groundingReportLines,
   missingReviewedFiles,
   reviewGateReason,
@@ -204,6 +214,27 @@ describe('reviewInstructions', () => {
     expect(p).toContain('weighs ONLY what you could verify in the provided input')
     expect(p).toContain('never lowers the verdict')
     expect(p).toContain('raise it as a step "check" question')
+  })
+
+  // D24: the repro rule is shared with dual.ts's prosecutorInstructions
+  // (dual.test.ts asserts the same constant there) — one source, never two
+  // rules drifting apart.
+  test('states the D24 repro rule and documents the optional repro field', () => {
+    const p = reviewInstructions()
+    expect(p).toContain(FINDING_REPRO_RULE)
+    expect(p).toContain('"repro"')
+    expect(p).toContain('"command"')
+    expect(p).toContain('"expected"')
+  })
+
+  // D15: the reviewer may now be handed a bounded read-only tool
+  // (boundedReadOnlyReviewCommand), so the prompt can no longer forbid tools
+  // outright — it must stay correct whether a tool was granted or not.
+  test('is neutral about tools instead of forbidding them outright', () => {
+    const p = reviewInstructions()
+    expect(p).not.toContain('Do NOT use any tools')
+    expect(p).toContain('Base your review primarily on the provided input')
+    expect(p).toContain('never to explore broadly, never to run, write, or install anything')
   })
 })
 
@@ -607,6 +638,151 @@ describe('buildFullReviewPrompt', () => {
     expect(prompt).toContain('"branch": "feature/x"')
     expect(prompt).toContain('-old\\n+new')
     expect(prompt).toContain('Output ONLY the JSON object now.')
+  })
+})
+
+// D24: both prompts need a REAL git repo — findPreviousReview reads
+// .codesema/reviews off disk, and isAncestor/mrDiff shell out to real git.
+describe('buildIncrementalPrompt / buildRepeatReviewPrompt (D24)', () => {
+  const tempDirs: string[] = []
+
+  afterAll(() => {
+    for (const dir of tempDirs) {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  function gitRepo(): string {
+    const repo = mkdtempSync(join(tmpdir(), 'codesema-review-git-'))
+    tempDirs.push(repo)
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    run(['init', '-b', 'main'])
+    run(['config', 'user.email', 't@t'])
+    run(['config', 'user.name', 't'])
+    writeFileSync(join(repo, 'a.ts'), 'old\n')
+    run(['add', '-A'])
+    run(['commit', '-m', 'feat: base'])
+    return repo
+  }
+
+  function headSha(repo: string): string {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo }).toString().trim()
+  }
+
+  function archivePreviousReview(repo: string, headSha1: string): ReviewRecord {
+    const previous: ReviewRecord = {
+      version: 1,
+      meta: {
+        title: 'feature/x',
+        branch: 'feature/x',
+        target: 'main',
+        merge_base: headSha1,
+        head_sha: headSha1,
+        repo_root: repo,
+        created_at: new Date().toISOString(),
+      },
+      commits: ['feat: base'],
+      diff: '',
+      review: {
+        verdict: 'request_changes',
+        summary: 'previous pass had issues',
+        findings: [{ file: 'a.ts', message: 'looks wrong', severity: 'major' }],
+        narrative: null,
+      },
+    }
+    const reviewsDir = join(repo, '.codesema', 'reviews')
+    mkdirSync(reviewsDir, { recursive: true })
+    writeFileSync(join(reviewsDir, 'feature-x-20260101-000000.json'), JSON.stringify(previous))
+    return previous
+  }
+
+  function inputAt(repo: string, headSha2: string): PrepInput {
+    return {
+      version: 1,
+      generated_by: 'codesema prep',
+      title: 'feature/x',
+      branch: 'feature/x',
+      target: 'main',
+      target_source: 'heuristic',
+      merge_base: headSha2,
+      head_sha: headSha2,
+      repo_root: repo,
+      commits: ['feat: base', 'feat: change'],
+      files: [{ path: 'a.ts', additions: 1, deletions: 1 }],
+      custom_instructions: null,
+      rules: null,
+      impact_candidates: null,
+      diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
+      server_context: null,
+    }
+  }
+
+  describe('buildIncrementalPrompt', () => {
+    function setup() {
+      const repo = gitRepo()
+      const head1 = headSha(repo)
+      archivePreviousReview(repo, head1)
+      const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+      writeFileSync(join(repo, 'a.ts'), 'new\n')
+      run(['add', '-A'])
+      run(['commit', '-m', 'feat: change'])
+      return { repo, input: inputAt(repo, headSha(repo)) }
+    }
+
+    test('2-arg call: no chapter, ends on the closing line, unchanged from before this ticket', () => {
+      const { repo, input } = setup()
+
+      const result = buildIncrementalPrompt(input, repo)
+
+      expect(result).not.toBeNull()
+      expect(result?.prompt).toContain('You are a senior code reviewer')
+      expect(result?.prompt).toContain('<previous_review>')
+      expect(result?.prompt).toContain('<incremental_diff>')
+      expect(result?.prompt.endsWith('Output ONLY the JSON object now.')).toBe(true)
+    })
+
+    test('3rd arg folds a chapter in right before the closing line, nothing else changes', () => {
+      const { repo, input } = setup()
+      const chapter = '### EXTRA CHAPTER ###'
+
+      const withoutChapter = buildIncrementalPrompt(input, repo)
+      const withChapter = buildIncrementalPrompt(input, repo, chapter)
+
+      expect(withChapter?.prompt).toContain(chapter)
+      expect(withChapter?.prompt.replace(`\n\n${chapter}`, '')).toBe(withoutChapter?.prompt)
+    })
+  })
+
+  describe('buildRepeatReviewPrompt', () => {
+    test('anchors on the previous verdict and instructs confirm-or-say-what-changed', () => {
+      const repo = gitRepo()
+      const head1 = headSha(repo)
+      const previous = archivePreviousReview(repo, head1)
+      const input = inputAt(repo, head1)
+
+      const prompt = buildRepeatReviewPrompt(input, previous)
+
+      expect(prompt).toContain('You are a senior code reviewer')
+      expect(prompt).toContain('EXACT SAME commit')
+      expect(prompt).toContain('Previous review verdict: request_changes')
+      expect(prompt).toContain('<previous_review>')
+      expect(prompt).toContain('CONFIRM the previous review stands')
+      expect(prompt).toContain('must not reappear unless you have a NEW fact')
+      expect(prompt.endsWith('Output ONLY the JSON object now.')).toBe(true)
+    })
+
+    test('folds an optional chapter in right before the closing line', () => {
+      const repo = gitRepo()
+      const previous = archivePreviousReview(repo, headSha(repo))
+      const input = inputAt(repo, headSha(repo))
+      const chapter = '### EXTRA CHAPTER ###'
+
+      const withoutChapter = buildRepeatReviewPrompt(input, previous)
+      const withChapter = buildRepeatReviewPrompt(input, previous, chapter)
+
+      expect(withChapter).toContain(chapter)
+      expect(withChapter.replace(`\n\n${chapter}`, '')).toBe(withoutChapter)
+    })
   })
 })
 

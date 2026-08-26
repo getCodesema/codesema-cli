@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { containerGitStateDir } from './container-git.js'
 import { TASK_CHECK_TAIL_MAX, type TaskChecks } from './contract.js'
 import {
+  AD_HOC_CHECK_DEFAULT_TIMEOUT_SECONDS,
   bootstrapWorktreeInstall,
+  buildChecksChapter,
   BUN_INSTALL_COMMAND,
+  CHECKS_CHAPTER_TAIL_MAX,
   DEFAULT_CHECK_TIMEOUT_SECONDS,
   DEFAULT_CHECKS_IMAGE,
   detectChecks,
@@ -18,6 +21,7 @@ import {
   pkgCacheVolume,
   planFromConfig,
   resolveChecksPlan,
+  runAdHocCheck,
   runChecks,
   worktreeHasDeps,
   type ExecFn,
@@ -891,5 +895,189 @@ describe('resolveChecksPlan', () => {
       'bun run test',
     ])
     expect(calls.some((c) => c.args.at(-1) === 'bun run lint')).toBe(false)
+  })
+})
+
+// --- runAdHocCheck (D17) ----------------------------------------------------
+
+describe('runAdHocCheck', () => {
+  test('success: passed, run caged the same way a checks step is (rw mount, no network)', async () => {
+    const { calls, exec } = dockerRig(() => ok({ stdout: 'ok' }))
+    const result = await runAdHocCheck({ worktree, command: 'echo hi', execFn: exec })
+    expect(result).toEqual({
+      command: 'echo hi',
+      status: 'passed',
+      exit_code: 0,
+      duration_ms: expect.any(Number),
+      tail: 'ok',
+    })
+    const run = calls.find((c) => c.args.at(-1) === 'echo hi')
+    const args = run?.args ?? []
+    expect(args[args.indexOf('--network') + 1]).toBe('none')
+    expect(args[args.indexOf('-v') + 1]).toBe(`${worktree}:/work:rw`)
+    // No install step: nothing runs before the command itself.
+    expect(calls.filter((c) => c.args[0] === 'run')).toHaveLength(1)
+  })
+
+  test('failure: a nonzero exit is failed, tail carries stderr', async () => {
+    const { exec } = dockerRig(() => ok({ code: 1, stderr: 'boom' }))
+    const result = await runAdHocCheck({ worktree, command: 'false', execFn: exec })
+    expect(result.status).toBe('failed')
+    expect(result.exit_code).toBe(1)
+    expect(result.tail).toContain('boom')
+  })
+
+  test('timeout: marked timeout, exit_code null, the default budget is AD_HOC_CHECK_DEFAULT_TIMEOUT_SECONDS', async () => {
+    const { calls, exec } = dockerRig(() => ok({ code: null, timedOut: true }))
+    const result = await runAdHocCheck({ worktree, command: 'sleep 999', execFn: exec })
+    expect(result.status).toBe('timeout')
+    expect(result.exit_code).toBeNull()
+    const run = calls.find((c) => c.args.at(-1) === 'sleep 999')
+    expect(run?.timeoutMs).toBe(AD_HOC_CHECK_DEFAULT_TIMEOUT_SECONDS * 1000)
+  })
+
+  test('an explicit timeoutSeconds overrides the default', async () => {
+    const { calls, exec } = dockerRig(() => ok())
+    await runAdHocCheck({ worktree, command: 'echo hi', timeoutSeconds: 5, execFn: exec })
+    const run = calls.find((c) => c.args.at(-1) === 'echo hi')
+    expect(run?.timeoutMs).toBe(5000)
+  })
+
+  test('no container runtime: a synthetic failed result, never throws', async () => {
+    const { calls, exec } = fakeExec(() => ok({ code: null, failure: 'spawn docker ENOENT' }))
+    const result = await runAdHocCheck({ worktree, command: 'echo hi', execFn: exec })
+    expect(result).toEqual({
+      command: 'echo hi',
+      status: 'failed',
+      exit_code: null,
+      duration_ms: 0,
+      tail: expect.stringContaining('docker or podman'),
+    })
+    // No run was ever attempted past the two --version probes.
+    expect(calls.every((c) => c.args[0] === '--version')).toBe(true)
+  })
+
+  test('defaults to DEFAULT_CHECKS_IMAGE when no image is given', async () => {
+    const { calls, exec } = dockerRig(() => ok())
+    await runAdHocCheck({ worktree, command: 'echo hi', execFn: exec })
+    const run = calls.find((c) => c.args.at(-1) === 'echo hi')
+    expect(run?.args).toContain(DEFAULT_CHECKS_IMAGE)
+  })
+
+  test('an explicit image is used instead of the default', async () => {
+    const { calls, exec } = dockerRig(() => ok())
+    await runAdHocCheck({ worktree, command: 'echo hi', image: 'python:3.12', execFn: exec })
+    const run = calls.find((c) => c.args.at(-1) === 'echo hi')
+    expect(run?.args).toContain('python:3.12')
+    expect(run?.args).not.toContain(DEFAULT_CHECKS_IMAGE)
+  })
+})
+
+// --- buildChecksChapter (D16) -----------------------------------------------
+
+describe('buildChecksChapter', () => {
+  const baseChecks: TaskChecks = {
+    head_sha: 'abc',
+    started_at: '2026-08-26T10:00:00.000Z',
+    finished_at: '2026-08-26T10:01:00.000Z',
+    status: 'passed',
+    error: null,
+    checks: [],
+  }
+
+  test('a passed-only run: one line per check, no tail, the "fact" closing', () => {
+    const checks: TaskChecks = {
+      ...baseChecks,
+      source: 'scripts',
+      checks: [{ command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 5, tail: 'ok' }],
+    }
+    const chapter = buildChecksChapter(checks)
+    expect(chapter).toContain('MANDATORY chapter (passed, source: scripts)')
+    expect(chapter.split('\n')).toContain('- bun test: passed')
+    // The tail of a GREEN check is never spent: it needs no evidence.
+    expect(chapter).not.toContain('ok')
+    expect(chapter).toContain('is a fact, not a hypothesis')
+  })
+
+  test('a failing check carries its tail, truncated to the LAST CHECKS_CHAPTER_TAIL_MAX chars', () => {
+    // "DROPPED" sits at the FRONT of a tail otherwise exactly
+    // CHECKS_CHAPTER_TAIL_MAX long: slicing the last N characters must cut it
+    // whole and leave the 'x' run untouched. The end of a tail is where the
+    // verdict lives, never the start.
+    const longTail = `DROPPED${'x'.repeat(CHECKS_CHAPTER_TAIL_MAX)}`
+    const checks: TaskChecks = {
+      ...baseChecks,
+      status: 'failed',
+      checks: [
+        { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: longTail },
+      ],
+    }
+    const chapter = buildChecksChapter(checks)
+    expect(chapter).toContain('- bun test: failed')
+    expect(chapter).toContain('x'.repeat(CHECKS_CHAPTER_TAIL_MAX))
+    expect(chapter).not.toContain('DROPPED')
+  })
+
+  test('a skipped check gets no tail either, even sitting beside a failed one that does', () => {
+    const checks: TaskChecks = {
+      ...baseChecks,
+      status: 'failed',
+      checks: [
+        {
+          command: 'npm ci',
+          status: 'failed',
+          exit_code: 1,
+          duration_ms: 5,
+          tail: 'lockfile mismatch',
+        },
+        { command: 'npm run test', status: 'skipped', exit_code: null, duration_ms: 0, tail: '' },
+      ],
+    }
+    const chapter = buildChecksChapter(checks)
+    expect(chapter.split('\n')).toContain('- npm run test: skipped')
+    expect(chapter).toContain('lockfile mismatch')
+  })
+
+  test('unconfigured: says so plainly, no check lines', () => {
+    const chapter = buildChecksChapter({ ...baseChecks, status: 'unconfigured' })
+    expect(chapter).toContain('No checks are detected or configured')
+  })
+
+  test('error: names the engine failure, never a check result', () => {
+    const chapter = buildChecksChapter({
+      ...baseChecks,
+      status: 'error',
+      error: 'no container runtime found',
+    })
+    expect(chapter).toContain('The checks engine itself failed to run: no container runtime found')
+  })
+
+  test('purpose review vs fix: the closing instruction differs, the body does not', () => {
+    const checks: TaskChecks = {
+      ...baseChecks,
+      status: 'failed',
+      checks: [
+        { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'FAIL' },
+      ],
+    }
+    const review = buildChecksChapter(checks, { purpose: 'review' })
+    const fix = buildChecksChapter(checks, { purpose: 'fix' })
+    expect(review).toContain('is a fact, not a hypothesis')
+    expect(review).not.toContain('What must still pass')
+    expect(fix).toContain('What must still pass')
+    expect(fix).not.toContain('is a fact, not a hypothesis')
+    expect(review).toContain('- bun test: failed')
+    expect(fix).toContain('- bun test: failed')
+  })
+
+  test('purpose defaults to review when omitted', () => {
+    const checks: TaskChecks = {
+      ...baseChecks,
+      status: 'failed',
+      checks: [
+        { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'FAIL' },
+      ],
+    }
+    expect(buildChecksChapter(checks)).toBe(buildChecksChapter(checks, { purpose: 'review' }))
   })
 })

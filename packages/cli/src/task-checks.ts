@@ -990,6 +990,103 @@ async function ensureInstallExtraArgs(opts: {
   ]
 }
 
+/** Wall-clock budget for a criterion's ad hoc `[proof:command ...]` check (D17), kept short on purpose: this runs inline in the review path, never as a background job. */
+export const AD_HOC_CHECK_DEFAULT_TIMEOUT_SECONDS = 60
+
+export type RunAdHocCheckOptions = {
+  /** The task's worktree: the ONLY host path the container ever sees, same as `RunChecksOptions`. */
+  worktree: string
+  /** The criterion's `[proof:command ...]` argument, run verbatim. */
+  command: string
+  /** Defaults to `DEFAULT_CHECKS_IMAGE`: a criterion's command names no stack, so nothing better can be inferred. */
+  image?: string
+  timeoutSeconds?: number
+  execFn?: ExecFn
+}
+
+/**
+ * Runs ONE command in an ephemeral checks container, for a `[proof:command
+ * ...]` criterion (D17) whose command is not among the task's own
+ * `TaskChecks.checks[]`. `task-criteria-gate.ts`'s `resolveMechanicalCriteria`
+ * is the only caller. No install step (the worktree carries whatever
+ * dependencies its last checks run, or the agent's own turn, left behind)
+ * and never network, unlike a checks run's own install step: a criterion's
+ * command is not trusted with either. Never throws: an absent container
+ * runtime is reported as a synthetic 'failed' result, the same discipline
+ * `runChecks` itself follows for every engine-level problem.
+ */
+export async function runAdHocCheck(opts: RunAdHocCheckOptions): Promise<TaskCheckResult> {
+  const exec = opts.execFn ?? defaultExec
+  const runtime = await containerRuntime(opts.execFn)
+  if (!runtime) {
+    return {
+      command: opts.command,
+      status: 'failed',
+      exit_code: null,
+      duration_ms: 0,
+      tail: 'no container runtime found: install docker or podman to run this check',
+    }
+  }
+  const git = prepareContainerGit({ worktree: opts.worktree, workDir: CHECKS_WORK_DIR })
+  const { result } = await runStep({
+    exec,
+    runtime,
+    step: { command: opts.command, network: false },
+    plan: {
+      image: opts.image?.trim() || DEFAULT_CHECKS_IMAGE,
+      install: null,
+      commands: [],
+      network: false,
+      timeoutSeconds: opts.timeoutSeconds ?? AD_HOC_CHECK_DEFAULT_TIMEOUT_SECONDS,
+      source: 'config',
+    },
+    worktree: opts.worktree,
+    gitMounts: git?.mountArgs ?? [],
+  })
+  return result
+}
+
+/** How much of a non-passed/skipped check's tail a prompt chapter spends, far smaller than `TASK_CHECK_TAIL_MAX`: this travels in a model's context, not a log. */
+export const CHECKS_CHAPTER_TAIL_MAX = 600
+
+/**
+ * The mandatory chapter a task's checks contribute to a review or fix prompt
+ * (D16). The commands already ran, in an isolated container, before this
+ * prompt was ever built: the whole point of this chapter is that neither the
+ * reviewer nor a fixing agent has to re-derive a check's outcome from the
+ * diff. A status here is a fact of THIS run, not an inference to make again.
+ */
+export function buildChecksChapter(
+  checks: TaskChecks,
+  opts: { purpose?: 'review' | 'fix' } = {},
+): string {
+  const header = `Repository checks, MANDATORY chapter (${checks.status}${
+    checks.source ? `, source: ${checks.source}` : ''
+  }):`
+  if (checks.status === 'unconfigured') {
+    return [header, 'No checks are detected or configured for this repository.'].join('\n')
+  }
+  if (checks.status === 'error') {
+    return [
+      header,
+      `The checks engine itself failed to run: ${checks.error ?? 'unknown error'}.`,
+    ].join('\n')
+  }
+  const lines = checks.checks.map((check) => {
+    const line = `- ${check.command}: ${check.status}`
+    // Only a check that is neither green nor merely skipped earns its tail.
+    // A pass needs no evidence and a skip has none to show.
+    return check.status === 'passed' || check.status === 'skipped'
+      ? line
+      : `${line}\n  ${check.tail.slice(-CHECKS_CHAPTER_TAIL_MAX)}`
+  })
+  const closing =
+    (opts.purpose ?? 'review') === 'fix'
+      ? 'What must still pass: make every failed or timed-out command above exit 0. These already ran once against your last commit and will run again against your next one.'
+      : 'These commands already ran in an isolated container: a passed check is not to be re-derived from the diff, and a failed or timed-out one is a fact, not a hypothesis to weigh against the code.'
+  return [header, ...lines, '', closing].join('\n')
+}
+
 export type BootstrapInstallStatus = 'passed' | 'skipped' | 'failed' | 'unconfigured'
 
 export type BootstrapInstallResult = {

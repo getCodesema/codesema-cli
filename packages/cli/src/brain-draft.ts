@@ -55,13 +55,27 @@ packages/contract/src/ticket.ts
 
 **Acceptance criteria**
 
-- WHEN a ticket is launched THE SYSTEM SHALL lint its body
-- WHEN a section is missing THE SYSTEM SHALL name that section
-- WHEN the body is conforming THE SYSTEM SHALL accept it
+- WHEN a ticket is launched THE SYSTEM SHALL lint its body [proof:command bun test packages/contract/src/ticket.test.ts]
+- WHEN a section is missing THE SYSTEM SHALL name that section [proof:diff packages/contract/src/ticket.ts]
+- WHEN the body is conforming THE SYSTEM SHALL accept it [proof:judgment]
 
 **Out of scope**
 
 Posting the issue on the forge.`
+
+/**
+ * How a criterion's own text tells the gate whether its verdict can be
+ * checked mechanically (D17): one line per `PROOF_METHODS` entry, in the
+ * grammar's own words rather than the contract's, since this reaches an
+ * agent that has no reason to have read `ticket.ts`.
+ */
+const PROOF_INSTRUCTION = [
+  'Every acceptance criterion line MUST end with a proof tag, in the exact form "[proof:<method> <argument>]", naming how its verdict will be checked:',
+  '- [proof:command <shell command>]: met when the command exits 0',
+  '- [proof:diff <path>]: met when <path> appears changed in the diff',
+  '- [proof:read <path>] or [proof:read <path> :: <substring>]: met when <path> exists in the worktree (and contains <substring>, when one is given)',
+  '- [proof:judgment]: only when none of the above can check it mechanically; a reviewer judges it by reading the diff',
+].join('\n')
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -76,7 +90,7 @@ function resolveDraftCommand(cwd: string): string {
 function grammarInstructions(): string {
   const sections = TICKET_SECTIONS.map(({ heading }) =>
     heading === ACCEPTANCE_CRITERIA_HEADING
-      ? `${heading}\n\n- ${EARS_TRIGGER} <trigger> ${EARS_RESPONSE} <response>\n(repeat: ${TICKET_CRITERIA_MIN} to ${TICKET_CRITERIA_MAX} lines total, each starting with "${EARS_TRIGGER}" and containing "${EARS_RESPONSE}" verbatim)`
+      ? `${heading}\n\n- ${EARS_TRIGGER} <trigger> ${EARS_RESPONSE} <response> [proof:<method> <argument>]\n(repeat: ${TICKET_CRITERIA_MIN} to ${TICKET_CRITERIA_MAX} lines total, each starting with "${EARS_TRIGGER}" and containing "${EARS_RESPONSE}" verbatim)\n\n${PROOF_INSTRUCTION}`
       : `${heading}\n\n<prose, non-empty>`,
   ).join('\n\n')
   return `Output ONLY the ticket body below, nothing before it and nothing after it, no markdown code fence around it. Five sections, in this exact order, each heading alone on its own line, verbatim:\n\n${sections}`
@@ -98,11 +112,18 @@ function buildDraftPrompt(input: { title?: string | undefined; promptContext: st
 }
 
 function buildRetryPrompt(previousPrompt: string, problems: readonly TicketProblem[]): string {
+  // Named out loud, on top of the base grammar instructions the previous
+  // prompt already repeats: a criterion missing its tag is the one rejection
+  // reason most likely to be dropped again on a blind retry, since it is a
+  // new D17 requirement rather than a rule the model is used to failing.
+  const proofReminder = problems.some((p) => p.code === 'criterion_missing_proof')
+    ? ' Every acceptance criterion line must end with its own "[proof:<method> <argument>]" tag: method is one of command, diff, read or judgment. Do not drop it, including on lines you are not otherwise changing.'
+    : ''
   return [
     previousPrompt,
     'Your previous answer was rejected for these reasons:',
     formatTicketProblems(problems),
-    'Output a corrected ticket body, same format, same rules, fixing every reason above.',
+    `Output a corrected ticket body, same format, same rules, fixing every reason above.${proofReminder}`,
   ].join('\n\n')
 }
 
@@ -165,7 +186,11 @@ export async function draftTicketBody(
       prompt = `${prompt}\n\nYour previous answer did not start with the required \`TITLE: …\` line. Follow the instructions exactly and try again.`
       continue
     }
-    const lint = lintTicketBody(extracted.body)
+    // D17: drafted tickets are held to the stricter gate: every criterion
+    // must carry a proof tag. Admission (task-from-issue) and boot-time
+    // reconciliation deliberately keep the default (false), so a ticket
+    // written before D17 existed keeps linting exactly as it always has.
+    const lint = lintTicketBody(extracted.body, { requireProofMethod: true })
     if (lint.ok) {
       return { ok: true, title, body: extracted.body }
     }

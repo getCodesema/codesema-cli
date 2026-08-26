@@ -19,13 +19,16 @@ import {
   type TaskReason,
   type TaskRecord,
 } from './contract.js'
+import { verifyFindingRepros } from './finding-repro.js'
 import { buildAgentFixPrompt, isFixable } from './fix.js'
 import { isAncestor, refExists, tryGit } from './git.js'
 import { createLoadCap, DEFAULT_MAX_CONCURRENT_AGENTS, type LoadCap } from './load-cap.js'
 import { prep } from './prep.js'
-import { archiveRecord, readJson, resolveArchivePath } from './record.js'
+import { archiveRecord, findPreviousReview, readJson, resolveArchivePath } from './record.js'
 import {
   buildFullReviewPrompt,
+  buildIncrementalPrompt,
+  buildRepeatReviewPrompt,
   runDualFlow,
   runSimpleFlow,
   type DualOutcome,
@@ -34,11 +37,15 @@ import {
 import { createSession } from './serve.js'
 import { autoPushReview } from './sync.js'
 import { reportBrainTransition } from './task-brain.js'
+import { buildChecksChapter } from './task-checks.js'
 import {
   buildCriteriaChapter,
+  combineCriteriaOutcomes,
   criteriaGateWaivable,
   criteriaUnmetDetail,
+  partitionCriteriaByProof,
   resolveCriteria,
+  resolveMechanicalCriteria,
   unmetCriteriaFixChapter,
   type CriteriaOutcome,
 } from './task-criteria-gate.js'
@@ -48,7 +55,7 @@ import {
   type TaskTurnIo,
   type TaskTurnReviewFn,
 } from './task-runner.js'
-import { loadTask, taskReason } from './tasks-store.js'
+import { loadTask, readTaskChecks, taskReason } from './tasks-store.js'
 import { progressLabel } from './ui.js'
 
 /**
@@ -157,31 +164,42 @@ export function buildFixTurnPrompt(task: TaskRecord, findingIds: number[]): stri
 }
 
 /**
- * The prompt of an AUTOMATIC fix turn (T3.3). It IS the manual path's prompt —
+ * The prompt of an AUTOMATIC fix turn (T3.3). It IS the manual path's prompt:
  * `buildAgentFixPrompt` on the same archive, through the same helper the click
- * uses — with the two differences that automating it requires:
+ * uses, with the differences that automating it requires:
  *
  *  - the findings are not a human's selection but every ACTIONABLE one, which
  *    is exactly the set that made the review block. Asking for less would
  *    guarantee the next review blocks on the remainder and burns a round;
  *  - a criteria chapter is appended when the acceptance-criteria gate is what
- *    blocks, because a review that approved the code raises no finding at all.
+ *    blocks, because a review that approved the code raises no finding at all;
+ *  - a checks chapter (D16) is appended when `checks` still blocks "ready to
+ *    merge" (`checksBlockReady`), the same reason a red run turns an OK into
+ *    a `review_ko` in `applyChecksGate`, so a fix round asked for by a red
+ *    check actually NAMES it, instead of leaving the agent to guess why the
+ *    turn it just finished was not enough.
  *
- * Null when there is nothing concrete to ask for — no archive, an unreadable
- * one, or an archive carrying neither an actionable finding nor an unsatisfied
- * criterion. That null is a REFUSAL to spend a round, never an empty prompt.
+ * Null when there is nothing concrete to ask for: no archive, an unreadable
+ * one, or an archive carrying no actionable finding, no unsatisfied criterion
+ * and no blocking check. That null is a REFUSAL to spend a round, never an
+ * empty prompt.
  */
-export function buildAutoFixTurnPrompt(task: TaskRecord): string | null {
+export function buildAutoFixTurnPrompt(task: TaskRecord, checks: TaskChecks | null): string | null {
   const review = readReviewRef(task)
   if (!review) {
     return null
   }
   const ids = actionableFindingIds(review)
-  const chapter = unmetCriteriaFixChapter(taskCriteria(task), review.review.criteria)
-  if (ids.length === 0 && !chapter) {
+  const criteriaChapter = unmetCriteriaFixChapter(taskCriteria(task), review.review.criteria)
+  const checksChapter =
+    checks && checksBlockReady(checks) ? buildChecksChapter(checks, { purpose: 'fix' }) : null
+  if (ids.length === 0 && !criteriaChapter && !checksChapter) {
     return null
   }
   const base = buildAgentFixPrompt(review, ids)
+  const chapter = [criteriaChapter, checksChapter]
+    .filter((c): c is string => Boolean(c))
+    .join('\n\n')
   return chapter ? `${base}\n\n${chapter}` : base
 }
 
@@ -539,12 +557,26 @@ export type CreateTaskReviewerOptions = {
   loadCap?: Pick<LoadCap, 'acquire' | 'snapshot'>
 }
 
+type FlowRunnerPrompt = {
+  /** T3.2's judged-criteria chapter and D16's checks chapter, merged, or null when the task has neither. */
+  chapter: string | null
+  /**
+   * D24: a pre-built simple-mode prompt (repeat or incremental, `chapter`
+   * already folded in by whichever of `buildRepeatReviewPrompt` /
+   * `buildIncrementalPrompt` built it), or null to build the ordinary full
+   * prompt inline. Ignored in dual mode, which always starts from scratch
+   * (review.ts's own comment on `dual` explains why: a judge has no
+   * equivalent for reconciling two lanes against a remembered verdict).
+   */
+  prebuiltPrompt: string | null
+}
+
 type FlowRunner = (
   opts: CreateTaskReviewerOptions,
   input: Awaited<ReturnType<typeof prep>>,
   io: TaskTurnIo,
-  /** T3.2's acceptance-criteria chapter, or null when the task carries none. */
-  criteriaChapter: string | null,
+  /** Bundled rather than two more params: max-params caps a function at 4. */
+  prompt: FlowRunnerPrompt,
 ) => Promise<SimpleOutcome | DualOutcome>
 
 /**
@@ -554,7 +586,7 @@ type FlowRunner = (
  * task_text SSE channel — the persisted journal only gets the bounded
  * review_started/review_done/error events.
  */
-const runReviewFlow: FlowRunner = async (opts, input, io, criteriaChapter) => {
+const runReviewFlow: FlowRunner = async (opts, input, io, { chapter, prebuiltPrompt }) => {
   const mode: TaskReviewMode = opts.mode ?? 'simple'
   const runSimple = opts.runSimpleFlowFn ?? runSimpleFlow
   const runDual = opts.runDualFlowFn ?? runDualFlow
@@ -584,7 +616,7 @@ const runReviewFlow: FlowRunner = async (opts, input, io, criteriaChapter) => {
           timeoutMs: opts.timeoutMs,
           session,
           spinner: { update: (status) => io.text(status) },
-          ...(criteriaChapter ? { criteriaChapter } : {}),
+          ...(chapter ? { criteriaChapter: chapter } : {}),
           signal: io.signal,
         })
       : await runSimple({
@@ -593,8 +625,12 @@ const runReviewFlow: FlowRunner = async (opts, input, io, criteriaChapter) => {
           dir,
           timeoutMs: opts.timeoutMs,
           session,
-          prompt: buildFullReviewPrompt(input, criteriaChapter ?? undefined),
-          incremental: false,
+          prompt: prebuiltPrompt ?? buildFullReviewPrompt(input, chapter ?? undefined),
+          // D24: a repeat or incremental prompt legitimately revisits only
+          // what changed (or, on a repeat, nothing at all) — same reasoning
+          // runSimpleFlow's own comment gives for skipping the coverage-gap
+          // check on a true incremental review.
+          incremental: prebuiltPrompt !== null,
           signal: io.signal,
         })
   } finally {
@@ -663,7 +699,18 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       // a task whose turn changed nothing gets no chapter and no model call,
       // exactly as before this ticket.
       const criteria = taskCriteria(record)
-      const criteriaChapter = criteria.length > 0 ? buildCriteriaChapter(criteria) : null
+      // D17: only the criteria the reviewer must actually JUDGE earn a prompt
+      // chapter. A mechanical one (a `[proof:command|diff|read ...]` tag) is
+      // decided by this file below, never asked of the model.
+      const { mechanical, judged } = partitionCriteriaByProof(criteria)
+      const criteriaChapter = judged.length > 0 ? buildCriteriaChapter(judged) : null
+      // D16: the SAME checks snapshot feeds this review chapter and the
+      // mechanical `command` criteria resolved below, read once from disk,
+      // never re-read mid-turn.
+      const checks = terminalChecksResult(readTaskChecks(opts.cwd, record.id))
+      const checksChapter = checks ? buildChecksChapter(checks, { purpose: 'review' }) : null
+      const chapter =
+        [criteriaChapter, checksChapter].filter((c): c is string => Boolean(c)).join('\n\n') || null
 
       io.emit({ type: 'review_started', data: { turn: record.turns.length, mode } })
       const input = await prepFn({
@@ -683,6 +730,29 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         // this is the gap where it was not kept.
         settleInterrupted(record, io, opts.cwd)
         return
+      }
+      // D24: inter-turn memory, SIMPLE mode only (dual always starts from
+      // scratch, see `runReviewFlow`'s own comment). When the last archived
+      // review of this branch/target sits at the SAME head as this turn's
+      // own HEAD, nothing was committed since it: hand that review back and
+      // ask the model to confirm or say what changed, instead of re-judging
+      // from a blank slate — the root cause D24 fixes (three different
+      // verdicts on one unchanged head_sha, see the plan's diagnosis). When
+      // the head moved and the previous archive is a verified ancestor of
+      // it, `buildIncrementalPrompt` covers that exactly as the single-review
+      // CLI flow already does. Any other shape (no previous archive, a
+      // rebased/unrelated head) falls through to `null`, which `runReviewFlow`
+      // reads as "build the ordinary full prompt", unchanged from before
+      // this ticket.
+      let prebuiltPrompt: string | null = null
+      if (mode === 'simple') {
+        const previousReview = findPreviousReview(opts.cwd, record.branch, record.base)
+        if (previousReview && previousReview.meta.head_sha === input.head_sha) {
+          prebuiltPrompt = buildRepeatReviewPrompt(input, previousReview, chapter ?? undefined)
+        } else if (previousReview) {
+          prebuiltPrompt =
+            buildIncrementalPrompt(input, opts.cwd, chapter ?? undefined)?.prompt ?? null
+        }
       }
       // T1.3 (D4): the review agent is a heavy consumer of the machine load
       // cap, gated tightly around the actual agent call — never around prep
@@ -718,7 +788,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           },
           input,
           io,
-          criteriaChapter,
+          { chapter, prebuiltPrompt },
         )
       } finally {
         release()
@@ -742,16 +812,39 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         return
       }
 
+      // D24: rebuts every 'major' finding that claims a concrete repro by
+      // actually running it, BEFORE anything downstream reads severity — the
+      // criteria gate below, `taskReviewVerdict` and `hasBlockingFindings`
+      // (T3.3's guard-rail) all read the CORRECTED severities from here on,
+      // never the model's raw, unverified claim.
+      const reproOutcome = await verifyFindingRepros(outcome.record.review.findings, {
+        worktree: record.worktree,
+      })
+      outcome.record.review.findings = reproOutcome.findings
+
       // T3.2, and BEFORE the archive on purpose: the normalized per-criterion
-      // statuses are what T3.6 reads back — possibly at a later boot — so they
+      // statuses are what T3.6 reads back, possibly at a later boot, so they
       // have to be part of the record that lands on disk, not a structure that
-      // dies with this process. `resolveCriteria` is the whole gate: it joins
-      // on the ticket's stable ids, discards what the model invented, grounds
-      // each evidence in the diff and forces one status per criterion.
-      const gate =
-        criteria.length > 0
-          ? resolveCriteria(criteria, outcome.record.review.criteria, outcome.record.diff)
-          : null
+      // dies with this process. `resolveCriteria` grounds the JUDGED criteria
+      // in the diff exactly as before D17; the MECHANICAL ones never go
+      // through it (nor `groundCriterionVerdicts`): a `command`/`diff`/`read`
+      // verdict has nothing to anchor in the diff and would be wrongly demoted
+      // for lacking one. `combineCriteriaOutcomes` re-merges both halves into
+      // the single ordered outcome the rest of this function (and T3.6) reads.
+      let gate: CriteriaOutcome | null = null
+      if (criteria.length > 0) {
+        const mechanicalVerdicts = await resolveMechanicalCriteria(mechanical, {
+          worktree: record.worktree,
+          diff: outcome.record.diff,
+          checks,
+        })
+        const judgedOutcome = resolveCriteria(
+          judged,
+          outcome.record.review.criteria,
+          outcome.record.diff,
+        )
+        gate = combineCriteriaOutcomes(criteria, mechanicalVerdicts, judgedOutcome)
+      }
       if (gate) {
         outcome.record.review.criteria = gate.verdicts
       }
@@ -773,6 +866,9 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           ref: record.review_ref,
           ...(summary ? { summary } : {}),
           ...findingSeverityCounts(outcome.record.review.findings),
+          ...(reproOutcome.report.demoted > 0
+            ? { repro_demoted: reproOutcome.report.demoted }
+            : {}),
         },
       })
       const verdict = taskReviewVerdict(outcome.record)

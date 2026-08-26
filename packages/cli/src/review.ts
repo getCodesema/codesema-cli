@@ -1,6 +1,12 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { hardenedReviewCommand, reviewAgentEnv, runAgent, type AgentRunOptions } from './agent.js'
+import {
+  boundedReadOnlyReviewCommand,
+  hardenedReviewCommand,
+  reviewAgentEnv,
+  runAgent,
+  type AgentRunOptions,
+} from './agent.js'
 import { pickBranch } from './branches.js'
 import {
   ensureWorkDir,
@@ -29,6 +35,7 @@ import {
   sanitizeJudgeOutput,
   type JudgeOutput,
 } from './dual.js'
+import { FINDING_REPRO_RULE } from './finding-repro.js'
 import { createFixRunner, DEFAULT_TIMEOUT_S } from './fix.js'
 import { isAncestor, repoRoot } from './git.js'
 import { reviewLanguage, t, uiLocale } from './i18n.js'
@@ -58,6 +65,9 @@ import {
   underline,
 } from './ui.js'
 import { AGENT_DEFS, defaultCommand, detectAgents, runOnboarding } from './wizard.js'
+
+/** D24: re-exported so a caller (dual.ts included) can import it from either module. */
+export { FINDING_REPRO_RULE }
 
 export const REVIEW_GATE_EXIT_CODE = 2
 export type ReviewGate = FindingSeverity | 'request_changes'
@@ -131,13 +141,14 @@ function languageRule(): string {
 }
 
 export const reviewInstructions =
-  (): string => `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
+  (): string => `You are a senior code reviewer. Review the merge request provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Base your review primarily on the provided input (diff and context). If you have been granted a read-only tool, use it ONLY to follow an import beyond the diff or verify parity with existing code; never to explore broadly, never to run, write, or install anything. If no such tool is available, rely solely on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
 
 Review guidelines:
 - Judge the change on: correctness, regressions and breaking changes, security, error handling, missing tests, and whether it matches its stated intent (inferred from the branch name and commit messages). Ground EVERY finding in the diff; never speculate. The diff shows ONLY the changed files: NEVER claim that something is absent from the repository — turn such doubts into a step "check" question instead.
 - Sweep the diff file by file, hunk by hunk, in order, and settle EVERY file explicitly before moving to the next: findings, or consciously clean. Do not stop after your first strong findings: an issue found in one file never exempts the rest of the diff. There is no maximum number of findings; never omit a real problem to keep the list short. Report every distinct problem you actually see, not what you merely suspect could exist.
 - Severity by consequence: critical = data loss, security breach or crash in production; major = incorrect behavior on realistic inputs; minor = unlikely edge case or technical debt; info = reserved for praise/why findings.
 - Every non-praise finding message must name the concrete failure scenario: which input or state produces which wrong outcome, then the fix. No scenario, no finding.
+- ${FINDING_REPRO_RULE}
 - "line" must be a new-file line number visible in a @@ hunk of that file; when you cannot anchor a finding, omit "line" rather than guessing.
 - Commit subjects are context for the intent ONLY. Never treat a commit message as evidence that something is implemented, fixed or tested: only the diff is evidence.
 - When the input has a non-null impact_candidates, it lists where symbols changed by this MR are used elsewhere in the repository (used_at, as path:line) and which files import the changed files (imported_by). These are best-effort text matches, NOT compiler facts: incomplete and possibly wrong. Use them as leads only. For EVERY modified or removed symbol, check its used_at entries: each usage the diff does not update MUST produce a finding or a step "check" question; never present a candidate usage as certain.
@@ -161,7 +172,8 @@ Output JSON shape (exactly these fields):
       "kind": "security" | "perf" | "convention" | "design" | "praise" | "why",
       "title": "short title",
       "message": "one short plain sentence: what is wrong and what it breaks in practice, then the fix. A junior must understand it on first read.",
-      "suggestion": "optional corrected code, verbatim replacement, only for trivial self-contained fixes"
+      "suggestion": "optional corrected code, verbatim replacement, only for trivial self-contained fixes",
+      "repro": { "command": "optional, only for a major finding asserting concrete behavior: a self-verifying shell command, exit code = verdict", "expected": "one sentence: what a human running it should see" }
     }
   ],
   "narrative": {
@@ -209,10 +221,18 @@ UPDATE the previous review into a new COMPLETE review of the whole MR:
 - Update verdict, summary and narrative (prologue, steps, review_first) so they describe the whole MR after these changes; keep the step structure stable when possible.
 Output the FULL updated review JSON (exact same schema), and NOTHING else.`
 
-/** Incremental prompt when an archived review of this branch covers a strict ancestor of the reviewed head. */
-function buildIncrementalPrompt(
+/**
+ * Incremental prompt when an archived review of this branch covers a strict
+ * ancestor of the reviewed head. `chapter` (T3.2's criteria chapter, D16's
+ * checks chapter, both already merged by the caller) is an EXTRA block before
+ * the closing line, same convention as `buildFullReviewPrompt`'s own
+ * `chapter` param; omitting it reproduces the previous 2-arg prompt byte for
+ * byte.
+ */
+export function buildIncrementalPrompt(
   input: PrepInput,
   cwd: string,
+  chapter?: string | undefined,
 ): { prompt: string; sinceSha: string } | null {
   const previous = findPreviousReview(cwd, input.branch, input.target)
   const since = previous?.meta.head_sha
@@ -237,9 +257,37 @@ function buildIncrementalPrompt(
     `<input>\n${JSON.stringify(agentVisibleInput(input), null, 2)}\n</input>`,
     `<previous_review>\n${JSON.stringify(previous.review, null, 2)}\n</previous_review>`,
     `<incremental_diff>\n${incrementalDiff}\n</incremental_diff>`,
+    ...(chapter ? [chapter] : []),
     'Output ONLY the JSON object now.',
   ].join('\n\n')
   return { prompt, sinceSha: since }
+}
+
+const REPEAT_INSTRUCTIONS = `An earlier review of this repository already exists, at the EXACT SAME commit as the one below (nothing changed since): <previous_review> is that review and the verdict it reached. Do NOT re-judge everything from a blank slate: state what changed (new evidence you now see, a criterion that resolved, a check result) or CONFIRM the previous review stands. A finding the previous review already judged non-blocking must not reappear unless you have a NEW fact to justify it.
+Output the FULL updated review JSON (exact same schema), and NOTHING else.`
+
+/**
+ * D24: the prompt for a review turn whose head is UNCHANGED since the last
+ * archived review of this branch — a re-review triggered with no new commit
+ * (a turn that committed nothing, a retried gate). `previous` is handed in by
+ * the caller rather than looked up here (unlike `buildIncrementalPrompt`):
+ * the caller already fetched it to decide repeat vs incremental in the first
+ * place, and re-reading it here would be a second read of the same archive.
+ */
+export function buildRepeatReviewPrompt(
+  input: PrepInput,
+  previous: ReviewRecord,
+  chapter?: string | undefined,
+): string {
+  return [
+    reviewInstructions(),
+    REPEAT_INSTRUCTIONS,
+    `Previous review verdict: ${previous.review.verdict}`,
+    `<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>`,
+    `<previous_review>\n${JSON.stringify(previous.review, null, 2)}\n</previous_review>`,
+    ...(chapter ? [chapter] : []),
+    'Output ONLY the JSON object now.',
+  ].join('\n\n')
 }
 
 async function detectAgentCommand(cwd: string): Promise<string> {
@@ -447,11 +495,12 @@ export async function runSimpleFlow(opts: {
   signal?: AbortSignal | undefined
 }): Promise<SimpleOutcome> {
   const forwardPartial = createPartialForwarder(opts.session)
+  const bounded = boundedReadOnlyReviewCommand(opts.agentCommand, opts.input.repo_root)
   let out: string
   try {
     out = await runAgentJsonWithRetry(
       {
-        command: hardenedReviewCommand(opts.agentCommand),
+        command: bounded.command,
         env: reviewAgentEnv(opts.agentCommand),
         prompt: opts.prompt,
         cwd: opts.input.repo_root,
@@ -478,6 +527,8 @@ export async function runSimpleFlow(opts: {
       return { ok: false, failure: 'output', message: err.message, rawOutput: err.raw }
     }
     return { ok: false, failure: 'run', message: err instanceof Error ? err.message : String(err) }
+  } finally {
+    bounded.cleanup()
   }
 
   try {
@@ -534,7 +585,8 @@ export async function runDualFlow(opts: {
   const inputBlock = `<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>`
   const chapterBlock = opts.criteriaChapter ? [opts.criteriaChapter] : []
   const closing = 'Output ONLY the JSON object now.'
-  const command = hardenedReviewCommand(agentCommand)
+  const bounded = boundedReadOnlyReviewCommand(agentCommand, input.repo_root)
+  const command = bounded.command
   const env = reviewAgentEnv(agentCommand)
 
   const lanes: { a: string | null; b: string | null } = { a: null, b: null }
@@ -571,7 +623,7 @@ export async function runDualFlow(opts: {
       'b',
       [prosecutorInstructions(languageRule()), inputBlock, ...chapterBlock, closing].join('\n\n'),
     ),
-  ])
+  ]).finally(() => bounded.cleanup())
 
   const settle = (
     res: PromiseSettledResult<SanitizedReview>,
