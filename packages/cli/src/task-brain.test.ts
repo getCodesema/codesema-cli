@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
-import type { TaskEvent, TaskRecord, TaskTurn } from './contract.js'
+import type { ArmOrder, TaskEvent, TaskRecord, TaskTurn } from './contract.js'
 import {
   flushBrainOutbox,
   heartbeatBrainTicket,
@@ -264,7 +264,7 @@ describe('task-brain', () => {
   describe('heartbeatBrainTicket', () => {
     test('posts to the ticket heartbeat route with the Bearer header', async () => {
       const calls: Call[] = []
-      await heartbeatBrainTicket(cwd, fakeRecord(), fetchStub(200, {}, calls))
+      await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchStub(200, {}, calls))
       expect(calls.length).toBe(1)
       expect(calls[0]?.url).toBe('https://brain.example/api/cli/tickets/tkt-1/heartbeat')
       const headers = calls[0]?.init.headers as Record<string, string>
@@ -273,8 +273,58 @@ describe('task-brain', () => {
 
     test('a task with no brain_ticket is a no-op', async () => {
       const calls: Call[] = []
-      await heartbeatBrainTicket(cwd, withoutBrainTicket(fakeRecord()), fetchStub(200, {}, calls))
+      await heartbeatBrainTicket(
+        cwd,
+        withoutBrainTicket(fakeRecord()),
+        undefined,
+        fetchStub(200, {}, calls),
+      )
       expect(calls.length).toBe(0)
+    })
+
+    test('sends local_status in the body when given', async () => {
+      const calls: Call[] = []
+      await heartbeatBrainTicket(cwd, fakeRecord(), 'waiting_for_you', fetchStub(200, {}, calls))
+      expect(requestBody(calls[0] as Call)).toEqual({ local_status: 'waiting_for_you' })
+    })
+
+    test('omits local_status from the body when not given', async () => {
+      const calls: Call[] = []
+      await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchStub(200, {}, calls))
+      expect(requestBody(calls[0] as Call)).toEqual({})
+    })
+
+    test('returns the sanitized order the brain hands back', async () => {
+      const order: ArmOrder = {
+        action: 'ship',
+        instruction: null,
+        issued_at: '2026-01-01T00:00:00.000Z',
+      }
+      const fetchImpl = fetchStub(200, { lease_expires_at: '2026-01-01T00:05:00.000Z', order }, [])
+      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchImpl)
+      expect(result).toEqual(order)
+    })
+
+    test('returns null when the response carries no order', async () => {
+      const fetchImpl = fetchStub(
+        200,
+        { lease_expires_at: '2026-01-01T00:05:00.000Z', order: null },
+        [],
+      )
+      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchImpl)
+      expect(result).toBeNull()
+    })
+
+    test('returns null, without throwing, when the success body is empty or not JSON', async () => {
+      const fetchImpl = (() =>
+        Promise.resolve(new Response('', { status: 200 }))) as unknown as typeof fetch
+      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchImpl)
+      expect(result).toBeNull()
+    })
+
+    test('returns null, without throwing, on a network failure', async () => {
+      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchOffline())
+      expect(result).toBeNull()
     })
   })
 

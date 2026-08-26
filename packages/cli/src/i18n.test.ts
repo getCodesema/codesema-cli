@@ -65,6 +65,10 @@ describe('every key is actually translated, not copied from the English', () => 
     'menu.cloudTitle',
     'brain.fieldId',
     'brain.fieldUrl',
+    'brain.fieldPid',
+    'brain.fieldPort',
+    'brain.fieldUptime',
+    'brain.fieldLog',
   ])
 
   test('no French entry is a copy of its English one, outside the argued list', () => {

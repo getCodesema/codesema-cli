@@ -1,10 +1,17 @@
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnOptions,
+} from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import { brainCommand } from './brain-commands.js'
+import { readBrainPidfile, writeBrainPidfile } from './brain-pidfile.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import type { ArmTicket } from './contract.js'
 
@@ -58,9 +65,9 @@ packages/x.
 
 **Acceptance criteria**
 
-- WHEN a THE SYSTEM SHALL b
-- WHEN c THE SYSTEM SHALL d
-- WHEN e THE SYSTEM SHALL f
+- WHEN a THE SYSTEM SHALL b [proof:command bun test]
+- WHEN c THE SYSTEM SHALL d [proof:diff packages/x/thing.ts]
+- WHEN e THE SYSTEM SHALL f [proof:judgment]
 
 **Out of scope**
 
@@ -85,6 +92,35 @@ const validTicket: ArmTicket = {
 
 function fakeRunAgent(output: string): (opts: AgentRunOptions) => Promise<string> {
   return async () => output
+}
+
+/** A pid that is certainly dead: a child that already ran to completion. */
+function deadPid(): number {
+  const child = spawnSync('true')
+  expect(child.pid).toBeGreaterThan(0)
+  return child.pid
+}
+
+/** A single real process with no custom signal handling: dies on the default SIGTERM. */
+function spawnAlive(): ChildProcess {
+  return spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'])
+}
+
+/**
+ * A single real process that registers a SIGTERM listener before signalling
+ * "ready" on stdout: adding any listener replaces Node's default (fatal)
+ * behavior for that signal, so this one survives SIGTERM until SIGKILLed.
+ * Resolves only once the handler is actually registered, so the stop-timeout
+ * test below can never race a child that has not installed it yet.
+ */
+function spawnIgnoringSigterm(): Promise<ChildProcess> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [
+      '-e',
+      'process.on("SIGTERM", () => {}); process.stdout.write("ready"); setInterval(() => {}, 1000)',
+    ])
+    child.stdout?.once('data', () => resolve(child))
+  })
 }
 
 describe('brainCommand', () => {
@@ -235,6 +271,126 @@ describe('brainCommand', () => {
           runAgentFn: fakeRunAgent('not a ticket'),
         }),
       ).rejects.toThrow()
+    })
+  })
+
+  describe('status: daemon rows (D21)', () => {
+    beforeEach(() => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://brain.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+    })
+
+    test('no pidfile: does not throw (reported as not running)', async () => {
+      initRepo(cwd, 'https://github.com/o/r.git')
+      await expect(
+        brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
+      ).resolves.toBeUndefined()
+    })
+
+    test('a pidfile naming our own (very much alive) pid: does not throw, cleans up nothing', async () => {
+      initRepo(cwd, 'https://github.com/o/r.git')
+      writeBrainPidfile(cwd, process.pid, 4400)
+      await expect(
+        brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
+      ).resolves.toBeUndefined()
+      expect(readBrainPidfile(cwd)).toMatchObject({ pid: process.pid, port: 4400 })
+    })
+
+    test('a pidfile naming a dead (stolen) pid: does not throw, and the stale file is removed', async () => {
+      initRepo(cwd, 'https://github.com/o/r.git')
+      writeBrainPidfile(cwd, deadPid(), 4400)
+      await expect(
+        brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
+      ).resolves.toBeUndefined()
+      expect(readBrainPidfile(cwd)).toBeNull()
+    })
+  })
+
+  describe('serve --detach', () => {
+    test('spawns a detached re-invocation of `brain serve` (no --detach) and reports pid + log path', async () => {
+      const calls: { command: string; args: readonly string[]; options: SpawnOptions }[] = []
+      const unrefCalls: number[] = []
+      const spawnFn = (command: string, args: readonly string[], options: SpawnOptions) => {
+        calls.push({ command, args, options })
+        return {
+          pid: 4242,
+          unref: () => {
+            unrefCalls.push(1)
+          },
+          on: () => {},
+        } as unknown as ChildProcess
+      }
+
+      await expect(
+        brainCommand({ action: 'serve', cwd, detach: true, spawnFn }),
+      ).resolves.toBeUndefined()
+
+      const call = calls[0]
+      if (!call) {
+        throw new Error('expected spawnFn to have been called')
+      }
+      expect(call.command).toBe(process.execPath)
+      expect(call.args).toEqual([process.argv[1] as string, 'brain', 'serve'])
+      expect(call.options.cwd).toBe(cwd)
+      expect(call.options.detached).toBe(true)
+      expect(unrefCalls.length).toBe(1)
+      expect(existsSync(join(cwd, '.codesema', 'brain-daemon.log'))).toBe(true)
+    })
+
+    test('a spawn that never yields a pid throws (D21 never silently reports success)', async () => {
+      const spawnFn = () =>
+        ({ pid: undefined, unref: () => {}, on: () => {} }) as unknown as ChildProcess
+      await expect(brainCommand({ action: 'serve', cwd, detach: true, spawnFn })).rejects.toThrow()
+    })
+  })
+
+  describe('stop', () => {
+    test('no pidfile: resolves without throwing (nothing to stop)', async () => {
+      await expect(brainCommand({ action: 'stop', cwd })).resolves.toBeUndefined()
+    })
+
+    test('a pidfile naming a dead pid: resolves without throwing, and the stale file is cleaned up', async () => {
+      writeBrainPidfile(cwd, deadPid(), 4400)
+      await expect(brainCommand({ action: 'stop', cwd })).resolves.toBeUndefined()
+      expect(readBrainPidfile(cwd)).toBeNull()
+    })
+
+    test('a live process: SIGTERM kills it, stop waits for it, then cleans up the pidfile', async () => {
+      const child = spawnAlive()
+      const pid = child.pid
+      if (pid === undefined) {
+        throw new Error('expected a real pid')
+      }
+      writeBrainPidfile(cwd, pid, 4400)
+      try {
+        await expect(
+          brainCommand({ action: 'stop', cwd, stopTimeoutMs: 5000, stopPollIntervalMs: 20 }),
+        ).resolves.toBeUndefined()
+        expect(readBrainPidfile(cwd)).toBeNull()
+      } finally {
+        child.kill('SIGKILL')
+      }
+    })
+
+    test('a live process that ignores SIGTERM: reports the timeout, never hangs, pidfile is left in place', async () => {
+      const child = await spawnIgnoringSigterm()
+      const pid = child.pid
+      if (pid === undefined) {
+        throw new Error('expected a real pid')
+      }
+      writeBrainPidfile(cwd, pid, 4400)
+      try {
+        await expect(
+          brainCommand({ action: 'stop', cwd, stopTimeoutMs: 300, stopPollIntervalMs: 20 }),
+        ).resolves.toBeUndefined()
+        expect(readBrainPidfile(cwd)).toMatchObject({ pid })
+      } finally {
+        child.kill('SIGKILL')
+      }
     })
   })
 })

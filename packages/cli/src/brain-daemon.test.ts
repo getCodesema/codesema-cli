@@ -7,6 +7,7 @@ import { startBrainDaemon } from './brain-daemon.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import type { ArmTicket, ArmTicketRequest, TaskRecord } from './contract.js'
 import type { Project } from './projects.js'
+import type { TaskActionResult } from './task-runner.js'
 import type { TaskCreateResult, TaskManager } from './task-server.js'
 
 type Call = { url: string; init: RequestInit }
@@ -79,6 +80,12 @@ function fakeManager(opts: {
   resumeCalls?: Array<{ projectId: string; id: string }>
   createResult?: TaskCreateResult
   createCalls?: { projectId: string; input: unknown }[]
+  shipCalls?: Array<{ projectId: string; id: string }>
+  shipResult?: TaskActionResult
+  replyCalls?: Array<{ projectId: string; id: string; message: string }>
+  replyResult?: TaskActionResult
+  abandonCalls?: Array<{ projectId: string; id: string }>
+  abandonResult?: TaskActionResult
 }): TaskManager {
   const project: Project = {
     id: opts.cwd,
@@ -101,6 +108,18 @@ function fakeManager(opts: {
     resume: (projectId: string, id: string) => {
       opts.resumeCalls?.push({ projectId, id })
       return { ok: true }
+    },
+    ship: async (projectId: string, id: string) => {
+      opts.shipCalls?.push({ projectId, id })
+      return opts.shipResult ?? { ok: true }
+    },
+    reply: (projectId: string, id: string, message: string) => {
+      opts.replyCalls?.push({ projectId, id, message })
+      return opts.replyResult ?? { ok: true }
+    },
+    abandon: async (projectId: string, id: string) => {
+      opts.abandonCalls?.push({ projectId, id })
+      return opts.abandonResult ?? { ok: true }
     },
   } as unknown as TaskManager
 }
@@ -142,6 +161,31 @@ function fastSleep(_ms: number, signal: AbortSignal): Promise<void> {
       { once: true },
     )
   })
+}
+
+/**
+ * Answers `order` on the FIRST heartbeat only, `null` on every one after
+ * (the real brain purges an order the moment it hands it back, D19), and an
+ * otherwise-empty tick everywhere else. `fastSleep` drives several
+ * heartbeat-loop iterations within one `settle()` window, so a stub that
+ * kept re-serving the same order would make a dispatch test see it applied
+ * once per iteration instead of once.
+ */
+function fetchHeartbeatOrder(order: unknown, calls: Call[]): typeof fetch {
+  let served = false
+  return (async (url: string | URL | Request, init?: RequestInit) => {
+    const href = String(url)
+    calls.push({ url: href, init: init ?? {} })
+    if (href.endsWith('/heartbeat')) {
+      const body = served ? null : order
+      served = true
+      return new Response(
+        JSON.stringify({ lease_expires_at: '2026-01-01T00:05:00.000Z', order: body }),
+        { status: 200 },
+      )
+    }
+    return new Response(JSON.stringify({ requests: [], tickets: [] }), { status: 200 })
+  }) as unknown as typeof fetch
 }
 
 describe('startBrainDaemon', () => {
@@ -483,5 +527,225 @@ describe('startBrainDaemon', () => {
     expect(
       calls.some((c) => c.url === 'https://brain.example/api/cli/tickets/tkt1/heartbeat'),
     ).toBe(true)
+  })
+
+  test('heartbeats a waiting_for_you brain-ticket task even when the memory slot is free', async () => {
+    // Regression: the memory slot (claimActive/activeTask) empties the moment
+    // a turn's promise settles, so a task parked on waiting_for_you must be
+    // found from the PERSISTED record, never from that slot.
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      syncUrl: 'https://brain.example',
+      syncWorkspaceId: 'ws1',
+      syncSecret: 'sec1',
+    })
+    initRepo(cwd, 'https://github.com/o/r.git')
+    const record = fakeRecord({
+      id: 'active1',
+      status: 'waiting_for_you',
+      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+    })
+    const manager = fakeManager({ cwd, records: [record] })
+    const calls: Call[] = []
+    const handle = startBrainDaemon({
+      manager,
+      cwd,
+      fetchImpl: fetchStub(200, { requests: [], tickets: [] }, calls),
+      logFn: () => {},
+      sleepFn: fastSleep,
+    })
+    await settle(30)
+    await handle.stop()
+    expect(
+      calls.some((c) => c.url === 'https://brain.example/api/cli/tickets/tkt1/heartbeat'),
+    ).toBe(true)
+  })
+
+  test('the heartbeat carries the persisted status as local_status', async () => {
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      syncUrl: 'https://brain.example',
+      syncWorkspaceId: 'ws1',
+      syncSecret: 'sec1',
+    })
+    initRepo(cwd, 'https://github.com/o/r.git')
+    const record = fakeRecord({
+      id: 'active1',
+      status: 'waiting_for_you',
+      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+    })
+    const manager = fakeManager({ cwd, records: [record] })
+    const calls: Call[] = []
+    const handle = startBrainDaemon({
+      manager,
+      cwd,
+      fetchImpl: fetchStub(200, { requests: [], tickets: [] }, calls),
+      logFn: () => {},
+      sleepFn: fastSleep,
+    })
+    await settle(30)
+    await handle.stop()
+    const heartbeatCall = calls.find((c) => c.url.endsWith('/heartbeat'))
+    expect(JSON.parse(String(heartbeatCall?.init.body))).toEqual({
+      local_status: 'waiting_for_you',
+    })
+  })
+
+  test('a ship order from the heartbeat response ships the task', async () => {
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      syncUrl: 'https://brain.example',
+      syncWorkspaceId: 'ws1',
+      syncSecret: 'sec1',
+    })
+    initRepo(cwd, 'https://github.com/o/r.git')
+    const record = fakeRecord({
+      id: 'active1',
+      status: 'waiting_for_you',
+      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+    })
+    const shipCalls: Array<{ projectId: string; id: string }> = []
+    const manager = fakeManager({ cwd, records: [record], shipCalls })
+    const order = { action: 'ship', instruction: null, issued_at: '2026-01-01T00:00:00.000Z' }
+    const calls: Call[] = []
+    const handle = startBrainDaemon({
+      manager,
+      cwd,
+      fetchImpl: fetchHeartbeatOrder(order, calls),
+      logFn: () => {},
+      sleepFn: fastSleep,
+    })
+    await settle(30)
+    await handle.stop()
+    expect(shipCalls).toEqual([{ projectId: expect.any(String), id: 'active1' }])
+  })
+
+  test('a reply order from the heartbeat response replies with the instruction', async () => {
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      syncUrl: 'https://brain.example',
+      syncWorkspaceId: 'ws1',
+      syncSecret: 'sec1',
+    })
+    initRepo(cwd, 'https://github.com/o/r.git')
+    const record = fakeRecord({
+      id: 'active1',
+      status: 'waiting_for_you',
+      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+    })
+    const replyCalls: Array<{ projectId: string; id: string; message: string }> = []
+    const manager = fakeManager({ cwd, records: [record], replyCalls })
+    const order = {
+      action: 'reply',
+      instruction: 'fix the flaky test',
+      issued_at: '2026-01-01T00:00:00.000Z',
+    }
+    const calls: Call[] = []
+    const handle = startBrainDaemon({
+      manager,
+      cwd,
+      fetchImpl: fetchHeartbeatOrder(order, calls),
+      logFn: () => {},
+      sleepFn: fastSleep,
+    })
+    await settle(30)
+    await handle.stop()
+    expect(replyCalls).toEqual([
+      { projectId: expect.any(String), id: 'active1', message: 'fix the flaky test' },
+    ])
+  })
+
+  test('an abandon order from the heartbeat response abandons the task', async () => {
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      syncUrl: 'https://brain.example',
+      syncWorkspaceId: 'ws1',
+      syncSecret: 'sec1',
+    })
+    initRepo(cwd, 'https://github.com/o/r.git')
+    const record = fakeRecord({
+      id: 'active1',
+      status: 'waiting_for_you',
+      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+    })
+    const abandonCalls: Array<{ projectId: string; id: string }> = []
+    const manager = fakeManager({ cwd, records: [record], abandonCalls })
+    const order = { action: 'abandon', instruction: null, issued_at: '2026-01-01T00:00:00.000Z' }
+    const calls: Call[] = []
+    const handle = startBrainDaemon({
+      manager,
+      cwd,
+      fetchImpl: fetchHeartbeatOrder(order, calls),
+      logFn: () => {},
+      sleepFn: fastSleep,
+    })
+    await settle(30)
+    await handle.stop()
+    expect(abandonCalls).toEqual([{ projectId: expect.any(String), id: 'active1' }])
+  })
+
+  test('no order in the heartbeat response: nothing is dispatched', async () => {
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      syncUrl: 'https://brain.example',
+      syncWorkspaceId: 'ws1',
+      syncSecret: 'sec1',
+    })
+    initRepo(cwd, 'https://github.com/o/r.git')
+    const record = fakeRecord({
+      id: 'active1',
+      status: 'waiting_for_you',
+      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+    })
+    const shipCalls: Array<{ projectId: string; id: string }> = []
+    const replyCalls: Array<{ projectId: string; id: string; message: string }> = []
+    const abandonCalls: Array<{ projectId: string; id: string }> = []
+    const manager = fakeManager({ cwd, records: [record], shipCalls, replyCalls, abandonCalls })
+    const calls: Call[] = []
+    const handle = startBrainDaemon({
+      manager,
+      cwd,
+      fetchImpl: fetchHeartbeatOrder(null, calls),
+      logFn: () => {},
+      sleepFn: fastSleep,
+    })
+    await settle(30)
+    await handle.stop()
+    expect(shipCalls.length).toBe(0)
+    expect(replyCalls.length).toBe(0)
+    expect(abandonCalls.length).toBe(0)
+  })
+
+  test('a manager refusal applying an order is logged, not thrown', async () => {
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      syncUrl: 'https://brain.example',
+      syncWorkspaceId: 'ws1',
+      syncSecret: 'sec1',
+    })
+    initRepo(cwd, 'https://github.com/o/r.git')
+    const record = fakeRecord({
+      id: 'active1',
+      status: 'waiting_for_you',
+      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+    })
+    const manager = fakeManager({
+      cwd,
+      records: [record],
+      shipResult: { ok: false, code: 409, error: 'ship in progress' },
+    })
+    const order = { action: 'ship', instruction: null, issued_at: '2026-01-01T00:00:00.000Z' }
+    const calls: Call[] = []
+    const lines: string[] = []
+    const handle = startBrainDaemon({
+      manager,
+      cwd,
+      fetchImpl: fetchHeartbeatOrder(order, calls),
+      logFn: (line) => lines.push(line),
+      sleepFn: fastSleep,
+    })
+    await settle(30)
+    await handle.stop()
+    expect(lines.some((l) => l.includes('refused') && l.includes('ship in progress'))).toBe(true)
   })
 })

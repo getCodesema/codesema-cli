@@ -5,7 +5,15 @@
 // is auto-registered and becomes the current project; launched outside any
 // repo, the workspace opens on the existing registry (possibly empty — add
 // projects from the UI). The process stays in the foreground: tasks live as
-// long as it runs (no detached daemon, decision n°4 of the plan). The first
+// long as it runs. D21 introduces one targeted exception to that:
+// `codesema brain serve --detach` (brain-commands.ts) backgrounds the brain
+// daemon behind a detached child process; every other entry point (bare
+// `codesema workspace`, `codesema review`, `codesema brain serve` without the
+// flag) stays foreground-only. Whenever CODESEMA_BRAIN_MODE is set, a
+// repo-local `<cwd>/.codesema/brain.pid` (brain-pidfile.ts) records
+// {pid, port, started_at} once the port is known, so `brain stop`/`brain
+// status`, run later from a different process, can find this daemon; it
+// is erased on shutdown, right beside the lock below. The first
 // Ctrl-C shuts down gracefully (agents SIGTERMed, the turns IN FLIGHT
 // persisted 'interrupted', worktrees kept — the next boot offers them back,
 // and one click on Resume in the UI restarts the turn that died; a turn that
@@ -18,6 +26,7 @@
 // racing this one's registry and task stores.
 
 import { knownAgent, type WatchdogBudgets } from './agent.js'
+import { removeBrainPidfile, writeBrainPidfile } from './brain-pidfile.js'
 import {
   globalConfigPath,
   hasInvalidPositiveIntKey,
@@ -348,8 +357,9 @@ function installShutdownHandlers(deps: {
   lock: WorkspaceLockHandle
   probe: IsolationProbe
   draining: AbortController
+  cwd: string
 }): void {
-  const { manager, stop, lock, probe, draining } = deps
+  const { manager, stop, lock, probe, draining, cwd } = deps
   let shuttingDown = false
   const shutdown = (): void => {
     if (shuttingDown) {
@@ -372,6 +382,11 @@ function installShutdownHandlers(deps: {
         // Exit inside finally: even a failing drain must not leave a headless
         // process holding the lock.
         lock.release()
+        // Mirrors the write at lock.setPort() below: only ever written and
+        // removed together, gated on the same env var.
+        if (process.env.CODESEMA_BRAIN_MODE === '1') {
+          removeBrainPidfile(cwd)
+        }
         process.exit(0)
       }
     })()
@@ -591,6 +606,9 @@ export async function workspace(
     throw err
   }
   lock.setPort(started.port)
+  if (process.env.CODESEMA_BRAIN_MODE === '1') {
+    writeBrainPidfile(repoRoot ?? opts.cwd, process.pid, started.port)
+  }
 
   console.log('')
   console.log(`codesema — ${t('workspace.intro')}`)
@@ -608,7 +626,14 @@ export async function workspace(
   if (opts.open) {
     openBrowser(started.url)
   }
-  installShutdownHandlers({ manager: taskManager, stop: started.stop, lock, probe, draining })
+  installShutdownHandlers({
+    manager: taskManager,
+    stop: started.stop,
+    lock,
+    probe,
+    draining,
+    cwd: repoRoot ?? opts.cwd,
+  })
   // T1.9 housekeeping: orphaned HOME volumes and the retention purge of old
   // terminated tasks. Neither gates the workspace being usable (both report
   // through `notice` — the console today, see task-server.ts) and neither is

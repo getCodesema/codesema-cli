@@ -1,0 +1,45 @@
+# Example systemd USER unit for the codesema brain daemon (D21).
+#
+# Runs `codesema brain serve` attached, in the foreground: systemd is already
+# the process supervisor here, so this never needs the CLI's own `--detach`
+# (that flag exists for machines with no service manager, see
+# `codesema brain serve --help` / `codesema brain stop`). Restart=on-failure
+# means systemd relaunches the daemon after a crash, but ALSO after any
+# SIGTERM it did not send itself, so once this unit is running, stop it with
+#
+#   systemctl --user stop codesema-brain.service
+#
+# never with a manual `kill` or `codesema brain stop`: either would just be
+# restarted 5 seconds later.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp codesema-brain.service ~/.config/systemd/user/
+#   # then edit WorkingDirectory below to the repo this daemon should serve
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now codesema-brain.service
+#
+# Logs: `journalctl --user -u codesema-brain.service -f` (stdout/stderr go to
+# the journal by default under systemd, no log file to manage here, unlike
+# `--detach`, which has no journal and writes to .codesema/brain-daemon.log).
+
+[Unit]
+Description=codesema brain daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The repo this daemon claims and works tickets for. Required: there is no
+# usable default.
+WorkingDirectory=/path/to/your/repo
+# Bare command name: relies on `codesema` being on the PATH systemd starts
+# this unit with, which is not always the PATH your interactive shell has.
+# Run `command -v codesema` in the same shell you'd normally launch it from
+# and paste the absolute path here if the unit fails to start.
+ExecStart=codesema brain serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

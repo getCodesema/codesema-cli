@@ -41,7 +41,11 @@ Usage:
   codesema brain ticket --issue <n>  Draft and publish a ticket from a forge issue
   codesema brain ticket --title <t> --prompt <p>
                                       Draft and publish a ticket from a free-form prompt
-  codesema brain serve               Alias for \`codesema workspace --brain\`
+  codesema brain serve [--detach]    Alias for \`codesema workspace --brain\`; --detach backgrounds the
+                                      daemon (prints its pid and log path) instead of running it in the
+                                      foreground
+  codesema brain stop                Stop a brain daemon started with --detach (or under systemd) for
+                                      this repo
 
 Options:
   --branch <name>     Local branch to review (default: interactive picker, else current branch)
@@ -360,9 +364,9 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'sync.unreachable': 'could not reach {url}: check your connection or CODESEMA_SYNC_URL',
   'sync.badResponse': 'unexpected response from {url}: required fields are missing or invalid',
 
-  'brain.usage': 'usage: codesema brain <connect|status|ticket|serve>',
+  'brain.usage': 'usage: codesema brain <connect|status|ticket|serve|stop>',
   'brain.unknownAction':
-    'unknown brain action: {action} (expected connect, status, ticket or serve)',
+    'unknown brain action: {action} (expected connect, status, ticket, serve or stop)',
   'brain.connectMissingFlags':
     '`codesema brain connect` needs both --url <url> and --token <token>',
   'brain.badToken': 'malformed token: expected csk_<workspaceId>.<secret>',
@@ -380,6 +384,17 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'brain.draftFailed': 'could not draft a ticket: {reason}',
   'brain.ticketCreated': 'Ticket created: {title}',
   'brain.fieldId': 'id',
+  'brain.fieldDaemon': 'daemon',
+  'brain.fieldPid': 'pid',
+  'brain.fieldPort': 'port',
+  'brain.fieldUptime': 'uptime',
+  'brain.fieldLog': 'log',
+  'brain.notRunning': 'not running',
+  'brain.detached': 'Brain daemon started in the background (pid {pid}).',
+  'brain.stopped': 'Brain daemon stopped (pid {pid}).',
+  'brain.stopTimeout':
+    'pid {pid} is still running {seconds}s after SIGTERM: send SIGKILL yourself, or `systemctl stop` if this runs as a systemd unit',
+  'brain.detachSpawnFailed': 'could not start the detached brain daemon',
 
   'menu.title': 'What do you want to do?',
   'menu.review': 'Simple review',
@@ -876,9 +891,9 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'sync.unreachable': 'impossible de joindre {url} : vérifiez votre connexion ou CODESEMA_SYNC_URL',
   'sync.badResponse': 'réponse inattendue de {url} : champs requis manquants ou invalides',
 
-  'brain.usage': 'usage : codesema brain <connect|status|ticket|serve>',
+  'brain.usage': 'usage : codesema brain <connect|status|ticket|serve|stop>',
   'brain.unknownAction':
-    'action brain inconnue : {action} (attendu connect, status, ticket ou serve)',
+    'action brain inconnue : {action} (attendu connect, status, ticket, serve ou stop)',
   'brain.connectMissingFlags': '`codesema brain connect` nécessite --url <url> et --token <token>',
   'brain.badToken': 'jeton malformé : format attendu csk_<workspaceId>.<secret>',
   'brain.connected': 'Connecté au cerveau à {url}.',
@@ -895,6 +910,17 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'brain.draftFailed': 'impossible de rédiger un ticket : {reason}',
   'brain.ticketCreated': 'Ticket créé : {title}',
   'brain.fieldId': 'id',
+  'brain.fieldDaemon': 'démon',
+  'brain.fieldPid': 'pid',
+  'brain.fieldPort': 'port',
+  'brain.fieldUptime': 'uptime',
+  'brain.fieldLog': 'log',
+  'brain.notRunning': "à l'arrêt",
+  'brain.detached': 'Démon brain démarré en arrière-plan (pid {pid}).',
+  'brain.stopped': 'Démon brain arrêté (pid {pid}).',
+  'brain.stopTimeout':
+    'le pid {pid} tourne toujours {seconds}s après SIGTERM : envoyez SIGKILL vous-même, ou `systemctl stop` si ça tourne en unité systemd',
+  'brain.detachSpawnFailed': 'impossible de démarrer le démon brain détaché',
 
   'menu.title': 'Que voulez-vous faire ?',
   'menu.review': 'Revue simple',

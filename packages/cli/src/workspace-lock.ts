@@ -36,8 +36,10 @@ export function readWorkspaceLock(): WorkspaceLock | null {
 /**
  * Signal 0 probes existence without sending anything. EPERM means the pid is
  * alive but owned by someone else — still alive, so still a real holder.
+ * Exported for brain-pidfile.ts's readers (D21): the repo-local brain.pid
+ * follows the same "a dead pid blocks nothing" doctrine as this lock.
  */
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true

@@ -49,6 +49,7 @@ type ParsedValues = {
   issue?: string | undefined
   title?: string | undefined
   prompt?: string | undefined
+  detach?: boolean | undefined
 }
 
 export const COMMAND_NAMES = [
@@ -218,6 +219,7 @@ async function runCommand(
         issue: values.issue,
         title: values.title,
         prompt: values.prompt,
+        detach: values.detach,
       })
       break
   }
@@ -247,6 +249,7 @@ async function main(): Promise<void> {
       issue: { type: 'string' },
       title: { type: 'string' },
       prompt: { type: 'string' },
+      detach: { type: 'boolean' },
     },
   })
 

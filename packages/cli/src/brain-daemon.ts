@@ -5,7 +5,10 @@
 // workspace has no task already running here — claims the next published
 // ticket and hands it to the task manager exactly as if it had been typed by
 // hand. A claimed brain-ticket task is kept alive with a heartbeat every 45s,
-// on its own schedule, independent of the main tick's backoff.
+// on its own schedule, independent of the main tick's backoff, and a
+// decision a human made from the dashboard while that ticket sat waiting
+// (D19) rides back on that same heartbeat and is applied here: ship, reply,
+// or abandon.
 
 import {
   brainRemoteUrl,
@@ -15,11 +18,11 @@ import {
   listTickets,
 } from './brain-client.js'
 import { draftAndSubmitTicketRequest } from './brain-draft.js'
-import { isActiveTaskStatus, type ArmTicketRequest } from './contract.js'
+import { isActiveTaskStatus, type ArmOrder, type ArmTicketRequest } from './contract.js'
 import { loadSyncCredentials, type SyncCredentials } from './sync.js'
 import { createBrainTicketTask } from './task-brain-ticket.js'
 import { flushBrainOutbox, heartbeatBrainTicket } from './task-brain.js'
-import { activeTask } from './task-queue.js'
+import type { TaskActionResult } from './task-runner.js'
 import type { TaskManager } from './task-server.js'
 
 const DEFAULT_INTERVAL_MS = 25_000
@@ -28,18 +31,6 @@ const HEARTBEAT_INTERVAL_MS = 45_000
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
-}
-
-/**
- * Same resolution `createBrainTicketTask` (task-brain-ticket.ts) uses
- * internally (`listAll().find(path match)`), reused here rather than
- * `projects.ts`'s `projectIdFor` directly: the two must agree on which
- * project `cwd` names, and going through the manager the task itself will be
- * created on is what guarantees that instead of assuming two derivations
- * stay in step.
- */
-function resolveProjectId(manager: TaskManager, cwd: string): string | null {
-  return manager.listAll().find((entry) => entry.project.path === cwd)?.project.id ?? null
 }
 
 type DraftRequestFn = (
@@ -215,20 +206,69 @@ async function tick(ctx: DaemonContext): Promise<TickOutcome> {
   return requestsOutcome === 'retryable' || ticketOutcome === 'retryable' ? 'retryable' : 'ok'
 }
 
+function dispatchArmOrder(
+  manager: TaskManager,
+  projectId: string,
+  id: string,
+  order: ArmOrder,
+): Promise<TaskActionResult> {
+  if (order.action === 'ship') {
+    return manager.ship(projectId, id)
+  }
+  if (order.action === 'abandon') {
+    return manager.abandon(projectId, id)
+  }
+  return Promise.resolve(manager.reply(projectId, id, order.instruction ?? ''))
+}
+
+/**
+ * Applies a decision a human made from the dashboard while this ticket sat
+ * waiting (D19): ship, reply with the human's instruction, or abandon. A
+ * refusal from the manager (its own status guards: already shipped, a ship
+ * already in flight, and so on) is JOURNALED here, never retried: the same
+ * order rides the next heartbeat only if the brain still has it to hand
+ * back, and a manager guard is what keeps a duplicate delivery from
+ * double-applying anything.
+ */
+async function applyArmOrder(
+  ctx: DaemonContext,
+  projectId: string,
+  id: string,
+  order: ArmOrder,
+): Promise<void> {
+  const outcome = await dispatchArmOrder(ctx.manager, projectId, id, order)
+  ctx.log(
+    outcome.ok
+      ? `applied arm order '${order.action}' for task ${id}`
+      : `arm order '${order.action}' for task ${id} refused: ${outcome.error}`,
+  )
+}
+
+/**
+ * Keyed on the PERSISTED status (`isActiveTaskStatus`, the same predicate
+ * `claimNextTicket` gates new claims on), not on the in-memory active-task
+ * slot: that slot empties the moment a turn's promise settles
+ * (task-runner.ts), so a task parked on `waiting_for_you` would otherwise go
+ * silently un-heartbeat for as long as it waits on a human. This is the fix
+ * for the "24 invisible minutes" the 2026-08-26 bench run traced back to
+ * this function. `isActiveTaskStatus` counts `waiting_for_you` as active,
+ * which is exactly the status this exists to keep beating for.
+ */
 async function heartbeatTick(ctx: DaemonContext): Promise<void> {
-  const projectId = resolveProjectId(ctx.manager, ctx.cwd)
-  if (!projectId) {
+  const entry = ctx.manager.listAll().find((candidate) => candidate.project.path === ctx.cwd)
+  if (!entry) {
     return
   }
-  const activeId = activeTask(projectId)
-  if (!activeId) {
+  const found = entry.records.find(
+    (record) => record.brain_ticket && isActiveTaskStatus(record.status),
+  )
+  if (!found) {
     return
   }
-  const found = ctx.manager.get(projectId, activeId)
-  if (!found?.record.brain_ticket) {
-    return
+  const order = await heartbeatBrainTicket(ctx.cwd, found, found.status, ctx.fetchImpl)
+  if (order) {
+    await applyArmOrder(ctx, entry.project.id, found.id, order)
   }
-  await heartbeatBrainTicket(ctx.cwd, found.record, ctx.fetchImpl)
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

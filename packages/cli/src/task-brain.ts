@@ -24,10 +24,13 @@ import { ensureWorkDir } from './config.js'
 import {
   ARM_LABEL_MAX,
   cutCodePoints,
+  sanitizeArmOrder,
   type ArmEvent,
+  type ArmOrder,
   type ArmTransition,
   type TaskEvent,
   type TaskRecord,
+  type TaskStatus,
 } from './contract.js'
 import { tryGitAsync } from './git.js'
 import { authHeader, loadSyncCredentials, type SyncCredentials } from './sync.js'
@@ -116,7 +119,7 @@ function originRemoteUrl(cwd: string): Promise<string | null> {
 }
 
 type BrainPostOutcome =
-  | { kind: 'ok' }
+  | { kind: 'ok'; body: unknown }
   | { kind: 'client_error'; status: number; detail: string }
   | { kind: 'retryable'; detail: string }
 
@@ -138,7 +141,13 @@ async function postToBrain(
     return { kind: 'retryable', detail: errorMessage(err) }
   }
   if (res.ok) {
-    return { kind: 'ok' }
+    // Tolerant on purpose: most callers post to routes that answer with no
+    // body at all, and JSON.parse on an empty string throws rather than
+    // returning something falsy, so a route that DOES answer with a body
+    // (the heartbeat's `order`, D19) is read the same tolerant way instead
+    // of every other caller needing its own empty-body special case.
+    const responseBody = await res.json().catch(() => undefined)
+    return { kind: 'ok', body: responseBody }
   }
   const parsed = (await res.json().catch(() => ({}))) as { error?: unknown }
   const detail = typeof parsed.error === 'string' ? parsed.error : `HTTP ${res.status}`
@@ -232,9 +241,32 @@ export async function reportBrainTransition(
 }
 
 /**
- * Sends a heartbeat for a task's brain ticket lease. No outbox: a missed
- * heartbeat is superseded by the next one (the daemon owns the 45s timer,
- * not this module): retrying a stale one is never useful. Never throws.
+ * Reads the `order` field off a heartbeat response body without assuming its
+ * shape: `body` is `unknown` (postToBrain only ever confirms "this parsed as
+ * JSON"), so this is the one narrowing step between the wire and
+ * `sanitizeArmOrder`, which validates everything else about it.
+ */
+function orderFieldOf(body: unknown): unknown {
+  return body && typeof body === 'object' && 'order' in body
+    ? (body as { order: unknown }).order
+    : undefined
+}
+
+/**
+ * Sends a heartbeat for a task's brain ticket lease, and returns the order a
+ * human decided from the dashboard while this ticket sat waiting (D19):
+ * ship, reply with an instruction, or abandon. `null` on every ordinary tick
+ * nothing is waiting on, and on any failure.
+ *
+ * No outbox: a missed heartbeat is superseded by the next one (the daemon
+ * owns the 45s timer, not this module), and a stale order is superseded the
+ * same way (the brain purges an order the moment it hands it back, so the
+ * next heartbeat only ever carries a fresh one, or none). Retrying either is
+ * never useful. Never throws.
+ *
+ * `localStatus`, when given, rides along as `local_status` so the brain can
+ * show this ticket as waiting (or not) on its own dashboard; omitted, the
+ * body is `{}`, same as before D19.
  *
  * `cwd` (unused) is kept for call-shape symmetry with this module's other
  * exports (`reportBrainTransition`, `queueBrainEvent`), all of which the
@@ -243,29 +275,33 @@ export async function reportBrainTransition(
 export async function heartbeatBrainTicket(
   _cwd: string,
   record: TaskRecord,
+  localStatus?: TaskStatus,
   fetchImpl: typeof fetch = fetch,
-): Promise<void> {
+): Promise<ArmOrder | null> {
   const ticketId = record.brain_ticket?.id
   if (!ticketId) {
-    return
+    return null
   }
   const creds = loadSyncCredentials()
   if (!creds) {
-    return
+    return null
   }
   const label = `heartbeat for task ${record.id}`
   try {
     const outcome = await postToBrain(
       `/api/cli/tickets/${encodeURIComponent(ticketId)}/heartbeat`,
-      {},
+      localStatus ? { local_status: localStatus } : {},
       creds,
       fetchImpl,
     )
     if (outcome.kind !== 'ok') {
       logBrainFailure(label, outcome.detail)
+      return null
     }
+    return sanitizeArmOrder(orderFieldOf(outcome.body))
   } catch (err) {
     logBrainFailure(label, errorMessage(err))
+    return null
   }
 }
 

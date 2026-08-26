@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { acquireWorkspaceLock, readWorkspaceLock, workspaceLockPath } from './workspace-lock.js'
+import {
+  acquireWorkspaceLock,
+  isPidAlive,
+  readWorkspaceLock,
+  workspaceLockPath,
+} from './workspace-lock.js'
 
 // The lock is GLOBAL (one workspace process per machine): it lives in
 // globalConfigDir(), redirected to a fresh tmpdir per test via
@@ -96,5 +101,22 @@ describe('acquireWorkspaceLock', () => {
     acquireWorkspaceLock()
     writeFileSync(workspaceLockPath(), JSON.stringify({ pid: 'x', port: 1 }))
     expect(readWorkspaceLock()).toBeNull()
+  })
+})
+
+// Exported for brain-pidfile.ts (D21): brain.pid follows the same "a dead
+// pid is never a permanent blocker" doctrine as this lock, and reuses this
+// exact check rather than a second copy of it.
+describe('isPidAlive', () => {
+  test('true for our own, very much alive, pid', () => {
+    expect(isPidAlive(process.pid)).toBe(true)
+  })
+
+  test('false for a pid that already ran to completion', () => {
+    expect(isPidAlive(deadPid())).toBe(false)
+  })
+
+  test('true for pid 1 (EPERM: alive, just not ours)', () => {
+    expect(isPidAlive(1)).toBe(true)
   })
 })

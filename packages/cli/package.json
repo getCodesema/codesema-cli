@@ -25,7 +25,8 @@
   },
   "files": [
     "dist",
-    "web-dist"
+    "web-dist",
+    "assets"
   ],
   "scripts": {
     "build": "tsdown && node scripts/embed-web.mjs",
