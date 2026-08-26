@@ -237,7 +237,7 @@ async function copySourceBranch(): Promise<void> {
       copied.value = false
     }, 2000)
   } catch {
-    // clipboard unavailable: no feedback, same as FocusView.vue/ReviewShell.vue
+    // clipboard unavailable: no feedback, same as ReviewFocusMode.vue/ReviewShell.vue
   }
 }
 

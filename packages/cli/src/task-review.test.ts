@@ -10,6 +10,7 @@ import {
   type Finding,
   type ReviewRecord,
   type TaskChecks,
+  type TaskReason,
   type TaskRecord,
   type TaskStatus,
   type Verdict,
@@ -28,6 +29,7 @@ import {
   actionableFindingIds,
   applyChecksGate,
   blockingFindingsDetail,
+  brainSettleTransition,
   buildAutoFixTurnPrompt,
   buildFixTurnPrompt,
   checksBlockReady,
@@ -1447,21 +1449,24 @@ describe('createTaskReviewer: the hard gate (T3.2)', () => {
     expect(rig.events.some((event) => event.type === 'error')).toBe(false)
   })
 
-  test('a single unclear blocks exactly as hard, and says so', async () => {
+  test('a sincere unclear is LIFTED by the settled OK review, out loud (D18)', async () => {
     const { record, rig } = await runGate([
       { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
       { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
       { criterion_id: GC3.id, status: 'unclear' },
     ])
-    expect(record.status).toBe('review_ko')
-    expect(record.reason?.code).toBe('criteria_unmet')
-    expect(record.reason?.detail).toContain('1 unclear')
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
     expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
-      name: 'gate_blocked',
+      name: 'gate_waived',
       met: 2,
       unmet: 0,
       unclear: 1,
     })
+    const waived = rig.events.find(
+      (event) => event.type === 'message' && event.data.name === 'criteria_unclear_waived',
+    )
+    expect(waived?.data.text).toContain('1')
   })
 
   test('a criterion the model skipped blocks: silence is never a pass', async () => {
@@ -1491,21 +1496,22 @@ describe('createTaskReviewer: the hard gate (T3.2)', () => {
     expect(record.reason?.detail).toContain('no verdict back from the reviewer')
   })
 
-  test('…and a reviewer that judged all three and doubted says something ELSE', async () => {
-    // The discriminator for the line above: identical tally, different fact.
+  test('…and a reviewer that judged all three and doubted is waived, unlike silence (D18)', async () => {
+    // The discriminator for the line above: identical tally, different fact,
+    // different outcome. Silence (unjudged) blocks; a sincere doubt on every
+    // criterion rides the settled OK verdict, and the gate line says which.
     const { record, rig } = await runGate([
       { criterion_id: GC1.id, status: 'unclear' },
       { criterion_id: GC2.id, status: 'unclear' },
       { criterion_id: GC3.id, status: 'unclear' },
     ])
-    expect(record.status).toBe('review_ko')
+    expect(record.status).toBe('review_ok')
     expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
-      name: 'gate_blocked',
+      name: 'gate_waived',
       met: 0,
       unmet: 0,
       unclear: 3,
     })
-    expect(record.reason?.detail).not.toContain('no verdict back from the reviewer')
   })
 
   test('an evidence the diff cannot carry is journaled as such, not as a doubt', async () => {
@@ -1912,5 +1918,64 @@ describe('buildAutoFixTurnPrompt (T3.3)', () => {
     const auto = buildAutoFixTurnPrompt(task)
     expect(auto).toContain('first one')
     expect(auto).toContain('second one')
+  })
+})
+
+describe('brainSettleTransition', () => {
+  test('review_ok with no reviewOutcome (the empty-diff short-circuit): an approve, no findings_total', () => {
+    const transition = brainSettleTransition({ status: 'review_ok' })
+    expect(transition).toEqual({ type: 'review_result', verdict: 'approve' })
+  })
+
+  test('review_ok with a reviewOutcome: an approve, carrying findings_total', () => {
+    const transition = brainSettleTransition({
+      status: 'review_ok',
+      reviewOutcome: fakeReview('approve', [{ file: 'a.ts', severity: 'minor', message: 'nit' }]),
+    })
+    expect(transition).toEqual({ type: 'review_result', verdict: 'approve', findings_total: 1 })
+  })
+
+  test('review_ko with a reviewOutcome (a verdict was produced, possibly overridden): request_changes', () => {
+    const transition = brainSettleTransition({
+      status: 'review_ko',
+      reviewOutcome: fakeReview('request_changes', [
+        { file: 'a.ts', severity: 'major', message: 'bug' },
+      ]),
+    })
+    expect(transition).toEqual({
+      type: 'review_result',
+      verdict: 'request_changes',
+      findings_total: 1,
+    })
+  })
+
+  test('review_ko with NO reviewOutcome (a flow failure, or an exception): failed, not review_result', () => {
+    // No reviewer ever produced a verdict here: reporting review_result would
+    // be indistinguishable from a reviewer that looked at the work and
+    // rejected it.
+    const transition = brainSettleTransition({ status: 'review_ko' })
+    expect(transition).toEqual({ type: 'failed' })
+  })
+
+  test('review_ko with no reviewOutcome and a reason: failed, carrying the reason as error_message', () => {
+    const reason: TaskReason = { code: 'review_blocked', detail: 'review failed: agent crashed' }
+    const transition = brainSettleTransition({ status: 'review_ko', reason })
+    expect(transition).toEqual({
+      type: 'failed',
+      error_message: 'review failed: agent crashed',
+    })
+  })
+
+  test('a reason with no detail adds no error_message', () => {
+    const reason: TaskReason = { code: 'review_blocked' }
+    const transition = brainSettleTransition({ status: 'review_ko', reason })
+    expect(transition).toEqual({ type: 'failed' })
+  })
+
+  test('costTicks rides along on a review_result, omitted entirely when absent', () => {
+    const withCost = brainSettleTransition({ status: 'review_ok', costTicks: 42 })
+    expect(withCost).toEqual({ type: 'review_result', verdict: 'approve', cost_ticks: 42 })
+    const withoutCost = brainSettleTransition({ status: 'review_ok' })
+    expect('cost_ticks' in withoutCost).toBe(false)
   })
 })

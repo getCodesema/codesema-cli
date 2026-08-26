@@ -7,6 +7,12 @@
 // useTasks stream; every child stays presentational and derives from pure
 // functions.
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import {
+  buildCodeReviewRows,
+  codeReviewRowKey,
+  filterCodeReviewRows,
+  type CodeReviewRow,
+} from '../composables/useCodeReview'
 import { useForgePrefs } from '../composables/useForgePrefs'
 import { useIssues } from '../composables/useIssues'
 import {
@@ -30,6 +36,7 @@ import {
   type BranchRow,
   type BranchSortKey,
 } from '../composables/useRepository'
+import { useReviewSession } from '../composables/useReviewSession'
 import { agentCounts, oldestWaiting } from '../composables/useTaskBoard'
 import {
   createPlanRequests,
@@ -48,8 +55,12 @@ import {
   focusFromBranchResolution,
   forkDraft,
   openRepository,
+  openReviewRun,
+  openReviewTarget,
   promoteDraft,
+  promoteReviewRun,
   openReview as reviewView,
+  sameReviewSource,
   scratchDraft,
   switchRepoTab,
   workonDraft,
@@ -59,8 +70,15 @@ import {
   type RepoTab,
 } from '../composables/useWorkspaceNav'
 import { t } from '../i18n'
-import type { AgentOption, ForgeMr, ReviewRecord } from '../types'
+import type {
+  AgentOption,
+  ForgeMr,
+  MrReviewMode,
+  ReviewArchiveSummary,
+  ReviewRecord,
+} from '../types'
 import ForgeSplitter from './forge/ForgeSplitter.vue'
+import CodeReviewList from './rail/CodeReviewList.vue'
 import ConversationsList from './rail/ConversationsList.vue'
 import RepositoriesList from './rail/RepositoriesList.vue'
 import WorkspaceNavRail from './rail/WorkspaceNavRail.vue'
@@ -68,6 +86,8 @@ import RepoSettings from './RepoSettings.vue'
 import BranchTable from './repository/BranchTable.vue'
 import RepositoryTiles from './repository/RepositoryTiles.vue'
 import RepositoryView from './repository/RepositoryView.vue'
+import ReviewTargetPanel from './review/ReviewTargetPanel.vue'
+import ReviewLive from './ReviewLive.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
@@ -623,6 +643,14 @@ watch(railPrefs, (next) => writeRailPrefs({ ...next }), { deep: true })
 
 function selectCategory(category: NavCategory): void {
   railPrefs.category = category
+  if (category === 'codeReview') {
+    // Lazy, and only the badges: the per-row history waits for an expand.
+    for (const project of repoProjects.value) {
+      if (!reviewArchives.value.has(project.id)) {
+        void loadReviewArchives(project.id)
+      }
+    }
+  }
 }
 
 type SearchableList = { focusSearch: () => void }
@@ -636,6 +664,7 @@ function onGlobalKeydown(e: KeyboardEvent): void {
     e.preventDefault()
     conversationsList.value?.focusSearch()
     repositoriesList.value?.focusSearch()
+    codeReviewList.value?.focusSearch()
   }
 }
 
@@ -651,6 +680,212 @@ function selectRepoTab(tab: RepoTab): void {
   railPrefs.activeRepoTab = tab
   focus.value = switchRepoTab(focus.value, tab)
 }
+
+// ── Code review: the cross-project list, its history, and the runner ─────
+//
+// The session lives here rather than in the list: the runner is process-wide
+// (one review at a time), so its status and its SSE stream outlive whichever
+// row or view is on screen, and survive navigating away and back.
+const reviewSession = useReviewSession()
+
+const reviewTarget = computed(() => (focus.value.kind === 'reviewTarget' ? focus.value : null))
+const reviewRun = computed(() => (focus.value.kind === 'reviewRun' ? focus.value : null))
+
+const codeReviewRows = computed<CodeReviewRow[]>(() =>
+  buildCodeReviewRows({
+    projects: repoProjects.value.map((project) => ({
+      project,
+      mrs: mrsOf(project.id, mrsStateFilter.value),
+      branches: branchesByProject.get(project.id) ?? [],
+      archives: reviewArchives.value.get(project.id) ?? [],
+    })),
+    ...(reviewSession.mrReviewStatus.value !== null && {
+      running: reviewSession.mrReviewStatus.value,
+    }),
+  }),
+)
+
+/** Latest archive per branch, per project: feeds the row badges. */
+const reviewArchives = ref(new Map<string, ReviewArchiveSummary[]>())
+const reviewHistory = ref(new Map<string, ReviewArchiveSummary[]>())
+const reviewHistoryErrors = ref(new Map<string, string>())
+const reviewQuery = ref('')
+
+/** Absent from BOTH maps means "never requested": the list reads that as
+ * loading, which is what an expand always starts. */
+function clearHistoryState(key: string): void {
+  const entries = new Map(reviewHistory.value)
+  const errors = new Map(reviewHistoryErrors.value)
+  entries.delete(key)
+  errors.delete(key)
+  reviewHistory.value = entries
+  reviewHistoryErrors.value = errors
+}
+const expandedReviewRows = ref<ReadonlySet<string>>(new Set())
+
+async function loadReviewArchives(projectId: string): Promise<void> {
+  try {
+    const res = await fetch(`/api/reviews/latest?project=${encodeURIComponent(projectId)}`)
+    const body = res.ok ? ((await res.json()) as { latest: ReviewArchiveSummary[] }) : null
+    reviewArchives.value = new Map(reviewArchives.value).set(projectId, body?.latest ?? [])
+  } catch {
+    reviewArchives.value = new Map(reviewArchives.value).set(projectId, [])
+  }
+}
+
+async function loadReviewHistory(row: CodeReviewRow): Promise<void> {
+  const key = codeReviewRowKey(row)
+  const branch = row.kind === 'mr' ? row.mr.sourceBranch : row.branch.name
+  clearHistoryState(key)
+  const query = `project=${encodeURIComponent(row.projectId)}&branch=${encodeURIComponent(branch)}`
+  try {
+    const res = await fetch(`/api/reviews?${query}`)
+    if (!res.ok) {
+      reviewHistoryErrors.value = new Map(reviewHistoryErrors.value).set(key, String(res.status))
+      return
+    }
+    const body = (await res.json()) as { entries: ReviewArchiveSummary[] }
+    reviewHistory.value = new Map(reviewHistory.value).set(key, body.entries)
+  } catch (err) {
+    reviewHistoryErrors.value = new Map(reviewHistoryErrors.value).set(key, String(err))
+  }
+}
+
+function toggleReviewRow(key: string): void {
+  const next = new Set(expandedReviewRows.value)
+  if (next.delete(key)) {
+    expandedReviewRows.value = next
+    return
+  }
+  next.add(key)
+  expandedReviewRows.value = next
+  const row = codeReviewRows.value.find((candidate) => codeReviewRowKey(candidate) === key)
+  if (row && !reviewHistory.value.has(key) && !reviewHistoryErrors.value.has(key)) {
+    void loadReviewHistory(row)
+  }
+}
+
+function openReviewTargetRow(row: CodeReviewRow): void {
+  selectProject(row.projectId)
+  focus.value = openReviewTarget(row.projectId, row.source)
+}
+
+async function onRunReview(mode: MrReviewMode): Promise<void> {
+  const target = reviewTarget.value
+  if (target === null) {
+    return
+  }
+  reviewSession.setProjectId(target.projectId)
+  const launched = await reviewSession.runReview(target.source, mode)
+  if (launched) {
+    focus.value = openReviewRun(target.projectId, target.source, mode, focus.value)
+  }
+}
+
+async function openArchivedReview(
+  projectId: string,
+  branch: string,
+  archiveRef: string,
+): Promise<void> {
+  const query = `project=${encodeURIComponent(projectId)}&branch=${encodeURIComponent(branch)}&ref=${encodeURIComponent(archiveRef)}`
+  try {
+    const res = await fetch(`/api/reviews/record?${query}`)
+    if (res.ok) {
+      openReview((await res.json()) as ReviewRecord)
+    }
+  } catch {
+    // An unreadable archive leaves the view where it was: the list already
+    // says what it could read.
+  }
+}
+
+const visibleCodeReviewRows = computed(() =>
+  filterCodeReviewRows(codeReviewRows.value, reviewQuery.value),
+)
+
+const codeReviewList = ref<SearchableList | null>(null)
+
+const selectedReviewRowKey = computed<string | null>(() => {
+  const view = focus.value
+  if (view.kind !== 'reviewTarget' && view.kind !== 'reviewRun') {
+    return null
+  }
+  const row = codeReviewRows.value.find(
+    (candidate) =>
+      candidate.projectId === view.projectId && sameReviewSource(candidate.source, view.source),
+  )
+  return row ? codeReviewRowKey(row) : null
+})
+
+/** The row the staged target names, for the panel's own props. Null when the
+ * list has not caught up with the focus yet (a project still loading). */
+const stagedReviewRow = computed<CodeReviewRow | null>(() => {
+  const view = reviewTarget.value
+  if (view === null) {
+    return null
+  }
+  return (
+    codeReviewRows.value.find(
+      (row) => row.projectId === view.projectId && sameReviewSource(row.source, view.source),
+    ) ?? null
+  )
+})
+
+const reviewTargetProps = computed(() => {
+  const row = stagedReviewRow.value
+  if (row === null) {
+    return null
+  }
+  const key = codeReviewRowKey(row)
+  return {
+    projectId: row.projectId,
+    projectName: row.projectName,
+    target:
+      row.kind === 'mr'
+        ? ({ kind: 'mr', mr: row.mr } as const)
+        : ({ kind: 'branch', name: row.branch.name } as const),
+    history: reviewHistory.value.get(key) ?? null,
+    historyError: reviewHistoryErrors.value.get(key) ?? null,
+    runStatus: reviewSession.mrReviewStatus.value,
+    starting: false,
+    startError: reviewSession.mrReviewStartError.value,
+  }
+})
+
+function onOpenArchive(row: CodeReviewRow, archiveRef: string): void {
+  const branch = row.kind === 'mr' ? row.mr.sourceBranch : row.branch.name
+  void openArchivedReview(row.projectId, branch, archiveRef)
+}
+
+function onOpenArchiveFromPanel(archiveRef: string): void {
+  const row = stagedReviewRow.value
+  if (row) {
+    onOpenArchive(row, archiveRef)
+  }
+}
+
+/** The runner is process-wide: "open the running review" means whichever
+ * target it is actually on, not the one being looked at. */
+function onOpenRunningReview(): void {
+  const status = reviewSession.mrReviewStatus.value
+  if (status?.available !== true || status.phase !== 'running') {
+    return
+  }
+  focus.value = openReviewRun(status.project_id ?? '', status.source, status.mode, focus.value)
+}
+
+// A finished run only takes the stage from the reader who was watching THAT
+// run; anyone else keeps what they were looking at and learns it from the
+// row's own badge.
+watch(
+  () => reviewSession.record.value,
+  (record) => {
+    const view = reviewRun.value
+    if (record && view) {
+      focus.value = promoteReviewRun(focus.value, view.projectId, view.source, record)
+    }
+  },
+)
 
 // ── The Branches tab: its own toolbar state, and the rows it derives ──────
 const branchQuery = ref('')
@@ -766,6 +1001,22 @@ watch(
           :focused-keys="focusedKeys"
           @select="(state) => openConversation(state.projectId, state.record.id)"
           @create="onNewConversation"
+        />
+        <CodeReviewList
+          v-else-if="railPrefs.category === 'codeReview'"
+          ref="codeReviewList"
+          :rows="codeReviewRows"
+          :visible-rows="visibleCodeReviewRows"
+          :query="reviewQuery"
+          :running="reviewSession.mrReviewStatus.value"
+          :selected-key="selectedReviewRowKey"
+          :expanded="expandedReviewRows"
+          :history="reviewHistory"
+          :history-errors="reviewHistoryErrors"
+          @update:query="(v: string) => (reviewQuery = v)"
+          @select="openReviewTargetRow"
+          @toggle-expanded="toggleReviewRow"
+          @open-archive="onOpenArchive"
         />
         <RepositoriesList
           v-else
@@ -977,6 +1228,26 @@ watch(
             />
           </template>
         </RepositoryView>
+
+        <!-- A live review: the run is process-wide, so this branch renders
+             whatever the session is streaming, whichever row started it. -->
+        <ReviewLive
+          v-else-if="reviewRun && reviewSession.status.value"
+          :status="reviewSession.status.value"
+          :partial="reviewSession.partial.value"
+          :partial-b="reviewSession.partialB.value"
+          :judge="reviewSession.judge.value"
+        />
+
+        <!-- A review target: its detail, its launch controls, its archives. -->
+        <ReviewTargetPanel
+          v-else-if="reviewTargetProps"
+          v-bind="reviewTargetProps"
+          @run="onRunReview"
+          @open-archive="onOpenArchiveFromPanel"
+          @open-running="onOpenRunningReview"
+          @close="focus = EMPTY_FOCUS"
+        />
 
         <!-- Empty focus: a sober invite (no project selected, or none registered). -->
         <div v-else class="ws-empty-focus">

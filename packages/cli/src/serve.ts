@@ -4,9 +4,17 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { brainErrorMessage, brainRemoteUrl, listTickets, type BrainError } from './brain-client.js'
+import { startBrainDaemon, type BrainDaemonHandle } from './brain-daemon.js'
 import { listLocalBranches, listWorktrees } from './branches.js'
 import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './config.js'
-import { isTaskId, TASK_AGENT_MAX, type ReviewRecord } from './contract.js'
+import {
+  isTaskId,
+  sanitizeRecord,
+  TASK_AGENT_MAX,
+  type ArmTicket,
+  type ReviewRecord,
+} from './contract.js'
 import type { JudgeDecision } from './dual.js'
 import type { FixRunner } from './fix.js'
 import {
@@ -16,7 +24,13 @@ import {
 } from './forge-issues.js'
 import { listOpenMrs, type ForgeMrsResult, type ForgeMrStateFilter } from './forge-mrs.js'
 import { t } from './i18n.js'
-import type { MrReviewMode, MrReviewRunner, ReviewSource } from './mr-review-runner.js'
+import type {
+  MrReviewMode,
+  MrReviewRunner,
+  MrReviewScope,
+  MrReviewStatus,
+  ReviewSource,
+} from './mr-review-runner.js'
 import type { PartialReview } from './partial.js'
 import { buildFileDiff, buildPreview, parsePreviewPath, parsePreviewSource } from './preview.js'
 import {
@@ -27,6 +41,7 @@ import {
   listWorkspaceProjects,
   removeProject,
 } from './projects.js'
+import { listLatestReviews, listReviewHistory, readJson, resolveArchivePath } from './record.js'
 import {
   readRulesContent,
   readSyncAutoPush,
@@ -34,6 +49,7 @@ import {
   setSyncAutoPush,
   writeRulesContent,
 } from './repo-config.js'
+import { loadSyncCredentials } from './sync.js'
 import { applyTaskCriteria } from './task-criteria.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { CreateTaskManagerInput, TaskEnvelope, TaskManager } from './task-server.js'
@@ -408,7 +424,9 @@ async function handleMrReviewStart(
   req: IncomingMessage,
   res: ServerResponse,
   mrReview: MrReviewEndpoint | undefined,
+  ctx: { searchParams: URLSearchParams; cwd: string },
 ): Promise<void> {
+  const { searchParams, cwd } = ctx
   if (!mrReview) {
     return sendJson(res, 501, { error: 'MR review runner unavailable' })
   }
@@ -426,7 +444,13 @@ async function handleMrReviewStart(
   if (!source || (b?.mode !== 'simple' && b?.mode !== 'dual')) {
     return sendText(res, 400, 'bad request')
   }
-  const started = await mrReview.runner.start(source, b?.mode as MrReviewMode)
+  const scoped = resolveProjectCwd(searchParams, cwd)
+  if ('error' in scoped) {
+    return sendText(res, 404, 'not found')
+  }
+  const projectId = searchParams.get('project')?.trim() || null
+  const scope: MrReviewScope | undefined = projectId ? { projectId, cwd: scoped.cwd } : undefined
+  const started = await mrReview.runner.start(source, b?.mode as MrReviewMode, scope)
   if (!started.ok) {
     return sendJson(res, started.code, { error: started.error })
   }
@@ -723,6 +747,32 @@ export function resolveProjectCwd(
     return { error: 404 }
   }
   return { cwd: project.path }
+}
+
+/**
+ * The single MR review runner is shared by every project, so a status whose
+ * `project_id` belongs to a DIFFERENT project than the one asked for must not
+ * leak through as if it were this project's own — the caller sees 'idle'
+ * instead. `projectId: null` (no `?project=`) keeps today's behavior: the
+ * raw, unfiltered status.
+ */
+export function mrReviewStatusForProject(
+  status: MrReviewStatus,
+  projectId: string | null,
+): MrReviewStatus {
+  if (projectId === null || status.phase === 'idle' || status.project_id === projectId) {
+    return status
+  }
+  return { available: true, phase: 'idle' }
+}
+
+/** Null on a missing or corrupt archive: the caller turns that into a 404, never a crash. */
+function readReviewRecord(path: string): ReviewRecord | null {
+  try {
+    return sanitizeRecord(readJson(path))
+  } catch {
+    return null
+  }
 }
 
 /** A parsed task-creation request, ready for either the real create or its dry-run. */
@@ -1180,6 +1230,47 @@ async function handleIssuesList(
   sendJson(res, 200, result)
 }
 
+/**
+ * The brain's own view of this project's in-flight tickets, for a future
+ * dashboard: every status a caller could act on or care about right now.
+ * `done` is left out on purpose — the wire contract has no way to bound it by
+ * date, and an unbounded "every ticket ever finished" is not what "in
+ * flight" means. 503 whenever the brain integration is not usable for this
+ * project right now (no credentials, or no git origin remote to scope tickets
+ * by) — not 501 (this codebase's convention for "no task manager at all"),
+ * since the feature exists here, it is just not connected.
+ */
+const BRAIN_DASHBOARD_STATUSES = [
+  'published',
+  'in_progress',
+  'mr_opened',
+  'ready_to_merge',
+] as const
+
+async function handleBrainTicketsList(res: ServerResponse, cwd: string): Promise<void> {
+  const creds = loadSyncCredentials()
+  const remoteUrl = creds ? brainRemoteUrl(cwd) : null
+  if (!creds || !remoteUrl) {
+    return sendJson(res, 503, { available: false })
+  }
+  const results = await Promise.all(
+    BRAIN_DASHBOARD_STATUSES.map((status) => listTickets(creds, remoteUrl, status)),
+  )
+  const tickets: ArmTicket[] = []
+  let firstError: BrainError | null = null
+  for (const result of results) {
+    if (result.ok) {
+      tickets.push(...result.data)
+    } else {
+      firstError ??= result.error
+    }
+  }
+  if (tickets.length === 0 && firstError) {
+    return sendJson(res, 503, { available: false, error: brainErrorMessage(firstError) })
+  }
+  return sendJson(res, 200, { available: true, tickets })
+}
+
 /** Adapts forge-issues's `listIssues({cwd, state?})` to the plain `(cwd, state?) =>
  *  Promise<result>` shape every route handler and test seam here uses; absent state falls
  *  through to the underlying probe's own default (open). */
@@ -1328,7 +1419,7 @@ function createRequestHandler(handlerOpts: {
         return void handleFixStart(req, res, fix)
       }
       if (pathname === '/api/mrs/review') {
-        return void handleMrReviewStart(req, res, mrReview)
+        return void handleMrReviewStart(req, res, mrReview, { searchParams, cwd })
       }
       if (pathname === '/api/tasks') {
         return void handleTaskCreate(req, res, tasks)
@@ -1403,6 +1494,10 @@ function createRequestHandler(handlerOpts: {
         pathname === '/api/issues' ||
         pathname === '/api/branches' ||
         pathname === '/api/worktrees' ||
+        pathname === '/api/brain/tickets' ||
+        pathname === '/api/reviews/latest' ||
+        pathname === '/api/reviews' ||
+        pathname === '/api/reviews/record' ||
         pathname === '/api/preview' ||
         pathname === '/api/preview/diff'
       ) {
@@ -1430,6 +1525,35 @@ function createRequestHandler(handlerOpts: {
         if (pathname === '/api/worktrees') {
           return sendJson(res, 200, listWorktrees(scoped.cwd))
         }
+        if (pathname === '/api/brain/tickets') {
+          return void handleBrainTicketsList(res, scoped.cwd)
+        }
+        if (pathname === '/api/reviews/latest') {
+          return sendJson(res, 200, { latest: listLatestReviews(scoped.cwd) })
+        }
+        if (pathname === '/api/reviews/record') {
+          const branch = searchParams.get('branch')?.trim()
+          const ref = searchParams.get('ref')?.trim()
+          if (!branch || !ref) {
+            return sendText(res, 400, 'bad request')
+          }
+          const archivePath = resolveArchivePath(scoped.cwd, ref)
+          const record = archivePath ? readReviewRecord(archivePath) : null
+          // A `ref` that resolves inside the project's reviews dir but belongs
+          // to a DIFFERENT branch is refused too: a valid ref alone must never
+          // serve another branch's review.
+          if (!record || record.meta.branch !== branch) {
+            return sendText(res, 404, 'not found')
+          }
+          return sendJson(res, 200, record)
+        }
+        if (pathname === '/api/reviews') {
+          const branch = searchParams.get('branch')?.trim()
+          if (!branch) {
+            return sendText(res, 400, 'bad request')
+          }
+          return sendJson(res, 200, { branch, entries: listReviewHistory(scoped.cwd, branch) })
+        }
         if (pathname === '/api/preview') {
           return void handlePreview(res, scoped.cwd, searchParams)
         }
@@ -1445,7 +1569,12 @@ function createRequestHandler(handlerOpts: {
         if (!mrReview) {
           return sendJson(res, 200, { available: false })
         }
-        return sendJson(res, 200, mrReview.runner.status())
+        const scoped = resolveProjectCwd(searchParams, cwd)
+        if ('error' in scoped) {
+          return sendText(res, 404, 'not found')
+        }
+        const projectId = searchParams.get('project')?.trim() || null
+        return sendJson(res, 200, mrReviewStatusForProject(mrReview.runner.status(), projectId))
       }
       if (pathname === '/api/events') {
         if (sseClients >= MAX_SSE_CLIENTS) {
@@ -1720,10 +1849,21 @@ export async function startServer(
     }),
     opts.port ?? 4400,
   )
-  const stop = () =>
-    new Promise<void>((resolveClose) => {
+  // `codesema workspace --brain` / `codesema brain serve` (index.ts,
+  // brain-commands.ts) set this before calling workspace(), which has no
+  // room in its own options type for a brain flag: read here, at the one
+  // place that actually needs it, the same way CODESEMA_SYNC_URL /
+  // CODESEMA_DEV_VITE already cross an intermediate layer in this codebase.
+  const brainDaemon: BrainDaemonHandle | null =
+    opts.taskManager && process.env.CODESEMA_BRAIN_MODE === '1'
+      ? startBrainDaemon({ manager: opts.taskManager, cwd: opts.cwd })
+      : null
+  const stop = async () => {
+    await brainDaemon?.stop()
+    await new Promise<void>((resolveClose) => {
       server.closeAllConnections()
       server.close(() => resolveClose())
     })
+  }
   return { url: `http://localhost:${port}`, port, stop }
 }

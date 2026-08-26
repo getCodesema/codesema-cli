@@ -211,12 +211,50 @@ describe('createMrReviewRunner (MR source)', () => {
     expect(session.record()?.review.verdict).toBe('approve')
     expect(session.record()?.meta.branch).toBe('feature/x')
     expect(session.record()?.meta.target).toBe('main')
+    // No scope was passed: today's behavior, a null project_id.
+    expect(runner.status()).toMatchObject({ phase: 'done', project_id: null })
 
     const reviewsDir = join(cwd, '.codesema', 'reviews')
     expect(existsSync(reviewsDir)).toBe(true)
     expect(readdirSync(reviewsDir).some((name) => name.startsWith('feature-x-'))).toBe(true)
 
     expect(worktreeCount(cwd)).toBe(1)
+  }, 20000)
+
+  test('a scoped start() lists, fetches and archives against the SCOPE repo, not the construction cwd', async () => {
+    const { cwd: constructionCwd } = setupMrRepo()
+    const { cwd: scopeCwd, mr } = setupMrRepo()
+    const session = createSession()
+    const listMrsCalls: string[] = []
+    const runner = createMrReviewRunner({
+      cwd: constructionCwd,
+      session,
+      agentCommand: agentScriptFor(scopeCwd, REVIEW),
+      timeoutMs: 15000,
+      listMrs: async (cwd): Promise<ForgeMrsResult> => {
+        listMrsCalls.push(cwd)
+        return { available: true, mrs: [mr], truncated: false }
+      },
+    })
+
+    const started = await runner.start({ kind: 'mr', number: mr.number }, 'simple', {
+      projectId: 'project-c',
+      cwd: scopeCwd,
+    })
+    expect(started).toEqual({ ok: true })
+    expect(listMrsCalls).toEqual([scopeCwd])
+    expect(runner.status()).toMatchObject({ phase: 'running', project_id: 'project-c' })
+
+    await waitForPhase(runner, 'done')
+
+    expect(runner.status()).toMatchObject({ phase: 'done', project_id: 'project-c' })
+    expect(session.record()?.meta.branch).toBe('feature/x')
+    // Archived and cleaned up in the scope repo...
+    expect(existsSync(join(scopeCwd, '.codesema', 'reviews'))).toBe(true)
+    expect(worktreeCount(scopeCwd)).toBe(1)
+    // ...the construction repo was never touched.
+    expect(existsSync(join(constructionCwd, '.codesema', 'reviews'))).toBe(false)
+    expect(worktreeCount(constructionCwd)).toBe(1)
   }, 20000)
 
   test('cleans up the worktree even when the agent run fails', async () => {
@@ -415,5 +453,36 @@ describe('createMrReviewRunner (branch source)', () => {
     expect(worktreeCount(cwd)).toBe(2)
 
     tryGit(['worktree', 'remove', '--force', otherWorktree], cwd)
+  }, 20000)
+
+  test('a scoped start() reviews the SCOPE repo, not the construction cwd', async () => {
+    const { cwd: constructionCwd } = setupBranchRepo()
+    const { cwd: scopeCwd } = setupBranchRepo()
+    const session = createSession()
+    const runner = createMrReviewRunner({
+      cwd: constructionCwd,
+      session,
+      agentCommand: agentScriptFor(scopeCwd, REVIEW),
+      timeoutMs: 15000,
+      execFn: noForge,
+    })
+
+    const started = await runner.start({ kind: 'branch', name: 'feature/y' }, 'simple', {
+      projectId: 'project-b',
+      cwd: scopeCwd,
+    })
+    expect(started).toEqual({ ok: true })
+    expect(runner.status()).toMatchObject({ phase: 'running', project_id: 'project-b' })
+
+    await waitForPhase(runner, 'done')
+
+    expect(runner.status()).toMatchObject({ phase: 'done', project_id: 'project-b' })
+    expect(session.record()?.meta.branch).toBe('feature/y')
+    // Reviewed and cleaned up in the scope repo...
+    expect(existsSync(join(scopeCwd, '.codesema', 'reviews'))).toBe(true)
+    expect(worktreeCount(scopeCwd)).toBe(1)
+    // ...the construction repo was never touched.
+    expect(existsSync(join(constructionCwd, '.codesema', 'reviews'))).toBe(false)
+    expect(worktreeCount(constructionCwd)).toBe(1)
   }, 20000)
 })

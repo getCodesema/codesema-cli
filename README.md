@@ -55,6 +55,23 @@ There are no named agent roles: every task gets the same anonymous dev agent wit
 
 Tasks live as long as the process runs (no detached daemon). The first Ctrl-C shuts down cleanly — agents stopped, the turns that were in flight persisted as `interrupted`, worktrees kept for resume, and a review already under way stopped like any other agent (its conversation lands in **Needs you** as `interrupted`, never on a verdict nobody produced) — and a second one force-quits. A shutdown that takes more than a moment says on the terminal what it is still waiting for, and it never waits forever: past 30 seconds it stops waiting, says which conversations it left as they stand on disk, and exits. The next start names those on the terminal and shows them in **Needs you**, one click away from resuming; the tasks that were merely _waiting_ stay `queued`, and the queue restarts as the last, announced step of the boot — once the server is listening and Ctrl-C is armed, so a resumed turn can be watched and stopped. Coming from a version older than the queue file, a `queued` task has no queue to prove it was ever scheduled: it becomes `interrupted` and waits for you in **Needs you** instead of an agent starting by surprise on your first boot. Task state (record, append-only event journal, latest checks run) is stored under `.codesema/tasks/<id>/` of the task's repo, and the waiting line in `.codesema/queue.json` next to it.
 
+## Brain mode
+
+A **brain** is a small local SaaS that owns a backlog of tickets for a repository: standing up one and pointing a workspace at it turns `codesema workspace` into a hands-off loop — the brain proposes work, the workspace codes it, ships it, reviews it and merges it, reporting every transition back.
+
+```bash
+codesema brain connect --url http://localhost:3000 --token csk_<workspaceId>.<secret>   # same account/credentials as `codesema sync`
+codesema brain status                          # url, account, this repo's remote, ready ticket count
+codesema brain ticket --issue 42                # draft + publish a ticket from a forge issue
+codesema brain ticket --title "…" --prompt "…"  # draft + publish a ticket from a free-form prompt
+codesema workspace --brain                      # the workspace, plus the brain daemon in the same process
+codesema brain serve                            # alias for the line above
+```
+
+`brain connect` stores the token in the same global config credentials `codesema sync`/`codesema link` already use (`~/.config/codesema/config.json`, owner-only permissions): a brain and a sync workspace are the same account. `brain ticket` runs the configured agent once, off the interactive workspace, to write a ticket body in the grammar the brain requires (`**Context**`, `**Goal**`, `**Scope**`, `**Acceptance criteria**` as `WHEN … THE SYSTEM SHALL …` lines, `**Out of scope**`); a body the lint rejects gets one retry with the lint's own reasons folded back into the prompt before the command gives up.
+
+With `--brain`, the workspace additionally polls the brain in the background — still no detached process, just another loop inside the same one `codesema workspace` already runs: it drafts and submits any ticket request waiting on this repo, and — once the workspace has no task already running here — claims the next published ticket and hands it to the very same task manager the web UI drives, exactly as if you had typed the prompt yourself. The claim is kept alive with a heartbeat every 45 seconds; a report the brain could not reach (a network blip, a 5xx) is queued and replayed on the next tick rather than lost. Auto-merging a brain ticket's task once it ships clean is controlled by `brainAutoMerge` (on by default, `codesema config`), independent of the repo's own `mergePolicy`.
+
 ## Dual review
 
 `codesema review --dual` (or "Dual review" in the menu) runs the review twice in parallel with the agent you already use, under two different angles: the **reviewer** reads the MR for the big picture and writes the guided narrative, while the **prosecutor** hunts for what breaks — bugs, regressions, security, edge cases — and reports findings only. A **judge** on the same provider's mid-tier model then adjudicates every finding: kept, merged as a duplicate, or rejected with a one-line reason. Security findings can never be rejected.
@@ -313,20 +330,21 @@ Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses 
 
 ## Environment variables
 
-Nine variables change how the CLI behaves. Each row names the file that reads
+Ten variables change how the CLI behaves. Each row names the file that reads
 it, under `packages/cli/src/`.
 
-| Variable                   | Read in      | Effect                                                                                                                      |
-| -------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `CODESEMA_CONFIG_DIR`      | `config.ts`  | Override the global config directory (default `~/.config/codesema`).                                                        |
-| `XDG_CONFIG_HOME`          | `config.ts`  | Base of that default directory when `CODESEMA_CONFIG_DIR` is unset: `$XDG_CONFIG_HOME/codesema`, else `~/.config/codesema`. |
-| `CODESEMA_NO_UPDATE_CHECK` | `version.ts` | Any non-empty value skips the startup npm version check (also skipped when stdout is not a TTY).                            |
-| `CODESEMA_SYNC_URL`        | `sync.ts`    | Point `sync`/`link` at a different codesema.com host (self-hosted or staging); wins over the stored `syncUrl`.              |
-| `NO_COLOR`                 | `ui.ts`      | Any non-empty value turns the coloured terminal output off.                                                                 |
-| `TERM`                     | `ui.ts`      | `dumb` turns the coloured terminal output off.                                                                              |
-| `LC_ALL`                   | `wizard.ts`  | Preselects the onboarding language: a locale starting with `fr` preselects French, anything else English.                   |
-| `LC_MESSAGES`              | `wizard.ts`  | Same, consulted when `LC_ALL` is unset.                                                                                     |
-| `LANG`                     | `wizard.ts`  | Same, consulted when `LC_ALL` and `LC_MESSAGES` are unset.                                                                  |
+| Variable                   | Read in      | Effect                                                                                                                           |
+| -------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `CODESEMA_CONFIG_DIR`      | `config.ts`  | Override the global config directory (default `~/.config/codesema`).                                                             |
+| `XDG_CONFIG_HOME`          | `config.ts`  | Base of that default directory when `CODESEMA_CONFIG_DIR` is unset: `$XDG_CONFIG_HOME/codesema`, else `~/.config/codesema`.      |
+| `CODESEMA_NO_UPDATE_CHECK` | `version.ts` | Any non-empty value skips the startup npm version check (also skipped when stdout is not a TTY).                                 |
+| `CODESEMA_SYNC_URL`        | `sync.ts`    | Point `sync`/`link` at a different codesema.com host (self-hosted or staging); wins over the stored `syncUrl`.                   |
+| `CODESEMA_BRAIN_MODE`      | `serve.ts`   | Set by `codesema workspace --brain` / `codesema brain serve`: starts the background ticket-claiming daemon alongside the server. |
+| `NO_COLOR`                 | `ui.ts`      | Any non-empty value turns the coloured terminal output off.                                                                      |
+| `TERM`                     | `ui.ts`      | `dumb` turns the coloured terminal output off.                                                                                   |
+| `LC_ALL`                   | `wizard.ts`  | Preselects the onboarding language: a locale starting with `fr` preselects French, anything else English.                        |
+| `LC_MESSAGES`              | `wizard.ts`  | Same, consulted when `LC_ALL` is unset.                                                                                          |
+| `LANG`                     | `wizard.ts`  | Same, consulted when `LC_ALL` and `LC_MESSAGES` are unset.                                                                       |
 
 The three locale variables only preselect an answer in the wizard: the choice
 you confirm is stored as `language` in the config and wins from then on.

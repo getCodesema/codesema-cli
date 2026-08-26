@@ -29,6 +29,7 @@ import {
   type AgentRunOptions,
   type WatchdogBudgets,
 } from './agent.js'
+import { loadGlobalConfig, resolveMaxTaskTurns } from './config.js'
 import {
   EARS_RESPONSE,
   EARS_TRIGGER,
@@ -61,6 +62,7 @@ import {
 } from './load-cap.js'
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
+import { reportBrainTransition } from './task-brain.js'
 import {
   bootstrapWorktreeInstall,
   type BootstrapInstallResult,
@@ -1872,6 +1874,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       // later, can genuinely succeed. Same argument as the abort path above.
       const retryable = code !== null && !isTerminalReason(code)
       record.status = retryable ? 'interrupted' : 'failed'
+      if (!retryable && record.brain_ticket) {
+        void reportBrainTransition(opts.cwd, record, { type: 'failed', error_message: message })
+      }
       emit(record.id, {
         // The event names the same outcome as the status. A task parked on
         // 'interrupted' — with a resume affordance — announced by an 'error'
@@ -2890,6 +2895,24 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // is neither work nor wait.
         accrueWait(record)
       }
+      // D25's safety net: a task that already burned its turn budget refuses
+      // every further reply (human, daemon, fix loop alike) instead of
+      // looping; the record keeps its state and the journal says why.
+      const turnCap = resolveMaxTaskTurns(loadGlobalConfig())
+      if (record.turns.length >= turnCap) {
+        emit(record.id, {
+          type: 'message',
+          data: {
+            text: `turn budget exhausted: ${record.turns.length} turn(s) spent, cap ${turnCap}`,
+            name: 'turn_budget_exhausted',
+          },
+        })
+        return {
+          ok: false,
+          code: 409,
+          error: `turn budget exhausted (${record.turns.length}/${turnCap}): raise maxTaskTurns in codesema config, or decide this task by hand`,
+        }
+      }
       record.turns.push({
         prompt: text,
         response: null,
@@ -3176,6 +3199,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // Everything else abandoned mid-cycle is discarded work: failed.
         if (current.status !== 'shipped') {
           current.status = 'failed'
+          if (current.brain_ticket) {
+            void reportBrainTransition(opts.cwd, current, {
+              type: 'failed',
+              error_message: 'worktree removed, task abandoned',
+            })
+          }
         }
         // T1.9 review round 3, Mineur 3: the terminal status is written to
         // disk BEFORE the (possibly slow, up to the release seam's own

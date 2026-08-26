@@ -226,6 +226,30 @@ export function resolveCriteria(
 }
 
 /** `1 criterion` / `3 criteria` — a count and the word that agrees with it. */
+/**
+ * D18: whether an unsatisfied gate may be LIFTED by a review the reviewer
+ * itself settled as OK. Only the pure unclear case qualifies: every judged
+ * criterion is met or unclear, nothing is unmet, nothing went unjudged and the
+ * diff was indexable. An unclear criterion is an evidence gap (the proof lives
+ * outside the diff, or needs an execution the reviewer cannot run), not a
+ * failure; a false "satisfied" stays impossible because `satisfied` itself is
+ * untouched and the waiver is journaled out loud by the caller.
+ */
+export function criteriaGateWaivable(outcome: CriteriaOutcome): boolean {
+  return (
+    outcome.verdicts.length > 0 &&
+    outcome.counts.unmet === 0 &&
+    outcome.unjudged === 0 &&
+    !outcome.report.diff_unreadable &&
+    // A demoted 'met' or a dropped proof is a claim that failed anchoring,
+    // not a sincere doubt: those never qualify, or a fabricated evidence
+    // would ride an approve through the gate.
+    outcome.demoted === 0 &&
+    outcome.dropped_evidence === 0 &&
+    outcome.counts.unclear > 0
+  )
+}
+
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
 /**

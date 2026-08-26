@@ -125,7 +125,7 @@ describe('parseRailPrefs', () => {
   })
 
   test('every known category round-trips', () => {
-    for (const category of ['conversations', 'repositories'] as const) {
+    for (const category of ['conversations', 'repositories', 'codeReview'] as const) {
       expect(parseRailPrefs(JSON.stringify({ category })).category).toBe(category)
     }
   })

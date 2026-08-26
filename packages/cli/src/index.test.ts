@@ -151,8 +151,8 @@ describe('resolveCommand — version, help and unknown commands', () => {
   })
 })
 
-describe('resolveCommand — the nine routed commands', () => {
-  test('COMMAND_NAMES lists the nine commands the switch handles', () => {
+describe('resolveCommand — the ten routed commands', () => {
+  test('COMMAND_NAMES lists the ten commands the switch handles', () => {
     expect([...COMMAND_NAMES]).toEqual([
       'review',
       'prep',
@@ -163,10 +163,11 @@ describe('resolveCommand — the nine routed commands', () => {
       'export',
       'sync',
       'link',
+      'brain',
     ])
   })
 
-  test('each of the nine resolves to its own command, in a terminal and outside one', () => {
+  test('each of the ten resolves to its own command, in a terminal and outside one', () => {
     for (const name of COMMAND_NAMES) {
       for (const ctx of [TERMINAL, PIPE]) {
         expect(resolveCommand({}, [name], ctx)).toEqual({ kind: 'command', name, arg: undefined })

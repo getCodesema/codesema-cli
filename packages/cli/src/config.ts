@@ -101,6 +101,33 @@ export type CodesemaConfig = {
    * project that had just refused it.
    */
   forgeCycleLabels?: boolean | undefined
+  /**
+   * Arm/brain integration: whether a task created from a brain ticket
+   * (`TaskRecord.brain_ticket` set) merges automatically once T3.6/D12's four
+   * conditions hold, REGARDLESS of `mergePolicy`. The general setting keeps
+   * governing every other task (default `'human'`).
+   *
+   * DEFAULT `true`, unlike `mergePolicy`: the brain integration is itself an
+   * opt-in the owner made by standing up a local brain and running the arm
+   * against it, and the whole point of that loop is to run unattended end to
+   * end (code, ship, review, merge): a brain-ticket task that still waited
+   * on a human to click merge would defeat the reason the integration exists.
+   *
+   * GLOBAL-ONLY, same argument and same doctrine as `mergePolicy` itself:
+   * this is a consent to merge without asking, and a consent is given by
+   * whoever owns the machine, not by a repository they cloned. A repo file
+   * that sets it is stripped here and NAMED by `repoGlobalOnlyIgnoredNotices`,
+   * never dropped in silence.
+   */
+  brainAutoMerge?: boolean | undefined
+  /**
+   * Cost guard for one workspace task: how many turns (creation, replies,
+   * automatic fix rounds alike) it may spend before every further reply is
+   * refused and a human decides. GLOBAL-ONLY, same consent argument as
+   * `brainAutoMerge`: the token budget burned by a looping task belongs to
+   * the machine owner, never to a cloned repository. Absent means 30.
+   */
+  maxTaskTurns?: number | undefined
   /** UI and review language (ISO 639-1). */
   language?: SupportedLanguage | undefined
   /**
@@ -289,6 +316,21 @@ export function resolveMergeSettings(config: CodesemaConfig): MergeSettings {
   }
 }
 
+/**
+ * Whether a brain-ticket task auto-merges (see `CodesemaConfig.brainAutoMerge`'s
+ * own doc comment). Absent means `true`, the one setting in this module
+ * whose unconfigured default is the ENABLED one, since the brain integration
+ * is itself the opt-in.
+ */
+export function resolveBrainAutoMerge(config: CodesemaConfig): boolean {
+  return config.brainAutoMerge ?? true
+}
+
+/** The per-task turn budget (see `CodesemaConfig.maxTaskTurns`). Absent means 30. */
+export function resolveMaxTaskTurns(config: CodesemaConfig): number {
+  return config.maxTaskTurns ?? 30
+}
+
 /** Configured isolation policy for workspace tasks (see CodesemaConfig.isolation). */
 export type IsolationMode = 'auto' | 'container' | 'policy'
 
@@ -449,6 +491,20 @@ function parseConfig(path: string, scope: ConfigScope): CodesemaConfig {
       // drop it and hand the project straight back to the global opt-in.
       ...(typeof raw.forgeCycleLabels === 'boolean'
         ? { forgeCycleLabels: raw.forgeCycleLabels }
+        : {}),
+      // Arm/brain integration, GLOBAL-ONLY (see the field's own comment): a
+      // consent to merge without asking is the machine owner's to give, not
+      // a cloned repository's. Stripped from a repo file here (and NAMED by
+      // `repoGlobalOnlyIgnoredNotices`), same doctrine as `mergePolicy`.
+      ...(scope === 'global' && typeof raw.brainAutoMerge === 'boolean'
+        ? { brainAutoMerge: raw.brainAutoMerge }
+        : {}),
+      ...(scope === 'global' &&
+      typeof raw.maxTaskTurns === 'number' &&
+      Number.isInteger(raw.maxTaskTurns) &&
+      raw.maxTaskTurns >= 1 &&
+      raw.maxTaskTurns <= 500
+        ? { maxTaskTurns: raw.maxTaskTurns }
         : {}),
     }
   } catch {
@@ -639,6 +695,13 @@ const REPO_IGNORED_GLOBAL_ONLY_KEYS = [
   'mergeStrategy',
   'deleteBranchAfterMerge',
   'allowMergeWithoutChecks',
+  // Arm/brain integration: the same consent argument as the four above, not
+  // a machine resource either. A repo cloned from a brain-driven workspace
+  // must not be able to consent to auto-merging its own tickets on the
+  // machine owner's behalf.
+  'brainAutoMerge',
+  // The turn budget is money: same owner, same rule.
+  'maxTaskTurns',
 ] as const
 
 /**

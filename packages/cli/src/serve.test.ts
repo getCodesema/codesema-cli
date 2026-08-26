@@ -12,14 +12,23 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { sanitizeRecord } from './contract.js'
+import { sanitizeRecord, type ReviewRecord } from './contract.js'
 import type { ForgeMrsResult } from './forge-mrs.js'
+import type {
+  MrReviewMode,
+  MrReviewRunner,
+  MrReviewScope,
+  MrReviewStatus,
+  ReviewSource,
+} from './mr-review-runner.js'
 import { parsePartialReview } from './partial.js'
 import { addProject } from './projects.js'
+import { archiveRecord } from './record.js'
 import {
   createSession,
   devIndexHtml,
   isLoopbackHost,
+  mrReviewStatusForProject,
   resolveDevViteOrigin,
   resolveProjectCwd,
   resolveStaticPath,
@@ -712,6 +721,51 @@ describe('resolveProjectCwd', () => {
   })
 })
 
+describe('mrReviewStatusForProject', () => {
+  const source: ReviewSource = { kind: 'branch', name: 'feature/x' }
+
+  test('idle and no ?project= both pass the status through unchanged', () => {
+    expect(mrReviewStatusForProject({ available: true, phase: 'idle' }, 'A')).toEqual({
+      available: true,
+      phase: 'idle',
+    })
+    const running: MrReviewStatus = {
+      available: true,
+      phase: 'running',
+      project_id: 'A',
+      source,
+      mode: 'simple',
+      started_at: '2026-01-01T00:00:00.000Z',
+    }
+    expect(mrReviewStatusForProject(running, null)).toEqual(running)
+  })
+
+  test('a status belonging to another project is hidden as idle', () => {
+    const running: MrReviewStatus = {
+      available: true,
+      phase: 'running',
+      project_id: 'A',
+      source,
+      mode: 'simple',
+      started_at: '2026-01-01T00:00:00.000Z',
+    }
+    expect(mrReviewStatusForProject(running, 'B')).toEqual({ available: true, phase: 'idle' })
+    expect(mrReviewStatusForProject(running, 'A')).toEqual(running)
+  })
+
+  test('a null project_id (a run started without ?project=) is hidden from a scoped query', () => {
+    const done: MrReviewStatus = {
+      available: true,
+      phase: 'done',
+      project_id: null,
+      source,
+      mode: 'dual',
+    }
+    expect(mrReviewStatusForProject(done, 'A')).toEqual({ available: true, phase: 'idle' })
+    expect(mrReviewStatusForProject(done, null)).toEqual(done)
+  })
+})
+
 describe('project-scoped repo routes (?project=)', () => {
   let configDir: string
   let repoA: string
@@ -721,8 +775,22 @@ describe('project-scoped repo routes (?project=)', () => {
   let projectBPath: string
   let scopedPort: number
   let scopedStop: () => Promise<void>
+  let mrReviewToken: string
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   const mrsCalls: string[] = []
+  const mrReviewCalls: {
+    source: ReviewSource
+    mode: MrReviewMode
+    scope: MrReviewScope | undefined
+  }[] = []
+  let mrReviewStatusValue: MrReviewStatus = { available: true, phase: 'idle' }
+  const mrReviewRunnerMock: MrReviewRunner = {
+    status: () => mrReviewStatusValue,
+    start: async (source, mode, scope) => {
+      mrReviewCalls.push({ source, mode, scope })
+      return { ok: true }
+    },
+  }
   const stubMrs: ForgeMrsResult = {
     available: true,
     mrs: [
@@ -794,9 +862,12 @@ describe('project-scoped repo routes (?project=)', () => {
         mrsCalls.push(cwd)
         return Promise.resolve(stubMrs)
       },
+      mrReviewRunner: mrReviewRunnerMock,
     })
     scopedPort = started.port
     scopedStop = started.stop
+    const html = await rawRequest(scopedPort, '/')
+    mrReviewToken = /__CODESEMA_MRREVIEW_TOKEN__="([a-f0-9]{32})"/.exec(html.body)![1]!
   })
 
   afterAll(async () => {
@@ -906,6 +977,71 @@ describe('project-scoped repo routes (?project=)', () => {
     expect(mrsCalls).toHaveLength(2)
     expect(mrsCalls[1]).toBe(repoA)
   })
+
+  test('POST /api/mrs/review threads ?project= into the runner as scope, omitted when absent', async () => {
+    mrReviewCalls.length = 0
+    const scoped = await rawRequest(scopedPort, `/api/mrs/review?project=${projectBId}`, {
+      method: 'POST',
+      headers: { 'x-codesema-mrreview-token': mrReviewToken },
+      body: '{"source":{"kind":"branch","name":"feature/beta"},"mode":"simple"}',
+    })
+    expect(scoped.status).toBe(202)
+    expect(mrReviewCalls).toEqual([
+      {
+        source: { kind: 'branch', name: 'feature/beta' },
+        mode: 'simple',
+        scope: { projectId: projectBId, cwd: projectBPath },
+      },
+    ])
+
+    const unscoped = await rawRequest(scopedPort, '/api/mrs/review', {
+      method: 'POST',
+      headers: { 'x-codesema-mrreview-token': mrReviewToken },
+      body: '{"source":{"kind":"branch","name":"feature/alpha"},"mode":"simple"}',
+    })
+    expect(unscoped.status).toBe(202)
+    expect(mrReviewCalls).toHaveLength(2)
+    expect(mrReviewCalls[1]?.scope).toBeUndefined()
+  })
+
+  test('POST /api/mrs/review 404s an unknown project without starting a review', async () => {
+    mrReviewCalls.length = 0
+    const res = await rawRequest(scopedPort, '/api/mrs/review?project=deadbeef', {
+      method: 'POST',
+      headers: { 'x-codesema-mrreview-token': mrReviewToken },
+      body: '{"source":{"kind":"branch","name":"feature/alpha"},"mode":"simple"}',
+    })
+    expect(res.status).toBe(404)
+    expect(mrReviewCalls).toEqual([])
+  })
+
+  test('GET /api/mrs/review/status 404s an unknown project', async () => {
+    const res = await rawRequest(scopedPort, '/api/mrs/review/status?project=deadbeef')
+    expect(res.status).toBe(404)
+  })
+
+  test('GET /api/mrs/review/status isolates a running review between two projects', async () => {
+    mrReviewStatusValue = {
+      available: true,
+      phase: 'running',
+      project_id: projectAId,
+      source: { kind: 'branch', name: 'feature/alpha' },
+      mode: 'simple',
+      started_at: new Date().toISOString(),
+    }
+    try {
+      const forA = await rawRequest(scopedPort, `/api/mrs/review/status?project=${projectAId}`)
+      expect(JSON.parse(forA.body)).toMatchObject({ phase: 'running', project_id: projectAId })
+
+      const forB = await rawRequest(scopedPort, `/api/mrs/review/status?project=${projectBId}`)
+      expect(JSON.parse(forB.body)).toEqual({ available: true, phase: 'idle' })
+
+      const unscoped = await rawRequest(scopedPort, '/api/mrs/review/status')
+      expect(JSON.parse(unscoped.body)).toMatchObject({ phase: 'running', project_id: projectAId })
+    } finally {
+      mrReviewStatusValue = { available: true, phase: 'idle' }
+    }
+  })
 })
 
 // GET /api/mrs beyond the default open state (D2 states beyond open). Kept in
@@ -965,6 +1101,130 @@ describe('GET /api/mrs state filter', () => {
     // Refused before the probe is ever asked: a caller requesting a state
     // this server does not recognise must not be silently served 'open'.
     expect(calls).toEqual([])
+  })
+})
+
+describe('GET /api/reviews*', () => {
+  let configDir: string
+  let repo: string
+  let projectId: string
+  let port: number
+  let stop: () => Promise<void>
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+
+  function fakeRecord(
+    branch: string,
+    verdict: 'approve' | 'request_changes' | 'comment',
+  ): ReviewRecord {
+    const record = sanitizeRecord({
+      meta: { branch, target: 'main' },
+      review: { verdict, summary: 's' },
+    })
+    if (!record) {
+      throw new Error('failed to build a fixture record')
+    }
+    return record
+  }
+
+  beforeAll(async () => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-reviews-config-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    repo = mkdtempSync(join(tmpdir(), 'codesema-reviews-repo-'))
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' })
+    const added = addProject(repo)
+    if (!added.ok) {
+      throw new Error('failed to register the test repo')
+    }
+    projectId = added.project.id
+
+    archiveRecord(fakeRecord('feat/reviewed', 'approve'), repo)
+    archiveRecord(fakeRecord('feat/other', 'request_changes'), repo)
+
+    const started = await startServer(createSession(), { cwd: repo, port: 4980 })
+    port = started.port
+    stop = started.stop
+  })
+
+  afterAll(async () => {
+    await stop()
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  test('GET /api/reviews/latest lists one summary per branch, 404s an unknown project', async () => {
+    const res = await rawRequest(port, `/api/reviews/latest?project=${projectId}`)
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as { latest: { branch: string; verdict: string }[] }
+    const byBranch = new Map(body.latest.map((s) => [s.branch, s]))
+    expect(byBranch.get('feat/reviewed')?.verdict).toBe('approve')
+    expect(byBranch.get('feat/other')?.verdict).toBe('request_changes')
+
+    expect((await rawRequest(port, '/api/reviews/latest?project=deadbeef')).status).toBe(404)
+  })
+
+  test('GET /api/reviews lists one branch history, 400s without ?branch=, 404s an unknown project', async () => {
+    const ok = await rawRequest(port, `/api/reviews?project=${projectId}&branch=feat/reviewed`)
+    expect(ok.status).toBe(200)
+    const body = JSON.parse(ok.body) as { branch: string; entries: { branch: string }[] }
+    expect(body.branch).toBe('feat/reviewed')
+    expect(body.entries.length).toBeGreaterThan(0)
+    expect(body.entries.every((e) => e.branch === 'feat/reviewed')).toBe(true)
+
+    expect((await rawRequest(port, `/api/reviews?project=${projectId}`)).status).toBe(400)
+    expect(
+      (await rawRequest(port, `/api/reviews?project=deadbeef&branch=feat/reviewed`)).status,
+    ).toBe(404)
+  })
+
+  test('GET /api/reviews/record serves one archive by ref, scoped to its own branch', async () => {
+    const list = await rawRequest(port, `/api/reviews?project=${projectId}&branch=feat/reviewed`)
+    const { entries } = JSON.parse(list.body) as { entries: { ref: string }[] }
+    const ref = entries[0]?.ref
+    expect(ref).toBeDefined()
+
+    const ok = await rawRequest(
+      port,
+      `/api/reviews/record?project=${projectId}&branch=feat/reviewed&ref=${ref}`,
+    )
+    expect(ok.status).toBe(200)
+    const record = JSON.parse(ok.body) as ReviewRecord
+    expect(record.meta.branch).toBe('feat/reviewed')
+    expect(record.review.verdict).toBe('approve')
+
+    expect(
+      (await rawRequest(port, `/api/reviews/record?project=${projectId}&branch=feat/reviewed`))
+        .status,
+    ).toBe(400)
+    expect(
+      (await rawRequest(port, `/api/reviews/record?project=${projectId}&ref=${ref}`)).status,
+    ).toBe(400)
+
+    // A ref that resolves fine but belongs to a DIFFERENT branch is refused.
+    const wrongBranch = await rawRequest(
+      port,
+      `/api/reviews/record?project=${projectId}&branch=feat/other&ref=${ref}`,
+    )
+    expect(wrongBranch.status).toBe(404)
+
+    const traversal = await rawRequest(
+      port,
+      `/api/reviews/record?project=${projectId}&branch=feat/reviewed&ref=${encodeURIComponent('../../etc/passwd')}`,
+    )
+    expect(traversal.status).toBe(404)
+
+    expect(
+      (
+        await rawRequest(
+          port,
+          `/api/reviews/record?project=deadbeef&branch=feat/reviewed&ref=${ref}`,
+        )
+      ).status,
+    ).toBe(404)
   })
 })
 

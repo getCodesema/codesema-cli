@@ -6,10 +6,10 @@
 // view at a time. Components only compose these functions (testable with
 // bun:test, no DOM, no fetch).
 
-import type { ForgeMr, ReviewRecord, TaskRecord } from '../types'
+import type { ForgeMr, MrReviewMode, ReviewRecord, ReviewSource, TaskRecord } from '../types'
 import { resolveBranchClick, type BranchClickResolution } from './useProjects'
 
-export type NavCategory = 'conversations' | 'repositories'
+export type NavCategory = 'conversations' | 'repositories' | 'codeReview'
 export type RepoTab = 'branches' | 'issues' | 'mrs'
 
 /**
@@ -24,12 +24,30 @@ export type DraftTarget =
   | { mode: 'fork'; base: string }
   | { mode: 'workon'; branch: string; target: string | null }
 
+/**
+ * `reviewTarget` and `reviewRun` name only the MR/branch under review, never
+ * its live flow: `status`/`partial`/`partial_b`/`judge` mutate on every SSE
+ * frame, and folding that into FocusView would turn every frame into a new
+ * object identity, defeating the point of a value the rest of the app can
+ * diff and memoize on. That transient state lives in WorkspaceView refs
+ * instead. `reviewTarget` carries no `behind`: like `repository`, it is a
+ * resting view, not an overlay, so leaving it is picking another category or
+ * target, never "going back" to whatever a review sat on top of.
+ */
 export type FocusView =
   | { kind: 'empty' }
   | { kind: 'conversation'; projectId: string; taskId: string }
   | { kind: 'draft'; projectId: string; draft: DraftTarget }
   | { kind: 'repository'; projectId: string; tab: RepoTab }
   | { kind: 'review'; record: ReviewRecord; behind: FocusView }
+  | { kind: 'reviewTarget'; projectId: string; source: ReviewSource }
+  | {
+      kind: 'reviewRun'
+      projectId: string
+      source: ReviewSource
+      mode: MrReviewMode
+      behind: FocusView
+    }
 
 export const EMPTY_FOCUS: FocusView = { kind: 'empty' }
 
@@ -120,19 +138,78 @@ export function promoteDraft(view: FocusView, taskId: string): FocusView {
   return { kind: 'conversation', projectId: view.projectId, taskId }
 }
 
+export function openReviewTarget(projectId: string, source: ReviewSource): FocusView {
+  return { kind: 'reviewTarget', projectId, source }
+}
+
+/** Unwraps an overlay (`review`, `reviewRun`) down to the resting view it
+ * sits on. Shared by every overlay constructor so opening one overlay over
+ * another never stacks them, whatever the mix of the two overlay kinds. */
+function restingBehind(current: FocusView): FocusView {
+  return current.kind === 'review' || current.kind === 'reviewRun' ? current.behind : current
+}
+
 /**
- * Opens a review over `current`. Always flattens: reviewing while a review is
- * already open replaces its record but keeps the ORIGINAL `behind`, so a
- * review can never stack on top of another review — closing always lands
- * back on the last non-review view instead of peeling one review at a time.
+ * Opens a review over `current`. Always flattens: reviewing while a review
+ * or a live run is already open replaces it but keeps the ORIGINAL resting
+ * `behind`, so overlays can never stack, closing always lands back on the
+ * last resting view instead of peeling one overlay at a time.
  */
 export function openReview(record: ReviewRecord, current: FocusView): FocusView {
-  const behind = current.kind === 'review' ? current.behind : current
-  return { kind: 'review', record, behind }
+  return { kind: 'review', record, behind: restingBehind(current) }
 }
 
 export function closeReview(current: FocusView): FocusView {
   return current.kind === 'review' ? current.behind : current
+}
+
+/** Starts (or replaces) a live run over `current`, flattening through the
+ * same rule as openReview: a run launched from an archived review view, or
+ * from another still-running view, never stacks. */
+export function openReviewRun(
+  projectId: string,
+  source: ReviewSource,
+  mode: MrReviewMode,
+  current: FocusView,
+): FocusView {
+  return { kind: 'reviewRun', projectId, source, mode, behind: restingBehind(current) }
+}
+
+export function closeReviewRun(current: FocusView): FocusView {
+  return current.kind === 'reviewRun' ? current.behind : current
+}
+
+/** Value equality for ReviewSource: two sources naming the same MR number or
+ * the same branch name are equal even as distinct objects, since every
+ * status poll and SSE frame constructs a fresh one. */
+export function sameReviewSource(a: ReviewSource, b: ReviewSource): boolean {
+  if (a.kind === 'mr' && b.kind === 'mr') {
+    return a.number === b.number
+  }
+  return a.kind === 'branch' && b.kind === 'branch' && a.name === b.name
+}
+
+/**
+ * A live run finished archiving as `record`. It only takes over the scene
+ * when `view` is still that exact run (same project, same source): any other
+ * view, a different target, a different project, or the reader having
+ * already navigated elsewhere, returns `view` UNCHANGED, same reference, so
+ * watchers keyed on FocusView identity stay silent.
+ */
+export function promoteReviewRun(
+  view: FocusView,
+  projectId: string,
+  source: ReviewSource,
+  record: ReviewRecord,
+): FocusView {
+  if (
+    view.kind !== 'reviewRun' ||
+    view.projectId !== projectId ||
+    !sameReviewSource(view.source, source)
+  ) {
+    return view
+  }
+  return { kind: 'review', record, behind: view.behind }
 }
 
 export function closeFocus(): FocusView {

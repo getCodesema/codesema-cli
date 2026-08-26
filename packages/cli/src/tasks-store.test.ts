@@ -27,10 +27,12 @@ import {
   listTasks,
   loadTask,
   onStoreUnreadable,
+  peekBrainTicketIdCache,
   readTaskChecks,
   readTaskEvents,
   readTaskJournal,
   removeTaskDir,
+  resetBrainTicketIdCache,
   resetJournalCursors,
   resetStoreReports,
   saveTask,
@@ -62,6 +64,7 @@ afterEach(() => {
   setJournalReader(null)
   resetJournalCursors()
   resetStoreReports()
+  resetBrainTicketIdCache()
   rmSync(cwd, { recursive: true, force: true })
 })
 
@@ -909,4 +912,34 @@ describe('removeTaskDir', () => {
     expect(removeTaskDir(cwd, 'AAAAAAAAAAAA')).toBe(false)
     expect(removeTaskDir(cwd, '')).toBe(false)
   })
+
+  // Arm/brain integration: `brainTicketIdCache` is WRITE-ONCE for a LIVE
+  // task, but this is the one place a task's own id stops meaning that task
+  // at all: an id left in the cache after removal would answer a later,
+  // unrelated task carrying the same 12-hex id with a ticket from a task
+  // that no longer exists.
+  test('evicts the removed task from brainTicketIdCache', () => {
+    const task = createTask(cwd, { ...input, brainTicket: { id: 'tkt-1', title: 't' } })
+    expect(peekBrainTicketIdCache(cwd, task.id)).toBe('tkt-1')
+
+    expect(removeTaskDir(cwd, task.id)).toBe(true)
+
+    expect(peekBrainTicketIdCache(cwd, task.id)).toBeUndefined()
+  })
+
+  test.skipIf(RUNNING_AS_ROOT)(
+    'a removal that could not complete leaves the cache entry untouched',
+    () => {
+      const task = createTask(cwd, { ...input, brainTicket: { id: 'tkt-1', title: 't' } })
+      // Same recipe as the other permission-failure tests in this file: no
+      // write access on the PARENT directory makes rmSync fail without root.
+      chmodSync(tasksDir(cwd), 0o000)
+      try {
+        expect(removeTaskDir(cwd, task.id)).toBe(false)
+        expect(peekBrainTicketIdCache(cwd, task.id)).toBe('tkt-1')
+      } finally {
+        chmodSync(tasksDir(cwd), 0o700)
+      }
+    },
+  )
 })

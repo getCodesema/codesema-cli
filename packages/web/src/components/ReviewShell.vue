@@ -8,7 +8,7 @@ import { useReviewProgress } from '../composables/useReviewProgress'
 import type { ReviewRecord } from '../types'
 import DiffView from './DiffView.vue'
 import FileTree from './FileTree.vue'
-import FocusView from './FocusView.vue'
+import ReviewFocusMode from './ReviewFocusMode.vue'
 import ReviewPrologue from './ReviewPrologue.vue'
 import StepList from './StepList.vue'
 import StepRail from './StepRail.vue'
@@ -368,7 +368,7 @@ const SEV_CLS: Record<string, string> = {
     </div>
 
     <div v-if="viewMode === 'focus'" class="sr-stage">
-      <FocusView :record="record" :list="focusList" :files="parsedDiff.files" />
+      <ReviewFocusMode :record="record" :list="focusList" :files="parsedDiff.files" />
     </div>
 
     <div v-show="viewMode === 'explain' && activeTab === 'steps'" class="sr-stage">

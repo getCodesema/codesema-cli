@@ -37,7 +37,7 @@ export const DEFAULT_RAIL_PREFS: RailPrefs = {
 
 export const RAIL_PREFS_STORAGE_KEY = 'codesema-ws-rail-prefs'
 
-const CATEGORIES: readonly NavCategory[] = ['conversations', 'repositories']
+const CATEGORIES: readonly NavCategory[] = ['conversations', 'repositories', 'codeReview']
 const REPO_TABS: readonly RepoTab[] = ['branches', 'issues', 'mrs']
 
 function isCategory(value: unknown): value is NavCategory {

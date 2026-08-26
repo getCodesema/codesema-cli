@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
+import type { NavCategory } from '../../composables/useWorkspaceNav'
 import { t } from '../../i18n'
 
 Bun.plugin({
@@ -24,8 +25,6 @@ Bun.plugin({
 })
 
 const SOURCE = readFileSync(join(import.meta.dir, 'WorkspaceNavRail.vue'), 'utf8')
-
-type NavCategory = 'conversations' | 'repositories'
 
 type Props = {
   category: NavCategory
@@ -47,33 +46,31 @@ function catButtons(html: string): RegExpMatchArray[] {
   return [...html.matchAll(/<button type="button" class="wnr-cat[^"]*"([^>]*)>/g)]
 }
 
-describe('categories: both render, the active one carries the tinted accent', () => {
-  test('both category labels render', async () => {
+describe('categories: all three render, the active one carries the tinted accent', () => {
+  test('every category label renders', async () => {
     const html = await render()
     expect(html).toContain(t('rail.conversations'))
     expect(html).toContain(t('rail.repositories'))
+    expect(html).toContain(t('rail.codeReview'))
   })
 
-  test('conversations active by default: aria-pressed true on it, false on repositories', async () => {
-    const html = await render({ category: 'conversations' })
-    const buttons = catButtons(html)
-    expect(buttons).toHaveLength(2)
-    expect(buttons[0]?.[1]).toContain('aria-pressed="true"')
-    expect(buttons[1]?.[1]).toContain('aria-pressed="false"')
+  test('exactly one category is pressed at a time, whichever it is', async () => {
+    for (const [index, category] of (
+      ['conversations', 'repositories', 'codeReview'] as const
+    ).entries()) {
+      const buttons = catButtons(await render({ category }))
+      expect(buttons).toHaveLength(3)
+      for (const [at, button] of buttons.entries()) {
+        expect(button[1]).toContain(`aria-pressed="${at === index}"`)
+      }
+    }
   })
 
-  test('switching to repositories flips the active state', async () => {
-    const html = await render({ category: 'repositories' })
-    const buttons = catButtons(html)
-    expect(buttons[0]?.[1]).toContain('aria-pressed="false"')
-    expect(buttons[1]?.[1]).toContain('aria-pressed="true"')
-  })
-
-  test('the active category carries the wnr-cat--active class, the inactive one does not', async () => {
-    const html = await render({ category: 'repositories' })
-    const buttons = catButtons(html)
+  test('the active category carries the wnr-cat--active class, the others do not', async () => {
+    const buttons = catButtons(await render({ category: 'codeReview' }))
     expect(buttons[0]?.[0]).not.toContain('wnr-cat--active')
-    expect(buttons[1]?.[0]).toContain('wnr-cat--active')
+    expect(buttons[1]?.[0]).not.toContain('wnr-cat--active')
+    expect(buttons[2]?.[0]).toContain('wnr-cat--active')
   })
 
   test('the active row uses the tinted fill token, no border', () => {
@@ -100,18 +97,19 @@ describe('collapsed state: labels absent from markup, aria-label present', () =>
     const html = await render({ collapsed: false })
     expect(html).toContain('wnr-cat-label')
     const buttons = catButtons(html)
-    expect(buttons).toHaveLength(2)
+    expect(buttons).toHaveLength(3)
     expect(buttons.every((m) => !(m[1] ?? '').includes('aria-label'))).toBe(true)
   })
 
-  test('collapsed: labels absent, aria-label present on both category buttons', async () => {
+  test('collapsed: labels absent, aria-label present on every category button', async () => {
     const html = await render({ collapsed: true })
     expect(html).not.toContain('wnr-cat-label')
     const buttons = catButtons(html)
-    expect(buttons).toHaveLength(2)
+    expect(buttons).toHaveLength(3)
     expect(buttons.every((m) => (m[1] ?? '').includes('aria-label'))).toBe(true)
     expect(html).toContain(`aria-label="${t('rail.conversations')}"`)
     expect(html).toContain(`aria-label="${t('rail.repositories')}"`)
+    expect(html).toContain(`aria-label="${t('rail.codeReview')}"`)
   })
 
   test('collapsed: the settings row loses its label but keeps an aria-label', async () => {

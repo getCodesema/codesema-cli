@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import type { ForgeMr, ReviewRecord, TaskStatus } from '../types'
+import type { ForgeMr, ReviewRecord, ReviewSource, TaskStatus } from '../types'
 import {
   closeFocus,
   closeReview,
+  closeReviewRun,
   draftBranch,
   draftKey,
   EMPTY_FOCUS,
@@ -13,7 +14,11 @@ import {
   openNewConversationDraft,
   openRepository,
   openReview,
+  openReviewRun,
+  openReviewTarget,
   promoteDraft,
+  promoteReviewRun,
+  sameReviewSource,
   scratchDraft,
   switchRepoTab,
   workonDraft,
@@ -64,6 +69,14 @@ function mr(overrides: Partial<ForgeMr> = {}): ForgeMr {
 
 function stateOf(id: string, branch: string, status: TaskStatus) {
   return { record: { id, branch, status } }
+}
+
+function mrSource(number = 1): ReviewSource {
+  return { kind: 'mr', number }
+}
+
+function branchSource(name = 'feature/x'): ReviewSource {
+  return { kind: 'branch', name }
 }
 
 describe('draft constructors', () => {
@@ -315,6 +328,159 @@ describe('openReview / closeReview', () => {
     // Closing the second review lands back on the conversation directly,
     // never on the first review: reviews do not nest.
     expect(closeReview(second)).toEqual(conversation)
+  })
+
+  test('opens over a reviewRun, flattening onto the run behind rather than stacking', () => {
+    const target = openReviewTarget('p1', mrSource(7))
+    const run = openReviewRun('p1', mrSource(7), 'simple', target)
+    const record = review()
+    expect(openReview(record, run)).toEqual({ kind: 'review', record, behind: target })
+  })
+})
+
+describe('openReviewTarget', () => {
+  test('builds a reviewTarget view for an MR source, with no behind', () => {
+    expect(openReviewTarget('p1', mrSource(7))).toEqual({
+      kind: 'reviewTarget',
+      projectId: 'p1',
+      source: mrSource(7),
+    })
+  })
+
+  test('builds a reviewTarget view for a branch source', () => {
+    expect(openReviewTarget('p1', branchSource('feature/x'))).toEqual({
+      kind: 'reviewTarget',
+      projectId: 'p1',
+      source: branchSource('feature/x'),
+    })
+  })
+})
+
+describe('openReviewRun / closeReviewRun', () => {
+  test('opens over a reviewTarget, remembering it as behind', () => {
+    const target = openReviewTarget('p1', mrSource(7))
+    expect(openReviewRun('p1', mrSource(7), 'simple', target)).toEqual({
+      kind: 'reviewRun',
+      projectId: 'p1',
+      source: mrSource(7),
+      mode: 'simple',
+      behind: target,
+    })
+  })
+
+  test('opens over the empty view', () => {
+    expect(openReviewRun('p1', branchSource('feature/x'), 'dual', EMPTY_FOCUS)).toEqual({
+      kind: 'reviewRun',
+      projectId: 'p1',
+      source: branchSource('feature/x'),
+      mode: 'dual',
+      behind: EMPTY_FOCUS,
+    })
+  })
+
+  test('a run launched over another run flattens: keeps the ORIGINAL behind', () => {
+    const target = openReviewTarget('p1', mrSource(7))
+    const first = openReviewRun('p1', mrSource(7), 'simple', target)
+    const second = openReviewRun('p1', mrSource(7), 'dual', first)
+    expect(second).toEqual({
+      kind: 'reviewRun',
+      projectId: 'p1',
+      source: mrSource(7),
+      mode: 'dual',
+      behind: target,
+    })
+  })
+
+  test('a run launched over an archived review view flattens onto its behind', () => {
+    const conversation = openConversation('p1', 't1')
+    const archived = openReview(review(), conversation)
+    const run = openReviewRun('p1', mrSource(7), 'simple', archived)
+    expect(run).toEqual({
+      kind: 'reviewRun',
+      projectId: 'p1',
+      source: mrSource(7),
+      mode: 'simple',
+      behind: conversation,
+    })
+  })
+
+  test('closeReviewRun returns exactly what was behind it', () => {
+    const target = openReviewTarget('p1', mrSource(7))
+    const run = openReviewRun('p1', mrSource(7), 'simple', target)
+    expect(closeReviewRun(run)).toEqual(target)
+  })
+
+  test('closeReviewRun on a non-reviewRun view is a no-op (same reference)', () => {
+    const target = openReviewTarget('p1', mrSource(7))
+    expect(closeReviewRun(target)).toBe(target)
+    expect(closeReviewRun(EMPTY_FOCUS)).toBe(EMPTY_FOCUS)
+  })
+})
+
+describe('sameReviewSource', () => {
+  test('two mr sources with the same number are equal by value', () => {
+    expect(sameReviewSource(mrSource(7), { kind: 'mr', number: 7 })).toBe(true)
+  })
+
+  test('two mr sources with different numbers are not equal', () => {
+    expect(sameReviewSource(mrSource(7), mrSource(8))).toBe(false)
+  })
+
+  test('two branch sources with the same name are equal by value', () => {
+    expect(sameReviewSource(branchSource('feature/x'), { kind: 'branch', name: 'feature/x' })).toBe(
+      true,
+    )
+  })
+
+  test('two branch sources with different names are not equal', () => {
+    expect(sameReviewSource(branchSource('feature/x'), branchSource('feature/y'))).toBe(false)
+  })
+
+  test('an mr and a branch source are never equal, even with overlapping "identity" values', () => {
+    expect(sameReviewSource({ kind: 'mr', number: 7 }, { kind: 'branch', name: '7' })).toBe(false)
+  })
+})
+
+describe('promoteReviewRun', () => {
+  test('the exact run being watched becomes the archived review, keeping its behind', () => {
+    const target = openReviewTarget('p1', mrSource(7))
+    const run = openReviewRun('p1', mrSource(7), 'simple', target)
+    const record = review('done')
+    expect(promoteReviewRun(run, 'p1', mrSource(7), record)).toEqual({
+      kind: 'review',
+      record,
+      behind: target,
+    })
+  })
+
+  test('a view of a different kind entirely: same reference back', () => {
+    const conversation = openConversation('p1', 't1')
+    expect(promoteReviewRun(conversation, 'p1', mrSource(7), review())).toBe(conversation)
+  })
+
+  test('a reviewRun of a different source, same project: same reference back', () => {
+    const run = openReviewRun('p1', mrSource(7), 'simple', openReviewTarget('p1', mrSource(7)))
+    expect(promoteReviewRun(run, 'p1', mrSource(8), review())).toBe(run)
+  })
+
+  test('a reviewRun of a different source kind sharing the same raw value: same reference back', () => {
+    const run = openReviewRun(
+      'p1',
+      branchSource('7'),
+      'simple',
+      openReviewTarget('p1', branchSource('7')),
+    )
+    expect(promoteReviewRun(run, 'p1', mrSource(7), review())).toBe(run)
+  })
+
+  test('a reviewRun of the same source in a different project: same reference back', () => {
+    const run = openReviewRun('p1', mrSource(7), 'simple', openReviewTarget('p1', mrSource(7)))
+    expect(promoteReviewRun(run, 'p2', mrSource(7), review())).toBe(run)
+  })
+
+  test('a reviewTarget (already promoted, or never a run): same reference back', () => {
+    const target = openReviewTarget('p1', mrSource(7))
+    expect(promoteReviewRun(target, 'p1', mrSource(7), review())).toBe(target)
   })
 })
 

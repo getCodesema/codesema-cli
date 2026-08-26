@@ -494,7 +494,8 @@ export async function runOnboarding(cwd: string): Promise<string | null> {
   return result.command
 }
 
-export type ConfigEntryId = 'agent' | 'language' | 'autoSync' | 'back'
+export type ConfigEntryId =
+  'agent' | 'language' | 'autoSync' | 'brainAutoMerge' | 'maxTaskTurns' | 'back'
 
 export type ConfigEntry = {
   id: ConfigEntryId
@@ -519,6 +520,11 @@ function autoSyncLabel(syncAutoPush: boolean | undefined): string {
   return syncAutoPush ? t('config.autoSyncOn') : t('config.autoSyncOff')
 }
 
+/** Unlike autoSyncLabel, no "unset" state: resolveBrainAutoMerge (config.ts) treats absent as on. */
+function brainAutoMergeLabel(brainAutoMerge: boolean | undefined): string {
+  return (brainAutoMerge ?? true) ? t('config.brainAutoMergeOn') : t('config.brainAutoMergeOff')
+}
+
 /** Entries of the `codesema config` submenu, current values shown as hints. */
 export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
   return [
@@ -529,6 +535,16 @@ export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
     },
     { id: 'language', label: t('config.languageEntry'), hint: languageLabel(current.language) },
     { id: 'autoSync', label: t('config.autoSyncEntry'), hint: autoSyncLabel(current.syncAutoPush) },
+    {
+      id: 'brainAutoMerge',
+      label: t('config.brainAutoMergeEntry'),
+      hint: brainAutoMergeLabel(current.brainAutoMerge),
+    },
+    {
+      id: 'maxTaskTurns',
+      label: t('config.maxTurnsEntry'),
+      hint: String(current.maxTaskTurns ?? 30),
+    },
     { id: 'back', label: t('config.back'), hint: '' },
   ]
 }
@@ -591,6 +607,59 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
       const path = saveGlobalConfig({ ...loadGlobalConfig(), syncAutoPush: choice === 'on' })
       console.log('')
       console.log(`  ${t('config.autoSyncSaved', { state: autoSyncLabel(choice === 'on'), path })}`)
+      console.log('')
+      continue
+    }
+
+    if (picked === 'maxTaskTurns') {
+      const currentCap = current.maxTaskTurns ?? 30
+      const choice = await select<number>({
+        title: t('config.maxTurnsQuestion'),
+        options: [10, 30, 60, 120].map((cap) => ({
+          label: String(cap),
+          hint: cap === 30 ? t('config.maxTurnsDefaultHint') : '',
+          value: cap,
+        })),
+        initialIndex: Math.max(0, [10, 30, 60, 120].indexOf(currentCap)),
+        summary: false,
+      })
+      if (choice === null) {
+        continue
+      }
+      // GLOBAL-ONLY (config.ts's own doc on maxTaskTurns): the turn budget is
+      // the machine owner's money, never a cloned repository's consent.
+      const path = saveGlobalConfig({ ...loadGlobalConfig(), maxTaskTurns: choice })
+      console.log('')
+      console.log(`  ${t('config.maxTurnsSaved', { cap: String(choice), path })}`)
+      console.log('')
+      continue
+    }
+
+    if (picked === 'brainAutoMerge') {
+      const choice = await select<'on' | 'off'>({
+        title: t('config.brainAutoMergeQuestion'),
+        options: [
+          { label: t('config.brainAutoMergeOff'), hint: '', value: 'off' },
+          {
+            label: t('config.brainAutoMergeOn'),
+            hint: t('config.brainAutoMergeOnHint'),
+            value: 'on',
+          },
+        ],
+        initialIndex: (current.brainAutoMerge ?? true) ? 1 : 0,
+        summary: false,
+      })
+      if (choice === null) {
+        continue
+      }
+      // GLOBAL-ONLY, same doctrine as autoSync/mergePolicy (config.ts's own
+      // doc on brainAutoMerge): a consent to merge without asking is the
+      // machine owner's to give, not a cloned repository's.
+      const path = saveGlobalConfig({ ...loadGlobalConfig(), brainAutoMerge: choice === 'on' })
+      console.log('')
+      console.log(
+        `  ${t('config.brainAutoMergeSaved', { state: brainAutoMergeLabel(choice === 'on'), path })}`,
+      )
       console.log('')
       continue
     }

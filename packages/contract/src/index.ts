@@ -14,6 +14,7 @@ import {
 
 // All agent input passes through here: whitelist and truncate, never throw.
 
+export * from './brain.js'
 export * from './reasons.js'
 export * from './recap.js'
 export * from './tasks.js'

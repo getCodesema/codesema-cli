@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -15,6 +15,7 @@ import {
   repoConfigPath,
   repoGlobalOnlyIgnoredNotices,
   resolveMaxAutoFixRounds,
+  resolveMaxTaskTurns,
   resolveMergeSettings,
   resolveProjectAgentCommand,
   resolveProjectConfig,
@@ -789,5 +790,48 @@ describe('merge settings (T3.6, D12/D13/DP1)', () => {
     for (const key of ['mergePolicy', 'allowMergeWithoutChecks']) {
       expect(notices.some((line) => line.includes(key))).toBe(true)
     }
+  })
+})
+
+describe('maxTaskTurns (D25)', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let repoDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-turns-'))
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-turns-repo-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('absent means 30, a global value within bounds applies', () => {
+    expect(resolveMaxTaskTurns(loadGlobalConfig())).toBe(30)
+    saveGlobalConfig({ maxTaskTurns: 60 })
+    expect(resolveMaxTaskTurns(loadGlobalConfig())).toBe(60)
+  })
+
+  test('out-of-bounds or fractional values fall back to the default', () => {
+    writeFileSync(globalConfigPath(), '{"maxTaskTurns": 0}\n')
+    expect(resolveMaxTaskTurns(loadGlobalConfig())).toBe(30)
+    writeFileSync(globalConfigPath(), '{"maxTaskTurns": 501}\n')
+    expect(resolveMaxTaskTurns(loadGlobalConfig())).toBe(30)
+    writeFileSync(globalConfigPath(), '{"maxTaskTurns": 2.5}\n')
+    expect(resolveMaxTaskTurns(loadGlobalConfig())).toBe(30)
+  })
+
+  test('a repo config can never set the machine owner turn budget', () => {
+    mkdirSync(join(repoDir, '.codesema'), { recursive: true })
+    writeFileSync(join(repoDir, '.codesema', 'config.json'), '{"maxTaskTurns": 400}\n')
+    expect(loadRepoConfig(repoDir).maxTaskTurns).toBeUndefined()
   })
 })
