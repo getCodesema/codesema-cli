@@ -1,0 +1,107 @@
+// Rewrites `#123` references in a forge item's raw markdown body into real
+// markdown links to the same issue/PR tracker, before the body ever
+// reaches the markdown renderer (ForgeMarkdown.ts). Every zone where `#`
+// does not mean "reference" is masked first: fenced code blocks, inline
+// code, and existing markdown links, so a hex color or a URL's
+// `#issuecomment-9` anchor is left untouched.
+
+/** U+0000 has no legitimate meaning in markdown source: used below both to
+ * delimit masking placeholders and, first, to strip any literal NUL byte
+ * from untrusted input, so a body that happens to carry one can never
+ * collide with a placeholder this module generates (the restore loop at
+ * the end of `linkifyForgeReferences` only replaces a placeholder's first
+ * occurrence, so a collision would restore content at the wrong spot).
+ * Built with `String.fromCharCode` rather than written as a literal
+ * control character in this file, so the source stays plain text. */
+const NUL = String.fromCharCode(0)
+
+/** A `#` followed by digits, on a word boundary: `#123` matches, `#1a2b3c`
+ * (a hex color) does not, since there is no word boundary between the `1`
+ * and the `a` that follows it. */
+const REFERENCE_PATTERN = /#(\d+)\b/g
+
+/** A fenced code block, delimited by 3+ backticks or 3+ tildes, opening its
+ * own line and closed by a same-length run of the same character on its
+ * own line (`\1` backreference: a closing fence longer than the opening
+ * one, legal in CommonMark, is not matched here, which only means it stays
+ * unmasked rather than that anything unsafe follows from it). */
+const FENCE_PATTERN = /^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[ \t]*$/gm
+/** A single-backtick inline code span. */
+const INLINE_CODE_PATTERN = /`[^`\n]+`/g
+/** An existing markdown link, `[text](url)`. No nested brackets/parens
+ * support: good enough for the shapes a forge body actually contains. */
+const EXISTING_LINK_PATTERN = /\[[^\]\n]*\]\([^)\n]*\)/g
+
+/** Matches a URL ending in `/<number>`, optionally followed by a query
+ * string or a fragment, and captures everything up to and including that
+ * last `/`. */
+const TRAILING_NUMBER_PATTERN = /^(.*\/)\d+(?:[/?#].*)?$/
+
+/**
+ * `itemUrl` is the current issue's or MR's own full URL (`ForgeIssue.url` /
+ * `ForgeMr.url`), the only base this module has to work with. If it does
+ * not end in `/<number>`, deriving a reliable base is not possible.
+ */
+function deriveReferenceBase(itemUrl: string): string | null {
+  const match = TRAILING_NUMBER_PATTERN.exec(itemUrl)
+  return match?.[1] ?? null
+}
+
+type MaskedSpan = { placeholder: string; text: string }
+
+/** Replaces every match of `pattern` in `text` with a unique NUL-delimited
+ * placeholder, and records the original text in `spans` so it can be
+ * restored later. */
+function maskPattern(text: string, pattern: RegExp, kind: string, spans: MaskedSpan[]): string {
+  return text.replace(pattern, (match) => {
+    const placeholder = `${NUL}${kind}${spans.length}${NUL}`
+    spans.push({ placeholder, text: match })
+    return placeholder
+  })
+}
+
+export type LinkifiedReferences = {
+  markdown: string
+  /** Every URL this call generated for a `#123` reference, mapped to the
+   * exact label (`#123`) it was linkified with, in the form it appears in
+   * `markdown`'s link syntax. ForgeMarkdown.ts uses both: matching the href
+   * alone would let a hand-written link reuse a reference's URL under
+   * different, misleading anchor text. */
+  references: ReadonlyMap<string, string>
+}
+
+/**
+ * Rewrites `#123` into `[#123](base/123)` everywhere in `markdown` except
+ * inside fenced code, inline code, and existing links. `itemUrl` supplies
+ * the base (see `deriveReferenceBase`); when it cannot be derived
+ * reliably, every `#123` is left as plain text rather than risk a link
+ * pointing somewhere else.
+ */
+export function linkifyForgeReferences(markdown: string, itemUrl: string): LinkifiedReferences {
+  const cleaned = markdown.replaceAll(NUL, '')
+
+  const base = deriveReferenceBase(itemUrl)
+  if (base === null) {
+    return { markdown: cleaned, references: new Map() }
+  }
+
+  const spans: MaskedSpan[] = []
+  let masked = cleaned
+  masked = maskPattern(masked, FENCE_PATTERN, 'F', spans)
+  masked = maskPattern(masked, INLINE_CODE_PATTERN, 'C', spans)
+  masked = maskPattern(masked, EXISTING_LINK_PATTERN, 'L', spans)
+
+  const references = new Map<string, string>()
+  const linked = masked.replace(REFERENCE_PATTERN, (_match, digits: string) => {
+    const url = `${base}${digits}`
+    references.set(url, `#${digits}`)
+    return `[#${digits}](${url})`
+  })
+
+  let restored = linked
+  for (const span of spans) {
+    restored = restored.replace(span.placeholder, () => span.text)
+  }
+
+  return { markdown: restored, references }
+}

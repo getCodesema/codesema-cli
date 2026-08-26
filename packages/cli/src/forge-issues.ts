@@ -66,6 +66,7 @@ import { execFile, type ExecException } from 'node:child_process'
 import type { TaskReason } from './contract.js'
 import { forgeCandidates, forgeReasonDetail } from './degraded-mode.js'
 import {
+  applyLabelColors,
   extractIssueUrl,
   ghIssueDatabaseId,
   ghIssueNumberFromRest,
@@ -87,6 +88,7 @@ import {
   parseGlabIssue,
   parseGlabIssueList,
   parseGlabIssueNotes,
+  parseGlabLabelCatalog,
   parseLabelNames,
   sanitizeIssueBody,
   sanitizeIssueLabels,
@@ -158,7 +160,7 @@ export type ForgeCli = 'gh' | 'glab'
  * DIVERGES from `ForgeMrsResult` (`forge-mrs.ts:14`) by one member:
  * `invalid-input`. The three others mean exactly what they mean there —
  * `no-remote`, `no-cli`, `cli-error` — and the web keeps mapping them the same
- * way (`MrSidebar.vue:24-26`).
+ * way (`forge/ForgeListPanel.vue:155-157`).
  *
  * `invalid-input` exists because this module WRITES: an issue number that is
  * not a positive integer, a title that sanitises to nothing, a label no forge
@@ -656,36 +658,73 @@ function ghListCandidate(state: ForgeIssueStateFilter): Candidate<IssuePage> {
   })
 }
 
+/**
+ * Walks GitLab's issue list pages, same shape as before this ticket: the
+ * cap/truncation logic lives in the single caller below, not here, so this
+ * stays the one thing it does: fetch every page, or stop honestly on the
+ * first one that fails.
+ */
+async function glabIssuePages(
+  execFn: ForgeIssuesExecFn,
+  cwd: string,
+  state: ForgeIssueStateFilter,
+): Promise<
+  { kind: 'ok'; issues: ForgeIssue[] } | Exclude<CandidateOutcome<never>, { kind: 'ok' }>
+> {
+  const all: ForgeIssue[] = []
+  for (let page = 1; page <= GLAB_MAX_PAGES; page += 1) {
+    const paging = ['--per-page', GLAB_PER_PAGE, '--page', String(page), '--output', 'json']
+    const args = ['issue', 'list', ...GLAB_STATE_FLAGS[state], ...paging]
+    const outcome = await execFn('glab', args, cwd)
+    if (outcome.kind !== 'ok') {
+      return outcome
+    }
+    const batch = parseGlabIssueList(outcome.stdout)
+    if (batch === null) {
+      return { kind: 'error', message: UNREADABLE }
+    }
+    all.push(...batch)
+    // A short page is the end of the list, but the pages before it can
+    // already have overshot the cap (100 + 100 + 50 = 250), so `capPage`
+    // (applied by the caller) always runs regardless of which branch ends
+    // the walk. Skipping that would have returned 250 issues with
+    // truncated:false where gh answered 200/true on the same repo.
+    if (batch.length < GLAB_PAGE_SIZE || all.length > ISSUE_LIST_MAX) {
+      break
+    }
+  }
+  return { kind: 'ok', issues: all }
+}
+
 /** glab cannot: GitLab clamps a page at 100, so walk pages until one comes back short. */
 function glabListCandidate(state: ForgeIssueStateFilter): Candidate<IssuePage> {
   return {
     cli: 'glab',
     run: async (execFn, cwd) => {
-      const all: ForgeIssue[] = []
-      for (let page = 1; page <= GLAB_MAX_PAGES; page += 1) {
-        const paging = ['--per-page', GLAB_PER_PAGE, '--page', String(page), '--output', 'json']
-        const args = ['issue', 'list', ...GLAB_STATE_FLAGS[state], ...paging]
-        const outcome = await execFn('glab', args, cwd)
-        if (outcome.kind !== 'ok') {
-          return outcome
-        }
-        const batch = parseGlabIssueList(outcome.stdout)
-        if (batch === null) {
-          return { kind: 'error', message: UNREADABLE }
-        }
-        all.push(...batch)
-        if (batch.length < GLAB_PAGE_SIZE) {
-          // A short page is the end of the list — but the pages before it can
-          // already have overshot the cap (100 + 100 + 50 = 250), so the cap is
-          // applied HERE too. Skipping it returned 250 issues with
-          // truncated:false where gh answered 200/true on the same repo.
-          return { kind: 'ok', value: capPage(all) }
-        }
-        if (all.length > ISSUE_LIST_MAX) {
-          break
-        }
+      const walked = await glabIssuePages(execFn, cwd, state)
+      if (walked.kind !== 'ok') {
+        return walked
       }
-      return { kind: 'ok', value: capPage(all) }
+      const page = capPage(walked.issues)
+      // GitLab's issue-list payload carries only label NAMES (verified live:
+      // `glab issue list --output json` on a labelled public project answers
+      // bare strings), unlike gh's, which already carries colour for free.
+      // One extra, bounded call to the project's own label catalog, never
+      // one per issue, colours whatever names came back; any failure of
+      // that call leaves every label at `color: null` rather than failing
+      // the whole list (see `glabLabelColorCatalog`).
+      const needsColor = page.issues.some((issue) => issue.labels.length > 0)
+      const catalog = needsColor
+        ? await glabLabelColorCatalog(execFn, cwd)
+        : new Map<string, string>()
+      const issues =
+        catalog.size === 0
+          ? page.issues
+          : page.issues.map((issue) => ({
+              ...issue,
+              labels: applyLabelColors(issue.labels, catalog),
+            }))
+      return { kind: 'ok', value: { issues, truncated: page.truncated } }
     },
   }
 }
@@ -1081,6 +1120,59 @@ function glabLabelListCandidate(): Candidate<LabelPage> {
       return { kind: 'ok', value: capLabels(all) }
     },
   }
+}
+
+/**
+ * The project's own label catalog, coloured: used ONLY to paint the bare
+ * label names `glab issue list`/`glab mr list` hand back (T3.9). Deliberately
+ * NOT `listLabels` above: that catalog's one job is a name existence check
+ * (T3.7) and widening its return shape would ripple into every one of its
+ * callers (`ensureCycleLabel` in task-labels.ts) for a field none of them
+ * need.
+ *
+ * Best-effort by construction: unlike every other read in this file, a
+ * failure here is not reported to the caller at all, it degrades to an
+ * empty map, and every label the caller already has simply keeps its
+ * `color: null` (never a failure of the issue/MR list itself). Bounded the
+ * same way `glabLabelListCandidate` is (`LABEL_LIST_MAX` labels,
+ * `GLAB_MAX_LABEL_PAGES` pages, each call under the ladder's own per-call
+ * timeout): a repo with a pathological label count degrades to partial
+ * colouring, never an unbounded fetch.
+ */
+async function glabLabelColorCatalog(
+  execFn: ForgeIssuesExecFn,
+  cwd: string,
+): Promise<Map<string, string>> {
+  const catalog = new Map<string, string>()
+  for (let page = 1; page <= GLAB_MAX_LABEL_PAGES; page += 1) {
+    const args = [
+      'label',
+      'list',
+      '--per-page',
+      GLAB_PER_PAGE,
+      '--page',
+      String(page),
+      '--output',
+      'json',
+    ]
+    const outcome = await execFn('glab', args, cwd)
+    if (outcome.kind !== 'ok') {
+      return catalog
+    }
+    const batch = parseGlabLabelCatalog(outcome.stdout)
+    if (batch === null) {
+      return catalog
+    }
+    for (const label of batch) {
+      if (label.color !== null) {
+        catalog.set(label.name, label.color)
+      }
+    }
+    if (batch.length < GLAB_PAGE_SIZE || catalog.size > LABEL_LIST_MAX) {
+      break
+    }
+  }
+  return catalog
 }
 
 /**

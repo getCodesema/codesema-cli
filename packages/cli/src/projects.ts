@@ -5,6 +5,11 @@
 // only maps stable ids to git roots. Reads are corruption-tolerant like
 // parseConfig (a broken file is an empty registry, never a crash) and writes
 // are atomic (tmp + rename).
+//
+// One project is not in the file and never will be: the scratch project, the
+// workspace's own directory, synthesized on every read. It is where a
+// conversation lives while it has no repository, so that starting one costs
+// the user's repositories nothing.
 
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, realpathSync, type Dirent } from 'node:fs'
@@ -15,12 +20,19 @@ import { tryGit } from './git.js'
 import { t } from './i18n.js'
 
 export type Project = {
-  /** 8 lowercase hex chars, stable: derived from the canonical repo path. */
+  /** 8 lowercase hex chars, stable: derived from the canonical path. */
   id: string
-  /** Absolute git repository root. */
+  /** Absolute git repository root, or the scratch directory when kind is 'scratch'. */
   path: string
   /** Display name: basename of the path. */
   name: string
+  /**
+   * 'scratch' names the one project that is NOT a git repository: the
+   * workspace's own directory, where a conversation lives before it is given
+   * any repo. Callers that reach for git (worktrees, branches, ship, MR) must
+   * check this rather than assume `path` is a repo root.
+   */
+  kind: 'repo' | 'scratch'
   added_at: string
 }
 
@@ -59,8 +71,42 @@ function sanitizeProject(raw: unknown): Project | null {
     // The name is derived, never trusted from disk: the basename cannot drift
     // from the path it names.
     name: basename(path),
+    // addProject refuses anything but a git root, so every persisted entry is
+    // one. The scratch project is synthesized, never read back from here.
+    kind: 'repo',
     added_at: typeof p.added_at === 'string' && p.added_at ? p.added_at : new Date().toISOString(),
   }
+}
+
+/**
+ * The workspace's own directory: where a conversation that has been given no
+ * repository does its work. Deliberately outside every repo, so a discussion
+ * costs the user's repositories nothing — no branch, no worktree, no
+ * `.codesema/` in a tree they did not ask us to touch.
+ */
+export function scratchDir(): string {
+  return join(globalConfigDir(), 'scratch')
+}
+
+/**
+ * Synthetic, always present, never persisted in projects.json: it is a
+ * property of the workspace, not something the user registered. Its id is
+ * derived like any other so URLs, SSE frames and task lookups treat it as an
+ * ordinary project.
+ */
+export function scratchProject(): Project {
+  const path = scratchDir()
+  return {
+    id: projectIdFor(path),
+    path,
+    name: 'scratch',
+    kind: 'scratch',
+    added_at: new Date(0).toISOString(),
+  }
+}
+
+export function isScratchProjectId(id: string): boolean {
+  return id === projectIdFor(scratchDir())
 }
 
 /** listProjects, plus whether the read was COMPLETE (see listProjectsDetailed). */
@@ -124,7 +170,20 @@ export function getProject(id: string): Project | null {
   if (!isProjectId(id)) {
     return null
   }
+  if (isScratchProjectId(id)) {
+    return scratchProject()
+  }
   return listProjects().find((project) => project.id === id) ?? null
+}
+
+/**
+ * What the workspace can actually run a conversation against: the scratch
+ * project first, then everything the user registered. `listProjects` stays the
+ * registry ALONE, so anything that writes projects.json keeps operating on the
+ * file's own contents.
+ */
+export function listWorkspaceProjects(): Project[] {
+  return [scratchProject(), ...listProjects()]
 }
 
 /** Atomic rewrite (shared tmp + rename): a crash mid-write leaves the previous registry intact. */
@@ -165,6 +224,7 @@ export function addProject(path: string): AddProjectResult {
     id,
     path: canonical,
     name: basename(canonical),
+    kind: 'repo',
     added_at: new Date().toISOString(),
   }
   saveProjects([...projects, project])

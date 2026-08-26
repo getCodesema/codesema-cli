@@ -152,6 +152,107 @@ export function hardenedReviewCommand(command: string): string {
   return command
 }
 
+/** A boundedReadOnlyReviewCommand result: the command to run, and the cleanup
+ *  for whatever private temp file it created (a no-op when it created none). */
+export type BoundedReadOnlyCommand = {
+  command: string
+  cleanup: () => void
+}
+
+const NOOP_CLEANUP = (): void => {}
+
+/**
+ * D15: like hardenedReviewCommand, but grants the reviewer/prosecutor a
+ * scoped read of the worktree instead of cutting every tool — to follow an
+ * import beyond the diff or check parity with existing code. NEVER used for
+ * the judge: it arbitrates two already-written reviews and needs no
+ * filesystem access.
+ *
+ * claude: `--tools "Read,Grep,Glob"` (replacing hardenedReviewCommand's
+ * `--tools ""`) plus a private `--settings` file, same temp-file recipe as
+ * the prompt file (mkdtemp, a 0700 directory; the file itself written 0600).
+ * Its content sets `permissions.defaultMode: "dontAsk"` (auto-deny anything
+ * not explicitly allowed — see "Permission modes" in the Claude Code docs)
+ * with `allow` rules scoping Read/Grep/Glob to the worktree via the
+ * `//absolute/path/**` gitignore-style anchor ("Read and Edit" in the same
+ * docs); a repo-provided settings.json cannot widen this, since
+ * --setting-sources user (kept from hardenedReviewCommand) already excludes
+ * project settings. This is transcribed from the current Claude Code
+ * permission-rule documentation, NOT exercised against a real claude binary
+ * here: validate the flag and the settings syntax before this ships.
+ * codex: its existing read-only sandbox already confines the filesystem, so
+ * hardenedReviewCommand's command is reused unchanged — no bounded variant
+ * needed.
+ * grok: `--allow 'Read,Grep'` widens hardenedReviewCommand's tool-empty
+ * `--deny '*'` to a read-only set; the "owned" flags list below is
+ * hardenedReviewCommand's grok list duplicated on purpose, since that
+ * function must stay byte-for-byte unchanged.
+ * gemini/opencode/unknown: no per-tool read-only harness exists for them;
+ * same fallback as hardenedReviewCommand.
+ */
+export function boundedReadOnlyReviewCommand(
+  command: string,
+  worktree: string,
+): BoundedReadOnlyCommand {
+  const agent = knownAgent(command)
+  if (agent === 'claude') {
+    const flags: string[] = []
+    if (!flagPresent(command, '--tools')) {
+      flags.push('--tools "Read,Grep,Glob"')
+    }
+    if (!flagPresent(command, '--strict-mcp-config')) {
+      flags.push('--strict-mcp-config')
+    }
+    if (!flagPresent(command, '--setting-sources')) {
+      flags.push('--setting-sources user')
+    }
+    if (flagPresent(command, '--settings')) {
+      const withFlags = flags.length > 0 ? `${command} ${flags.join(' ')}` : command
+      return { command: withFlags, cleanup: NOOP_CLEANUP }
+    }
+    const dir = mkdtempSync(join(tmpdir(), 'codesema-review-settings-'))
+    const path = join(dir, 'settings.json')
+    const settingsJson = JSON.stringify({
+      permissions: {
+        defaultMode: 'dontAsk',
+        allow: [`Read(/${worktree}/**)`, `Grep(/${worktree}/**)`, `Glob(/${worktree}/**)`],
+      },
+    })
+    writeFileSync(path, settingsJson, { mode: 0o600 })
+    flags.push(`--settings "${path}"`)
+    return {
+      command: `${command} ${flags.join(' ')}`,
+      cleanup: () => {
+        try {
+          unlinkSync(path)
+          rmdirSync(dir)
+        } catch {
+          // a temp file the OS will collect anyway: never worth failing a review
+        }
+      },
+    }
+  }
+  if (agent === 'grok') {
+    // Duplicated from hardenedReviewCommand's grok branch: see the doc
+    // comment above for why it cannot be extracted into a shared constant.
+    const owned = [
+      '--deny',
+      '--disallowedTools',
+      '--allow',
+      '--allowedTools',
+      '--tools',
+      '--disallowed-tools',
+      '--permission-mode',
+      '--always-approve',
+    ]
+    if (owned.some((flag) => flagPresent(command, flag))) {
+      return { command, cleanup: NOOP_CLEANUP }
+    }
+    return { command: `${command} --allow 'Read,Grep' --deny '*'`, cleanup: NOOP_CLEANUP }
+  }
+  return { command: hardenedReviewCommand(command), cleanup: NOOP_CLEANUP }
+}
+
 const BASE_ENV_VARS = [
   'PATH',
   'HOME',

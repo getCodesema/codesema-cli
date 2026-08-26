@@ -1,0 +1,83 @@
+{
+  "type": "object",
+  "required": ["type", "idempotency_key", "at"],
+  "properties": {
+    "type": {
+      "anyOf": [
+        {
+          "const": "mr_opened",
+          "type": "string"
+        },
+        {
+          "const": "review_result",
+          "type": "string"
+        },
+        {
+          "const": "merged",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "type": "string"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "minLength": 1,
+      "maxLength": 200,
+      "type": "string"
+    },
+    "at": {
+      "type": "string"
+    },
+    "mr_iid": {
+      "minLength": 1,
+      "maxLength": 100,
+      "type": "string"
+    },
+    "mr_url": {
+      "minLength": 1,
+      "maxLength": 2000,
+      "type": "string"
+    },
+    "branch": {
+      "minLength": 1,
+      "maxLength": 300,
+      "type": "string"
+    },
+    "verdict": {
+      "anyOf": [
+        {
+          "const": "approve",
+          "type": "string"
+        },
+        {
+          "const": "request_changes",
+          "type": "string"
+        },
+        {
+          "const": "comment",
+          "type": "string"
+        }
+      ]
+    },
+    "findings_total": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "merge_sha": {
+      "minLength": 1,
+      "maxLength": 100,
+      "type": "string"
+    },
+    "error_message": {
+      "minLength": 1,
+      "maxLength": 5000,
+      "type": "string"
+    },
+    "cost_ticks": {
+      "minimum": 0,
+      "type": "number"
+    }
+  }
+}

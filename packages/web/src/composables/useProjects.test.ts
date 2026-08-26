@@ -18,6 +18,7 @@ function project(partial: Partial<Project> & { id: string }): Project {
   return {
     path: `/repos/${partial.id}`,
     name: partial.id,
+    kind: 'repo',
     added_at: '2026-08-14T10:00:00.000Z',
     ...partial,
   }
@@ -186,6 +187,19 @@ function mr(partial: Partial<ForgeMr> & { number: number }): ForgeMr {
     targetBranch: 'main',
     updatedAt: '2026-08-14T08:00:00.000Z',
     url: `https://forge.example/mr/${partial.number}`,
+    state: null,
+    isDraft: null,
+    labels: null,
+    additions: null,
+    deletions: null,
+    changedFiles: null,
+    checks: null,
+    reviewers: null,
+    assignees: null,
+    milestone: null,
+    mergeable: null,
+    commits: null,
+    body: null,
     ...partial,
   }
 }

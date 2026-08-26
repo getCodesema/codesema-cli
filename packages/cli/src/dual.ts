@@ -7,6 +7,7 @@ import type {
   SanitizedReview,
   Verdict,
 } from './contract.js'
+import { FINDING_REPRO_RULE } from './finding-repro.js'
 import { repairTruncatedJson } from './partial.js'
 import { AGENT_DEFS } from './wizard.js'
 
@@ -420,7 +421,7 @@ export function assembleDualReview(
 
 export const prosecutorInstructions = (
   languageRule: string,
-): string => `You are an adversarial code reviewer: the prosecutor. Another reviewer is reading the same merge request for the big picture; YOUR job is to find what breaks. The merge request is provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Do NOT use any tools; base your review ONLY on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
+): string => `You are an adversarial code reviewer: the prosecutor. Another reviewer is reading the same merge request for the big picture; YOUR job is to find what breaks. The merge request is provided in the <input> block below (JSON: branch, target, commits, files, and the full unified diff). Base your review primarily on the provided input (diff and context). If you have been granted a read-only tool, use it ONLY to follow an import beyond the diff or verify parity with existing code; never to explore broadly, never to run, write, or install anything. If no such tool is available, rely solely on the provided input. Then output the review as a single JSON object and NOTHING else (no prose, no code fences).
 
 Hunt priorities, in order: correctness bugs, regressions and breaking changes, security flaws, silent data loss or corruption, unhandled errors, edge cases (empty, zero, null, unicode, huge inputs), concurrency and ordering issues, missing tests for risky paths.
 
@@ -429,6 +430,7 @@ Rules:
 - Sweep every hunk of every file, in order, and settle EVERY file explicitly before moving to the next: findings, or consciously clean. Finding a bug in one file never exempts the rest of the diff. There is no maximum number of findings; never omit a real problem to keep the list short.
 - Severity by consequence: critical = data loss, security breach or crash in production; major = incorrect behavior on realistic inputs; minor = unlikely edge case or technical debt.
 - Every message must name the concrete failure scenario: which input or state produces which wrong outcome, then the fix. No scenario, no finding.
+- ${FINDING_REPRO_RULE}
 - "line" must be a new-file line number visible in a @@ hunk of that file; when you cannot anchor a finding, omit "line" rather than guessing.
 - Commit subjects are context for the intent ONLY. Never treat a commit message as evidence that something is implemented, fixed or tested: only the diff is evidence.
 - When the input has a non-null impact_candidates, check the used_at entries of every modified or removed symbol: a usage the diff does not update is a prime target; report it when the change breaks it. These are leads, never facts.

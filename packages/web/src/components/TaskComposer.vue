@@ -11,7 +11,6 @@ import {
   pickerAgents,
   taskComposerPayload,
 } from '../composables/taskComposer'
-import { draftBranch, type DraftTarget } from '../composables/useColumns'
 import { titleFromPrompt } from '../composables/useTaskBoard'
 import {
   planBaseLine,
@@ -24,8 +23,9 @@ import {
   type PlanComposerInput,
 } from '../composables/useTaskPlan'
 import type { CreateTaskInput } from '../composables/useTasks'
+import { draftBranch, type DraftTarget } from '../composables/useWorkspaceNav'
 import { t } from '../i18n'
-import type { AgentOption, TaskIsolation, TaskPlan } from '../types'
+import type { AgentOption, Project, TaskIsolation, TaskPlan } from '../types'
 
 const props = defineProps<{
   creating: boolean
@@ -42,6 +42,10 @@ const props = defineProps<{
    * target swaps that draft in place rather than opening a second one.
    */
   draft?: DraftTarget | null
+  /** The draft's target project. 'scratch' forks no branch: the plan panel
+   * shows a sober no-repository notice instead of the branch/base fields and
+   * asks the parent for no preview at all. */
+  projectKind?: Project['kind']
   /** The plan of what would be created, or null while there is nothing to plan. */
   plan?: TaskPlan | null
   /** Why the plan could not be worked out — shown instead of a stale plan. */
@@ -98,6 +102,14 @@ function submit(): void {
 
 // ── T2.6 the plan panel ───────────────────────────────────────────────────
 
+/** No repository at all: a scratch draft forks no branch, so there is
+ * nothing here for a preview to describe. The draft's own mode is the fact
+ * that decides; the project kind only answers for a composer mounted with no
+ * draft at all. */
+const noRepo = computed(() =>
+  props.draft ? props.draft.mode === 'scratch' : props.projectKind === 'scratch',
+)
+
 /** The composer's half of the plan request: the parent adds the draft's own. */
 const planInput = computed<PlanComposerInput>(() => ({
   title: titleFromPrompt(prompt.value.trim()),
@@ -109,7 +121,9 @@ const planInput = computed<PlanComposerInput>(() => ({
 // A plan is only worth asking for once there IS a prompt: an empty one is a
 // 400 on the creation route too, and showing that refusal before the human has
 // typed anything would be an error message about nothing — which is why the
-// parent, not this watch, is the one that decides to skip it.
+// parent, not this watch, is the one that decides to skip it. A scratch draft
+// asks for nothing either: the server has no branch or base to preview, and
+// the panel shows its own fixed notice instead of a plan.
 //
 // `immediate` is not a nicety here, it is the whole point (review round 1,
 // MAJEUR 3). Correcting the target branch changes the draft column's key, so
@@ -123,20 +137,26 @@ const planInput = computed<PlanComposerInput>(() => ({
 watch(
   [() => planInput.value.prompt, () => planInput.value.autoShip, () => planInput.value.agent],
   () => {
-    if (props.draft) {
+    if (props.draft && !noRepo.value) {
       emit('plan-input', planInput.value)
     }
   },
   { immediate: true },
 )
 
-const retargetInput = ref(props.draft ? draftBranch(props.draft) : '')
+const retargetInput = ref(draftBranchOrEmpty(props.draft))
 watch(
   () => props.draft,
   (draft) => {
-    retargetInput.value = draft ? draftBranch(draft) : ''
+    retargetInput.value = draftBranchOrEmpty(draft)
   },
 )
+
+/** A scratch draft names no branch, and neither does an absent one: the
+ * field then starts empty rather than on a name nothing would accept. */
+function draftBranchOrEmpty(draft: DraftTarget | null | undefined): string {
+  return draft ? (draftBranch(draft) ?? '') : ''
+}
 
 const retargetFieldLabel = computed(() =>
   props.draft ? retargetLabel(props.draft) : t('workspace.planBranchLabel'),
@@ -147,7 +167,7 @@ const retargetChanged = computed(
     props.draft !== null &&
     props.draft !== undefined &&
     retargetInput.value.trim() !== '' &&
-    retargetInput.value.trim() !== draftBranch(props.draft),
+    retargetInput.value.trim() !== draftBranchOrEmpty(props.draft),
 )
 
 function applyRetarget(): void {
@@ -232,40 +252,45 @@ defineExpose({ reset })
          branch, so it has no plan to show. -->
     <section v-if="draft" class="tc-plan">
       <h4 class="tc-plan-title">{{ t('workspace.planTitle') }}</h4>
-      <div class="tc-plan-edit">
-        <label class="tc-plan-label" :for="'tc-retarget'">{{ retargetFieldLabel }}</label>
-        <input
-          id="tc-retarget"
-          v-model="retargetInput"
-          class="tc-plan-input"
-          type="text"
-          spellcheck="false"
-          @keydown.enter.prevent="applyRetarget"
-        />
-        <button
-          class="tc-plan-apply"
-          type="button"
-          :disabled="!retargetChanged"
-          @click="applyRetarget"
-        >
-          {{ t('workspace.planRetarget') }}
-        </button>
-      </div>
-      <p v-if="planPending" class="tc-plan-state">{{ t('workspace.planLoading') }}</p>
-      <p v-else-if="planError" class="tc-plan-state tc-plan-state--bad">
-        {{ t('workspace.planError', { error: planError }) }}
-      </p>
-      <template v-else-if="plan">
-        <dl class="tc-plan-rows">
-          <div v-for="row in planRows" :key="row.key" class="tc-plan-row">
-            <dt class="tc-plan-key">{{ row.label }}</dt>
-            <dd class="tc-plan-value">{{ row.value }}</dd>
-          </div>
-        </dl>
-        <p v-if="plan.mode === 'fork'" class="tc-plan-hint">
-          {{ t('workspace.planBranchDerived') }}
+      <!-- No repository: no branch is ever forked, so neither the retarget
+           field nor a plan would describe anything real. -->
+      <p v-if="noRepo" class="tc-plan-state">{{ t('workspace.draftNoRepo') }}</p>
+      <template v-else>
+        <div class="tc-plan-edit">
+          <label class="tc-plan-label" :for="'tc-retarget'">{{ retargetFieldLabel }}</label>
+          <input
+            id="tc-retarget"
+            v-model="retargetInput"
+            class="tc-plan-input"
+            type="text"
+            spellcheck="false"
+            @keydown.enter.prevent="applyRetarget"
+          />
+          <button
+            class="tc-plan-apply"
+            type="button"
+            :disabled="!retargetChanged"
+            @click="applyRetarget"
+          >
+            {{ t('workspace.planRetarget') }}
+          </button>
+        </div>
+        <p v-if="planPending" class="tc-plan-state">{{ t('workspace.planLoading') }}</p>
+        <p v-else-if="planError" class="tc-plan-state tc-plan-state--bad">
+          {{ t('workspace.planError', { error: planError }) }}
         </p>
-        <p class="tc-plan-hint">{{ t('workspace.planIndicative') }}</p>
+        <template v-else-if="plan">
+          <dl class="tc-plan-rows">
+            <div v-for="row in planRows" :key="row.key" class="tc-plan-row">
+              <dt class="tc-plan-key">{{ row.label }}</dt>
+              <dd class="tc-plan-value">{{ row.value }}</dd>
+            </div>
+          </dl>
+          <p v-if="plan.mode === 'fork'" class="tc-plan-hint">
+            {{ t('workspace.planBranchDerived') }}
+          </p>
+          <p class="tc-plan-hint">{{ t('workspace.planIndicative') }}</p>
+        </template>
       </template>
     </section>
   </form>

@@ -42,6 +42,7 @@ import {
   type TaskRecord,
 } from './contract.js'
 import { detectForgeHint, isAncestor, refExists } from './git.js'
+import { reportBrainTransition } from './task-brain.js'
 import { CRITERIA_REASON_IDS_MAX } from './task-criteria-gate.js'
 import {
   blockingFindingsDetail,
@@ -365,9 +366,17 @@ function criteriaCondition(
   const archived = new Map(
     (review?.review.criteria ?? []).map((verdict) => [verdict.criterion_id, verdict.status]),
   )
+  // D18: an archived 'unclear' does not block on its own (the review that
+  // reached this condition already settled OK, and an unclear is an evidence
+  // gap, not a failure). An 'unmet', or a criterion the archive never judged
+  // at all, still refuses the merge.
   const blocking = criteria
-    .map((criterion) => ({ id: criterion.id, status: archived.get(criterion.id) ?? 'unclear' }))
-    .filter((entry) => entry.status !== 'met')
+    .map((criterion) => ({ id: criterion.id, status: archived.get(criterion.id) ?? 'unjudged' }))
+    .filter((entry) => entry.status === 'unmet' || entry.status === 'unjudged')
+    .map((entry) => ({
+      id: entry.id,
+      status: entry.status === 'unjudged' ? ('unclear' as const) : entry.status,
+    }))
   if (blocking.length === 0) {
     return { id: 'criteria', satisfied: true, detail: null }
   }
@@ -604,6 +613,60 @@ export function isMergeConflictError(message: string): boolean {
   return /conflict|not mergeable|cannot be merged/i.test(message)
 }
 
+/**
+ * D20 idempotence guard, read-only: has the FORGE already recorded this
+ * exact branch as merged? Checked ONLY after a forge merge call has already
+ * failed (see its call site) — never before a fresh attempt, so an open,
+ * unmerged branch pays nothing extra for the ordinary case.
+ *
+ * Never a local git ancestry check: a squash or rebase merge lands a NEW
+ * commit on the target, one `record.branch`'s own tip is never an ancestor
+ * of, so only the forge's own open/closed/merged bookkeeping can answer this
+ * honestly (`branchAncestry` above answers a different question — whether
+ * the TARGET is already in the branch, not the reverse).
+ *
+ * The unambiguous LIST form, same as prep.ts's `forgeProbes`: a NAMED branch
+ * is never passed as a positional (`gh pr view 1234` / `glab mr view 1234`
+ * read a purely numeric argument as a PR/MR NUMBER). `--head=`/
+ * `--source-branch=` and the merged-state filters are the same flags already
+ * verified against gh 2.46.0 / glab 1.53.0 elsewhere in this file
+ * (`mergeCandidates`) and in prep.ts.
+ *
+ * Unreadable, or any shape this cannot parse, answers `false`: not proof
+ * either way, so the ordinary forge failure this guards falls through and
+ * surfaces exactly as it always has.
+ */
+async function branchAlreadyMerged(
+  cli: 'gh' | 'glab',
+  cwd: string,
+  branch: string,
+  execForge: ShipForgeExecFn,
+): Promise<boolean> {
+  const args =
+    cli === 'gh'
+      ? ['pr', 'list', `--head=${branch}`, '--state', 'merged', '--limit', '1', '--json', 'number']
+      : [
+          'mr',
+          'list',
+          `--source-branch=${branch}`,
+          '--merged',
+          '--per-page',
+          '1',
+          '--output',
+          'json',
+        ]
+  const outcome = await execForge(cli, args, cwd)
+  if (outcome.kind !== 'ok') {
+    return false
+  }
+  try {
+    const data: unknown = JSON.parse(outcome.stdout)
+    return Array.isArray(data) && data.length > 0
+  } catch {
+    return false
+  }
+}
+
 // --- outcome ---------------------------------------------------------------
 
 export type MergeOutcome = {
@@ -630,6 +693,17 @@ export type MergeTaskOptions = {
   cwd: string
   task: TaskRecord
   settings: MergeSettings
+  /**
+   * Arm/brain integration: `brainAutoMerge` (config.ts), resolved by the
+   * CALLER from the global config alone and handed in as a plain value.
+   * GLOBAL-ONLY, same doctrine as every field of `settings` above; this
+   * module never reads config itself, so the boundary between "the workspace
+   * resolved a setting" and "a repo could sneak one past this gate" cannot
+   * blur here. `true` (a brain-ticket task's own consent OVERRIDES
+   * `mergePolicy` to `'auto'` for that task only) is the caller's honest
+   * default when nothing configures it either way.
+   */
+  brainAutoMerge: boolean
   /** Test seam: the four facts. Omitted, they are collected from disk by `readMergeInputs`. */
   inputs?: MergeInputs
   /** Test seam: the default runs a real gh / glab. */
@@ -667,6 +741,31 @@ const forgeOutcomeMessage = (outcome: Extract<ShipCliOutcome, { kind: 'error' }>
   outcome.message.slice(0, MERGE_ERROR_MAX)
 
 /**
+ * Whether the policy this call actually merges under — `opts.settings.policy`
+ * after the SAME brain override `mergeTask` applies below — is `'auto'`.
+ *
+ * Arm/brain integration: a brain-ticket task's own consent (`brainAutoMerge`,
+ * GLOBAL-ONLY, default true, resolved by the caller and handed in as a plain
+ * value) OVERRIDES `mergePolicy` to `'auto'` for THIS task only: the
+ * workspace-wide setting, and every task that carries no `brain_ticket`, are
+ * untouched. Never the other direction: a repo that explicitly wants
+ * `mergePolicy: 'auto'` for every task keeps that regardless of
+ * `brainAutoMerge`.
+ *
+ * Exported (D20) so a caller can ask the SAME question `mergeTask` is about
+ * to answer BEFORE calling it — `task-server.ts`'s `ship()` reads it to
+ * decide whether the merge about to run is worth a `cycle_step: 'merge'`
+ * marker — without a second, drifting copy of this exact calculation.
+ */
+export function effectiveMergePolicyIsAuto(
+  task: TaskRecord,
+  settings: MergeSettings,
+  brainAutoMerge: boolean,
+): boolean {
+  return settings.policy === 'auto' || Boolean(task.brain_ticket && brainAutoMerge)
+}
+
+/**
  * Evaluate, then — only under `mergePolicy: 'auto'`, and only on four
  * satisfied conditions — merge.
  *
@@ -678,8 +777,15 @@ const forgeOutcomeMessage = (outcome: Extract<ShipCliOutcome, { kind: 'error' }>
  * — all come back as an outcome the caller states.
  */
 export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
+  const settings: MergeSettings = effectiveMergePolicyIsAuto(
+    opts.task,
+    opts.settings,
+    opts.brainAutoMerge,
+  )
+    ? { ...opts.settings, policy: 'auto' }
+    : opts.settings
   const inputs = opts.inputs ?? readMergeInputs(opts.cwd, opts.task)
-  const readiness = mergeReadiness(opts.task, inputs, opts.settings)
+  const readiness = mergeReadiness(opts.task, inputs, settings)
   const events: AppendTaskEventInput[] = []
   if (opts.degradedKeys && opts.degradedKeys.length > 0) {
     // A config value that was present and unusable never merely disappears
@@ -701,7 +807,7 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
   // it has to say, and it REFUSES nothing: nobody asked it to merge, so
   // turning a shipped task into "needs you" would be a refusal invented on
   // the user's behalf. The caller leaves the record exactly as it found it.
-  if (opts.settings.policy !== 'auto') {
+  if (settings.policy !== 'auto') {
     events.push({
       type: MERGE_EVENT,
       data: {
@@ -722,7 +828,7 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
       type: MERGE_EVENT,
       data: {
         name: 'refused',
-        policy: opts.settings.policy,
+        policy: settings.policy,
         terminal: isTerminalReason(reason.code),
         ...(reason.detail ? { message: reason.detail } : {}),
       },
@@ -733,7 +839,7 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
 
   const execForge = opts.execForge ?? ((cli, args, cwd) => execCli(cli, args, cwd))
   let note: string | null = null
-  for (const candidate of mergeCandidates(opts.cwd, opts.task, opts.settings)) {
+  for (const candidate of mergeCandidates(opts.cwd, opts.task, settings)) {
     const outcome = await execForge(candidate.cli, candidate.args, opts.cwd)
     if (outcome.kind === 'missing') {
       continue
@@ -754,7 +860,38 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
           data: { name: 'failed', cli: candidate.cli, message: reason.detail ?? message },
           reason_code: 'merge_conflict',
         })
+        if (opts.task.brain_ticket) {
+          void reportBrainTransition(opts.cwd, opts.task, {
+            type: 'failed',
+            error_message: reason.detail ?? message,
+          })
+        }
         return { kind: 'failed', reason, readiness, events }
+      }
+      // D20 idempotence: a crash between an EARLIER attempt's forge merge
+      // landing and this process recording it resumes here on the SAME
+      // branch, and the forge's own refusal (already merged, the PR/MR no
+      // longer open) reads exactly like any other error — never a conflict,
+      // so it never took the branch above. Asked here, not before the call:
+      // see branchAlreadyMerged's own header for why the cost is paid only
+      // once a fresh attempt has already failed.
+      if (await branchAlreadyMerged(candidate.cli, opts.cwd, opts.task.branch, execForge)) {
+        events.push({
+          type: MERGE_EVENT,
+          data: {
+            name: 'merged',
+            cli: candidate.cli,
+            branch: opts.task.branch,
+            already_merged: true,
+          },
+        })
+        if (opts.task.brain_ticket) {
+          void reportBrainTransition(opts.cwd, opts.task, {
+            type: 'merged',
+            branch: opts.task.branch,
+          })
+        }
+        return { kind: 'merged', cli: candidate.cli, url: null, readiness, events }
       }
       // Keep trying (a dual-remote setup may have the other CLI working) but
       // remember the failure: it is the honest note if nothing else succeeds.
@@ -768,11 +905,18 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
         name: 'merged',
         cli: candidate.cli,
         branch: opts.task.branch,
-        strategy: opts.settings.strategy ?? 'forge default',
-        deleted_branch: opts.settings.deleteBranch,
+        strategy: settings.strategy ?? 'forge default',
+        deleted_branch: settings.deleteBranch,
         ...(url ? { url } : {}),
       },
     })
+    if (opts.task.brain_ticket) {
+      // `merge_sha` is omitted: neither `gh pr merge` nor `glab mr merge`
+      // hands one back on this path (only the MR/PR url, when the forge
+      // gives one). The brain reads a `merged` transition with no sha as
+      // "landed, sha unknown" rather than a claim about a commit nobody read.
+      void reportBrainTransition(opts.cwd, opts.task, { type: 'merged', branch: opts.task.branch })
+    }
     return { kind: 'merged', cli: candidate.cli, url, readiness, events }
   }
 
@@ -793,5 +937,11 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
     data: { name: 'failed', message: reason.detail ?? 'the merge could not be performed' },
     reason_code: 'forge_unreachable',
   })
+  if (opts.task.brain_ticket) {
+    void reportBrainTransition(opts.cwd, opts.task, {
+      type: 'failed',
+      error_message: reason.detail ?? 'the merge could not be performed',
+    })
+  }
   return { kind: 'failed', reason, readiness, events }
 }

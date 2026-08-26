@@ -26,7 +26,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import { t } from '../i18n'
-import type { TaskChecks, TaskEvent, TaskRecord } from '../types'
+import type { TaskChecks, TaskEvent, TaskRecord, TaskTurn } from '../types'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -107,7 +107,6 @@ async function renderConversation(options: RenderOptions = {}): Promise<string> 
       checks: options.checks ?? null,
     },
     projectName: 'repo',
-    pinned: false,
     reply: ok,
     interrupt: ok,
     resume: ok,
@@ -267,5 +266,60 @@ describe('TaskConversation gates the re-run button on the checks status', () => 
     const html = await renderConversation({ events: [commitEvent], checks: checksJson() })
     expect(buttonWith(html, 'cv-checks-rerun')).not.toContain('disabled')
     expect(html).toContain(t('workspace.checksRerun'))
+  })
+})
+
+// The user's own turn is rendered by TaskEventUser, not inline as raw text.
+// It used to be a `<p>` with the prompt interpolated, so a user who wrote a
+// list, a code block or a link saw it verbatim while the assistant's own
+// markdown right below rendered properly. Same renderer for both sides now.
+/** A started turn: the prompt only reaches the thread through this event
+ *  (see TaskConversation.vue's `thread`), so a turn alone renders nothing. */
+const turnStarted: TaskEvent = {
+  seq: 1,
+  at: '2026-08-24T10:00:00.000Z',
+  type: 'turn_started',
+  data: { turn: 1 },
+}
+
+/** One finished user turn, with only the fields this suite cares about. */
+function turn(prompt: string): TaskTurn {
+  return {
+    prompt,
+    response: null,
+    question: null,
+    started_at: '2026-08-24T10:00:00Z',
+    ended_at: '2026-08-24T10:00:05Z',
+  }
+}
+
+describe('the user turn renders markdown, like the assistant beside it', () => {
+  test('a list written by the user becomes a real list, not literal dashes', async () => {
+    const html = await renderConversation({
+      record: { turns: [turn('do this:\n\n- first\n- second')] },
+      events: [turnStarted],
+    })
+    expect(html).toContain('<li>')
+    expect(html).toContain('first')
+    // The raw markdown must NOT survive as text.
+    expect(html).not.toContain('- first\n- second')
+  })
+
+  test('inline code and emphasis render as elements', async () => {
+    const html = await renderConversation({
+      record: { turns: [turn('run `bun test` and **stop**')] },
+      events: [turnStarted],
+    })
+    expect(html).toContain('<code>')
+    expect(html).toContain('<strong>')
+  })
+
+  test('the old inline bubble is gone: no decorative colour on a turn that is not a state', async () => {
+    const html = await renderConversation({
+      record: { turns: [turn('plain text')] },
+      events: [turnStarted],
+    })
+    expect(html).not.toContain('cv-user')
+    expect(html).toContain('plain text')
   })
 })

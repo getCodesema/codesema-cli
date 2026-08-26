@@ -1,0 +1,65 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+
+  // An export that is also referenced inside its own file is not dead code: the
+  // symbol is alive, only the `export` keyword is superfluous. This repo does
+  // that a lot on purpose — module-local constants and helpers are exported so
+  // they read as the module's documented vocabulary and so a test can reach for
+  // them without a refactor. Left on, that habit would report 64 exports and 87
+  // types and bury the handful of symbols that are genuinely referenced from
+  // nowhere. Flip this to `false` for a one-off "what have we over-exported?"
+  // audit; it is not meant to run that way in the gate.
+  "ignoreExportsUsedInFile": true,
+
+  // DEBT — real dead code, found by the very run that this config gates. Four
+  // symbols have ZERO references anywhere: not in a sibling module, not in a
+  // test, not in a .vue template. They are tagged `@deadcode` where they stand
+  // rather than ignored by file: a whole-file ignore would blind the gate to
+  // any NEW dead export in `task-isolation.ts` and `task-runner.ts`, the two
+  // largest files of the CLI. The tag is on the symbol, so the rest of each
+  // file stays checked, and whoever opens the file sees the debt.
+  //
+  //   packages/cli/src/task-isolation.ts  BUN_CLAUDE_INSTALL_COMMAND (const)
+  //   packages/cli/src/task-isolation.ts  hostClaudeVersion (function)
+  //   packages/cli/src/task-runner.ts     DEFAULT_MAX_PARALLEL_TASKS (const,
+  //                                       documented INERT since T1.2)
+  //   packages/web/src/composables/useDiff.ts  SplitRowKind (type)
+  //
+  // Delete the symbol, delete its tag; when the last one goes, delete this too.
+  "tags": ["-deadcode"],
+
+  // `entry` and `project` at the root of the config are IGNORED once
+  // `workspaces` exists — the root package is the workspace named ".".
+  "workspaces": {
+    ".": {
+      // NOT debt, despite how it looks: `unrun` is an OPTIONAL PEER of tsdown
+      // (`"unrun": "*"` in its peerDependencies), and installing it is what
+      // makes tsdown load tsdown.config.ts through it — the build log says so
+      // on every run: `config file: .../tsdown.config.ts (unrun)`. Nothing
+      // imports it, which is exactly why knip cannot see the link and calls it
+      // unused. Removing it does not break the build, it silently changes which
+      // config loader runs. Keep both the dependency and this line.
+      "ignoreDependencies": ["unrun"]
+    },
+
+    "packages/cli": {
+      // The eval harness is started by hand (`bun eval/run.ts`), so no manifest
+      // script points at it and knip would call the whole harness unused.
+      // Nothing else needs declaring here: `src/index.ts` matches knip's default
+      // entry pattern, `scripts/*.mjs` are reached through the package's
+      // build/prepack scripts, and `*.test.ts` files are entry points already
+      // because the Bun plugin reads the root `test:only` script.
+      "entry": ["eval/run.ts"]
+    },
+
+    "packages/web": {
+      // `src/types.ts` mirrors the CLI contract by hand (see the file header).
+      // Its surface is dictated by the contract, not by whatever the app happens
+      // to read today, so a mirror type nobody imports yet is intended and not
+      // dead code. Scoped to that one file so the rest of the app stays checked.
+      "ignoreIssues": {
+        "src/types.ts": ["exports", "types"]
+      }
+    }
+  }
+}

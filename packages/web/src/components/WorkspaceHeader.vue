@@ -1,16 +1,20 @@
 <script setup lang="ts">
-// Global 52px workspace header: brand + WORKSPACE label, the search field
-// (⌘K focuses it, its query filters the work queue), and the two live
+// Global 52px workspace header: brand + WORKSPACE label, and the two live
 // signals on the right — the amber bell badge "N agents need you" (visible
 // only when N > 0, clicking it opens the conversation that has waited the
 // longest) and the "● N agents" counter (running + reviewing, amber glowing
 // dot while at least one run is live). No avatar, per the maquette.
 //
+// The search lives in the list column, not here: each list searches its own
+// corpus (conversations, repositories), and a header field on top of them
+// would be a second box searching an overlapping third thing. ⌘K is owned by
+// the shell, which focuses whichever list is up.
+//
 // Plus, since T2.7/D9, the one place the workspace says it cannot reach a
 // forge. It sits HERE and not next to a list, because the fact is about the
 // workspace, not about one panel: a silent header with an empty issue list
 // underneath is exactly the ambiguity D9 exists to remove.
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed } from 'vue'
 import { forgeUnavailableKey } from '../composables/useProjects'
 import { t } from '../i18n'
 import type { WorkspaceInfo } from '../types'
@@ -34,22 +38,7 @@ const props = defineProps<{
 /** Null when the forge answers, and null when nothing is known about it. */
 const forgeReasonKey = computed(() => forgeUnavailableKey(props.workspace ?? null))
 
-const query = defineModel<string>('query', { default: '' })
-
 const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
-
-const searchInput = ref<HTMLInputElement | null>(null)
-
-/** ⌘K / Ctrl+K focuses the search from anywhere in the workspace. */
-function onGlobalKeydown(e: KeyboardEvent): void {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-    e.preventDefault()
-    searchInput.value?.focus()
-  }
-}
-
-onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 </script>
 
 <template>
@@ -57,20 +46,6 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
     <div class="wh-brand">
       <span class="wh-brand-name">codesema</span>
       <span class="wh-brand-sub">{{ t('workspace.title') }}</span>
-    </div>
-
-    <div class="wh-search">
-      <span class="wh-search-glyph" aria-hidden="true">⌕</span>
-      <input
-        ref="searchInput"
-        v-model="query"
-        class="wh-search-input"
-        type="search"
-        :placeholder="t('workspace.searchPlaceholder')"
-        :aria-label="t('workspace.searchPlaceholder')"
-        spellcheck="false"
-      />
-      <span class="wh-search-kbd" aria-hidden="true">⌘K</span>
     </div>
 
     <div class="wh-right">
@@ -144,47 +119,6 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--cs-muted);
-}
-
-.wh-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: 24px;
-  padding: 0 12px;
-  width: 300px;
-  background: var(--cs-surface-2);
-  border: 1px solid var(--cs-line-2);
-  border-radius: 7px;
-}
-
-.wh-search-glyph {
-  color: var(--cs-muted);
-  font-size: 13px;
-}
-
-.wh-search-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  color: var(--cs-text);
-  font-family: inherit;
-  font-size: 12.5px;
-  padding: 7px 0;
-  outline: none;
-}
-
-.wh-search-input::placeholder {
-  color: var(--cs-muted);
-}
-
-.wh-search-kbd {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--cs-ghost);
 }
 
 .wh-right {

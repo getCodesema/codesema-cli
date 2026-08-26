@@ -4,7 +4,7 @@
 // Everything here is testable with bun:test and NOTHING here touches the DOM:
 // the request body a draft produces, the correction that moves the plan, the
 // tolerant parse of the answer, the lines the panel renders — and the
-// per-column request machinery at the bottom, which is here rather than in
+// per-draft request machinery at the bottom, which is here rather than in
 // WorkspaceView.vue precisely because the view cannot be mounted in a test
 // (its setup builds `useTasks`) and the one rule that machinery exists to
 // keep — a slow answer never overwrites a newer one — was therefore pinned by
@@ -16,19 +16,19 @@
 //  1. The correction reuses the EXISTING draft model (`forkDraft` /
 //     `workonDraft`): correcting the branch swaps the draft in place, exactly
 //     as the fork/work-on toggle already does. A second draft model would be
-//     a second source of truth for what the column is targeting.
+//     a second source of truth for what the draft is targeting.
 //  2. Nothing the server says is rendered raw when it has a label of its own,
 //     and nothing the server did not say is invented. A plan that could not
 //     name a base says so; a branch the server refused to promise is never
 //     shown as final.
-//  3. A column shows the plan of what it is targeting NOW. Answers arrive out
-//     of order, columns are remounted by a correction, and a plan is only
+//  3. A draft shows the plan of what it is targeting NOW. Answers arrive out
+//     of order, the composer is remounted by a correction, and a plan is only
 //     ever replaced by a fresher one — never by a staler one that took longer.
 
 import { reactive } from 'vue'
 import { t } from '../i18n'
 import type { TaskIssueRef, TaskPlan } from '../types'
-import { draftBranch, forkDraft, workonDraft, type DraftTarget } from './useColumns'
+import { draftBranch, forkDraft, workonDraft, type DraftTarget } from './useWorkspaceNav'
 
 /** What the composer contributes: it owns the prompt, the agent and auto-ship. */
 export type PlanComposerInput = {
@@ -40,10 +40,10 @@ export type PlanComposerInput = {
 }
 
 /**
- * The preview request body for a draft column — the SAME mapping
- * `onDraftCreate` uses for the creation (fork sends `base`, work-on sends
- * `branch` and its optional `target`), so the plan describes the very request
- * the Launch button will send.
+ * The preview request body for a draft — the SAME mapping `onDraftCreate`
+ * uses for the creation (fork sends `base`, work-on sends `branch` and its
+ * optional `target`, scratch sends neither), so the plan describes the very
+ * request the Launch button will send.
  */
 export function planRequestBody(
   projectId: string,
@@ -56,9 +56,20 @@ export function planRequestBody(
     prompt: input.prompt,
     autoShip: input.autoShip,
     ...(input.agent ? { agent: input.agent } : {}),
-    ...(draft.mode === 'fork'
-      ? { base: draft.base }
-      : { branch: draft.branch, ...(draft.target !== null ? { target: draft.target } : {}) }),
+    ...planTargetFields(draft),
+  }
+}
+
+/** A scratch draft names no repository: naming a base or a branch on one is
+ * a 400, not a silently ignored field. */
+function planTargetFields(draft: DraftTarget): Record<string, unknown> {
+  switch (draft.mode) {
+    case 'scratch':
+      return {}
+    case 'fork':
+      return { base: draft.base }
+    case 'workon':
+      return { branch: draft.branch, ...(draft.target !== null ? { target: draft.target } : {}) }
   }
 }
 
@@ -72,7 +83,7 @@ export function planRequestBody(
  */
 export function retargetDraft(draft: DraftTarget, branch: string): DraftTarget {
   const next = branch.trim()
-  if (!next || next === draftBranch(draft)) {
+  if (draft.mode === 'scratch' || !next || next === draftBranch(draft)) {
     return draft
   }
   return draft.mode === 'fork' ? forkDraft(next) : workonDraft(next, draft.target)
@@ -195,12 +206,12 @@ export function planIssueLine(plan: TaskPlan): string {
   return plan.issue ? `${plan.issue.project}#${plan.issue.iid}` : t('workspace.planNone')
 }
 
-// ── The per-column request machinery ──────────────────────────────────────
+// ── The per-draft request machinery ───────────────────────────────────────
 
-/** What one draft column renders: a plan, a refusal, or a request in flight. */
+/** What one draft renders: a plan, a refusal, or a request in flight. */
 export type DraftPlan = { plan: TaskPlan | null; error: string | null; pending: boolean }
 
-/** No plan, no refusal, nothing in flight — the state a column starts in. */
+/** No plan, no refusal, nothing in flight — the state a draft starts in. */
 export const EMPTY_PLAN: DraftPlan = { plan: null, error: null, pending: false }
 
 /** Only the shape of `useTasks().preview` this needs; the real fetch is injected. */
@@ -218,35 +229,35 @@ const settled = (result: Awaited<ReturnType<PlanPreviewFn>>): DraftPlan =>
     : { plan: null, error: result.error, pending: false }
 
 export type PlanRequests = {
-  /** The state to render for a column key. */
+  /** The state to render for a draft key. */
   planOf: (key: string) => DraftPlan
-  /** The prompt a column should mount with — carried across a correction. */
+  /** The prompt a draft should mount with — carried across a correction. */
   promptOf: (key: string) => string
   /**
-   * Ask what this column's draft would create. Debounced, and NEVER a
+   * Ask what this draft would create. Debounced, and NEVER a
    * creation: the route it calls writes nothing at all, so a human typing in
    * the composer costs reads and nothing else.
    */
   request: (key: string, body: Record<string, unknown>, prompt: string) => void
-  /** Hand a prompt to a column that is about to mount under a new key. */
+  /** Hand a prompt to a draft that is about to mount under a new key. */
   carry: (key: string, prompt: string) => void
-  /** The column is gone (closed, corrected, promoted): drop everything it owned. */
+  /** The draft is gone (closed, corrected, promoted): drop everything it owned. */
   forget: (key: string) => void
 }
 
 /**
- * Per-column plan requests, with the two guards that make them safe to fire
+ * Per-draft plan requests, with the two guards that make them safe to fire
  * from a keystroke:
  *
  *  - a DEBOUNCE, so a sentence is one request rather than forty;
- *  - a monotonic RUN TOKEN per column, so the answer that lands is only ever
+ *  - a monotonic RUN TOKEN per key, so the answer that lands is only ever
  *    written down if it is still the answer to the last question asked. The
  *    server is local but not instant, and a preview for 'develop' issued
  *    before a correction to 'release' can perfectly well answer after it.
  *    Without the token that stale plan wins, and the panel then describes a
- *    branch the column is no longer targeting.
+ *    branch the draft is no longer targeting.
  *
- * `forget` bumps the token too: an answer for a column that has since been
+ * `forget` bumps the token too: an answer for a draft that has since been
  * closed, corrected or promoted belongs to nobody.
  */
 export function createPlanRequests(

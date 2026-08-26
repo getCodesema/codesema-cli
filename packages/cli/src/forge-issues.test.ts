@@ -55,7 +55,13 @@ const GLAB_ISSUE = {
   title: 'Fix login',
   description: 'Login is broken.',
   state: 'opened',
-  labels: ['bug', 'ui'],
+  // Empty on purpose: this fixture backs the generic pagination/ladder tests
+  // below, none of which is about labels, and a non-empty list here would
+  // trigger the label-colour catalog fetch (T3.9) on every one of them,
+  // adding an unrelated call their `r.calls` assertions do not expect. The
+  // colour-enrichment behaviour itself has its own fixtures and its own
+  // describe block further down.
+  labels: [] as string[],
   author: { id: 1, username: 'jdoe', name: 'Jane Doe' },
   created_at: '2026-07-20T09:30:00.123Z',
   updated_at: '2026-07-28T09:30:00.123Z',
@@ -67,7 +73,7 @@ const GH_ISSUE_PARSED: ForgeIssue = {
   title: 'Add sidebar',
   body: 'It needs a sidebar.',
   state: 'open',
-  labels: ['bug'],
+  labels: [{ name: 'bug', color: 'd73a4a' }],
   author: 'octocat',
   createdAt: '2026-07-20T09:00:00Z',
   updatedAt: '2026-07-28T10:00:00Z',
@@ -79,7 +85,7 @@ const GLAB_ISSUE_PARSED: ForgeIssue = {
   title: 'Fix login',
   body: 'Login is broken.',
   state: 'open',
-  labels: ['bug', 'ui'],
+  labels: [],
   author: 'jdoe',
   createdAt: '2026-07-20T09:30:00.123Z',
   updatedAt: '2026-07-28T09:30:00.123Z',
@@ -729,6 +735,136 @@ describe('a capped list says so', () => {
         '--output',
         'json',
       ])
+    })
+  })
+})
+
+// --- T3.9: GitLab label-colour enrichment (listIssues only) -------------------
+//
+// GitHub's issue list already carries colour for free (GH_ISSUE above), so
+// none of this applies to it. GitLab's `issue list` payload is bare names:
+// these fixtures are deliberately SEPARATE from GLAB_ISSUE (which stays
+// label-free, see its own comment) so the generic pagination/ladder tests
+// above never trigger this extra call.
+function glabIssueWithLabels(labels: string[]) {
+  return { ...GLAB_ISSUE, labels }
+}
+
+function glabLabelCatalog(entries: { name: string; color: string | null }[]): string {
+  return JSON.stringify(
+    entries.map((e) => ({ id: 1, name: e.name, ...(e.color === null ? {} : { color: e.color }) })),
+  )
+}
+
+describe('GitLab label-colour enrichment (listIssues, T3.9)', () => {
+  test('colours labels from one bounded catalog call, never one per issue', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.args[0] === 'label'
+          ? ok(
+              glabLabelCatalog([
+                { name: 'bug', color: '#D73A4A' },
+                { name: 'ui', color: '#428bca' },
+              ]),
+            )()
+          : ok(JSON.stringify([glabIssueWithLabels(['bug', 'ui'])]))(),
+      )
+      const result = await listIssues({ cwd: repo, execFn: r.execFn })
+      expect(result).toMatchObject({ available: true })
+      expect(result.available && result.issues[0]?.labels).toEqual([
+        { name: 'bug', color: 'd73a4a' },
+        { name: 'ui', color: '428bca' },
+      ])
+      // One issue-list call, one label-catalog call, never one per issue.
+      expect(r.calls.map((c) => c.args[0])).toEqual(['issue', 'label'])
+    })
+  })
+
+  test('no label anywhere in the page skips the catalog call entirely', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig(ok(JSON.stringify([glabIssueWithLabels([])])))
+      await listIssues({ cwd: repo, execFn: r.execFn })
+      expect(r.calls).toHaveLength(1)
+      expect(r.calls[0]?.args[0]).toBe('issue')
+    })
+  })
+
+  test('a catalog call that fails leaves every label at color: null, never fails the list', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.args[0] === 'label'
+          ? failing('HTTP 500')()
+          : ok(JSON.stringify([glabIssueWithLabels(['bug'])]))(),
+      )
+      const result = await listIssues({ cwd: repo, execFn: r.execFn })
+      expect(result).toMatchObject({ available: true })
+      expect(result.available && result.issues[0]?.labels).toEqual([{ name: 'bug', color: null }])
+    })
+  })
+
+  test('a catalog binary that is simply missing degrades the same way, never no-cli for the list', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.args[0] === 'label' ? missing() : ok(JSON.stringify([glabIssueWithLabels(['bug'])]))(),
+      )
+      const result = await listIssues({ cwd: repo, execFn: r.execFn })
+      expect(result).toMatchObject({ available: true })
+      expect(result.available && result.issues[0]?.labels).toEqual([{ name: 'bug', color: null }])
+    })
+  })
+
+  test('an unreadable catalog payload leaves every label at color: null too', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.args[0] === 'label'
+          ? ok('{ not an array')()
+          : ok(JSON.stringify([glabIssueWithLabels(['bug'])]))(),
+      )
+      const result = await listIssues({ cwd: repo, execFn: r.execFn })
+      expect(result).toMatchObject({ available: true })
+      expect(result.available && result.issues[0]?.labels).toEqual([{ name: 'bug', color: null }])
+    })
+  })
+
+  test('a name absent from the catalog keeps color: null, never a guessed colour', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) =>
+        call.args[0] === 'label'
+          ? ok(glabLabelCatalog([{ name: 'ui', color: '#428bca' }]))()
+          : ok(JSON.stringify([glabIssueWithLabels(['bug', 'ui'])]))(),
+      )
+      const result = await listIssues({ cwd: repo, execFn: r.execFn })
+      expect(result.available && result.issues[0]?.labels).toEqual([
+        { name: 'bug', color: null },
+        { name: 'ui', color: '428bca' },
+      ])
+    })
+  })
+
+  test('the catalog fetch itself pages, and stops at the first short page', async () => {
+    await withRepo(GITLAB_REMOTE, async (repo) => {
+      const r = rig((call) => {
+        if (call.args[0] !== 'label') {
+          return ok(JSON.stringify([glabIssueWithLabels(['bug'])]))()
+        }
+        const page = call.args.at(-3)
+        return page === '1'
+          ? ok(
+              glabLabelCatalog(
+                Array.from({ length: GLAB_PAGE_SIZE }, (_, i) => ({
+                  name: `l${i}`,
+                  color: '#111111',
+                })),
+              ),
+            )()
+          : ok(glabLabelCatalog([{ name: 'bug', color: '#D73A4A' }]))()
+      })
+      const result = await listIssues({ cwd: repo, execFn: r.execFn })
+      expect(result.available && result.issues[0]?.labels).toEqual([
+        { name: 'bug', color: 'd73a4a' },
+      ])
+      // 100 (full page) then a short page: exactly two catalog calls.
+      expect(r.calls.filter((c) => c.args[0] === 'label')).toHaveLength(2)
     })
   })
 })
@@ -2739,7 +2875,7 @@ describe('hierarchy: listChildIssues rejects the whole array on a shape mismatch
             number: 20,
             title: 'Add sidebar',
             author: 'octocat',
-            labels: ['bug'],
+            labels: [{ name: 'bug', color: 'd73a4a' }],
             url: 'https://github.com/acme/repo/issues/20',
           },
         ],
@@ -2760,7 +2896,7 @@ describe('hierarchy: listChildIssues rejects the whole array on a shape mismatch
             number: 20,
             title: 'Fix login',
             author: 'jdoe',
-            labels: ['bug'],
+            labels: [{ name: 'bug', color: null }],
             // origin (from the RESOLVED parent's web_url) + webPath.
             url: `${GLAB_ORIGIN}/acme/repo/-/issues/20`,
           },

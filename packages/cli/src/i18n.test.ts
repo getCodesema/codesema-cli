@@ -41,11 +41,11 @@ describe('every key is actually translated, not copied from the English', () => 
    * Identical on purpose, and each for a reason that is not "nobody got to
    * it": a proper noun (`menu.cloud*`), a field name that is the same word in
    * both languages (`field.mode`, `field.prompt`, `field.web`,
-   * `field.verdict`, `prep.label.custom`), a technical token quoted verbatim
-   * (`wizard.stdinStdout`), or a label whose French spelling IS the English
-   * one (`prep.title`, `prep.label.commits`, `review.commits`,
-   * `review.dualLaneA`, `export.verdictLabel`, `export.commitsLabel`,
-   * `export.prologue`).
+   * `field.verdict`, `prep.label.custom`, `brain.fieldId`, `brain.fieldUrl`),
+   * a technical token quoted verbatim (`wizard.stdinStdout`), or a label
+   * whose French spelling IS the English one (`prep.title`,
+   * `prep.label.commits`, `review.commits`, `review.dualLaneA`,
+   * `export.verdictLabel`, `export.commitsLabel`, `export.prologue`).
    */
   const IDENTICAL_ON_PURPOSE = new Set<string>([
     'prep.title',
@@ -63,6 +63,12 @@ describe('every key is actually translated, not copied from the English', () => 
     'export.prologue',
     'menu.cloud',
     'menu.cloudTitle',
+    'brain.fieldId',
+    'brain.fieldUrl',
+    'brain.fieldPid',
+    'brain.fieldPort',
+    'brain.fieldUptime',
+    'brain.fieldLog',
   ])
 
   test('no French entry is a copy of its English one, outside the argued list', () => {

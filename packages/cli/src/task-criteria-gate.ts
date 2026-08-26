@@ -22,16 +22,24 @@
 // the same story — that module decides which criteria exist, this one decides
 // whether the branch meets them.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   groundCriterionVerdicts,
+  parseCriterionProof,
   sanitizeCriterionVerdict,
   sanitizeCriterionVerdicts,
   TICKET_CRITERIA_MAX,
   type AcceptanceCriterion,
   type CriteriaGroundingReport,
+  type CriterionProof,
   type CriterionStatus,
   type CriterionVerdict,
+  type TaskCheckResult,
+  type TaskChecks,
 } from './contract.js'
+import { diffFilePaths } from './impact.js'
+import { runAdHocCheck, type ExecFn } from './task-checks.js'
 
 /**
  * How many blocking criterion ids the readable reason names before it stops.
@@ -73,6 +81,26 @@ export function buildCriteriaChapter(criteria: readonly AcceptanceCriterion[]): 
 }
 
 export type CriteriaCounts = { met: number; unmet: number; unclear: number }
+
+/**
+ * The tally + the one boolean it decides, shared by `resolveCriteria` (the
+ * judged half of the gate) and `combineCriteriaOutcomes` (D17, the merge of
+ * that half with the mechanical one) so the two never compute "satisfied"
+ * two different ways.
+ */
+function tallyCriteria(verdicts: readonly CriterionVerdict[]): {
+  counts: CriteriaCounts
+  satisfied: boolean
+} {
+  const counts: CriteriaCounts = { met: 0, unmet: 0, unclear: 0 }
+  for (const verdict of verdicts) {
+    counts[verdict.status] += 1
+  }
+  // INVARIANT n° 4, as code: the only thing consulted is the tally of the
+  // statuses computed above. Nothing the model asserted about the WHOLE
+  // ("all satisfied", "90% done") has any path to this boolean.
+  return { counts, satisfied: verdicts.length > 0 && counts.met === verdicts.length }
+}
 
 export type CriteriaOutcome = {
   /** Exactly one entry per criterion of the task, in the ticket's own order. */
@@ -195,17 +223,11 @@ export function resolveCriteria(
     (criterion): CriterionVerdict =>
       byId.get(criterion.id) ?? { criterion_id: criterion.id, status: 'unclear' },
   )
-  const counts: CriteriaCounts = { met: 0, unmet: 0, unclear: 0 }
-  for (const verdict of verdicts) {
-    counts[verdict.status] += 1
-  }
+  const { counts, satisfied } = tallyCriteria(verdicts)
   const unjudged = criteria.filter((criterion) => !byId.has(criterion.id)).length
   return {
     verdicts,
-    // INVARIANT n° 4, as code: the only thing consulted is the tally of the
-    // statuses computed above. Nothing the model asserted about the WHOLE —
-    // "all satisfied", "90% done" — has any path to this boolean.
-    satisfied: verdicts.length > 0 && counts.met === verdicts.length,
+    satisfied,
     counts,
     // Readable entries naming an id this task does not carry, counted once per
     // distinct id.
@@ -225,7 +247,260 @@ export function resolveCriteria(
   }
 }
 
+// --- Mechanical criteria (D17) ----------------------------------------------
+//
+// A criterion whose text ends in `[proof:command|diff|read ...]` is decided
+// HERE, deterministically, from the checks that already ran, the diff, or the
+// worktree: never asked of the reviewer, and never run through
+// `groundCriterionVerdicts`, since that function demotes a verdict for lacking an
+// anchor IN THE DIFF, which is the wrong test for a verdict that was never
+// meant to have one (a command's exit code needs no diff line to point at).
+// `[proof:judgment]`, and a criterion with no proof tag at all, still go
+// through the model exactly as before D17.
+
+/** One criterion known (D17) to carry a machine-checkable proof. */
+export type MechanicalCriterion = AcceptanceCriterion & { proof: CriterionProof }
+
+export type CriteriaPartition = {
+  /** Proof method is `command`, `diff` or `read`: decided by this file, never by the model. */
+  mechanical: MechanicalCriterion[]
+  /** No proof tag, or an explicit `[proof:judgment]`: still the reviewer's call. */
+  judged: AcceptanceCriterion[]
+}
+
+/**
+ * Splits a task's criteria on whether their own text carries a machine-
+ * checkable proof (D17). Each list keeps the input's relative order; a
+ * criterion written before D17 existed carries no tag at all and lands in
+ * `judged`, exactly where it already was.
+ */
+export function partitionCriteriaByProof(
+  criteria: readonly AcceptanceCriterion[],
+): CriteriaPartition {
+  const mechanical: MechanicalCriterion[] = []
+  const judged: AcceptanceCriterion[] = []
+  for (const criterion of criteria) {
+    const proof = parseCriterionProof(criterion.text)
+    if (proof && proof.method !== 'judgment') {
+      mechanical.push({ ...criterion, proof })
+    } else {
+      judged.push(criterion)
+    }
+  }
+  return { mechanical, judged }
+}
+
+export type ResolveMechanicalContext = {
+  /** The task's worktree: read for `read`, and the sandbox an ad hoc `command` runs in. */
+  worktree: string
+  /** The SAME diff the judged half of the gate grounds against (`outcome.record.diff`). */
+  diff: string
+  /** The turn's own checks run, or null when none exists: `command` falls back to an ad hoc run either way. */
+  checks: TaskChecks | null
+  execFn?: ExecFn
+}
+
+/** `passed` is the only mechanical `met`: `failed`, `timeout` and a synthetic engine failure are all `unmet`, with no middle ground, and a mechanical criterion is never `unclear`. */
+function statusFromCheck(check: TaskCheckResult): CriterionStatus {
+  return check.status === 'passed' ? 'met' : 'unmet'
+}
+
+async function resolveCommandCriterion(
+  criterion: MechanicalCriterion,
+  command: string,
+  ctx: ResolveMechanicalContext,
+): Promise<CriterionVerdict> {
+  // Strict equality against the turn's OWN checks first: the command already
+  // ran once, for real, and re-running it would only spend a second container
+  // to learn the same fact. A match still `skipped` carries no such fact (an
+  // earlier install failure canceled it): that is treated as no match, same
+  // as a command this task's checks never ran at all.
+  const already = ctx.checks?.checks.find((check) => check.command === command)
+  if (already && already.status !== 'skipped') {
+    return {
+      criterion_id: criterion.id,
+      status: statusFromCheck(already),
+      evidence: `task check \`${command}\`: ${already.status}`,
+    }
+  }
+  const ranNow = await runAdHocCheck({
+    worktree: ctx.worktree,
+    command,
+    ...(ctx.execFn ? { execFn: ctx.execFn } : {}),
+  })
+  return {
+    criterion_id: criterion.id,
+    status: statusFromCheck(ranNow),
+    evidence: `ad hoc \`${command}\`: ${ranNow.status}`,
+  }
+}
+
+function resolveDiffCriterion(
+  criterion: MechanicalCriterion,
+  path: string,
+  ctx: ResolveMechanicalContext,
+): CriterionVerdict {
+  const touched = diffFilePaths(ctx.diff).includes(path)
+  return {
+    criterion_id: criterion.id,
+    status: touched ? 'met' : 'unmet',
+    evidence: touched ? `${path} is changed in the diff` : `${path} does not appear in the diff`,
+  }
+}
+
+/**
+ * Separates a `[proof:read <path> :: <substring>]` argument's two halves:
+ * this file's own convention (D17 leaves the argument's inner grammar to the
+ * caller). `::` was picked as unlikely to collide with a real path, and is
+ * split on its FIRST occurrence so a substring that itself contains `::`
+ * still comes through whole.
+ */
+const READ_ARG_SEPARATOR = '::'
+
+function resolveReadCriterion(
+  criterion: MechanicalCriterion,
+  argument: string,
+  ctx: ResolveMechanicalContext,
+): CriterionVerdict {
+  const sep = argument.indexOf(READ_ARG_SEPARATOR)
+  const path = (sep < 0 ? argument : argument.slice(0, sep)).trim()
+  const substring = sep < 0 ? null : argument.slice(sep + READ_ARG_SEPARATOR.length).trim() || null
+  let content: string
+  try {
+    content = readFileSync(join(ctx.worktree, path), 'utf8')
+  } catch {
+    return {
+      criterion_id: criterion.id,
+      status: 'unmet',
+      evidence: `${path} not found in the worktree`,
+    }
+  }
+  if (substring && !content.includes(substring)) {
+    return {
+      criterion_id: criterion.id,
+      status: 'unmet',
+      evidence: `${path} does not contain "${substring}"`,
+    }
+  }
+  return {
+    criterion_id: criterion.id,
+    status: 'met',
+    evidence: substring ? `${path} contains "${substring}"` : `${path} is present in the worktree`,
+  }
+}
+
+async function resolveOneMechanicalCriterion(
+  criterion: MechanicalCriterion,
+  ctx: ResolveMechanicalContext,
+): Promise<CriterionVerdict> {
+  const { method, argument } = criterion.proof
+  // `parseCriterionProof` already refuses `command`/`diff`/`read` with no
+  // argument, so this is unreachable through `partitionCriteriaByProof`:
+  // defensive only, never trusting a `MechanicalCriterion` built by hand.
+  if (!argument) {
+    return {
+      criterion_id: criterion.id,
+      status: 'unmet',
+      evidence: `proof:${method} has no argument`,
+    }
+  }
+  if (method === 'command') {
+    return resolveCommandCriterion(criterion, argument, ctx)
+  }
+  if (method === 'diff') {
+    return resolveDiffCriterion(criterion, argument, ctx)
+  }
+  if (method === 'read') {
+    return resolveReadCriterion(criterion, argument, ctx)
+  }
+  // Unreachable through `partitionCriteriaByProof` (a `judgment` proof lands
+  // in `judged`, never in the `mechanical` list this function reads).
+  return {
+    criterion_id: criterion.id,
+    status: 'unmet',
+    evidence: `proof:${method} is not mechanical`,
+  }
+}
+
+/**
+ * The mechanical half of the gate (D17): one verdict per `MechanicalCriterion`,
+ * decided from the checks/diff/worktree rather than asked of a reviewer.
+ * Sequential, like `runChecks`'s own steps: an ad hoc `command` check is a
+ * container too, and nothing here caps how many run at once.
+ */
+export async function resolveMechanicalCriteria(
+  criteria: readonly MechanicalCriterion[],
+  ctx: ResolveMechanicalContext,
+): Promise<CriterionVerdict[]> {
+  const verdicts: CriterionVerdict[] = []
+  for (const criterion of criteria) {
+    verdicts.push(await resolveOneMechanicalCriterion(criterion, ctx))
+  }
+  return verdicts
+}
+
+/**
+ * Re-merges the mechanical verdicts (D17, never grounded) with `judgedOutcome`
+ * (the reviewer's own half, already grounded by `resolveCriteria`) into the
+ * single ordered `CriteriaOutcome` the rest of the gate reads: counts and
+ * `satisfied` recomputed over BOTH halves; the grounding-shaped fields
+ * (`unknown_ids`, `unjudged`, `dropped_evidence`, `demoted`, `overflowed`,
+ * `report`) carried over from `judgedOutcome` unchanged, since none of them
+ * has a mechanical equivalent. A mechanical criterion is always resolved,
+ * never `unclear`, and was never in the prompt for the model to overreach on.
+ */
+export function combineCriteriaOutcomes(
+  criteria: readonly AcceptanceCriterion[],
+  mechanicalVerdicts: readonly CriterionVerdict[],
+  judgedOutcome: CriteriaOutcome,
+): CriteriaOutcome {
+  const byId = new Map<string, CriterionVerdict>()
+  for (const verdict of [...mechanicalVerdicts, ...judgedOutcome.verdicts]) {
+    byId.set(verdict.criterion_id, verdict)
+  }
+  const verdicts = criteria.map(
+    (criterion): CriterionVerdict =>
+      byId.get(criterion.id) ?? { criterion_id: criterion.id, status: 'unclear' },
+  )
+  const { counts, satisfied } = tallyCriteria(verdicts)
+  return {
+    verdicts,
+    satisfied,
+    counts,
+    unknown_ids: judgedOutcome.unknown_ids,
+    unjudged: judgedOutcome.unjudged,
+    dropped_evidence: judgedOutcome.dropped_evidence,
+    demoted: judgedOutcome.demoted,
+    overflowed: judgedOutcome.overflowed,
+    report: judgedOutcome.report,
+  }
+}
+
 /** `1 criterion` / `3 criteria` — a count and the word that agrees with it. */
+/**
+ * D18: whether an unsatisfied gate may be LIFTED by a review the reviewer
+ * itself settled as OK. Only the pure unclear case qualifies: every judged
+ * criterion is met or unclear, nothing is unmet, nothing went unjudged and the
+ * diff was indexable. An unclear criterion is an evidence gap (the proof lives
+ * outside the diff, or needs an execution the reviewer cannot run), not a
+ * failure; a false "satisfied" stays impossible because `satisfied` itself is
+ * untouched and the waiver is journaled out loud by the caller.
+ */
+export function criteriaGateWaivable(outcome: CriteriaOutcome): boolean {
+  return (
+    outcome.verdicts.length > 0 &&
+    outcome.counts.unmet === 0 &&
+    outcome.unjudged === 0 &&
+    !outcome.report.diff_unreadable &&
+    // A demoted 'met' or a dropped proof is a claim that failed anchoring,
+    // not a sincere doubt: those never qualify, or a fabricated evidence
+    // would ride an approve through the gate.
+    outcome.demoted === 0 &&
+    outcome.dropped_evidence === 0 &&
+    outcome.counts.unclear > 0
+  )
+}
+
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
 /**

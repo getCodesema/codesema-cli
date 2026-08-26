@@ -58,6 +58,12 @@ export type TaskPlanDeps = {
   /** The PROJECT's repo root — never the repo the workspace was launched from. */
   cwd: string
   /**
+   * The scratch project: `cwd` is a plain directory. There is no base to fork
+   * from and no branch to name, and announcing either would promise the user a
+   * deliverable this conversation will never produce.
+   */
+  scratch?: boolean
+  /**
    * Fresh per-project runtime snapshot (T1.4): the agent command a new task
    * runs when it does not name its own, and the project's configured
    * isolation mode. Passing the launch repo's here is the exact bug T1.4
@@ -374,6 +380,25 @@ function resolveTargets(
   // both at once is a caller bug, not something to guess a priority for.
   if (branch && base) {
     return { ok: false, code: 400, error: "'branch' and 'base' are mutually exclusive" }
+  }
+  if (deps.scratch) {
+    if (branch || base) {
+      return {
+        ok: false,
+        code: 400,
+        error: "a conversation with no repository cannot name a 'branch' or a 'base'",
+      }
+    }
+    return {
+      ok: true,
+      branch: '',
+      recordBase: '',
+      planBase: '',
+      planTarget: '',
+      planBranch: '',
+      branchCertain: true,
+      baseNote: null,
+    }
   }
   if (base) {
     const refusal = refuseExplicitBase(deps.cwd, base)

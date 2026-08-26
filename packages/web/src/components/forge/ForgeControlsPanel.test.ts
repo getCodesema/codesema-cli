@@ -1,0 +1,740 @@
+// Same harness as ForgeBoard.test.ts / ForgeListPanel.test.ts for the
+// SSR-string-rendered cases (every prop-driven state). One block at the
+// bottom mounts on a null Vue renderer instead, mirroring TaskComposer.test.ts's
+// own precedent: the label search's open/close-clears-the-query behavior is
+// internal component state with no prop to seed it through, and SSR "runs
+// setup and stops" (same limitation TaskComposer.test.ts's own comment
+// names), so it cannot observe a click's effect at all.
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, test } from 'bun:test'
+import { createRenderer, createSSRApp, nextTick } from 'vue'
+import { compileScript, parse } from 'vue/compiler-sfc'
+import { renderToString } from 'vue/server-renderer'
+import type { ProjectIssuesState } from '../../composables/useIssues'
+import type { MrsLoadState } from '../../composables/useTasks'
+import { t } from '../../i18n'
+import type {
+  ForgeIssue,
+  ForgeIssuesResult,
+  ForgeLabel,
+  ForgeMr,
+  ForgeMrStateFilter,
+} from '../../types'
+import type { ForgeSortKey } from './ForgeLogic'
+import type { ForgeSection } from './ForgePrefs'
+
+const SOURCE = readFileSync(join(import.meta.dir, 'ForgeControlsPanel.vue'), 'utf8')
+
+Bun.plugin({
+  name: 'vue-sfc-with-template',
+  setup(build) {
+    build.onLoad({ filter: /\.vue$/ }, async (args) => {
+      const source = await Bun.file(args.path).text()
+      const { descriptor } = parse(source, { filename: args.path })
+      const compiled = compileScript(descriptor, { id: args.path, inlineTemplate: true })
+      return { contents: compiled.content, loader: 'ts' }
+    })
+  },
+})
+
+function label(name: string): ForgeLabel {
+  return { name, color: null }
+}
+
+function issue(overrides: Partial<ForgeIssue> = {}): ForgeIssue {
+  return {
+    number: 1,
+    title: 'first issue',
+    body: '',
+    state: 'open',
+    labels: [],
+    author: 'octocat',
+    createdAt: '2026-08-14T00:00:00.000Z',
+    updatedAt: '2026-08-14T00:00:00.000Z',
+    url: 'https://example.test/issues/1',
+    ...overrides,
+  }
+}
+
+function mr(overrides: Partial<ForgeMr> = {}): ForgeMr {
+  return {
+    number: 42,
+    title: 'first mr',
+    author: 'octocat',
+    sourceBranch: 'feat/x',
+    targetBranch: 'main',
+    updatedAt: '2026-08-14T00:00:00.000Z',
+    url: 'https://example.test/mr/42',
+    state: 'open',
+    isDraft: false,
+    labels: [],
+    additions: null,
+    deletions: null,
+    changedFiles: null,
+    checks: null,
+    reviewers: null,
+    assignees: null,
+    milestone: null,
+    mergeable: null,
+    commits: null,
+    body: null,
+    ...overrides,
+  }
+}
+
+function issuesState(overrides: Partial<ProjectIssuesState> = {}): ProjectIssuesState {
+  return { result: null, loading: false, error: null, ...overrides }
+}
+
+function available(issues: ForgeIssue[], truncated = false): ForgeIssuesResult {
+  return { available: true, truncated, issues }
+}
+
+type Props = {
+  hasBoard: boolean
+  activeSection: ForgeSection
+  collapsed: boolean
+  projectName: string
+  issuesState: ProjectIssuesState
+  issuesSort: ForgeSortKey
+  issuesLabels: string[]
+  mrs: ForgeMr[]
+  mrsState: MrsLoadState | null
+  mrsSort: ForgeSortKey
+  mrsStateFilter: ForgeMrStateFilter
+  mrsDraftOnly: boolean
+  mrsLabels: string[]
+}
+
+function props(overrides: Partial<Props> = {}): Props {
+  return {
+    // Most tests here are about the filter sections, which only exist when
+    // a board is up; the rail-without-a-board case has its own describe.
+    hasBoard: true,
+    activeSection: 'issues',
+    collapsed: false,
+    projectName: 'demo',
+    issuesState: issuesState(),
+    issuesSort: 'updated',
+    issuesLabels: [],
+    mrs: [],
+    mrsState: null,
+    mrsSort: 'updated',
+    mrsStateFilter: 'open',
+    mrsDraftOnly: false,
+    mrsLabels: [],
+    ...overrides,
+  }
+}
+
+async function render(overrides: Partial<Props> = {}): Promise<string> {
+  const ForgeControlsPanel = (await import('./ForgeControlsPanel.vue')).default
+  const app = createSSRApp(ForgeControlsPanel, props(overrides))
+  return renderToString(app)
+}
+
+describe('both accordion headers always render; only the active section has a body', () => {
+  test('issues active: its body renders, the pull requests body does not', async () => {
+    const html = await render({ activeSection: 'issues' })
+    expect(html).toContain(t('forge.issuesTitle'))
+    expect(html).toContain(t('forge.mrsTitle'))
+    expect(html).toContain('id="fcp-body-issues"')
+    expect(html).not.toContain('id="fcp-body-mrs"')
+  })
+
+  test('pull requests active: its body renders, the issues body does not', async () => {
+    const html = await render({ activeSection: 'mrs' })
+    expect(html).toContain('id="fcp-body-mrs"')
+    expect(html).not.toContain('id="fcp-body-issues"')
+  })
+
+  test('the collapse toggle reads "collapse", expanded (aria-expanded true)', async () => {
+    const html = await render()
+    expect(html).toContain(t('forge.controlsCollapse'))
+    expect(html).not.toContain(t('forge.controlsExpand'))
+    expect(html).toContain('aria-expanded="true"')
+  })
+
+  test('no collapsed band while expanded', async () => {
+    const html = await render()
+    expect(html).not.toContain('fcp-band')
+  })
+})
+
+/** The two accordion head buttons, in DOM order, as [ariaExpanded, closedChevron] pairs.
+ * The chevron is a lucide icon: its rendered `class` carries the library's own
+ * prefix classes ahead of ours, and both the section icon and the chevron are
+ * `<svg>` elements inside the same header, so this reads every svg's class
+ * list in the header and picks the one carrying the `fcp-acc-chevron` token
+ * (an exact token match, not a substring one, since "fcp-acc-chevron--closed"
+ * also contains "fcp-acc-chevron" as a substring). */
+function headsOf(html: string): Array<{ expanded: string; chevronClosed: boolean }> {
+  const headPattern =
+    /<button type="button" class="fcp-acc-head" aria-expanded="(true|false)"[^>]*>([\s\S]*?)<\/button>/g
+  return [...html.matchAll(headPattern)].map((head) => {
+    const svgClasses = [...head[2]!.matchAll(/<svg[^>]*\bclass="([^"]*)"/g)].map((m) => m[1]!)
+    const chevronClass = svgClasses.find((cls) => cls.split(/\s+/).includes('fcp-acc-chevron'))
+    return {
+      expanded: head[1] ?? '',
+      chevronClosed: (chevronClass?.split(/\s+/) ?? []).includes('fcp-acc-chevron--closed'),
+    }
+  })
+}
+
+describe('accordion headers: aria-expanded and the chevron follow the active section', () => {
+  test('issues active: its header is expanded with an un-rotated chevron, the other is not', async () => {
+    const html = await render({ activeSection: 'issues' })
+    const heads = headsOf(html)
+    expect(heads).toEqual([
+      { expanded: 'true', chevronClosed: false },
+      { expanded: 'false', chevronClosed: true },
+    ])
+  })
+
+  test('pull requests active: its header is expanded, issues is closed', async () => {
+    const html = await render({ activeSection: 'mrs' })
+    const heads = headsOf(html)
+    expect(heads).toEqual([
+      { expanded: 'false', chevronClosed: true },
+      { expanded: 'true', chevronClosed: false },
+    ])
+  })
+})
+
+// The rotation itself is CSS-only, unreachable through an SSR string render
+// (same limitation as ForgeControlsPanel's own former band-orientation test).
+describe('chevron rotation and the filter separator geometry: CSS-pinned', () => {
+  test('the chevron rotates 90 degrees when its section is closed, animated over 150ms', () => {
+    const chevron = SOURCE.slice(
+      SOURCE.indexOf('.fcp-acc-chevron {'),
+      SOURCE.indexOf('.fcp-acc-body {'),
+    )
+    expect(chevron).toContain('transition: transform 150ms ease;')
+    expect(chevron).toContain('transform: rotate(-90deg);')
+  })
+
+  test('the separator sits 4px from the rows above and below, 1px tall', () => {
+    const sep = SOURCE.slice(SOURCE.indexOf('.fcp-filter-sep {'), SOURCE.indexOf('.fcp-reset {'))
+    expect(sep).toContain('height: 1px;')
+    expect(sep).toContain('margin: 4px 0;')
+  })
+
+  test('a selected row never gets a border, only an accent-soft fill and weight 500', () => {
+    const on = SOURCE.slice(SOURCE.indexOf('.fcp-row--on {'), SOURCE.indexOf('.fcp-row-icon {'))
+    expect(on).toContain('background: var(--cs-green-soft);')
+    expect(on).toContain('font-weight: 500;')
+    expect(on).not.toContain('border')
+  })
+
+  test('a row lights up on hover', () => {
+    const hover = SOURCE.slice(SOURCE.indexOf('.fcp-row:hover {'), SOURCE.indexOf('.fcp-row--on {'))
+    expect(hover).toContain('background: var(--cs-hover);')
+  })
+})
+
+describe('issues section: sort rows, gated on there being data to control', () => {
+  test('no data loaded yet: no sort block, no labels block', async () => {
+    const html = await render({ activeSection: 'issues', issuesState: issuesState() })
+    expect(html).not.toContain('fcp-block')
+  })
+
+  test('an empty, loaded list: no sort block either (nothing to control)', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([]) }),
+    })
+    expect(html).not.toContain('fcp-block')
+  })
+
+  test('sort rows carry role=radio and aria-checked reflecting the current sort', async () => {
+    const updated = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue()]) }),
+      issuesSort: 'updated',
+    })
+    expect(updated).toContain('role="radiogroup"')
+    const rows = [
+      ...updated.matchAll(/class="fcp-row[^"]*" role="radio" aria-checked="(true|false)"/g),
+    ]
+    expect(rows.map((m) => m[1])).toEqual(['true', 'false'])
+
+    const title = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue()]) }),
+      issuesSort: 'title',
+    })
+    const titleRows = [
+      ...title.matchAll(/class="fcp-row[^"]*" role="radio" aria-checked="(true|false)"/g),
+    ]
+    expect(titleRows.map((m) => m[1])).toEqual(['false', 'true'])
+  })
+
+  test('issues carry no status-filter block: only labels can narrow this section', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue()]) }),
+    })
+    expect(html).not.toContain(t('forge.controlsFiltersHeading'))
+    expect(html).not.toContain('fcp-filter-sep')
+  })
+
+  test('label chips render from the loaded issues', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue({ labels: [label('bug')] })]) }),
+    })
+    expect(html).toContain('bug')
+    expect(html).toContain('lc-chip')
+  })
+})
+
+describe('pull requests section: sort, status filter (draft/ready only), labels', () => {
+  test('no data (unavailable or empty): no controls at all', async () => {
+    const unavailable = await render({
+      activeSection: 'mrs',
+      mrs: [mr()],
+      mrsState: { status: 'unavailable', reason: 'no-cli' },
+    })
+    expect(unavailable).not.toContain('fcp-block')
+
+    const empty = await render({
+      activeSection: 'mrs',
+      mrs: [],
+      mrsState: { status: 'loaded', truncated: false },
+    })
+    expect(empty).not.toContain('fcp-block')
+  })
+
+  // Two groups, and the separator between them is load-bearing: above it the
+  // STATE (exclusive, and it changes what is fetched from the forge), below it
+  // the DRAFT toggle (cumulative, and it sieves what was already fetched).
+  // They used to be one exclusive group offering draft/ready as if those were
+  // states, which left the real state filter unreachable.
+  test('the four states are offered as an exclusive group, draft/ready no longer are', async () => {
+    const html = await render({
+      activeSection: 'mrs',
+      mrs: [mr()],
+      mrsState: { status: 'loaded', truncated: false },
+    })
+    for (const key of [
+      'forge.stateOpen',
+      'forge.stateMerged',
+      'forge.stateClosed',
+      'forge.stateAll',
+    ]) {
+      expect(html).toContain(t(key))
+    }
+    expect(html).toContain('role="radiogroup" aria-label="' + t('forge.stateAria'))
+  })
+
+  test('the draft toggle is a CHECKBOX below the separator, never a fifth radio', async () => {
+    const html = await render({
+      activeSection: 'mrs',
+      mrs: [mr()],
+      mrsState: { status: 'loaded', truncated: false },
+    })
+    expect(html).toContain('fcp-filter-sep')
+    expect(html).toContain('role="checkbox" aria-checked="false">' + t('forge.filterDraftOnly'))
+    // The separator sits between the two groups, not before both.
+    expect(html.indexOf(t('forge.stateAll'))).toBeLessThan(html.indexOf('fcp-filter-sep'))
+    expect(html.indexOf('fcp-filter-sep')).toBeLessThan(html.indexOf(t('forge.filterDraftOnly')))
+  })
+
+  test('the state and the toggle are independent: both can be set at once', async () => {
+    const html = await render({
+      activeSection: 'mrs',
+      mrs: [mr()],
+      mrsState: { status: 'loaded', truncated: false },
+      mrsStateFilter: 'merged',
+      mrsDraftOnly: true,
+    })
+    expect(html).toContain('role="radio" aria-checked="true">' + t('forge.stateMerged'))
+    expect(html).toContain('role="checkbox" aria-checked="true">' + t('forge.filterDraftOnly'))
+  })
+
+  test('the reset link shows when EITHER dimension is narrowed, and reads "reset"', async () => {
+    const base = {
+      activeSection: 'mrs' as const,
+      mrs: [mr()],
+      mrsState: { status: 'loaded' as const, truncated: false },
+    }
+    // 'all' plus no sieve is the one unfiltered combination.
+    const inactive = await render({ ...base, mrsStateFilter: 'all', mrsDraftOnly: false })
+    expect(inactive).not.toContain('fcp-reset')
+
+    // The default state ('open') is already a narrowing, so it offers a reset.
+    for (const narrowed of [
+      { mrsStateFilter: 'open' as const, mrsDraftOnly: false },
+      { mrsStateFilter: 'all' as const, mrsDraftOnly: true },
+      { mrsStateFilter: 'closed' as const, mrsDraftOnly: true },
+    ]) {
+      const active = await render({ ...base, ...narrowed })
+      expect(active).toContain('fcp-reset')
+      expect(active).toContain(t('forge.controlsFiltersReset'))
+    }
+  })
+
+  test('label chips render from the loaded MRs', async () => {
+    const html = await render({
+      activeSection: 'mrs',
+      mrs: [mr({ labels: [label('needs-review')] })],
+      mrsState: { status: 'loaded', truncated: false },
+    })
+    expect(html).toContain('needs-review')
+    expect(html).toContain('lc-chip')
+  })
+})
+
+// Pins the glyph choices by their stable, library-generated lucide classes,
+// never the icons' own SVG path data, which can change on a library bump.
+describe('section and control glyphs', () => {
+  test('the collapse button carries the chevrons-left glyph', async () => {
+    const html = await render({ collapsed: false })
+    expect(html).toContain('lucide-chevrons-left')
+  })
+
+  test('the issues section header carries the circle-dot glyph', async () => {
+    const html = await render({ activeSection: 'issues' })
+    expect(html).toContain('lucide-circle-dot')
+  })
+
+  test('the pull requests section header carries the pull-request glyph', async () => {
+    const html = await render({ activeSection: 'mrs' })
+    expect(html).toContain('lucide-git-pull-request-icon')
+  })
+
+  test('both accordion chevrons carry the chevron-down glyph', async () => {
+    const html = await render({ activeSection: 'issues' })
+    expect((html.match(/lucide-chevron-down/g) ?? []).length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('the sort heading carries the up-down arrow glyph, updated carries a clock, title a list', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue()]) }),
+    })
+    expect(html).toContain('lucide-arrow-up-down')
+    expect(html).toContain('lucide-clock')
+    expect(html).toContain('lucide-list-icon')
+  })
+
+  test('the labels heading carries the tag glyph, its search toggle the magnifier', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue({ labels: [label('bug')] })]) }),
+    })
+    expect(html).toContain('lucide-tag')
+    expect(html).toContain('lucide-search')
+  })
+
+  test('the mrs filters heading carries the funnel glyph, the reset action the cross', async () => {
+    const html = await render({
+      activeSection: 'mrs',
+      mrs: [mr()],
+      mrsState: { status: 'loaded', truncated: false },
+      mrsDraftOnly: true,
+    })
+    expect(html).toContain('lucide-list-filter')
+    expect(html).toContain('lucide-x-icon')
+  })
+})
+
+describe('label search: closed by default in both sections', () => {
+  test('issues: the magnifier is not accented, no search field is rendered', async () => {
+    const html = await render({
+      activeSection: 'issues',
+      issuesState: issuesState({ result: available([issue({ labels: [label('bug')] })]) }),
+    })
+    expect(html).not.toContain('fcp-search-toggle--on')
+    expect(html).not.toContain('fcp-label-search-input')
+  })
+
+  test('pull requests: same rest state', async () => {
+    const html = await render({
+      activeSection: 'mrs',
+      mrs: [mr({ labels: [label('bug')] })],
+      mrsState: { status: 'loaded', truncated: false },
+    })
+    expect(html).not.toContain('fcp-search-toggle--on')
+    expect(html).not.toContain('fcp-label-search-input')
+  })
+})
+
+describe('collapsed: a full-band reopen control carrying the project name, no sections', () => {
+  test('neither accordion head is rendered as a nav button', async () => {
+    const html = await render({ collapsed: true })
+    expect(html).not.toContain('fcp-acc-head')
+  })
+
+  test('the band carries the project name, truncatable, and reads as the expand control', async () => {
+    const html = await render({ collapsed: true, projectName: 'my-repo' })
+    expect(html).toContain('class="fcp-band"')
+    expect(html).toContain('class="fcp-band-name"')
+    expect(html).toContain('>my-repo<')
+    expect(html).toContain('title="my-repo"')
+    expect(html).toContain(t('forge.controlsExpand'))
+    expect(html).not.toContain(t('forge.controlsCollapse'))
+    expect(html).toContain('aria-expanded="false"')
+  })
+
+  test('the whole band is a single button element (the entire strip reopens it)', async () => {
+    const html = await render({ collapsed: true })
+    expect((html.match(/<button/g) ?? []).length).toBe(1)
+  })
+})
+
+// The writing-mode flip is CSS-only, unreachable through an SSR string
+// render (same limitation as rail/RepositoriesList.test.ts's geometry pins).
+describe('the band orientation: CSS-pinned', () => {
+  test('the name is vertical, top-to-bottom, by default', () => {
+    const bandName = SOURCE.slice(
+      SOURCE.indexOf('.fcp-band-name {'),
+      SOURCE.indexOf('/* Below the shell'),
+    )
+    expect(bandName).toContain('writing-mode: vertical-rl;')
+  })
+
+  test("below the shell's own 640px, the band becomes horizontal, the name no longer rotated", () => {
+    const narrow = SOURCE.slice(SOURCE.indexOf('@container fb-shell (max-width: 640px) {'))
+    expect(narrow).toContain('writing-mode: horizontal-tb;')
+    expect(narrow).toContain('height: 48px;')
+  })
+})
+
+// ── Interactive: mounted on a null Vue renderer, same escape hatch as
+// TaskComposer.test.ts (see its own comment). This is the one behavior SSR
+// genuinely cannot observe: the search box is internal ref state with no
+// prop seeding it, and clicking it is exactly the interaction SSR "runs
+// setup and stops" before ever reaching. ──
+type FakeNode = {
+  tag: string
+  text: string
+  parent: FakeNode | null
+  children: FakeNode[]
+  attrs: Record<string, unknown>
+  listeners: Record<string, (event?: unknown) => void>
+  value: string
+  focus: () => void
+  addEventListener: () => void
+  removeEventListener: () => void
+}
+
+function fakeNode(tag: string): FakeNode {
+  return {
+    tag,
+    text: '',
+    parent: null,
+    children: [],
+    attrs: {},
+    listeners: {},
+    value: '',
+    focus: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }
+}
+
+const { createApp: createNullApp } = createRenderer<FakeNode, FakeNode>({
+  createElement: (tag) => fakeNode(tag),
+  createText: (text) => Object.assign(fakeNode('#text'), { text }),
+  createComment: (text) => Object.assign(fakeNode('#comment'), { text }),
+  setText: (node, text) => {
+    node.text = text
+  },
+  setElementText: (node, text) => {
+    node.text = text
+    node.children = []
+  },
+  insert: (child, parent, anchor) => {
+    child.parent = parent
+    const at = anchor ? parent.children.indexOf(anchor) : -1
+    if (at === -1) {
+      parent.children.push(child)
+    } else {
+      parent.children.splice(at, 0, child)
+    }
+  },
+  remove: (child) => {
+    child.parent?.children.splice(child.parent.children.indexOf(child), 1)
+  },
+  parentNode: (node) => node.parent,
+  nextSibling: (node) => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
+  // The compiler stringifies large fully-static subtrees (this panel's many
+  // static SVG icon paths qualify): the renderer must be able to insert an
+  // opaque block for them even though this fake DOM cannot parse HTML. Its
+  // own content is never inspected by these tests, only its two anchors.
+  insertStaticContent: (content, parent, anchor) => {
+    const node = fakeNode('#static')
+    node.text = content
+    node.parent = parent
+    const at = anchor ? parent.children.indexOf(anchor) : -1
+    if (at === -1) {
+      parent.children.push(node)
+    } else {
+      parent.children.splice(at, 0, node)
+    }
+    return [node, node]
+  },
+  patchProp: (el, key, _prev, next) => {
+    if (key.startsWith('on') && key.length > 2) {
+      const event = (key[2] as string).toLowerCase() + key.slice(3)
+      el.listeners[event] = next as (event?: unknown) => void
+      return
+    }
+    if (key === 'value') {
+      el.value = typeof next === 'string' ? next : ''
+    }
+    el.attrs[key] = next
+  },
+})
+
+function findAll(root: FakeNode, pred: (n: FakeNode) => boolean): FakeNode[] {
+  const out: FakeNode[] = []
+  const walk = (n: FakeNode): void => {
+    if (pred(n)) {
+      out.push(n)
+    }
+    for (const child of n.children) {
+      walk(child)
+    }
+  }
+  walk(root)
+  return out
+}
+
+function find(root: FakeNode, pred: (n: FakeNode) => boolean): FakeNode | null {
+  return findAll(root, pred)[0] ?? null
+}
+
+function hasClass(node: FakeNode, cls: string): boolean {
+  const value = node.attrs.class
+  return typeof value === 'string' && value.split(/\s+/).includes(cls)
+}
+
+describe('label search: opening, typing, closing clears the query (interactive)', () => {
+  async function mountControls(): Promise<FakeNode> {
+    const ForgeControlsPanel = (await import('./ForgeControlsPanel.vue')).default
+    const root = fakeNode('#root')
+    const app = createNullApp(
+      ForgeControlsPanel,
+      props({
+        activeSection: 'issues',
+        issuesState: issuesState({
+          result: available([issue({ labels: [label('bug'), label('ui')] })]),
+        }),
+      }),
+    )
+    app.mount(root)
+    await nextTick()
+    await nextTick()
+    return root
+  }
+
+  test('closed by default, opens on click, and closing after typing clears the query on reopen', async () => {
+    const root = await mountControls()
+
+    expect(find(root, (n) => hasClass(n, 'fcp-label-search'))).toBeNull()
+
+    const toggle = find(root, (n) => hasClass(n, 'fcp-search-toggle'))
+    expect(toggle).not.toBeNull()
+    toggle?.listeners.click?.()
+    await nextTick()
+    await nextTick()
+
+    const input = find(root, (n) => hasClass(n, 'fcp-label-search-input'))
+    expect(input).not.toBeNull()
+
+    if (input) {
+      input.value = 'bu'
+      input.listeners.input?.({ target: input })
+    }
+    await nextTick()
+
+    const close = find(root, (n) => hasClass(n, 'fcp-label-search-close'))
+    expect(close).not.toBeNull()
+    close?.listeners.click?.()
+    await nextTick()
+
+    expect(find(root, (n) => hasClass(n, 'fcp-label-search'))).toBeNull()
+
+    toggle?.listeners.click?.()
+    await nextTick()
+    await nextTick()
+
+    const reopened = find(root, (n) => hasClass(n, 'fcp-label-search-input'))
+    expect(reopened).not.toBeNull()
+    expect(reopened?.value).toBe('')
+  })
+})
+
+// The rail's head. The project menu is a standalone column everywhere the
+// board is not shown, so it is NOT changed for this: the panel adapts it from
+// the outside instead. What is pinned here is that all three "stop being a
+// column" overrides are present, since dropping any one of them breaks the
+// rail in a way no unit test would otherwise catch: keeping the fixed 236px
+// track leaves a gap on the rail's right, and keeping either scroll or
+// stretch gives the menu a scrollbar of its own inside a column that already
+// scrolls.
+describe('the rail head adapts the project menu to living inside the rail', () => {
+  test('the head exists and costs no height when the slot is unused', () => {
+    expect(SOURCE).toContain('<slot name="top" />')
+    const head = SOURCE.slice(SOURCE.indexOf('.fcp-top {'), SOURCE.indexOf('.fcp-top :deep'))
+    expect(head).toContain('flex: none;')
+  })
+
+  test("the menu's fixed 236px track gives way to the rail's own width", () => {
+    const track = SOURCE.slice(
+      SOURCE.indexOf('.fcp-top :deep(.pn-root)'),
+      SOURCE.indexOf('.fcp-top :deep(.pn-card)'),
+    )
+    expect(track).toContain('width: 100%;')
+    expect(track).toContain('flex: none;')
+    expect(track).toContain('overflow-y: visible;')
+  })
+
+  test('neither the track nor its card scrolls on its own: the rail is the one scrolling', () => {
+    const card = SOURCE.slice(
+      SOURCE.indexOf('.fcp-top :deep(.pn-card)'),
+      SOURCE.indexOf('.fcp-sections {'),
+    )
+    expect(card).toContain('flex: none;')
+    expect(card).toContain('overflow-y: visible;')
+    expect(SOURCE).toContain('overflow-y: auto;') // still on .fcp-root itself
+  })
+
+  test('the head sits above the sections, never below them', () => {
+    expect(SOURCE.indexOf('class="fcp-top"')).toBeLessThan(SOURCE.indexOf('class="fcp-sections"'))
+  })
+})
+
+// The rail is permanent, the sections are not. With no board up there is no
+// list for a filter to act on, so the rail is the project menu and nothing
+// else. This is what stops the menu from moving or resizing when a project
+// is picked: only the sections below it appear.
+describe('without a board the rail keeps its head and drops its sections', () => {
+  test('no sections, no accordion headers', async () => {
+    const html = await render(props({ hasBoard: false }))
+    expect(html).not.toContain('fcp-sections')
+    expect(html).not.toContain('fcp-acc-head')
+  })
+
+  test('the head and the collapse control are still there', async () => {
+    const html = await render(props({ hasBoard: false }))
+    expect(html).toContain('fcp-top')
+    expect(html).toContain('fcp-collapse')
+  })
+
+  test('with a board, the sections come back under that same head', async () => {
+    const html = await render(props({ hasBoard: true }))
+    expect(html).toContain('fcp-top')
+    expect(html).toContain('fcp-sections')
+    expect(html.indexOf('fcp-top')).toBeLessThan(html.indexOf('fcp-sections'))
+  })
+
+  test('collapsed, the band shows whatever label it was given, board or not', async () => {
+    const html = await render(props({ hasBoard: false, collapsed: true, projectName: 'Projects' }))
+    expect(html).toContain('fcp-band')
+    expect(html).toContain('>Projects<')
+  })
+})

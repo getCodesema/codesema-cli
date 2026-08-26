@@ -3,7 +3,11 @@
 // the agent waits), 📌 pin, the discreet 2-click branch/worktree cleanup,
 // Stop, Resume (T8 — only when there IS an interrupted turn to restart; a
 // conversation stopped after the agent answered says so instead), Ship; a
-// mono "project · ⎇ branch" chip, the isolation chip (🛡
+// mono "project · ⎇ branch" chip (a scratch conversation has neither, so the
+// chip instead says no repository is attached, next to a picker over the
+// registered repos; once any landed, one chip per attachment replaces the
+// notice instead, since a scratch conversation can take more than one), the
+// isolation chip (🛡
 // container / ◇ policy, tooltip spelling out the guarantee) plus the colored
 // status phrase; then the Conversation / Diff / Checks tabs (Diff is the scoped
 // PreviewPanel; Checks shows the sandboxed typecheck/tests/lint run of the
@@ -56,16 +60,31 @@ import type { ApiResult, TaskState } from '../composables/useTasks'
 import { EXECUTION_STATUS } from '../execution-status'
 import { t } from '../i18n'
 import { TASK_EVENT_COMPONENTS, type TaskEventCtx } from '../task-event-registry'
-import type { PreviewResult, ReviewRecord, TaskEvent, TaskStatus as TaskStatus2 } from '../types'
+import type {
+  PreviewResult,
+  Project,
+  ReviewRecord,
+  TaskEvent,
+  TaskStatus as TaskStatus2,
+} from '../types'
 import PreviewPanel from './PreviewPanel.vue'
+import TaskEventUser from './task-events/TaskEventUser.vue'
 
 const props = defineProps<{
   state: TaskState
   /** Display name of the conversation's repo, for the header chip. */
   projectName: string
+  /** 'scratch' swaps the header's project/branch chip for a no-repo notice:
+   * that project has no branch, no worktree, nothing for the agent to read. */
+  projectKind: Project['kind']
+  /** Registered projects of kind 'repo', for the attach picker (scratch
+   * conversations only). Never pre-filtered by what this conversation
+   * already carries in `state.record.attachments`. */
+  repoProjects: Project[]
   /** Pinned in the focus deck: the 📌 toggle reflects and flips it. */
-  pinned: boolean
   reply: (message: string) => Promise<ApiResult>
+  /** POST …/attach: gives a scratch conversation one more repository. */
+  attach: (repoProjectId: string) => Promise<ApiResult>
   interrupt: () => Promise<ApiResult>
   /** POST …/resume: restarts the turn an interrupted conversation died on. */
   resume: () => Promise<ApiResult>
@@ -88,7 +107,7 @@ const props = defineProps<{
   dismissChecksProposal: () => void
 }>()
 
-const emit = defineEmits<{ 'open-review': [record: ReviewRecord]; 'toggle-pin': [] }>()
+const emit = defineEmits<{ 'open-review': [record: ReviewRecord] }>()
 
 const record = computed(() => props.state.record)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
@@ -111,6 +130,15 @@ const reasonDetail = computed(() => reasonDetailText(record.value))
 // Containment of this conversation's turns, fixed at its creation: the chip
 // states it, the tooltip says what it actually guarantees.
 const isolation = computed(() => isolationBadge(record.value))
+// Repos given to a scratch conversation after it started (empty on every
+// other conversation: its own project already is one).
+const attachments = computed(() => record.value.attachments ?? [])
+// Offering a repository this conversation already holds would be an action
+// with nothing to do: the server answers the second attach with the same ok.
+const attachableProjects = computed(() => {
+  const held = new Set(attachments.value.map((attachment) => attachment.project_id))
+  return props.repoProjects.filter((project) => !held.has(project.id))
+})
 
 // ── Tabs: Conversation / Diff · N / Checks ────────────────────────────────
 const tab = ref<FocusTab>('conversation')
@@ -733,6 +761,25 @@ async function doShip(): Promise<void> {
   }
 }
 
+// ── Attach: give a scratch conversation a repo, any time, more than once ──
+const attachSelection = ref('')
+const attachBusy = ref(false)
+
+async function doAttach(): Promise<void> {
+  if (attachBusy.value || attachSelection.value === '') {
+    return
+  }
+  attachBusy.value = true
+  actionError.value = null
+  const result = await props.attach(attachSelection.value)
+  attachBusy.value = false
+  if (result.ok) {
+    attachSelection.value = ''
+  } else {
+    actionError.value = result.error
+  }
+}
+
 const work = computed(() => formatDuration(record.value.work_ms))
 const wait = computed(() =>
   record.value.wait_ms > 0 ? formatDuration(record.value.wait_ms) : null,
@@ -753,17 +800,6 @@ const wait = computed(() =>
         />
         <h1 class="cv-title">{{ record.title }}</h1>
         <span class="cv-actions">
-          <button
-            class="cv-pin"
-            :class="{ 'cv-pin--on': pinned }"
-            type="button"
-            :aria-pressed="pinned"
-            :aria-label="pinned ? t('workspace.unpin') : t('workspace.pin')"
-            :title="pinned ? t('workspace.unpin') : t('workspace.pin')"
-            @click="emit('toggle-pin')"
-          >
-            📌
-          </button>
           <button
             v-if="canCleanup"
             class="cv-btn cv-btn--ghost-danger"
@@ -801,7 +837,48 @@ const wait = computed(() =>
       </div>
 
       <div class="cv-sub">
-        <span class="cv-chip">
+        <template v-if="projectKind === 'scratch'">
+          <span v-if="attachments.length === 0" class="cv-chip">
+            {{ t('workspace.noRepoAttached') }}
+          </span>
+          <template v-else>
+            <span v-for="attachment in attachments" :key="attachment.project_id" class="cv-chip">
+              {{ attachment.name }} · <span aria-hidden="true">⎇</span> {{ attachment.branch }}
+            </span>
+          </template>
+          <!-- Still offered once some are attached: a scratch conversation can
+               take more than one. It disappears only when there is nothing
+               left to offer. -->
+          <span v-if="repoProjects.length === 0" class="cv-chip">
+            {{ t('workspace.attachRepoNone') }}
+          </span>
+          <template v-else-if="attachableProjects.length > 0">
+            <select
+              v-model="attachSelection"
+              class="cv-attach-select"
+              :disabled="attachBusy"
+              :aria-label="t('workspace.attachRepoPlaceholder')"
+            >
+              <option value="" disabled>{{ t('workspace.attachRepoPlaceholder') }}</option>
+              <option
+                v-for="repoProject in attachableProjects"
+                :key="repoProject.id"
+                :value="repoProject.id"
+              >
+                {{ repoProject.name }}
+              </option>
+            </select>
+            <button
+              type="button"
+              class="cv-attach-btn"
+              :disabled="attachBusy || attachSelection === ''"
+              @click="doAttach"
+            >
+              {{ attachBusy ? t('workspace.attaching') : t('workspace.attachRepo') }}
+            </button>
+          </template>
+        </template>
+        <span v-else class="cv-chip">
           {{ projectName }} · <span aria-hidden="true">⎇</span> {{ record.branch || record.base }}
         </span>
         <!-- Isolation: what contains this conversation's agent. The tooltip
@@ -866,9 +943,7 @@ const wait = computed(() =>
             :key="item.kind === 'tools' ? `tools-${item.key}` : item.event.seq"
           >
             <template v-if="item.kind === 'single'">
-              <div v-if="item.prompt !== null" class="cv-user">
-                <p class="cv-user-text">{{ item.prompt }}</p>
-              </div>
+              <TaskEventUser v-if="item.prompt !== null" :text="item.prompt" />
               <component
                 :is="TASK_EVENT_COMPONENTS[item.event.type]"
                 :event="item.event"
@@ -1299,31 +1374,6 @@ const wait = computed(() =>
   gap: 8px;
 }
 
-.cv-pin {
-  font-size: 13px;
-  line-height: 1;
-  padding: 5px 8px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  cursor: pointer;
-  filter: grayscale(1);
-  opacity: 0.55;
-}
-
-.cv-pin:hover {
-  border-color: var(--cs-line-3);
-  opacity: 0.85;
-}
-
-/* Pinned is a STATE: the pin wears the green. */
-.cv-pin--on {
-  filter: none;
-  opacity: 1;
-  border-color: var(--cs-green-ring);
-  background: var(--cs-green-soft);
-}
-
 .cv-btn {
   font-size: 12px;
   font-weight: 600;
@@ -1409,6 +1459,43 @@ const wait = computed(() =>
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Attach picker: sized to sit inline among the chips of .cv-sub, never wider,
+   with a neutral border by default, same as .cv-chip; the color it never
+   wears is deliberate: attaching a repo is an ordinary action, not a state. */
+.cv-attach-select {
+  font-family: inherit;
+  font-size: 10.5px;
+  color: var(--cs-text-2);
+  background: var(--cs-panel);
+  border: 1px solid var(--cs-line-2);
+  border-radius: 5px;
+  padding: 3px 6px;
+  max-width: 160px;
+}
+
+.cv-attach-btn {
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--cs-text-2);
+  background: transparent;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.cv-attach-btn:hover:not(:disabled) {
+  border-color: var(--cs-line-3);
+  color: var(--cs-text);
+}
+
+.cv-attach-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* Isolation chip: a green outline when the cage holds it, neutral otherwise —
@@ -1539,27 +1626,6 @@ const wait = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-/* User turn: sober green-tinted bubble, right-aligned (maquette). */
-.cv-user {
-  align-self: flex-end;
-  max-width: 72%;
-  margin: 4px 0;
-  padding: 10px 13px;
-  border: 1px solid var(--cs-green-ring);
-  border-radius: 10px 10px 3px 10px;
-  background: var(--cs-green-soft);
-}
-
-.cv-user-text {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--cs-text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  min-width: 0;
 }
 
 .cv-live {

@@ -35,6 +35,17 @@ Usage:
   codesema sync              Push the latest review to your codesema.com workspace
   codesema sync delete       Delete all synced data (unlinked workspaces only)
   codesema link [code]       Link this workspace to your codesema.com account (no code: confirm in the browser)
+  codesema brain connect --url <url> --token <token>
+                                      Connect this workspace to a brain (same account as sync/link)
+  codesema brain status              Show the connected brain, this repo and its ready ticket count
+  codesema brain ticket --issue <n>  Draft and publish a ticket from a forge issue
+  codesema brain ticket --title <t> --prompt <p>
+                                      Draft and publish a ticket from a free-form prompt
+  codesema brain serve [--detach]    Alias for \`codesema workspace --brain\`; --detach backgrounds the
+                                      daemon (prints its pid and log path) instead of running it in the
+                                      foreground
+  codesema brain stop                Stop a brain daemon started with --detach (or under systemd) for
+                                      this repo
 
 Options:
   --branch <name>     Local branch to review (default: interactive picker, else current branch)
@@ -52,6 +63,11 @@ Options:
                       <level> (critical, major, minor, info) or when changes are requested
   --force             \`sync\`: upload even though the diff looks like it carries a secret
   --no-open           Do not open the browser
+  --brain             \`workspace\`: also start the brain daemon (drafts ticket requests, claims
+                      and runs published tickets)
+  --url, --token      \`brain connect\`: the brain's URL and a csk_<workspaceId>.<secret> token
+  --issue <n>         \`brain ticket\`: draft from this forge issue number
+  --title, --prompt   \`brain ticket\`: draft from a free-form title and prompt instead of an issue
   -h, --help          Show this help
   -v, --version       Show version
 
@@ -219,6 +235,16 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'config.autoSyncQuestion':
     'Push every completed review to your codesema.com workspace automatically?',
   'config.autoSyncSaved': 'auto-sync {state}: {path}',
+  'config.brainAutoMergeEntry': 'Brain ticket auto-merge',
+  'config.brainAutoMergeOn': 'on',
+  'config.brainAutoMergeOff': 'off',
+  'config.brainAutoMergeQuestion': 'Auto-merge a brain-ticket task once it ships clean?',
+  'config.brainAutoMergeOnHint': 'the whole point of connecting a brain: no human click to merge',
+  'config.brainAutoMergeSaved': 'brain auto-merge {state}: {path}',
+  'config.maxTurnsEntry': 'Turn budget per task',
+  'config.maxTurnsQuestion': 'How many turns may one task spend before replies are refused?',
+  'config.maxTurnsDefaultHint': 'default',
+  'config.maxTurnsSaved': 'turn budget {cap}: {path}',
   'config.back': 'Back',
   'config.languageSaved': 'language saved: {path}',
 
@@ -272,6 +298,8 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
 
   'serve.noWebUi': 'embedded web UI not found at {path}: broken install or build',
   'serve.noFreePort': 'no free port between {start} and {end}',
+  'serve.devViteInvalid':
+    'CODESEMA_DEV_VITE must be a loopback http(s) URL such as http://localhost:5173, got {value}',
 
   'record.invalidJson': '{path} is not valid JSON — the agent output must be a single JSON object',
   'record.noInput': '.codesema/input.json not found — run `codesema prep` first',
@@ -335,6 +363,38 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
     'unknown sync action: {action} (expected `codesema sync` or `codesema sync delete`)',
   'sync.unreachable': 'could not reach {url}: check your connection or CODESEMA_SYNC_URL',
   'sync.badResponse': 'unexpected response from {url}: required fields are missing or invalid',
+
+  'brain.usage': 'usage: codesema brain <connect|status|ticket|serve|stop>',
+  'brain.unknownAction':
+    'unknown brain action: {action} (expected connect, status, ticket, serve or stop)',
+  'brain.connectMissingFlags':
+    '`codesema brain connect` needs both --url <url> and --token <token>',
+  'brain.badToken': 'malformed token: expected csk_<workspaceId>.<secret>',
+  'brain.connected': 'Connected to the brain at {url}.',
+  'brain.savedTo': 'saved to: {path}',
+  'brain.notConnected': 'not connected to a brain (run `codesema brain connect` first)',
+  'brain.fieldUrl': 'url',
+  'brain.fieldRepo': 'repo',
+  'brain.noRemote': 'no git origin remote',
+  'brain.fieldReady': 'ready tickets',
+  'brain.statusTitle': 'Brain status',
+  'brain.ticketUsage':
+    'usage: codesema brain ticket --issue <n>, or --title <title> --prompt <prompt>',
+  'brain.badIssueNumber': 'not a valid issue number: {value}',
+  'brain.draftFailed': 'could not draft a ticket: {reason}',
+  'brain.ticketCreated': 'Ticket created: {title}',
+  'brain.fieldId': 'id',
+  'brain.fieldDaemon': 'daemon',
+  'brain.fieldPid': 'pid',
+  'brain.fieldPort': 'port',
+  'brain.fieldUptime': 'uptime',
+  'brain.fieldLog': 'log',
+  'brain.notRunning': 'not running',
+  'brain.detached': 'Brain daemon started in the background (pid {pid}).',
+  'brain.stopped': 'Brain daemon stopped (pid {pid}).',
+  'brain.stopTimeout':
+    'pid {pid} is still running {seconds}s after SIGTERM: send SIGKILL yourself, or `systemctl stop` if this runs as a systemd unit',
+  'brain.detachSpawnFailed': 'could not start the detached brain daemon',
 
   'menu.title': 'What do you want to do?',
   'menu.review': 'Simple review',
@@ -410,7 +470,7 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
     'another codesema workspace is already running (pid {pid}, port {port}) — stop it first, or delete {path} if it is stale',
   'workspace.projects': 'projects:',
   'workspace.noProjects':
-    'no project registered yet — launch codesema from a git repository, or add one from the web UI',
+    'no repository registered: you can start a conversation right away, and give it one later (or launch codesema from a git repository to register it)',
   'workspace.resumable':
     '{n} interrupted task can be resumed — click Resume in the web UI: | {n} interrupted tasks can be resumed — click Resume in the web UI:',
   'workspace.queueResumed':
@@ -493,6 +553,13 @@ Usage :
   codesema sync              Pousse la dernière review vers votre workspace codesema.com
   codesema sync delete       Supprime toutes les données synchronisées (workspaces non rattachés)
   codesema link [code]       Rattache ce workspace à votre compte codesema.com (sans code : confirmation navigateur)
+  codesema brain connect --url <url> --token <token>
+                                      Connecte ce workspace à un cerveau (même compte que sync/link)
+  codesema brain status              Affiche le cerveau connecté, ce dépôt et ses tickets prêts
+  codesema brain ticket --issue <n>  Rédige et publie un ticket depuis une issue du forge
+  codesema brain ticket --title <t> --prompt <p>
+                                      Rédige et publie un ticket depuis un titre et un prompt libres
+  codesema brain serve               Alias de \`codesema workspace --brain\`
 
 Options :
   --branch <nom>      Branche locale à passer en revue (défaut : sélecteur interactif, sinon branche courante)
@@ -511,6 +578,11 @@ Options :
                       sont demandés
   --force             \`sync\` : envoie même si le diff semble contenir un secret
   --no-open           Ne pas ouvrir le navigateur
+  --brain             \`workspace\` : démarre aussi le daemon du cerveau (rédige les demandes de
+                      tickets, réclame et exécute les tickets publiés)
+  --url, --token      \`brain connect\` : l'URL du cerveau et un jeton csk_<workspaceId>.<secret>
+  --issue <n>         \`brain ticket\` : rédige depuis ce numéro d'issue du forge
+  --title, --prompt   \`brain ticket\` : rédige depuis un titre et un prompt libres plutôt qu'une issue
   -h, --help          Afficher cette aide
   -v, --version       Afficher la version
 
@@ -684,6 +756,19 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'config.autoSyncQuestion':
     'Pousser automatiquement chaque review terminée vers votre workspace codesema.com ?',
   'config.autoSyncSaved': 'auto-sync {state} : {path}',
+  'config.brainAutoMergeEntry': 'Auto-merge des tickets du cerveau',
+  'config.brainAutoMergeOn': 'activé',
+  'config.brainAutoMergeOff': 'désactivé',
+  'config.brainAutoMergeQuestion':
+    "Merger automatiquement une tâche issue d'un ticket du cerveau une fois livrée sans accroc ?",
+  'config.brainAutoMergeOnHint':
+    'tout le sens de connecter un cerveau : aucun clic humain pour merger',
+  'config.brainAutoMergeSaved': 'auto-merge du cerveau {state} : {path}',
+  'config.maxTurnsEntry': 'Budget de tours par tâche',
+  'config.maxTurnsQuestion':
+    'Combien de tours une tâche peut-elle dépenser avant que les relances soient refusées ?',
+  'config.maxTurnsDefaultHint': 'défaut',
+  'config.maxTurnsSaved': 'budget de tours {cap} : {path}',
   'config.back': 'Retour',
   'config.languageSaved': 'langue enregistrée : {path}',
 
@@ -737,6 +822,8 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
 
   'serve.noWebUi': 'UI web embarquée introuvable dans {path} : installation ou build cassé',
   'serve.noFreePort': 'aucun port libre entre {start} et {end}',
+  'serve.devViteInvalid':
+    'CODESEMA_DEV_VITE doit être une URL http(s) loopback comme http://localhost:5173, reçu {value}',
 
   'record.invalidJson':
     "{path} n'est pas du JSON valide : la sortie de l'agent doit être un unique objet JSON",
@@ -804,6 +891,37 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'sync.unreachable': 'impossible de joindre {url} : vérifiez votre connexion ou CODESEMA_SYNC_URL',
   'sync.badResponse': 'réponse inattendue de {url} : champs requis manquants ou invalides',
 
+  'brain.usage': 'usage : codesema brain <connect|status|ticket|serve|stop>',
+  'brain.unknownAction':
+    'action brain inconnue : {action} (attendu connect, status, ticket, serve ou stop)',
+  'brain.connectMissingFlags': '`codesema brain connect` nécessite --url <url> et --token <token>',
+  'brain.badToken': 'jeton malformé : format attendu csk_<workspaceId>.<secret>',
+  'brain.connected': 'Connecté au cerveau à {url}.',
+  'brain.savedTo': 'enregistré dans : {path}',
+  'brain.notConnected': "non connecté à un cerveau (lancez d'abord `codesema brain connect`)",
+  'brain.fieldUrl': 'url',
+  'brain.fieldRepo': 'dépôt',
+  'brain.noRemote': 'aucun remote git origin',
+  'brain.fieldReady': 'tickets prêts',
+  'brain.statusTitle': 'Statut du cerveau',
+  'brain.ticketUsage':
+    'usage : codesema brain ticket --issue <n>, ou --title <titre> --prompt <prompt>',
+  'brain.badIssueNumber': "numéro d'issue invalide : {value}",
+  'brain.draftFailed': 'impossible de rédiger un ticket : {reason}',
+  'brain.ticketCreated': 'Ticket créé : {title}',
+  'brain.fieldId': 'id',
+  'brain.fieldDaemon': 'démon',
+  'brain.fieldPid': 'pid',
+  'brain.fieldPort': 'port',
+  'brain.fieldUptime': 'uptime',
+  'brain.fieldLog': 'log',
+  'brain.notRunning': "à l'arrêt",
+  'brain.detached': 'Démon brain démarré en arrière-plan (pid {pid}).',
+  'brain.stopped': 'Démon brain arrêté (pid {pid}).',
+  'brain.stopTimeout':
+    'le pid {pid} tourne toujours {seconds}s après SIGTERM : envoyez SIGKILL vous-même, ou `systemctl stop` si ça tourne en unité systemd',
+  'brain.detachSpawnFailed': 'impossible de démarrer le démon brain détaché',
+
   'menu.title': 'Que voulez-vous faire ?',
   'menu.review': 'Revue simple',
   'menu.reviewHint': 'choisir une branche et démarrer une revue',
@@ -870,7 +988,7 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
     'un autre workspace codesema tourne déjà (pid {pid}, port {port}) — arrêtez-le, ou supprimez {path} s’il est périmé',
   'workspace.projects': 'projets :',
   'workspace.noProjects':
-    "aucun projet enregistré — lancez codesema depuis un dépôt git, ou ajoutez-en un depuis l'UI web",
+    "aucun dépôt enregistré : vous pouvez démarrer une conversation tout de suite, et lui en donner un ensuite (ou lancez codesema depuis un dépôt git pour l'enregistrer)",
   'workspace.resumable':
     "{n} tâche interrompue peut reprendre — cliquez Reprendre dans l'UI web : | {n} tâches interrompues peuvent reprendre — cliquez Reprendre dans l'UI web :",
   'workspace.queueResumed':

@@ -3,10 +3,12 @@ import {
   acceptanceCriterionId,
   isActiveTaskStatus,
   isTaskId,
+  isTaskStatus,
   sanitizeTaskChecks,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
   TASK_AGENT_MAX,
+  TASK_BRAIN_TICKET_ID_MAX,
   TASK_CHECK_COMMAND_MAX,
   TASK_CHECK_TAIL_MAX,
   TASK_CHECKS_ERROR_MAX,
@@ -15,6 +17,7 @@ import {
   TASK_EVENT_DATA_STRING_MAX,
   TASK_ISSUE_PROJECT_MAX,
   TASK_ISSUE_URL_MAX,
+  TASK_STATUS_VALUES,
   TASK_TIMESTAMP_MAX,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
@@ -40,6 +43,12 @@ const validIssue: TaskIssueRef = {
   project: 'getCodesema/codesema-cli',
   iid: 42,
   url: 'https://github.com/getCodesema/codesema-cli/issues/42',
+}
+
+const validBrainTicket = {
+  id: 'tick-1',
+  title: 'Add rate limiting',
+  url: 'https://brain.local/tickets/tick-1',
 }
 
 const CRITERION_TEXT = 'WHEN x THE SYSTEM SHALL y'
@@ -316,6 +325,23 @@ describe('sanitizeTaskRecord', () => {
     expect(
       sanitizeTaskRecord({ ...validRecord, checks_status: 'green' }) &&
         'checks_status' in sanitizeTaskRecord({ ...validRecord, checks_status: 'green' })!,
+    ).toBe(false)
+  })
+
+  test('cycle_step: optional, whitelisted, unknown dropped', () => {
+    expect(
+      sanitizeTaskRecord(validRecord) && 'cycle_step' in sanitizeTaskRecord(validRecord)!,
+    ).toBe(false)
+    for (const step of ['ship', 'merge'] as const) {
+      expect(sanitizeTaskRecord({ ...validRecord, cycle_step: step })?.cycle_step).toBe(step)
+    }
+    expect(
+      sanitizeTaskRecord({ ...validRecord, cycle_step: 'review' }) &&
+        'cycle_step' in sanitizeTaskRecord({ ...validRecord, cycle_step: 'review' })!,
+    ).toBe(false)
+    expect(
+      sanitizeTaskRecord({ ...validRecord, cycle_step: 42 }) &&
+        'cycle_step' in sanitizeTaskRecord({ ...validRecord, cycle_step: 42 })!,
     ).toBe(false)
   })
 
@@ -895,6 +921,76 @@ describe('sanitizeTaskRecord — issue binding (T2.4)', () => {
   })
 })
 
+describe('sanitizeTaskRecord — brain ticket binding', () => {
+  test('a record with brain_ticket round-trips unchanged', () => {
+    const withTicket = { ...validRecord, brain_ticket: validBrainTicket }
+    expect(sanitizeTaskRecord(structuredClone(withTicket))).toEqual(withTicket)
+  })
+
+  test('brain_ticket without a url round-trips unchanged (url is optional)', () => {
+    const { url: _drop, ...withoutUrl } = validBrainTicket
+    const withTicket = { ...validRecord, brain_ticket: withoutUrl }
+    expect(sanitizeTaskRecord(structuredClone(withTicket))).toEqual(withTicket)
+  })
+
+  test('a record without brain_ticket carries no key, same as any record predating this field', () => {
+    const r = sanitizeTaskRecord(structuredClone(validRecord))
+    expect(r).toEqual(validRecord)
+    expect(r && 'brain_ticket' in r).toBe(false)
+  })
+
+  test('brain_ticket: a non-object drops the whole field rather than inventing one', () => {
+    for (const junk of [null, 'tick-1', 42, [], true]) {
+      const r = sanitizeTaskRecord({ ...validRecord, brain_ticket: junk })
+      expect(r && 'brain_ticket' in r).toBe(false)
+    }
+  })
+
+  test('brain_ticket: a missing or blank id drops the whole field: no usable identity', () => {
+    for (const id of [undefined, '', '   ', 42, null]) {
+      const r = sanitizeTaskRecord({ ...validRecord, brain_ticket: { ...validBrainTicket, id } })
+      expect(r && 'brain_ticket' in r).toBe(false)
+    }
+  })
+
+  test('brain_ticket: id and title are truncated to their bounds, never rejected for length', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      brain_ticket: {
+        ...validBrainTicket,
+        id: 'i'.repeat(TASK_BRAIN_TICKET_ID_MAX + 50),
+        title: 't'.repeat(TASK_TITLE_MAX + 50),
+      },
+    })
+    expect(r?.brain_ticket?.id.length).toBe(TASK_BRAIN_TICKET_ID_MAX)
+    expect(r?.brain_ticket?.title.length).toBe(TASK_TITLE_MAX)
+  })
+
+  test('brain_ticket: title degrades to an empty string rather than dropping the field', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      brain_ticket: { id: validBrainTicket.id, title: 42 },
+    })
+    expect(r?.brain_ticket).toEqual({ id: validBrainTicket.id, title: '' })
+  })
+
+  test('brain_ticket: url must be an http(s) URL, or the key is simply omitted', () => {
+    for (const url of ['not a url', 'ftp://example.com/1', 'javascript:alert(1)']) {
+      const r = sanitizeTaskRecord({ ...validRecord, brain_ticket: { ...validBrainTicket, url } })
+      expect(r && r.brain_ticket && 'url' in r.brain_ticket).toBe(false)
+    }
+  })
+
+  test('brain_ticket: url is truncated to its bound, never rejected for length', () => {
+    const longUrl = `https://brain.local/${'x'.repeat(TASK_ISSUE_URL_MAX)}`
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      brain_ticket: { ...validBrainTicket, url: longUrl },
+    })
+    expect(r?.brain_ticket?.url?.length).toBe(TASK_ISSUE_URL_MAX)
+  })
+})
+
 describe('sanitizeTaskRecord — top-level criteria (T2.5)', () => {
   const validCriterion = {
     id: acceptanceCriterionId(CRITERION_TEXT),
@@ -951,6 +1047,32 @@ describe('isActiveTaskStatus', () => {
     }
     expect(isActiveTaskStatus('shipped')).toBe(false)
     expect(isActiveTaskStatus('failed')).toBe(false)
+  })
+})
+
+describe('TASK_STATUS_VALUES / isTaskStatus', () => {
+  test('TASK_STATUS_VALUES names exactly the nine TaskStatus values', () => {
+    const allStatuses: TaskStatus[] = [
+      'queued',
+      'running',
+      'waiting_for_you',
+      'reviewing',
+      'review_ok',
+      'review_ko',
+      'shipped',
+      'failed',
+      'interrupted',
+    ]
+    expect([...TASK_STATUS_VALUES].toSorted()).toEqual(allStatuses.toSorted())
+  })
+
+  test('isTaskStatus accepts every value TASK_STATUS_VALUES names, and nothing else', () => {
+    for (const status of TASK_STATUS_VALUES) {
+      expect(isTaskStatus(status)).toBe(true)
+    }
+    for (const junk of ['done', 'blocked', '', 42, null, undefined, {}]) {
+      expect(isTaskStatus(junk)).toBe(false)
+    }
   })
 })
 
@@ -1020,6 +1142,7 @@ describe('sanitizeTaskEvent', () => {
       'queue',
       'issue',
       'criteria',
+      'post_merge_checks',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

@@ -213,3 +213,30 @@ describe('workspace.evResource (T1.9 resource events)', () => {
     expect(catalogs.en?.['workspace.evResourceHomeReleased']).toBe('HOME volume released')
   })
 })
+
+describe('the attach-a-repo labels are actually translated, not copied', () => {
+  const keys = [
+    'workspace.attachRepoPlaceholder',
+    'workspace.attachRepo',
+    'workspace.attaching',
+    'workspace.attachRepoNone',
+  ] as const
+
+  test('every one of them differs from its English source', () => {
+    for (const key of keys) {
+      expect(catalogs.fr?.[key]).toBeDefined()
+      expect(catalogs.fr?.[key]).not.toBe(catalogs.en?.[key])
+    }
+  })
+})
+
+describe('the scratch draft labels are actually translated, not copied', () => {
+  const keys = ['workspace.draftScratchTitle', 'workspace.draftNoRepo'] as const
+
+  test('every one of them differs from its English source', () => {
+    for (const key of keys) {
+      expect(catalogs.fr?.[key]).toBeDefined()
+      expect(catalogs.fr?.[key]).not.toBe(catalogs.en?.[key])
+    }
+  })
+})

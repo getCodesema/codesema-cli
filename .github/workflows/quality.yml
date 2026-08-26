@@ -16,6 +16,30 @@ permissions:
   contents: read
 
 jobs:
+  # The pre-commit and pre-push hooks already scan for secrets, but only on the
+  # machines where `bun run prepare` succeeded, and `--no-verify` is one flag
+  # away. This is the copy that cannot be skipped. It is its own job so it does
+  # not queue behind `bun install`, and it needs the full history: a secret is
+  # in the branch whether it arrived in the last commit or the first.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The binary rather than gitleaks-action: the action wants a licence key
+      # for organisation-owned repositories, and pinning the version keeps CI
+      # and the hooks finding the same things.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+
+      - run: gitleaks git --no-banner --redact .
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -27,13 +51,29 @@ jobs:
 
       - run: bun run lint
 
+      - run: bun run knip
+
+      # Known advisories against the installed tree. Every package this can
+      # flag today is a BUILD-time dependency: `codesema` ships with no runtime
+      # dependencies at all, so nothing here reaches a user's machine by being
+      # installed. It still matters, because these packages execute during
+      # `bun run build` and that build produces the `dist` we publish.
+      #
+      # Two transitive packages are pinned past their advisories through the
+      # `overrides` block in the root package.json (postcss, and the nanoid it
+      # pulls). Their parents — vite, vue, @vue/compiler-sfc — still declare
+      # ranges that resolve to the vulnerable versions, so removing the override
+      # silently reintroduces both. Drop an entry only once its parent has moved
+      # on, and confirm with `bun run audit` rather than by reading the range.
+      - run: bun run audit
+
       - run: bun run format:check
 
       - run: bun run typecheck
 
       - run: bun run build
 
-      - run: bun run test
+      - run: bun run test:coverage
 
       - run: bunx publint packages/cli
 

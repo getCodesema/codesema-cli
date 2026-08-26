@@ -3,8 +3,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listWorktrees } from './branches.js'
 import { ensureWorkDir } from './config.js'
+import {
+  addDetachedWorktree,
+  addLocalBranchWorktree,
+  addMrWorktree,
+  CLEANUP_LOCK_TIMEOUT_MS,
+  removeMrWorktree,
+  underRepoLock,
+} from './ephemeral-worktree.js'
 import { listOpenMrs, type ForgeMr, type ForgeMrsResult } from './forge-mrs.js'
-import { git, refExists, tryGit, type ProbeExecFn } from './git.js'
+import { git, refExists, type ProbeExecFn } from './git.js'
 import { prep } from './prep.js'
 import { resolvePreviewRefs } from './preview.js'
 import { archiveRecord } from './record.js'
@@ -17,23 +25,54 @@ export type MrReviewPhase = 'idle' | 'running' | 'done' | 'error'
 
 export type ReviewSource = { kind: 'mr'; number: number } | { kind: 'branch'; name: string }
 
+/**
+ * A multi-project workspace shares ONE runner across every registered repo:
+ * scope is what points a single start() at one of them instead of the
+ * runner's own construction cwd.
+ */
+export type MrReviewScope = { projectId: string | null; cwd: string }
+
+/**
+ * `project_id` rides every non-idle phase: two projects can each have their
+ * own MR #7, and a status with no project attached would make them
+ * indistinguishable to a client polling this single, shared runner.
+ */
 export type MrReviewStatus =
   | { available: true; phase: 'idle' }
   | {
       available: true
       phase: 'running'
+      project_id: string | null
       source: ReviewSource
       mode: MrReviewMode
       started_at: string
     }
-  | { available: true; phase: 'done'; source: ReviewSource; mode: MrReviewMode }
-  | { available: true; phase: 'error'; source: ReviewSource; mode: MrReviewMode; error: string }
+  | {
+      available: true
+      phase: 'done'
+      project_id: string | null
+      source: ReviewSource
+      mode: MrReviewMode
+    }
+  | {
+      available: true
+      phase: 'error'
+      project_id: string | null
+      source: ReviewSource
+      mode: MrReviewMode
+      error: string
+    }
 
 export type MrReviewStartResult = { ok: true } | { ok: false; code: number; error: string }
 
 export type MrReviewRunner = {
   status: () => MrReviewStatus
-  start: (source: ReviewSource, mode: MrReviewMode) => Promise<MrReviewStartResult>
+  /** No `scope`: today's behavior, the runner's own construction cwd and a null project_id. */
+  start: (
+    source: ReviewSource,
+    mode: MrReviewMode,
+    scope?: MrReviewScope,
+  ) => Promise<MrReviewStartResult>
 }
 
 type ResolvedSource = { kind: 'mr'; mr: ForgeMr } | { kind: 'branch'; name: string }
@@ -45,64 +84,6 @@ type ResolvedSource = { kind: 'mr'; mr: ForgeMr } | { kind: 'branch'; name: stri
  */
 function fetchMrBranch(cwd: string, sourceBranch: string): void {
   git(['fetch', 'origin', `+refs/heads/${sourceBranch}:refs/remotes/origin/${sourceBranch}`], cwd)
-}
-
-/**
- * -B (re)creates the local branch from the freshly fetched remote tip: a stale
- * local branch of the same name, if any, is reset rather than reused. Fails
- * loudly (surfaced as the run error) if that branch name is already checked
- * out in another worktree, which is an acceptable rare edge case.
- */
-function addMrWorktree(cwd: string, worktreeDir: string, sourceBranch: string): void {
-  git(
-    ['worktree', 'add', '-B', sourceBranch, worktreeDir, `refs/remotes/origin/${sourceBranch}`],
-    cwd,
-  )
-}
-
-function addLocalBranchWorktree(cwd: string, worktreeDir: string, branch: string): void {
-  git(['worktree', 'add', worktreeDir, branch], cwd)
-}
-
-/** A branch already checked out somewhere (the main worktree counts) can't be checked out again in a
- *  second worktree: detach on the same commit instead. */
-function addDetachedWorktree(cwd: string, worktreeDir: string, sha: string): void {
-  git(['worktree', 'add', '--detach', worktreeDir, sha], cwd)
-}
-
-/** Best-effort: a failed cleanup must not turn a completed run into an error. */
-function removeMrWorktree(cwd: string, worktreeDir: string): void {
-  tryGit(['worktree', 'remove', '--force', worktreeDir], cwd)
-  tryGit(['worktree', 'prune'], cwd)
-}
-
-/**
- * What the CLEANUP acquisition is willing to wait, as opposed to the full
- * budget the work itself gets. A cleanup runs on the way out — often on the way
- * out of the process — and the removal is safe without the lock anyway (git's
- * own index lock remains the net). Waiting the full minute-plus here would hold
- * a Ctrl-C hostage to a lock that changes nothing about the outcome.
- */
-const CLEANUP_LOCK_TIMEOUT_MS = 2_000
-
-/**
- * The MR review's worktree lives in a tmpdir, but `git worktree add/remove`
- * still writes the REPOSITORY's index and its .git/worktrees registry — the
- * very thing the repo lock serializes. So these runs take it too, exactly like
- * task worktrees do.
- *
- * Only the add and the remove are held, never the agent run between them: a
- * review takes minutes, and holding a repo-wide lock for that long would block
- * every task in the workspace. The lock protects the git operations, not the
- * work.
- */
-async function underRepoLock<T>(cwd: string, fn: () => T): Promise<T> {
-  const lock = await acquireWorktreeLock(cwd)
-  try {
-    return fn()
-  } finally {
-    lock.release()
-  }
 }
 
 function slug(name: string): string {
@@ -131,10 +112,12 @@ export function createMrReviewRunner(opts: {
   const listMrs = opts.listMrs ?? listOpenMrs
 
   let phase: MrReviewPhase = 'idle'
-  let current: { source: ReviewSource; mode: MrReviewMode; started_at: string } | undefined
+  let current:
+    | { source: ReviewSource; mode: MrReviewMode; started_at: string; projectId: string | null }
+    | undefined
   let error: string | undefined
 
-  async function run(resolved: ResolvedSource, mode: MrReviewMode): Promise<void> {
+  async function run(resolved: ResolvedSource, mode: MrReviewMode, cwd: string): Promise<void> {
     opts.session.reset()
     opts.session.setAgent(opts.agentCommand)
     opts.session.setMode(mode)
@@ -147,28 +130,26 @@ export function createMrReviewRunner(opts: {
     let targetForPrep: string
 
     if (resolved.kind === 'mr') {
-      fetchMrBranch(opts.cwd, resolved.mr.sourceBranch)
-      await underRepoLock(opts.cwd, () =>
-        addMrWorktree(opts.cwd, worktreeDir, resolved.mr.sourceBranch),
-      )
+      fetchMrBranch(cwd, resolved.mr.sourceBranch)
+      await underRepoLock(cwd, () => addMrWorktree(cwd, worktreeDir, resolved.mr.sourceBranch))
       branchForPrep = resolved.mr.sourceBranch
       targetForPrep = resolved.mr.targetBranch
     } else {
       const refs = await resolvePreviewRefs(
-        opts.cwd,
+        cwd,
         { kind: 'branch', name: resolved.name },
         { execFn: opts.execFn },
       )
-      await underRepoLock(opts.cwd, () => {
+      await underRepoLock(cwd, () => {
         // Both the "is it checked out" probe and the add write/read the same
         // registry: they belong INSIDE the lock, or the answer can go stale
         // between them.
-        const alreadyCheckedOut = listWorktrees(opts.cwd).some((wt) => wt.branch === resolved.name)
+        const alreadyCheckedOut = listWorktrees(cwd).some((wt) => wt.branch === resolved.name)
         if (alreadyCheckedOut) {
-          const sha = git(['rev-parse', `refs/heads/${resolved.name}`], opts.cwd)
-          addDetachedWorktree(opts.cwd, worktreeDir, sha)
+          const sha = git(['rev-parse', `refs/heads/${resolved.name}`], cwd)
+          addDetachedWorktree(cwd, worktreeDir, sha)
         } else {
-          addLocalBranchWorktree(opts.cwd, worktreeDir, resolved.name)
+          addLocalBranchWorktree(cwd, worktreeDir, resolved.name)
         }
       })
       branchForPrep = resolved.name
@@ -219,9 +200,9 @@ export function createMrReviewRunner(opts: {
         throw new Error(outcome.message)
       }
 
-      // Archived in the MAIN repo (opts.cwd), never in the disposable worktree:
+      // Archived in the TARGET repo (`cwd`), never in the disposable worktree:
       // `codesema show` reads .codesema/reviews from the repo the server was started in.
-      archiveRecord(outcome.record, opts.cwd)
+      archiveRecord(outcome.record, cwd)
       opts.session.setDone(outcome.record)
     } finally {
       // A cleanup path must never mask the outcome it is cleaning up after, so
@@ -232,7 +213,7 @@ export function createMrReviewRunner(opts: {
       // wait sits between the user and the exit.
       let lock: WorktreeLockHandle | null = null
       try {
-        lock = await acquireWorktreeLock(opts.cwd, {
+        lock = await acquireWorktreeLock(cwd, {
           timeoutMs: CLEANUP_LOCK_TIMEOUT_MS,
           ...(opts.shutdownSignal ? { signal: opts.shutdownSignal } : {}),
         })
@@ -240,7 +221,7 @@ export function createMrReviewRunner(opts: {
         lock = null
       }
       try {
-        removeMrWorktree(opts.cwd, worktreeDir)
+        removeMrWorktree(cwd, worktreeDir)
       } finally {
         lock?.release()
       }
@@ -252,16 +233,30 @@ export function createMrReviewRunner(opts: {
       if (phase === 'idle' || current === undefined) {
         return { available: true, phase: 'idle' }
       }
-      const { source, mode, started_at } = current
+      const { source, mode, started_at, projectId } = current
       if (phase === 'running') {
-        return { available: true, phase: 'running', source, mode, started_at }
+        return {
+          available: true,
+          phase: 'running',
+          project_id: projectId,
+          source,
+          mode,
+          started_at,
+        }
       }
       if (phase === 'done') {
-        return { available: true, phase: 'done', source, mode }
+        return { available: true, phase: 'done', project_id: projectId, source, mode }
       }
-      return { available: true, phase: 'error', source, mode, error: error ?? 'unknown error' }
+      return {
+        available: true,
+        phase: 'error',
+        project_id: projectId,
+        source,
+        mode,
+        error: error ?? 'unknown error',
+      }
     },
-    async start(source, mode) {
+    async start(source, mode, scope) {
       if (phase === 'running') {
         return { ok: false, code: 409, error: 'a review is already running' }
       }
@@ -275,24 +270,31 @@ export function createMrReviewRunner(opts: {
         return { ok: false, code: 400, error: 'invalid branch name' }
       }
 
+      const cwd = scope?.cwd ?? opts.cwd
+
       // Reserve the runner before the async lookup: a second concurrent
       // start() must hit the 409 above, not slip past it during the await.
       const previousPhase = phase
       phase = 'running'
-      current = { source, mode, started_at: new Date().toISOString() }
+      current = {
+        source,
+        mode,
+        started_at: new Date().toISOString(),
+        projectId: scope?.projectId ?? null,
+      }
       error = undefined
 
       let resolved: ResolvedSource | undefined
       try {
         if (source.kind === 'mr') {
-          const mrsResult = await listMrs(opts.cwd)
+          const mrsResult = await listMrs(cwd)
           const mr = mrsResult.available
             ? mrsResult.mrs.find((m) => m.number === source.number)
             : undefined
           if (mr) {
             resolved = { kind: 'mr', mr }
           }
-        } else if (refExists(`refs/heads/${source.name}`, opts.cwd)) {
+        } else if (refExists(`refs/heads/${source.name}`, cwd)) {
           resolved = { kind: 'branch', name: source.name }
         }
       } finally {
@@ -306,7 +308,7 @@ export function createMrReviewRunner(opts: {
         return { ok: false, code: 404, error: notFound }
       }
 
-      void run(resolved, mode)
+      void run(resolved, mode, cwd)
         .then(() => {
           phase = 'done'
         })

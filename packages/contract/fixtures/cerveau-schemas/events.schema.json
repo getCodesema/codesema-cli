@@ -1,0 +1,69 @@
+{
+  "type": "object",
+  "required": ["remote_url", "run_id", "events"],
+  "properties": {
+    "remote_url": {
+      "minLength": 1,
+      "maxLength": 2000,
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "maxLength": 64,
+      "type": "string"
+    },
+    "ticket_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "events": {
+      "minItems": 1,
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run_id", "at", "event_type", "label"],
+        "properties": {
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "event_type": {
+            "minLength": 1,
+            "maxLength": 100,
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "maxLength": 500,
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "patternProperties": {
+              "^(.*)$": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

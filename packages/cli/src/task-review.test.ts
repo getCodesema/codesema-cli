@@ -10,6 +10,7 @@ import {
   type Finding,
   type ReviewRecord,
   type TaskChecks,
+  type TaskReason,
   type TaskRecord,
   type TaskStatus,
   type Verdict,
@@ -28,6 +29,7 @@ import {
   actionableFindingIds,
   applyChecksGate,
   blockingFindingsDetail,
+  brainSettleTransition,
   buildAutoFixTurnPrompt,
   buildFixTurnPrompt,
   checksBlockReady,
@@ -46,6 +48,7 @@ import {
   loadTask,
   readTaskEvents,
   saveTask,
+  writeTaskChecks,
   type AppendTaskEventInput,
 } from './tasks-store.js'
 
@@ -659,10 +662,13 @@ describe('createTaskReviewer', () => {
     const record = await makeTaskWithWorktree(repo, 'spread task')
     commitChange(record.worktree, 'work.txt')
     const rig = fakeIo(record)
+    // D24: kind 'design' is exempt from the repro rule (a judgment call, not
+    // a reproducible-behavior claim) — keeps this test's severities exactly
+    // as the model reported them, isolated from verifyFindingRepros.
     const findings: Finding[] = [
       { file: 'work.txt', severity: 'critical', message: 'boom' },
-      { file: 'work.txt', severity: 'major', message: 'meh' },
-      { file: 'work.txt', severity: 'major', message: 'also meh' },
+      { file: 'work.txt', severity: 'major', kind: 'design', message: 'meh' },
+      { file: 'work.txt', severity: 'major', kind: 'design', message: 'also meh' },
       { file: 'work.txt', severity: 'info', message: 'nit' },
     ]
     const flow = fakeSimpleFlow({
@@ -1395,6 +1401,156 @@ describe('createTaskReviewer: the criteria chapter (T3.2)', () => {
   })
 })
 
+// --- D16: the checks chapter -----------------------------------------------
+
+function checksAt(over: Partial<TaskChecks> = {}): TaskChecks {
+  return {
+    head_sha: 'whatever',
+    started_at: '2026-08-26T10:00:00.000Z',
+    finished_at: '2026-08-26T10:01:00.000Z',
+    status: 'passed',
+    error: null,
+    checks: [],
+    ...over,
+  }
+}
+
+describe('createTaskReviewer: the checks chapter (D16)', () => {
+  test('a red checks run reaches the review prompt as its own MANDATORY chapter', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'checked task')
+    commitChange(record.worktree, 'feature.txt')
+    writeTaskChecks(
+      repo,
+      record.id,
+      checksAt({
+        status: 'failed',
+        source: 'scripts',
+        checks: [
+          {
+            command: 'bun test',
+            status: 'failed',
+            exit_code: 1,
+            duration_ms: 5,
+            tail: 'FAIL feature.test.ts',
+          },
+        ],
+      }),
+    )
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).toContain('Repository checks, MANDATORY chapter')
+    expect(prompt).toContain('- bun test: failed')
+    expect(prompt).toContain('FAIL feature.test.ts')
+  })
+
+  test('a task with no checks.json at all gets no checks chapter', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'unchecked task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls[0]?.prompt ?? '').not.toContain('Repository checks')
+  })
+
+  test('a still-RUNNING checks snapshot is not a result yet: no chapter either', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'running-checks task')
+    commitChange(record.worktree, 'feature.txt')
+    writeTaskChecks(repo, record.id, checksAt({ status: 'running', finished_at: null }))
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls[0]?.prompt ?? '').not.toContain('Repository checks')
+  })
+})
+
+// --- D17: mechanical criteria decided without the reviewer ------------------
+
+describe('createTaskReviewer: mechanical criteria (D17)', () => {
+  test('a [proof:command] criterion is decided from the turn checks, never sent to the model', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'mechanical task')
+    const mechanicalCriterion = criterionOf(
+      'WHEN the suite runs THE SYSTEM SHALL pass it [proof:command bun test]',
+    )
+    const judgedCriterion = criterionOf('WHEN reviewed THE SYSTEM SHALL be judged by a human')
+    record.criteria = [mechanicalCriterion, judgedCriterion]
+    saveTask(repo, record)
+    commitChange(record.worktree, 'feature.txt')
+    writeTaskChecks(
+      repo,
+      record.id,
+      checksAt({
+        checks: [{ command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 5, tail: '' }],
+      }),
+    )
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithCriteria('approve', [
+        { criterion_id: judgedCriterion.id, status: 'met', evidence: ANCHOR },
+      ]),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    // The mechanical criterion never reached the model's own prompt...
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).not.toContain(mechanicalCriterion.id)
+    expect(prompt).toContain(judgedCriterion.id)
+    // ...yet the final gate still carries a verdict for it, decided from the
+    // checks that already ran, and the task is not blocked on it.
+    expect(record.status).toBe('review_ok')
+    const gateEvents = rig.events.filter((e) => e.type === 'criteria')
+    expect(gateEvents).toHaveLength(1)
+    expect(gateEvents[0]?.data).toMatchObject({ name: 'gate_passed', met: 2, unmet: 0, unclear: 0 })
+  })
+
+  test('a [proof:command] criterion whose command FAILED in the turn checks blocks the gate', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'mechanical failing task')
+    const mechanicalCriterion = criterionOf(
+      'WHEN the suite runs THE SYSTEM SHALL pass it [proof:command bun test]',
+    )
+    record.criteria = [mechanicalCriterion]
+    saveTask(repo, record)
+    commitChange(record.worktree, 'feature.txt')
+    writeTaskChecks(
+      repo,
+      record.id,
+      checksAt({
+        status: 'failed',
+        checks: [{ command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: '' }],
+      }),
+    )
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithCriteria('approve', undefined),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    // review_ko for TWO independent reasons here (the checks gate AND the
+    // criteria gate); either is a correct block, what matters is it is one.
+    expect(record.status).toBe('review_ko')
+    const gateEvent = rig.events.find((e) => e.type === 'criteria')
+    expect(gateEvent?.data).toMatchObject({ unmet: 1 })
+  })
+})
+
 describe('createTaskReviewer: the hard gate (T3.2)', () => {
   const allMet: CriterionVerdict[] = [
     { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
@@ -1447,21 +1603,24 @@ describe('createTaskReviewer: the hard gate (T3.2)', () => {
     expect(rig.events.some((event) => event.type === 'error')).toBe(false)
   })
 
-  test('a single unclear blocks exactly as hard, and says so', async () => {
+  test('a sincere unclear is LIFTED by the settled OK review, out loud (D18)', async () => {
     const { record, rig } = await runGate([
       { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
       { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
       { criterion_id: GC3.id, status: 'unclear' },
     ])
-    expect(record.status).toBe('review_ko')
-    expect(record.reason?.code).toBe('criteria_unmet')
-    expect(record.reason?.detail).toContain('1 unclear')
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
     expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
-      name: 'gate_blocked',
+      name: 'gate_waived',
       met: 2,
       unmet: 0,
       unclear: 1,
     })
+    const waived = rig.events.find(
+      (event) => event.type === 'message' && event.data.name === 'criteria_unclear_waived',
+    )
+    expect(waived?.data.text).toContain('1')
   })
 
   test('a criterion the model skipped blocks: silence is never a pass', async () => {
@@ -1491,21 +1650,22 @@ describe('createTaskReviewer: the hard gate (T3.2)', () => {
     expect(record.reason?.detail).toContain('no verdict back from the reviewer')
   })
 
-  test('…and a reviewer that judged all three and doubted says something ELSE', async () => {
-    // The discriminator for the line above: identical tally, different fact.
+  test('…and a reviewer that judged all three and doubted is waived, unlike silence (D18)', async () => {
+    // The discriminator for the line above: identical tally, different fact,
+    // different outcome. Silence (unjudged) blocks; a sincere doubt on every
+    // criterion rides the settled OK verdict, and the gate line says which.
     const { record, rig } = await runGate([
       { criterion_id: GC1.id, status: 'unclear' },
       { criterion_id: GC2.id, status: 'unclear' },
       { criterion_id: GC3.id, status: 'unclear' },
     ])
-    expect(record.status).toBe('review_ko')
+    expect(record.status).toBe('review_ok')
     expect(rig.events.find((event) => event.type === 'criteria')?.data).toEqual({
-      name: 'gate_blocked',
+      name: 'gate_waived',
       met: 0,
       unmet: 0,
       unclear: 3,
     })
-    expect(record.reason?.detail).not.toContain('no verdict back from the reviewer')
   })
 
   test('an evidence the diff cannot carry is journaled as such, not as a doubt', async () => {
@@ -1783,8 +1943,11 @@ describe('createTaskReviewer: an approve never releases a blocking finding (T3.3
   test('approve + an unresolved MAJOR finding: the task stays blocked', async () => {
     // `groundReview` escalates approve+critical, never approve+major: this is
     // the gap the CLI-side guard-rail closes.
+    // D24: kind 'design' is exempt from the repro rule, so this finding is
+    // never touched by verifyFindingRepros — this test is about T3.3's
+    // guard-rail, not about D24's demotion (covered on its own elsewhere).
     const { record, rig } = await runVerdict('approve', [
-      { file: 'feature.txt', severity: 'major', message: 'leaks a descriptor' },
+      { file: 'feature.txt', severity: 'major', kind: 'design', message: 'leaks a descriptor' },
     ])
     expect(record.status).toBe('review_ko')
     expect(record.reason?.code).toBe('review_blocked')
@@ -1826,6 +1989,123 @@ describe('createTaskReviewer: an approve never releases a blocking finding (T3.3
   })
 })
 
+describe('createTaskReviewer: D24 repro verification and inter-turn memory', () => {
+  test('a major finding with no repro is demoted before the guard-rail reads it: the verdict is released', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'unproven major')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    // Behavior-asserting (kind undefined, severity major), no `repro`: before
+    // D24 this alone forced review_ko through hasBlockingFindings (T3.3),
+    // exactly the fixture the T3.3 describe block above uses with `kind:
+    // 'design'` to stay OUT of this rule.
+    const unproven: Finding = { file: 'feature.txt', severity: 'major', message: 'looks risky' }
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReview('approve', [unproven]),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    const done = rig.events.find((e) => e.type === 'review_done')
+    expect(done?.data).toMatchObject({ repro_demoted: 1, severity_minor: 1 })
+    expect(done?.data.severity_major).toBeUndefined()
+    // T3.3's own guard-rail message never fires: nothing blocking survived.
+    expect(rig.events.some((e) => e.data.name === 'review_verdict_overridden')).toBe(false)
+  })
+
+  test('a second turn on the SAME head (nothing committed since the last review) gets the repeat prompt', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'repeat turn')
+    commitChange(record.worktree, 'feature.txt')
+    const rig1 = fakeIo(record)
+    // The real flow builds its record's meta from the prep input (record.ts's
+    // buildRecord): mirrored here, since it is what findPreviousReview later
+    // matches on (same pattern as the baseline-anchoring incremental test).
+    const flow1 = fakeSimpleFlow((options) => ({
+      ok: true,
+      record: {
+        ...fakeReview('request_changes', [
+          { file: 'feature.txt', severity: 'major', kind: 'design', message: 'first pass' },
+        ]),
+        meta: {
+          ...fakeReview('approve').meta,
+          branch: options.input.branch,
+          target: options.input.target,
+          head_sha: options.input.head_sha,
+        },
+      },
+      reportLines: [],
+    }))
+
+    await reviewer(repo, { runSimpleFlowFn: flow1.fn })(record, rig1.io)
+    expect(record.status).toBe('review_ko')
+
+    // Turn 2: NO new commit — the worktree HEAD is exactly what turn 1 just
+    // archived. `record.status` is left as turn 1 settled it: the hook is
+    // called directly here (bypassing the runner), and never reads the
+    // incoming status itself — only the runner uses it as a precondition.
+    const rig2 = fakeIo(record)
+    const flow2 = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow2.fn })(record, rig2.io)
+
+    expect(flow2.calls).toHaveLength(1)
+    expect(flow2.calls[0]?.incremental).toBe(true)
+    expect(flow2.calls[0]?.prompt).toContain('EXACT SAME commit')
+    expect(flow2.calls[0]?.prompt).toContain('Previous review verdict: request_changes')
+    expect(flow2.calls[0]?.prompt).toContain('<previous_review>')
+    expect(record.status).toBe('review_ok')
+  })
+
+  test('dual mode never receives a repeat/incremental prompt, even with a previous review at the same head', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'dual unaffected')
+    commitChange(record.worktree, 'feature.txt')
+    const rig1 = fakeIo(record)
+    const simpleFlow1 = fakeSimpleFlow((options) => ({
+      ok: true,
+      record: {
+        ...fakeReview('approve'),
+        meta: {
+          ...fakeReview('approve').meta,
+          branch: options.input.branch,
+          target: options.input.target,
+          head_sha: options.input.head_sha,
+        },
+      },
+      reportLines: [],
+    }))
+    // Turn 1 in SIMPLE mode plants a previous archive at the current head.
+    await reviewer(repo, { runSimpleFlowFn: simpleFlow1.fn })(record, rig1.io)
+    expect(record.status).toBe('review_ok')
+
+    // Turn 2 in DUAL mode, same head, no new commit: task-review.ts's D24
+    // wiring only ever computes a prebuiltPrompt for SIMPLE mode (the
+    // `mode === 'simple'` guard), so runSimpleFlow must never even be called.
+    const rig2 = fakeIo(record)
+    const simpleFlow2 = fakeSimpleFlow({
+      ok: false,
+      failure: 'run',
+      message: 'must not be called in dual mode',
+    })
+    const dual = fakeDualFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, {
+      mode: 'dual',
+      runSimpleFlowFn: simpleFlow2.fn,
+      runDualFlowFn: dual.fn,
+    })(record, rig2.io)
+
+    expect(simpleFlow2.calls).toHaveLength(0)
+    expect(dual.calls).toHaveLength(1)
+    expect(record.status).toBe('review_ok')
+  })
+})
+
 describe('buildAutoFixTurnPrompt (T3.3)', () => {
   test('asks for every actionable finding, and never for the notes', () => {
     const repo = makeRepo()
@@ -1836,7 +2116,10 @@ describe('buildAutoFixTurnPrompt (T3.3)', () => {
       ]),
       repo,
     )
-    const prompt = buildAutoFixTurnPrompt({ review_ref: saved, turns: [] } as unknown as TaskRecord)
+    const prompt = buildAutoFixTurnPrompt(
+      { review_ref: saved, turns: [] } as unknown as TaskRecord,
+      null,
+    )
     expect(prompt).toContain('off by one')
     expect(prompt).not.toContain('a nit nobody must chase')
     // It IS the manual path's prompt: same builder, same rules.
@@ -1861,11 +2144,14 @@ describe('buildAutoFixTurnPrompt (T3.3)', () => {
       },
       repo,
     )
-    const prompt = buildAutoFixTurnPrompt({
-      review_ref: saved,
-      criteria: [GC1, GC2, GC3],
-      turns: [],
-    } as unknown as TaskRecord)
+    const prompt = buildAutoFixTurnPrompt(
+      {
+        review_ref: saved,
+        criteria: [GC1, GC2, GC3],
+        turns: [],
+      } as unknown as TaskRecord,
+      null,
+    )
     expect(prompt).toContain(GC2.id)
     expect(prompt).toContain('WHEN checks fail')
     expect(prompt).toContain(GC3.id)
@@ -1873,7 +2159,7 @@ describe('buildAutoFixTurnPrompt (T3.3)', () => {
     expect(prompt).not.toContain(GC1.id)
   })
 
-  test('null when there is nothing concrete to ask for', () => {
+  test('null when there is nothing concrete to ask for: no findings, no criteria, no blocking checks', () => {
     const repo = makeRepo()
     // An archive with no actionable finding and no criteria: a round spent on
     // this would name no work at all.
@@ -1881,18 +2167,52 @@ describe('buildAutoFixTurnPrompt (T3.3)', () => {
       fakeReview('comment', [{ file: 'a.ts', severity: 'info', message: 'nit' }]),
       repo,
     )
-    expect(buildAutoFixTurnPrompt({ review_ref: empty, turns: [] } as unknown as TaskRecord)).toBe(
-      null,
-    )
-    expect(buildAutoFixTurnPrompt({ review_ref: null, turns: [] } as unknown as TaskRecord)).toBe(
-      null,
-    )
     expect(
-      buildAutoFixTurnPrompt({
-        review_ref: join(repo, 'gone.json'),
-        turns: [],
-      } as unknown as TaskRecord),
+      buildAutoFixTurnPrompt({ review_ref: empty, turns: [] } as unknown as TaskRecord, null),
     ).toBe(null)
+    expect(
+      buildAutoFixTurnPrompt({ review_ref: null, turns: [] } as unknown as TaskRecord, null),
+    ).toBe(null)
+    expect(
+      buildAutoFixTurnPrompt(
+        { review_ref: join(repo, 'gone.json'), turns: [] } as unknown as TaskRecord,
+        null,
+      ),
+    ).toBe(null)
+    // A GREEN checks run blocks nothing either: still null.
+    expect(
+      buildAutoFixTurnPrompt(
+        { review_ref: empty, turns: [] } as unknown as TaskRecord,
+        checksOf({ status: 'passed' }),
+      ),
+    ).toBe(null)
+  })
+
+  test('a RED checks run earns its own chapter, even with nothing else to ask for', () => {
+    const repo = makeRepo()
+    const empty = archiveRecord(
+      fakeReview('comment', [{ file: 'a.ts', severity: 'info', message: 'nit' }]),
+      repo,
+    )
+    const failing = checksOf({
+      status: 'failed',
+      checks: [
+        {
+          command: 'bun test',
+          status: 'failed',
+          exit_code: 1,
+          duration_ms: 5,
+          tail: 'FAIL a.test.ts',
+        },
+      ],
+    })
+    const prompt = buildAutoFixTurnPrompt(
+      { review_ref: empty, turns: [] } as unknown as TaskRecord,
+      failing,
+    )
+    expect(prompt).toContain('What must still pass')
+    expect(prompt).toContain('bun test')
+    expect(prompt).toContain('FAIL a.test.ts')
   })
 
   test('non-regression: the MANUAL path still honours the human’s own selection', () => {
@@ -1909,8 +2229,67 @@ describe('buildAutoFixTurnPrompt (T3.3)', () => {
     expect(manual).toContain('second one')
     expect(manual).not.toContain('first one')
     // ...while the automatic one takes both, because both block.
-    const auto = buildAutoFixTurnPrompt(task)
+    const auto = buildAutoFixTurnPrompt(task, null)
     expect(auto).toContain('first one')
     expect(auto).toContain('second one')
+  })
+})
+
+describe('brainSettleTransition', () => {
+  test('review_ok with no reviewOutcome (the empty-diff short-circuit): an approve, no findings_total', () => {
+    const transition = brainSettleTransition({ status: 'review_ok' })
+    expect(transition).toEqual({ type: 'review_result', verdict: 'approve' })
+  })
+
+  test('review_ok with a reviewOutcome: an approve, carrying findings_total', () => {
+    const transition = brainSettleTransition({
+      status: 'review_ok',
+      reviewOutcome: fakeReview('approve', [{ file: 'a.ts', severity: 'minor', message: 'nit' }]),
+    })
+    expect(transition).toEqual({ type: 'review_result', verdict: 'approve', findings_total: 1 })
+  })
+
+  test('review_ko with a reviewOutcome (a verdict was produced, possibly overridden): request_changes', () => {
+    const transition = brainSettleTransition({
+      status: 'review_ko',
+      reviewOutcome: fakeReview('request_changes', [
+        { file: 'a.ts', severity: 'major', message: 'bug' },
+      ]),
+    })
+    expect(transition).toEqual({
+      type: 'review_result',
+      verdict: 'request_changes',
+      findings_total: 1,
+    })
+  })
+
+  test('review_ko with NO reviewOutcome (a flow failure, or an exception): failed, not review_result', () => {
+    // No reviewer ever produced a verdict here: reporting review_result would
+    // be indistinguishable from a reviewer that looked at the work and
+    // rejected it.
+    const transition = brainSettleTransition({ status: 'review_ko' })
+    expect(transition).toEqual({ type: 'failed' })
+  })
+
+  test('review_ko with no reviewOutcome and a reason: failed, carrying the reason as error_message', () => {
+    const reason: TaskReason = { code: 'review_blocked', detail: 'review failed: agent crashed' }
+    const transition = brainSettleTransition({ status: 'review_ko', reason })
+    expect(transition).toEqual({
+      type: 'failed',
+      error_message: 'review failed: agent crashed',
+    })
+  })
+
+  test('a reason with no detail adds no error_message', () => {
+    const reason: TaskReason = { code: 'review_blocked' }
+    const transition = brainSettleTransition({ status: 'review_ko', reason })
+    expect(transition).toEqual({ type: 'failed' })
+  })
+
+  test('costTicks rides along on a review_result, omitted entirely when absent', () => {
+    const withCost = brainSettleTransition({ status: 'review_ok', costTicks: 42 })
+    expect(withCost).toEqual({ type: 'review_result', verdict: 'approve', cost_ticks: 42 })
+    const withoutCost = brainSettleTransition({ status: 'review_ok' })
+    expect('cost_ticks' in withoutCost).toBe(false)
   })
 })

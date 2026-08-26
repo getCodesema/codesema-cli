@@ -80,19 +80,29 @@ export function gitPointerContent(link: WorktreeGitLink): string {
  * ignored on the first turn (the volume is seeded before it exists) and
  * unprotected.
  */
-export function gitSafeDirectoryEnvArgs(workDir: string): string[] {
+export function gitSafeDirectoryEnvArgs(workDir: string, extra: readonly string[] = []): string[] {
+  // safe.directory is not recursive: a repository attached under the work dir
+  // needs its OWN entry, and so does the git directory it resolves to.
+  const directories = [workDir, CAGE_GIT_COMMON_DIR, ...extra]
   return [
     '-e',
-    'GIT_CONFIG_COUNT=2',
-    '-e',
-    'GIT_CONFIG_KEY_0=safe.directory',
-    '-e',
-    `GIT_CONFIG_VALUE_0=${workDir}`,
-    '-e',
-    'GIT_CONFIG_KEY_1=safe.directory',
-    '-e',
-    `GIT_CONFIG_VALUE_1=${CAGE_GIT_COMMON_DIR}`,
+    `GIT_CONFIG_COUNT=${directories.length}`,
+    ...directories.flatMap((directory, index) => [
+      '-e',
+      `GIT_CONFIG_KEY_${index}=safe.directory`,
+      '-e',
+      `GIT_CONFIG_VALUE_${index}=${directory}`,
+    ]),
   ]
+}
+
+/**
+ * Where an attached repository's shared git directory is mounted. One per
+ * attachment, because `/gitcommon` names ONE repository and a conversation
+ * can hold several.
+ */
+export function attachedGitCommonDir(name: string): string {
+  return `${CAGE_GIT_COMMON_DIR}-${name}`
 }
 
 /** Stable per-worktree scratch dir for the generated pointer file. */
@@ -107,6 +117,14 @@ export type ContainerGitAccess = {
   /** Host path of the generated `.git` pointer file. */
   pointerPath: string
   link: WorktreeGitLink
+}
+
+/** A repository attached to a conversation, as a directory inside its workspace. */
+export type ContainerGitAttachment = {
+  /** Directory name inside the work dir. */
+  name: string
+  /** Host path of that repository's worktree. */
+  worktree: string
 }
 
 export type PrepareContainerGitOptions = {
@@ -145,4 +163,58 @@ export function prepareContainerGit(opts: PrepareContainerGitOptions): Container
     pointerPath,
     link,
   }
+}
+
+/** What a container needs to READ the git of the repositories attached to a conversation. */
+export type AttachedContainerGit = {
+  /** `-v` arguments, all read-only. */
+  mountArgs: string[]
+  /** Container paths that need their own safe.directory entry. */
+  safeDirectories: string[]
+}
+
+/**
+ * Same trick as `prepareContainerGit`, once per attached repository: its
+ * shared git directory is mounted read-only under a name of its own, and a
+ * generated pointer replaces the `.git` FILE that would otherwise point at a
+ * host path the container cannot see.
+ *
+ * Best effort, attachment by attachment: one repository whose layout the
+ * pointer cannot describe is left without git inside the cage rather than
+ * taking the others down with it.
+ */
+export function prepareAttachedContainerGit(
+  attachments: readonly ContainerGitAttachment[],
+  workDir: string,
+  stateDir?: string,
+): AttachedContainerGit {
+  const mountArgs: string[] = []
+  const safeDirectories: string[] = []
+  for (const attachment of attachments) {
+    const link = resolveWorktreeGitLink(attachment.worktree)
+    if (!link) {
+      continue
+    }
+    const commonDir = attachedGitCommonDir(attachment.name)
+    const dir = stateDir ?? containerGitStateDir(attachment.worktree)
+    // Named after the attachment, not a fixed 'dotgit': several attachments
+    // handed the same state dir would otherwise overwrite each other's pointer
+    // and all resolve to whichever repository was written last.
+    const pointerPath = join(dir, `dotgit-${attachment.name}`)
+    try {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(pointerPath, `gitdir: ${commonDir}/${link.gitDirRelative}\n`)
+    } catch {
+      continue
+    }
+    const workTree = `${workDir}/${attachment.name}`
+    mountArgs.push(
+      '-v',
+      `${link.commonDir}:${commonDir}:ro`,
+      '-v',
+      `${pointerPath}:${workTree}/.git:ro`,
+    )
+    safeDirectories.push(workTree, commonDir)
+  }
+  return { mountArgs, safeDirectories }
 }

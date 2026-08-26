@@ -1,17 +1,35 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { sanitizeRecord } from './contract.js'
+import { sanitizeRecord, type ReviewRecord } from './contract.js'
 import type { ForgeMrsResult } from './forge-mrs.js'
+import type {
+  MrReviewMode,
+  MrReviewRunner,
+  MrReviewScope,
+  MrReviewStatus,
+  ReviewSource,
+} from './mr-review-runner.js'
 import { parsePartialReview } from './partial.js'
 import { addProject } from './projects.js'
+import { archiveRecord } from './record.js'
 import {
   createSession,
+  devIndexHtml,
   isLoopbackHost,
+  mrReviewStatusForProject,
+  resolveDevViteOrigin,
   resolveProjectCwd,
   resolveStaticPath,
   startServer,
@@ -544,6 +562,12 @@ describe('startServer', () => {
     expect(JSON.parse(res.body)).toEqual([])
   })
 
+  test('reports no worktrees outside a git repo', async () => {
+    const res = await rawRequest(port, '/api/worktrees')
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual([])
+  })
+
   test('rejects a malformed preview source', async () => {
     expect((await rawRequest(port, '/api/preview')).status).toBe(400)
     expect((await rawRequest(port, '/api/preview?source=branch')).status).toBe(400)
@@ -628,6 +652,14 @@ describe('preview and branches endpoints', () => {
     expect(feature).toMatchObject({ isCurrent: false, worktreePath: null })
   })
 
+  test('lists worktrees, the main worktree included', async () => {
+    const res = await rawRequest(previewPort, '/api/worktrees')
+    expect(res.status).toBe(200)
+    const worktrees = JSON.parse(res.body) as { path: string; branch: string | null }[]
+    expect(worktrees).toHaveLength(1)
+    expect(worktrees[0]?.branch).toBe('main')
+  })
+
   test('builds a deterministic preview for a local branch, without the full diff', async () => {
     const res = await rawRequest(previewPort, '/api/preview?source=branch&name=feature/x')
     expect(res.status).toBe(200)
@@ -689,6 +721,51 @@ describe('resolveProjectCwd', () => {
   })
 })
 
+describe('mrReviewStatusForProject', () => {
+  const source: ReviewSource = { kind: 'branch', name: 'feature/x' }
+
+  test('idle and no ?project= both pass the status through unchanged', () => {
+    expect(mrReviewStatusForProject({ available: true, phase: 'idle' }, 'A')).toEqual({
+      available: true,
+      phase: 'idle',
+    })
+    const running: MrReviewStatus = {
+      available: true,
+      phase: 'running',
+      project_id: 'A',
+      source,
+      mode: 'simple',
+      started_at: '2026-01-01T00:00:00.000Z',
+    }
+    expect(mrReviewStatusForProject(running, null)).toEqual(running)
+  })
+
+  test('a status belonging to another project is hidden as idle', () => {
+    const running: MrReviewStatus = {
+      available: true,
+      phase: 'running',
+      project_id: 'A',
+      source,
+      mode: 'simple',
+      started_at: '2026-01-01T00:00:00.000Z',
+    }
+    expect(mrReviewStatusForProject(running, 'B')).toEqual({ available: true, phase: 'idle' })
+    expect(mrReviewStatusForProject(running, 'A')).toEqual(running)
+  })
+
+  test('a null project_id (a run started without ?project=) is hidden from a scoped query', () => {
+    const done: MrReviewStatus = {
+      available: true,
+      phase: 'done',
+      project_id: null,
+      source,
+      mode: 'dual',
+    }
+    expect(mrReviewStatusForProject(done, 'A')).toEqual({ available: true, phase: 'idle' })
+    expect(mrReviewStatusForProject(done, null)).toEqual(done)
+  })
+})
+
 describe('project-scoped repo routes (?project=)', () => {
   let configDir: string
   let repoA: string
@@ -698,8 +775,22 @@ describe('project-scoped repo routes (?project=)', () => {
   let projectBPath: string
   let scopedPort: number
   let scopedStop: () => Promise<void>
+  let mrReviewToken: string
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   const mrsCalls: string[] = []
+  const mrReviewCalls: {
+    source: ReviewSource
+    mode: MrReviewMode
+    scope: MrReviewScope | undefined
+  }[] = []
+  let mrReviewStatusValue: MrReviewStatus = { available: true, phase: 'idle' }
+  const mrReviewRunnerMock: MrReviewRunner = {
+    status: () => mrReviewStatusValue,
+    start: async (source, mode, scope) => {
+      mrReviewCalls.push({ source, mode, scope })
+      return { ok: true }
+    },
+  }
   const stubMrs: ForgeMrsResult = {
     available: true,
     mrs: [
@@ -711,8 +802,22 @@ describe('project-scoped repo routes (?project=)', () => {
         targetBranch: 'main',
         updatedAt: '2026-08-14T00:00:00Z',
         url: 'https://example.test/mr/7',
+        state: 'open',
+        isDraft: false,
+        labels: [],
+        additions: null,
+        deletions: null,
+        changedFiles: null,
+        checks: null,
+        reviewers: [],
+        assignees: [],
+        milestone: null,
+        mergeable: null,
+        commits: null,
+        body: null,
       },
     ],
+    truncated: false,
   }
 
   function runGit(cwd: string, args: string[]): void {
@@ -757,9 +862,12 @@ describe('project-scoped repo routes (?project=)', () => {
         mrsCalls.push(cwd)
         return Promise.resolve(stubMrs)
       },
+      mrReviewRunner: mrReviewRunnerMock,
     })
     scopedPort = started.port
     scopedStop = started.stop
+    const html = await rawRequest(scopedPort, '/')
+    mrReviewToken = /__CODESEMA_MRREVIEW_TOKEN__="([a-f0-9]{32})"/.exec(html.body)![1]!
   })
 
   afterAll(async () => {
@@ -777,6 +885,7 @@ describe('project-scoped repo routes (?project=)', () => {
   test('404s an unknown project on every scoped route', async () => {
     expect((await rawRequest(scopedPort, '/api/mrs?project=deadbeef')).status).toBe(404)
     expect((await rawRequest(scopedPort, '/api/branches?project=deadbeef')).status).toBe(404)
+    expect((await rawRequest(scopedPort, '/api/worktrees?project=deadbeef')).status).toBe(404)
     expect(
       (await rawRequest(scopedPort, '/api/preview?project=deadbeef&source=branch&name=main'))
         .status,
@@ -809,6 +918,26 @@ describe('project-scoped repo routes (?project=)', () => {
     const names = (JSON.parse(res.body) as { name: string }[]).map((b) => b.name)
     expect(names).toContain('feature/alpha')
     expect(names).not.toContain('feature/beta')
+  })
+
+  test('lists the worktrees of the project named by ?project=', async () => {
+    const resB = await rawRequest(scopedPort, `/api/worktrees?project=${projectBId}`)
+    expect(resB.status).toBe(200)
+    const pathsB = (JSON.parse(resB.body) as { path: string }[]).map((w) => w.path)
+    expect(pathsB).toContain(realpathSync(repoB))
+    expect(pathsB).not.toContain(realpathSync(repoA))
+
+    const resA = await rawRequest(scopedPort, `/api/worktrees?project=${projectAId}`)
+    const pathsA = (JSON.parse(resA.body) as { path: string }[]).map((w) => w.path)
+    expect(pathsA).toContain(realpathSync(repoA))
+    expect(pathsA).not.toContain(realpathSync(repoB))
+  })
+
+  test('keeps the launch-cwd behavior for worktrees when the param is absent', async () => {
+    const res = await rawRequest(scopedPort, '/api/worktrees')
+    const paths = (JSON.parse(res.body) as { path: string }[]).map((w) => w.path)
+    expect(paths).toContain(realpathSync(repoA))
+    expect(paths).not.toContain(realpathSync(repoB))
   })
 
   test('builds the preview and file diff against the scoped project repo', async () => {
@@ -847,5 +976,360 @@ describe('project-scoped repo routes (?project=)', () => {
     expect(unscoped.status).toBe(200)
     expect(mrsCalls).toHaveLength(2)
     expect(mrsCalls[1]).toBe(repoA)
+  })
+
+  test('POST /api/mrs/review threads ?project= into the runner as scope, omitted when absent', async () => {
+    mrReviewCalls.length = 0
+    const scoped = await rawRequest(scopedPort, `/api/mrs/review?project=${projectBId}`, {
+      method: 'POST',
+      headers: { 'x-codesema-mrreview-token': mrReviewToken },
+      body: '{"source":{"kind":"branch","name":"feature/beta"},"mode":"simple"}',
+    })
+    expect(scoped.status).toBe(202)
+    expect(mrReviewCalls).toEqual([
+      {
+        source: { kind: 'branch', name: 'feature/beta' },
+        mode: 'simple',
+        scope: { projectId: projectBId, cwd: projectBPath },
+      },
+    ])
+
+    const unscoped = await rawRequest(scopedPort, '/api/mrs/review', {
+      method: 'POST',
+      headers: { 'x-codesema-mrreview-token': mrReviewToken },
+      body: '{"source":{"kind":"branch","name":"feature/alpha"},"mode":"simple"}',
+    })
+    expect(unscoped.status).toBe(202)
+    expect(mrReviewCalls).toHaveLength(2)
+    expect(mrReviewCalls[1]?.scope).toBeUndefined()
+  })
+
+  test('POST /api/mrs/review 404s an unknown project without starting a review', async () => {
+    mrReviewCalls.length = 0
+    const res = await rawRequest(scopedPort, '/api/mrs/review?project=deadbeef', {
+      method: 'POST',
+      headers: { 'x-codesema-mrreview-token': mrReviewToken },
+      body: '{"source":{"kind":"branch","name":"feature/alpha"},"mode":"simple"}',
+    })
+    expect(res.status).toBe(404)
+    expect(mrReviewCalls).toEqual([])
+  })
+
+  test('GET /api/mrs/review/status 404s an unknown project', async () => {
+    const res = await rawRequest(scopedPort, '/api/mrs/review/status?project=deadbeef')
+    expect(res.status).toBe(404)
+  })
+
+  test('GET /api/mrs/review/status isolates a running review between two projects', async () => {
+    mrReviewStatusValue = {
+      available: true,
+      phase: 'running',
+      project_id: projectAId,
+      source: { kind: 'branch', name: 'feature/alpha' },
+      mode: 'simple',
+      started_at: new Date().toISOString(),
+    }
+    try {
+      const forA = await rawRequest(scopedPort, `/api/mrs/review/status?project=${projectAId}`)
+      expect(JSON.parse(forA.body)).toMatchObject({ phase: 'running', project_id: projectAId })
+
+      const forB = await rawRequest(scopedPort, `/api/mrs/review/status?project=${projectBId}`)
+      expect(JSON.parse(forB.body)).toEqual({ available: true, phase: 'idle' })
+
+      const unscoped = await rawRequest(scopedPort, '/api/mrs/review/status')
+      expect(JSON.parse(unscoped.body)).toMatchObject({ phase: 'running', project_id: projectAId })
+    } finally {
+      mrReviewStatusValue = { available: true, phase: 'idle' }
+    }
+  })
+})
+
+// GET /api/mrs beyond the default open state (D2 states beyond open). Kept in
+// its own describe/repo rather than folded into the scoped describe above:
+// this one asserts on the `state` argument itself, which the scoped describe's
+// seam never records.
+describe('GET /api/mrs state filter', () => {
+  let repo: string
+  let port: number
+  let stop: () => Promise<void>
+  let calls: { cwd: string; state: string | undefined }[]
+
+  const STUB_MRS: ForgeMrsResult = { available: true, mrs: [], truncated: false }
+
+  beforeAll(async () => {
+    repo = mkdtempSync(join(tmpdir(), 'codesema-mrs-state-repo-'))
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' })
+    calls = []
+    const started = await startServer(createSession(), {
+      cwd: repo,
+      port: 4970,
+      listMrs: (cwd, state) => {
+        calls.push({ cwd, state })
+        return Promise.resolve(STUB_MRS)
+      },
+    })
+    port = started.port
+    stop = started.stop
+  })
+
+  afterAll(async () => {
+    await stop()
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  test('absent ?state= reaches the probe as undefined, the historical behavior', async () => {
+    calls.length = 0
+    const res = await rawRequest(port, '/api/mrs')
+    expect(res.status).toBe(200)
+    expect(calls).toEqual([{ cwd: repo, state: undefined }])
+  })
+
+  test.each(['open', 'merged', 'closed', 'all'])(
+    'accepts state=%s and forwards it to the probe verbatim',
+    async (state) => {
+      calls.length = 0
+      const res = await rawRequest(port, `/api/mrs?state=${state}`)
+      expect(res.status).toBe(200)
+      expect(calls).toEqual([{ cwd: repo, state }])
+    },
+  )
+
+  test('rejects an unknown state value instead of silently falling back to the default', async () => {
+    calls.length = 0
+    const res = await rawRequest(port, '/api/mrs?state=bogus')
+    expect(res.status).toBe(400)
+    // Refused before the probe is ever asked: a caller requesting a state
+    // this server does not recognise must not be silently served 'open'.
+    expect(calls).toEqual([])
+  })
+})
+
+describe('GET /api/reviews*', () => {
+  let configDir: string
+  let repo: string
+  let projectId: string
+  let port: number
+  let stop: () => Promise<void>
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+
+  function fakeRecord(
+    branch: string,
+    verdict: 'approve' | 'request_changes' | 'comment',
+  ): ReviewRecord {
+    const record = sanitizeRecord({
+      meta: { branch, target: 'main' },
+      review: { verdict, summary: 's' },
+    })
+    if (!record) {
+      throw new Error('failed to build a fixture record')
+    }
+    return record
+  }
+
+  beforeAll(async () => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-reviews-config-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    repo = mkdtempSync(join(tmpdir(), 'codesema-reviews-repo-'))
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' })
+    const added = addProject(repo)
+    if (!added.ok) {
+      throw new Error('failed to register the test repo')
+    }
+    projectId = added.project.id
+
+    archiveRecord(fakeRecord('feat/reviewed', 'approve'), repo)
+    archiveRecord(fakeRecord('feat/other', 'request_changes'), repo)
+
+    const started = await startServer(createSession(), { cwd: repo, port: 4980 })
+    port = started.port
+    stop = started.stop
+  })
+
+  afterAll(async () => {
+    await stop()
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  test('GET /api/reviews/latest lists one summary per branch, 404s an unknown project', async () => {
+    const res = await rawRequest(port, `/api/reviews/latest?project=${projectId}`)
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as { latest: { branch: string; verdict: string }[] }
+    const byBranch = new Map(body.latest.map((s) => [s.branch, s]))
+    expect(byBranch.get('feat/reviewed')?.verdict).toBe('approve')
+    expect(byBranch.get('feat/other')?.verdict).toBe('request_changes')
+
+    expect((await rawRequest(port, '/api/reviews/latest?project=deadbeef')).status).toBe(404)
+  })
+
+  test('GET /api/reviews lists one branch history, 400s without ?branch=, 404s an unknown project', async () => {
+    const ok = await rawRequest(port, `/api/reviews?project=${projectId}&branch=feat/reviewed`)
+    expect(ok.status).toBe(200)
+    const body = JSON.parse(ok.body) as { branch: string; entries: { branch: string }[] }
+    expect(body.branch).toBe('feat/reviewed')
+    expect(body.entries.length).toBeGreaterThan(0)
+    expect(body.entries.every((e) => e.branch === 'feat/reviewed')).toBe(true)
+
+    expect((await rawRequest(port, `/api/reviews?project=${projectId}`)).status).toBe(400)
+    expect(
+      (await rawRequest(port, `/api/reviews?project=deadbeef&branch=feat/reviewed`)).status,
+    ).toBe(404)
+  })
+
+  test('GET /api/reviews/record serves one archive by ref, scoped to its own branch', async () => {
+    const list = await rawRequest(port, `/api/reviews?project=${projectId}&branch=feat/reviewed`)
+    const { entries } = JSON.parse(list.body) as { entries: { ref: string }[] }
+    const ref = entries[0]?.ref
+    expect(ref).toBeDefined()
+
+    const ok = await rawRequest(
+      port,
+      `/api/reviews/record?project=${projectId}&branch=feat/reviewed&ref=${ref}`,
+    )
+    expect(ok.status).toBe(200)
+    const record = JSON.parse(ok.body) as ReviewRecord
+    expect(record.meta.branch).toBe('feat/reviewed')
+    expect(record.review.verdict).toBe('approve')
+
+    expect(
+      (await rawRequest(port, `/api/reviews/record?project=${projectId}&branch=feat/reviewed`))
+        .status,
+    ).toBe(400)
+    expect(
+      (await rawRequest(port, `/api/reviews/record?project=${projectId}&ref=${ref}`)).status,
+    ).toBe(400)
+
+    // A ref that resolves fine but belongs to a DIFFERENT branch is refused.
+    const wrongBranch = await rawRequest(
+      port,
+      `/api/reviews/record?project=${projectId}&branch=feat/other&ref=${ref}`,
+    )
+    expect(wrongBranch.status).toBe(404)
+
+    const traversal = await rawRequest(
+      port,
+      `/api/reviews/record?project=${projectId}&branch=feat/reviewed&ref=${encodeURIComponent('../../etc/passwd')}`,
+    )
+    expect(traversal.status).toBe(404)
+
+    expect(
+      (
+        await rawRequest(
+          port,
+          `/api/reviews/record?project=deadbeef&branch=feat/reviewed&ref=${ref}`,
+        )
+      ).status,
+    ).toBe(404)
+  })
+})
+
+describe('resolveDevViteOrigin', () => {
+  test('is off unless CODESEMA_DEV_VITE says otherwise', () => {
+    expect(resolveDevViteOrigin(undefined)).toBeUndefined()
+    expect(resolveDevViteOrigin('')).toBeUndefined()
+    expect(resolveDevViteOrigin('   ')).toBeUndefined()
+  })
+
+  test('accepts loopback dev servers and keeps only the origin', () => {
+    expect(resolveDevViteOrigin('http://localhost:5173')).toBe('http://localhost:5173')
+    expect(resolveDevViteOrigin('http://127.0.0.1:5173/')).toBe('http://127.0.0.1:5173')
+    expect(resolveDevViteOrigin('http://localhost:5173/ignored/path')).toBe('http://localhost:5173')
+  })
+
+  test.each([
+    'http://evil.example.com:5173',
+    'http://localhost.evil.example.com:5173',
+    'file:///tmp/x',
+    'javascript:alert(1)',
+    'localhost:5173',
+    'not a url',
+  ])('refuses %s rather than injecting it as a script source', (value) => {
+    // The value lands in a <script src> on the served page, so anything that is
+    // not a loopback http(s) origin is a remote script against the local server.
+    expect(() => resolveDevViteOrigin(value)).toThrow()
+  })
+})
+
+describe('devIndexHtml', () => {
+  test('loads the Vite client and the app entry from the dev server', () => {
+    const html = devIndexHtml('http://localhost:5173')
+    expect(html).toContain(
+      '<script type="module" src="http://localhost:5173/@vite/client"></script>',
+    )
+    expect(html).toContain(
+      '<script type="module" src="http://localhost:5173/src/main.ts"></script>',
+    )
+  })
+
+  test('mirrors the shell of packages/web/index.html', () => {
+    // The two shells are kept in step by hand: if the real one grows a tag, this
+    // fails instead of the dev page silently rendering something else.
+    const source = readFileSync(
+      fileURLToPath(new URL('../../web/index.html', import.meta.url)),
+      'utf8',
+    )
+    const shell = (html: string) =>
+      html
+        .replace(/<script\b[^>]*><\/script>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    expect(shell(devIndexHtml('http://localhost:5173'))).toBe(shell(source))
+  })
+
+  test('keeps the </head> anchor startServer injects the boot script into', () => {
+    expect(devIndexHtml('http://localhost:5173')).toContain('</head>')
+  })
+})
+
+describe('startServer in dev mode', () => {
+  let port: number
+  let stop: () => Promise<void>
+  let repoDir: string
+  const previousDevVite = process.env.CODESEMA_DEV_VITE
+
+  beforeAll(async () => {
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-serve-dev-'))
+    process.env.CODESEMA_DEV_VITE = 'http://localhost:5173'
+    const started = await startServer(createSession(), { cwd: repoDir, port: 4931 })
+    port = started.port
+    stop = started.stop
+  })
+
+  afterAll(async () => {
+    await stop()
+    if (previousDevVite === undefined) {
+      delete process.env.CODESEMA_DEV_VITE
+    } else {
+      process.env.CODESEMA_DEV_VITE = previousDevVite
+    }
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('serves the dev shell instead of the embedded bundle', async () => {
+    const res = await rawRequest(port, '/')
+    expect(res.status).toBe(200)
+    expect(res.contentType).toBe('text/html; charset=utf-8')
+    expect(res.body).toContain('http://localhost:5173/@vite/client')
+    expect(res.body).not.toContain('/assets/')
+  })
+
+  test('still injects the boot script, so workspace mode survives HMR', async () => {
+    const res = await rawRequest(port, '/')
+    // Same injection as the bundled path: this is the whole point of letting the
+    // CLI serve the page rather than proxying /api to Vite.
+    expect(res.body).toContain('window.__CODESEMA_CONFIG_TOKEN__=')
+    expect(res.body).toContain('window.__CODESEMA_LOCALE__=')
+  })
+
+  test('keeps /api on the CLI origin', async () => {
+    // 202: no record yet. What matters is that the route answers from the same
+    // origin as the page, so no proxy and no CORS are in the dev loop at all.
+    const res = await rawRequest(port, '/api/review')
+    expect(res.status).toBe(202)
   })
 })

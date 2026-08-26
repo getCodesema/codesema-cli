@@ -646,6 +646,79 @@ export function extractAcceptanceCriteria(body: unknown): AcceptanceCriterion[] 
   return readAcceptanceCriteria(body).criteria
 }
 
+// --- Proof methods (D17) ------------------------------------------------------
+
+/**
+ * How a criterion's verdict may be established, named strictly enough that a
+ * caller can act on it mechanically. `judgment` is the escape hatch: the only
+ * method with nothing mechanical behind it, for a criterion nothing else can
+ * verify. Never a JSON field on `AcceptanceCriterion` (D17): a new field would
+ * need every existing producer and consumer of a `TicketBody` updated in
+ * lockstep before a single criterion could carry one, where a textual tag
+ * inside `text` is legible to all of them the day it starts appearing.
+ * Extensible, never renamed: same doctrine as `TICKET_PROBLEM_CODES`.
+ */
+export const PROOF_METHODS = ['command', 'diff', 'read', 'judgment'] as const
+
+export type ProofMethod = (typeof PROOF_METHODS)[number]
+
+/**
+ * One criterion's declared proof: which method judges it, and the argument
+ * that method acts on (the command to run, the path a diff must touch, the
+ * path or substring a read must find). `argument` is `null` only for
+ * `judgment`, the one method with nothing for an argument to name.
+ */
+export type CriterionProof = {
+  method: ProofMethod
+  argument: string | null
+}
+
+/**
+ * Matches a `[proof:<method> <argument>]` tag anchored at the very END of a
+ * criterion's text (trailing whitespace tolerated, nothing else: a tag
+ * followed by more prose is not at the end and must not match). Tolerant of
+ * extra internal whitespace around `<method>` and before `<argument>`, since
+ * this tag is typed by hand as often as it is generated. `<argument>` is
+ * matched GREEDILY up to the last `]` the anchor allows, so an argument that
+ * itself contains a literal `]` (a grep pattern, a JSON snippet in a command)
+ * is not cut at the first one.
+ */
+const CRITERION_PROOF_RE = /\[proof:\s*(\S+)(?:\s+(.+))?\]\s*$/
+
+const PROOF_METHOD_SET: ReadonlySet<string> = new Set(PROOF_METHODS)
+
+/**
+ * Reads the `[proof:...]` tag off a criterion's text. Returns `null` when
+ * there is none, when it sits anywhere but the end, or when its method is not
+ * one of `PROOF_METHODS`: the same never-fabricate rule this contract
+ * applies to every closed enum, a method this build does not recognize is
+ * refused, not guessed at. `argument` is REQUIRED for `command`/`diff`/`read`
+ * (a mechanical check needs something to act on): a tag missing one, or
+ * carrying only whitespace, is refused for those three exactly like a missing
+ * tag would be. `judgment` is the one method `argument` is optional for.
+ *
+ * Deliberately compatible with `EARS_RE`: the tag lives inside the response
+ * clause's own trailing `.+`, so a criterion carrying one still is, and
+ * always was, an ordinary EARS sentence to every reader that does not know
+ * about proofs yet (D17: D12, a structured field instead, is not done).
+ */
+export function parseCriterionProof(text: string): CriterionProof | null {
+  const match = CRITERION_PROOF_RE.exec(text)
+  if (!match) {
+    return null
+  }
+  const methodToken = match[1] ?? ''
+  if (!PROOF_METHOD_SET.has(methodToken)) {
+    return null
+  }
+  const method = methodToken as ProofMethod
+  const argument = match[2]?.trim() || null
+  if (method !== 'judgment' && !argument) {
+    return null
+  }
+  return { method, argument }
+}
+
 // --- Lint -------------------------------------------------------------------
 
 /**
@@ -665,6 +738,7 @@ export const TICKET_PROBLEM_CODES = [
   'criteria_duplicated',
   'criterion_not_ears',
   'criterion_too_long',
+  'criterion_missing_proof',
 ] as const
 
 export type TicketProblemCode = (typeof TICKET_PROBLEM_CODES)[number]
@@ -685,6 +759,21 @@ export type TicketLintResult =
 /** What `lintCriteria` answers: the structured list, or why it was refused. */
 export type TicketCriteriaLintResult =
   { ok: true; criteria: AcceptanceCriterion[] } | { ok: false; problems: TicketProblem[] }
+
+/**
+ * Shared options of `lintTicketBody` and `lintCriteria` (D17).
+ *
+ * `requireProofMethod` defaults to `false`, and that default is the whole
+ * lint's behavior before D17 existed, byte-for-byte: nothing changes for a
+ * caller that does not pass this. Only `brain-draft.ts` passes `true`, to gate
+ * drafts on carrying a `[proof:...]` tag per criterion; the ADMISSION lint
+ * (task-from-issue) and boot-time reconciliation are deliberately left at the
+ * default, so an existing ticket written before D17 keeps linting exactly as
+ * it always has.
+ */
+export type TicketLintOptions = {
+  requireProofMethod?: boolean
+}
 
 type SectionScan = {
   blocks: Map<TicketSectionHeading, string[]>
@@ -1196,7 +1285,20 @@ function problemsForSection(scan: SectionScan, heading: TicketSectionHeading): T
   return out
 }
 
-function problemsForCriterion(text: string, seen: Set<string>): TicketProblem[] {
+/**
+ * Resolved lint behavior for the criteria rules below. Never partial: callers
+ * always pass a fully-defaulted object, so nothing here re-decides what
+ * `requireProofMethod`'s own absence means.
+ */
+type CriteriaLintOptions = {
+  requireProofMethod: boolean
+}
+
+function problemsForCriterion(
+  text: string,
+  seen: Set<string>,
+  opts: CriteriaLintOptions,
+): TicketProblem[] {
   const out: TicketProblem[] = []
   // Counted in CODE POINTS, the unit the bound is published in: an emoji is one
   // character of a criterion, not two, and the refusal must say the same.
@@ -1219,6 +1321,19 @@ function problemsForCriterion(text: string, seen: Set<string>): TicketProblem[] 
       ),
     )
   }
+  // Off by default (byte-identical to the lint's pre-D17 behavior): only
+  // `brain-draft.ts` opts in today. When it does, a criterion with no valid
+  // `[proof:<method> <argument>]` tag is refused by name, same as a criterion
+  // that fails EARS.
+  if (opts.requireProofMethod && !parseCriterionProof(text)) {
+    out.push(
+      problem(
+        'criterion_missing_proof',
+        `acceptance criterion has no valid "[proof:<method> <argument>]" tag: ${quoted(text)}`,
+        { criterion: text },
+      ),
+    )
+  }
   const id = acceptanceCriterionId(text)
   if (seen.has(id)) {
     out.push(
@@ -1232,11 +1347,14 @@ function problemsForCriterion(text: string, seen: Set<string>): TicketProblem[] 
 }
 
 /**
- * The rules that apply to the criteria THEMSELVES — count, bound, EARS,
- * duplicates — shared verbatim by `lintTicketBody` and `lintCriteria` so a body
- * and a bare list can never be judged by two different standards.
+ * The rules that apply to the criteria THEMSELVES (count, bound, EARS,
+ * duplicates, proof), shared verbatim by `lintTicketBody` and `lintCriteria`
+ * so a body and a bare list can never be judged by two different standards.
  */
-function problemsForCriteriaTexts(texts: readonly string[]): TicketProblem[] {
+function problemsForCriteriaTexts(
+  texts: readonly string[],
+  opts: CriteriaLintOptions,
+): TicketProblem[] {
   const problems: TicketProblem[] = []
   if (texts.length < TICKET_CRITERIA_MIN) {
     problems.push(
@@ -1257,12 +1375,15 @@ function problemsForCriteriaTexts(texts: readonly string[]): TicketProblem[] {
   }
   const seen = new Set<string>()
   for (const text of texts) {
-    problems.push(...problemsForCriterion(text, seen))
+    problems.push(...problemsForCriterion(text, seen, opts))
   }
   return problems
 }
 
-function problemsForCriteria(scan: SectionScan): { problems: TicketProblem[]; items: string[] } {
+function problemsForCriteria(
+  scan: SectionScan,
+  opts: CriteriaLintOptions,
+): { problems: TicketProblem[]; items: string[] } {
   const block = scan.blocks.get(ACCEPTANCE_CRITERIA_HEADING)
   // A missing section is already reported by `problemsForSection`; saying it
   // twice would only pad the refusal.
@@ -1282,7 +1403,7 @@ function problemsForCriteria(scan: SectionScan): { problems: TicketProblem[]; it
   // No filter here: an item that carries no text was already named above, so
   // nothing silently disappears between the section and the count.
   const texts = items.map((item) => collapse(item))
-  problems.push(...problemsForCriteriaTexts(texts))
+  problems.push(...problemsForCriteriaTexts(texts, opts))
   return { problems, items: texts }
 }
 
@@ -1300,7 +1421,7 @@ function problemsForCriteria(scan: SectionScan): { problems: TicketProblem[]; it
  * Never throws: `raw` that is not a non-empty string is a refusal like any
  * other, with its own code.
  */
-export function lintTicketBody(raw: unknown): TicketLintResult {
+export function lintTicketBody(raw: unknown, opts: TicketLintOptions = {}): TicketLintResult {
   if (typeof raw !== 'string' || !raw.trim()) {
     return {
       ok: false,
@@ -1312,7 +1433,9 @@ export function lintTicketBody(raw: unknown): TicketLintResult {
   for (const { heading } of TICKET_SECTIONS) {
     problems.push(...problemsForSection(scan, heading))
   }
-  const criteria = problemsForCriteria(scan)
+  const criteria = problemsForCriteria(scan, {
+    requireProofMethod: opts.requireProofMethod ?? false,
+  })
   problems.push(...criteria.problems)
   if (problems.length > 0) {
     return { ok: false, problems }
@@ -1361,7 +1484,7 @@ function typeName(value: unknown): string {
  *
  * Never throws: anything that is not a list is a refusal with its own code.
  */
-export function lintCriteria(raw: unknown): TicketCriteriaLintResult {
+export function lintCriteria(raw: unknown, opts: TicketLintOptions = {}): TicketCriteriaLintResult {
   if (!Array.isArray(raw)) {
     return {
       ok: false,
@@ -1390,7 +1513,9 @@ export function lintCriteria(raw: unknown): TicketCriteriaLintResult {
       ),
     )
   })
-  problems.push(...problemsForCriteriaTexts(texts))
+  problems.push(
+    ...problemsForCriteriaTexts(texts, { requireProofMethod: opts.requireProofMethod ?? false }),
+  )
   if (problems.length > 0) {
     return { ok: false, problems }
   }

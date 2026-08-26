@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { ref } from 'vue'
-import type { TaskPlan, TaskRecord } from '../types'
+import type { ForgeMr, GitWorktree, TaskPlan, TaskRecord } from '../types'
 import {
   applyTaskMetaFrame,
   taskKey,
@@ -210,6 +210,309 @@ describe('taskStreamHandlers (the stream wiring itself)', () => {
   })
 })
 
+// mrsLoadByProject carries the FACT behind mrsByProject's flattened `[]`: a
+// loaded (possibly empty, possibly truncated) list, a forge the CLI could not
+// reach with its own motif, or the fetch itself failing. Driven through
+// loadProjects()'s auto-select of the derived active card, since loadMrs
+// itself is private (setActive's own lazy-fetch policy, mirrored by
+// selectProject), the same wiring WorkspaceView relies on.
+describe('loadMrs / mrsLoadByProject (selectProject/loadProjects lazy-fetch policy)', () => {
+  type Route = { status: number; body: unknown } | 'reject'
+
+  function mrFixture(overrides: Partial<ForgeMr> = {}): ForgeMr {
+    return {
+      number: 1,
+      title: 'first mr',
+      author: 'octocat',
+      sourceBranch: 'feat/x',
+      targetBranch: 'main',
+      updatedAt: '2026-08-14T00:00:00.000Z',
+      url: 'https://example.test/mr/1',
+      state: 'open',
+      isDraft: false,
+      labels: [],
+      additions: null,
+      deletions: null,
+      changedFiles: null,
+      checks: null,
+      reviewers: null,
+      assignees: null,
+      milestone: null,
+      mergeable: null,
+      commits: null,
+      body: null,
+      ...overrides,
+    }
+  }
+
+  function projectsResponse(id: string): unknown {
+    return {
+      projects: [{ id, path: `/repo/${id}`, name: id, added_at: '2026-08-14T00:00:00.000Z' }],
+      current: id,
+    }
+  }
+
+  /** Routes a GET/DELETE by its pathname (query string stripped); 'reject'
+   * simulates a network failure, an unrouted path is a test authoring bug. */
+  function installRoutedFetch(routes: Record<string, Route>): {
+    calls: string[]
+    restore: () => void
+  } {
+    const calls: string[] = []
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) => {
+      calls.push(url)
+      const path = url.split('?')[0] ?? url
+      const route = routes[path]
+      if (route === undefined) {
+        return Promise.reject(new Error(`unrouted fetch in test: ${url}`))
+      }
+      if (route === 'reject') {
+        return Promise.reject(new Error('network down'))
+      }
+      const { status, body } = route
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    return {
+      calls,
+      restore: () => {
+        globalThis.fetch = original
+      },
+    }
+  }
+
+  /** Lets the fetch/json promise chain inside loadMrs actually settle. */
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  /** Registers project 'p1' (the API's `current`, so loadProjects derives it
+   * as the active card and its lazy fetches fire on their own) and lets its
+   * MR load settle. Branches are routed to an empty list unconditionally:
+   * this describe block is about the MR side only. */
+  async function loadedProject(
+    mrsRoute: Route,
+  ): Promise<{ tasks: ReturnType<typeof useTasks>; calls: string[] }> {
+    const { calls, restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/branches': { status: 200, body: [] },
+      '/api/mrs': mrsRoute,
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      return { tasks, calls }
+    } finally {
+      restore()
+    }
+  }
+
+  test('a successful, non-truncated list: status "loaded", truncated false, the list carried over', async () => {
+    const { tasks } = await loadedProject({
+      status: 200,
+      body: { available: true, truncated: false, mrs: [mrFixture()] },
+    })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: false })
+    expect(tasks.mrsByProject.get('p1')).toEqual([mrFixture()])
+  })
+
+  test('a successful, truncated list: status "loaded", truncated true', async () => {
+    const { tasks } = await loadedProject({
+      status: 200,
+      body: { available: true, truncated: true, mrs: [mrFixture()] },
+    })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: true })
+  })
+
+  test('a successful, empty list: status "loaded", never confused with unavailable', async () => {
+    const { tasks } = await loadedProject({
+      status: 200,
+      body: { available: true, truncated: false, mrs: [] },
+    })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: false })
+    expect(tasks.mrsByProject.get('p1')).toEqual([])
+  })
+
+  test.each(['no-remote', 'no-cli', 'cli-error'] as const)(
+    'forge unavailable (%s): status "unavailable" with its motif, mrsByProject stays empty',
+    async (reason) => {
+      const { tasks } = await loadedProject({
+        status: 200,
+        body: { available: false, reason },
+      })
+      expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'unavailable', reason })
+      expect(tasks.mrsByProject.get('p1')).toEqual([])
+    },
+  )
+
+  test('an HTTP failure: status "error" with the server’s own words, mrsByProject stays empty', async () => {
+    const { tasks } = await loadedProject({ status: 500, body: { error: 'boom' } })
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'error', error: 'boom' })
+    expect(tasks.mrsByProject.get('p1')).toEqual([])
+  })
+
+  test('a transport exception: status "error" with the exception’s message', async () => {
+    const { tasks } = await loadedProject('reject')
+    expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'error', error: 'network down' })
+    expect(tasks.mrsByProject.get('p1')).toEqual([])
+  })
+
+  test('removing a project purges mrsLoadByProject alongside mrsByProject', async () => {
+    const { calls, restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/branches': { status: 200, body: [] },
+      '/api/mrs': { status: 200, body: { available: true, truncated: false, mrs: [] } },
+      '/api/projects/p1': { status: 200, body: {} },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.mrsLoadByProject.get('p1')).toEqual({ status: 'loaded', truncated: false })
+
+      const result = await tasks.removeProject('p1')
+      expect(result).toEqual({ ok: true })
+      expect(tasks.mrsLoadByProject.get('p1')).toBeUndefined()
+      expect(tasks.mrsByProject.get('p1')).toBeUndefined()
+      expect(calls).toContain('/api/projects/p1')
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('loadWorktrees / worktreesByProject (selectProject/loadProjects lazy-fetch policy)', () => {
+  type Route = { status: number; body: unknown } | 'reject'
+
+  const WORKTREE: GitWorktree = { path: '/repo/p1', branch: 'main' }
+
+  function projectsResponse(id: string): unknown {
+    return {
+      projects: [{ id, path: `/repo/${id}`, name: id, added_at: '2026-08-14T00:00:00.000Z' }],
+      current: id,
+    }
+  }
+
+  /** Routes a GET/DELETE by its pathname (query string stripped); 'reject'
+   * simulates a network failure, an unrouted path is a test authoring bug. */
+  function installRoutedFetch(routes: Record<string, Route>): {
+    calls: string[]
+    restore: () => void
+  } {
+    const calls: string[] = []
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) => {
+      calls.push(url)
+      const path = url.split('?')[0] ?? url
+      const route = routes[path]
+      if (route === undefined) {
+        return Promise.reject(new Error(`unrouted fetch in test: ${url}`))
+      }
+      if (route === 'reject') {
+        return Promise.reject(new Error('network down'))
+      }
+      const { status, body } = route
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    return {
+      calls,
+      restore: () => {
+        globalThis.fetch = original
+      },
+    }
+  }
+
+  /** Lets the fetch/json promise chain inside loadWorktrees actually settle. */
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  test('a successful load populates worktreesByProject', async () => {
+    const { restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': { status: 200, body: [WORKTREE] },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.worktreesByProject.get('p1')).toEqual([WORKTREE])
+    } finally {
+      restore()
+    }
+  })
+
+  test('an HTTP failure caches an empty list', async () => {
+    const { restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': { status: 500, body: { error: 'boom' } },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.worktreesByProject.get('p1')).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  test('a transport exception caches an empty list', async () => {
+    const { restore } = installRoutedFetch({
+      '/api/projects': { status: 200, body: projectsResponse('p1') },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': 'reject',
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      expect(tasks.worktreesByProject.get('p1')).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  test('selecting a project as active triggers its worktrees load', async () => {
+    const { calls, restore } = installRoutedFetch({
+      '/api/projects': {
+        status: 200,
+        body: {
+          projects: [
+            { id: 'p1', path: '/repo/p1', name: 'p1', added_at: '2026-08-14T00:00:00.000Z' },
+            { id: 'p2', path: '/repo/p2', name: 'p2', added_at: '2026-08-14T00:00:00.000Z' },
+          ],
+          current: 'p1',
+        },
+      },
+      '/api/mrs': { status: 200, body: { available: false, reason: 'no-remote' } },
+      '/api/branches': { status: 200, body: [] },
+      '/api/worktrees': { status: 200, body: [WORKTREE] },
+    })
+    try {
+      const tasks = useTasks('tok-123')
+      await tasks.loadProjects()
+      await flush()
+      tasks.selectProject('p2')
+      await flush()
+      expect(calls).toContain('/api/worktrees?project=p2')
+      expect(tasks.worktreesByProject.get('p2')).toEqual([WORKTREE])
+    } finally {
+      restore()
+    }
+  })
+})
+
 // T2.6 — the client half of the dry-run. What matters here is that it hits
 // the PREVIEW route (never the creation one), carries the CSRF token, and
 // leaves the store untouched whatever comes back.
@@ -300,5 +603,93 @@ describe('useTasks().preview', () => {
       (preview) => preview({ project_id: 'p1', title: 't', prompt: 'p' }),
     )
     expect(result).toMatchObject({ ok: false })
+  })
+})
+
+// Gives a scratch conversation a repo after the fact. What matters here is
+// the wire shape (route, token, `repo_project_id` body) and that every
+// refusal the server can send (400 malformed id, 404 unknown repo, 409 own
+// repo already set or a turn in progress) reaches the caller with its status
+// and words intact, never swallowed into a generic failure.
+describe('useTasks().attach', () => {
+  type Call = { url: string; init: RequestInit }
+
+  async function withFetch<T>(
+    reply: (call: Call) => { status: number; body: unknown },
+    run: (attach: ReturnType<typeof useTasks>['attach']) => Promise<T>,
+  ): Promise<{ result: T; calls: Call[] }> {
+    const calls: Call[] = []
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      const { status, body } = reply({ url, init })
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    try {
+      const tasks = useTasks('tok-123')
+      const result = await run(tasks.attach)
+      return { result, calls }
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+
+  test('posts repo_project_id to the scoped attach route, with the tasks token', async () => {
+    const { calls, result } = await withFetch(
+      () => ({ status: 200, body: { ok: true } }),
+      (attach) => attach('p1', 'task-1', 'repo-9'),
+    )
+    expect(calls).toHaveLength(1)
+    const call = calls[0]
+    if (!call) {
+      throw new Error('no request was made')
+    }
+    expect(call.url).toBe('/api/tasks/task-1/attach?project=p1')
+    expect(call.init.method).toBe('POST')
+    expect((call.init.headers as Record<string, string>)['x-codesema-tasks-token']).toBe('tok-123')
+    expect(JSON.parse(call.init.body as string)).toEqual({ repo_project_id: 'repo-9' })
+    expect(result).toEqual({ ok: true })
+  })
+
+  test('a 409 (own repo already set, or a turn in progress) keeps the server’s words', async () => {
+    const { result } = await withFetch(
+      () => ({ status: 409, body: { error: 'a turn is in progress' } }),
+      (attach) => attach('p1', 'task-1', 'repo-9'),
+    )
+    expect(result).toEqual({ ok: false, status: 409, error: 'a turn is in progress' })
+  })
+
+  test('a 404 (unknown repository) keeps the server’s words', async () => {
+    const { result } = await withFetch(
+      () => ({ status: 404, body: { error: 'unknown repository' } }),
+      (attach) => attach('p1', 'task-1', 'ghost'),
+    )
+    expect(result).toEqual({ ok: false, status: 404, error: 'unknown repository' })
+  })
+
+  test('a 400 (malformed repo id) keeps its status, not folded into 404', async () => {
+    const { result } = await withFetch(
+      () => ({ status: 400, body: { error: 'bad request' } }),
+      (attach) => attach('p1', 'task-1', 'not-an-id'),
+    )
+    expect(result).toEqual({ ok: false, status: 400, error: 'bad request' })
+  })
+
+  test('a network failure never throws: status 0, the thrown message as the error', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = (() => {
+      throw new Error('fetch failed')
+    }) as unknown as typeof fetch
+    try {
+      const tasks = useTasks('tok-123')
+      const result = await tasks.attach('p1', 'task-1', 'repo-9')
+      expect(result).toEqual({ ok: false, status: 0, error: 'fetch failed' })
+    } finally {
+      globalThis.fetch = original
+    }
   })
 })

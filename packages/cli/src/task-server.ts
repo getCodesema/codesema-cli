@@ -19,6 +19,8 @@ import {
 } from './checks-setup.js'
 import {
   DEFAULT_MERGE_SETTINGS,
+  loadGlobalConfig,
+  resolveBrainAutoMerge,
   resolveMaxAutoFixRounds,
   resolveProjectAgentCommand,
   resolveProjectConfig,
@@ -32,6 +34,8 @@ import {
   isActiveTaskStatus,
   TASK_TITLE_MAX,
   TASK_TURN_TEXT_MAX,
+  type AcceptanceCriterion,
+  type ArmTicket,
   type ReasonCode,
   type ReviewRecord,
   type TaskChecks,
@@ -57,8 +61,15 @@ import type { ForgeIssuesExecFn } from './forge-issues.js'
 import { refExists, tryGit, tryGitAsync } from './git.js'
 import { t } from './i18n.js'
 import { createLoadCap, type LoadCap, type LoadCapSnapshot } from './load-cap.js'
-import { listProjects, listProjectsDetailed, type Project } from './projects.js'
+import {
+  listProjectsDetailed,
+  listWorkspaceProjects,
+  scratchProject,
+  type Project,
+} from './projects.js'
 import { readChecksConfig } from './repo-config.js'
+import { resolveBrainTicketOrigin } from './task-brain-ticket.js'
+import { reportBrainTransition } from './task-brain.js'
 import { runChecks } from './task-checks.js'
 import {
   applyFixLoopDecision,
@@ -99,8 +110,9 @@ import {
   syncCycleLabel,
   type CycleLabel,
 } from './task-labels.js'
-import { mergeTask, type MergeOutcome } from './task-merge.js'
+import { effectiveMergePolicyIsAuto, mergeTask, type MergeOutcome } from './task-merge.js'
 import { resolveTaskPlan, type TaskPlanDeps, type TaskPreviewResult } from './task-plan.js'
+import { replayChecksOnDefaultBranch } from './task-post-merge-checks.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import { publishTaskRecap } from './task-recap-publish.js'
 import {
@@ -256,6 +268,17 @@ export type CreateTaskManagerInput = {
    */
   issue?: CreateTaskManagerIssueInput
   /**
+   * Arm/brain integration: creates the task FROM this ticket the local
+   * brain owns, instead of a bare title+prompt or a forge issue. Mutually
+   * exclusive in effect with `issue` and with `title`/`prompt`: when given,
+   * they are ignored and this wins, same convention `issue` already has over
+   * `title`/`prompt`. The ticket's own title and (linted) body take their
+   * place, and the task's record carries `brain_ticket` and its already
+   * brain-validated `criteria` (see `resolveBrainTicketOrigin`,
+   * task-brain-ticket.ts).
+   */
+  brainTicket?: ArmTicket
+  /**
    * Per-task agent CLI (id or full known command). Validated with
    * `resolveKnownAgentCommand`; unknown/custom is a 400. Absent: the
    * project's current runtime command is used and stored on the record.
@@ -380,6 +403,14 @@ export type TaskManager = {
     /** Resolved agent command a NEW unspecified task of this project would run. */
     agent: string
   }
+  /**
+   * Gives a registered repository to a conversation that started without one.
+   * `repoProjectId` names a project in the registry; the scratch project is
+   * not one, and neither is an id nothing claims (404). The worktree lands
+   * inside the conversation's own workspace, so the directory its agent runs
+   * in is unchanged.
+   */
+  attach: (projectId: string, taskId: string, repoProjectId: string) => Promise<TaskActionResult>
   /**
    * Writes the ready proposal to the project's .codesema/config.json — the
    * ONLY path from a proposal to disk. 409 when nothing is proposed.
@@ -623,6 +654,13 @@ export type CreateTaskManagerOptions = {
   degradedMergeKeys?: readonly string[]
   /** Test seam: the default evaluates the four conditions for real and drives gh/glab. */
   mergeTaskFn?: typeof mergeTask
+  /**
+   * D22 (minimal) test seam: the post-merge checks replay `runMergeStep` fires
+   * fire-and-forget after a landed merge (`schedulePostMergeReplay`). The
+   * default runs a real fetch against the repo's own `origin` and a real
+   * checks engine — no test of this module drives either.
+   */
+  replayPostMergeChecksFn?: typeof replayChecksOnDefaultBranch
 }
 
 /** One project whose persisted queue was resumed, for the boot announcement. */
@@ -709,6 +747,18 @@ function reconcileTasks(cwd: string, projectId: string): ReconcileOutcome {
   const records = listTasks(cwd)
   /** Facts worth a line on the terminal that are not, in themselves, failures. */
   const notices: string[] = []
+  // D20: a `cycle_step` is how a task tells boot it was mid-ship or
+  // mid-merge when the previous process died. `startPending` is what
+  // actually resumes it (resumeCycleStep) — this is only the "never
+  // silent" half (invariant n° 2): a human reading the boot log sees the
+  // resume coming instead of a task quietly finishing a step nobody knew
+  // was still open.
+  const pendingCycleSteps = records.filter((record) => record.cycle_step)
+  if (pendingCycleSteps.length > 0) {
+    notices.push(
+      `${pendingCycleSteps.length} task(s) carry a pending cycle step from an earlier session and will resume it: ${pendingCycleSteps.map((record) => `${record.id} (${record.cycle_step})`).join(', ')}`,
+    )
+  }
   /**
    * `reason` travels WITH the status, always. A boot rewrite is a degradation
    * like any other (invariant 2) and the D2 vocabulary is the machine-readable
@@ -916,12 +966,34 @@ function shipRefusal(record: TaskRecord): TaskActionResult | null {
   return null
 }
 
+/**
+ * D20 defensive purge. A `cycle_step` marker names a ship or merge step this
+ * process is running THROUGH `ship()`/`runMergeStep()` — never through
+ * `reply`/`resume`/`abandon` — so any of the three finding one already set
+ * can only mean a crash left it behind (the step's own write always clears
+ * it, success or failure alike, before the runner claims the task again). An
+ * explicit human reply/resume/abandon overrides whatever that stale step
+ * still claims to be doing, so it purges the marker itself, before its own
+ * effect, rather than leaving it for a `startPending` the human's own action
+ * has already overtaken.
+ */
+function purgeStaleCycleStep(cwd: string, id: string): void {
+  const record = loadTask(cwd, id)
+  if (record?.cycle_step) {
+    delete record.cycle_step
+    record.updated_at = new Date().toISOString()
+    saveTask(cwd, record)
+  }
+}
+
 /** Everything the manager holds per project, built lazily at first access. */
 type ProjectContext = {
   project: Project
   runner: TaskRunner
   /** Tasks with a ship in flight (see ship below). */
   shipping: Set<string>
+  /** Tasks with a merge in flight (see runMergeStep below). Mirrors shipping exactly. */
+  merging: Set<string>
   /** Tasks with a checks run in flight (one run at a time per task). */
   checking: Set<string>
   /**
@@ -948,6 +1020,10 @@ type TaskOrigin =
       issueSnapshot: TaskIssueSnapshot | null
       /** T2.4/DP13: true when the issue's raw body carries content the edit-detector cannot see. Always false off the title+prompt path. */
       coverageGap: boolean
+      /** Arm/brain integration: the ticket this task was created from, when it was one. Absent off every other origin. */
+      brainTicket?: { id: string; title: string; url?: string } | null
+      /** The brain's already-validated criteria, frozen onto the record at creation. Absent off every other origin. */
+      criteria?: AcceptanceCriterion[] | null
     }
   | { ok: false; refusal: Extract<TaskCreateResult, { ok: false }> }
 
@@ -1153,7 +1229,9 @@ async function runWithConcurrency<T>(
 }
 
 export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
-  const registered = opts.listProjectsFn ?? listProjects
+  // Workspace projects, not the registry: the scratch project is a destination
+  // a conversation can be created against, and it is in no file.
+  const registered = opts.listProjectsFn ?? listWorkspaceProjects
   const notice = opts.onNotice ?? ((message: string) => console.warn(message))
   /**
    * Machine-wide load cap (T1.3, D4): ONE instance for the whole manager,
@@ -1298,8 +1376,19 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // that will not resolve forbids the WHOLE sweep, same as an unparsable
     // registry or a tasks/ that will not list.
     let pathUnresolved = false
-    for (const project of registry.projects) {
+    // The scratch project holds conversations like any other and their HOME
+    // volumes are claimed like any other: leaving it out of this walk would
+    // read every one of them as orphaned the moment a single repository is
+    // registered alongside. It is deliberately NOT counted in projectCount,
+    // which guards "we know of no project at all, so sweep nothing" and must
+    // keep meaning exactly that.
+    for (const project of [scratchProject(), ...registry.projects]) {
       if (!existsSync(project.path)) {
+        // The scratch directory is created on first use: not existing yet is
+        // a project holding nothing, not a project we failed to read.
+        if (project.kind === 'scratch') {
+          continue
+        }
         pathUnresolved = true
         continue
       }
@@ -1433,6 +1522,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const runtime = projectRuntime(project.path)
     return {
       cwd: project.path,
+      ...(project.kind === 'scratch' ? { scratch: true } : {}),
       runtime: { command: runtime.command, isolationMode: runtime.isolationMode },
       probe,
       tasks: () => listTasks(project.path),
@@ -1694,6 +1784,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     }
     const refusal = shipRefusal(record)
     if (refusal) {
+      // D20: this attempt never ran, but a `cycle_step` an earlier, crashed
+      // attempt left behind must not survive a refusal that will not retry
+      // itself — otherwise a resumed boot would keep calling ship() on this
+      // exact refusal forever. The record is left exactly as shipRefusal
+      // read it, this one field aside.
+      if (record.cycle_step) {
+        delete record.cycle_step
+        record.updated_at = new Date().toISOString()
+        saveTask(cwd, record)
+      }
       return refusal
     }
     // This `record` crosses the push (network, slow) before saveTask below —
@@ -1724,6 +1824,14 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           ...(outcome.reasonCode ? { reason_code: outcome.reasonCode } : {}),
         })
         emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+        // D20: the push failed, so nothing shipped — but a `cycle_step` this
+        // attempt carried in must not survive a refusal that will not retry
+        // itself, same reasoning as shipRefusal's own clear above.
+        if (record.cycle_step) {
+          delete record.cycle_step
+          record.updated_at = new Date().toISOString()
+          saveTask(cwd, record)
+        }
         // 502: the failure is on the remote/CLI side, not in the request.
         return {
           ok: false,
@@ -1765,6 +1873,22 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         delete record.reason
       }
       record.status = 'shipped'
+      // D20, same write as the status above: advanced to 'merge' when the
+      // chained runMergeStep below will actually attempt one — the SAME
+      // settings/brainAutoMerge it resolves a few lines later — or cleared
+      // when it will not (mergePolicy 'human', no brain override), so the
+      // record never claims to be mid-step when nothing is about to run.
+      if (
+        effectiveMergePolicyIsAuto(
+          record,
+          opts.mergeSettings ?? DEFAULT_MERGE_SETTINGS,
+          resolveBrainAutoMerge(loadGlobalConfig()),
+        )
+      ) {
+        record.cycle_step = 'merge'
+      } else {
+        delete record.cycle_step
+      }
       record.updated_at = new Date().toISOString()
       saveTask(cwd, record)
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
@@ -1775,6 +1899,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // `codesema:reviewing` with the `review_ok` it comes from, so the
       // nominal auto-ship spends nothing at all here.
       trackCycleLabel(mirrorCycleLabel(projectId, cwd, record))
+      // Arm/brain integration: the same "after the persisted transition,
+      // never instead of it" discipline as the cycle label right above.
+      // Never awaited: a brain round trip must not hold up the ship's own
+      // answer, exactly like the label.
+      void reportBrainTransition(cwd, record, {
+        type: 'mr_opened',
+        ...(outcome.mrUrl ? { mr_url: outcome.mrUrl } : {}),
+        branch: record.branch,
+      })
       // T1.9: nothing was ever created for a 'policy' task, so nothing is
       // attempted for one either — same gate as the runner's abandon path.
       if (record.isolation === 'container') {
@@ -1853,6 +1986,65 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   /**
+   * D22 (minimal): replays this task's checks on the default branch after its
+   * merge landed and journals the outcome. Called fire-and-forget from
+   * `runMergeStep` — see the call site — because the turn that shipped this
+   * task is already over, and nothing about ITS status may wait on what a
+   * check of the DEFAULT branch, possibly minutes later, turns out to say.
+   *
+   * `replayChecksOnDefaultBranch` returning `null` is INFRASTRUCTURE noise (an
+   * unreachable remote, a lock that timed out, a vanished container engine),
+   * not news about the default branch itself: it is logged, never journaled,
+   * so a flaky fetch never leaves a permanent line on a task that otherwise
+   * finished cleanly.
+   */
+  const schedulePostMergeReplay = async (
+    ctx: ProjectContext,
+    record: TaskRecord,
+  ): Promise<void> => {
+    const cwd = ctx.project.path
+    const projectId = ctx.project.id
+    // Same normalization as task-merge.ts's own `branchAncestry`: a fork
+    // records `origin/<branch>` while a work-on conversation records the bare
+    // MR target branch, and the fetch below needs the bare remote branch name
+    // either way.
+    const target = record.base.replace(/^origin\//, '')
+    const replay = opts.replayPostMergeChecksFn ?? replayChecksOnDefaultBranch
+    const checks = await replay({
+      cwd,
+      task: record,
+      target,
+      config: readChecksConfig(cwd),
+      projectId,
+    })
+    if (!checks) {
+      notice(`${record.id}: the post-merge checks replay on '${target}' could not run`)
+      return
+    }
+    const passed = checks.checks.filter((c) => c.status === 'passed').length
+    const failed = checks.checks.filter(
+      (c) => c.status === 'failed' || c.status === 'timeout',
+    ).length
+    // Same "blocking" reading `checks`'s own journal line uses (above,
+    // read-checks job): a genuinely red run, never an 'error'/'unconfigured'
+    // one — those mean "not evaluated", not "failed" (see reasons.ts's own
+    // `checks_unavailable` doc for why the two must never share a code).
+    const blocking = checks.status === 'failed' || checks.checks.some((c) => c.status === 'timeout')
+    const event = appendTaskEvent(cwd, record.id, {
+      type: 'post_merge_checks',
+      data: {
+        status: checks.status,
+        passed,
+        failed,
+        target,
+        ...(checks.error ? { error: checks.error } : {}),
+      },
+      ...(blocking ? { reason_code: 'checks_failed' as const } : {}),
+    })
+    emit({ project_id: projectId, task_id: record.id, event: { name: 'task_event', data: event } })
+  }
+
+  /**
    * T3.6 (D12): the merge step. Chained after a SUCCESSFUL ship, inside
    * `onTurnDone`, so it only ever runs when there is a merge request to merge.
    *
@@ -1888,54 +2080,150 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const runMergeStep = async (ctx: ProjectContext, id: string): Promise<MergeOutcome | null> => {
     const cwd = ctx.project.path
     const projectId = ctx.project.id
+    // D20 anti-reentrancy, exact mirror of ship()'s own `shipping` guard: the
+    // normal auto-chain (onTurnDone) and a boot resume (resumeCycleStep) are
+    // two independent callers that can land on the same id.
+    if (ctx.merging.has(id)) {
+      return null
+    }
     const record = loadTask(cwd, id)
     if (!record || record.status !== 'shipped') {
       return null
     }
-    const settings = opts.mergeSettings ?? DEFAULT_MERGE_SETTINGS
-    const run = opts.mergeTaskFn ?? mergeTask
-    let outcome: MergeOutcome
-    try {
-      outcome = await run({
-        cwd,
-        task: record,
-        settings,
-        ...(opts.degradedMergeKeys && opts.degradedMergeKeys.length > 0
-          ? { degradedKeys: opts.degradedMergeKeys }
-          : {}),
-      })
-    } catch (err) {
-      const event = appendTaskEvent(cwd, id, {
-        type: 'error',
-        data: {
-          message: `the merge step failed: ${err instanceof Error ? err.message : String(err)}`,
-        },
-      })
-      emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+    // D20 idempotence: a crash between an EARLIER call's landed merge and the
+    // write that would have cleared `cycle_step` resumes this exact call at
+    // the next boot, on a record still sitting on 'shipped' (a landed merge
+    // never moves the status — see WHAT MOVES A STATUS below). That earlier
+    // call's own 'merged' journal line (appended a few lines down, on every
+    // success) is already there; reading it back is cheaper than a fresh
+    // mergeTaskFn call and never itself races the merge module's own
+    // forge-side guard (task-merge.ts's `branchAlreadyMerged`).
+    if (
+      readTaskEvents(cwd, id).some(
+        (event) => event.type === 'merge' && event.data.name === 'merged',
+      )
+    ) {
+      if (record.cycle_step) {
+        delete record.cycle_step
+        record.updated_at = new Date().toISOString()
+        saveTask(cwd, record)
+        emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      }
       return null
     }
-    for (const input of outcome.events) {
-      const event = appendTaskEvent(cwd, id, input)
-      emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+    ctx.merging.add(id)
+    try {
+      const settings = opts.mergeSettings ?? DEFAULT_MERGE_SETTINGS
+      const run = opts.mergeTaskFn ?? mergeTask
+      let outcome: MergeOutcome
+      try {
+        outcome = await run({
+          cwd,
+          task: record,
+          settings,
+          // Arm/brain integration: `brainAutoMerge` is GLOBAL-ONLY (see its own
+          // field comment, config.ts), resolved HERE, once, from the global
+          // file alone, and handed to `mergeTask` as a plain value rather than
+          // read there: a repo file can never contribute to it, and a merge
+          // module that read config itself would blur that boundary.
+          brainAutoMerge: resolveBrainAutoMerge(loadGlobalConfig()),
+          ...(opts.degradedMergeKeys && opts.degradedMergeKeys.length > 0
+            ? { degradedKeys: opts.degradedMergeKeys }
+            : {}),
+        })
+      } catch (err) {
+        const event = appendTaskEvent(cwd, id, {
+          type: 'error',
+          data: {
+            message: `the merge step failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        })
+        emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+        return null
+      }
+      for (const input of outcome.events) {
+        const event = appendTaskEvent(cwd, id, input)
+        emit({ project_id: projectId, task_id: id, event: { name: 'task_event', data: event } })
+      }
+      if (outcome.kind === 'refused' || outcome.kind === 'failed') {
+        record.status = 'waiting_for_you'
+        record.reason = outcome.reason
+        // D20, same write as the status above: the step just ended, one way
+        // or the other, so nothing is left claiming it is still running.
+        delete record.cycle_step
+        record.updated_at = new Date().toISOString()
+        saveTask(cwd, record)
+        emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+        // T3.7, same shape as the ship's: after the persisted transition, never
+        // instead of it. `waiting_for_you` is `codesema:blocked` — the ticket
+        // now says a person is needed, which is exactly what just became true.
+        trackCycleLabel(mirrorCycleLabel(projectId, cwd, record))
+      } else if (record.cycle_step) {
+        // D20: 'held' or 'merged' — neither moves the status (see WHAT MOVES
+        // A STATUS below), but a resumed marker must not outlive either
+        // outcome any more than it outlives a status change. No write at all
+        // when `ship()` never set one to begin with — the ordinary 'held'
+        // case under mergePolicy 'human'.
+        delete record.cycle_step
+        record.updated_at = new Date().toISOString()
+        saveTask(cwd, record)
+        emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      }
+      if (outcome.kind === 'merged') {
+        // T3.5 × T3.6 × T3.7, and the only place `outcome.kind === 'merged'` is
+        // ever read: what a LANDED merge owes the ticket. AWAITED — see
+        // `publishMergedOutcome`.
+        await publishMergedOutcome(ctx, record)
+        // D22 (minimal): deliberately NOT awaited — the turn this merge
+        // belongs to is already done, see `schedulePostMergeReplay`'s own
+        // doc. `.catch()` rather than a bare `void`, same discipline as
+        // `trackCycleLabel` above: nothing in this hook's own contract is
+        // "never rejects" the way `reportBrainTransition`'s is, so an
+        // unexpected throw is turned into a notice instead of an unhandled
+        // rejection.
+        void schedulePostMergeReplay(ctx, record).catch((err: unknown) => {
+          notice(
+            `${record.id}: the post-merge checks replay hook failed unexpectedly (${errorMessage(err)})`,
+          )
+        })
+      }
+      return outcome
+    } finally {
+      ctx.merging.delete(id)
     }
-    if (outcome.kind === 'refused' || outcome.kind === 'failed') {
-      record.status = 'waiting_for_you'
-      record.reason = outcome.reason
-      record.updated_at = new Date().toISOString()
-      saveTask(cwd, record)
-      emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
-      // T3.7, same shape as the ship's: after the persisted transition, never
-      // instead of it. `waiting_for_you` is `codesema:blocked` — the ticket
-      // now says a person is needed, which is exactly what just became true.
-      trackCycleLabel(mirrorCycleLabel(projectId, cwd, record))
+  }
+
+  /**
+   * D20 boot recovery: resumes exactly the step a `cycle_step` marker names,
+   * for a task a crash caught mid-ship or mid-merge. `ship()` and
+   * `runMergeStep()` are what clear the marker (success or failure alike),
+   * so this does nothing else — no notice on the ordinary case, no retry
+   * budget, no decision of its own. Called from `startPending()`, once, for
+   * every task a project's disk still carries one on.
+   *
+   * `'ship'` re-reads the record after `ship()` returns rather than trusting
+   * what it had in hand: a successful ship advances the marker to `'merge'`
+   * in the SAME write as the `shipped` status (see `ship()`'s own D20
+   * comment), and only that fresh copy can say so.
+   */
+  const resumeCycleStep = async (ctx: ProjectContext, record: TaskRecord): Promise<void> => {
+    try {
+      if (record.cycle_step === 'ship') {
+        await ship(ctx, record.id)
+        const reloaded = loadTask(ctx.project.path, record.id)
+        if (reloaded?.cycle_step === 'merge') {
+          await runMergeStep(ctx, record.id)
+        }
+        return
+      }
+      if (record.cycle_step === 'merge') {
+        await runMergeStep(ctx, record.id)
+      }
+    } catch (err) {
+      notice(
+        `${ctx.project.name}: resuming task ${record.id}'s '${record.cycle_step}' step failed unexpectedly (${errorMessage(err)})`,
+      )
     }
-    if (outcome.kind === 'merged') {
-      // T3.5 × T3.6 × T3.7, and the only place `outcome.kind === 'merged'` is
-      // ever read: what a LANDED merge owes the ticket. AWAITED — see
-      // `publishMergedOutcome`.
-      await publishMergedOutcome(ctx, record)
-    }
-    return outcome
   }
 
   /**
@@ -2288,7 +2576,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         state.decided = true
         // Read at THIS instant on purpose: the archive the fix turn works
         // from is the one the reviewer just wrote.
-        state.fixPrompt = reviewArchived ? buildAutoFixTurnPrompt(record) : null
+        state.fixPrompt = reviewArchived ? buildAutoFixTurnPrompt(record, gateChecks) : null
         // A function of the DISK, never of a counter this process holds: a
         // workspace restarted mid-loop resumes at the right round. And a
         // journal it could not READ is handed on as null — not as the count
@@ -2304,6 +2592,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           fixable: state.fixPrompt !== null,
         })
         applyFixLoopDecision(record, state.loop)
+        // D20: posed in the SAME write as the verdict that decides it, right
+        // before whichever persist follows — never a write of its own. The
+        // exact condition `ship()` chains on below, so the marker is set
+        // the instant it becomes true and never lags a turn behind it.
+        if (record.auto_ship && record.status === 'review_ok') {
+          record.cycle_step = 'ship'
+        }
       }
       // The persist the reviewer (or a test stub) calls is THE unique write
       // of the final status: the gates mutate the in-memory record first, so
@@ -2467,6 +2762,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       timeoutMs,
       ...(watchdog ? { watchdog } : {}),
       projectId,
+      ...(project.kind === 'scratch' ? { scratch: true } : {}),
       onTurnDone,
       // A degradation of queue.json met OUTSIDE the boot pass: journaled on
       // the tasks the rebuilt queue holds, and said out loud. The rebuild
@@ -2588,6 +2884,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       project,
       runner,
       shipping: new Set(),
+      merging: new Set(),
       checking: new Set(),
       command,
     }
@@ -3096,6 +3393,25 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           )
         }
       }
+      // D20: every registered project, checked for a task left mid-ship or
+      // mid-merge by a process that died before it cleared `cycle_step`.
+      // `listTasks` is a plain disk read — `context()` (and the runner it
+      // builds) is only ever reached for a project that actually has one,
+      // same laziness `context()`'s own docstring promises for every other
+      // caller.
+      for (const project of registered()) {
+        const stuck = listTasks(project.path).filter((record) => record.cycle_step)
+        if (stuck.length === 0) {
+          continue
+        }
+        const ctx = context(project.id)
+        if (!ctx) {
+          continue
+        }
+        for (const record of stuck) {
+          await resumeCycleStep(ctx, record)
+        }
+      }
       return resumed
     },
 
@@ -3114,7 +3430,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // "poll until the registry looks readable and then delete things".
     async sweepOrphanedVolumes() {
       const first = projectClaimedIds()
-      if (!first.complete || first.projectCount === 0) {
+      // Two different facts, and conflating them told every workspace with an
+      // empty registry that something was unreadable. Nothing is: there is
+      // simply nothing registered to compare volumes against yet, which is now
+      // an ordinary state rather than a workspace that cannot be used at all.
+      if (first.projectCount === 0) {
+        notice('orphaned HOME volume sweep skipped: no repository registered to claim them')
+        return
+      }
+      if (!first.complete) {
         notice(
           "orphaned HOME volume sweep skipped: the project registry or a project's task store could not be read completely",
         )
@@ -3210,10 +3534,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
       // Reads the issue exactly as `create` does — `admitIssue` never writes —
       // and then throws the snapshot away: D-d, previewing is not launching, so
-      // nothing dates the ticket of a task that does not exist.
-      const origin = input.issue
-        ? await resolveIssueOrigin(project.path, input.issue, opts.issueExecFn)
-        : resolveTitlePromptOrigin(input)
+      // nothing dates the ticket of a task that does not exist. Same
+      // brainTicket > issue > title/prompt order `create()` resolves with.
+      const origin = input.brainTicket
+        ? resolveBrainTicketOrigin(project.path, input.brainTicket)
+        : input.issue
+          ? await resolveIssueOrigin(project.path, input.issue, opts.issueExecFn)
+          : resolveTitlePromptOrigin(input)
       if (!origin.ok) {
         return origin.refusal
       }
@@ -3249,15 +3576,28 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (!ctx) {
         return unknownProject
       }
-      // Both given together or neither: `issue` is what freezes the ticket,
-      // and a task's record must never carry one without the other (T2.4).
-      const origin = input.issue
-        ? await resolveIssueOrigin(ctx.project.path, input.issue, opts.issueExecFn)
-        : resolveTitlePromptOrigin(input)
+      // `brainTicket` wins over `issue`, which wins over a bare
+      // title+prompt: the same "one origin, and it decides everything
+      // else" convention `issue` already has. `resolveBrainTicketOrigin` is
+      // synchronous (no forge round trip: the ticket arrives already
+      // resolved and validated by the brain), unlike `resolveIssueOrigin`.
+      const origin = input.brainTicket
+        ? resolveBrainTicketOrigin(ctx.project.path, input.brainTicket)
+        : input.issue
+          ? await resolveIssueOrigin(ctx.project.path, input.issue, opts.issueExecFn)
+          : resolveTitlePromptOrigin(input)
       if (!origin.ok) {
         return origin.refusal
       }
-      const { title, prompt, issue: issueRef, issueSnapshot, coverageGap } = origin
+      const {
+        title,
+        prompt,
+        issue: issueRef,
+        issueSnapshot,
+        coverageGap,
+        brainTicket,
+        criteria,
+      } = origin
       // Every guard below — base/branch exclusivity and shape, the work-on
       // uniqueness and checked-out-elsewhere 409s, the agent, the isolation
       // refusal — and every DECISION the record carries now live in
@@ -3309,6 +3649,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // resolveIssueOrigin/resolveTitlePromptOrigin) — one guard, not two,
         // so a future drift here cannot silently split the pair.
         ...(issueRef && issueSnapshot ? { issue: issueRef, issueSnapshot } : {}),
+        // Arm/brain integration: both land in the SAME write as everything
+        // else above. Criteria in particular must never trail the record by
+        // a second write: the task's very first turn already reads
+        // `taskCriteria(record)` to build its prompt, and criteria arriving
+        // even one write later would race that read.
+        ...(brainTicket ? { brainTicket } : {}),
+        ...(criteria && criteria.length > 0 ? { criteria } : {}),
       })
       // The WHY is journaled on the task itself: an 'auto' workspace that fell
       // back to policy must be able to say so, months later, from the record.
@@ -3352,6 +3699,25 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           })
         }
       }
+      // Arm/brain integration: the same 'criteria'/'validated' line
+      // POST /api/tasks/:id/criteria journals for a human-validated list
+      // (task-criteria.ts); the brain played that role instead, so the
+      // record's journal says so the same way.
+      if (brainTicket && criteria && criteria.length > 0) {
+        const criteriaEvent = appendTaskEvent(ctx.project.path, record.id, {
+          type: 'criteria',
+          data: {
+            name: 'validated',
+            message: 'acceptance criteria validated',
+            count: criteria.length,
+          },
+        })
+        emit({
+          project_id: projectId,
+          task_id: record.id,
+          event: { name: 'task_event', data: criteriaEvent },
+        })
+      }
       // start() rereads the task.json written just above; on a fresh 'queued'
       // record it cannot legitimately refuse, but a refusal must not be
       // swallowed: the caller would wait forever on a task that never runs.
@@ -3380,6 +3746,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           task_id: failure.id,
           event: { name: 'task_event', data: event },
         })
+        // Never awaited: the caller must not wait on a brain round trip for a
+        // task that just failed to even start.
+        void reportBrainTransition(ctx.project.path, failure, {
+          type: 'failed',
+          error_message: started.error,
+        })
         return started
       }
       // The caller learns right away whether it got the repo (no position) or
@@ -3396,27 +3768,39 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // While a ship pushes, a reply would start a new turn (and a new commit)
     // under it, and an abandon would delete the very branch being pushed:
     // both wait until the ship settles. interrupt already 409s at the runner
-    // (a shippable task is neither active nor queued).
+    // (a shippable task is neither active nor queued). D20: a merge in
+    // flight is the same class of risk (abandon deleting the very branch a
+    // forge merge call is mid-flight on), so it waits on `merging` too.
     reply(projectId, id, message) {
       const ctx = context(projectId)
       if (!ctx) {
         return unknownProject
       }
-      return ctx.shipping.has(id)
-        ? { ok: false, code: 409, error: 'ship in progress' }
-        : ctx.runner.reply(id, message)
+      if (ctx.shipping.has(id)) {
+        return { ok: false, code: 409, error: 'ship in progress' }
+      }
+      if (ctx.merging.has(id)) {
+        return { ok: false, code: 409, error: 'merge in progress' }
+      }
+      purgeStaleCycleStep(ctx.project.path, id)
+      return ctx.runner.reply(id, message)
     },
 
     // Same reason as reply: a resume starts a turn (and a commit) under a push
-    // in flight, so it waits for the ship to settle.
+    // or a merge in flight, so it waits for either to settle.
     resume(projectId, id) {
       const ctx = context(projectId)
       if (!ctx) {
         return unknownProject
       }
-      return ctx.shipping.has(id)
-        ? { ok: false, code: 409, error: 'ship in progress' }
-        : ctx.runner.resume(id)
+      if (ctx.shipping.has(id)) {
+        return { ok: false, code: 409, error: 'ship in progress' }
+      }
+      if (ctx.merging.has(id)) {
+        return { ok: false, code: 409, error: 'merge in progress' }
+      }
+      purgeStaleCycleStep(ctx.project.path, id)
+      return ctx.runner.resume(id)
     },
 
     interrupt(projectId, id) {
@@ -3436,9 +3820,14 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
       // Removing a worktree waits for the repo lock, so this one is async
       // where its siblings are not: the refusals stay immediate values.
-      return ctx.shipping.has(id)
-        ? Promise.resolve({ ok: false, code: 409, error: 'ship in progress' })
-        : ctx.runner.abandon(id)
+      if (ctx.shipping.has(id)) {
+        return Promise.resolve({ ok: false, code: 409, error: 'ship in progress' })
+      }
+      if (ctx.merging.has(id)) {
+        return Promise.resolve({ ok: false, code: 409, error: 'merge in progress' })
+      }
+      purgeStaleCycleStep(ctx.project.path, id)
+      return ctx.runner.abandon(id)
     },
 
     checks(projectId, id) {
@@ -3493,6 +3882,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         isolation_configured: overlaid.configured,
         agent,
       }
+    },
+
+    async attach(projectId, taskId, repoProjectId) {
+      const ctx = context(projectId)
+      if (!ctx) {
+        return unknownProject
+      }
+      const repo = findProject(repoProjectId)
+      // The scratch project is a destination, never a source: attaching the
+      // conversation's own workspace to itself would nest it in itself.
+      if (!repo || repo.kind !== 'repo') {
+        return { ok: false, code: 404, error: 'unknown repository' }
+      }
+      return ctx.runner.attach(taskId, { project_id: repo.id, path: repo.path })
     },
 
     checksApply(projectId) {

@@ -56,6 +56,32 @@ export type CostBasis = 'harness' | 'lower_bound'
 
 const COST_BASES: ReadonlySet<CostBasis> = new Set(['harness', 'lower_bound'])
 
+/**
+ * A repository handed to a conversation that did not start with one.
+ *
+ * The worktree lives INSIDE the conversation's own working directory, not
+ * under the repository's `.codesema/worktrees/`, and that placement is the
+ * whole point: the directory the agent runs in never changes, whatever is
+ * attached to it or detached from it later. A provider that indexes its
+ * transcripts by working directory would otherwise lose the conversation the
+ * moment a repository arrived.
+ *
+ * `branch` and `base` mean what they mean on TaskRecord, except they belong to
+ * THIS repository: several attachments each carry their own.
+ */
+export type TaskAttachment = {
+  /** Registry id of the attached project. */
+  project_id: string
+  /** Absolute root of the attached repository. */
+  repo: string
+  /** Directory name inside the conversation's workspace: the repo's basename. */
+  name: string
+  /** Absolute path of the worktree, inside the conversation's workspace. */
+  worktree: string
+  branch: string
+  base: string
+}
+
 export type TaskTurn = {
   prompt: string
   response: string | null
@@ -208,6 +234,17 @@ export type TaskEventType =
    * five that answers "may this branch land".
    */
   | 'merge'
+  /**
+   * D22 (minimal): the result of replaying this task's checks on the default
+   * branch AFTER its merge landed, a best-effort confirmation that what
+   * merged still passes once combined with everything else that landed
+   * beside it, since `checks` alone only ever proved the branch green in
+   * isolation. NEUTRAL like `checks`, never `error`: a failed replay is news
+   * about the default branch, not about this task, and nothing here re-opens
+   * or blocks the task it is journaled against. Fired at most once,
+   * fire-and-forget, after the merge step itself is already settled.
+   */
+  | 'post_merge_checks'
 
 /**
  * How a task's agent turns are contained.
@@ -344,6 +381,13 @@ export function isActiveTaskStatus(status: TaskStatus): boolean {
   return status !== 'shipped' && status !== 'failed'
 }
 
+/**
+ * Which half of the post-review pipeline a task is currently inside, when it
+ * is inside one (D20): `'ship'` while the ship step runs, `'merge'` while the
+ * merge step runs.
+ */
+export type CycleStep = 'ship' | 'merge'
+
 export type TaskRecord = {
   version: 1
   /** 12 lowercase hex chars, doubles as the on-disk directory name. */
@@ -399,6 +443,17 @@ export type TaskRecord = {
    * nothing rather than inventing a comparison it cannot make.
    */
   head_sha?: string
+  /**
+   * Repositories handed to this conversation after it started, in the order
+   * they were attached.
+   *
+   * OPTIONAL, and absence means the conversation was never given one: either
+   * it works on the single repository named by `base`/`branch` above (the
+   * ordinary case), or it has no repository at all. The two are told apart by
+   * `worktree` being inside a repository's `.codesema/` or not, never by this
+   * field.
+   */
+  attachments?: TaskAttachment[]
   /** Provider session id (claude --resume), null before the first turn ran. */
   agent_session_id: string | null
   turns: TaskTurn[]
@@ -535,6 +590,35 @@ export type TaskRecord = {
    * always means "no criteria".
    */
   criteria?: AcceptanceCriterion[]
+  /**
+   * The brain ticket this task was created from, when it was (arm/brain
+   * integration): a stable pointer back to the ticket that owns this task, so
+   * a reader can open it without knowing the brain's own routing. WRITE-ONCE,
+   * same discipline as `issue`: fixed at creation, never re-decided by a
+   * later turn.
+   *
+   * OPTIONAL, and absence is the honest default: a record predating this
+   * field, and a task never claimed from a brain ticket (title+prompt, or a
+   * forge issue per T2.4/T2.5), name no ticket, exactly what "no
+   * brain_ticket" always meant before this field existed.
+   */
+  brain_ticket?: {
+    id: string
+    title: string
+    url?: string
+  }
+  /**
+   * Which half of ship/merge this task is currently inside, when it is
+   * (D20). Written at the start of that step and cleared at its end, success
+   * or failure alike, and on every reply, resume or abandon, so a stale value
+   * can never outlive the step it named. Read back at boot so a crash between
+   * the step finishing and the record's next write resumes the step instead
+   * of losing it.
+   *
+   * OPTIONAL, and absence is the honest default: a record written before D20,
+   * and a task that is not currently shipping or merging, are the same fact.
+   */
+  cycle_step?: CycleStep
   created_at: string
   updated_at: string
 }
@@ -551,6 +635,13 @@ export const TASK_TIMESTAMP_MAX = 40
 /** Applies to a turn's prompt, response and question alike. */
 export const TASK_TURN_TEXT_MAX = 20_000
 export const TASK_TURNS_MAX = 500
+/**
+ * Bound of `TaskRecord.attachments`. A conversation reaching for a dozen
+ * repositories at once has stopped being a conversation, and the cap keeps a
+ * hand-edited (or corrupted) task.json from asking the runner to materialize
+ * an unbounded number of worktrees at its next turn.
+ */
+export const TASK_ATTACHMENTS_MAX = 8
 export const TASK_EVENT_DATA_KEYS_MAX = 16
 export const TASK_EVENT_DATA_KEY_MAX = 64
 export const TASK_EVENT_DATA_STRING_MAX = 2_000
@@ -558,6 +649,8 @@ export const TASK_EVENT_DATA_STRING_MAX = 2_000
 export const TASK_ISSUE_PROJECT_MAX = 200
 /** Bound of `TaskIssueRef.url`: a forge issue URL, never long in practice. */
 export const TASK_ISSUE_URL_MAX = 500
+/** Bound of `TaskRecord.brain_ticket.id`: an id from an external system, not this store's own 12-hex TASK_ID_RE. */
+export const TASK_BRAIN_TICKET_ID_MAX = 64
 
 const TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'queued',
@@ -570,6 +663,19 @@ const TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'failed',
   'interrupted',
 ])
+
+/**
+ * The closed set of `TaskStatus` values, as an array: the published surface a
+ * consumer outside this module reads to validate a status without
+ * hand-copying `TASK_STATUSES`. Derived from that same Set, so the two can
+ * never drift apart.
+ */
+export const TASK_STATUS_VALUES: readonly TaskStatus[] = [...TASK_STATUSES]
+
+/** Type guard over the same closed set, for a value arriving as `unknown`. */
+export function isTaskStatus(value: unknown): value is TaskStatus {
+  return TASK_STATUSES.has(value as TaskStatus)
+}
 
 /** Terminal checks statuses a TaskRecord may carry. `running` is never a result. */
 const TASK_RECORD_CHECKS_STATUSES: ReadonlySet<Exclude<TaskChecksStatus, 'running'>> = new Set([
@@ -601,9 +707,11 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'prep',
   'criteria',
   'merge',
+  'post_merge_checks',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
+const CYCLE_STEPS: ReadonlySet<CycleStep> = new Set(['ship', 'merge'])
 const ISSUE_FORGES: ReadonlySet<IssueForge> = new Set(['github', 'gitlab'])
 
 /**
@@ -746,6 +854,8 @@ function sanitizeIssueSnapshot(raw: unknown): TaskIssueSnapshot | null {
 
 /** The id names a directory under .codesema/tasks/: nothing else is usable. */
 const TASK_ID_RE = /^[0-9a-f]{12}$/
+/** Mirrors the workspace registry's own id shape (packages/cli, projects.ts). */
+const PROJECT_ID_RE = /^[0-9a-f]{8}$/
 
 /** Guards every id joined into a filesystem path (store, HTTP routes). */
 export function isTaskId(value: unknown): value is string {
@@ -753,7 +863,7 @@ export function isTaskId(value: unknown): value is string {
 }
 
 const str = (v: unknown, max: number): string =>
-  typeof v === 'string' ? v.trim().slice(0, max) : ''
+  typeof v === 'string' ? v.trim().slice(0, max).trim() : ''
 
 const nullableStr = (v: unknown, max: number): string | null => {
   const s = str(v, max)
@@ -827,6 +937,51 @@ const costPair = (
   return ticks === null || basis === null ? null : { cost_ticks: ticks, cost_basis: basis }
 }
 
+function sanitizeTaskAttachment(raw: unknown): TaskAttachment | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const a = raw as Record<string, unknown>
+  const project_id = typeof a.project_id === 'string' ? a.project_id.trim().toLowerCase() : ''
+  const repo = typeof a.repo === 'string' ? a.repo.slice(0, TASK_PATH_MAX) : ''
+  const worktree = typeof a.worktree === 'string' ? a.worktree.slice(0, TASK_PATH_MAX) : ''
+  const name = typeof a.name === 'string' ? a.name.slice(0, TASK_TITLE_MAX) : ''
+  // An attachment that cannot name its project, its repository and where the
+  // worktree went is unusable: nothing downstream could rebuild or remove it.
+  if (!PROJECT_ID_RE.test(project_id) || !repo.trim() || !worktree.trim() || !name.trim()) {
+    return null
+  }
+  return {
+    project_id,
+    repo,
+    name,
+    worktree,
+    branch: typeof a.branch === 'string' ? a.branch.slice(0, TASK_BASE_MAX) : '',
+    base: typeof a.base === 'string' ? a.base.slice(0, TASK_BASE_MAX) : '',
+  }
+}
+
+function sanitizeTaskAttachments(raw: unknown): TaskAttachment[] {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  const out: TaskAttachment[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (out.length >= TASK_ATTACHMENTS_MAX) {
+      break
+    }
+    const attachment = sanitizeTaskAttachment(item)
+    // One worktree per repository per conversation: a duplicate could only
+    // fight the first one for the same directory.
+    if (attachment && !seen.has(attachment.project_id)) {
+      seen.add(attachment.project_id)
+      out.push(attachment)
+    }
+  }
+  return out
+}
+
 function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
   if (!raw || typeof raw !== 'object') {
     return null
@@ -854,6 +1009,31 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
     // are one fact and travel as one (see costPair) — never one without the
     // other, in either direction.
     ...cost,
+  }
+}
+
+/**
+ * Whitelist and truncate, never throw: a non-object, or one whose `id` is
+ * missing or blank, drops the WHOLE field, same doctrine as `sanitizeIssueRef`
+ * above, since a brain ticket pointer nobody can identify is worse than none.
+ * `title` degrades to an empty string rather than nulling the field, and
+ * `url` is kept only when it is an http(s) URL, same rule `isHttpUrl` applies
+ * everywhere else in this module.
+ */
+function sanitizeBrainTicket(raw: unknown): { id: string; title: string; url?: string } | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  const id = str(r.id, TASK_BRAIN_TICKET_ID_MAX)
+  if (!id) {
+    return null
+  }
+  const url = str(r.url, TASK_ISSUE_URL_MAX)
+  return {
+    id,
+    title: str(r.title, TASK_TITLE_MAX),
+    ...(url && isHttpUrl(url) ? { url } : {}),
   }
 }
 
@@ -896,9 +1076,11 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     totalPair === null || costTurns === null ? null : { ...totalPair, cost_turns: costTurns }
   const baselineSha = sanitizeBaselineSha(r.baseline_sha)
   const headSha = sanitizeBaselineSha(r.head_sha)
+  const attachments = sanitizeTaskAttachments(r.attachments)
   const issue = sanitizeIssueRef(r.issue)
   const issueSnapshot = sanitizeIssueSnapshot(r.issue_snapshot)
   const criteria = sanitizeAcceptanceCriteria(r.criteria)
+  const brainTicket = sanitizeBrainTicket(r.brain_ticket)
   return {
     version: 1,
     id,
@@ -973,11 +1155,22 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // than trusted.
     ...(issue ? { issue } : {}),
     ...(issueSnapshot ? { issue_snapshot: issueSnapshot } : {}),
+    ...(brainTicket ? { brain_ticket: brainTicket } : {}),
+    // Optional and whitelisted, same doctrine as `checks_status`: absence is
+    // "not currently shipping or merging", which is also what an unknown or
+    // stale token degrades to rather than being trusted as a step in progress.
+    ...(typeof r.cycle_step === 'string' && CYCLE_STEPS.has(r.cycle_step as CycleStep)
+      ? { cycle_step: r.cycle_step as CycleStep }
+      : {}),
     // Optional, whitelist-and-truncate, never throw: a missing or unusable
     // list is "no criteria", which is the honest default for every record
     // written before T2.5 and every task that still has none. An empty list
     // after sanitizing is dropped so absence cannot drift from `[]`.
     ...(criteria.length > 0 ? { criteria } : {}),
+    // Same rule as `criteria`: an empty list is dropped so absence cannot
+    // drift from `[]`, and absence honestly means "no repository was ever
+    // handed to this conversation".
+    ...(attachments.length > 0 ? { attachments } : {}),
     created_at,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : created_at,
   }

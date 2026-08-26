@@ -10,6 +10,7 @@ import {
   sanitizeJudgeOutput,
   worstVerdict,
 } from './dual.js'
+import { FINDING_REPRO_RULE } from './finding-repro.js'
 
 function reviewWith(
   findings: Finding[],
@@ -462,6 +463,31 @@ describe('prompt hardening', () => {
     const j = judgeInstructions('English')
     expect(j).toContain('cite the exact diff line')
     expect(j).toContain('critical = data loss')
+  })
+
+  // D24: shared with review.ts's reviewInstructions() (review.test.ts asserts
+  // the same constant there) — one rule, never two copies drifting apart.
+  test('prosecutor prompt states the D24 repro rule; judge prompt stays UNCHANGED', () => {
+    const p = prosecutorInstructions('English')
+    expect(p).toContain(FINDING_REPRO_RULE)
+
+    const j = judgeInstructions('English')
+    expect(j).not.toContain(FINDING_REPRO_RULE)
+    expect(j).not.toContain('repro')
+  })
+
+  // D15: the prosecutor may now be handed a bounded read-only tool
+  // (boundedReadOnlyReviewCommand), so its prompt turns neutral instead of
+  // forbidding tools outright. The judge never gets a tool (arbitrates two
+  // already-written reviews) and keeps the outright ban.
+  test('prosecutor prompt is neutral about tools; judge prompt still forbids them outright', () => {
+    const p = prosecutorInstructions('English')
+    expect(p).not.toContain('Do NOT use any tools')
+    expect(p).toContain('Base your review primarily on the provided input')
+    expect(p).toContain('never to explore broadly, never to run, write, or install anything')
+
+    const j = judgeInstructions('English')
+    expect(j).toContain('Do NOT use any tools')
   })
 })
 

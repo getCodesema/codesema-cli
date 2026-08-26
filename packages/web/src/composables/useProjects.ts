@@ -290,7 +290,7 @@ export const isTrunkBranch = (branch: string): boolean => TRUNK_BRANCHES.has(sho
  * a new conversation on their branch. This is NOT the rail's section grammar:
  * review_ok is done for the rail but still owns its branch.
  */
-const ACTIVE_TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
+export const ACTIVE_TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'queued',
   'running',
   'waiting_for_you',

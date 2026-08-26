@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   acceptanceCriterionId,
   CRITERION_VERDICT_EVIDENCE_MAX,
@@ -6,13 +9,18 @@ import {
   TICKET_CRITERIA_MAX,
   type AcceptanceCriterion,
   type CriterionVerdict,
+  type TaskChecks,
 } from './contract.js'
+import type { ExecFn } from './task-checks.js'
 import {
   buildCriteriaChapter,
+  combineCriteriaOutcomes,
   CRITERIA_REASON_IDS_MAX,
   criteriaUnmetDetail,
   mergeCriterionVerdicts,
+  partitionCriteriaByProof,
   resolveCriteria,
+  resolveMechanicalCriteria,
   unmetCriteriaFixChapter,
 } from './task-criteria-gate.js'
 
@@ -698,5 +706,277 @@ describe('CRITERIA_REASON_IDS_MAX', () => {
     // The COUNTS stay complete whatever the cap does to the names.
     expect(detail).toContain('9 of 9')
     expect(detail).toContain('9 unclear')
+  })
+})
+
+// --- D17: mechanical criteria -----------------------------------------------
+
+const MC_COMMAND = criterion('WHEN checks run THE SYSTEM SHALL pass them [proof:command bun test]')
+const MC_DIFF = criterion(
+  'WHEN the gate changes THE SYSTEM SHALL touch it [proof:diff src/gate.ts]',
+)
+const MC_DIFF_GHOST = criterion(
+  'WHEN a ghost file changes THE SYSTEM SHALL touch it [proof:diff src/ghost.ts]',
+)
+const MC_READ = criterion('WHEN a marker exists THE SYSTEM SHALL find it [proof:read marker.txt]')
+const MC_READ_SUBSTRING = criterion(
+  'WHEN a marker has content THE SYSTEM SHALL find it [proof:read marker.txt :: hello]',
+)
+const JUDGMENT_TAGGED = criterion(
+  'WHEN judged explicitly THE SYSTEM SHALL still ask a human [proof:judgment]',
+)
+
+function checksOf(over: Partial<TaskChecks> = {}): TaskChecks {
+  return {
+    head_sha: 'abc',
+    started_at: '2026-08-26T10:00:00.000Z',
+    finished_at: '2026-08-26T10:01:00.000Z',
+    status: 'passed',
+    error: null,
+    checks: [],
+    ...over,
+  }
+}
+
+describe('partitionCriteriaByProof', () => {
+  test('splits a mixed list, each side keeping the input order', () => {
+    const { mechanical, judged } = partitionCriteriaByProof([
+      C1,
+      MC_COMMAND,
+      JUDGMENT_TAGGED,
+      MC_DIFF,
+    ])
+    expect(mechanical.map((c) => c.id)).toEqual([MC_COMMAND.id, MC_DIFF.id])
+    expect(mechanical.map((c) => c.proof.method)).toEqual(['command', 'diff'])
+    expect(judged).toEqual([C1, JUDGMENT_TAGGED])
+  })
+
+  test('a criterion written before D17 (no proof tag at all) lands in judged', () => {
+    const { mechanical, judged } = partitionCriteriaByProof(TASK_CRITERIA)
+    expect(mechanical).toEqual([])
+    expect(judged).toEqual(TASK_CRITERIA)
+  })
+
+  test('[proof:judgment] is judged, never mechanical, even though it is a well-formed tag', () => {
+    const { mechanical, judged } = partitionCriteriaByProof([JUDGMENT_TAGGED])
+    expect(mechanical).toEqual([])
+    expect(judged).toEqual([JUDGMENT_TAGGED])
+  })
+})
+
+describe('resolveMechanicalCriteria', () => {
+  let worktree: string
+
+  beforeEach(() => {
+    worktree = mkdtempSync(join(tmpdir(), 'codesema-criteria-gate-'))
+  })
+
+  afterEach(() => {
+    rmSync(worktree, { recursive: true, force: true })
+  })
+
+  test('command: a match in the turn checks decides it, passed is met, no ad hoc run', async () => {
+    const { mechanical } = partitionCriteriaByProof([MC_COMMAND])
+    let adHocRan = false
+    const execFn: ExecFn = async () => {
+      adHocRan = true
+      return { code: 0, stdout: '', stderr: '', timedOut: false, failure: null }
+    }
+    const verdicts = await resolveMechanicalCriteria(mechanical, {
+      worktree: '/nonexistent',
+      diff: '',
+      checks: checksOf({
+        checks: [{ command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 1, tail: '' }],
+      }),
+      execFn,
+    })
+    expect(verdicts).toEqual([
+      { criterion_id: MC_COMMAND.id, status: 'met', evidence: expect.stringContaining('bun test') },
+    ])
+    expect(adHocRan).toBe(false)
+  })
+
+  test('command: a match that failed or timed out is unmet', async () => {
+    const { mechanical } = partitionCriteriaByProof([MC_COMMAND])
+    for (const status of ['failed', 'timeout'] as const) {
+      const verdicts = await resolveMechanicalCriteria(mechanical, {
+        worktree: '/nonexistent',
+        diff: '',
+        checks: checksOf({
+          checks: [{ command: 'bun test', status, exit_code: 1, duration_ms: 1, tail: '' }],
+        }),
+      })
+      expect(verdicts[0]?.status).toBe('unmet')
+    }
+  })
+
+  test('command: absent from the turn checks runs an ad hoc check instead', async () => {
+    const { mechanical } = partitionCriteriaByProof([MC_COMMAND])
+    const ranCommands: string[] = []
+    const execFn: ExecFn = async (_file, args) => {
+      if (args[0] === '--version') {
+        return {
+          code: 0,
+          stdout: 'Docker version 27',
+          stderr: '',
+          timedOut: false,
+          failure: null,
+        }
+      }
+      ranCommands.push(args.at(-1) ?? '')
+      return { code: 0, stdout: '', stderr: '', timedOut: false, failure: null }
+    }
+    const verdicts = await resolveMechanicalCriteria(mechanical, {
+      worktree: '/nonexistent',
+      diff: '',
+      checks: null,
+      execFn,
+    })
+    expect(verdicts[0]?.status).toBe('met')
+    expect(ranCommands.some((c) => c === 'bun test')).toBe(true)
+  })
+
+  test('command: a match still SKIPPED carries no fact and also falls back to an ad hoc run', async () => {
+    const { mechanical } = partitionCriteriaByProof([MC_COMMAND])
+    let adHocRan = false
+    const execFn: ExecFn = async (_file, args) => {
+      if (args[0] === '--version') {
+        return { code: 0, stdout: 'Docker version 27', stderr: '', timedOut: false, failure: null }
+      }
+      adHocRan = true
+      return { code: 1, stdout: '', stderr: '', timedOut: false, failure: null }
+    }
+    const verdicts = await resolveMechanicalCriteria(mechanical, {
+      worktree: '/nonexistent',
+      diff: '',
+      checks: checksOf({
+        checks: [
+          { command: 'bun test', status: 'skipped', exit_code: null, duration_ms: 0, tail: '' },
+        ],
+      }),
+      execFn,
+    })
+    expect(adHocRan).toBe(true)
+    expect(verdicts[0]?.status).toBe('unmet')
+  })
+
+  test('diff: met when the argument names a file the diff touches, unmet otherwise', async () => {
+    const { mechanical: touched } = partitionCriteriaByProof([MC_DIFF])
+    const metVerdicts = await resolveMechanicalCriteria(touched, {
+      worktree: '/nonexistent',
+      diff: DIFF,
+      checks: null,
+    })
+    expect(metVerdicts[0]?.status).toBe('met')
+
+    const { mechanical: ghost } = partitionCriteriaByProof([MC_DIFF_GHOST])
+    const unmetVerdicts = await resolveMechanicalCriteria(ghost, {
+      worktree: '/nonexistent',
+      diff: DIFF,
+      checks: null,
+    })
+    expect(unmetVerdicts[0]?.status).toBe('unmet')
+  })
+
+  test('read: met on bare presence, unmet when the file is missing', async () => {
+    writeFileSync(join(worktree, 'marker.txt'), 'hello world')
+    const { mechanical } = partitionCriteriaByProof([MC_READ])
+    const present = await resolveMechanicalCriteria(mechanical, {
+      worktree,
+      diff: '',
+      checks: null,
+    })
+    expect(present[0]?.status).toBe('met')
+
+    const { mechanical: missing } = partitionCriteriaByProof([
+      criterion('WHEN a marker exists THE SYSTEM SHALL find it [proof:read gone.txt]'),
+    ])
+    const absent = await resolveMechanicalCriteria(missing, { worktree, diff: '', checks: null })
+    expect(absent[0]?.status).toBe('unmet')
+  })
+
+  test('read: the "path :: substring" form checks the substring too', async () => {
+    writeFileSync(join(worktree, 'marker.txt'), 'hello world')
+    const { mechanical } = partitionCriteriaByProof([MC_READ_SUBSTRING])
+    const found = await resolveMechanicalCriteria(mechanical, { worktree, diff: '', checks: null })
+    expect(found[0]?.status).toBe('met')
+
+    const { mechanical: notFound } = partitionCriteriaByProof([
+      criterion(
+        'WHEN a marker has content THE SYSTEM SHALL find it [proof:read marker.txt :: goodbye]',
+      ),
+    ])
+    const missingSubstring = await resolveMechanicalCriteria(notFound, {
+      worktree,
+      diff: '',
+      checks: null,
+    })
+    expect(missingSubstring[0]?.status).toBe('unmet')
+  })
+
+  test('read: a malformed argument (no path before "::") still resolves rather than throwing', async () => {
+    const { mechanical } = partitionCriteriaByProof([
+      criterion('WHEN X THE SYSTEM SHALL Y [proof:read  :: hello]'),
+    ])
+    const verdicts = await resolveMechanicalCriteria(mechanical, {
+      worktree,
+      diff: '',
+      checks: null,
+    })
+    expect(verdicts[0]?.status).toBe('unmet')
+  })
+})
+
+describe('combineCriteriaOutcomes', () => {
+  test('satisfied iff every criterion, mechanical and judged alike, is met', () => {
+    const mechanicalVerdicts = [met(MC_COMMAND, 'ran'), met(MC_DIFF, 'touched')]
+    const judgedOutcome = resolveCriteria([C1], [met(C1, ANCHORED)], DIFF)
+    const outcome = combineCriteriaOutcomes(
+      [MC_COMMAND, MC_DIFF, C1],
+      mechanicalVerdicts,
+      judgedOutcome,
+    )
+    expect(outcome.satisfied).toBe(true)
+    expect(outcome.counts).toEqual({ met: 3, unmet: 0, unclear: 0 })
+    expect(outcome.verdicts.map((v) => v.criterion_id)).toEqual([MC_COMMAND.id, MC_DIFF.id, C1.id])
+  })
+
+  test('one mechanical unmet blocks satisfied even though every judged criterion is met', () => {
+    const mechanicalVerdicts: CriterionVerdict[] = [
+      { criterion_id: MC_COMMAND.id, status: 'unmet', evidence: 'failed' },
+    ]
+    const judgedOutcome = resolveCriteria([C1], [met(C1, ANCHORED)], DIFF)
+    const outcome = combineCriteriaOutcomes([MC_COMMAND, C1], mechanicalVerdicts, judgedOutcome)
+    expect(outcome.satisfied).toBe(false)
+    expect(outcome.counts).toEqual({ met: 1, unmet: 1, unclear: 0 })
+  })
+
+  test('the grounding-shaped fields are carried over from judgedOutcome untouched', () => {
+    const judgedOutcome = resolveCriteria(
+      [C1],
+      [met(C1, 'src/ghost.ts:3, never in this diff')],
+      DIFF,
+    )
+    // Sanity on the fixture: this is the exact shape that produces a drop+demotion.
+    expect(judgedOutcome.dropped_evidence).toBe(1)
+    expect(judgedOutcome.demoted).toBe(1)
+    const outcome = combineCriteriaOutcomes(
+      [MC_COMMAND, C1],
+      [met(MC_COMMAND, 'ran')],
+      judgedOutcome,
+    )
+    expect(outcome.dropped_evidence).toBe(1)
+    expect(outcome.demoted).toBe(1)
+    expect(outcome.unknown_ids).toBe(judgedOutcome.unknown_ids)
+    expect(outcome.unjudged).toBe(judgedOutcome.unjudged)
+    expect(outcome.overflowed).toBe(judgedOutcome.overflowed)
+    expect(outcome.report).toBe(judgedOutcome.report)
+  })
+
+  test('a criterion neither input names falls back to unclear, defensively', () => {
+    const judgedOutcome = resolveCriteria([], [], DIFF)
+    const outcome = combineCriteriaOutcomes([MC_COMMAND], [], judgedOutcome)
+    expect(outcome.verdicts).toEqual([{ criterion_id: MC_COMMAND.id, status: 'unclear' }])
+    expect(outcome.satisfied).toBe(false)
   })
 })

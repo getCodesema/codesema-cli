@@ -1,0 +1,517 @@
+// Same harness as ForgeBoard.test.ts. A read of the raw source backs the
+// handful of geometry assertions renderToString cannot see (scoped <style>
+// rules never reach the SSR output, only inline style bindings do).
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, test } from 'bun:test'
+import { createSSRApp } from 'vue'
+import { compileScript, parse } from 'vue/compiler-sfc'
+import { renderToString } from 'vue/server-renderer'
+import { t } from '../../i18n'
+import type { ForgeIssue, ForgeMr } from '../../types'
+import type { ForgeDetailItem } from './ForgeLogic'
+import { MAX_FORGE_MARKDOWN_LENGTH } from './ForgeMarkdown'
+
+const SOURCE = readFileSync(join(import.meta.dir, 'ForgeDetailPanel.vue'), 'utf8')
+
+Bun.plugin({
+  name: 'vue-sfc-with-template',
+  setup(build) {
+    build.onLoad({ filter: /\.vue$/ }, async (args) => {
+      const source = await Bun.file(args.path).text()
+      const { descriptor } = parse(source, { filename: args.path })
+      const compiled = compileScript(descriptor, { id: args.path, inlineTemplate: true })
+      return { contents: compiled.content, loader: 'ts' }
+    })
+  },
+})
+
+function issue(overrides: Partial<ForgeIssue> = {}): ForgeIssue {
+  return {
+    number: 1,
+    title: 'first issue',
+    body: '',
+    state: 'open',
+    labels: [],
+    author: 'octocat',
+    createdAt: '2026-08-14T00:00:00.000Z',
+    updatedAt: '2026-08-14T00:00:00.000Z',
+    url: 'https://example.test/issues/1',
+    ...overrides,
+  }
+}
+
+function mr(overrides: Partial<ForgeMr> = {}): ForgeMr {
+  return {
+    number: 42,
+    title: 'first mr',
+    author: 'octocat',
+    sourceBranch: 'feat/x',
+    targetBranch: 'main',
+    updatedAt: '2026-08-14T00:00:00.000Z',
+    url: 'https://example.test/mr/42',
+    state: 'open',
+    isDraft: false,
+    labels: [],
+    additions: null,
+    deletions: null,
+    changedFiles: null,
+    checks: null,
+    reviewers: null,
+    assignees: null,
+    milestone: null,
+    mergeable: null,
+    commits: null,
+    body: null,
+    ...overrides,
+  }
+}
+
+function htmlEscapeAttr(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
+}
+
+async function render(item: ForgeDetailItem | null): Promise<string> {
+  const ForgeDetailPanel = (await import('./ForgeDetailPanel.vue')).default
+  const app = createSSRApp(ForgeDetailPanel, { item })
+  return renderToString(app)
+}
+
+// This panel stays on screen at all times, not conditioned on a selection: a
+// clean empty state replaces the "panel absent" behavior.
+describe('no selection: a clean empty state, never an absent panel', () => {
+  test('null renders the empty-state message, no columns', async () => {
+    const html = await render(null)
+    expect(html).toContain(t('forge.detailEmpty'))
+    expect(html).not.toContain('fdp-columns')
+  })
+
+  test('a selection replaces the empty state entirely', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ title: 'not empty any more' }),
+    })
+    expect(html).not.toContain(t('forge.detailEmpty'))
+    expect(html).toContain('not empty any more')
+  })
+})
+
+describe('the header', () => {
+  test('is a labeled landmark for assistive tech', async () => {
+    const html = await render({ kind: 'issue', issue: issue() })
+    expect(html).toContain(htmlEscapeAttr(t('forge.detailTitle')))
+  })
+
+  test('the title never truncates, however long', async () => {
+    const long = 'a title so long it would wrap across several lines of a 236px-wide rail '.repeat(
+      4,
+    )
+    const html = await render({ kind: 'issue', issue: issue({ title: long }) })
+    expect(html).toContain(long)
+    // No line-clamp class from the list cards leaked in here.
+    expect(html).not.toContain('fic-title')
+    expect(html).not.toContain('mrc-title')
+  })
+
+  test('the number is a plain link, no badge or background class of its own', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ number: 7, url: 'https://example.test/issues/7' }),
+    })
+    expect(html).toContain('class="fdp-number"')
+    expect(html).toContain('href="https://example.test/issues/7"')
+    expect(html).toContain(t('mrs.number', { n: 7 }))
+  })
+
+  test('the primary action opens the item in the forge, labeled and linked', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ title: 'fix the thing', url: 'https://example.test/issues/9' }),
+    })
+    expect(html).toContain('href="https://example.test/issues/9"')
+    expect(html).toContain(t('forge.detailOpenLabel'))
+    expect(html).toContain(htmlEscapeAttr(t('forge.openItemAria', { title: 'fix the thing' })))
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('rel="noopener noreferrer"')
+  })
+
+  test('the nav band back control closes the panel, labeled', async () => {
+    const html = await render({ kind: 'issue', issue: issue() })
+    expect(html).toContain('class="fdp-back"')
+    expect(html).toContain(htmlEscapeAttr(t('forge.detailClose')))
+  })
+
+  describe('state badges', () => {
+    test('an open issue: green', async () => {
+      const html = await render({ kind: 'issue', issue: issue({ state: 'open' }) })
+      expect(html).toContain('fdp-state--open')
+      expect(html).toContain(t('mrs.card.stateOpen'))
+    })
+
+    test('a closed issue: red (the contract only has two states)', async () => {
+      const html = await render({ kind: 'issue', issue: issue({ state: 'closed' }) })
+      expect(html).toContain('fdp-state--closed')
+      expect(html).toContain(t('mrs.card.stateClosed'))
+    })
+
+    test('an open MR: green', async () => {
+      const html = await render({ kind: 'mr', mr: mr({ state: 'open', isDraft: false }) })
+      expect(html).toContain('fdp-state--open')
+    })
+
+    test('a draft MR: the muted neutral', async () => {
+      const html = await render({ kind: 'mr', mr: mr({ state: 'open', isDraft: true }) })
+      expect(html).toContain('fdp-state--draft')
+    })
+
+    test('a closed MR: red', async () => {
+      const html = await render({ kind: 'mr', mr: mr({ state: 'closed' }) })
+      expect(html).toContain('fdp-state--closed')
+    })
+
+    // Merged is lavender, deliberately never green: a merged MR whose checks
+    // failed would otherwise show green for two contradictory reasons.
+    test('a merged MR: lavender, never green', async () => {
+      const html = await render({ kind: 'mr', mr: mr({ state: 'merged' }) })
+      expect(html).toContain('fdp-state--merged')
+      expect(html).toContain(t('mrs.card.stateMerged'))
+    })
+
+    test('an MR with no known state: the badge is absent, never a guessed one', async () => {
+      const html = await render({ kind: 'mr', mr: mr({ state: null }) })
+      expect(html).not.toContain('fdp-state--')
+    })
+  })
+})
+
+// The head is three bands: a sticky nav band (back + title echo), the real
+// title (scrolls normally), and a toolbar band (sticky on narrow widths,
+// static past 640px). Most of this is geometry no DOM-less SSR render can
+// see (scoped <style> never reaches renderToString output), so it is read
+// from source the same way the pre-existing "layout geometry" describe
+// blocks below already do.
+describe('the head: three bands', () => {
+  test('band 1 (nav) is sticky, pinned to the very top of the scroll container, 44px minimum height', () => {
+    expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*position: sticky;/)
+    expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*top: 0;/)
+    expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*min-height: var\(--fdp-nav-h\);/)
+    expect(SOURCE).toContain('--fdp-nav-h: 44px;')
+  })
+
+  test('band 1 renders the back control and a title echo, both always in the markup', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ title: 'reticulate the splines' }),
+    })
+    expect(html).toContain('class="fdp-nav"')
+    expect(html).toContain('class="fdp-back"')
+    expect(html).toContain('reticulate the splines')
+  })
+
+  test('the echo is decorative and starts hidden: SSR never runs the IntersectionObserver that would reveal it', async () => {
+    const html = await render({ kind: 'issue', issue: issue() })
+    const echoTag = /<span class="fdp-title-echo"[^>]*>/.exec(html)
+    expect(echoTag).not.toBeNull()
+    expect(echoTag?.[0]).toContain('aria-hidden="true"')
+    expect(html).not.toContain('fdp-title-echo--visible')
+  })
+
+  test('the echo fades by an opacity transition, 150ms', () => {
+    expect(SOURCE).toMatch(/\.fdp-title-echo\s*\{[^}]*transition: opacity 150ms ease;/)
+  })
+
+  test('band 2 (title band) is not sticky, and the title itself carries no line cap', () => {
+    expect(SOURCE).not.toMatch(/\.fdp-title-band\s*\{[^}]*position: sticky;/)
+    expect(SOURCE).not.toContain('-webkit-line-clamp')
+    expect(SOURCE).not.toContain('line-clamp')
+  })
+
+  test('band 2 padding: 16px top / 12px bottom by default, 20px top / 0 bottom past 640px', () => {
+    expect(SOURCE).toContain('padding: 16px 0 12px;')
+    expect(SOURCE).toContain('padding: 20px 0 0;')
+  })
+
+  test('band 3 (toolbar) is sticky right under band 1 on narrow widths, static past 640px', () => {
+    expect(SOURCE).toMatch(/\.fdp-toolbar\s*\{[^}]*position: sticky;/)
+    expect(SOURCE).toMatch(/\.fdp-toolbar\s*\{[^}]*top: var\(--fdp-nav-h\);/)
+    expect(SOURCE).toMatch(
+      /@container fb-shell \(min-width: 640px\) \{\s*\.fdp-toolbar \{\s*position: static;/,
+    )
+  })
+
+  test('band 3 padding: 8px vertical by default, 16px vertical past 640px', () => {
+    expect(SOURCE).toContain('padding: 8px 0;')
+    expect(SOURCE).toContain('padding: 16px 0;')
+  })
+
+  test('band 3 renders the state badge, number and open action', async () => {
+    const html = await render({ kind: 'issue', issue: issue({ state: 'open' }) })
+    expect(html).toContain('class="fdp-toolbar"')
+    expect(html).toContain('fdp-state--open')
+    expect(html).toContain('class="fdp-number"')
+    expect(html).toContain('class="fdp-open"')
+  })
+
+  test('the stacking breakpoint (max-width: 640px) is still the only max-width query: the band overrides use min-width instead', () => {
+    const maxWidthQueries = SOURCE.match(/@container fb-shell \(max-width: \d+px\)/g) ?? []
+    expect(maxWidthQueries).toHaveLength(1)
+    expect(maxWidthQueries[0]).toBe('@container fb-shell (max-width: 640px)')
+  })
+})
+
+// The echo's visibility is driven by an IntersectionObserver, not
+// observable under this SSR-only harness: `shouldShowTitleEcho` is the
+// pure predicate extracted from its callback so the toggle logic itself
+// stays under direct test.
+describe('shouldShowTitleEcho: the pure predicate behind the nav band echo', () => {
+  test('no entries yet: hidden (the echo starts hidden, not visible-by-default)', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([])).toBe(false)
+  })
+
+  test('the title sentinel is still intersecting the scroll container: hidden', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([{ isIntersecting: true }])).toBe(false)
+  })
+
+  test('the title sentinel has left the scroll container entirely: visible', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([{ isIntersecting: false }])).toBe(true)
+  })
+
+  test('the last entry decides, in case the callback signature ever delivers more than one', async () => {
+    const { shouldShowTitleEcho } = await import('./ForgeDetailPanel.vue')
+    expect(shouldShowTitleEcho([{ isIntersecting: true }, { isIntersecting: false }])).toBe(true)
+    expect(shouldShowTitleEcho([{ isIntersecting: false }, { isIntersecting: true }])).toBe(false)
+  })
+})
+
+describe('the body', () => {
+  test('markdown is rendered, not shown as raw sigils', async () => {
+    const html = await render({
+      kind: 'mr',
+      mr: mr({ body: '**not bold** and a [link](https://example.test)' }),
+    })
+    expect(html).toContain('<strong>not bold</strong>')
+    expect(html).toContain('href="https://example.test"')
+    expect(html).not.toContain('**not bold**')
+  })
+
+  test('the rendered body sits in its own markdown container', async () => {
+    const html = await render({ kind: 'issue', issue: issue({ body: 'steps to reproduce' }) })
+    expect(html).toContain('class="fdp-md"')
+  })
+
+  test('a script tag in the body never reaches the page', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: 'before <script>alert(1)</script> after' }),
+    })
+    expect(html).not.toContain('<script')
+    expect(html).not.toContain('alert(1)')
+  })
+
+  test('an MR with no body: the empty state, not a blank paragraph', async () => {
+    const html = await render({ kind: 'mr', mr: mr({ body: null }) })
+    expect(html).toContain(t('forge.detailDescriptionEmpty'))
+    expect(html).not.toContain('class="fdp-md"')
+  })
+
+  test('an issue with an empty string body (a real, description-less issue): the empty state', async () => {
+    const html = await render({ kind: 'issue', issue: issue({ body: '' }) })
+    expect(html).toContain(t('forge.detailDescriptionEmpty'))
+  })
+
+  test('an issue with a real body renders it', async () => {
+    const html = await render({ kind: 'issue', issue: issue({ body: 'steps to reproduce' }) })
+    expect(html).toContain('steps to reproduce')
+    expect(html).not.toContain(t('forge.detailDescriptionEmpty'))
+  })
+
+  test('a #123 reference in the body becomes a link to the issue tracker', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({
+        number: 42,
+        url: 'https://github.com/acme/repo/issues/42',
+        body: 'duplicate of #7',
+      }),
+    })
+    expect(html).toContain('href="https://github.com/acme/repo/issues/7"')
+    expect(html).toContain('fdp-md-ref')
+  })
+
+  test('a body past MAX_FORGE_MARKDOWN_LENGTH: a visible, non-silent truncation notice with a link to the forge', async () => {
+    const url = 'https://github.com/acme/repo/issues/9'
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ number: 9, url, body: 'a'.repeat(MAX_FORGE_MARKDOWN_LENGTH + 500) }),
+    })
+    expect(html).toContain(t('forge.detailDescriptionTruncated'))
+    expect(html).toContain(htmlEscapeAttr(t('forge.detailDescriptionTruncatedLink')))
+    expect(html).toContain(`href="${url}"`)
+  })
+
+  test('a body at or under MAX_FORGE_MARKDOWN_LENGTH: no truncation notice', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: 'a'.repeat(MAX_FORGE_MARKDOWN_LENGTH) }),
+    })
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+  })
+
+  // The non-regression case a length-only defense would get backwards: a
+  // long, ordinary description, comfortably under the cap, must render in
+  // full with no notice at all, not be treated as a threat for its length.
+  test('a long but ordinary description, under the cap: renders in full, no notice at all', async () => {
+    const sentence =
+      'Investigated the timeout: the retry loop backed off too aggressively and the pool starved under load. '
+    const body = sentence.repeat(150) + 'END-OF-DESCRIPTION-MARKER'
+    expect(body.length).toBeGreaterThan(15000)
+    expect(body.length).toBeLessThan(MAX_FORGE_MARKDOWN_LENGTH)
+    const html = await render({ kind: 'issue', issue: issue({ body }) })
+    expect(html).toContain('END-OF-DESCRIPTION-MARKER')
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+    expect(html).not.toContain(t('forge.detailDescriptionShapeAbnormal'))
+  })
+
+  // Length is not the danger: a body far under the cap, shaped like one of
+  // the two known-expensive constructs, must still be caught and named.
+  test('a short body shaped like a pathological emphasis run: the shape notice, not the length one', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: '*'.repeat(200) }),
+    })
+    expect(html).toContain(t('forge.detailDescriptionShapeAbnormal'))
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+  })
+
+  test('a short body shaped like pathologically deep blockquote nesting: the shape notice, not the length one', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: '> '.repeat(200) + 'deep' }),
+    })
+    expect(html).toContain(t('forge.detailDescriptionShapeAbnormal'))
+    expect(html).not.toContain(t('forge.detailDescriptionTruncated'))
+  })
+
+  test('a body shaped to be pathologically expensive to parse: the panel still renders, never throws', async () => {
+    const html = await render({
+      kind: 'issue',
+      issue: issue({ body: '> '.repeat(20000) + 'deep' }),
+    })
+    expect(typeof html).toBe('string')
+  })
+})
+
+describe('layout geometry: the markdown container (read from source)', () => {
+  test('a fenced code block scrolls in its own container, never the page', () => {
+    expect(SOURCE).toMatch(/\.fdp-md pre \{[^}]*overflow-x: auto;/)
+  })
+
+  test('a reference link is dotted, a plain link is solid', () => {
+    expect(SOURCE).toMatch(/\.fdp-md a \{[^}]*text-decoration-style: solid;/)
+    expect(SOURCE).toMatch(/\.fdp-md a\.fdp-md-ref \{[^}]*text-decoration-style: dotted;/)
+  })
+})
+
+describe('the metadata rail', () => {
+  test('is a named region', async () => {
+    const html = await render({ kind: 'issue', issue: issue() })
+    expect(html).toContain('role="region"')
+    expect(html).toContain(htmlEscapeAttr(t('forge.detailRailAria')))
+  })
+
+  test('an MR selection renders MrMetaRail (its auto-review section, always present)', async () => {
+    const html = await render({ kind: 'mr', mr: mr() })
+    expect(html).toContain('mrr-root')
+    expect(html).toContain(t('mrs.rail.autoReview'))
+  })
+
+  describe('an issue selection: labels + dates only, MrMetaRail is not reused', () => {
+    test('no MrMetaRail markup leaks in', async () => {
+      const html = await render({ kind: 'issue', issue: issue() })
+      expect(html).not.toContain('mrr-root')
+    })
+
+    test('labels: empty state when there are none', async () => {
+      const html = await render({ kind: 'issue', issue: issue({ labels: [] }) })
+      expect(html).toContain(t('mrs.rail.labels'))
+      expect(html).toContain(t('mrs.rail.labelsEmpty'))
+    })
+
+    test('labels: every one renders when present', async () => {
+      const html = await render({
+        kind: 'issue',
+        issue: issue({
+          labels: [
+            { name: 'bug', color: null },
+            { name: 'ui', color: null },
+          ],
+        }),
+      })
+      expect(html).toContain('bug')
+      expect(html).toContain('ui')
+      expect(html).not.toContain(t('mrs.rail.labelsEmpty'))
+    })
+
+    test('dates: both opened and updated always render, createdAt/updatedAt are never null', async () => {
+      const html = await render({
+        kind: 'issue',
+        issue: issue({
+          createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+          updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        }),
+      })
+      expect(html).toContain(t('mrs.rail.dates'))
+      expect(html).toContain(t('mrs.rail.openedAt', { age: t('time.daysAgo', { n: 2 }) }))
+      expect(html).toContain(t('mrs.rail.updatedAt', { age: t('time.hoursAgo', { n: 1 }) }))
+    })
+
+    test('the last section (dates) carries no bottom rule', async () => {
+      const html = await render({ kind: 'issue', issue: issue() })
+      const sections = html.split('<section class="fdp-issue-rail-section">')
+      const lastSection = sections[sections.length - 1] ?? ''
+      expect(lastSection).toContain(t('mrs.rail.dates'))
+    })
+  })
+})
+
+describe('layout geometry (read from source: scoped CSS never reaches SSR output)', () => {
+  test('the rail is fixed at 236px and never shrinks', () => {
+    expect(SOURCE).toContain('flex: 0 0 236px;')
+    expect(SOURCE).toContain('width: 236px;')
+  })
+
+  test('a 24px gap separates the two columns', () => {
+    expect(SOURCE).toContain('gap: 24px;')
+  })
+
+  test('16px side padding, 20px vertical, on both columns', () => {
+    expect(SOURCE).toMatch(/\.fdp-main,\s*\n\s*\.fdp-rail\s*\{/)
+    expect(SOURCE).toContain('padding: 20px 16px;')
+  })
+
+  test('the stacking breakpoint reuses fb-shell, the same one the three panels already stack at', () => {
+    const stackingQueries = SOURCE.match(/@container fb-shell \(max-width: \d+px\)/g) ?? []
+    expect(stackingQueries).toHaveLength(1)
+    expect(stackingQueries[0]).toBe('@container fb-shell (max-width: 640px)')
+  })
+})
+
+// The control in the first band closes the panel, it does not navigate back.
+// The list it would "return" to is the column immediately beside it, still on
+// screen: a back arrow would promise a navigation that never happens, and
+// would contradict its own label, which says "close".
+describe('the first band closes the panel rather than going back', () => {
+  test('the control carries a cross, never a back arrow', () => {
+    expect(SOURCE).toContain('<X class="fdp-back-icon"')
+    expect(SOURCE).not.toContain('ArrowLeft')
+  })
+
+  test('its label and its behaviour agree: it says close, and it closes', () => {
+    const button = SOURCE.slice(SOURCE.indexOf('class="fdp-back"'), SOURCE.indexOf('</button>'))
+    expect(button).toContain("t('forge.detailClose')")
+    expect(button).toContain("emit('close')")
+  })
+})

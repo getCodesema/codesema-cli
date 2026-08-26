@@ -5,7 +5,10 @@
     "jsx": "preserve",
     "types": ["bun"],
     "noEmit": true,
-    "tsBuildInfoFile": "../../node_modules/.cache/tsc/web.tsbuildinfo"
+    "tsBuildInfoFile": "../../node_modules/.cache/tsc/web.tsbuildinfo",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src", "env.d.ts"]
 }
