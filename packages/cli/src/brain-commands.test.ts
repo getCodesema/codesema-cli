@@ -24,7 +24,21 @@ function fetchStub(status: number, body: unknown, calls: Call[]): typeof fetch {
 
 function initRepo(cwd: string, remoteUrl?: string): void {
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd })
-  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'chore: init'], { cwd })
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'chore: init',
+    ],
+    { cwd },
+  )
   if (remoteUrl) {
     execFileSync('git', ['remote', 'add', 'origin', remoteUrl], { cwd })
   }
