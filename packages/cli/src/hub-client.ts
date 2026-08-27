@@ -11,14 +11,18 @@ import {
   sanitizeArmClaimResult,
   sanitizeArmTicket,
   sanitizeArmTicketRequest,
+  sanitizeRunnerListEntry,
+  sanitizeSealedSecretBlob,
   type ArmClaimResult,
   type ArmEvent,
   type ArmIssueRef,
   type ArmTicket,
   type ArmTicketRequest,
   type ArmTransition,
+  type RunnerListEntry,
 } from './contract.js'
 import { tryGit } from './git.js'
+import { runnerIdentityHeader } from './runner-identity.js'
 import { authHeader, type SyncCredentials } from './sync.js'
 
 const HUB_REQUEST_TIMEOUT_MS = 10_000
@@ -99,13 +103,20 @@ function ack(): Record<string, never> {
   return {}
 }
 
-type RequestOptions = {
+type RequestOptions<T> = {
   fetchImpl: typeof fetch
   /** See `HubError`'s `unavailable` doc: only a bare collection GET qualifies. */
   collectionRoute?: boolean
+  /**
+   * A route where a plain 404 means "nothing to report" rather than an
+   * error (checking whether a claim is pending): resolves as
+   * `{ ok: true, data: notFoundValue }` instead of a `kind: 'http'` error.
+   * No route needs both this and `collectionRoute` at once.
+   */
+  notFoundValue?: T
 }
 
-type RequestSpec<T> = RequestOptions & {
+type RequestSpec<T> = RequestOptions<T> & {
   method: string
   path: string
   body?: unknown
@@ -118,7 +129,11 @@ async function request<T>(creds: SyncCredentials, spec: RequestSpec<T>): Promise
   try {
     res = await spec.fetchImpl(`${creds.url}${path}`, {
       method,
-      headers: { 'content-type': 'application/json', ...authHeader(creds) },
+      headers: {
+        'content-type': 'application/json',
+        ...authHeader(creds),
+        ...runnerIdentityHeader(),
+      },
       ...(method === 'GET' ? {} : { body: JSON.stringify(body ?? {}) }),
       signal: AbortSignal.timeout(HUB_REQUEST_TIMEOUT_MS),
     })
@@ -129,6 +144,9 @@ async function request<T>(creds: SyncCredentials, spec: RequestSpec<T>): Promise
   if (!res.ok) {
     if (res.status === 404 && spec.collectionRoute) {
       return { ok: false, error: { kind: 'unavailable' } }
+    }
+    if (res.status === 404 && spec.notFoundValue !== undefined) {
+      return { ok: true, data: spec.notFoundValue }
     }
     const errorField = field(parsedBody, 'error')
     const message = typeof errorField === 'string' ? errorField : `HTTP ${res.status}`
@@ -359,6 +377,99 @@ export async function pushEvents(
       events: input.events,
     },
     parse: ack,
+    fetchImpl,
+  })
+}
+
+export async function registerRunnerKey(
+  creds: SyncCredentials,
+  input: { public_key: string; name: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<{ fingerprint: string }>> {
+  return request(creds, {
+    method: 'POST',
+    path: '/api/cli/runners',
+    body: { public_key: input.public_key, name: input.name },
+    parse: (body) => {
+      const fingerprint = field(body, 'fingerprint')
+      return typeof fingerprint === 'string' && fingerprint.trim() ? { fingerprint } : null
+    },
+    fetchImpl,
+  })
+}
+
+/**
+ * Unlike every other list* function in this file, an entry this sanitizer
+ * cannot place DROPS ONLY THAT ENTRY rather than refusing the whole
+ * collection (contrast `sanitizeList`'s all-or-nothing doctrine, used by
+ * `listTickets`/`listTicketRequests`/`listInFlightTickets`): this listing is
+ * read by a human deciding which runner to push a secret to, or by the
+ * daemon checking pending state, and one malformed row (a hub built for a
+ * newer runner shape than this client understands) must not hide every
+ * other legitimately usable runner from view.
+ */
+export async function listRunners(
+  creds: SyncCredentials,
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<RunnerListEntry[]>> {
+  return request(creds, {
+    method: 'GET',
+    path: '/api/cli/runners',
+    parse: (body) => {
+      const raw = field(body, 'runners')
+      if (!Array.isArray(raw)) {
+        return null
+      }
+      const entries: RunnerListEntry[] = []
+      for (const item of raw) {
+        const entry = sanitizeRunnerListEntry(item)
+        if (entry) {
+          entries.push(entry)
+        }
+      }
+      return entries
+    },
+    fetchImpl,
+    collectionRoute: true,
+  })
+}
+
+export async function depositRunnerSecret(
+  creds: SyncCredentials,
+  fingerprint: string,
+  ciphertext: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<void>> {
+  return request(creds, {
+    method: 'POST',
+    path: `/api/cli/runners/${encodeURIComponent(fingerprint)}/secret`,
+    body: { ciphertext },
+    parse: () => undefined,
+    fetchImpl,
+  })
+}
+
+/**
+ * Claims whatever secret blob the hub is currently holding for this runner,
+ * for the daemon's own rotation tick to unseal and apply. A 404 (nothing
+ * pending) is the routine, expected outcome of most ticks and resolves as
+ * `{ ok: true, data: null }` via `notFoundValue`, never as an error the
+ * caller has to special-case out of `HubError`.
+ */
+export async function claimPendingSecret(
+  creds: SyncCredentials,
+  fingerprint: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<{ ciphertext: string } | null>> {
+  return request(creds, {
+    method: 'POST',
+    path: `/api/cli/runners/${encodeURIComponent(fingerprint)}/secret/claim`,
+    body: {},
+    notFoundValue: null,
+    parse: (body) => {
+      const blob = sanitizeSealedSecretBlob(field(body, 'secret'))
+      return blob ? { ciphertext: blob.ciphertext } : null
+    },
     fetchImpl,
   })
 }

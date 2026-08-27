@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": [
+    "public_key",
+    "name"
+  ],
+  "properties": {
+    "public_key": {
+      "minLength": 44,
+      "maxLength": 44,
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "maxLength": 200,
+      "type": "string"
+    }
+  }
+}

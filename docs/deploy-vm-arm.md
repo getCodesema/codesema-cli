@@ -8,9 +8,10 @@ gate below is lifted — on a real server, from the exact same artifact.
 
 The provisioning content lives in `packages/cli/assets/deploy/`:
 
-- `cloud-init.yaml.example` — the full cloud-init file for a fresh machine.
-  Copy it to `cloud-init.local.yaml` (gitignored) and fill in every
-  `__PLACEHOLDER__`.
+- `cloud-init.yaml.example`: the full cloud-init file for a fresh machine.
+  Copy it to `cloud-init.local.yaml` (gitignored); autoconfig mode needs only
+  `CODESEMA_HUB_TOKEN` filled in, direct mode needs the three commented-out
+  lines too.
 - `runner.env.example`: the five values `cloud-init.local.yaml` (and
   `install.sh`, below) need, with one line each on where to mint them.
 - `install.sh` — the same installer `cloud-init.yaml.example` calls under
@@ -33,8 +34,9 @@ reaches your server. Do not run step 8 until that work has shipped.
 ## Prerequisites
 
 - **On your workstation:** `/dev/kvm` present, and `multipass` (`sudo snap
-install multipass`). `codesema` and `claude` installed globally (both are
-  needed only to mint tokens below, not to run the arm itself).
+install multipass`). `codesema` and `claude` installed globally (needed to
+  mint tokens directly, or to run `codesema runner autoconfig`; never to run
+  the arm itself).
 - **A GitHub personal access token** with `repo` scope, for the bench
   repository the arm will clone and push to.
 - **codesema.com prod reachable and current.** `curl -s -o /dev/null -w
@@ -44,6 +46,48 @@ install multipass`). `codesema` and `claude` installed globally (both are
   deployed yet, deploy it first (Dokploy) and re-check.
 - **The bench repository already registered** in your codesema.com account
   (connected through the dashboard's GitHub integration).
+
+## Autoconfig (recommended)
+
+The fastest path, and the one where your GitHub token and Claude Code
+credentials never reach the hub in the clear: the exchange runs over a
+sealed channel (X25519 key agreement, AES-256-GCM), so the hub only ever relays
+bytes it cannot read.
+
+1. Mint just the hub token, [as in step 1 below](#1-mint-a-hub-token-against-prod),
+   then run the install with only that value set:
+
+   ```bash
+   CODESEMA_HUB_TOKEN=csk_... bash packages/cli/assets/deploy/install.sh
+   ```
+
+   For the VM path, fill in only `CODESEMA_HUB_TOKEN` in
+   `cloud-init.local.yaml`'s `runner.env` section and leave the three
+   commented-out lines there alone; see [step 3](#3-fill-in-the-templates).
+
+2. The install registers an identity with the hub, prints a fingerprint for
+   it, and then blocks, waiting.
+
+3. From your own workstation, inside the repository this arm will work:
+
+   ```bash
+   codesema runner autoconfig
+   ```
+
+   It asks what it needs and shows its own fingerprint for this exchange.
+   Compare that fingerprint, by eye, against the one the server printed in
+   step 2, before confirming anything. This comparison is the only defense
+   here: encryption proves nobody in the middle can read the secrets in
+   transit, not that you are encrypting them to the machine you think you
+   are. A mismatch means stop and investigate, never retry and hope.
+
+4. Once confirmed, the server receives the repository URL and both runtime
+   secrets and continues exactly as direct mode does from here: see
+   [Verify](#6-verify).
+
+Direct mode, starting at [step 1](#1-mint-a-hub-token-against-prod) below,
+remains available: mint and paste in all four values yourself, with no
+exchange to compare fingerprints on.
 
 ## 1. Mint a hub token against prod
 
@@ -90,12 +134,12 @@ from your GitHub account settings.
 cp packages/cli/assets/deploy/cloud-init.yaml.example packages/cli/assets/deploy/cloud-init.local.yaml
 ```
 
-Edit `cloud-init.local.yaml` and replace:
-
-- the three `__PLACEHOLDER__` values in the `/etc/codesema/runner.env`
-  section, with the tokens from steps 1-2;
-- `__CODESEMA_BENCH_REPO_URL__` in `provision.sh`, with the bench
-  repository's HTTPS clone URL.
+Edit `cloud-init.local.yaml`'s `/etc/codesema/runner.env` section: replace
+`CODESEMA_HUB_TOKEN`'s placeholder with the token from step 1, then
+uncomment and fill in the three direct-mode lines (`CLAUDE_CODE_OAUTH_TOKEN`,
+`GH_TOKEN`, `REPO_URL`) with the tokens from step 2 and the bench
+repository's HTTPS clone URL. Leave those three commented out instead to use
+[autoconfig](#autoconfig-recommended) once the VM is up.
 
 `cloud-init.local.yaml` and any `runner.env` are gitignored: this is the one
 file in this workflow that ever holds real secrets.
@@ -163,13 +207,22 @@ this runbook changes.
 
 ## Existing server (BYOC)
 
-Already have a server — a VPS, a machine in your own fleet — instead of
+Already have a server, a VPS, a machine in your own fleet, instead of
 provisioning a fresh one? Skip the VM and cloud-init entirely and run the
 installer directly on it. Same artifact, same end state: `install.sh` is
 exactly what `cloud-init.yaml.example`'s own `provision.sh` calls once it
 has bootstrapped just enough (Node.js, `npm i -g codesema`) to run it, so
-there is one place — not two — that knows how to turn a machine into a
+there is one place, not two, that knows how to turn a machine into a
 running arm.
+
+The simplest invocation is [autoconfig mode](#autoconfig-recommended):
+
+```bash
+CODESEMA_HUB_TOKEN=csk_... bash packages/cli/assets/deploy/install.sh
+```
+
+Direct mode mints and passes all four values upfront instead, with no
+fingerprint to compare:
 
 ```bash
 REPO_URL=https://github.com/org/repo.git \
@@ -181,18 +234,21 @@ CODESEMA_HUB_TOKEN=csk_... \
 
 The same five values `runner.env.example` documents (steps 1-2 above mint
 them the same way), passed as environment variables instead of pasted into
-a YAML file: `CODESEMA_HUB_URL` defaults to `https://codesema.com` if
-left unset. Any of the other four left unset is prompted for interactively
-when the script is run from a terminal; a piped or otherwise non-interactive
-run fails loudly instead of hanging on a prompt nobody can answer.
+a YAML file: `CODESEMA_HUB_URL` defaults to `https://codesema.com` if left
+unset. REPO_URL, GH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are all optional:
+leave any of them unset (the default for a non-interactive run, or by
+answering blank at its prompt for an interactive one) and the script
+switches to autoconfig mode instead of requiring them upfront.
 
 `install.sh` is idempotent, the same "check before acting" doctrine
 throughout this file: Node.js (>= 20, else nodesource), `gh` (else the
 official apt repo), a container runtime (docker or podman, installing
-rootless podman only if neither is present) and `codesema`/`claude-code` are
-all checked before anything is installed, the repository is cloned only if
-not already there, and the run ends by calling `codesema runner
-install-service` itself: it never writes the systemd unit by hand.
+rootless podman only if neither is present, and docker specifically
+checked with `docker info` for one that is actually usable, not merely
+installed) and `codesema`/`claude-code` are all checked before anything is
+installed, the repository is cloned only if not already there, and the run
+ends by calling `codesema runner install-service` itself: it never writes
+the systemd unit by hand.
 
 **Same gate as step 7 above (a real server).** This puts a 24/7 arm on a
 machine whose order channel has no signature or confirmation and no kill

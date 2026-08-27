@@ -851,6 +851,11 @@ export function trustStorePath(): string {
   return join(globalConfigDir(), 'trusted-agents.json')
 }
 
+/** Where a runner's sealed secrets are decrypted to before being sourced into its agent process. */
+export function runnerEnvPath(): string {
+  return join(globalConfigDir(), 'runner.env')
+}
+
 function readTrustStore(): Record<string, string> {
   const path = trustStorePath()
   if (!existsSync(path)) {

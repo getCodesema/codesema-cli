@@ -51,6 +51,10 @@ type ParsedValues = {
   prompt?: string | undefined
   detach?: boolean | undefined
   'env-file'?: string | undefined
+  fingerprint?: string | undefined
+  'gh-token-from-gh'?: boolean | undefined
+  'claude-token'?: string | undefined
+  'repo-url'?: string | undefined
 }
 
 export const COMMAND_NAMES = [
@@ -222,6 +226,11 @@ async function runCommand(
         prompt: values.prompt,
         detach: values.detach,
         envFile: values['env-file'],
+        fingerprint: values.fingerprint,
+        ghTokenFromGh: values['gh-token-from-gh'],
+        claudeToken: values['claude-token'],
+        repoUrl: values['repo-url'],
+        timeoutSeconds: parseIntFlag('timeout', values.timeout, 1, 86400),
       })
       break
   }
@@ -253,6 +262,10 @@ async function main(): Promise<void> {
       prompt: { type: 'string' },
       detach: { type: 'boolean' },
       'env-file': { type: 'string' },
+      fingerprint: { type: 'string' },
+      'gh-token-from-gh': { type: 'boolean' },
+      'claude-token': { type: 'string' },
+      'repo-url': { type: 'string' },
     },
   })
 

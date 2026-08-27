@@ -10,14 +10,19 @@
 // (D19) rides back on that same heartbeat and is applied here: ship, reply,
 // or abandon.
 
+import { runnerEnvPath } from './config.js'
 import { isActiveTaskStatus, type ArmOrder, type ArmTicketRequest } from './contract.js'
 import {
+  claimPendingSecret,
   claimTicket,
   claimTicketRequest,
   hubRemoteUrl,
   listTicketRequests,
   listTickets,
 } from './hub-client.js'
+import { loadRunnerIdentity } from './runner-identity.js'
+import { applySecretsToEnvFile, sanitizeRunnerSecretsPayload } from './runner-secrets.js'
+import { unseal } from './sealed-box.js'
 import { loadSyncCredentials, type SyncCredentials } from './sync.js'
 import { createHubTicketTask } from './task-hub-ticket.js'
 import { flushHubOutbox, heartbeatHubTicket } from './task-hub.js'
@@ -47,6 +52,11 @@ type DaemonContext = {
   log: (line: string) => void
   /** Once per distinct `key` for the whole daemon lifetime, never per tick. */
   logOnce: (key: string, line: string) => void
+  loadIdentityFn: typeof loadRunnerIdentity
+  claimSecretFn: typeof claimPendingSecret
+  unsealFn: typeof unseal
+  sanitizeSecretsFn: typeof sanitizeRunnerSecretsPayload
+  applySecretsFn: typeof applySecretsToEnvFile
 }
 
 /** Whether this half-tick saw a network failure or a 5xx: the ONLY conditions that back off the next tick. */
@@ -182,6 +192,60 @@ async function claimNextTicket(
   return 'ok'
 }
 
+/**
+ * Claims and applies whatever secret the hub is holding for this machine's
+ * runner identity, as steady-state rotation, distinct from the one-time
+ * provisioning at `codesema runner connect`. Every failure mode short of a
+ * programming error degrades to a no-op: no local identity yet (the machine
+ * never registered as a runner), no pending secret (the routine case on
+ * almost every tick), an unreadable blob (undecryptable, not valid JSON, or
+ * failing payload validation), or a network failure (the main tick's own
+ * backoff already covers reachability, so this stays silent rather than
+ * doubling up on it). Only the unreadable-blob failures are worth a log
+ * line, since those point at a misconfigured hub or runner rather than
+ * routine network flakiness.
+ */
+async function checkPendingSecretRotation(
+  ctx: DaemonContext,
+  creds: SyncCredentials,
+): Promise<void> {
+  const identity = ctx.loadIdentityFn()
+  if (!identity) {
+    ctx.logOnce(
+      'no-runner-identity',
+      'runner mode is on but this machine has no runner identity yet',
+    )
+    return
+  }
+  const claimed = await ctx.claimSecretFn(creds, identity.fingerprint, ctx.fetchImpl)
+  if (!claimed.ok || !claimed.data) {
+    return
+  }
+  const plaintext = ctx.unsealFn(identity.privateKey, claimed.data.ciphertext)
+  if (!plaintext) {
+    ctx.log('could not decrypt the pending runner secret; skipping this rotation')
+    return
+  }
+  let parsedPlaintext: unknown
+  try {
+    parsedPlaintext = JSON.parse(plaintext.toString('utf8'))
+  } catch {
+    ctx.log('the decrypted runner secret is not valid JSON; skipping this rotation')
+    return
+  }
+  const payload = ctx.sanitizeSecretsFn(parsedPlaintext)
+  if (!payload) {
+    ctx.log('the decrypted runner secret failed validation; skipping this rotation')
+    return
+  }
+  ctx.applySecretsFn(runnerEnvPath(), payload.secrets)
+  Object.assign(process.env, payload.secrets)
+  const appliedKeys = Object.keys(payload.secrets)
+  if (appliedKeys.length > 0) {
+    ctx.log(`applied rotated runner secret(s): ${appliedKeys.join(', ')}`)
+  }
+}
+
 async function tick(ctx: DaemonContext): Promise<TickOutcome> {
   await flushHubOutbox(ctx.cwd, ctx.fetchImpl)
 
@@ -193,6 +257,9 @@ async function tick(ctx: DaemonContext): Promise<TickOutcome> {
     )
     return 'ok'
   }
+
+  await checkPendingSecretRotation(ctx, creds)
+
   const remoteUrl = hubRemoteUrl(ctx.cwd)
   if (!remoteUrl) {
     ctx.logOnce('no-remote', 'runner mode is on but this workspace has no git origin remote')
@@ -300,6 +367,16 @@ export type StartRunnerDaemonOptions = {
   draftFn?: DraftRequestFn
   /** Test seam: an injectable, abortable sleep instead of the real timers. */
   sleepFn?: (ms: number, signal: AbortSignal) => Promise<void>
+  /** Test seam. */
+  loadIdentityFn?: typeof loadRunnerIdentity
+  /** Test seam. */
+  claimSecretFn?: typeof claimPendingSecret
+  /** Test seam. */
+  unsealFn?: typeof unseal
+  /** Test seam. */
+  sanitizeSecretsFn?: typeof sanitizeRunnerSecretsPayload
+  /** Test seam. */
+  applySecretsFn?: typeof applySecretsToEnvFile
 }
 
 export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonHandle {
@@ -308,6 +385,11 @@ export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonH
   const log = opts.logFn ?? ((line: string) => console.log(`[runner] ${line}`))
   const draftFn = opts.draftFn ?? draftAndSubmitTicketRequest
   const sleepFn = opts.sleepFn ?? sleep
+  const loadIdentityFn = opts.loadIdentityFn ?? loadRunnerIdentity
+  const claimSecretFn = opts.claimSecretFn ?? claimPendingSecret
+  const unsealFn = opts.unsealFn ?? unseal
+  const sanitizeSecretsFn = opts.sanitizeSecretsFn ?? sanitizeRunnerSecretsPayload
+  const applySecretsFn = opts.applySecretsFn ?? applySecretsToEnvFile
   const controller = new AbortController()
   const loggedOnce = new Set<string>()
 
@@ -324,6 +406,11 @@ export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonH
       loggedOnce.add(key)
       log(line)
     },
+    loadIdentityFn,
+    claimSecretFn,
+    unsealFn,
+    sanitizeSecretsFn,
+    applySecretsFn,
   }
 
   let backoffMs = intervalMs

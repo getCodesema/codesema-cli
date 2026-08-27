@@ -5,8 +5,10 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import type { ArmTicket, ArmTicketRequest, TaskRecord } from './contract.js'
+import type { HubResult } from './hub-client.js'
 import type { Project } from './projects.js'
 import { startRunnerDaemon } from './runner-daemon.js'
+import type { RunnerSecretsPayload } from './runner-secrets.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskCreateResult, TaskManager } from './task-server.js'
 
@@ -139,6 +141,12 @@ const validTicket: ArmTicket = {
   mr_url: null,
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',
+}
+
+const fakeRunnerIdentity = {
+  publicKey: Buffer.from('pub'),
+  privateKey: Buffer.from('priv'),
+  fingerprint: 'fp1',
 }
 
 async function settle(ms = 30): Promise<void> {
@@ -745,5 +753,190 @@ describe('startRunnerDaemon', () => {
     await settle(30)
     await handle.stop()
     expect(lines.some((l) => l.includes('refused') && l.includes('ship in progress'))).toBe(true)
+  })
+
+  describe('secret rotation', () => {
+    test('no runner identity yet: skips without calling the hub', async () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const claimSecretCalls: unknown[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadIdentityFn: () => null,
+        claimSecretFn: async (...args) => {
+          claimSecretCalls.push(args)
+          return { ok: true, data: null }
+        },
+      })
+      await handle.stop()
+      expect(claimSecretCalls.length).toBe(0)
+      expect(lines.some((l) => l.includes('no runner identity'))).toBe(true)
+    })
+
+    test('no pending secret: a silent no-op', async () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const applyCalls: unknown[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadIdentityFn: () => fakeRunnerIdentity,
+        claimSecretFn: async () => ({ ok: true, data: null }),
+        applySecretsFn: (...args) => {
+          applyCalls.push(args)
+        },
+      })
+      await handle.stop()
+      expect(applyCalls.length).toBe(0)
+      expect(lines.length).toBe(0)
+    })
+
+    test('a valid blob mutates process.env, writes the env file, and logs only the key names', async () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const applyCalls: Array<{ envPath: string; secrets: Record<string, string> }> = []
+      const previousToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+      const payload: RunnerSecretsPayload = {
+        v: 1,
+        secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'secret-token-value' },
+      }
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadIdentityFn: () => fakeRunnerIdentity,
+        claimSecretFn: async () => ({ ok: true, data: { ciphertext: 'sealed-blob' } }),
+        unsealFn: () => Buffer.from(JSON.stringify(payload), 'utf8'),
+        sanitizeSecretsFn: (raw) => raw as RunnerSecretsPayload,
+        applySecretsFn: (envPath, secrets) => {
+          applyCalls.push({ envPath, secrets: secrets as Record<string, string> })
+        },
+      })
+      await handle.stop()
+      try {
+        expect(applyCalls).toEqual([
+          {
+            envPath: expect.any(String),
+            secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'secret-token-value' },
+          },
+        ])
+        expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('secret-token-value')
+        expect(lines.some((l) => l.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(true)
+        expect(lines.some((l) => l.includes('secret-token-value'))).toBe(false)
+      } finally {
+        if (previousToken === undefined) {
+          delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+        } else {
+          process.env.CLAUDE_CODE_OAUTH_TOKEN = previousToken
+        }
+      }
+    })
+
+    test('an undecryptable blob logs a warning and mutates nothing', async () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const applyCalls: unknown[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadIdentityFn: () => fakeRunnerIdentity,
+        claimSecretFn: async () => ({ ok: true, data: { ciphertext: 'sealed-blob' } }),
+        unsealFn: () => null,
+        applySecretsFn: (...args) => {
+          applyCalls.push(args)
+        },
+      })
+      await handle.stop()
+      expect(applyCalls.length).toBe(0)
+      expect(lines.some((l) => l.includes('could not decrypt'))).toBe(true)
+    })
+
+    test('a payload that fails validation logs a warning and mutates nothing', async () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const applyCalls: unknown[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadIdentityFn: () => fakeRunnerIdentity,
+        claimSecretFn: async () => ({ ok: true, data: { ciphertext: 'sealed-blob' } }),
+        unsealFn: () => Buffer.from('{"not":"a payload"}', 'utf8'),
+        sanitizeSecretsFn: () => null,
+        applySecretsFn: (...args) => {
+          applyCalls.push(args)
+        },
+      })
+      await handle.stop()
+      expect(applyCalls.length).toBe(0)
+      expect(lines.some((l) => l.includes('failed validation'))).toBe(true)
+    })
+
+    test('a network failure claiming the secret does not crash the tick', async () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadIdentityFn: () => fakeRunnerIdentity,
+        claimSecretFn: (): Promise<HubResult<{ ciphertext: string } | null>> =>
+          Promise.resolve({ ok: false, error: { kind: 'network' } }),
+      })
+      await handle.stop()
+      expect(lines.some((l) => l.includes('tick failed'))).toBe(false)
+    })
   })
 })

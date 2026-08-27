@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Idempotent codesema arm installer for an EXISTING Ubuntu/Debian server (the
 # "bring your own compute" path; cloud-init.yaml.example is the equivalent
-# for a fresh VM provisioned from scratch — see docs/deploy-vm-arm.md for
+# for a fresh VM provisioned from scratch: see docs/deploy-vm-arm.md for
 # both). Runner-style split, same shape as gitlab-runner's install +
 # config.sh/svc.sh: this script only gets the OS ready (Node.js, gh, a
 # container runtime) and codesema/claude-code onto PATH; the systemd --user
@@ -13,15 +13,28 @@
 # required variable is missing and stdin is a terminal:
 #
 #   CODESEMA_HUB_URL            hub to connect to (default: https://codesema.com)
-#   CODESEMA_HUB_TOKEN          csk_<workspaceId>.<secret>, from `codesema link`
+#   CODESEMA_HUB_TOKEN          csk_<workspaceId>.<secret>, from `codesema link`,
+#                               required in both modes below
 #   REPO_URL                    HTTPS clone URL of the repo this arm works
 #   GH_TOKEN                    GitHub token, "repo" scope
 #   CLAUDE_CODE_OAUTH_TOKEN     from `claude setup-token`
 #
-# Usage:
+# REPO_URL, GH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are optional. Set all three
+# and this runs in direct mode, exactly as below. Leave any of them unset and
+# the script switches to autoconfig mode: it registers this machine with the
+# hub through `codesema runner connect` (which prints a fingerprint), then
+# blocks in `codesema runner await-secrets` until a human runs `codesema
+# runner autoconfig` on their own workstation and delivers the three values
+# over the sealed-secrets channel. A fresh VM can therefore boot with only
+# CODESEMA_HUB_TOKEN set; see docs/deploy-vm-arm.md.
+#
+# Usage (direct mode):
 #   REPO_URL=https://github.com/org/repo.git GH_TOKEN=... \
 #   CLAUDE_CODE_OAUTH_TOKEN=... CODESEMA_HUB_TOKEN=csk_... \
 #     bash install.sh
+#
+# Usage (autoconfig mode):
+#   CODESEMA_HUB_TOKEN=csk_... bash install.sh
 #
 # Minting each value: docs/deploy-vm-arm.md.
 
@@ -84,10 +97,18 @@ prompt_var GH_TOKEN "GitHub token (repo scope)" secret
 prompt_var CLAUDE_CODE_OAUTH_TOKEN "Claude Code OAuth token (from 'claude setup-token')" secret
 
 require_var CODESEMA_HUB_TOKEN
-require_var REPO_URL
-require_var GH_TOKEN
-require_var CLAUDE_CODE_OAUTH_TOKEN
-export GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+
+# --- REPO_URL/GH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN all present: direct mode,
+# unchanged from here on. Any one missing (the common case on a fresh VM's
+# non-interactive boot, where prompt_var above had no terminal to ask on)
+# switches to autoconfig mode instead, resolved further down once `runner
+# connect` has this machine's identity registered with the hub.
+if [ -n "${REPO_URL:-}" ] && [ -n "${GH_TOKEN:-}" ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  direct_mode=1
+  export GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+else
+  direct_mode=0
+fi
 
 log "starting at $(date -u +%FT%TZ)"
 
@@ -136,6 +157,17 @@ else
   fi
 fi
 
+# --- Docker specifically needs a group membership rootless podman does not:
+# a freshly added user cannot run it until they are in the docker group and
+# have logged back in, and this script has no relogin to wait for, so a
+# docker that cannot actually run fails loud here instead of at the first
+# ticket's container run.
+if command -v docker >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1; then
+    fail "docker is installed but not usable by $(id -un): add this user to the docker group and log back in ('sudo usermod -aG docker $(id -un)', then relogin), or install rootless podman instead"
+  fi
+fi
+
 # --- codesema + claude-code on PATH. Presence-gated, not version-gated: a
 # locked-down service account (no sudo, by design — see
 # cloud-init.yaml.example's `codesema` user) can reach this script with
@@ -158,22 +190,6 @@ else
     || fail "codesema not on PATH after npm install -g — check npm's global bin dir is in PATH"
   command -v claude >/dev/null 2>&1 \
     || fail "claude not on PATH after npm install -g — check npm's global bin dir is in PATH"
-fi
-
-# --- Clone the repository. gh's own credential helper authenticates the
-# clone from GH_TOKEN (already exported above), so the token never lands in
-# this repo's .git/config — only ~/.gitconfig gets a credential.helper line
-# naming gh, which reads GH_TOKEN again at call time.
-repo_name="$(basename "$REPO_URL" .git)"
-repo_dir="$HOME/$repo_name"
-
-gh auth setup-git
-
-if [ -d "$repo_dir/.git" ]; then
-  log "$repo_dir already cloned, skipping"
-else
-  log "cloning $REPO_URL into $repo_dir"
-  git clone "$REPO_URL" "$repo_dir"
 fi
 
 # --- Base config: written only if absent, so a re-run never clobbers a
@@ -201,13 +217,65 @@ codesema runner connect --url "$CODESEMA_HUB_URL" --token "$CODESEMA_HUB_TOKEN"
 # every ticket (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN). CODESEMA_HUB_TOKEN is
 # install-time only: `runner connect` above already turned it into
 # config.json's stored credentials, so it has no reason to also live here.
+# REPO_URL is not written here either: direct mode already has it in the
+# environment, and autoconfig mode resolves it below, from whichever of
+# await-secrets or an existing clone actually knows it.
 env_file="$config_dir/runner.env"
-umask 077
-cat > "$env_file" <<EOF
+
+if [ "$direct_mode" = 1 ]; then
+  umask 077
+  cat > "$env_file" <<EOF
 CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN
 GH_TOKEN=$GH_TOKEN
 EOF
-chmod 0600 "$env_file"
+  chmod 0600 "$env_file"
+else
+  # --- Autoconfig: this machine now has an identity and a fingerprint
+  # (printed above by `runner connect`) but neither the repository nor the
+  # two runtime secrets yet. A re-run that already has both secrets on disk
+  # skips straight past the wait instead of blocking on the hub again.
+  if [ -f "$env_file" ] && grep -q '^GH_TOKEN=.' "$env_file" && grep -q '^CLAUDE_CODE_OAUTH_TOKEN=.' "$env_file"; then
+    log "$env_file already holds both runtime secrets, skipping await-secrets"
+  else
+    log "waiting for secrets: on your workstation, run 'codesema runner autoconfig' and compare its fingerprint against the one printed above"
+    REPO_URL="$(codesema runner await-secrets --env-file "$env_file")"
+  fi
+
+  if [ -z "${REPO_URL:-}" ]; then
+    # await-secrets was skipped or came back empty: REPO_URL itself is never
+    # written to runner.env, but a machine that already has a clone still
+    # has its remote, which is exactly the same URL.
+    unit_path="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/codesema-runner.service"
+    existing_repo_dir=""
+    if [ -f "$unit_path" ]; then
+      existing_repo_dir="$(sed -n 's/^WorkingDirectory=//p' "$unit_path" | head -n1)"
+    fi
+    if [ -n "$existing_repo_dir" ] && [ -d "$existing_repo_dir/.git" ]; then
+      REPO_URL="$(git -C "$existing_repo_dir" remote get-url origin 2>/dev/null || true)"
+    fi
+  fi
+  require_var REPO_URL
+
+  set -a
+  . "$env_file"
+  set +a
+fi
+
+# --- Clone the repository. gh's own credential helper authenticates the
+# clone from GH_TOKEN (exported above, one way or another by this point), so
+# the token never lands in this repo's .git/config: only ~/.gitconfig gets a
+# credential.helper line naming gh, which reads GH_TOKEN again at call time.
+repo_name="$(basename "$REPO_URL" .git)"
+repo_dir="$HOME/$repo_name"
+
+gh auth setup-git
+
+if [ -d "$repo_dir/.git" ]; then
+  log "$repo_dir already cloned, skipping"
+else
+  log "cloning $REPO_URL into $repo_dir"
+  git clone "$REPO_URL" "$repo_dir"
+fi
 
 ( cd "$repo_dir" && codesema runner install-service --env-file "$env_file" )
 

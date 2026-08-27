@@ -11,10 +11,17 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
-import type { ArmTicket } from './contract.js'
+import type { ArmTicket, RunnerListEntry } from './contract.js'
 import { t } from './i18n.js'
 import { runnerCommand } from './runner-commands.js'
+import { loadOrCreateRunnerIdentity } from './runner-identity.js'
 import { readRunnerPidfile, writeRunnerPidfile } from './runner-pidfile.js'
+import {
+  formatFingerprint,
+  generateRunnerKeyPair,
+  runnerKeyFingerprint,
+  seal,
+} from './sealed-box.js'
 
 process.env.NO_COLOR = '1'
 
@@ -55,6 +62,25 @@ function fetchOffline(): typeof fetch {
   return (() => Promise.reject(new Error('network unreachable'))) as unknown as typeof fetch
 }
 
+/** One canned response per call, in order; the last entry repeats once exhausted (a poll loop's Nth+ call). */
+function fetchSequence(
+  responses: { status: number; body: unknown }[],
+  calls: Call[],
+): typeof fetch {
+  let i = 0
+  return ((url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} })
+    const resp = responses[Math.min(i, responses.length - 1)]
+    i++
+    return Promise.resolve(
+      new Response(JSON.stringify(resp?.body ?? {}), {
+        status: resp?.status ?? 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+  }) as typeof fetch
+}
+
 /** Same pattern as summary.test.ts's own `captureLog`, made async: `runnerCommand` resolves its promise after every `console.log` it makes. */
 async function captureLog(fn: () => Promise<void>): Promise<string[]> {
   const lines: string[] = []
@@ -66,6 +92,21 @@ async function captureLog(fn: () => Promise<void>): Promise<string[]> {
     await fn()
   } finally {
     console.log = original
+  }
+  return lines
+}
+
+/** Same as `captureLog`, for the STDERR-only progress/warning lines `await-secrets` prints. */
+async function captureErr(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = []
+  const original = console.error
+  console.error = (...args: unknown[]) => {
+    lines.push(args.join(' '))
+  }
+  try {
+    await fn()
+  } finally {
+    console.error = original
   }
   return lines
 }
@@ -133,6 +174,19 @@ const validTicket: ArmTicket = {
 
 function fakeRunAgent(output: string): (opts: AgentRunOptions) => Promise<string> {
   return async () => output
+}
+
+/** A real keypair behind every fake runner entry, so the security recompute in `resolveTargetRunner` genuinely matches unless a test deliberately overrides `fingerprint`. */
+function fakeRunnerEntry(overrides: Partial<RunnerListEntry> = {}): RunnerListEntry {
+  const { publicKey } = generateRunnerKeyPair()
+  return {
+    name: 'build-box-1',
+    fingerprint: runnerKeyFingerprint(publicKey),
+    public_key: publicKey.toString('base64'),
+    last_seen_at: new Date().toISOString(),
+    has_pending_secret: false,
+    ...overrides,
+  }
 }
 
 /** A pid that is certainly dead: a child that already ran to completion. */
@@ -216,6 +270,49 @@ describe('runnerCommand', () => {
       expect(config.syncUrl).toBe('https://hub.example')
       expect(config.syncWorkspaceId).toBe('ws1')
       expect(config.syncSecret).toBe('sec1')
+    })
+  })
+
+  describe('connect: runner identity', () => {
+    test('the fingerprint shown is stable across reconnects (keygen happens once)', async () => {
+      const first = await captureLog(() =>
+        runnerCommand({
+          action: 'connect',
+          cwd,
+          url: 'https://hub.example',
+          token: 'csk_ws1.sec1',
+          fetchImpl: fetchStub(200, {}, []),
+        }),
+      )
+      const second = await captureLog(() =>
+        runnerCommand({
+          action: 'connect',
+          cwd,
+          url: 'https://hub.example',
+          token: 'csk_ws1.sec1',
+          fetchImpl: fetchStub(200, {}, []),
+        }),
+      )
+      const fingerprintLine = (lines: string[]) =>
+        lines.find((line) => line.includes(t('runner.fieldFingerprint')))
+      expect(fingerprintLine(first)).toBeDefined()
+      expect(fingerprintLine(first)).toBe(fingerprintLine(second))
+    })
+
+    test('a key-registration failure warns but does not throw, and credentials are still saved', async () => {
+      const lines = await captureLog(async () => {
+        await expect(
+          runnerCommand({
+            action: 'connect',
+            cwd,
+            url: 'https://hub.example',
+            token: 'csk_ws1.sec1',
+            fetchImpl: fetchOffline(),
+          }),
+        ).resolves.toBeUndefined()
+      })
+      expect(loadGlobalConfig().syncUrl).toBe('https://hub.example')
+      expect(lines.some((line) => line.includes(t('runner.fieldFingerprint')))).toBe(true)
     })
   })
 
@@ -575,6 +672,429 @@ describe('runnerCommand', () => {
       } finally {
         child.kill('SIGKILL')
       }
+    })
+  })
+
+  describe('list', () => {
+    test('throws when not connected', async () => {
+      await expect(runnerCommand({ action: 'list', cwd })).rejects.toThrow()
+    })
+
+    describe('connected', () => {
+      beforeEach(() => {
+        saveGlobalConfig({
+          ...loadGlobalConfig(),
+          syncUrl: 'https://hub.example',
+          syncWorkspaceId: 'ws1',
+          syncSecret: 'sec1',
+        })
+      })
+
+      test('shows a dedicated empty state', async () => {
+        const lines = await captureLog(() =>
+          runnerCommand({ action: 'list', cwd, fetchImpl: fetchStub(200, { runners: [] }, []) }),
+        )
+        expect(lines.join('\n')).toContain(t('runner.listEmpty'))
+      })
+
+      test('lists the name, the full formatted fingerprint, heartbeat age and a pending-secret marker', async () => {
+        const entry = fakeRunnerEntry({
+          name: 'build-box-1',
+          last_seen_at: new Date(Date.now() - 5000).toISOString(),
+          has_pending_secret: true,
+        })
+        const lines = await captureLog(() =>
+          runnerCommand({
+            action: 'list',
+            cwd,
+            fetchImpl: fetchStub(200, { runners: [entry] }, []),
+          }),
+        )
+        const output = lines.join('\n')
+        expect(output).toContain('build-box-1')
+        expect(output).toContain(formatFingerprint(entry.fingerprint))
+        expect(output).toContain(t('runner.fieldPendingSecret'))
+      })
+
+      test('a runner with no pending secret does not show the pending-secret marker', async () => {
+        const entry = fakeRunnerEntry({ has_pending_secret: false })
+        const lines = await captureLog(() =>
+          runnerCommand({
+            action: 'list',
+            cwd,
+            fetchImpl: fetchStub(200, { runners: [entry] }, []),
+          }),
+        )
+        expect(lines.join('\n')).not.toContain(t('runner.fieldPendingSecret'))
+      })
+
+      test('surfaces a clean error on a hub failure instead of throwing raw', async () => {
+        await expect(
+          runnerCommand({ action: 'list', cwd, fetchImpl: fetchOffline() }),
+        ).rejects.toThrow()
+      })
+    })
+  })
+
+  describe('autoconfig', () => {
+    test('throws when not connected', async () => {
+      await expect(runnerCommand({ action: 'autoconfig', cwd })).rejects.toThrow()
+    })
+
+    describe('connected, non-interactive (no TTY in this test environment)', () => {
+      beforeEach(() => {
+        saveGlobalConfig({
+          ...loadGlobalConfig(),
+          syncUrl: 'https://hub.example',
+          syncWorkspaceId: 'ws1',
+          syncSecret: 'sec1',
+        })
+      })
+
+      test('without --fingerprint or a token flag, refuses immediately and lists what is missing', async () => {
+        await expect(runnerCommand({ action: 'autoconfig', cwd })).rejects.toThrow(
+          t('runner.autoconfigMissingFlags', {
+            flags: '--fingerprint <fingerprint>, --gh-token-from-gh and/or --claude-token <token>',
+          }),
+        )
+      })
+
+      test('an unknown --fingerprint is refused', async () => {
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fingerprint: 'a'.repeat(64),
+            ghTokenFromGh: true,
+            execFn: () => 'ghp_x',
+            fetchImpl: fetchSequence([{ status: 200, body: { runners: [] } }], []),
+          }),
+        ).rejects.toThrow()
+      })
+
+      test('a runner whose reported fingerprint does not match its own public key is refused (hub incoherent)', async () => {
+        const entry = fakeRunnerEntry({ fingerprint: 'f'.repeat(64) })
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fingerprint: entry.fingerprint,
+            ghTokenFromGh: true,
+            execFn: () => 'ghp_x',
+            fetchImpl: fetchSequence([{ status: 200, body: { runners: [entry] } }], []),
+          }),
+        ).rejects.toThrow()
+      })
+
+      test('--gh-token-from-gh throws clearly when gh is not actually available', async () => {
+        const entry = fakeRunnerEntry()
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fingerprint: entry.fingerprint,
+            ghTokenFromGh: true,
+            execFn: () => {
+              throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' })
+            },
+            fetchImpl: fetchSequence([{ status: 200, body: { runners: [entry] } }], []),
+          }),
+        ).rejects.toThrow(t('runner.autoconfigGhTokenUnavailable'))
+      })
+
+      test('a fully-flagged run (fingerprint + gh-token-from-gh) never prompts and deposits a sealed secret', async () => {
+        const entry = fakeRunnerEntry()
+        const calls: Call[] = []
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fingerprint: entry.fingerprint,
+            ghTokenFromGh: true,
+            repoUrl: 'https://example.com/o/r.git',
+            execFn: () => 'ghp_from_gh',
+            fetchImpl: fetchSequence(
+              [
+                { status: 200, body: { runners: [entry] } },
+                { status: 200, body: {} },
+              ],
+              calls,
+            ),
+          }),
+        ).resolves.toBeUndefined()
+        expect(calls.length).toBe(2)
+      })
+
+      test('--claude-token alone is enough: no gh token is required', async () => {
+        const entry = fakeRunnerEntry()
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fingerprint: entry.fingerprint,
+            claudeToken: 'claude-token-value',
+            fetchImpl: fetchSequence(
+              [
+                { status: 200, body: { runners: [entry] } },
+                { status: 200, body: {} },
+              ],
+              [],
+            ),
+          }),
+        ).resolves.toBeUndefined()
+      })
+    })
+
+    describe('interactive flow (seamed select/confirm/textInput, no real TTY)', () => {
+      const previousStdinIsTTY = process.stdin.isTTY
+      const previousStdoutIsTTY = process.stdout.isTTY
+      const previousClaudeToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+
+      beforeEach(() => {
+        process.stdin.isTTY = true
+        process.stdout.isTTY = true
+        delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+        saveGlobalConfig({
+          ...loadGlobalConfig(),
+          syncUrl: 'https://hub.example',
+          syncWorkspaceId: 'ws1',
+          syncSecret: 'sec1',
+        })
+      })
+
+      afterEach(() => {
+        process.stdin.isTTY = previousStdinIsTTY
+        process.stdout.isTTY = previousStdoutIsTTY
+        if (previousClaudeToken === undefined) {
+          delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+        } else {
+          process.env.CLAUDE_CODE_OAUTH_TOKEN = previousClaudeToken
+        }
+      })
+
+      test('picks the runner via selectFn, confirms the fingerprint, and sends a pasted GH token', async () => {
+        const entry = fakeRunnerEntry()
+        const calls: Call[] = []
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fetchImpl: fetchSequence(
+              [
+                { status: 200, body: { runners: [entry] } },
+                { status: 200, body: {} },
+              ],
+              calls,
+            ),
+            selectFn: async () => entry,
+            confirmFn: async () => true,
+            textInputFn: async (o) =>
+              o.title === t('runner.autoconfigPasteGhToken') ? 'ghp_pasted' : null,
+            execFn: () => {
+              throw new Error('no gh on this test machine')
+            },
+            runInheritedFn: () => {},
+          }),
+        ).resolves.toBeUndefined()
+        expect(calls.length).toBe(2)
+      })
+
+      test('declining the fingerprint confirmation aborts before anything is deposited', async () => {
+        const entry = fakeRunnerEntry()
+        const calls: Call[] = []
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fetchImpl: fetchStub(200, { runners: [entry] }, calls),
+            selectFn: async () => entry,
+            confirmFn: async () => false,
+          }),
+        ).rejects.toThrow(t('runner.autoconfigFingerprintNotConfirmed'))
+        expect(calls.length).toBe(1)
+      })
+
+      test('declining every reuse offer with nothing pasted leaves no secret to send, and the command refuses', async () => {
+        const entry = fakeRunnerEntry()
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fetchImpl: fetchSequence([{ status: 200, body: { runners: [entry] } }], []),
+            selectFn: async () => entry,
+            confirmFn: async (o) => o.title === t('runner.autoconfigConfirmFingerprint'),
+            textInputFn: async () => null,
+            execFn: () => '',
+            runInheritedFn: () => {},
+          }),
+        ).rejects.toThrow(t('runner.autoconfigNoSecrets'))
+      })
+    })
+  })
+
+  describe('await-secrets', () => {
+    test('throws when not connected', async () => {
+      await expect(runnerCommand({ action: 'await-secrets', cwd })).rejects.toThrow()
+    })
+
+    describe('connected', () => {
+      beforeEach(() => {
+        saveGlobalConfig({
+          ...loadGlobalConfig(),
+          syncUrl: 'https://hub.example',
+          syncWorkspaceId: 'ws1',
+          syncSecret: 'sec1',
+        })
+      })
+
+      test('throws when this machine has no runner identity yet', async () => {
+        await expect(
+          runnerCommand({ action: 'await-secrets', cwd, timeoutSeconds: 1, pollIntervalMs: 5 }),
+        ).rejects.toThrow(t('runner.awaitSecretsNoIdentity'))
+      })
+
+      describe('with a local runner identity', () => {
+        let identity: ReturnType<typeof loadOrCreateRunnerIdentity>
+        let envPath: string
+
+        beforeEach(() => {
+          identity = loadOrCreateRunnerIdentity()
+          envPath = join(cwd, 'runner.env')
+        })
+
+        function sealedPayload(payload: unknown): string {
+          return seal(identity.publicKey, Buffer.from(JSON.stringify(payload)))
+        }
+
+        test('succeeds on the very first poll, writes the env file, and STDOUT carries only the repo_url', async () => {
+          const ciphertext = sealedPayload({
+            v: 1,
+            secrets: { GH_TOKEN: 'ghp_first_try' },
+            repo_url: 'https://example.com/o/r.git',
+          })
+          const lines = await captureLog(async () => {
+            await expect(
+              runnerCommand({
+                action: 'await-secrets',
+                cwd,
+                envFile: envPath,
+                fetchImpl: fetchSequence([{ status: 200, body: { secret: { ciphertext } } }], []),
+              }),
+            ).resolves.toBeUndefined()
+          })
+          expect(lines).toEqual(['https://example.com/o/r.git'])
+          expect(readFileSync(envPath, 'utf8')).toContain('GH_TOKEN=ghp_first_try')
+        })
+
+        test('nothing is printed on STDOUT when no repo_url was sent', async () => {
+          const ciphertext = sealedPayload({ v: 1, secrets: { GH_TOKEN: 'ghp_no_repo' } })
+          const lines = await captureLog(async () => {
+            await runnerCommand({
+              action: 'await-secrets',
+              cwd,
+              envFile: envPath,
+              fetchImpl: fetchSequence([{ status: 200, body: { secret: { ciphertext } } }], []),
+            })
+          })
+          expect(lines).toEqual([])
+        })
+
+        test('keeps polling past empty responses and succeeds once a secret appears', async () => {
+          const ciphertext = sealedPayload({ v: 1, secrets: { GH_TOKEN: 'ghp_after_wait' } })
+          const fetchImpl = fetchSequence(
+            [
+              { status: 404, body: {} },
+              { status: 404, body: {} },
+              { status: 200, body: { secret: { ciphertext } } },
+            ],
+            [],
+          )
+          await expect(
+            runnerCommand({
+              action: 'await-secrets',
+              cwd,
+              envFile: envPath,
+              pollIntervalMs: 5,
+              fetchImpl,
+            }),
+          ).resolves.toBeUndefined()
+          expect(readFileSync(envPath, 'utf8')).toContain('GH_TOKEN=ghp_after_wait')
+        })
+
+        test('a corrupted delivery is logged and skipped, not fatal: a later valid one still lands', async () => {
+          const ciphertext = sealedPayload({ v: 1, secrets: { GH_TOKEN: 'ghp_after_garbage' } })
+          const fetchImpl = fetchSequence(
+            [
+              { status: 200, body: { secret: { ciphertext: 'not-a-real-sealed-blob' } } },
+              { status: 200, body: { secret: { ciphertext } } },
+            ],
+            [],
+          )
+          const errLines = await captureErr(async () => {
+            await expect(
+              runnerCommand({
+                action: 'await-secrets',
+                cwd,
+                envFile: envPath,
+                pollIntervalMs: 5,
+                fetchImpl,
+              }),
+            ).resolves.toBeUndefined()
+          })
+          expect(
+            errLines.some((line) => line.includes(t('runner.awaitSecretsUndecryptable'))),
+          ).toBe(true)
+          expect(readFileSync(envPath, 'utf8')).toContain('GH_TOKEN=ghp_after_garbage')
+        })
+
+        test('times out cleanly when nothing ever arrives, without writing the env file', async () => {
+          await expect(
+            runnerCommand({
+              action: 'await-secrets',
+              cwd,
+              envFile: envPath,
+              timeoutSeconds: 0.15,
+              pollIntervalMs: 10,
+              fetchImpl: fetchSequence([{ status: 404, body: {} }], []),
+            }),
+          ).rejects.toThrow()
+          expect(existsSync(envPath)).toBe(false)
+        })
+
+        test('reminds on STDERR at the configured interval while waiting', async () => {
+          // Several empty polls before the secret lands, so the reminder
+          // interval is guaranteed to elapse at least once: decoupled from
+          // the timeout path entirely, so this never races a deadline.
+          const ciphertext = sealedPayload({ v: 1, secrets: { GH_TOKEN: 'ghp_after_reminder' } })
+          const fetchImpl = fetchSequence(
+            [
+              { status: 404, body: {} },
+              { status: 404, body: {} },
+              { status: 404, body: {} },
+              { status: 404, body: {} },
+              { status: 404, body: {} },
+              { status: 200, body: { secret: { ciphertext } } },
+            ],
+            [],
+          )
+          const errLines = await captureErr(async () => {
+            await expect(
+              runnerCommand({
+                action: 'await-secrets',
+                cwd,
+                envFile: envPath,
+                pollIntervalMs: 5,
+                reminderIntervalMs: 10,
+                fetchImpl,
+              }),
+            ).resolves.toBeUndefined()
+          })
+          const expectedReminder = t('runner.awaitSecretsReminder', {
+            fingerprint: formatFingerprint(identity.fingerprint),
+          })
+          expect(errLines.some((line) => line.includes(expectedReminder))).toBe(true)
+        })
+      })
     })
   })
 

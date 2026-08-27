@@ -39,9 +39,18 @@ Usage:
                                       Connect this workspace to a hub (same account as sync/link)
   codesema runner status              Show the connected hub, this repo, its ready ticket count and
                                       in-flight tickets (executor, heartbeat age, stale lease)
+  codesema runner list                List the runners registered on the connected hub (fingerprint,
+                                      last heartbeat, pending secret)
   codesema runner ticket --issue <n>  Draft and publish a ticket from a forge issue
   codesema runner ticket --title <t> --prompt <p>
                                       Draft and publish a ticket from a free-form prompt
+  codesema runner autoconfig [--fingerprint <fp>] [--gh-token-from-gh] [--claude-token <tok>] [--repo-url <url>]
+                                      Pick a registered runner, collect a GH token and/or a Claude Code
+                                      token for it, seal them to that runner's key and deposit them on
+                                      the hub for it to pick up
+  codesema runner await-secrets [--env-file <path>] [--timeout <s>]
+                                      Run on the runner machine: wait for the secret \`autoconfig\` sealed
+                                      for it, decrypt it into --env-file and print the repo URL it carried
   codesema runner serve [--detach]    Alias for \`codesema workspace --runner\`; --detach backgrounds the
                                       daemon (prints its pid and log path) instead of running it in the
                                       foreground
@@ -62,7 +71,8 @@ Options:
   --review <file>     Agent output to display (default: .codesema/review.json, else last archived review)
   --out <file>        Destination of \`export\` (- for stdout)
   --port <n>          Preferred port for the local server (default: 4400)
-  --timeout <s>       Agent time budget in seconds for \`review\` (default: 900)
+  --timeout <s>       Agent time budget in seconds for \`review\` (default: 900), or the poll budget
+                      for \`runner await-secrets\` (default: 1800)
   --full              Review from scratch instead of updating the previous review
   --dual              Dual review: two independent reviewers run in parallel (same agent,
                       different angles), then a judge model merges their findings
@@ -75,7 +85,12 @@ Options:
   --url, --token      \`runner connect\`: the hub's URL and a csk_<workspaceId>.<secret> token
   --issue <n>         \`runner ticket\`: draft from this forge issue number
   --title, --prompt   \`runner ticket\`: draft from a free-form title and prompt instead of an issue
-  --env-file <path>   \`runner install-service\`: EnvironmentFile= for the generated systemd unit
+  --fingerprint <fp>  \`runner autoconfig\`: pick the runner by fingerprint instead of the interactive picker
+  --gh-token-from-gh  \`runner autoconfig\`: capture GH_TOKEN from this machine's \`gh auth token\` without asking
+  --claude-token <t>  \`runner autoconfig\`: Claude Code OAuth token to send instead of prompting for one
+  --repo-url <url>    \`runner autoconfig\`: repo URL to send instead of the detected git remote
+  --env-file <path>   \`runner install-service\`'s EnvironmentFile=, or \`runner await-secrets\`'s
+                      destination env file (default: the runner's own env file)
   -h, --help          Show this help
   -v, --version       Show version
 
@@ -377,9 +392,9 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'sync.badResponse': 'unexpected response from {url}: required fields are missing or invalid',
 
   'runner.usage':
-    'usage: codesema runner <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
+    'usage: codesema runner <connect|disconnect|status|list|ticket|autoconfig|await-secrets|serve|stop|install-service|uninstall-service>',
   'runner.unknownAction':
-    'unknown runner action: {action} (expected connect, disconnect, status, ticket, serve, stop, install-service or uninstall-service)',
+    'unknown runner action: {action} (expected connect, disconnect, status, list, ticket, autoconfig, await-secrets, serve, stop, install-service or uninstall-service)',
   'runner.connectMissingFlags':
     '`codesema runner connect` needs both --url <url> and --token <token>',
   'runner.badToken': 'malformed token: expected csk_<workspaceId>.<secret>',
@@ -436,6 +451,45 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'runner.fieldEnvironmentFile': 'environment file',
   'runner.lingerFailed':
     "could not enable lingering ({reason}): the service will stop when this user's session ends. Common in containers/WSL with no full systemd — run `sudo loginctl enable-linger $(whoami)` yourself if your host supports it.",
+  'runner.fieldFingerprint': 'fingerprint',
+  'runner.keyRegisterFailed':
+    'could not register this runner key with the hub yet ({reason}): the hub may be running an older build',
+  'runner.listFailed': 'could not list runners: {reason}',
+  'runner.listEmpty':
+    'No runners registered yet. Run `codesema runner connect` on the machine that should execute tickets.',
+  'runner.listHeading': 'registered runners',
+  'runner.fieldPendingSecret': 'secret pending',
+  'runner.fieldNeverSeen': 'never seen',
+  'runner.autoconfigMissingFlags': 'non-interactive `runner autoconfig` needs: {flags}',
+  'runner.autoconfigSelectRunner': 'Which runner is this for?',
+  'runner.autoconfigNoRunnerSelected': 'no runner selected',
+  'runner.autoconfigFingerprintNotFound': 'no registered runner has fingerprint {fingerprint}',
+  'runner.autoconfigFingerprintMismatch':
+    'the hub reported a fingerprint for {name} that does not match its own public key: refusing to seal secrets for it',
+  'runner.autoconfigConfirmFingerprint': 'Does the runner machine show this same fingerprint?',
+  'runner.autoconfigFingerprintNotConfirmed': 'fingerprint not confirmed: aborting',
+  'runner.autoconfigUseGhToken': "Use this machine's gh token?",
+  'runner.autoconfigPasteGhToken': 'Paste the GH_TOKEN to send',
+  'runner.autoconfigGhTokenUnavailable':
+    '`--gh-token-from-gh` was given but `gh auth token` is not available (is gh installed and logged in?)',
+  'runner.autoconfigReuseClaudeToken': "Reuse this machine's Claude Code OAuth token?",
+  'runner.autoconfigPasteClaudeToken': 'Paste the Claude Code OAuth token to send',
+  'runner.autoconfigUseDetectedRepoUrl': "Use {url} as this runner's repo?",
+  'runner.autoconfigRepoUrl': 'Repository URL for this runner',
+  'runner.autoconfigNoSecrets':
+    'no secret to send: provide at least a GH token or a Claude Code token',
+  'runner.autoconfigDepositFailed': 'could not deposit the sealed secret: {reason}',
+  'runner.autoconfigDone': 'Secrets sealed and deposited for {name}.',
+  'runner.autoconfigReminder': 'The runner will pick this up automatically at its next heartbeat.',
+  'runner.awaitSecretsNoIdentity':
+    'no runner key on this machine yet (run `codesema runner connect` first)',
+  'runner.awaitSecretsWaiting': 'waiting for a sealed secret addressed to {fingerprint}…',
+  'runner.awaitSecretsReminder': 'still waiting, fingerprint {fingerprint}',
+  'runner.awaitSecretsUndecryptable':
+    "received a sealed secret that could not be opened with this runner's key, ignoring it",
+  'runner.awaitSecretsInvalidPayload':
+    'received a secret payload that does not match the expected shape, ignoring it',
+  'runner.awaitSecretsTimeout': 'timed out after {seconds}s waiting for a sealed secret',
 
   'menu.title': 'What do you want to do?',
   'menu.review': 'Simple review',
@@ -598,9 +652,19 @@ Usage :
                                       Connecte ce workspace à un hub (même compte que sync/link)
   codesema runner status              Affiche le hub connecté, ce dépôt, ses tickets prêts et ses
                                       tickets en vol (exécutant, âge du battement, bail expiré)
+  codesema runner list                Liste les runners enregistrés sur le hub connecté (empreinte,
+                                      dernier battement, secret en attente)
   codesema runner ticket --issue <n>  Rédige et publie un ticket depuis une issue du forge
   codesema runner ticket --title <t> --prompt <p>
                                       Rédige et publie un ticket depuis un titre et un prompt libres
+  codesema runner autoconfig [--fingerprint <emp>] [--gh-token-from-gh] [--claude-token <jeton>] [--repo-url <url>]
+                                      Choisit un runner enregistré, récupère un jeton gh et/ou un jeton
+                                      Claude Code pour lui, les scelle avec sa clé et les dépose sur le
+                                      hub pour qu'il les récupère
+  codesema runner await-secrets [--env-file <chemin>] [--timeout <s>]
+                                      À lancer sur la machine runner : attend le secret scellé par
+                                      \`autoconfig\`, le déchiffre dans --env-file et affiche l'URL du
+                                      dépôt reçue
   codesema runner serve               Alias de \`codesema workspace --runner\`
   codesema runner disconnect          Oublie le hub connecté (efface seulement les identifiants
                                       locaux, pensez aussi à révoquer ce bras dans les Settings du
@@ -618,7 +682,8 @@ Options :
   --review <fichier>  Sortie d'agent à afficher (défaut : .codesema/review.json, sinon dernière revue archivée)
   --out <fichier>     Destination de \`export\` (- pour stdout)
   --port <n>          Port préféré du serveur local (défaut : 4400)
-  --timeout <s>       Budget de temps de l'agent en secondes pour \`review\` (défaut : 900)
+  --timeout <s>       Budget de temps de l'agent en secondes pour \`review\` (défaut : 900), ou
+                      budget d'attente de \`runner await-secrets\` (défaut : 1800)
   --full              Revue complète au lieu de mettre à jour la revue précédente
   --dual              Revue duale : deux reviewers indépendants en parallèle (même agent,
                       angles différents), puis un modèle juge fusionne leurs notes
@@ -632,7 +697,12 @@ Options :
   --url, --token      \`runner connect\` : l'URL du hub et un jeton csk_<workspaceId>.<secret>
   --issue <n>         \`runner ticket\` : rédige depuis ce numéro d'issue du forge
   --title, --prompt   \`runner ticket\` : rédige depuis un titre et un prompt libres plutôt qu'une issue
-  --env-file <chemin> \`runner install-service\` : EnvironmentFile= de l'unité systemd générée
+  --fingerprint <emp> \`runner autoconfig\` : choisit le runner par empreinte plutôt que par sélecteur
+  --gh-token-from-gh  \`runner autoconfig\` : capture GH_TOKEN via \`gh auth token\` sans confirmation
+  --claude-token <j>  \`runner autoconfig\` : jeton OAuth Claude Code à envoyer plutôt que de le demander
+  --repo-url <url>    \`runner autoconfig\` : URL de dépôt à envoyer plutôt que le remote détecté
+  --env-file <chemin> \`runner install-service\` : EnvironmentFile= de l'unité systemd générée, ou
+                      fichier de destination de \`runner await-secrets\` (défaut : le fichier env du runner)
   -h, --help          Afficher cette aide
   -v, --version       Afficher la version
 
@@ -947,9 +1017,9 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'sync.badResponse': 'réponse inattendue de {url} : champs requis manquants ou invalides',
 
   'runner.usage':
-    'usage : codesema runner <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
+    'usage : codesema runner <connect|disconnect|status|list|ticket|autoconfig|await-secrets|serve|stop|install-service|uninstall-service>',
   'runner.unknownAction':
-    'action runner inconnue : {action} (attendu connect, disconnect, status, ticket, serve, stop, install-service ou uninstall-service)',
+    'action runner inconnue : {action} (attendu connect, disconnect, status, list, ticket, autoconfig, await-secrets, serve, stop, install-service ou uninstall-service)',
   'runner.connectMissingFlags':
     '`codesema runner connect` nécessite --url <url> et --token <token>',
   'runner.badToken': 'jeton malformé : format attendu csk_<workspaceId>.<secret>',
@@ -1006,6 +1076,47 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'runner.fieldEnvironmentFile': 'fichier env',
   'runner.lingerFailed':
     "impossible d'activer le lingering ({reason}) : le service s'arrêtera à la fin de la session de cet utilisateur. Fréquent dans les conteneurs/WSL sans systemd complet : lancez vous-même `sudo loginctl enable-linger $(whoami)` si votre hôte le permet.",
+  'runner.fieldFingerprint': 'empreinte',
+  'runner.keyRegisterFailed':
+    "impossible d'enregistrer cette clé runner auprès du hub pour le moment ({reason}) : le hub tourne peut-être sur une version plus ancienne",
+  'runner.listFailed': 'impossible de lister les runners : {reason}',
+  'runner.listEmpty':
+    'Aucun runner enregistré pour le moment. Lancez `codesema runner connect` sur la machine qui doit exécuter les tickets.',
+  'runner.listHeading': 'runners enregistrés',
+  'runner.fieldPendingSecret': 'secret en attente',
+  'runner.fieldNeverSeen': 'jamais vu',
+  'runner.autoconfigMissingFlags':
+    'en mode non interactif, `runner autoconfig` nécessite : {flags}',
+  'runner.autoconfigSelectRunner': 'Pour quel runner ?',
+  'runner.autoconfigNoRunnerSelected': 'aucun runner sélectionné',
+  'runner.autoconfigFingerprintNotFound':
+    "aucun runner enregistré ne porte l'empreinte {fingerprint}",
+  'runner.autoconfigFingerprintMismatch':
+    'le hub a renvoyé pour {name} une empreinte qui ne correspond pas à sa propre clé publique : envoi des secrets refusé',
+  'runner.autoconfigConfirmFingerprint': 'La machine runner affiche-t-elle la même empreinte ?',
+  'runner.autoconfigFingerprintNotConfirmed': 'empreinte non confirmée : abandon',
+  'runner.autoconfigUseGhToken': 'Utiliser le jeton gh de cette machine ?',
+  'runner.autoconfigPasteGhToken': 'Collez le GH_TOKEN à envoyer',
+  'runner.autoconfigGhTokenUnavailable':
+    '`--gh-token-from-gh` a été fourni mais `gh auth token` est indisponible (gh est-il installé et connecté ?)',
+  'runner.autoconfigReuseClaudeToken': 'Réutiliser le jeton OAuth Claude Code de cette machine ?',
+  'runner.autoconfigPasteClaudeToken': 'Collez le jeton OAuth Claude Code à envoyer',
+  'runner.autoconfigUseDetectedRepoUrl': 'Utiliser {url} comme dépôt de ce runner ?',
+  'runner.autoconfigRepoUrl': 'URL du dépôt pour ce runner',
+  'runner.autoconfigNoSecrets':
+    'aucun secret à envoyer : fournissez au moins un jeton gh ou un jeton Claude Code',
+  'runner.autoconfigDepositFailed': 'impossible de déposer le secret scellé : {reason}',
+  'runner.autoconfigDone': 'Secrets scellés et déposés pour {name}.',
+  'runner.autoconfigReminder': 'Le runner les récupérera automatiquement à son prochain battement.',
+  'runner.awaitSecretsNoIdentity':
+    "pas encore de clé runner sur cette machine (lancez d'abord `codesema runner connect`)",
+  'runner.awaitSecretsWaiting': "en attente d'un secret scellé adressé à {fingerprint}…",
+  'runner.awaitSecretsReminder': 'toujours en attente, empreinte {fingerprint}',
+  'runner.awaitSecretsUndecryptable':
+    "un secret scellé reçu n'a pas pu être ouvert avec la clé de ce runner, ignoré",
+  'runner.awaitSecretsInvalidPayload':
+    'un secret reçu ne correspond pas à la forme attendue, ignoré',
+  'runner.awaitSecretsTimeout': "délai dépassé après {seconds}s en attente d'un secret scellé",
 
   'menu.title': 'Que voulez-vous faire ?',
   'menu.review': 'Revue simple',

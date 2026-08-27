@@ -4,16 +4,21 @@
 # described in docs/deploy-vm-arm.md. Same file, same content, either target.
 #
 # This is the "fresh machine" path. For an EXISTING server you already
-# manage, use assets/deploy/install.sh directly instead — this file's own
+# manage, use assets/deploy/install.sh directly instead: this file's own
 # provision.sh is a thin bootstrap (just enough to get npm running, chicken-
 # egg) that ends by calling that exact same script, so there is only one
 # place that knows how to turn a bare machine into a running arm.
 #
-# Usage: cp cloud-init.yaml.example cloud-init.local.yaml, replace every
-# __PLACEHOLDER__ below (runner.env.example says where each one comes from),
-# then:
+# Usage: cp cloud-init.yaml.example cloud-init.local.yaml, fill in
+# CODESEMA_HUB_TOKEN below (runner.env.example says where to mint it), then:
 #   multipass launch 24.04 --name codesema-arm --cpus 2 --memory 4G --disk 20G \
 #     --cloud-init cloud-init.local.yaml
+#
+# That alone boots into autoconfig mode: install.sh registers this VM with
+# the hub and blocks, waiting for a human to run `codesema runner autoconfig`
+# from their own workstation. See docs/deploy-vm-arm.md for that half of the
+# exchange and for the direct-mode alternative (fill in the three commented
+# lines in the write_files section below instead, and skip autoconfig).
 
 hostname: codesema-arm
 
@@ -45,25 +50,31 @@ users:
     lock_passwd: true
 
 write_files:
-  # defer: true — cloud-init's default module order runs write_files BEFORE
+  # defer: true: cloud-init's default module order runs write_files BEFORE
   # users-groups, so an `owner: codesema:...` here would fail with "no such
   # user" unless the write is deferred past user creation.
   #
-  # All five values install.sh needs, in the one file it (and the systemd
-  # unit it installs, through EnvironmentFile=) reads from: see
-  # runner.env.example for where each one comes from. CODESEMA_HUB_URL
-  # ships with a real default rather than a placeholder: override it only
-  # for a self-hosted hub.
+  # The file install.sh (and the systemd unit it installs, through
+  # EnvironmentFile=) reads its configuration from: see runner.env.example
+  # for where each value comes from. Only CODESEMA_HUB_TOKEN must be filled
+  # in; CODESEMA_HUB_URL already ships with a real default (override only
+  # for a self-hosted hub). The three commented-out lines are direct mode
+  # only: leave them as they are for autoconfig mode, where install.sh gets
+  # them from the hub instead once a human runs `codesema runner autoconfig`
+  # and compares its fingerprint against the one `codesema runner connect`
+  # prints to /var/log/codesema-provision.log.
   - path: /etc/codesema/runner.env
     owner: root:codesema
     permissions: '0640'
     defer: true
     content: |
-      CLAUDE_CODE_OAUTH_TOKEN=__PLACEHOLDER__
-      GH_TOKEN=__PLACEHOLDER__
       CODESEMA_HUB_TOKEN=__PLACEHOLDER__
       CODESEMA_HUB_URL=https://codesema.com
-      REPO_URL=__PLACEHOLDER__
+
+      # Direct mode only: uncomment and fill in all three to skip autoconfig.
+      # CLAUDE_CODE_OAUTH_TOKEN=__PLACEHOLDER__
+      # GH_TOKEN=__PLACEHOLDER__
+      # REPO_URL=__PLACEHOLDER__
 
   # No defer needed: root:root, no dependency on the codesema user existing.
   - path: /opt/codesema/provision.sh
@@ -76,9 +87,11 @@ write_files:
 
       # Fail fast and loud on a forgotten placeholder rather than let
       # install.sh (or the service it enables) crashloop later with no clue
-      # why.
-      if grep -q '__PLACEHOLDER__' /etc/codesema/runner.env; then
-        echo "[codesema-provision] /etc/codesema/runner.env still has __PLACEHOLDER__ values, aborting" >&2
+      # why. Anchored to actual assignments, not the whole file: the three
+      # direct-mode-only lines stay commented out, __PLACEHOLDER__ text and
+      # all, whenever autoconfig mode is what is wanted.
+      if grep -qE '^[A-Za-z_]+=__PLACEHOLDER__' /etc/codesema/runner.env; then
+        echo "[codesema-provision] /etc/codesema/runner.env has an unfilled __PLACEHOLDER__ value, aborting" >&2
         exit 1
       fi
 
@@ -129,9 +142,10 @@ write_files:
       # reason to know about) need XDG_RUNTIME_DIR themselves. runuser's PAM
       # session does not reliably set it (a known systemd/util-linux gap:
       # https://github.com/systemd/systemd/issues/10574), so it is exported
-      # explicitly instead of assumed. install.sh reads the rest of its
-      # configuration (REPO_URL, the hub URL/token, the two runtime
-      # secrets) straight out of runner.env itself.
+      # explicitly instead of assumed. install.sh reads CODESEMA_HUB_URL and
+      # CODESEMA_HUB_TOKEN out of runner.env either way; REPO_URL and the two
+      # runtime secrets come from that same file only in direct mode, else
+      # install.sh resolves them itself in autoconfig mode.
       runuser -u codesema -- env XDG_RUNTIME_DIR="/run/user/$(id -u codesema)" bash -c '
         set -euo pipefail
         set -a; . /etc/codesema/runner.env; set +a

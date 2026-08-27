@@ -6,29 +6,45 @@
 // the one action that is a no-op rather than an error when there is nothing
 // to do: stopping an already-stopped daemon is success, not misuse.
 
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnOptions,
+} from 'node:child_process'
 import { closeSync, mkdirSync, openSync } from 'node:fs'
+import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { runAgent } from './agent.js'
-import { loadGlobalConfig, saveGlobalConfig } from './config.js'
+import { loadGlobalConfig, runnerEnvPath, saveGlobalConfig } from './config.js'
+import type { RunnerListEntry } from './contract.js'
 import { tryGit } from './git.js'
 import {
+  claimPendingSecret,
+  depositRunnerSecret,
   hubErrorMessage,
   hubRemoteUrl,
   listInFlightTickets,
+  listRunners,
   listTickets,
   parseHubToken,
+  registerRunnerKey,
   type InFlightTicket,
 } from './hub-client.js'
 import { t } from './i18n.js'
+import { loadOrCreateRunnerIdentity, loadRunnerIdentity } from './runner-identity.js'
 import { readRunnerPidfile, removeRunnerPidfile } from './runner-pidfile.js'
+import { applySecretsToEnvFile, sanitizeRunnerSecretsPayload } from './runner-secrets.js'
 import {
   installRunnerService,
   uninstallRunnerService,
   type ExecCommandFn,
 } from './runner-service.js'
+import { formatFingerprint, runnerKeyFingerprint, seal, unseal } from './sealed-box.js'
 import { loadSyncCredentials } from './sync.js'
 import { draftAndPublishTicket } from './ticket-draft.js'
+import { confirm, isInteractive, select, textInput, type SelectOption } from './tui.js'
 import { ACCENT, AMBER, dim, GREEN, paint, renderFieldRows, type FieldRow } from './ui.js'
 import { isPidAlive } from './workspace-lock.js'
 import { workspace } from './workspace.js'
@@ -39,6 +55,18 @@ import { workspace } from './workspace.js'
  * dozen overloads deep, which a test fake has no reason to satisfy.
  */
 type SpawnFn = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+
+/** The one shape `runner autoconfig`'s Claude-token step needs from `spawnSync`: run a command attached to the real terminal (an OAuth device flow needs to print a URL and read a code), no output captured. */
+export type RunInheritedFn = (command: string, args: readonly string[]) => void
+
+function realRunInherited(command: string, args: readonly string[]): void {
+  spawnSync(command, args, { stdio: 'inherit' })
+}
+
+/** Same `execFileSync` wrapper runner-service.ts keeps private for its own systemctl calls; restated here for `gh auth token`, the one other place this module shells out to a real binary. */
+function realExecCommand(command: string, args: readonly string[]): string {
+  return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
 
 /** Same bkctl-style result block as sync.ts's own (private there, so restated here). */
 function printResult(statusMessage: string, rows: FieldRow[]): void {
@@ -59,19 +87,38 @@ export type RunnerCommandOptions = {
   prompt?: string | undefined
   /** `runner serve --detach` only: background the daemon instead of running it here. */
   detach?: boolean | undefined
-  /** `runner install-service` only: EnvironmentFile= for the generated systemd unit. */
+  /** `runner install-service`'s EnvironmentFile=, or `runner await-secrets`'s destination env file. */
   envFile?: string | undefined
+  /** `runner autoconfig` only: fingerprint of the target runner, skips the interactive picker. */
+  fingerprint?: string | undefined
+  /** `runner autoconfig` only: capture GH_TOKEN from `gh auth token` without asking to confirm. */
+  ghTokenFromGh?: boolean | undefined
+  /** `runner autoconfig` only: Claude Code OAuth token to send, skips env reuse/`claude setup-token`/paste. */
+  claudeToken?: string | undefined
+  /** `runner autoconfig` only: repo URL to send, skips the detected-remote confirm/paste. */
+  repoUrl?: string | undefined
+  /** `runner await-secrets` only: seconds to poll before giving up (default 1800). */
+  timeoutSeconds?: number | undefined
   /** Test seam. */
   fetchImpl?: typeof fetch | undefined
   /** Test seam. */
   runAgentFn?: typeof runAgent | undefined
   /** Test seam for `runner serve --detach`: never forks a real process in tests. */
   spawnFn?: SpawnFn | undefined
-  /** Test seam for `runner install-service`/`uninstall-service`: never shells out to a real systemctl/loginctl in tests. */
+  /** Test seam for `runner install-service`/`uninstall-service`/`autoconfig`'s `gh auth token`: never shells out to a real systemctl/loginctl/gh in tests. */
   execFn?: ExecCommandFn | undefined
+  /** Test seam for `runner autoconfig`'s `claude setup-token`: never spawns a real inherited process in tests. */
+  runInheritedFn?: RunInheritedFn | undefined
+  /** Test seams for `runner autoconfig`'s prompts: never touch a real TTY in tests. */
+  selectFn?: RunnerSelectFn | undefined
+  textInputFn?: typeof textInput | undefined
+  confirmFn?: typeof confirm | undefined
   /** Test seams for `runner stop`'s bounded poll: real 10s/200ms by default. */
   stopTimeoutMs?: number | undefined
   stopPollIntervalMs?: number | undefined
+  /** Test seams for `runner await-secrets`'s poll loop: real 4s/30s by default. */
+  pollIntervalMs?: number | undefined
+  reminderIntervalMs?: number | undefined
 }
 
 async function runnerConnect(opts: RunnerCommandOptions): Promise<void> {
@@ -90,10 +137,28 @@ async function runnerConnect(opts: RunnerCommandOptions): Promise<void> {
     syncWorkspaceId: parsed.workspaceId,
     syncSecret: parsed.secret,
   })
+
+  // Stable across reconnects: only ever generated once per machine, so the
+  // fingerprint an operator reads here still matches the one `autoconfig`
+  // recomputes later against whatever the hub reports for this same key.
+  const identity = loadOrCreateRunnerIdentity()
+  const creds = { url: opts.url, workspaceId: parsed.workspaceId, secret: parsed.secret }
+  const registerResult = await registerRunnerKey(
+    creds,
+    { public_key: identity.publicKey.toString('base64'), name: hostname() },
+    opts.fetchImpl ?? fetch,
+  )
+
   printResult(t('runner.connected', { url: opts.url }), [
     { label: t('field.account'), value: parsed.workspaceId },
+    { label: t('runner.fieldFingerprint'), value: formatFingerprint(identity.fingerprint) },
   ])
   console.log(`  ${t('runner.savedTo', { path })}`)
+  if (!registerResult.ok) {
+    console.log(
+      `  ${paint(t('runner.keyRegisterFailed', { reason: hubErrorMessage(registerResult.error) }), AMBER)}`,
+    )
+  }
   console.log('')
 }
 
@@ -445,6 +510,363 @@ async function runnerUninstallService(opts: RunnerCommandOptions): Promise<void>
   ])
 }
 
+/** A runner that registered but never sent a heartbeat yet reports `last_seen_at: null`. */
+function formatLastSeen(lastSeenAt: string | null, nowMs: number): string {
+  return lastSeenAt ? formatHeartbeatAge(lastSeenAt, nowMs) : t('runner.fieldNeverSeen')
+}
+
+function printRunnerList(runners: RunnerListEntry[]): void {
+  console.log('')
+  console.log(`  ${paint(t('runner.listHeading'), ACCENT)}`)
+  const nowMs = Date.now()
+  for (const runner of runners) {
+    console.log(`    ${runner.name}`)
+    const facts = [
+      formatFingerprint(runner.fingerprint),
+      formatLastSeen(runner.last_seen_at, nowMs),
+      ...(runner.has_pending_secret ? [t('runner.fieldPendingSecret')] : []),
+    ]
+    console.log(`      ${dim(facts.join(' · '))}`)
+  }
+  console.log('')
+}
+
+async function runnerList(opts: RunnerCommandOptions): Promise<void> {
+  const creds = loadSyncCredentials()
+  if (!creds) {
+    throw new Error(t('runner.notConnected'))
+  }
+  const result = await listRunners(creds, opts.fetchImpl ?? fetch)
+  if (!result.ok) {
+    throw new Error(t('runner.listFailed', { reason: hubErrorMessage(result.error) }))
+  }
+  if (result.data.length === 0) {
+    printResult(t('runner.listEmpty'), [])
+    return
+  }
+  printRunnerList(result.data)
+}
+
+/**
+ * The flags `runner autoconfig` needs to complete without ever prompting: one
+ * to pick the runner (`--fingerprint`) and one path to at least one secret
+ * (`--gh-token-from-gh` or `--claude-token`); everything else (repo URL,
+ * reusing an already-set `gh`/Claude token) degrades to "not sent" rather
+ * than blocking, since the final "at least one secret" check is the real
+ * gate. A bare `CLAUDE_CODE_OAUTH_TOKEN` env var does not count here: reusing
+ * it still asks for confirmation, which a non-interactive run cannot give.
+ */
+function missingAutoconfigFlags(opts: RunnerCommandOptions): string[] {
+  const missing: string[] = []
+  if (!opts.fingerprint) {
+    missing.push('--fingerprint <fingerprint>')
+  }
+  if (!opts.ghTokenFromGh && !opts.claudeToken) {
+    missing.push('--gh-token-from-gh and/or --claude-token <token>')
+  }
+  return missing
+}
+
+function findRunnerByFingerprint(
+  runners: RunnerListEntry[],
+  fingerprint: string,
+): RunnerListEntry | null {
+  const normalized = fingerprint.trim().toLowerCase()
+  return runners.find((runner) => runner.fingerprint.toLowerCase() === normalized) ?? null
+}
+
+/** `select` narrowed to the one value type `runner autoconfig` ever picks from: a test fake only has to handle `RunnerListEntry`, not `select`'s full generic signature. */
+type RunnerSelectFn = (opts: {
+  title: string
+  options: SelectOption<RunnerListEntry>[]
+}) => Promise<RunnerListEntry | null>
+
+type AutoconfigPromptSeams = {
+  selectFn: RunnerSelectFn
+  textInputFn: typeof textInput
+  confirmFn: typeof confirm
+}
+
+/**
+ * Picks the target runner, then re-derives its fingerprint from its OWN
+ * public key rather than trusting `entry.fingerprint` as reported by the hub
+ * (a hub that got the two out of sync is not safe to seal secrets through).
+ * Supplying `--fingerprint` stands in for the interactive "does the runner
+ * machine show the same fingerprint?" confirmation: typing the exact 64-hex
+ * value on the command line already IS that out-of-band check.
+ */
+async function resolveTargetRunner(
+  opts: RunnerCommandOptions,
+  runners: RunnerListEntry[],
+  seams: AutoconfigPromptSeams,
+): Promise<RunnerListEntry> {
+  let entry: RunnerListEntry
+  let alreadyVerifiedByOperator: boolean
+  if (opts.fingerprint) {
+    const found = findRunnerByFingerprint(runners, opts.fingerprint)
+    if (!found) {
+      throw new Error(t('runner.autoconfigFingerprintNotFound', { fingerprint: opts.fingerprint }))
+    }
+    entry = found
+    alreadyVerifiedByOperator = true
+  } else {
+    const nowMs = Date.now()
+    const picked = await seams.selectFn({
+      title: t('runner.autoconfigSelectRunner'),
+      options: runners.map((runner) => ({
+        label: runner.name,
+        value: runner,
+        hint: formatLastSeen(runner.last_seen_at, nowMs),
+      })),
+    })
+    if (!picked) {
+      throw new Error(t('runner.autoconfigNoRunnerSelected'))
+    }
+    entry = picked
+    alreadyVerifiedByOperator = false
+  }
+
+  const recomputed = runnerKeyFingerprint(Buffer.from(entry.public_key, 'base64'))
+  if (recomputed !== entry.fingerprint) {
+    throw new Error(t('runner.autoconfigFingerprintMismatch', { name: entry.name }))
+  }
+
+  if (!alreadyVerifiedByOperator) {
+    console.log(`  ${formatFingerprint(recomputed)}`)
+    const confirmed = await seams.confirmFn({ title: t('runner.autoconfigConfirmFingerprint') })
+    if (!confirmed) {
+      throw new Error(t('runner.autoconfigFingerprintNotConfirmed'))
+    }
+  }
+
+  return entry
+}
+
+function tryGhAuthToken(execFn: ExecCommandFn): string | null {
+  try {
+    return execFn('gh', ['auth', 'token']).trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Non-interactive without `--gh-token-from-gh` skips even the `gh auth
+ * token` probe: a fully-flagged run that only wants a Claude token has no
+ * business shelling out for a GH one nobody asked for, and no one is present
+ * to answer the confirm/paste fallback anyway.
+ */
+async function resolveGhToken(
+  opts: RunnerCommandOptions,
+  seams: AutoconfigPromptSeams & { execFn: ExecCommandFn },
+): Promise<string | undefined> {
+  if (opts.ghTokenFromGh) {
+    const ghToken = tryGhAuthToken(seams.execFn)
+    if (!ghToken) {
+      throw new Error(t('runner.autoconfigGhTokenUnavailable'))
+    }
+    return ghToken
+  }
+  if (!isInteractive()) {
+    return undefined
+  }
+  const ghToken = tryGhAuthToken(seams.execFn)
+  if (ghToken && (await seams.confirmFn({ title: t('runner.autoconfigUseGhToken') }))) {
+    return ghToken
+  }
+  const pasted = await seams.textInputFn({ title: t('runner.autoconfigPasteGhToken'), mask: true })
+  return pasted ?? undefined
+}
+
+/**
+ * Non-interactive without `--claude-token` returns immediately: no one is
+ * present to confirm reusing the ambient OAuth token, and `claude
+ * setup-token` is an interactive device-code flow that a script invoking
+ * this non-interactively must never be left blocked on.
+ */
+async function resolveClaudeToken(
+  opts: RunnerCommandOptions,
+  seams: AutoconfigPromptSeams & { runInheritedFn: RunInheritedFn },
+): Promise<string | undefined> {
+  if (opts.claudeToken) {
+    return opts.claudeToken
+  }
+  if (!isInteractive()) {
+    return undefined
+  }
+  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  if (envToken && (await seams.confirmFn({ title: t('runner.autoconfigReuseClaudeToken') }))) {
+    return envToken
+  }
+  seams.runInheritedFn('claude', ['setup-token'])
+  const pasted = await seams.textInputFn({
+    title: t('runner.autoconfigPasteClaudeToken'),
+    mask: true,
+  })
+  return pasted ?? undefined
+}
+
+async function resolveRepoUrl(
+  opts: RunnerCommandOptions,
+  seams: AutoconfigPromptSeams,
+): Promise<string | undefined> {
+  if (opts.repoUrl) {
+    return opts.repoUrl
+  }
+  const detected = hubRemoteUrl(opts.cwd)
+  if (
+    detected &&
+    (await seams.confirmFn({ title: t('runner.autoconfigUseDetectedRepoUrl', { url: detected }) }))
+  ) {
+    return detected
+  }
+  const pasted = await seams.textInputFn({ title: t('runner.autoconfigRepoUrl') })
+  return pasted ?? undefined
+}
+
+/**
+ * Picks a registered runner, collects whichever secrets the operator has for
+ * it, seals them against that runner's own public key and deposits the
+ * result for `runner await-secrets` to pick up. Every prompt has a flag that
+ * short-circuits it, so a fully-flagged invocation never touches a TTY; a
+ * non-interactive one missing a required flag fails immediately instead of
+ * hanging on a prompt that can never be answered.
+ */
+async function runnerAutoconfig(opts: RunnerCommandOptions): Promise<void> {
+  const creds = loadSyncCredentials()
+  if (!creds) {
+    throw new Error(t('runner.notConnected'))
+  }
+  if (!isInteractive()) {
+    const missing = missingAutoconfigFlags(opts)
+    if (missing.length > 0) {
+      throw new Error(t('runner.autoconfigMissingFlags', { flags: missing.join(', ') }))
+    }
+  }
+
+  const fetchImpl = opts.fetchImpl ?? fetch
+  const listResult = await listRunners(creds, fetchImpl)
+  if (!listResult.ok) {
+    throw new Error(t('runner.listFailed', { reason: hubErrorMessage(listResult.error) }))
+  }
+  if (listResult.data.length === 0) {
+    throw new Error(t('runner.listEmpty'))
+  }
+
+  const seams: AutoconfigPromptSeams = {
+    selectFn: opts.selectFn ?? select,
+    textInputFn: opts.textInputFn ?? textInput,
+    confirmFn: opts.confirmFn ?? confirm,
+  }
+  const execFn = opts.execFn ?? realExecCommand
+  const runInheritedFn = opts.runInheritedFn ?? realRunInherited
+
+  const entry = await resolveTargetRunner(opts, listResult.data, seams)
+  const ghToken = await resolveGhToken(opts, { ...seams, execFn })
+  const claudeToken = await resolveClaudeToken(opts, { ...seams, runInheritedFn })
+  const repoUrl = await resolveRepoUrl(opts, seams)
+
+  const secrets = {
+    ...(ghToken ? { GH_TOKEN: ghToken } : {}),
+    ...(claudeToken ? { CLAUDE_CODE_OAUTH_TOKEN: claudeToken } : {}),
+  }
+  if (Object.keys(secrets).length === 0) {
+    throw new Error(t('runner.autoconfigNoSecrets'))
+  }
+
+  const payload = { v: 1 as const, secrets, ...(repoUrl ? { repo_url: repoUrl } : {}) }
+  const ciphertext = seal(
+    Buffer.from(entry.public_key, 'base64'),
+    Buffer.from(JSON.stringify(payload)),
+  )
+  const depositResult = await depositRunnerSecret(creds, entry.fingerprint, ciphertext, fetchImpl)
+  if (!depositResult.ok) {
+    throw new Error(
+      t('runner.autoconfigDepositFailed', { reason: hubErrorMessage(depositResult.error) }),
+    )
+  }
+
+  printResult(t('runner.autoconfigDone', { name: entry.name }), [])
+  console.log(`  ${t('runner.autoconfigReminder')}`)
+  console.log('')
+}
+
+const DEFAULT_AWAIT_TIMEOUT_S = 1800
+const DEFAULT_AWAIT_POLL_INTERVAL_MS = 4000
+const DEFAULT_AWAIT_REMINDER_INTERVAL_MS = 30_000
+
+/** Malformed JSON is the same "ignore and keep polling" case as a payload that fails `sanitizeRunnerSecretsPayload`. */
+function tryParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Runs on the runner machine after `runner connect`: polls the hub for the
+ * secret `runner autoconfig` sealed for this runner's fingerprint, decrypts
+ * and validates it, then writes it to the env file the daemon reads. A
+ * corrupt or malformed delivery is logged and skipped rather than treated as
+ * fatal, since the hub only ever holds one pending secret per runner and a
+ * bad one should not need the operator to restart this command by hand.
+ * STDOUT carries nothing but the repo URL (or nothing, if none was sent) so
+ * a caller can capture it directly; every other message goes to STDERR.
+ */
+async function runnerAwaitSecrets(opts: RunnerCommandOptions): Promise<void> {
+  const creds = loadSyncCredentials()
+  if (!creds) {
+    throw new Error(t('runner.notConnected'))
+  }
+  const identity = loadRunnerIdentity()
+  if (!identity) {
+    throw new Error(t('runner.awaitSecretsNoIdentity'))
+  }
+
+  const envPath = opts.envFile ?? runnerEnvPath()
+  const fetchImpl = opts.fetchImpl ?? fetch
+  const timeoutMs = (opts.timeoutSeconds ?? DEFAULT_AWAIT_TIMEOUT_S) * 1000
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_AWAIT_POLL_INTERVAL_MS
+  const reminderIntervalMs = opts.reminderIntervalMs ?? DEFAULT_AWAIT_REMINDER_INTERVAL_MS
+  const formattedFingerprint = formatFingerprint(identity.fingerprint)
+
+  const deadline = Date.now() + timeoutMs
+  let lastReminder = Date.now()
+  console.error(`  ${t('runner.awaitSecretsWaiting', { fingerprint: formattedFingerprint })}`)
+
+  for (;;) {
+    const claimed = await claimPendingSecret(creds, identity.fingerprint, fetchImpl)
+    if (claimed.ok && claimed.data) {
+      const plaintext = unseal(identity.privateKey, claimed.data.ciphertext)
+      if (!plaintext) {
+        console.error(`  ${t('runner.awaitSecretsUndecryptable')}`)
+      } else {
+        const parsed = tryParseJson(plaintext.toString('utf8'))
+        const payload = parsed !== null ? sanitizeRunnerSecretsPayload(parsed) : null
+        if (!payload) {
+          console.error(`  ${t('runner.awaitSecretsInvalidPayload')}`)
+        } else {
+          applySecretsToEnvFile(envPath, payload.secrets)
+          if (payload.repo_url) {
+            console.log(payload.repo_url)
+          }
+          return
+        }
+      }
+    }
+
+    if (Date.now() >= deadline) {
+      throw new Error(t('runner.awaitSecretsTimeout', { seconds: Math.round(timeoutMs / 1000) }))
+    }
+    if (Date.now() - lastReminder >= reminderIntervalMs) {
+      console.error(`  ${t('runner.awaitSecretsReminder', { fingerprint: formattedFingerprint })}`)
+      lastReminder = Date.now()
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+  }
+}
+
 export async function runnerCommand(opts: RunnerCommandOptions): Promise<void> {
   switch (opts.action) {
     case 'connect':
@@ -456,8 +878,17 @@ export async function runnerCommand(opts: RunnerCommandOptions): Promise<void> {
     case 'status':
       await runnerStatus(opts)
       return
+    case 'list':
+      await runnerList(opts)
+      return
     case 'ticket':
       await runnerTicket(opts)
+      return
+    case 'autoconfig':
+      await runnerAutoconfig(opts)
+      return
+    case 'await-secrets':
+      await runnerAwaitSecrets(opts)
       return
     case 'serve':
       await runnerServe(opts)

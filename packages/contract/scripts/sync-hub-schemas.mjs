@@ -36,7 +36,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const SCHEMA_NAMES = ['claim', 'heartbeat', 'transitions', 'events']
+const SCHEMA_NAMES = [
+  'claim',
+  'heartbeat',
+  'transitions',
+  'events',
+  'runner-register',
+  'runner-secret',
+  'runner-secret-claim',
+]
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES_DIR = path.join(here, '..', 'fixtures', 'hub-schemas')
