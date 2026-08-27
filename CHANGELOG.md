@@ -3,6 +3,14 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.17.0] - 2026-08-27
+
+### Added
+
+- **The arm's lifecycle is no longer one-way.** `codesema brain disconnect` clears the locally stored brain credentials (`syncUrl`/`syncWorkspaceId`/`syncSecret`), idempotent and non-interactive like the rest of `brain-commands.ts`, and reminds the caller to also revoke the arm server-side, in the repository's dashboard Settings — this command never talks to the brain itself, only the local file `brain connect` wrote. `codesema brain install-service` writes and enables a systemd `--user` unit for `codesema brain serve`, generated from the same template already shipped at `assets/systemd/codesema-brain.service` (its path resolved from the installed package the way `serve.ts` already resolves its embedded `web-dist`), pinned to the invoking repository's root and the actual binary running the command — never a bare `codesema` relying on `PATH`, which a systemd unit is not guaranteed to see the same way an interactive shell does — with an optional `--env-file` for secrets and `loginctl enable-linger` enabled best-effort (a failure, common in containers and WSL, is reported to the caller rather than failing the install). `codesema brain uninstall-service` reverses it; both commands are idempotent, the same doctrine `brain stop` already has for an absent pidfile.
+
+- **An arm can now be installed on a server you already have, not only a freshly provisioned VM.** `packages/cli/assets/deploy/install.sh` is a runner-style installer, the same binary/OS split gitlab-runner's own installer uses: it checks Node.js (>= 20), `gh`, a container runtime (docker or rootless podman) and `codesema`/`claude-code` before installing any of them, clones the target repository through `gh auth setup-git` so no token ever lands in `.git/config`, and hands the systemd unit itself to `codesema brain install-service` rather than writing it by hand. `cloud-init.yaml.example`'s own embedded `provision.sh` is now a thin bootstrap — just enough Node.js to run `npm i -g codesema` — that calls this exact same script from the installed package, so the fresh-VM and existing-server paths share one implementation instead of two that could drift apart; `brain.env.example` grew `CODESEMA_BRAIN_URL` (defaulted to the production brain) and `REPO_URL` alongside the three secrets it already carried, one file feeding both paths. `docs/deploy-vm-arm.md` gains an "Existing server (BYOC)" runbook and an "Uninstall" section covering both paths, and states the same order-channel security gate for a server install as it already does for a real VPS — the constraint is the brain's order channel, not how the machine was provisioned.
+
 ## [0.16.0] - 2026-08-27
 
 ### Added

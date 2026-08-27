@@ -5,7 +5,7 @@ import {
   type ChildProcess,
   type SpawnOptions,
 } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -216,6 +216,42 @@ describe('brainCommand', () => {
       expect(config.syncUrl).toBe('https://brain.example')
       expect(config.syncWorkspaceId).toBe('ws1')
       expect(config.syncSecret).toBe('sec1')
+    })
+  })
+
+  describe('disconnect', () => {
+    test('is a soft no-op when nothing is connected', async () => {
+      await expect(brainCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
+      expect(loadGlobalConfig().syncUrl).toBeUndefined()
+    })
+
+    test('clears syncUrl/syncWorkspaceId/syncSecret, and only those', async () => {
+      await brainCommand({
+        action: 'connect',
+        cwd,
+        url: 'https://brain.example',
+        token: 'csk_ws1.sec1',
+      })
+      saveGlobalConfig({ ...loadGlobalConfig(), agent: 'claude -p' })
+
+      await expect(brainCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
+
+      const config = loadGlobalConfig()
+      expect(config.syncUrl).toBeUndefined()
+      expect(config.syncWorkspaceId).toBeUndefined()
+      expect(config.syncSecret).toBeUndefined()
+      expect(config.agent).toBe('claude -p')
+    })
+
+    test('running it twice is fine (idempotent)', async () => {
+      await brainCommand({
+        action: 'connect',
+        cwd,
+        url: 'https://brain.example',
+        token: 'csk_ws1.sec1',
+      })
+      await brainCommand({ action: 'disconnect', cwd })
+      await expect(brainCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
     })
   })
 
@@ -539,6 +575,94 @@ describe('brainCommand', () => {
       } finally {
         child.kill('SIGKILL')
       }
+    })
+  })
+
+  describe('install-service / uninstall-service', () => {
+    const previousXdg = process.env.XDG_CONFIG_HOME
+    let xdgConfigHome: string
+
+    function noopExecFn(calls: { command: string; args: readonly string[] }[]) {
+      return (command: string, args: readonly string[]) => {
+        calls.push({ command, args })
+        return ''
+      }
+    }
+
+    function unitPath(): string {
+      return join(xdgConfigHome, 'systemd', 'user', 'codesema-brain.service')
+    }
+
+    beforeEach(() => {
+      xdgConfigHome = mkdtempSync(join(tmpdir(), 'codesema-braincmd-xdg-'))
+      process.env.XDG_CONFIG_HOME = xdgConfigHome
+    })
+
+    afterEach(() => {
+      rmSync(xdgConfigHome, { recursive: true, force: true })
+      if (previousXdg === undefined) {
+        delete process.env.XDG_CONFIG_HOME
+      } else {
+        process.env.XDG_CONFIG_HOME = previousXdg
+      }
+    })
+
+    test('install-service refuses to run outside a git repository', async () => {
+      await expect(
+        brainCommand({ action: 'install-service', cwd, execFn: noopExecFn([]) }),
+      ).rejects.toThrow()
+      expect(existsSync(unitPath())).toBe(false)
+    })
+
+    test('install-service writes the unit pinned to the resolved repo root', async () => {
+      initRepo(cwd)
+      const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd,
+        encoding: 'utf8',
+      }).trim()
+      const calls: { command: string; args: readonly string[] }[] = []
+
+      await expect(
+        brainCommand({ action: 'install-service', cwd, execFn: noopExecFn(calls) }),
+      ).resolves.toBeUndefined()
+
+      expect(existsSync(unitPath())).toBe(true)
+      const unit = readFileSync(unitPath(), 'utf8')
+      expect(unit).toContain(`WorkingDirectory=${repoRoot}`)
+      expect(calls.map((c) => c.args.join(' '))).toContain(
+        '--user enable --now codesema-brain.service',
+      )
+    })
+
+    test('install-service surfaces a clear error when systemctl is absent, and writes nothing', async () => {
+      initRepo(cwd)
+      const execFn = (command: string) => {
+        if (command === 'systemctl') {
+          throw Object.assign(new Error('spawn systemctl ENOENT'), { code: 'ENOENT' })
+        }
+        return ''
+      }
+      await expect(brainCommand({ action: 'install-service', cwd, execFn })).rejects.toThrow(
+        t('brain.systemctlNotFound'),
+      )
+      expect(existsSync(unitPath())).toBe(false)
+    })
+
+    test('uninstall-service is a soft no-op when nothing is installed', async () => {
+      await expect(
+        brainCommand({ action: 'uninstall-service', cwd, execFn: noopExecFn([]) }),
+      ).resolves.toBeUndefined()
+    })
+
+    test('uninstall-service removes a previously installed unit', async () => {
+      initRepo(cwd)
+      await brainCommand({ action: 'install-service', cwd, execFn: noopExecFn([]) })
+      expect(existsSync(unitPath())).toBe(true)
+
+      await expect(
+        brainCommand({ action: 'uninstall-service', cwd, execFn: noopExecFn([]) }),
+      ).resolves.toBeUndefined()
+      expect(existsSync(unitPath())).toBe(false)
     })
   })
 })

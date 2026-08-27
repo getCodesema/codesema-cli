@@ -3,6 +3,12 @@
 # once the order-channel hardening gate is lifted, the real VPS deployment
 # described in docs/deploy-vm-arm.md. Same file, same content, either target.
 #
+# This is the "fresh machine" path. For an EXISTING server you already
+# manage, use assets/deploy/install.sh directly instead — this file's own
+# provision.sh is a thin bootstrap (just enough to get npm running, chicken-
+# egg) that ends by calling that exact same script, so there is only one
+# place that knows how to turn a bare machine into a running arm.
+#
 # Usage: cp cloud-init.yaml.example cloud-init.local.yaml, replace every
 # __PLACEHOLDER__ below (brain.env.example says where each one comes from),
 # then:
@@ -42,46 +48,22 @@ write_files:
   # defer: true — cloud-init's default module order runs write_files BEFORE
   # users-groups, so an `owner: codesema:...` here would fail with "no such
   # user" unless the write is deferred past user creation.
+  #
+  # All five values install.sh needs, in the one file it (and the systemd
+  # unit it installs, through EnvironmentFile=) reads from — see
+  # brain.env.example for where each one comes from. CODESEMA_BRAIN_URL
+  # ships with a real default rather than a placeholder: override it only
+  # for a self-hosted brain.
   - path: /etc/codesema/brain.env
     owner: root:codesema
     permissions: '0640'
     defer: true
     content: |
-      # Filled in from cloud-init.local.yaml; loaded by the systemd unit
-      # below through EnvironmentFile= (see brain.env.example for how to
-      # mint each value).
       CLAUDE_CODE_OAUTH_TOKEN=__PLACEHOLDER__
       GH_TOKEN=__PLACEHOLDER__
       CODESEMA_BRAIN_TOKEN=__PLACEHOLDER__
-
-  - path: /home/codesema/.config/systemd/user/codesema-brain.service
-    owner: codesema:codesema
-    permissions: '0644'
-    defer: true
-    content: |
-      # Derived from packages/cli/assets/systemd/codesema-brain.service:
-      # only WorkingDirectory/EnvironmentFile/ExecStart are pinned to this
-      # VM's layout, nothing else changed. Stop with
-      # `systemctl --user stop codesema-brain.service`, never a raw `kill`
-      # or `codesema brain stop`: Restart=on-failure relaunches either.
-      [Unit]
-      Description=codesema brain daemon
-      After=network-online.target
-      Wants=network-online.target
-
-      [Service]
-      Type=simple
-      WorkingDirectory=/home/codesema/codesema-bench
-      EnvironmentFile=/etc/codesema/brain.env
-      # Absolute path: systemd --user units do not reliably inherit an
-      # interactive shell's PATH, and this is where npm puts global bins
-      # when node itself comes from the nodesource package (prefix /usr).
-      ExecStart=/usr/bin/codesema brain serve
-      Restart=on-failure
-      RestartSec=5
-
-      [Install]
-      WantedBy=default.target
+      CODESEMA_BRAIN_URL=https://codesema.com
+      REPO_URL=__PLACEHOLDER__
 
   # No defer needed: root:root, no dependency on the codesema user existing.
   - path: /opt/codesema/provision.sh
@@ -92,45 +74,30 @@ write_files:
       exec > >(tee -a /var/log/codesema-provision.log) 2>&1
       echo "[codesema-provision] starting at $(date -u +%FT%TZ)"
 
-      # The bench repo this arm works; replace before launch, same as the
-      # three secrets in /etc/codesema/brain.env.
-      BENCH_REPO_URL="__CODESEMA_BENCH_REPO_URL__"
-
-      # Fail fast and loud on a forgotten placeholder rather than let the
-      # service crashloop later with no clue why.
+      # Fail fast and loud on a forgotten placeholder rather than let
+      # install.sh (or the service it enables) crashloop later with no clue
+      # why.
       if grep -q '__PLACEHOLDER__' /etc/codesema/brain.env; then
         echo "[codesema-provision] /etc/codesema/brain.env still has __PLACEHOLDER__ values, aborting" >&2
         exit 1
       fi
-      if [ "$BENCH_REPO_URL" = "__CODESEMA_BENCH_REPO_URL__" ]; then
-        echo "[codesema-provision] BENCH_REPO_URL was not replaced, aborting" >&2
-        exit 1
-      fi
 
-      # --- Node.js 22 LTS (nodesource): packages: above only installs from
-      # repos that already exist, so the repo-add step lives here.
+      # --- Node.js 22 LTS (nodesource): the one step install.sh cannot do
+      # for itself here — chicken-egg, npm does not exist yet to run it.
+      # install.sh's own node check finds this already satisfied and skips
+      # it, same as it would on a server that already had node.
       curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
       apt-get install -y nodejs
 
-      # --- GitHub CLI, official repo (same reasoning as nodejs above).
-      install -d -m 0755 /usr/share/keyrings
-      curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        -o /usr/share/keyrings/githubcli-archive-keyring.gpg
-      chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list
-      apt-get update
-      apt-get install -y gh
-
       npm install -g codesema@latest @anthropic-ai/claude-code
 
-      # Asserted rather than assumed: the systemd unit's ExecStart is a
-      # hardcoded absolute path, so a silent prefix drift here must fail
-      # the provisioning run, not the service five seconds after boot.
-      test -x /usr/bin/codesema || { echo "[codesema-provision] codesema not at /usr/bin/codesema, fix ExecStart" >&2; exit 1; }
+      # Asserted rather than assumed: install.sh is invoked below by its
+      # installed path, so a silent prefix drift here must fail the
+      # provisioning run, not that invocation five seconds later.
+      test -x /usr/bin/codesema || { echo "[codesema-provision] codesema not at /usr/bin/codesema, fix nodesource's npm prefix" >&2; exit 1; }
 
       # write_files ran before this user existed; own its home now, before
-      # any command below runs as codesema (gh/git both write under $HOME).
+      # any command below runs as codesema (gh/git/npm all write under $HOME).
       mkdir -p /home/codesema
       chown -R codesema:codesema /home/codesema
 
@@ -144,54 +111,36 @@ write_files:
       # the entire point of running this as a boot-time daemon.
       loginctl enable-linger codesema
 
-      # `gh auth setup-git` wires env-based auth (GH_TOKEN) into git's own
-      # HTTPS credential helper, so the clone below never puts the token in
-      # this repo's .git/config: only ~/.gitconfig gets a `credential.helper`
-      # line naming gh, which reads GH_TOKEN again at call time.
-      runuser -u codesema -- bash -c '
-        set -euo pipefail
-        set -a; . /etc/codesema/brain.env; set +a
-        gh auth setup-git
-      '
-      runuser -u codesema -- env BENCH_REPO_URL="$BENCH_REPO_URL" bash -c '
-        set -euo pipefail
-        set -a; . /etc/codesema/brain.env; set +a
-        git clone "$BENCH_REPO_URL" /home/codesema/codesema-bench
-      '
-
-      # agent/isolation written FIRST: `codesema brain connect` below loads
-      # this same file and merges its own three keys into it — it does not
-      # overwrite what is already there.
-      install -d -o codesema -g codesema -m 0700 /home/codesema/.config/codesema
-      cat > /home/codesema/.config/codesema/config.json <<'JSON'
-      {
-        "agent": "claude -p",
-        "isolation": "container"
-      }
-      JSON
-      chown codesema:codesema /home/codesema/.config/codesema/config.json
-      chmod 0600 /home/codesema/.config/codesema/config.json
-
-      runuser -u codesema -- bash -c '
-        set -euo pipefail
-        set -a; . /etc/codesema/brain.env; set +a
-        codesema brain connect --url "https://codesema.com" --token "$CODESEMA_BRAIN_TOKEN"
-      '
-
-      # Warms the checks image ahead of the first ticket instead of paying
-      # for the pull on that ticket's critical path.
-      runuser -u codesema -- podman pull docker.io/library/node:26
-
-      # `-M codesema@` reaches codesema's user@<uid> manager through
-      # systemd-logind directly (systemd >= 248, shipped since Ubuntu
-      # 20.10): avoids hand-rolling XDG_RUNTIME_DIR, which is fragile this
-      # soon after enable-linger. The retry covers logind's own startup lag.
+      # codesema's user manager must actually be up before install.sh's own
+      # `systemctl --user`/`loginctl` calls (inside `codesema brain
+      # install-service`) can reach it — enable-linger above only spawns it
+      # asynchronously through logind, hence the bounded retry. `-M
+      # codesema@` reaches the manager through systemd-logind directly
+      # (systemd >= 248, shipped since Ubuntu 20.10), which is more robust
+      # here than hand-rolling XDG_RUNTIME_DIR this soon after enable-linger.
       for _ in $(seq 1 10); do
         systemctl --user -M codesema@ daemon-reload 2>/dev/null && break
         sleep 1
       done
       systemctl --user -M codesema@ daemon-reload
-      systemctl --user -M codesema@ enable --now codesema-brain.service
+
+      # Once warm, install.sh's own PLAIN `systemctl --user` calls (no -M
+      # addressing: that is a cloud-init-specific concern install.sh has no
+      # reason to know about) need XDG_RUNTIME_DIR themselves. runuser's PAM
+      # session does not reliably set it (a known systemd/util-linux gap:
+      # https://github.com/systemd/systemd/issues/10574), so it is exported
+      # explicitly instead of assumed. install.sh reads the rest of its
+      # configuration (REPO_URL, the brain URL/token, the two runtime
+      # secrets) straight out of brain.env itself.
+      runuser -u codesema -- env XDG_RUNTIME_DIR="/run/user/$(id -u codesema)" bash -c '
+        set -euo pipefail
+        set -a; . /etc/codesema/brain.env; set +a
+        "$(npm root -g)/codesema/assets/deploy/install.sh"
+      '
+
+      # Warms the checks image ahead of the first ticket instead of paying
+      # for the pull on that ticket's critical path.
+      runuser -u codesema -- podman pull docker.io/library/node:26
 
       echo "[codesema-provision] done at $(date -u +%FT%TZ)"
 
