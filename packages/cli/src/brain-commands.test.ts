@@ -14,6 +14,9 @@ import { brainCommand } from './brain-commands.js'
 import { readBrainPidfile, writeBrainPidfile } from './brain-pidfile.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import type { ArmTicket } from './contract.js'
+import { t } from './i18n.js'
+
+process.env.NO_COLOR = '1'
 
 type Call = { url: string; init: RequestInit }
 
@@ -27,6 +30,44 @@ function fetchStub(status: number, body: unknown, calls: Call[]): typeof fetch {
       }),
     )
   }) as typeof fetch
+}
+
+/** Routes a response per `status` query param, so one stub can answer both the ready and in-flight `listTickets` calls `brainStatus` makes. */
+function fetchStubByStatus(
+  responsesByStatus: Record<string, { tickets: unknown[] }>,
+  calls: Call[],
+): typeof fetch {
+  return ((url: string | URL | Request, init?: RequestInit) => {
+    const urlStr = String(url)
+    calls.push({ url: urlStr, init: init ?? {} })
+    const status = new URL(urlStr).searchParams.get('status') ?? ''
+    const body = responsesByStatus[status] ?? { tickets: [] }
+    return Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+  }) as typeof fetch
+}
+
+function fetchOffline(): typeof fetch {
+  return (() => Promise.reject(new Error('network unreachable'))) as unknown as typeof fetch
+}
+
+/** Same pattern as summary.test.ts's own `captureLog`, made async: `brainCommand` resolves its promise after every `console.log` it makes. */
+async function captureLog(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = []
+  const original = console.log
+  console.log = (...args: unknown[]) => {
+    lines.push(args.join(' '))
+  }
+  try {
+    await fn()
+  } finally {
+    console.log = original
+  }
+  return lines
 }
 
 function initRepo(cwd: string, remoteUrl?: string): void {
@@ -214,6 +255,113 @@ describe('brainCommand', () => {
       const calls: Call[] = []
       await brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, {}, calls) })
       expect(calls.length).toBe(0)
+    })
+  })
+
+  describe('status: in flight tickets', () => {
+    beforeEach(() => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://brain.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+    })
+
+    test('lists an in-flight ticket with a fresh heartbeat, no stale marker', async () => {
+      const freshTicket = {
+        ...validTicket,
+        id: 't-if-fresh',
+        title: 'Fix the flaky retry test',
+        status: 'in_progress',
+        executed_by: 'cli-arm-01',
+        updated_at: new Date(Date.now() - 12_000).toISOString(),
+        lease_expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        arm_local_status: 'executing',
+      }
+      const calls: Call[] = []
+      const lines = await captureLog(async () => {
+        await brainCommand({
+          action: 'status',
+          cwd,
+          fetchImpl: fetchStubByStatus(
+            { published: { tickets: [] }, in_flight: { tickets: [freshTicket] } },
+            calls,
+          ),
+        })
+      })
+      const inFlightCalls = calls.filter((c) => c.url.includes('status=in_flight'))
+      expect(inFlightCalls.length).toBe(1)
+      expect(inFlightCalls[0]?.url).toContain('remote_url=')
+      const output = lines.join('\n')
+      expect(output).toContain('Fix the flaky retry test')
+      expect(output).toContain('cli-arm-01')
+      expect(output).toContain('executing')
+      expect(output).not.toContain(t('brain.fieldStale'))
+    })
+
+    test('marks a ticket stale once its lease has lapsed', async () => {
+      const staleTicket = {
+        ...validTicket,
+        id: 't-if-stale',
+        title: 'Add retry logic',
+        status: 'mr_opened',
+        executed_by: 'cli-arm-02',
+        updated_at: new Date(Date.now() - 3 * 60_000).toISOString(),
+        lease_expires_at: new Date(Date.now() - 60_000).toISOString(),
+        arm_local_status: 'awaiting_review',
+      }
+      const lines = await captureLog(async () => {
+        await brainCommand({
+          action: 'status',
+          cwd,
+          fetchImpl: fetchStubByStatus(
+            { published: { tickets: [] }, in_flight: { tickets: [staleTicket] } },
+            [],
+          ),
+        })
+      })
+      const output = lines.join('\n')
+      expect(output).toContain('Add retry logic')
+      expect(output).toContain(t('brain.fieldStale'))
+    })
+
+    test('degrades gracefully when the brain does not send arm_local_status (older brain)', async () => {
+      const oldBrainTicket = {
+        ...validTicket,
+        id: 't-if-old',
+        title: 'Legacy ticket from an older brain',
+        status: 'in_progress',
+        executed_by: null,
+        updated_at: new Date(Date.now() - 5_000).toISOString(),
+        lease_expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        // No `arm_local_status` key at all: what an older brain, built before
+        // that field existed, actually sends.
+      }
+      const lines = await captureLog(async () => {
+        await expect(
+          brainCommand({
+            action: 'status',
+            cwd,
+            fetchImpl: fetchStubByStatus(
+              { published: { tickets: [] }, in_flight: { tickets: [oldBrainTicket] } },
+              [],
+            ),
+          }),
+        ).resolves.toBeUndefined()
+      })
+      const output = lines.join('\n')
+      expect(output).toContain('Legacy ticket from an older brain')
+      expect(output).toContain(t('brain.fieldUnclaimed'))
+      expect(output).not.toContain('undefined')
+      expect(output).not.toContain('null')
+    })
+
+    test('an unreachable brain degrades the same way the ready count already does', async () => {
+      await expect(
+        brainCommand({ action: 'status', cwd, fetchImpl: fetchOffline() }),
+      ).resolves.toBeUndefined()
     })
   })
 

@@ -10,13 +10,20 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { closeSync, mkdirSync, openSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { runAgent } from './agent.js'
-import { brainErrorMessage, brainRemoteUrl, listTickets, parseBrainToken } from './brain-client.js'
+import {
+  brainErrorMessage,
+  brainRemoteUrl,
+  listInFlightTickets,
+  listTickets,
+  parseBrainToken,
+  type InFlightTicket,
+} from './brain-client.js'
 import { draftAndPublishTicket } from './brain-draft.js'
 import { readBrainPidfile, removeBrainPidfile } from './brain-pidfile.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import { t } from './i18n.js'
 import { loadSyncCredentials } from './sync.js'
-import { GREEN, paint, renderFieldRows, type FieldRow } from './ui.js'
+import { ACCENT, AMBER, dim, GREEN, paint, renderFieldRows, type FieldRow } from './ui.js'
 import { isPidAlive } from './workspace-lock.js'
 import { workspace } from './workspace.js'
 
@@ -95,6 +102,58 @@ function formatUptime(startedAt: string, nowMs: number): string {
   return `${s}s`
 }
 
+/** `{12s ago}` / `{3min ago}` / `{2h ago}` / `{5d ago}`: coarsest unit only, i18n'd via `brain.heartbeat*`. */
+function formatHeartbeatAge(updatedAt: string, nowMs: number): string {
+  const elapsedS = Math.max(0, Math.floor((nowMs - Date.parse(updatedAt)) / 1000))
+  if (elapsedS < 60) {
+    return t('brain.heartbeatSeconds', { n: elapsedS })
+  }
+  const elapsedMin = Math.floor(elapsedS / 60)
+  if (elapsedMin < 60) {
+    return t('brain.heartbeatMinutes', { n: elapsedMin })
+  }
+  const elapsedH = Math.floor(elapsedMin / 60)
+  if (elapsedH < 24) {
+    return t('brain.heartbeatHours', { n: elapsedH })
+  }
+  return t('brain.heartbeatDays', { n: Math.floor(elapsedH / 24) })
+}
+
+const IN_FLIGHT_TITLE_MAX = 64
+
+function truncateInFlightTitle(title: string): string {
+  return title.length > IN_FLIGHT_TITLE_MAX ? `${title.slice(0, IN_FLIGHT_TITLE_MAX - 1)}…` : title
+}
+
+/**
+ * One `brain status` in-flight detail line: brain status, executor, heartbeat
+ * age, the arm's own local status when the brain reports one (absent on a
+ * brain build older than that field), and a `stale` tag when the claim's
+ * lease has already lapsed: a ticket a dead or stuck arm is still shown as
+ * holding.
+ */
+function inFlightDetailLine(ticket: InFlightTicket, nowMs: number): string {
+  const facts = [
+    ticket.status,
+    ticket.executed_by ?? t('brain.fieldUnclaimed'),
+    formatHeartbeatAge(ticket.updated_at, nowMs),
+    ...(ticket.arm_local_status ? [ticket.arm_local_status] : []),
+  ]
+  const line = dim(facts.join(' · '))
+  const isStale = ticket.lease_expires_at !== null && Date.parse(ticket.lease_expires_at) < nowMs
+  return isStale ? `${line} ${paint(t('brain.fieldStale'), AMBER)}` : line
+}
+
+function printInFlightTickets(tickets: InFlightTicket[]): void {
+  console.log('')
+  console.log(`  ${paint(t('brain.inFlightHeading'), ACCENT)}`)
+  const nowMs = Date.now()
+  for (const ticket of tickets) {
+    console.log(`    ${truncateInFlightTitle(ticket.title)}`)
+    console.log(`      ${inFlightDetailLine(ticket, nowMs)}`)
+  }
+}
+
 /**
  * The daemon rows for `brain status`: pid/port/uptime read off the D21
  * pidfile, or a single "not running" row. A pidfile naming a dead pid is
@@ -132,12 +191,21 @@ async function brainStatus(opts: BrainCommandOptions): Promise<void> {
     printResult(t('brain.statusTitle'), rows)
     return
   }
-  const result = await listTickets(creds, remoteUrl, 'published', opts.fetchImpl ?? fetch)
+  const fetchImpl = opts.fetchImpl ?? fetch
+  const result = await listTickets(creds, remoteUrl, 'published', fetchImpl)
   rows.push({
     label: t('brain.fieldReady'),
     value: result.ok ? String(result.data.length) : brainErrorMessage(result.error),
   })
+  const inFlight = await listInFlightTickets(creds, remoteUrl, fetchImpl)
+  rows.push({
+    label: t('brain.fieldInFlight'),
+    value: inFlight.ok ? String(inFlight.data.length) : brainErrorMessage(inFlight.error),
+  })
   printResult(t('brain.statusTitle'), rows)
+  if (inFlight.ok && inFlight.data.length > 0) {
+    printInFlightTickets(inFlight.data)
+  }
 }
 
 function parsePositiveInt(raw: string): number | null {

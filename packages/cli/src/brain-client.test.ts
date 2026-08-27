@@ -7,6 +7,7 @@ import {
   failTicketRequest,
   getTicket,
   heartbeat,
+  listInFlightTickets,
   listTicketRequests,
   listTickets,
   parseBrainToken,
@@ -235,6 +236,52 @@ describe('listTickets / getTicket', () => {
   test('getTicket 404 is a normal not-found, never unavailable', async () => {
     const result = await getTicket(creds, 'missing', fetchStub(404, { error: 'not found' }, []))
     expect(result).toEqual({ ok: false, error: { kind: 'http', status: 404, error: 'not found' } })
+  })
+})
+
+describe('listInFlightTickets', () => {
+  test('sends status=in_flight and parses arm_local_status when present', async () => {
+    const calls: Call[] = []
+    const result = await listInFlightTickets(
+      creds,
+      'https://github.com/o/r.git',
+      fetchStub(200, { tickets: [{ ...validTicket, arm_local_status: 'executing' }] }, calls),
+    )
+    expect(calls[0]?.url).toContain('status=in_flight')
+    expect(calls[0]?.url).toContain('remote_url=')
+    expect(result).toEqual({ ok: true, data: [{ ...validTicket, arm_local_status: 'executing' }] })
+  })
+
+  test('degrades arm_local_status to null when the brain does not send it (older brain)', async () => {
+    const result = await listInFlightTickets(
+      creds,
+      'https://github.com/o/r.git',
+      fetchStub(200, { tickets: [validTicket] }, []),
+    )
+    expect(result).toEqual({ ok: true, data: [{ ...validTicket, arm_local_status: null }] })
+  })
+
+  test('a blank arm_local_status also degrades to null', async () => {
+    const result = await listInFlightTickets(
+      creds,
+      'https://github.com/o/r.git',
+      fetchStub(200, { tickets: [{ ...validTicket, arm_local_status: '   ' }] }, []),
+    )
+    expect(result).toEqual({ ok: true, data: [{ ...validTicket, arm_local_status: null }] })
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await listInFlightTickets(creds, 'https://github.com/o/r.git', fetchOffline())
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
+  })
+
+  test('a malformed base ticket still refuses the whole list', async () => {
+    const result = await listInFlightTickets(
+      creds,
+      'https://github.com/o/r.git',
+      fetchStub(200, { tickets: [{ nope: true }] }, []),
+    )
+    expect(result.ok).toBe(false)
   })
 })
 
