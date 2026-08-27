@@ -1169,11 +1169,10 @@ export function watchdogTickMs(budgets: WatchdogBudgets): number {
 export class AgentWatchdogError extends Error {
   /** Retryable in D2: what has to change is the RUN or its environment, not the work on the branch. */
   readonly reasonCode: ReasonCode = 'inactivity_timeout'
-  constructor(
-    readonly watchdogCause: AgentWatchdogCause,
-    message: string,
-  ) {
+  readonly watchdogCause: AgentWatchdogCause
+  constructor(watchdogCause: AgentWatchdogCause, message: string) {
     super(message)
+    this.watchdogCause = watchdogCause
     this.name = 'AgentWatchdogError'
   }
 }
