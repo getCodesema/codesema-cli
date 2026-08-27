@@ -3,6 +3,12 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.18.2] - 2026-08-28
+
+### Fixed
+
+- **The caged agent could not execute claude when the cage image was built through the native installer.** claude.ai/install.sh drops a symlink in ~/.local/bin pointing into ~/.local/share/claude; the image build runs as root, so moving that symlink to /usr/local/bin left its target under /root (mode 0700) and every caged turn died with "claude: Permission denied" for the non-root uid the turn runs as. The recipe now materializes the real binary with cp -L, chmods it 755 and removes the root-owned source tree in the same layer. First caught on the first production server's first ticket.
+
 ## [0.18.1] - 2026-08-27
 
 ### Fixed
