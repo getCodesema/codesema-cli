@@ -3,6 +3,12 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.18.1] - 2026-08-27
+
+### Fixed
+
+- **`--env-file` is now `--secrets-file`.** Node consumes an `--env-file` argument itself, even placed after the script (its native dotenv flag), so `runner await-secrets --env-file` and `runner install-service --env-file` never reached the CLI at all under a real node install; bun does not do this, which is why every test and the local e2e stayed green. First caught on a real server install. `install.sh` passes the new flag.
+
 ## [0.18.0] - 2026-08-27
 
 ### Added
