@@ -3,6 +3,12 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.18.0] - unreleased
+
+### Changed
+
+- **The "brain" vocabulary is gone from the CLI: a runner is the local daemon working tickets, a hub is the remote store that owns them (codesema.com or self-hosted).** `codesema brain <action>` is now `codesema runner <action>` across the board (`connect`, `status`, `ticket`, `serve`, `stop`, `install-service`, `uninstall-service`), and `codesema workspace --brain` is `codesema workspace --runner`. `install-service` now writes and enables `codesema-runner.service`, generated from the template shipped at `assets/systemd/codesema-runner.service`, and removes a previously installed `codesema-brain.service` unit automatically. The daemon's env file is `runner.env` (`~/.config/codesema/runner.env`), and the two identifiers it reads changed from `CODESEMA_BRAIN_URL`/`CODESEMA_BRAIN_TOKEN` to `CODESEMA_HUB_URL`/`CODESEMA_HUB_TOKEN`. The web settings panel's auto-merge field is `runnerAutoMerge`; the old `brainAutoMerge` key is still read from an existing config file, so nothing already saved breaks. `@codesema/contract` 0.9.0 renames the wire field `brain_ticket` to `hub_ticket`, with the old name still accepted on read. On boot, this repository's outbox and pidfile migrate in place to their new names, `.codesema/hub-outbox.jsonl` and `.codesema/runner.pid`.
+
 ## [0.17.0] - 2026-08-27
 
 ### Added

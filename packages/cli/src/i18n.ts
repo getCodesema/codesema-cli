@@ -35,24 +35,24 @@ Usage:
   codesema sync              Push the latest review to your codesema.com workspace
   codesema sync delete       Delete all synced data (unlinked workspaces only)
   codesema link [code]       Link this workspace to your codesema.com account (no code: confirm in the browser)
-  codesema brain connect --url <url> --token <token>
-                                      Connect this workspace to a brain (same account as sync/link)
-  codesema brain status              Show the connected brain, this repo, its ready ticket count and
+  codesema runner connect --url <url> --token <token>
+                                      Connect this workspace to a hub (same account as sync/link)
+  codesema runner status              Show the connected hub, this repo, its ready ticket count and
                                       in-flight tickets (executor, heartbeat age, stale lease)
-  codesema brain ticket --issue <n>  Draft and publish a ticket from a forge issue
-  codesema brain ticket --title <t> --prompt <p>
+  codesema runner ticket --issue <n>  Draft and publish a ticket from a forge issue
+  codesema runner ticket --title <t> --prompt <p>
                                       Draft and publish a ticket from a free-form prompt
-  codesema brain serve [--detach]    Alias for \`codesema workspace --brain\`; --detach backgrounds the
+  codesema runner serve [--detach]    Alias for \`codesema workspace --runner\`; --detach backgrounds the
                                       daemon (prints its pid and log path) instead of running it in the
                                       foreground
-  codesema brain stop                Stop a brain daemon started with --detach (or under systemd) for
+  codesema runner stop                Stop a runner daemon started with --detach (or under systemd) for
                                       this repo
-  codesema brain disconnect          Forget the connected brain (clears local credentials only —
+  codesema runner disconnect          Forget the connected hub (clears local credentials only —
                                       also revoke this arm in the dashboard's Settings)
-  codesema brain install-service [--env-file <path>]
-                                      Install a systemd --user unit that runs \`codesema brain serve\`
+  codesema runner install-service [--env-file <path>]
+                                      Install a systemd --user unit that runs \`codesema runner serve\`
                                       for this repo, enabled and started now
-  codesema brain uninstall-service   Stop and remove that systemd --user unit
+  codesema runner uninstall-service   Stop and remove that systemd --user unit
 
 Options:
   --branch <name>     Local branch to review (default: interactive picker, else current branch)
@@ -70,12 +70,12 @@ Options:
                       <level> (critical, major, minor, info) or when changes are requested
   --force             \`sync\`: upload even though the diff looks like it carries a secret
   --no-open           Do not open the browser
-  --brain             \`workspace\`: also start the brain daemon (drafts ticket requests, claims
+  --runner            \`workspace\`: also start the runner daemon (drafts ticket requests, claims
                       and runs published tickets)
-  --url, --token      \`brain connect\`: the brain's URL and a csk_<workspaceId>.<secret> token
-  --issue <n>         \`brain ticket\`: draft from this forge issue number
-  --title, --prompt   \`brain ticket\`: draft from a free-form title and prompt instead of an issue
-  --env-file <path>   \`brain install-service\`: EnvironmentFile= for the generated systemd unit
+  --url, --token      \`runner connect\`: the hub's URL and a csk_<workspaceId>.<secret> token
+  --issue <n>         \`runner ticket\`: draft from this forge issue number
+  --title, --prompt   \`runner ticket\`: draft from a free-form title and prompt instead of an issue
+  --env-file <path>   \`runner install-service\`: EnvironmentFile= for the generated systemd unit
   -h, --help          Show this help
   -v, --version       Show version
 
@@ -243,12 +243,12 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'config.autoSyncQuestion':
     'Push every completed review to your codesema.com workspace automatically?',
   'config.autoSyncSaved': 'auto-sync {state}: {path}',
-  'config.brainAutoMergeEntry': 'Brain ticket auto-merge',
-  'config.brainAutoMergeOn': 'on',
-  'config.brainAutoMergeOff': 'off',
-  'config.brainAutoMergeQuestion': 'Auto-merge a brain-ticket task once it ships clean?',
-  'config.brainAutoMergeOnHint': 'the whole point of connecting a brain: no human click to merge',
-  'config.brainAutoMergeSaved': 'brain auto-merge {state}: {path}',
+  'config.runnerAutoMergeEntry': 'Hub ticket auto-merge',
+  'config.runnerAutoMergeOn': 'on',
+  'config.runnerAutoMergeOff': 'off',
+  'config.runnerAutoMergeQuestion': 'Auto-merge a hub-ticket task once it ships clean?',
+  'config.runnerAutoMergeOnHint': 'the whole point of connecting a hub: no human click to merge',
+  'config.runnerAutoMergeSaved': 'runner auto-merge {state}: {path}',
   'config.maxTurnsEntry': 'Turn budget per task',
   'config.maxTurnsQuestion': 'How many turns may one task spend before replies are refused?',
   'config.maxTurnsDefaultHint': 'default',
@@ -376,65 +376,65 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'sync.unreachable': 'could not reach {url}: check your connection or CODESEMA_SYNC_URL',
   'sync.badResponse': 'unexpected response from {url}: required fields are missing or invalid',
 
-  'brain.usage':
-    'usage: codesema brain <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
-  'brain.unknownAction':
-    'unknown brain action: {action} (expected connect, disconnect, status, ticket, serve, stop, install-service or uninstall-service)',
-  'brain.connectMissingFlags':
-    '`codesema brain connect` needs both --url <url> and --token <token>',
-  'brain.badToken': 'malformed token: expected csk_<workspaceId>.<secret>',
-  'brain.connected': 'Connected to the brain at {url}.',
-  'brain.savedTo': 'saved to: {path}',
-  'brain.notConnected': 'not connected to a brain (run `codesema brain connect` first)',
-  'brain.fieldUrl': 'url',
-  'brain.fieldRepo': 'repo',
-  'brain.noRemote': 'no git origin remote',
-  'brain.fieldReady': 'ready tickets',
-  'brain.statusTitle': 'Brain status',
-  'brain.ticketUsage':
-    'usage: codesema brain ticket --issue <n>, or --title <title> --prompt <prompt>',
-  'brain.badIssueNumber': 'not a valid issue number: {value}',
-  'brain.draftFailed': 'could not draft a ticket: {reason}',
-  'brain.ticketCreated': 'Ticket created: {title}',
-  'brain.fieldId': 'id',
-  'brain.fieldDaemon': 'daemon',
-  'brain.fieldPid': 'pid',
-  'brain.fieldPort': 'port',
-  'brain.fieldUptime': 'uptime',
-  'brain.fieldLog': 'log',
-  'brain.notRunning': 'not running',
-  'brain.detached': 'Brain daemon started in the background (pid {pid}).',
-  'brain.stopped': 'Brain daemon stopped (pid {pid}).',
-  'brain.stopTimeout':
+  'runner.usage':
+    'usage: codesema runner <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
+  'runner.unknownAction':
+    'unknown runner action: {action} (expected connect, disconnect, status, ticket, serve, stop, install-service or uninstall-service)',
+  'runner.connectMissingFlags':
+    '`codesema runner connect` needs both --url <url> and --token <token>',
+  'runner.badToken': 'malformed token: expected csk_<workspaceId>.<secret>',
+  'runner.connected': 'Connected to the hub at {url}.',
+  'runner.savedTo': 'saved to: {path}',
+  'runner.notConnected': 'not connected to a hub (run `codesema runner connect` first)',
+  'runner.fieldUrl': 'url',
+  'runner.fieldRepo': 'repo',
+  'runner.noRemote': 'no git origin remote',
+  'runner.fieldReady': 'ready tickets',
+  'runner.statusTitle': 'Hub status',
+  'runner.ticketUsage':
+    'usage: codesema runner ticket --issue <n>, or --title <title> --prompt <prompt>',
+  'runner.badIssueNumber': 'not a valid issue number: {value}',
+  'runner.draftFailed': 'could not draft a ticket: {reason}',
+  'runner.ticketCreated': 'Ticket created: {title}',
+  'runner.fieldId': 'id',
+  'runner.fieldDaemon': 'daemon',
+  'runner.fieldPid': 'pid',
+  'runner.fieldPort': 'port',
+  'runner.fieldUptime': 'uptime',
+  'runner.fieldLog': 'log',
+  'runner.notRunning': 'not running',
+  'runner.detached': 'Runner daemon started in the background (pid {pid}).',
+  'runner.stopped': 'Runner daemon stopped (pid {pid}).',
+  'runner.stopTimeout':
     'pid {pid} is still running {seconds}s after SIGTERM: send SIGKILL yourself, or `systemctl stop` if this runs as a systemd unit',
-  'brain.detachSpawnFailed': 'could not start the detached brain daemon',
-  'brain.fieldInFlight': 'in flight tickets',
-  'brain.inFlightHeading': 'in flight',
-  'brain.fieldUnclaimed': 'unclaimed',
-  'brain.fieldStale': 'stale',
-  'brain.heartbeatSeconds': '{n}s ago',
-  'brain.heartbeatMinutes': '{n}min ago',
-  'brain.heartbeatHours': '{n}h ago',
-  'brain.heartbeatDays': '{n}d ago',
-  'brain.disconnected': 'Disconnected from the brain.',
-  'brain.alreadyDisconnected': 'Already disconnected.',
-  'brain.disconnectRevokeReminder':
+  'runner.detachSpawnFailed': 'could not start the detached runner daemon',
+  'runner.fieldInFlight': 'in flight tickets',
+  'runner.inFlightHeading': 'in flight',
+  'runner.fieldUnclaimed': 'unclaimed',
+  'runner.fieldStale': 'stale',
+  'runner.heartbeatSeconds': '{n}s ago',
+  'runner.heartbeatMinutes': '{n}min ago',
+  'runner.heartbeatHours': '{n}h ago',
+  'runner.heartbeatDays': '{n}d ago',
+  'runner.disconnected': 'Disconnected from the hub.',
+  'runner.alreadyDisconnected': 'Already disconnected.',
+  'runner.disconnectRevokeReminder':
     "Also revoke this arm in the dashboard's repo Settings — this only cleared local credentials.",
-  'brain.serviceNotARepo':
-    '`codesema brain install-service` must be run inside the git repository this daemon should serve',
-  'brain.systemctlNotFound':
-    'systemctl not found: this machine has no user systemd session to install into. Run the daemon in the foreground (`codesema brain serve`) or backgrounded (`codesema brain serve --detach`) instead.',
-  'brain.envFileNotFound': 'env file not found: {path}',
-  'brain.serviceExecPathUnknown':
+  'runner.serviceNotARepo':
+    '`codesema runner install-service` must be run inside the git repository this daemon should serve',
+  'runner.systemctlNotFound':
+    'systemctl not found: this machine has no user systemd session to install into. Run the daemon in the foreground (`codesema runner serve`) or backgrounded (`codesema runner serve --detach`) instead.',
+  'runner.envFileNotFound': 'env file not found: {path}',
+  'runner.serviceExecPathUnknown':
     'could not determine the path to the running codesema binary (process.argv[1] is empty)',
-  'brain.serviceInstalled': 'Brain service installed and started.',
-  'brain.serviceUninstalled': 'Brain service stopped and removed.',
-  'brain.serviceNotInstalled': 'No brain service installed (nothing to do).',
-  'brain.fieldUnit': 'unit',
-  'brain.fieldWorkingDirectory': 'working directory',
-  'brain.fieldExecStart': 'exec start',
-  'brain.fieldEnvironmentFile': 'environment file',
-  'brain.lingerFailed':
+  'runner.serviceInstalled': 'Runner service installed and started.',
+  'runner.serviceUninstalled': 'Runner service stopped and removed.',
+  'runner.serviceNotInstalled': 'No runner service installed (nothing to do).',
+  'runner.fieldUnit': 'unit',
+  'runner.fieldWorkingDirectory': 'working directory',
+  'runner.fieldExecStart': 'exec start',
+  'runner.fieldEnvironmentFile': 'environment file',
+  'runner.lingerFailed':
     "could not enable lingering ({reason}): the service will stop when this user's session ends. Common in containers/WSL with no full systemd — run `sudo loginctl enable-linger $(whoami)` yourself if your host supports it.",
 
   'menu.title': 'What do you want to do?',
@@ -594,21 +594,21 @@ Usage :
   codesema sync              Pousse la dernière review vers votre workspace codesema.com
   codesema sync delete       Supprime toutes les données synchronisées (workspaces non rattachés)
   codesema link [code]       Rattache ce workspace à votre compte codesema.com (sans code : confirmation navigateur)
-  codesema brain connect --url <url> --token <token>
-                                      Connecte ce workspace à un cerveau (même compte que sync/link)
-  codesema brain status              Affiche le cerveau connecté, ce dépôt, ses tickets prêts et ses
+  codesema runner connect --url <url> --token <token>
+                                      Connecte ce workspace à un hub (même compte que sync/link)
+  codesema runner status              Affiche le hub connecté, ce dépôt, ses tickets prêts et ses
                                       tickets en vol (exécutant, âge du battement, bail expiré)
-  codesema brain ticket --issue <n>  Rédige et publie un ticket depuis une issue du forge
-  codesema brain ticket --title <t> --prompt <p>
+  codesema runner ticket --issue <n>  Rédige et publie un ticket depuis une issue du forge
+  codesema runner ticket --title <t> --prompt <p>
                                       Rédige et publie un ticket depuis un titre et un prompt libres
-  codesema brain serve               Alias de \`codesema workspace --brain\`
-  codesema brain disconnect          Oublie le cerveau connecté (efface seulement les identifiants
+  codesema runner serve               Alias de \`codesema workspace --runner\`
+  codesema runner disconnect          Oublie le hub connecté (efface seulement les identifiants
                                       locaux, pensez aussi à révoquer ce bras dans les Settings du
                                       dashboard)
-  codesema brain install-service [--env-file <chemin>]
+  codesema runner install-service [--env-file <chemin>]
                                       Installe une unité systemd --user qui lance
-                                      \`codesema brain serve\` pour ce dépôt, activée et démarrée
-  codesema brain uninstall-service   Arrête et supprime cette unité systemd --user
+                                      \`codesema runner serve\` pour ce dépôt, activée et démarrée
+  codesema runner uninstall-service   Arrête et supprime cette unité systemd --user
 
 Options :
   --branch <nom>      Branche locale à passer en revue (défaut : sélecteur interactif, sinon branche courante)
@@ -627,12 +627,12 @@ Options :
                       sont demandés
   --force             \`sync\` : envoie même si le diff semble contenir un secret
   --no-open           Ne pas ouvrir le navigateur
-  --brain             \`workspace\` : démarre aussi le daemon du cerveau (rédige les demandes de
+  --runner            \`workspace\` : démarre aussi le daemon runner (rédige les demandes de
                       tickets, réclame et exécute les tickets publiés)
-  --url, --token      \`brain connect\` : l'URL du cerveau et un jeton csk_<workspaceId>.<secret>
-  --issue <n>         \`brain ticket\` : rédige depuis ce numéro d'issue du forge
-  --title, --prompt   \`brain ticket\` : rédige depuis un titre et un prompt libres plutôt qu'une issue
-  --env-file <chemin> \`brain install-service\` : EnvironmentFile= de l'unité systemd générée
+  --url, --token      \`runner connect\` : l'URL du hub et un jeton csk_<workspaceId>.<secret>
+  --issue <n>         \`runner ticket\` : rédige depuis ce numéro d'issue du forge
+  --title, --prompt   \`runner ticket\` : rédige depuis un titre et un prompt libres plutôt qu'une issue
+  --env-file <chemin> \`runner install-service\` : EnvironmentFile= de l'unité systemd générée
   -h, --help          Afficher cette aide
   -v, --version       Afficher la version
 
@@ -806,14 +806,14 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'config.autoSyncQuestion':
     'Pousser automatiquement chaque review terminée vers votre workspace codesema.com ?',
   'config.autoSyncSaved': 'auto-sync {state} : {path}',
-  'config.brainAutoMergeEntry': 'Auto-merge des tickets du cerveau',
-  'config.brainAutoMergeOn': 'activé',
-  'config.brainAutoMergeOff': 'désactivé',
-  'config.brainAutoMergeQuestion':
-    "Merger automatiquement une tâche issue d'un ticket du cerveau une fois livrée sans accroc ?",
-  'config.brainAutoMergeOnHint':
-    'tout le sens de connecter un cerveau : aucun clic humain pour merger',
-  'config.brainAutoMergeSaved': 'auto-merge du cerveau {state} : {path}',
+  'config.runnerAutoMergeEntry': 'Auto-merge des tickets du hub',
+  'config.runnerAutoMergeOn': 'activé',
+  'config.runnerAutoMergeOff': 'désactivé',
+  'config.runnerAutoMergeQuestion':
+    "Merger automatiquement une tâche issue d'un ticket du hub une fois livrée sans accroc ?",
+  'config.runnerAutoMergeOnHint':
+    'tout le sens de connecter un hub : aucun clic humain pour merger',
+  'config.runnerAutoMergeSaved': 'auto-merge du runner {state} : {path}',
   'config.maxTurnsEntry': 'Budget de tours par tâche',
   'config.maxTurnsQuestion':
     'Combien de tours une tâche peut-elle dépenser avant que les relances soient refusées ?',
@@ -946,64 +946,65 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'sync.unreachable': 'impossible de joindre {url} : vérifiez votre connexion ou CODESEMA_SYNC_URL',
   'sync.badResponse': 'réponse inattendue de {url} : champs requis manquants ou invalides',
 
-  'brain.usage':
-    'usage : codesema brain <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
-  'brain.unknownAction':
-    'action brain inconnue : {action} (attendu connect, disconnect, status, ticket, serve, stop, install-service ou uninstall-service)',
-  'brain.connectMissingFlags': '`codesema brain connect` nécessite --url <url> et --token <token>',
-  'brain.badToken': 'jeton malformé : format attendu csk_<workspaceId>.<secret>',
-  'brain.connected': 'Connecté au cerveau à {url}.',
-  'brain.savedTo': 'enregistré dans : {path}',
-  'brain.notConnected': "non connecté à un cerveau (lancez d'abord `codesema brain connect`)",
-  'brain.fieldUrl': 'url',
-  'brain.fieldRepo': 'dépôt',
-  'brain.noRemote': 'aucun remote git origin',
-  'brain.fieldReady': 'tickets prêts',
-  'brain.statusTitle': 'Statut du cerveau',
-  'brain.ticketUsage':
-    'usage : codesema brain ticket --issue <n>, ou --title <titre> --prompt <prompt>',
-  'brain.badIssueNumber': "numéro d'issue invalide : {value}",
-  'brain.draftFailed': 'impossible de rédiger un ticket : {reason}',
-  'brain.ticketCreated': 'Ticket créé : {title}',
-  'brain.fieldId': 'id',
-  'brain.fieldDaemon': 'démon',
-  'brain.fieldPid': 'pid',
-  'brain.fieldPort': 'port',
-  'brain.fieldUptime': 'uptime',
-  'brain.fieldLog': 'log',
-  'brain.notRunning': "à l'arrêt",
-  'brain.detached': 'Démon brain démarré en arrière-plan (pid {pid}).',
-  'brain.stopped': 'Démon brain arrêté (pid {pid}).',
-  'brain.stopTimeout':
+  'runner.usage':
+    'usage : codesema runner <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
+  'runner.unknownAction':
+    'action runner inconnue : {action} (attendu connect, disconnect, status, ticket, serve, stop, install-service ou uninstall-service)',
+  'runner.connectMissingFlags':
+    '`codesema runner connect` nécessite --url <url> et --token <token>',
+  'runner.badToken': 'jeton malformé : format attendu csk_<workspaceId>.<secret>',
+  'runner.connected': 'Connecté au hub à {url}.',
+  'runner.savedTo': 'enregistré dans : {path}',
+  'runner.notConnected': "non connecté à un hub (lancez d'abord `codesema runner connect`)",
+  'runner.fieldUrl': 'url',
+  'runner.fieldRepo': 'dépôt',
+  'runner.noRemote': 'aucun remote git origin',
+  'runner.fieldReady': 'tickets prêts',
+  'runner.statusTitle': 'Statut du hub',
+  'runner.ticketUsage':
+    'usage : codesema runner ticket --issue <n>, ou --title <titre> --prompt <prompt>',
+  'runner.badIssueNumber': "numéro d'issue invalide : {value}",
+  'runner.draftFailed': 'impossible de rédiger un ticket : {reason}',
+  'runner.ticketCreated': 'Ticket créé : {title}',
+  'runner.fieldId': 'id',
+  'runner.fieldDaemon': 'démon',
+  'runner.fieldPid': 'pid',
+  'runner.fieldPort': 'port',
+  'runner.fieldUptime': 'uptime',
+  'runner.fieldLog': 'log',
+  'runner.notRunning': "à l'arrêt",
+  'runner.detached': 'Démon runner démarré en arrière-plan (pid {pid}).',
+  'runner.stopped': 'Démon runner arrêté (pid {pid}).',
+  'runner.stopTimeout':
     'le pid {pid} tourne toujours {seconds}s après SIGTERM : envoyez SIGKILL vous-même, ou `systemctl stop` si ça tourne en unité systemd',
-  'brain.detachSpawnFailed': 'impossible de démarrer le démon brain détaché',
-  'brain.fieldInFlight': 'tickets en vol',
-  'brain.inFlightHeading': 'en vol',
-  'brain.fieldUnclaimed': 'non attribué',
-  'brain.fieldStale': 'expiré',
-  'brain.heartbeatSeconds': 'il y a {n}s',
-  'brain.heartbeatMinutes': 'il y a {n}min',
-  'brain.heartbeatHours': 'il y a {n}h',
-  'brain.heartbeatDays': 'il y a {n}j',
-  'brain.disconnected': 'Déconnecté du cerveau.',
-  'brain.alreadyDisconnected': 'Déjà déconnecté.',
-  'brain.disconnectRevokeReminder':
+  'runner.detachSpawnFailed': 'impossible de démarrer le démon runner détaché',
+  'runner.fieldInFlight': 'tickets en vol',
+  'runner.inFlightHeading': 'en vol',
+  'runner.fieldUnclaimed': 'non attribué',
+  'runner.fieldStale': 'expiré',
+  'runner.heartbeatSeconds': 'il y a {n}s',
+  'runner.heartbeatMinutes': 'il y a {n}min',
+  'runner.heartbeatHours': 'il y a {n}h',
+  'runner.heartbeatDays': 'il y a {n}j',
+  'runner.disconnected': 'Déconnecté du hub.',
+  'runner.alreadyDisconnected': 'Déjà déconnecté.',
+  'runner.disconnectRevokeReminder':
     "Pensez aussi à révoquer ce bras dans les Settings du dépôt sur le dashboard : ceci n'a effacé que les identifiants locaux.",
-  'brain.serviceNotARepo':
-    '`codesema brain install-service` doit être lancé depuis le dépôt git que ce daemon doit servir',
-  'brain.systemctlNotFound':
-    "systemctl introuvable : cette machine n'a pas de session systemd utilisateur pour y installer le service. Lancez plutôt le daemon au premier plan (`codesema brain serve`) ou en arrière-plan (`codesema brain serve --detach`).",
-  'brain.envFileNotFound': 'fichier env introuvable : {path}',
-  'brain.serviceExecPathUnknown':
+  'runner.serviceNotARepo':
+    '`codesema runner install-service` doit être lancé depuis le dépôt git que ce daemon doit servir',
+  'runner.systemctlNotFound':
+    "systemctl introuvable : cette machine n'a pas de session systemd utilisateur pour y installer le service. Lancez plutôt le daemon au premier plan (`codesema runner serve`) ou en arrière-plan (`codesema runner serve --detach`).",
+  'runner.envFileNotFound': 'fichier env introuvable : {path}',
+  'runner.serviceExecPathUnknown':
     "impossible de déterminer le chemin du binaire codesema en cours d'exécution (process.argv[1] est vide)",
-  'brain.serviceInstalled': 'Service brain installé et démarré.',
-  'brain.serviceUninstalled': 'Service brain arrêté et supprimé.',
-  'brain.serviceNotInstalled': 'Aucun service brain installé (rien à faire).',
-  'brain.fieldUnit': 'unité',
-  'brain.fieldWorkingDirectory': 'répertoire de travail',
-  'brain.fieldExecStart': 'commande de démarrage',
-  'brain.fieldEnvironmentFile': 'fichier env',
-  'brain.lingerFailed':
+  'runner.serviceInstalled': 'Service runner installé et démarré.',
+  'runner.serviceUninstalled': 'Service runner arrêté et supprimé.',
+  'runner.serviceNotInstalled': 'Aucun service runner installé (rien à faire).',
+  'runner.fieldUnit': 'unité',
+  'runner.fieldWorkingDirectory': 'répertoire de travail',
+  'runner.fieldExecStart': 'commande de démarrage',
+  'runner.fieldEnvironmentFile': 'fichier env',
+  'runner.lingerFailed':
     "impossible d'activer le lingering ({reason}) : le service s'arrêtera à la fin de la session de cet utilisateur. Fréquent dans les conteneurs/WSL sans systemd complet : lancez vous-même `sudo loginctl enable-linger $(whoami)` si votre hôte le permet.",
 
   'menu.title': 'Que voulez-vous faire ?',

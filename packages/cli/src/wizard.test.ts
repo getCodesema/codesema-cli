@@ -19,12 +19,12 @@ import {
 afterEach(() => setLanguage(null))
 
 describe('describeConfigEntries', () => {
-  test('lists agent, language, auto-sync, brain auto-merge, merge strategy, turn budget then back, with current values as hints', () => {
+  test('lists agent, language, auto-sync, runner auto-merge, merge strategy, turn budget then back, with current values as hints', () => {
     const entries = describeConfigEntries({
       agent: 'claude -p --model opus',
       language: 'fr',
       syncAutoPush: true,
-      brainAutoMerge: false,
+      runnerAutoMerge: false,
       mergeStrategy: 'squash',
       maxTaskTurns: 60,
     })
@@ -32,7 +32,7 @@ describe('describeConfigEntries', () => {
       'agent',
       'language',
       'autoSync',
-      'brainAutoMerge',
+      'runnerAutoMerge',
       'mergeStrategy',
       'maxTaskTurns',
       'back',
@@ -40,7 +40,7 @@ describe('describeConfigEntries', () => {
     expect(entries[0]?.hint).toBe('claude -p --model opus')
     expect(entries[1]?.hint).toBe('Français')
     expect(entries[2]?.hint).toBe(t('config.autoSyncOn'))
-    expect(entries[3]?.hint).toBe(t('config.brainAutoMergeOff'))
+    expect(entries[3]?.hint).toBe(t('config.runnerAutoMergeOff'))
     expect(entries[4]?.hint).toBe('squash')
     expect(entries[5]?.hint).toBe('60')
   })
@@ -50,8 +50,8 @@ describe('describeConfigEntries', () => {
     expect(entries[0]?.hint).toBe(t('config.agentEntryUnset'))
     expect(entries[1]?.hint).toBe(t('config.languageAuto'))
     expect(entries[2]?.hint).toBe(t('config.autoSyncUnset'))
-    // Unlike the other three, absent resolves to ON (resolveBrainAutoMerge's own doctrine), never an "unset" placeholder.
-    expect(entries[3]?.hint).toBe(t('config.brainAutoMergeOn'))
+    // Unlike the other three, absent resolves to ON (resolveRunnerAutoMerge's own doctrine), never an "unset" placeholder.
+    expect(entries[3]?.hint).toBe(t('config.runnerAutoMergeOn'))
     // Like autoSync, absence IS its own state here (resolveMergeSettings, D13): no strategy is picked on the project's behalf.
     expect(entries[4]?.hint).toBe(t('config.mergeStrategyUnset'))
   })

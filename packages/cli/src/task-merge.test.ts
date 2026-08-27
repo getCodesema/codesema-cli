@@ -696,7 +696,7 @@ describe("the merge gate's git reads are bounded (MAJEUR 2)", () => {
       `const started = Date.now()`,
       `const outcome = await mergeTask({`,
       `  cwd: ${JSON.stringify(cwd)},`,
-      `  brainAutoMerge: true,`,
+      `  runnerAutoMerge: true,`,
       `  task: ${JSON.stringify(greenTask())},`,
       `  settings: ${JSON.stringify(settings({ policy: 'auto' }))},`,
       // Injected: this test is about the ONE git read left on this path.
@@ -749,7 +749,7 @@ describe('mergeTask under mergePolicy: human (the default)', () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge()
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: settings(),
@@ -772,7 +772,7 @@ describe('mergeTask under mergePolicy: human (the default)', () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge()
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: settings(),
@@ -792,7 +792,7 @@ describe('mergeTask under mergePolicy: auto', () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge({ kind: 'ok', stdout: 'Merged pull request #7' })
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: auto(),
@@ -810,7 +810,7 @@ describe('mergeTask under mergePolicy: auto', () => {
     const repo = makeRepoWithOrigin('git@gitlab.com:o/r.git')
     const forge = recordingForge({ kind: 'ok', stdout: '' })
     await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: auto(),
@@ -829,7 +829,7 @@ describe('mergeTask under mergePolicy: auto', () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge()
     await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: auto(),
@@ -844,7 +844,7 @@ describe('mergeTask under mergePolicy: auto', () => {
   test('an explicit strategy reaches the argv, per CLI', async () => {
     const gh = recordingForge()
     await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: greenTask(),
       settings: auto({ strategy: 'squash' }),
@@ -855,7 +855,7 @@ describe('mergeTask under mergePolicy: auto', () => {
 
     const glab = recordingForge()
     await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@gitlab.com:o/r.git'),
       task: greenTask(),
       settings: auto({ strategy: 'rebase' }),
@@ -868,7 +868,7 @@ describe('mergeTask under mergePolicy: auto', () => {
   test("glab has no merge-commit flag: 'merge' sends none rather than inventing one", async () => {
     const glab = recordingForge()
     await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@gitlab.com:o/r.git'),
       task: greenTask(),
       settings: auto({ strategy: 'merge' }),
@@ -887,7 +887,7 @@ describe('mergeTask under mergePolicy: auto', () => {
   test('the branch is NOT deleted by default, and is on request', async () => {
     const kept = recordingForge()
     await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: greenTask(),
       settings: auto(),
@@ -898,7 +898,7 @@ describe('mergeTask under mergePolicy: auto', () => {
 
     const deleted = recordingForge()
     await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: greenTask(),
       settings: auto({ deleteBranch: true }),
@@ -917,7 +917,7 @@ describe('mergeTask under mergePolicy: auto', () => {
     ]) {
       const forge = recordingForge()
       const outcome = await mergeTask({
-        brainAutoMerge: true,
+        runnerAutoMerge: true,
         cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
         task: greenTask(),
         settings: auto({ allowMergeWithoutChecks: false }),
@@ -936,7 +936,7 @@ describe('mergeTask under mergePolicy: auto', () => {
     // one that depends on which condition happened to be evaluated last.
     const forge = recordingForge()
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: greenTask(),
       settings: auto(),
@@ -982,7 +982,7 @@ describe('mergeTask under mergePolicy: auto', () => {
   test('a task with no criteria emits no merge command either (DP2)', async () => {
     const forge = recordingForge()
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: makeTask({ review_ref: '/nowhere/review.json' }),
       settings: auto(),
@@ -997,7 +997,7 @@ describe('mergeTask under mergePolicy: auto', () => {
   test('the consent valve unblocks an unconfigured repo, and the merge happens', async () => {
     const forge = recordingForge()
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: greenTask(),
       settings: auto({ allowMergeWithoutChecks: true }),
@@ -1013,7 +1013,7 @@ describe('mergeTask under mergePolicy: auto', () => {
   test('the valve never covers a broken runtime, and no command is emitted', async () => {
     const forge = recordingForge()
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: greenTask(),
       settings: auto({ allowMergeWithoutChecks: true }),
@@ -1028,21 +1028,21 @@ describe('mergeTask under mergePolicy: auto', () => {
   })
 })
 
-describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a ticketed task', () => {
-  // `brainAutoMerge` is GLOBAL-ONLY (config.ts, REPO_IGNORED_GLOBAL_ONLY_KEYS):
+describe('arm/runner integration: runnerAutoMerge overrides mergePolicy for a ticketed task', () => {
+  // `runnerAutoMerge` is GLOBAL-ONLY (config.ts, REPO_IGNORED_GLOBAL_ONLY_KEYS):
   // `mergeTask` never reads config at all any more, global or repo. The
   // caller (`runMergeStep`, task-server.ts) resolves the boolean once from
-  // the global file and hands it in as `opts.brainAutoMerge`, so every test
+  // the global file and hands it in as `opts.runnerAutoMerge`, so every test
   // below sets it directly, with no config directory to isolate.
   const ticketedGreenTask = (over: Partial<TaskRecord> = {}): TaskRecord =>
-    greenTask({ brain_ticket: { id: 'tkt-1', title: 'x' }, ...over })
+    greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' }, ...over })
 
-  test('a ticketed task merges under mergePolicy human when brainAutoMerge is true', async () => {
+  test('a ticketed task merges under mergePolicy human when runnerAutoMerge is true', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge({ kind: 'ok', stdout: '' })
     const outcome = await mergeTask({
       cwd: repo,
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       task: ticketedGreenTask(),
       settings: settings({ policy: 'human' }),
       inputs: greenInputs(),
@@ -1052,12 +1052,12 @@ describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a tick
     expect(forge.calls.length).toBe(1)
   })
 
-  test('brainAutoMerge: false holds a ticketed task, like any human-policy task', async () => {
+  test('runnerAutoMerge: false holds a ticketed task, like any human-policy task', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge()
     const outcome = await mergeTask({
       cwd: repo,
-      brainAutoMerge: false,
+      runnerAutoMerge: false,
       task: ticketedGreenTask(),
       settings: settings({ policy: 'human' }),
       inputs: greenInputs(),
@@ -1067,16 +1067,16 @@ describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a tick
     expect(forge.calls).toEqual([])
   })
 
-  test('mergeTask never reads config itself: a repo file setting brainAutoMerge has no effect', async () => {
+  test('mergeTask never reads config itself: a repo file setting runnerAutoMerge has no effect', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     // Global-only per REPO_IGNORED_GLOBAL_ONLY_KEYS: silently stripped from a
     // repo file already. Written here anyway, on purpose, so this test would
     // still catch it if `mergeTask` ever read config back on its own.
-    saveRepoConfig(repo, { brainAutoMerge: true })
+    saveRepoConfig(repo, { runnerAutoMerge: true })
     const forge = recordingForge()
     const outcome = await mergeTask({
       cwd: repo,
-      brainAutoMerge: false,
+      runnerAutoMerge: false,
       task: ticketedGreenTask(),
       settings: settings({ policy: 'human' }),
       inputs: greenInputs(),
@@ -1086,12 +1086,12 @@ describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a tick
     expect(forge.calls).toEqual([])
   })
 
-  test('a task with no brain_ticket keeps mergePolicy human untouched even when brainAutoMerge is true', async () => {
+  test('a task with no hub_ticket keeps mergePolicy human untouched even when runnerAutoMerge is true', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge()
     const outcome = await mergeTask({
       cwd: repo,
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       task: greenTask(),
       settings: settings({ policy: 'human' }),
       inputs: greenInputs(),
@@ -1101,12 +1101,12 @@ describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a tick
     expect(forge.calls).toEqual([])
   })
 
-  test('a repo-wide mergePolicy: auto merges regardless of brainAutoMerge', async () => {
+  test('a repo-wide mergePolicy: auto merges regardless of runnerAutoMerge', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge({ kind: 'ok', stdout: '' })
     const outcome = await mergeTask({
       cwd: repo,
-      brainAutoMerge: false,
+      runnerAutoMerge: false,
       task: ticketedGreenTask(),
       settings: settings({ policy: 'auto' }),
       inputs: greenInputs(),
@@ -1120,7 +1120,7 @@ describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a tick
     const forge = recordingForge()
     const outcome = await mergeTask({
       cwd: repo,
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       task: ticketedGreenTask(),
       settings: settings({ policy: 'human' }),
       inputs: greenInputs({ checks: makeChecks({ status: 'failed' }) }),
@@ -1139,26 +1139,26 @@ describe('arm/brain integration: brainAutoMerge overrides mergePolicy for a tick
 // mergeTask's observable behavior — this is the same truth table, asserted
 // directly against the exported function.
 describe('effectiveMergePolicyIsAuto: the exact question mergeTask answers, exported', () => {
-  test('an explicit auto policy is auto, brain_ticket or not', () => {
+  test('an explicit auto policy is auto, hub_ticket or not', () => {
     expect(effectiveMergePolicyIsAuto(greenTask(), settings({ policy: 'auto' }), false)).toBe(true)
   })
 
-  test('a human policy with no brain_ticket is never auto', () => {
+  test('a human policy with no hub_ticket is never auto', () => {
     expect(effectiveMergePolicyIsAuto(greenTask(), settings({ policy: 'human' }), true)).toBe(false)
   })
 
-  test('a brain ticket with brainAutoMerge overrides a human policy to auto', () => {
-    const ticketed = greenTask({ brain_ticket: { id: 'tkt-1', title: 'x' } })
+  test('a hub ticket with runnerAutoMerge overrides a human policy to auto', () => {
+    const ticketed = greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' } })
     expect(effectiveMergePolicyIsAuto(ticketed, settings({ policy: 'human' }), true)).toBe(true)
   })
 
-  test('a brain ticket WITHOUT brainAutoMerge does not override a human policy', () => {
-    const ticketed = greenTask({ brain_ticket: { id: 'tkt-1', title: 'x' } })
+  test('a hub ticket WITHOUT runnerAutoMerge does not override a human policy', () => {
+    const ticketed = greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' } })
     expect(effectiveMergePolicyIsAuto(ticketed, settings({ policy: 'human' }), false)).toBe(false)
   })
 
-  test('a repo-wide auto policy is untouched by brainAutoMerge either way', () => {
-    const ticketed = greenTask({ brain_ticket: { id: 'tkt-1', title: 'x' } })
+  test('a repo-wide auto policy is untouched by runnerAutoMerge either way', () => {
+    const ticketed = greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' } })
     expect(effectiveMergePolicyIsAuto(ticketed, settings({ policy: 'auto' }), false)).toBe(true)
   })
 })
@@ -1182,7 +1182,7 @@ describe('what the merge never does', () => {
       message: 'Pull request is not mergeable: the merge commit cannot be cleanly created',
     })
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: settings({ policy: 'auto' }),
@@ -1205,7 +1205,7 @@ describe('what the merge never does', () => {
     const repo = makeRepoWithOrigin('git@example.test:o/r.git')
     const forge = recordingForge({ kind: 'missing' })
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: settings({ policy: 'auto' }),
@@ -1225,7 +1225,7 @@ describe('what the merge never does', () => {
       message: 'GraphQL: Base branch was modified. Review and try the merge again.',
     })
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: settings({ policy: 'auto' }),
@@ -1265,7 +1265,7 @@ describe('D20 idempotence: a branch the forge already merged is never merged twi
     }
     const task = greenTask()
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task,
       settings: settings({ policy: 'auto' }),
@@ -1301,7 +1301,7 @@ describe('D20 idempotence: a branch the forge already merged is never merged twi
       message: 'Pull request is not mergeable: the merge commit cannot be cleanly created',
     })
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: settings({ policy: 'auto' }),
@@ -1327,7 +1327,7 @@ describe('D20 idempotence: a branch the forge already merged is never merged twi
       )
     }
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
       settings: settings({ policy: 'auto' }),
@@ -1373,7 +1373,7 @@ describe('the merge really runs a forge CLI when nothing is injected', () => {
       `const { mergeTask } = await import(${JSON.stringify(modulePath)})`,
       `const outcome = await mergeTask({`,
       `  cwd: ${JSON.stringify(repo)},`,
-      `  brainAutoMerge: true,`,
+      `  runnerAutoMerge: true,`,
       `  task: ${JSON.stringify(greenTask())},`,
       `  settings: ${JSON.stringify(settings({ policy: 'auto' }))},`,
       `  inputs: ${JSON.stringify(greenInputs())},`,
@@ -1437,7 +1437,7 @@ describe('criteriaDraftProposed: the only trace a turn-1 draft ever leaves', () 
 describe('an unusable merge setting is named, never absorbed', () => {
   test('the degraded keys ride the task journal as their own line', async () => {
     const outcome = await mergeTask({
-      brainAutoMerge: true,
+      runnerAutoMerge: true,
       cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
       task: greenTask(),
       settings: settings(),

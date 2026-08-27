@@ -10,11 +10,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
-import { brainCommand } from './brain-commands.js'
-import { readBrainPidfile, writeBrainPidfile } from './brain-pidfile.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import type { ArmTicket } from './contract.js'
 import { t } from './i18n.js'
+import { runnerCommand } from './runner-commands.js'
+import { readRunnerPidfile, writeRunnerPidfile } from './runner-pidfile.js'
 
 process.env.NO_COLOR = '1'
 
@@ -32,7 +32,7 @@ function fetchStub(status: number, body: unknown, calls: Call[]): typeof fetch {
   }) as typeof fetch
 }
 
-/** Routes a response per `status` query param, so one stub can answer both the ready and in-flight `listTickets` calls `brainStatus` makes. */
+/** Routes a response per `status` query param, so one stub can answer both the ready and in-flight `listTickets` calls `runnerStatus` makes. */
 function fetchStubByStatus(
   responsesByStatus: Record<string, { tickets: unknown[] }>,
   calls: Call[],
@@ -55,7 +55,7 @@ function fetchOffline(): typeof fetch {
   return (() => Promise.reject(new Error('network unreachable'))) as unknown as typeof fetch
 }
 
-/** Same pattern as summary.test.ts's own `captureLog`, made async: `brainCommand` resolves its promise after every `console.log` it makes. */
+/** Same pattern as summary.test.ts's own `captureLog`, made async: `runnerCommand` resolves its promise after every `console.log` it makes. */
 async function captureLog(fn: () => Promise<void>): Promise<string[]> {
   const lines: string[] = []
   const original = console.log
@@ -164,15 +164,15 @@ function spawnIgnoringSigterm(): Promise<ChildProcess> {
   })
 }
 
-describe('brainCommand', () => {
+describe('runnerCommand', () => {
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   let configDir: string
   let cwd: string
 
   beforeEach(() => {
-    configDir = mkdtempSync(join(tmpdir(), 'codesema-braincmd-cfg-'))
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-runnercmd-cfg-'))
     process.env.CODESEMA_CONFIG_DIR = configDir
-    cwd = mkdtempSync(join(tmpdir(), 'codesema-braincmd-repo-'))
+    cwd = mkdtempSync(join(tmpdir(), 'codesema-runnercmd-repo-'))
   })
 
   afterEach(() => {
@@ -186,34 +186,34 @@ describe('brainCommand', () => {
   })
 
   test('no action prints usage and does not throw', async () => {
-    await expect(brainCommand({ cwd })).resolves.toBeUndefined()
+    await expect(runnerCommand({ cwd })).resolves.toBeUndefined()
   })
 
   test('an unknown action throws', async () => {
-    await expect(brainCommand({ action: 'nope', cwd })).rejects.toThrow()
+    await expect(runnerCommand({ action: 'nope', cwd })).rejects.toThrow()
   })
 
   describe('connect', () => {
     test('requires both --url and --token', async () => {
-      await expect(brainCommand({ action: 'connect', cwd, url: 'https://x' })).rejects.toThrow()
-      await expect(brainCommand({ action: 'connect', cwd, token: 'csk_a.b' })).rejects.toThrow()
+      await expect(runnerCommand({ action: 'connect', cwd, url: 'https://x' })).rejects.toThrow()
+      await expect(runnerCommand({ action: 'connect', cwd, token: 'csk_a.b' })).rejects.toThrow()
     })
 
     test('rejects a malformed token', async () => {
       await expect(
-        brainCommand({ action: 'connect', cwd, url: 'https://x', token: 'not-a-token' }),
+        runnerCommand({ action: 'connect', cwd, url: 'https://x', token: 'not-a-token' }),
       ).rejects.toThrow()
     })
 
     test('stores the same credentials shape as `codesema sync`', async () => {
-      await brainCommand({
+      await runnerCommand({
         action: 'connect',
         cwd,
-        url: 'https://brain.example',
+        url: 'https://hub.example',
         token: 'csk_ws1.sec1',
       })
       const config = loadGlobalConfig()
-      expect(config.syncUrl).toBe('https://brain.example')
+      expect(config.syncUrl).toBe('https://hub.example')
       expect(config.syncWorkspaceId).toBe('ws1')
       expect(config.syncSecret).toBe('sec1')
     })
@@ -221,20 +221,20 @@ describe('brainCommand', () => {
 
   describe('disconnect', () => {
     test('is a soft no-op when nothing is connected', async () => {
-      await expect(brainCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
+      await expect(runnerCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
       expect(loadGlobalConfig().syncUrl).toBeUndefined()
     })
 
     test('clears syncUrl/syncWorkspaceId/syncSecret, and only those', async () => {
-      await brainCommand({
+      await runnerCommand({
         action: 'connect',
         cwd,
-        url: 'https://brain.example',
+        url: 'https://hub.example',
         token: 'csk_ws1.sec1',
       })
       saveGlobalConfig({ ...loadGlobalConfig(), agent: 'claude -p' })
 
-      await expect(brainCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
+      await expect(runnerCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
 
       const config = loadGlobalConfig()
       expect(config.syncUrl).toBeUndefined()
@@ -244,33 +244,33 @@ describe('brainCommand', () => {
     })
 
     test('running it twice is fine (idempotent)', async () => {
-      await brainCommand({
+      await runnerCommand({
         action: 'connect',
         cwd,
-        url: 'https://brain.example',
+        url: 'https://hub.example',
         token: 'csk_ws1.sec1',
       })
-      await brainCommand({ action: 'disconnect', cwd })
-      await expect(brainCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
+      await runnerCommand({ action: 'disconnect', cwd })
+      await expect(runnerCommand({ action: 'disconnect', cwd })).resolves.toBeUndefined()
     })
   })
 
   describe('status', () => {
     test('throws when not connected', async () => {
-      await expect(brainCommand({ action: 'status', cwd })).rejects.toThrow()
+      await expect(runnerCommand({ action: 'status', cwd })).rejects.toThrow()
     })
 
     test('reports the ready ticket count when connected', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
       initRepo(cwd, 'https://github.com/o/r.git')
       const calls: Call[] = []
       await expect(
-        brainCommand({
+        runnerCommand({
           action: 'status',
           cwd,
           fetchImpl: fetchStub(200, { tickets: [validTicket] }, calls),
@@ -280,16 +280,16 @@ describe('brainCommand', () => {
       expect(calls[0]?.url).toContain('status=published')
     })
 
-    test('does not call the brain when the repo has no origin remote', async () => {
+    test('does not call the hub when the repo has no origin remote', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
       initRepo(cwd)
       const calls: Call[] = []
-      await brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, {}, calls) })
+      await runnerCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, {}, calls) })
       expect(calls.length).toBe(0)
     })
   })
@@ -298,7 +298,7 @@ describe('brainCommand', () => {
     beforeEach(() => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
@@ -318,7 +318,7 @@ describe('brainCommand', () => {
       }
       const calls: Call[] = []
       const lines = await captureLog(async () => {
-        await brainCommand({
+        await runnerCommand({
           action: 'status',
           cwd,
           fetchImpl: fetchStubByStatus(
@@ -334,7 +334,7 @@ describe('brainCommand', () => {
       expect(output).toContain('Fix the flaky retry test')
       expect(output).toContain('cli-arm-01')
       expect(output).toContain('executing')
-      expect(output).not.toContain(t('brain.fieldStale'))
+      expect(output).not.toContain(t('runner.fieldStale'))
     })
 
     test('marks a ticket stale once its lease has lapsed', async () => {
@@ -349,7 +349,7 @@ describe('brainCommand', () => {
         arm_local_status: 'awaiting_review',
       }
       const lines = await captureLog(async () => {
-        await brainCommand({
+        await runnerCommand({
           action: 'status',
           cwd,
           fetchImpl: fetchStubByStatus(
@@ -360,43 +360,43 @@ describe('brainCommand', () => {
       })
       const output = lines.join('\n')
       expect(output).toContain('Add retry logic')
-      expect(output).toContain(t('brain.fieldStale'))
+      expect(output).toContain(t('runner.fieldStale'))
     })
 
-    test('degrades gracefully when the brain does not send arm_local_status (older brain)', async () => {
-      const oldBrainTicket = {
+    test('degrades gracefully when the hub does not send arm_local_status (older hub)', async () => {
+      const oldHubTicket = {
         ...validTicket,
         id: 't-if-old',
-        title: 'Legacy ticket from an older brain',
+        title: 'Legacy ticket from an older hub',
         status: 'in_progress',
         executed_by: null,
         updated_at: new Date(Date.now() - 5_000).toISOString(),
         lease_expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-        // No `arm_local_status` key at all: what an older brain, built before
+        // No `arm_local_status` key at all: what an older hub, built before
         // that field existed, actually sends.
       }
       const lines = await captureLog(async () => {
         await expect(
-          brainCommand({
+          runnerCommand({
             action: 'status',
             cwd,
             fetchImpl: fetchStubByStatus(
-              { published: { tickets: [] }, in_flight: { tickets: [oldBrainTicket] } },
+              { published: { tickets: [] }, in_flight: { tickets: [oldHubTicket] } },
               [],
             ),
           }),
         ).resolves.toBeUndefined()
       })
       const output = lines.join('\n')
-      expect(output).toContain('Legacy ticket from an older brain')
-      expect(output).toContain(t('brain.fieldUnclaimed'))
+      expect(output).toContain('Legacy ticket from an older hub')
+      expect(output).toContain(t('runner.fieldUnclaimed'))
       expect(output).not.toContain('undefined')
       expect(output).not.toContain('null')
     })
 
-    test('an unreachable brain degrades the same way the ready count already does', async () => {
+    test('an unreachable hub degrades the same way the ready count already does', async () => {
       await expect(
-        brainCommand({ action: 'status', cwd, fetchImpl: fetchOffline() }),
+        runnerCommand({ action: 'status', cwd, fetchImpl: fetchOffline() }),
       ).resolves.toBeUndefined()
     })
   })
@@ -404,29 +404,29 @@ describe('brainCommand', () => {
   describe('ticket', () => {
     test('rejects both --issue and --title/--prompt together', async () => {
       await expect(
-        brainCommand({ action: 'ticket', cwd, issue: '1', title: 'T', prompt: 'p' }),
+        runnerCommand({ action: 'ticket', cwd, issue: '1', title: 'T', prompt: 'p' }),
       ).rejects.toThrow()
     })
 
     test('rejects neither form given', async () => {
-      await expect(brainCommand({ action: 'ticket', cwd })).rejects.toThrow()
+      await expect(runnerCommand({ action: 'ticket', cwd })).rejects.toThrow()
     })
 
     test('rejects a non-numeric --issue', async () => {
-      await expect(brainCommand({ action: 'ticket', cwd, issue: 'abc' })).rejects.toThrow()
+      await expect(runnerCommand({ action: 'ticket', cwd, issue: 'abc' })).rejects.toThrow()
     })
 
     test('drafts and publishes from --title/--prompt', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
       initRepo(cwd, 'https://github.com/o/r.git')
       const calls: Call[] = []
       await expect(
-        brainCommand({
+        runnerCommand({
           action: 'ticket',
           cwd,
           title: 'Add a thing',
@@ -435,19 +435,19 @@ describe('brainCommand', () => {
           fetchImpl: fetchStub(201, { ticket: validTicket }, calls),
         }),
       ).resolves.toBeUndefined()
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/tickets')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/tickets')
     })
 
     test('a drafting failure surfaces as a thrown error', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
       initRepo(cwd, 'https://github.com/o/r.git')
       await expect(
-        brainCommand({
+        runnerCommand({
           action: 'ticket',
           cwd,
           title: 'T',
@@ -462,7 +462,7 @@ describe('brainCommand', () => {
     beforeEach(() => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
@@ -471,31 +471,31 @@ describe('brainCommand', () => {
     test('no pidfile: does not throw (reported as not running)', async () => {
       initRepo(cwd, 'https://github.com/o/r.git')
       await expect(
-        brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
+        runnerCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
       ).resolves.toBeUndefined()
     })
 
     test('a pidfile naming our own (very much alive) pid: does not throw, cleans up nothing', async () => {
       initRepo(cwd, 'https://github.com/o/r.git')
-      writeBrainPidfile(cwd, process.pid, 4400)
+      writeRunnerPidfile(cwd, process.pid, 4400)
       await expect(
-        brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
+        runnerCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
       ).resolves.toBeUndefined()
-      expect(readBrainPidfile(cwd)).toMatchObject({ pid: process.pid, port: 4400 })
+      expect(readRunnerPidfile(cwd)).toMatchObject({ pid: process.pid, port: 4400 })
     })
 
     test('a pidfile naming a dead (stolen) pid: does not throw, and the stale file is removed', async () => {
       initRepo(cwd, 'https://github.com/o/r.git')
-      writeBrainPidfile(cwd, deadPid(), 4400)
+      writeRunnerPidfile(cwd, deadPid(), 4400)
       await expect(
-        brainCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
+        runnerCommand({ action: 'status', cwd, fetchImpl: fetchStub(200, { tickets: [] }, []) }),
       ).resolves.toBeUndefined()
-      expect(readBrainPidfile(cwd)).toBeNull()
+      expect(readRunnerPidfile(cwd)).toBeNull()
     })
   })
 
   describe('serve --detach', () => {
-    test('spawns a detached re-invocation of `brain serve` (no --detach) and reports pid + log path', async () => {
+    test('spawns a detached re-invocation of `runner serve` (no --detach) and reports pid + log path', async () => {
       const calls: { command: string; args: readonly string[]; options: SpawnOptions }[] = []
       const unrefCalls: number[] = []
       const spawnFn = (command: string, args: readonly string[], options: SpawnOptions) => {
@@ -510,7 +510,7 @@ describe('brainCommand', () => {
       }
 
       await expect(
-        brainCommand({ action: 'serve', cwd, detach: true, spawnFn }),
+        runnerCommand({ action: 'serve', cwd, detach: true, spawnFn }),
       ).resolves.toBeUndefined()
 
       const call = calls[0]
@@ -518,29 +518,29 @@ describe('brainCommand', () => {
         throw new Error('expected spawnFn to have been called')
       }
       expect(call.command).toBe(process.execPath)
-      expect(call.args).toEqual([process.argv[1] as string, 'brain', 'serve'])
+      expect(call.args).toEqual([process.argv[1] as string, 'runner', 'serve'])
       expect(call.options.cwd).toBe(cwd)
       expect(call.options.detached).toBe(true)
       expect(unrefCalls.length).toBe(1)
-      expect(existsSync(join(cwd, '.codesema', 'brain-daemon.log'))).toBe(true)
+      expect(existsSync(join(cwd, '.codesema', 'runner-daemon.log'))).toBe(true)
     })
 
     test('a spawn that never yields a pid throws (D21 never silently reports success)', async () => {
       const spawnFn = () =>
         ({ pid: undefined, unref: () => {}, on: () => {} }) as unknown as ChildProcess
-      await expect(brainCommand({ action: 'serve', cwd, detach: true, spawnFn })).rejects.toThrow()
+      await expect(runnerCommand({ action: 'serve', cwd, detach: true, spawnFn })).rejects.toThrow()
     })
   })
 
   describe('stop', () => {
     test('no pidfile: resolves without throwing (nothing to stop)', async () => {
-      await expect(brainCommand({ action: 'stop', cwd })).resolves.toBeUndefined()
+      await expect(runnerCommand({ action: 'stop', cwd })).resolves.toBeUndefined()
     })
 
     test('a pidfile naming a dead pid: resolves without throwing, and the stale file is cleaned up', async () => {
-      writeBrainPidfile(cwd, deadPid(), 4400)
-      await expect(brainCommand({ action: 'stop', cwd })).resolves.toBeUndefined()
-      expect(readBrainPidfile(cwd)).toBeNull()
+      writeRunnerPidfile(cwd, deadPid(), 4400)
+      await expect(runnerCommand({ action: 'stop', cwd })).resolves.toBeUndefined()
+      expect(readRunnerPidfile(cwd)).toBeNull()
     })
 
     test('a live process: SIGTERM kills it, stop waits for it, then cleans up the pidfile', async () => {
@@ -549,12 +549,12 @@ describe('brainCommand', () => {
       if (pid === undefined) {
         throw new Error('expected a real pid')
       }
-      writeBrainPidfile(cwd, pid, 4400)
+      writeRunnerPidfile(cwd, pid, 4400)
       try {
         await expect(
-          brainCommand({ action: 'stop', cwd, stopTimeoutMs: 5000, stopPollIntervalMs: 20 }),
+          runnerCommand({ action: 'stop', cwd, stopTimeoutMs: 5000, stopPollIntervalMs: 20 }),
         ).resolves.toBeUndefined()
-        expect(readBrainPidfile(cwd)).toBeNull()
+        expect(readRunnerPidfile(cwd)).toBeNull()
       } finally {
         child.kill('SIGKILL')
       }
@@ -566,12 +566,12 @@ describe('brainCommand', () => {
       if (pid === undefined) {
         throw new Error('expected a real pid')
       }
-      writeBrainPidfile(cwd, pid, 4400)
+      writeRunnerPidfile(cwd, pid, 4400)
       try {
         await expect(
-          brainCommand({ action: 'stop', cwd, stopTimeoutMs: 300, stopPollIntervalMs: 20 }),
+          runnerCommand({ action: 'stop', cwd, stopTimeoutMs: 300, stopPollIntervalMs: 20 }),
         ).resolves.toBeUndefined()
-        expect(readBrainPidfile(cwd)).toMatchObject({ pid })
+        expect(readRunnerPidfile(cwd)).toMatchObject({ pid })
       } finally {
         child.kill('SIGKILL')
       }
@@ -590,11 +590,11 @@ describe('brainCommand', () => {
     }
 
     function unitPath(): string {
-      return join(xdgConfigHome, 'systemd', 'user', 'codesema-brain.service')
+      return join(xdgConfigHome, 'systemd', 'user', 'codesema-runner.service')
     }
 
     beforeEach(() => {
-      xdgConfigHome = mkdtempSync(join(tmpdir(), 'codesema-braincmd-xdg-'))
+      xdgConfigHome = mkdtempSync(join(tmpdir(), 'codesema-runnercmd-xdg-'))
       process.env.XDG_CONFIG_HOME = xdgConfigHome
     })
 
@@ -609,7 +609,7 @@ describe('brainCommand', () => {
 
     test('install-service refuses to run outside a git repository', async () => {
       await expect(
-        brainCommand({ action: 'install-service', cwd, execFn: noopExecFn([]) }),
+        runnerCommand({ action: 'install-service', cwd, execFn: noopExecFn([]) }),
       ).rejects.toThrow()
       expect(existsSync(unitPath())).toBe(false)
     })
@@ -623,14 +623,14 @@ describe('brainCommand', () => {
       const calls: { command: string; args: readonly string[] }[] = []
 
       await expect(
-        brainCommand({ action: 'install-service', cwd, execFn: noopExecFn(calls) }),
+        runnerCommand({ action: 'install-service', cwd, execFn: noopExecFn(calls) }),
       ).resolves.toBeUndefined()
 
       expect(existsSync(unitPath())).toBe(true)
       const unit = readFileSync(unitPath(), 'utf8')
       expect(unit).toContain(`WorkingDirectory=${repoRoot}`)
       expect(calls.map((c) => c.args.join(' '))).toContain(
-        '--user enable --now codesema-brain.service',
+        '--user enable --now codesema-runner.service',
       )
     })
 
@@ -642,25 +642,25 @@ describe('brainCommand', () => {
         }
         return ''
       }
-      await expect(brainCommand({ action: 'install-service', cwd, execFn })).rejects.toThrow(
-        t('brain.systemctlNotFound'),
+      await expect(runnerCommand({ action: 'install-service', cwd, execFn })).rejects.toThrow(
+        t('runner.systemctlNotFound'),
       )
       expect(existsSync(unitPath())).toBe(false)
     })
 
     test('uninstall-service is a soft no-op when nothing is installed', async () => {
       await expect(
-        brainCommand({ action: 'uninstall-service', cwd, execFn: noopExecFn([]) }),
+        runnerCommand({ action: 'uninstall-service', cwd, execFn: noopExecFn([]) }),
       ).resolves.toBeUndefined()
     })
 
     test('uninstall-service removes a previously installed unit', async () => {
       initRepo(cwd)
-      await brainCommand({ action: 'install-service', cwd, execFn: noopExecFn([]) })
+      await runnerCommand({ action: 'install-service', cwd, execFn: noopExecFn([]) })
       expect(existsSync(unitPath())).toBe(true)
 
       await expect(
-        brainCommand({ action: 'uninstall-service', cwd, execFn: noopExecFn([]) }),
+        runnerCommand({ action: 'uninstall-service', cwd, execFn: noopExecFn([]) }),
       ).resolves.toBeUndefined()
       expect(existsSync(unitPath())).toBe(false)
     })

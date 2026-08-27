@@ -1,12 +1,12 @@
-// Brain wire contract: types and sanitizers for the tickets, transitions and
-// events exchanged between the brain (the local SaaS that owns tickets) and
+// Hub wire contract: types and sanitizers for the tickets, transitions and
+// events exchanged between the hub (the local SaaS that owns tickets) and
 // the arm (this CLI, claiming and executing them). Same doctrine as the rest
 // of the contract: whitelist and truncate, never throw.
 //
-// These shapes mirror the BRAIN's own wire format, not this package's usual
+// These shapes mirror the HUB's own wire format, not this package's usual
 // style: several fields below are REQUIRED keys carrying an explicit `null`
 // rather than an optional key that is simply omitted (TaskRecord's own
-// convention, tasks.ts). That mirrors nullable columns in the brain's own
+// convention, tasks.ts). That mirrors nullable columns in the hub's own
 // store, which always sends the key. The sanitizers below preserve that
 // shape rather than converting it to "absent means unknown".
 
@@ -19,10 +19,10 @@ import {
 import { NON_BLANK } from './ticket.js'
 
 /**
- * A forge issue the brain resolved a ticket from, or attached to one.
+ * A forge issue the hub resolved a ticket from, or attached to one.
  *
  * `iid` is a STRING here, unlike `TaskIssueRef.iid` (tasks.ts, a decimal
- * integer): the brain names issues however its own forge client returns
+ * integer): the hub names issues however its own forge client returns
  * them, and this contract must not assume every source it may grow to
  * support hands back a number. Gated as a pair, same doctrine as tasks.ts's
  * `sanitizeIssueRef`: a reference missing either half cannot be resolved by
@@ -34,10 +34,10 @@ export type ArmIssueRef = {
 }
 
 /**
- * A ticket proposal as the brain first raises it, before it is published.
+ * A ticket proposal as the hub first raises it, before it is published.
  *
  * `status` is a plain STRING, not `ArmTicketStatus`: the proposal lifecycle
- * is the brain's own vocabulary, and this contract has no business rejecting
+ * is the hub's own vocabulary, and this contract has no business rejecting
  * a value it does not yet recognize there. Only `ArmTicket.status`, the
  * lifecycle the arm actually acts on, is a closed enum below.
  */
@@ -69,7 +69,7 @@ export type ArmTicketStatus =
   | 'already_implemented'
 
 /**
- * A ticket the brain owns and the arm may claim and execute.
+ * A ticket the hub owns and the arm may claim and execute.
  *
  * `depends_on`, `executed_by`, `lease_expires_at`, `issue`, `branch`,
  * `mr_iid` and `mr_url` are all REQUIRED keys of type `string | null` (see
@@ -93,14 +93,14 @@ export type ArmTicket = {
   updated_at: string
 }
 
-/** What kind of fact an `ArmTransition` reports back to the brain about one ticket. */
+/** What kind of fact an `ArmTransition` reports back to the hub about one ticket. */
 export type ArmTransitionType = 'mr_opened' | 'review_result' | 'merged' | 'failed'
 
 /**
- * One fact the arm reports back to the brain about a ticket it executed.
+ * One fact the arm reports back to the hub about a ticket it executed.
  *
  * `idempotency_key` is MANDATORY, unlike every other field below: the
- * brain's report endpoint uses it to tell a retried report from a second,
+ * hub's report endpoint uses it to tell a retried report from a second,
  * real transition apart. A transition this sanitizer cannot name one for is
  * not a degraded transition, it is unsafe to apply, so `sanitizeArmTransition`
  * refuses the whole record rather than keeping the rest of it.
@@ -115,7 +115,7 @@ export type ArmTransition = {
   /**
    * Same literal union as `Verdict` (index.ts), restated rather than
    * imported: index.ts itself re-exports this module (`export * from
-   * './brain.js'`), so importing `Verdict` from index.ts here would cycle
+   * './arm.js'`), so importing `Verdict` from index.ts here would cycle
    * straight back through it. TypeScript compares union types structurally,
    * so this stays interchangeable with `Verdict` for every caller.
    */
@@ -126,7 +126,7 @@ export type ArmTransition = {
   cost_ticks?: number
 }
 
-/** One line of the arm's own execution journal for a ticket run, reported to the brain. */
+/** One line of the arm's own execution journal for a ticket run, reported to the hub. */
 export type ArmEvent = {
   run_id: string
   at: string
@@ -135,7 +135,7 @@ export type ArmEvent = {
   payload?: TaskEventData
 }
 
-/** What claiming a ticket (the brain's lease endpoint) hands back to the arm. */
+/** What claiming a ticket (the hub's lease endpoint) hands back to the arm. */
 export type ArmClaimResult = {
   ticket: ArmTicket
   lease_expires_at: string
@@ -145,7 +145,7 @@ export type ArmClaimResult = {
 export type ArmOrderAction = 'ship' | 'reply' | 'abandon'
 
 /**
- * The decision itself, as the brain's heartbeat response hands it back to the
+ * The decision itself, as the hub's heartbeat response hands it back to the
  * arm: what to do, and the instruction to carry out when that is `'reply'`.
  * `instruction` and `issued_at` are REQUIRED keys, same convention as
  * `ArmTicket` above (this module's own doc comment) rather than tasks.ts's
@@ -160,7 +160,7 @@ export type ArmOrder = {
 }
 
 /**
- * What the brain's heartbeat route hands back to the arm (D19): the lease
+ * What the hub's heartbeat route hands back to the arm (D19): the lease
  * extension every heartbeat already grants, plus the order a human decided
  * from the dashboard while this ticket was waiting on one. `null` on every
  * ordinary tick nothing is waiting on.
@@ -239,7 +239,7 @@ const nullableStr = (v: unknown, max: number): string | null => {
  * back to `fallback` when unusable. Bounded, unlike tasks.ts's own
  * `isoOrNow` (which never truncates): this module publishes JSON Schemas for
  * some of the shapes that use it, and the forward cross test in
- * brain.test.ts requires every string this sanitizer can produce to already
+ * arm.test.ts requires every string this sanitizer can produce to already
  * satisfy the bound the matching schema declares. Built on `str`, not a
  * separate trim+slice, so it inherits the same trim-cut-trim guarantee: a
  * value that degrades to whitespace-only after truncation falls back to
@@ -301,7 +301,7 @@ function sanitizeArmIssueRef(raw: unknown): ArmIssueRef | null {
 }
 
 /**
- * Revalidates a ticket proposal read off the brain's wire. `id` is the one
+ * Revalidates a ticket proposal read off the hub's wire. `id` is the one
  * identity-bearing field, same role `id` plays for `sanitizeTaskRecord`
  * (tasks.ts): without it the object cannot be told apart from any other, so
  * the whole proposal is unusable. Every other field degrades independently.
@@ -326,7 +326,7 @@ export function sanitizeArmTicketRequest(raw: unknown): ArmTicketRequest | null 
 }
 
 /**
- * Revalidates an `ArmTicket` read off the brain's wire. Two fields gate the
+ * Revalidates an `ArmTicket` read off the hub's wire. Two fields gate the
  * whole record: `id` (identity) and `status`. An unrecognized status is
  * never fabricated into a plausible one (contrast `TaskStatus`'s own
  * `'failed'` fallback, tasks.ts): a ticket this build cannot place in its
@@ -369,7 +369,7 @@ export function sanitizeArmTicket(raw: unknown): ArmTicket | null {
 
 /**
  * Revalidates an `ArmTransition` before it is sent to, or read back from,
- * the brain's report endpoint. Two fields gate the whole record: `type`
+ * the hub's report endpoint. Two fields gate the whole record: `type`
  * (same never-fabricate rule as `ArmTicket.status`) and `idempotency_key`,
  * mandatory per this type's own doc comment. Every other field is optional
  * and degrades to absence, never to an invented placeholder.
@@ -444,7 +444,7 @@ function sanitizeArmEventPayload(raw: unknown): TaskEventData {
 }
 
 /**
- * Revalidates an `ArmEvent` before it is reported to the brain. Gated on
+ * Revalidates an `ArmEvent` before it is reported to the hub. Gated on
  * `run_id`: an event this reader cannot place under a run is unusable, same
  * role `TaskEvent.seq` plays in `sanitizeTaskEvent` (tasks.ts).
  */
@@ -468,7 +468,7 @@ export function sanitizeArmEvent(raw: unknown): ArmEvent | null {
 }
 
 /**
- * Revalidates the brain's claim/lease response. Gated on `ticket`: a claim
+ * Revalidates the hub's claim/lease response. Gated on `ticket`: a claim
  * whose ticket cannot itself be trusted (see `sanitizeArmTicket`) grants
  * nothing usable, so the whole result is refused rather than handing back a
  * lease over an unreadable ticket. The lease falls back to the ticket's own
@@ -495,7 +495,7 @@ export function sanitizeArmClaimResult(raw: unknown): ArmClaimResult | null {
 }
 
 /**
- * Revalidates an `ArmOrder` read off the brain's heartbeat response. Gated on
+ * Revalidates an `ArmOrder` read off the hub's heartbeat response. Gated on
  * `action`: same never-fabricate rule as `ArmTicket.status` and
  * `ArmTransition.type`, an order outside this closed set is not safe to
  * dispatch, so the whole order is refused rather than guessed at.
@@ -522,12 +522,12 @@ export function sanitizeArmOrder(raw: unknown): ArmOrder | null {
 }
 
 /**
- * Revalidates the brain's heartbeat response. Gated on `lease_expires_at`,
+ * Revalidates the hub's heartbeat response. Gated on `lease_expires_at`,
  * same reasoning as `sanitizeArmClaimResult`: a heartbeat that cannot say
  * when the lease it just renewed expires is not a usable response, and unlike
  * `created_at`/`updated_at` elsewhere in this module, a lease deadline must
  * never fall back to "now": that would either claim an already-expired lease
- * or fabricate an extension the brain never granted. A malformed `order`
+ * or fabricate an extension the hub never granted. A malformed `order`
  * degrades to `null` rather than sinking the whole response, the same
  * never-fabricate rule `sanitizeArmOrder` itself applies.
  */
@@ -551,7 +551,7 @@ export function sanitizeArmHeartbeatResponse(raw: unknown): ArmHeartbeatResponse
  * `reviewRecordSchema` (index.ts), `ticketBodySchema` and `recapRecordSchema`
  * (this package): every `sanitizeArmTicket` output validates here (forward),
  * and the schema refuses every shape the sanitizer refuses (backward, tested
- * in brain.test.ts) so the two cannot silently drift apart.
+ * in arm.test.ts) so the two cannot silently drift apart.
  */
 export const armTicketSchema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',

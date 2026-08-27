@@ -4,15 +4,13 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { brainErrorMessage, brainRemoteUrl, listTickets, type BrainError } from './brain-client.js'
-import { startBrainDaemon, type BrainDaemonHandle } from './brain-daemon.js'
 import { listLocalBranches, listWorktrees } from './branches.js'
 import {
   isMergeStrategy,
   loadGlobalConfig,
-  resolveBrainAutoMerge,
   resolveMaxTaskTurns,
   resolveMergeSettings,
+  resolveRunnerAutoMerge,
   saveGlobalConfig,
   type CodesemaConfig,
   type MergeStrategy,
@@ -32,6 +30,7 @@ import {
   type ForgeIssueStateFilter,
 } from './forge-issues.js'
 import { listOpenMrs, type ForgeMrsResult, type ForgeMrStateFilter } from './forge-mrs.js'
+import { hubErrorMessage, hubRemoteUrl, listTickets, type HubError } from './hub-client.js'
 import { t } from './i18n.js'
 import type {
   MrReviewMode,
@@ -58,6 +57,7 @@ import {
   setSyncAutoPush,
   writeRulesContent,
 } from './repo-config.js'
+import { startRunnerDaemon, type RunnerDaemonHandle } from './runner-daemon.js'
 import { loadSyncCredentials } from './sync.js'
 import { applyTaskCriteria } from './task-criteria.js'
 import type { TaskActionResult } from './task-runner.js'
@@ -649,7 +649,7 @@ function nextGlobalConfig(current: CodesemaConfig, picked: AgentSelection): Code
 }
 
 type SettingsSnapshot = {
-  brainAutoMerge: { value: boolean; raw: boolean | undefined }
+  runnerAutoMerge: { value: boolean; raw: boolean | undefined }
   mergeStrategy: { value: MergeStrategy | undefined; raw: MergeStrategy | undefined }
   maxTaskTurns: { value: number; raw: number | undefined }
 }
@@ -657,7 +657,7 @@ type SettingsSnapshot = {
 function settingsSnapshot(config: CodesemaConfig): SettingsSnapshot {
   const merge = resolveMergeSettings(config)
   return {
-    brainAutoMerge: { value: resolveBrainAutoMerge(config), raw: config.brainAutoMerge },
+    runnerAutoMerge: { value: resolveRunnerAutoMerge(config), raw: config.runnerAutoMerge },
     mergeStrategy: { value: merge.strategy, raw: config.mergeStrategy },
     maxTaskTurns: { value: resolveMaxTaskTurns(config), raw: config.maxTaskTurns },
   }
@@ -670,16 +670,16 @@ function handleSettingsGet(res: ServerResponse): void {
 const MAX_SETTINGS_BODY_BYTES = 1024
 const MAX_TASK_TURNS = 500
 
-type SettingsUpdate = Pick<CodesemaConfig, 'brainAutoMerge' | 'mergeStrategy' | 'maxTaskTurns'>
+type SettingsUpdate = Pick<CodesemaConfig, 'runnerAutoMerge' | 'mergeStrategy' | 'maxTaskTurns'>
 const SETTINGS_KEYS: ReadonlySet<string> = new Set([
-  'brainAutoMerge',
+  'runnerAutoMerge',
   'mergeStrategy',
   'maxTaskTurns',
 ])
 
 /**
- * PUT /api/settings writes the three GLOBAL-ONLY brain-loop settings
- * (config.ts: brainAutoMerge, mergeStrategy, maxTaskTurns), so it needs the
+ * PUT /api/settings writes the three GLOBAL-ONLY runner-loop settings
+ * (config.ts: runnerAutoMerge, mergeStrategy, maxTaskTurns), so it needs the
  * same per-server CSRF token as the other /api/config/* mutations. Every
  * field is validated before ANY write happens, so a bad field never leaves
  * the other, valid ones written and the invalid one silently skipped.
@@ -707,11 +707,11 @@ async function handleSettingsUpdate(
     return sendJson(res, 400, { error: `unknown setting: ${unknownKey}` })
   }
   const update: SettingsUpdate = {}
-  if ('brainAutoMerge' in payload) {
-    if (typeof payload.brainAutoMerge !== 'boolean') {
-      return sendJson(res, 400, { error: 'brainAutoMerge must be a boolean' })
+  if ('runnerAutoMerge' in payload) {
+    if (typeof payload.runnerAutoMerge !== 'boolean') {
+      return sendJson(res, 400, { error: 'runnerAutoMerge must be a boolean' })
     }
-    update.brainAutoMerge = payload.brainAutoMerge
+    update.runnerAutoMerge = payload.runnerAutoMerge
   }
   if ('mergeStrategy' in payload) {
     if (!isMergeStrategy(payload.mergeStrategy)) {
@@ -1329,33 +1329,28 @@ async function handleIssuesList(
 }
 
 /**
- * The brain's own view of this project's in-flight tickets, for a future
+ * The hub's own view of this project's in-flight tickets, for a future
  * dashboard: every status a caller could act on or care about right now.
  * `done` is left out on purpose — the wire contract has no way to bound it by
  * date, and an unbounded "every ticket ever finished" is not what "in
- * flight" means. 503 whenever the brain integration is not usable for this
+ * flight" means. 503 whenever the hub integration is not usable for this
  * project right now (no credentials, or no git origin remote to scope tickets
  * by) — not 501 (this codebase's convention for "no task manager at all"),
  * since the feature exists here, it is just not connected.
  */
-const BRAIN_DASHBOARD_STATUSES = [
-  'published',
-  'in_progress',
-  'mr_opened',
-  'ready_to_merge',
-] as const
+const HUB_DASHBOARD_STATUSES = ['published', 'in_progress', 'mr_opened', 'ready_to_merge'] as const
 
-async function handleBrainTicketsList(res: ServerResponse, cwd: string): Promise<void> {
+async function handleHubTicketsList(res: ServerResponse, cwd: string): Promise<void> {
   const creds = loadSyncCredentials()
-  const remoteUrl = creds ? brainRemoteUrl(cwd) : null
+  const remoteUrl = creds ? hubRemoteUrl(cwd) : null
   if (!creds || !remoteUrl) {
     return sendJson(res, 503, { available: false })
   }
   const results = await Promise.all(
-    BRAIN_DASHBOARD_STATUSES.map((status) => listTickets(creds, remoteUrl, status)),
+    HUB_DASHBOARD_STATUSES.map((status) => listTickets(creds, remoteUrl, status)),
   )
   const tickets: ArmTicket[] = []
-  let firstError: BrainError | null = null
+  let firstError: HubError | null = null
   for (const result of results) {
     if (result.ok) {
       tickets.push(...result.data)
@@ -1364,7 +1359,7 @@ async function handleBrainTicketsList(res: ServerResponse, cwd: string): Promise
     }
   }
   if (tickets.length === 0 && firstError) {
-    return sendJson(res, 503, { available: false, error: brainErrorMessage(firstError) })
+    return sendJson(res, 503, { available: false, error: hubErrorMessage(firstError) })
   }
   return sendJson(res, 200, { available: true, tickets })
 }
@@ -1598,7 +1593,7 @@ function createRequestHandler(handlerOpts: {
         pathname === '/api/issues' ||
         pathname === '/api/branches' ||
         pathname === '/api/worktrees' ||
-        pathname === '/api/brain/tickets' ||
+        pathname === '/api/hub/tickets' ||
         pathname === '/api/reviews/latest' ||
         pathname === '/api/reviews' ||
         pathname === '/api/reviews/record' ||
@@ -1629,8 +1624,8 @@ function createRequestHandler(handlerOpts: {
         if (pathname === '/api/worktrees') {
           return sendJson(res, 200, listWorktrees(scoped.cwd))
         }
-        if (pathname === '/api/brain/tickets') {
-          return void handleBrainTicketsList(res, scoped.cwd)
+        if (pathname === '/api/hub/tickets') {
+          return void handleHubTicketsList(res, scoped.cwd)
         }
         if (pathname === '/api/reviews/latest') {
           return sendJson(res, 200, { latest: listLatestReviews(scoped.cwd) })
@@ -1953,17 +1948,17 @@ export async function startServer(
     }),
     opts.port ?? 4400,
   )
-  // `codesema workspace --brain` / `codesema brain serve` (index.ts,
-  // brain-commands.ts) set this before calling workspace(), which has no
-  // room in its own options type for a brain flag: read here, at the one
+  // `codesema workspace --runner` / `codesema runner serve` (index.ts,
+  // runner-commands.ts) set this before calling workspace(), which has no
+  // room in its own options type for a runner flag: read here, at the one
   // place that actually needs it, the same way CODESEMA_SYNC_URL /
   // CODESEMA_DEV_VITE already cross an intermediate layer in this codebase.
-  const brainDaemon: BrainDaemonHandle | null =
-    opts.taskManager && process.env.CODESEMA_BRAIN_MODE === '1'
-      ? startBrainDaemon({ manager: opts.taskManager, cwd: opts.cwd })
+  const runnerDaemon: RunnerDaemonHandle | null =
+    opts.taskManager && process.env.CODESEMA_RUNNER_MODE === '1'
+      ? startRunnerDaemon({ manager: opts.taskManager, cwd: opts.cwd })
       : null
   const stop = async () => {
-    await brainDaemon?.stop()
+    await runnerDaemon?.stop()
     await new Promise<void>((resolveClose) => {
       server.closeAllConnections()
       server.close(() => resolveClose())

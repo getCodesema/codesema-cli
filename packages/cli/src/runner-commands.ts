@@ -1,4 +1,4 @@
-// `codesema brain …`: connect a workspace to a brain, inspect it, draft and
+// `codesema runner …`: connect a workspace to a hub, inspect it, draft and
 // publish a ticket by hand, or start/stop the background daemon (D21: `serve
 // --detach` backgrounds it, `stop` ends it). Same shape as sync.ts's
 // `syncCommand`/`linkCommand`: one action-dispatching entry point. Usage
@@ -10,27 +10,31 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { closeSync, mkdirSync, openSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { runAgent } from './agent.js'
-import {
-  brainErrorMessage,
-  brainRemoteUrl,
-  listInFlightTickets,
-  listTickets,
-  parseBrainToken,
-  type InFlightTicket,
-} from './brain-client.js'
-import { draftAndPublishTicket } from './brain-draft.js'
-import { readBrainPidfile, removeBrainPidfile } from './brain-pidfile.js'
-import { installBrainService, uninstallBrainService, type ExecCommandFn } from './brain-service.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import { tryGit } from './git.js'
+import {
+  hubErrorMessage,
+  hubRemoteUrl,
+  listInFlightTickets,
+  listTickets,
+  parseHubToken,
+  type InFlightTicket,
+} from './hub-client.js'
 import { t } from './i18n.js'
+import { readRunnerPidfile, removeRunnerPidfile } from './runner-pidfile.js'
+import {
+  installRunnerService,
+  uninstallRunnerService,
+  type ExecCommandFn,
+} from './runner-service.js'
 import { loadSyncCredentials } from './sync.js'
+import { draftAndPublishTicket } from './ticket-draft.js'
 import { ACCENT, AMBER, dim, GREEN, paint, renderFieldRows, type FieldRow } from './ui.js'
 import { isPidAlive } from './workspace-lock.js'
 import { workspace } from './workspace.js'
 
 /**
- * The one `spawn` overload `spawnDetachedBrainServe` actually calls, pulled
+ * The one `spawn` overload `spawnDetachedRunnerServe` actually calls, pulled
  * out as its own type rather than `typeof spawn`: the real signature is a
  * dozen overloads deep, which a test fake has no reason to satisfy.
  */
@@ -45,7 +49,7 @@ function printResult(statusMessage: string, rows: FieldRow[]): void {
   }
 }
 
-export type BrainCommandOptions = {
+export type RunnerCommandOptions = {
   action?: string | undefined
   cwd: string
   url?: string | undefined
@@ -53,65 +57,65 @@ export type BrainCommandOptions = {
   issue?: string | undefined
   title?: string | undefined
   prompt?: string | undefined
-  /** `brain serve --detach` only: background the daemon instead of running it here. */
+  /** `runner serve --detach` only: background the daemon instead of running it here. */
   detach?: boolean | undefined
-  /** `brain install-service` only: EnvironmentFile= for the generated systemd unit. */
+  /** `runner install-service` only: EnvironmentFile= for the generated systemd unit. */
   envFile?: string | undefined
   /** Test seam. */
   fetchImpl?: typeof fetch | undefined
   /** Test seam. */
   runAgentFn?: typeof runAgent | undefined
-  /** Test seam for `brain serve --detach`: never forks a real process in tests. */
+  /** Test seam for `runner serve --detach`: never forks a real process in tests. */
   spawnFn?: SpawnFn | undefined
-  /** Test seam for `brain install-service`/`uninstall-service`: never shells out to a real systemctl/loginctl in tests. */
+  /** Test seam for `runner install-service`/`uninstall-service`: never shells out to a real systemctl/loginctl in tests. */
   execFn?: ExecCommandFn | undefined
-  /** Test seams for `brain stop`'s bounded poll: real 10s/200ms by default. */
+  /** Test seams for `runner stop`'s bounded poll: real 10s/200ms by default. */
   stopTimeoutMs?: number | undefined
   stopPollIntervalMs?: number | undefined
 }
 
-async function brainConnect(opts: BrainCommandOptions): Promise<void> {
+async function runnerConnect(opts: RunnerCommandOptions): Promise<void> {
   if (!opts.url || !opts.token) {
-    throw new Error(t('brain.connectMissingFlags'))
+    throw new Error(t('runner.connectMissingFlags'))
   }
-  const parsed = parseBrainToken(opts.token)
+  const parsed = parseHubToken(opts.token)
   if (!parsed) {
-    throw new Error(t('brain.badToken'))
+    throw new Error(t('runner.badToken'))
   }
   // Same global credentials sync.ts's createWorkspace/linkWorkspace write:
-  // `codesema sync`, `codesema link` and the brain daemon share one account.
+  // `codesema sync`, `codesema link` and the runner daemon share one account.
   const path = saveGlobalConfig({
     ...loadGlobalConfig(),
     syncUrl: opts.url,
     syncWorkspaceId: parsed.workspaceId,
     syncSecret: parsed.secret,
   })
-  printResult(t('brain.connected', { url: opts.url }), [
+  printResult(t('runner.connected', { url: opts.url }), [
     { label: t('field.account'), value: parsed.workspaceId },
   ])
-  console.log(`  ${t('brain.savedTo', { path })}`)
+  console.log(`  ${t('runner.savedTo', { path })}`)
   console.log('')
 }
 
 /**
- * Local-only: clears the three credentials `brainConnect` wrote, the same
+ * Local-only: clears the three credentials `runnerConnect` wrote, the same
  * destructure-and-omit `sync.ts`'s `deleteWorkspaceData` uses to drop
- * `syncWorkspaceId`/`syncSecret` (here all three, since disconnecting a brain
- * is meant to fully forget it, not just its data). No API call — the brain
+ * `syncWorkspaceId`/`syncSecret` (here all three, since disconnecting a hub
+ * is meant to fully forget it, not just its data). No API call — the hub
  * has its own revocation, shipped separately in its dashboard Settings — so
  * this only ever touches the local file and reminds the caller to revoke
  * there too.
  */
-async function brainDisconnect(): Promise<void> {
+async function runnerDisconnect(): Promise<void> {
   const config = loadGlobalConfig()
   if (!config.syncUrl && !config.syncWorkspaceId && !config.syncSecret) {
-    printResult(t('brain.alreadyDisconnected'), [])
+    printResult(t('runner.alreadyDisconnected'), [])
     return
   }
   const { syncUrl: _url, syncWorkspaceId: _id, syncSecret: _secret, ...rest } = config
   saveGlobalConfig(rest)
-  printResult(t('brain.disconnected'), [])
-  console.log(`  ${paint(t('brain.disconnectRevokeReminder'), AMBER)}`)
+  printResult(t('runner.disconnected'), [])
+  console.log(`  ${paint(t('runner.disconnectRevokeReminder'), AMBER)}`)
   console.log('')
 }
 
@@ -130,21 +134,21 @@ function formatUptime(startedAt: string, nowMs: number): string {
   return `${s}s`
 }
 
-/** `{12s ago}` / `{3min ago}` / `{2h ago}` / `{5d ago}`: coarsest unit only, i18n'd via `brain.heartbeat*`. */
+/** `{12s ago}` / `{3min ago}` / `{2h ago}` / `{5d ago}`: coarsest unit only, i18n'd via `runner.heartbeat*`. */
 function formatHeartbeatAge(updatedAt: string, nowMs: number): string {
   const elapsedS = Math.max(0, Math.floor((nowMs - Date.parse(updatedAt)) / 1000))
   if (elapsedS < 60) {
-    return t('brain.heartbeatSeconds', { n: elapsedS })
+    return t('runner.heartbeatSeconds', { n: elapsedS })
   }
   const elapsedMin = Math.floor(elapsedS / 60)
   if (elapsedMin < 60) {
-    return t('brain.heartbeatMinutes', { n: elapsedMin })
+    return t('runner.heartbeatMinutes', { n: elapsedMin })
   }
   const elapsedH = Math.floor(elapsedMin / 60)
   if (elapsedH < 24) {
-    return t('brain.heartbeatHours', { n: elapsedH })
+    return t('runner.heartbeatHours', { n: elapsedH })
   }
-  return t('brain.heartbeatDays', { n: Math.floor(elapsedH / 24) })
+  return t('runner.heartbeatDays', { n: Math.floor(elapsedH / 24) })
 }
 
 const IN_FLIGHT_TITLE_MAX = 64
@@ -154,27 +158,27 @@ function truncateInFlightTitle(title: string): string {
 }
 
 /**
- * One `brain status` in-flight detail line: brain status, executor, heartbeat
- * age, the arm's own local status when the brain reports one (absent on a
- * brain build older than that field), and a `stale` tag when the claim's
+ * One `runner status` in-flight detail line: hub status, executor, heartbeat
+ * age, the arm's own local status when the hub reports one (absent on a
+ * hub build older than that field), and a `stale` tag when the claim's
  * lease has already lapsed: a ticket a dead or stuck arm is still shown as
  * holding.
  */
 function inFlightDetailLine(ticket: InFlightTicket, nowMs: number): string {
   const facts = [
     ticket.status,
-    ticket.executed_by ?? t('brain.fieldUnclaimed'),
+    ticket.executed_by ?? t('runner.fieldUnclaimed'),
     formatHeartbeatAge(ticket.updated_at, nowMs),
     ...(ticket.arm_local_status ? [ticket.arm_local_status] : []),
   ]
   const line = dim(facts.join(' · '))
   const isStale = ticket.lease_expires_at !== null && Date.parse(ticket.lease_expires_at) < nowMs
-  return isStale ? `${line} ${paint(t('brain.fieldStale'), AMBER)}` : line
+  return isStale ? `${line} ${paint(t('runner.fieldStale'), AMBER)}` : line
 }
 
 function printInFlightTickets(tickets: InFlightTicket[]): void {
   console.log('')
-  console.log(`  ${paint(t('brain.inFlightHeading'), ACCENT)}`)
+  console.log(`  ${paint(t('runner.inFlightHeading'), ACCENT)}`)
   const nowMs = Date.now()
   for (const ticket of tickets) {
     console.log(`    ${truncateInFlightTitle(ticket.title)}`)
@@ -183,54 +187,54 @@ function printInFlightTickets(tickets: InFlightTicket[]): void {
 }
 
 /**
- * The daemon rows for `brain status`: pid/port/uptime read off the D21
+ * The daemon rows for `runner status`: pid/port/uptime read off the D21
  * pidfile, or a single "not running" row. A pidfile naming a dead pid is
- * cleaned up here too, the same read-time doctrine `brainStop` uses, so
+ * cleaned up here too, the same read-time doctrine `runnerStop` uses, so
  * neither command leaves a stale file for the other to trip over.
  */
-function brainDaemonStatusRows(cwd: string): FieldRow[] {
-  const pidfile = readBrainPidfile(cwd)
+function runnerDaemonStatusRows(cwd: string): FieldRow[] {
+  const pidfile = readRunnerPidfile(cwd)
   if (!pidfile || !isPidAlive(pidfile.pid)) {
     if (pidfile) {
-      removeBrainPidfile(cwd, pidfile.pid)
+      removeRunnerPidfile(cwd, pidfile.pid)
     }
-    return [{ label: t('brain.fieldDaemon'), value: t('brain.notRunning') }]
+    return [{ label: t('runner.fieldDaemon'), value: t('runner.notRunning') }]
   }
   return [
-    { label: t('brain.fieldPid'), value: String(pidfile.pid) },
-    { label: t('brain.fieldPort'), value: String(pidfile.port) },
-    { label: t('brain.fieldUptime'), value: formatUptime(pidfile.started_at, Date.now()) },
+    { label: t('runner.fieldPid'), value: String(pidfile.pid) },
+    { label: t('runner.fieldPort'), value: String(pidfile.port) },
+    { label: t('runner.fieldUptime'), value: formatUptime(pidfile.started_at, Date.now()) },
   ]
 }
 
-async function brainStatus(opts: BrainCommandOptions): Promise<void> {
+async function runnerStatus(opts: RunnerCommandOptions): Promise<void> {
   const creds = loadSyncCredentials()
   if (!creds) {
-    throw new Error(t('brain.notConnected'))
+    throw new Error(t('runner.notConnected'))
   }
-  const remoteUrl = brainRemoteUrl(opts.cwd)
+  const remoteUrl = hubRemoteUrl(opts.cwd)
   const rows: FieldRow[] = [
-    { label: t('brain.fieldUrl'), value: creds.url },
+    { label: t('runner.fieldUrl'), value: creds.url },
     { label: t('field.account'), value: creds.workspaceId },
-    { label: t('brain.fieldRepo'), value: remoteUrl ?? t('brain.noRemote') },
-    ...brainDaemonStatusRows(opts.cwd),
+    { label: t('runner.fieldRepo'), value: remoteUrl ?? t('runner.noRemote') },
+    ...runnerDaemonStatusRows(opts.cwd),
   ]
   if (!remoteUrl) {
-    printResult(t('brain.statusTitle'), rows)
+    printResult(t('runner.statusTitle'), rows)
     return
   }
   const fetchImpl = opts.fetchImpl ?? fetch
   const result = await listTickets(creds, remoteUrl, 'published', fetchImpl)
   rows.push({
-    label: t('brain.fieldReady'),
-    value: result.ok ? String(result.data.length) : brainErrorMessage(result.error),
+    label: t('runner.fieldReady'),
+    value: result.ok ? String(result.data.length) : hubErrorMessage(result.error),
   })
   const inFlight = await listInFlightTickets(creds, remoteUrl, fetchImpl)
   rows.push({
-    label: t('brain.fieldInFlight'),
-    value: inFlight.ok ? String(inFlight.data.length) : brainErrorMessage(inFlight.error),
+    label: t('runner.fieldInFlight'),
+    value: inFlight.ok ? String(inFlight.data.length) : hubErrorMessage(inFlight.error),
   })
-  printResult(t('brain.statusTitle'), rows)
+  printResult(t('runner.statusTitle'), rows)
   if (inFlight.ok && inFlight.data.length > 0) {
     printInFlightTickets(inFlight.data)
   }
@@ -241,11 +245,11 @@ function parsePositiveInt(raw: string): number | null {
   return Number.isInteger(n) && n > 0 ? n : null
 }
 
-async function brainTicket(opts: BrainCommandOptions): Promise<void> {
+async function runnerTicket(opts: RunnerCommandOptions): Promise<void> {
   const hasIssue = opts.issue !== undefined
   const hasPromptForm = opts.title !== undefined && opts.prompt !== undefined
   if (hasIssue === hasPromptForm) {
-    throw new Error(t('brain.ticketUsage'))
+    throw new Error(t('runner.ticketUsage'))
   }
 
   const seams = {
@@ -256,7 +260,7 @@ async function brainTicket(opts: BrainCommandOptions): Promise<void> {
     ? await (async () => {
         const issueNumber = opts.issue ? parsePositiveInt(opts.issue) : null
         if (issueNumber === null) {
-          throw new Error(t('brain.badIssueNumber', { value: opts.issue ?? '' }))
+          throw new Error(t('runner.badIssueNumber', { value: opts.issue ?? '' }))
         }
         return draftAndPublishTicket({ kind: 'issue', cwd: opts.cwd, issueNumber }, seams)
       })()
@@ -271,10 +275,10 @@ async function brainTicket(opts: BrainCommandOptions): Promise<void> {
       )
 
   if (!outcome.ok) {
-    throw new Error(t('brain.draftFailed', { reason: outcome.reason }))
+    throw new Error(t('runner.draftFailed', { reason: outcome.reason }))
   }
-  printResult(t('brain.ticketCreated', { title: outcome.ticket.title }), [
-    { label: t('brain.fieldId'), value: outcome.ticket.id },
+  printResult(t('runner.ticketCreated', { title: outcome.ticket.title }), [
+    { label: t('runner.fieldId'), value: outcome.ticket.id },
     { label: t('field.status'), value: outcome.ticket.status },
   ])
   console.log('')
@@ -282,12 +286,12 @@ async function brainTicket(opts: BrainCommandOptions): Promise<void> {
   console.log('')
 }
 
-function brainDaemonLogPath(cwd: string): string {
-  return join(cwd, '.codesema', 'brain-daemon.log')
+function runnerDaemonLogPath(cwd: string): string {
+  return join(cwd, '.codesema', 'runner-daemon.log')
 }
 
 /**
- * Re-invokes THIS SAME binary as `codesema brain serve` (no --detach: that
+ * Re-invokes THIS SAME binary as `codesema runner serve` (no --detach: that
  * flag names what the CURRENT process does, not the child, or every child
  * would refork itself), detached and unref'd so it outlives us, stdout/stderr
  * appended to a repo-local log since a detached process has no terminal to
@@ -295,16 +299,16 @@ function brainDaemonLogPath(cwd: string): string {
  * `isProcessEntrypoint` resolves against: the bin script, whether that is
  * the built `dist/index.mjs` or a dev entry point.
  */
-function spawnDetachedBrainServe(cwd: string, spawnFn: SpawnFn): ChildProcess {
+function spawnDetachedRunnerServe(cwd: string, spawnFn: SpawnFn): ChildProcess {
   const entry = process.argv[1]
   if (entry === undefined) {
-    throw new Error(t('brain.detachSpawnFailed'))
+    throw new Error(t('runner.detachSpawnFailed'))
   }
-  const logPath = brainDaemonLogPath(cwd)
+  const logPath = runnerDaemonLogPath(cwd)
   mkdirSync(dirname(logPath), { recursive: true })
   const logFd = openSync(logPath, 'a')
   try {
-    const child = spawnFn(process.execPath, [entry, 'brain', 'serve'], {
+    const child = spawnFn(process.execPath, [entry, 'runner', 'serve'], {
       cwd,
       detached: true,
       stdio: ['ignore', logFd, logFd],
@@ -319,24 +323,24 @@ function spawnDetachedBrainServe(cwd: string, spawnFn: SpawnFn): ChildProcess {
   }
 }
 
-async function brainServe(opts: BrainCommandOptions): Promise<void> {
+async function runnerServe(opts: RunnerCommandOptions): Promise<void> {
   if (opts.detach) {
-    const child = spawnDetachedBrainServe(opts.cwd, opts.spawnFn ?? spawn)
+    const child = spawnDetachedRunnerServe(opts.cwd, opts.spawnFn ?? spawn)
     child.unref()
     if (child.pid === undefined) {
-      throw new Error(t('brain.detachSpawnFailed'))
+      throw new Error(t('runner.detachSpawnFailed'))
     }
-    printResult(t('brain.detached', { pid: child.pid }), [
-      { label: t('brain.fieldLog'), value: brainDaemonLogPath(opts.cwd) },
+    printResult(t('runner.detached', { pid: child.pid }), [
+      { label: t('runner.fieldLog'), value: runnerDaemonLogPath(opts.cwd) },
     ])
     return
   }
   // workspace() (workspace.ts) has a fixed options type this module does not
-  // own, with no room for a brain flag, so the signal crosses into
+  // own, with no room for a runner flag, so the signal crosses into
   // startServer (serve.ts) the same way CODESEMA_SYNC_URL/CODESEMA_DEV_VITE
   // already do in this codebase: an env var read at the one place that needs
   // it, not threaded through every caller's signature.
-  process.env.CODESEMA_BRAIN_MODE = '1'
+  process.env.CODESEMA_RUNNER_MODE = '1'
   await workspace({ cwd: opts.cwd, open: true, port: undefined })
 }
 
@@ -362,24 +366,24 @@ async function waitForPidDeath(
 /**
  * SIGTERM, then a bounded wait (default ~10s) for the pid to actually exit,
  * never an infinite hang. An absent pidfile or one naming an already-dead pid
- * both mean "nothing to stop", reported the same way `brainStatus` would
+ * both mean "nothing to stop", reported the same way `runnerStatus` would
  * report it, and just as idempotent: calling `stop` twice never throws.
  */
-async function brainStop(opts: BrainCommandOptions): Promise<void> {
-  const pidfile = readBrainPidfile(opts.cwd)
+async function runnerStop(opts: RunnerCommandOptions): Promise<void> {
+  const pidfile = readRunnerPidfile(opts.cwd)
   if (!pidfile || !isPidAlive(pidfile.pid)) {
     if (pidfile) {
-      removeBrainPidfile(opts.cwd, pidfile.pid)
+      removeRunnerPidfile(opts.cwd, pidfile.pid)
     }
-    printResult(t('brain.notRunning'), [])
+    printResult(t('runner.notRunning'), [])
     return
   }
   try {
     process.kill(pidfile.pid, 'SIGTERM')
   } catch {
     // Died in the gap between the isPidAlive check above and this call.
-    removeBrainPidfile(opts.cwd, pidfile.pid)
-    printResult(t('brain.notRunning'), [])
+    removeRunnerPidfile(opts.cwd, pidfile.pid)
+    printResult(t('runner.notRunning'), [])
     return
   }
   const died = await waitForPidDeath(
@@ -390,87 +394,87 @@ async function brainStop(opts: BrainCommandOptions): Promise<void> {
   if (!died) {
     const seconds = Math.round((opts.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS) / 1000)
     console.log('')
-    console.log(`  ${t('brain.stopTimeout', { pid: pidfile.pid, seconds })}`)
+    console.log(`  ${t('runner.stopTimeout', { pid: pidfile.pid, seconds })}`)
     console.log('')
     return
   }
-  removeBrainPidfile(opts.cwd, pidfile.pid)
-  printResult(t('brain.stopped', { pid: pidfile.pid }), [])
+  removeRunnerPidfile(opts.cwd, pidfile.pid)
+  printResult(t('runner.stopped', { pid: pidfile.pid }), [])
 }
 
 /**
  * Writes and enables the systemd --user unit (D-lifecycle): must run inside
- * the repo the daemon should serve, same as `brain serve` itself, since that
+ * the repo the daemon should serve, same as `runner serve` itself, since that
  * repo's top-level path becomes the unit's WorkingDirectory.
  */
-async function brainInstallService(opts: BrainCommandOptions): Promise<void> {
+async function runnerInstallService(opts: RunnerCommandOptions): Promise<void> {
   const repoRoot = tryGit(['rev-parse', '--show-toplevel'], opts.cwd)
   if (!repoRoot) {
-    throw new Error(t('brain.serviceNotARepo'))
+    throw new Error(t('runner.serviceNotARepo'))
   }
-  const result = installBrainService({
+  const result = installRunnerService({
     workingDirectory: repoRoot,
     cwd: opts.cwd,
     envFile: opts.envFile,
     execFn: opts.execFn,
   })
   const rows: FieldRow[] = [
-    { label: t('brain.fieldUnit'), value: result.unitPath },
-    { label: t('brain.fieldWorkingDirectory'), value: result.workingDirectory },
-    { label: t('brain.fieldExecStart'), value: result.execStart },
+    { label: t('runner.fieldUnit'), value: result.unitPath },
+    { label: t('runner.fieldWorkingDirectory'), value: result.workingDirectory },
+    { label: t('runner.fieldExecStart'), value: result.execStart },
   ]
   if (result.environmentFile) {
-    rows.push({ label: t('brain.fieldEnvironmentFile'), value: result.environmentFile })
+    rows.push({ label: t('runner.fieldEnvironmentFile'), value: result.environmentFile })
   }
-  printResult(t('brain.serviceInstalled'), rows)
+  printResult(t('runner.serviceInstalled'), rows)
   if (result.lingerError) {
-    console.log(`  ${paint(t('brain.lingerFailed', { reason: result.lingerError }), AMBER)}`)
+    console.log(`  ${paint(t('runner.lingerFailed', { reason: result.lingerError }), AMBER)}`)
   }
   console.log('')
 }
 
-/** Idempotent: no unit file on disk is success, the same "nothing to do" doctrine `brainStop` already has for an absent pidfile. */
-async function brainUninstallService(opts: BrainCommandOptions): Promise<void> {
-  const result = uninstallBrainService({ execFn: opts.execFn })
+/** Idempotent: no unit file on disk is success, the same "nothing to do" doctrine `runnerStop` already has for an absent pidfile. */
+async function runnerUninstallService(opts: RunnerCommandOptions): Promise<void> {
+  const result = uninstallRunnerService({ execFn: opts.execFn })
   if (!result.removed) {
-    printResult(t('brain.serviceNotInstalled'), [])
+    printResult(t('runner.serviceNotInstalled'), [])
     return
   }
-  printResult(t('brain.serviceUninstalled'), [
-    { label: t('brain.fieldUnit'), value: result.unitPath },
+  printResult(t('runner.serviceUninstalled'), [
+    { label: t('runner.fieldUnit'), value: result.unitPath },
   ])
 }
 
-export async function brainCommand(opts: BrainCommandOptions): Promise<void> {
+export async function runnerCommand(opts: RunnerCommandOptions): Promise<void> {
   switch (opts.action) {
     case 'connect':
-      await brainConnect(opts)
+      await runnerConnect(opts)
       return
     case 'disconnect':
-      await brainDisconnect()
+      await runnerDisconnect()
       return
     case 'status':
-      await brainStatus(opts)
+      await runnerStatus(opts)
       return
     case 'ticket':
-      await brainTicket(opts)
+      await runnerTicket(opts)
       return
     case 'serve':
-      await brainServe(opts)
+      await runnerServe(opts)
       return
     case 'stop':
-      await brainStop(opts)
+      await runnerStop(opts)
       return
     case 'install-service':
-      await brainInstallService(opts)
+      await runnerInstallService(opts)
       return
     case 'uninstall-service':
-      await brainUninstallService(opts)
+      await runnerUninstallService(opts)
       return
     case undefined:
-      console.log(t('brain.usage'))
+      console.log(t('runner.usage'))
       return
     default:
-      throw new Error(t('brain.unknownAction', { action: opts.action }))
+      throw new Error(t('runner.unknownAction', { action: opts.action }))
   }
 }

@@ -104,7 +104,7 @@ describe('acquireWorkspaceLock', () => {
   })
 })
 
-// Exported for brain-pidfile.ts (D21): brain.pid follows the same "a dead
+// Exported for runner-pidfile.ts (D21): runner.pid follows the same "a dead
 // pid is never a permanent blocker" doctrine as this lock, and reuses this
 // exact check rather than a second copy of it.
 describe('isPidAlive', () => {

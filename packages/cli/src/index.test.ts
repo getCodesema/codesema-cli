@@ -163,7 +163,7 @@ describe('resolveCommand — the ten routed commands', () => {
       'export',
       'sync',
       'link',
-      'brain',
+      'runner',
     ])
   })
 

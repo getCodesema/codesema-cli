@@ -1,26 +1,26 @@
 import { describe, expect, test } from 'bun:test'
+import type { ArmTicket, ArmTicketRequest } from './contract.js'
 import {
-  brainErrorMessage,
   claimTicket,
   claimTicketRequest,
   createTicket,
   failTicketRequest,
   getTicket,
   heartbeat,
+  hubErrorMessage,
   listInFlightTickets,
   listTicketRequests,
   listTickets,
-  parseBrainToken,
+  parseHubToken,
   pushEvents,
   submitTicketRequestTickets,
   transition,
-} from './brain-client.js'
-import type { ArmTicket, ArmTicketRequest } from './contract.js'
+} from './hub-client.js'
 import type { SyncCredentials } from './sync.js'
 
 type Call = { url: string; init: RequestInit }
 
-/** Same stub as sync.test.ts / task-brain.test.ts: records every call, answers one fixed response. */
+/** Same stub as sync.test.ts / task-hub.test.ts: records every call, answers one fixed response. */
 function fetchStub(status: number, body: unknown, calls: Call[]): typeof fetch {
   return ((url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} })
@@ -37,7 +37,7 @@ function fetchOffline(): typeof fetch {
   return (() => Promise.reject(new Error('network unreachable'))) as unknown as typeof fetch
 }
 
-const creds: SyncCredentials = { url: 'https://brain.example', workspaceId: 'w1', secret: 's1' }
+const creds: SyncCredentials = { url: 'https://hub.example', workspaceId: 'w1', secret: 's1' }
 
 const validTicket: ArmTicket = {
   id: 't1',
@@ -65,34 +65,34 @@ const validRequest: ArmTicketRequest = {
   created_at: '2026-01-01T00:00:00.000Z',
 }
 
-describe('parseBrainToken', () => {
+describe('parseHubToken', () => {
   test('splits on the first dot', () => {
-    expect(parseBrainToken('csk_ws1.se.cret')).toEqual({ workspaceId: 'ws1', secret: 'se.cret' })
+    expect(parseHubToken('csk_ws1.se.cret')).toEqual({ workspaceId: 'ws1', secret: 'se.cret' })
   })
 
   test('rejects a token missing the csk_ prefix', () => {
-    expect(parseBrainToken('ws1.secret')).toBeNull()
+    expect(parseHubToken('ws1.secret')).toBeNull()
   })
 
   test('rejects a token with no dot', () => {
-    expect(parseBrainToken('csk_ws1secret')).toBeNull()
+    expect(parseHubToken('csk_ws1secret')).toBeNull()
   })
 
   test('rejects an empty workspace id or secret', () => {
-    expect(parseBrainToken('csk_.secret')).toBeNull()
-    expect(parseBrainToken('csk_ws1.')).toBeNull()
+    expect(parseHubToken('csk_.secret')).toBeNull()
+    expect(parseHubToken('csk_ws1.')).toBeNull()
   })
 
   test('trims surrounding whitespace', () => {
-    expect(parseBrainToken('  csk_ws1.secret  ')).toEqual({ workspaceId: 'ws1', secret: 'secret' })
+    expect(parseHubToken('  csk_ws1.secret  ')).toEqual({ workspaceId: 'ws1', secret: 'secret' })
   })
 })
 
-describe('brainErrorMessage', () => {
+describe('hubErrorMessage', () => {
   test('renders each error kind distinctly', () => {
-    expect(brainErrorMessage({ kind: 'network' })).toContain('could not reach')
-    expect(brainErrorMessage({ kind: 'unavailable' })).toContain('does not support')
-    expect(brainErrorMessage({ kind: 'http', status: 409, error: 'ticket_in_flight' })).toContain(
+    expect(hubErrorMessage({ kind: 'network' })).toContain('could not reach')
+    expect(hubErrorMessage({ kind: 'unavailable' })).toContain('does not support')
+    expect(hubErrorMessage({ kind: 'http', status: 409, error: 'ticket_in_flight' })).toContain(
       'ticket_in_flight',
     )
   })
@@ -252,7 +252,7 @@ describe('listInFlightTickets', () => {
     expect(result).toEqual({ ok: true, data: [{ ...validTicket, arm_local_status: 'executing' }] })
   })
 
-  test('degrades arm_local_status to null when the brain does not send it (older brain)', async () => {
+  test('degrades arm_local_status to null when the hub does not send it (older hub)', async () => {
     const result = await listInFlightTickets(
       creds,
       'https://github.com/o/r.git',

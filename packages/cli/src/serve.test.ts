@@ -550,11 +550,11 @@ describe('startServer', () => {
     expect(JSON.parse(afterToggle.body)).toMatchObject({ syncAutoPush: true })
   })
 
-  test('reports the effective brain settings with their resolved defaults', async () => {
+  test('reports the effective runner settings with their resolved defaults', async () => {
     const res = await rawRequest(port, '/api/settings')
     expect(res.status).toBe(200)
     expect(JSON.parse(res.body)).toEqual({
-      brainAutoMerge: { value: true },
+      runnerAutoMerge: { value: true },
       mergeStrategy: {},
       maxTaskTurns: { value: 30 },
     })
@@ -563,13 +563,13 @@ describe('startServer', () => {
   test('rejects settings mutations without a valid config token', async () => {
     const noToken = await rawRequest(port, '/api/settings', {
       method: 'PUT',
-      body: '{"brainAutoMerge":false}',
+      body: '{"runnerAutoMerge":false}',
     })
     expect(noToken.status).toBe(403)
     const badToken = await rawRequest(port, '/api/settings', {
       method: 'PUT',
       headers: { 'x-codesema-config-token': 'wrong' },
-      body: '{"brainAutoMerge":false}',
+      body: '{"runnerAutoMerge":false}',
     })
     expect(badToken.status).toBe(403)
   })
@@ -582,7 +582,7 @@ describe('startServer', () => {
 
     const rejections = [
       '{"nope":true}',
-      '{"brainAutoMerge":"yes"}',
+      '{"runnerAutoMerge":"yes"}',
       '{"mergeStrategy":"fast-forward"}',
       '{"maxTaskTurns":0}',
       '{"maxTaskTurns":501}',
@@ -600,7 +600,7 @@ describe('startServer', () => {
 
     const stillDefault = await rawRequest(port, '/api/settings')
     expect(JSON.parse(stillDefault.body)).toEqual({
-      brainAutoMerge: { value: true },
+      runnerAutoMerge: { value: true },
       mergeStrategy: {},
       maxTaskTurns: { value: 30 },
     })
@@ -608,11 +608,11 @@ describe('startServer', () => {
     const written = await rawRequest(port, '/api/settings', {
       method: 'PUT',
       headers: { 'x-codesema-config-token': token },
-      body: JSON.stringify({ brainAutoMerge: false, mergeStrategy: 'squash', maxTaskTurns: 60 }),
+      body: JSON.stringify({ runnerAutoMerge: false, mergeStrategy: 'squash', maxTaskTurns: 60 }),
     })
     expect(written.status).toBe(200)
     expect(JSON.parse(written.body)).toEqual({
-      brainAutoMerge: { value: false, raw: false },
+      runnerAutoMerge: { value: false, raw: false },
       mergeStrategy: { value: 'squash', raw: 'squash' },
       maxTaskTurns: { value: 60, raw: 60 },
     })
@@ -623,11 +623,11 @@ describe('startServer', () => {
     const partial = await rawRequest(port, '/api/settings', {
       method: 'PUT',
       headers: { 'x-codesema-config-token': token },
-      body: '{"brainAutoMerge":true}',
+      body: '{"runnerAutoMerge":true}',
     })
     expect(partial.status).toBe(200)
     expect(JSON.parse(partial.body)).toEqual({
-      brainAutoMerge: { value: true, raw: true },
+      runnerAutoMerge: { value: true, raw: true },
       mergeStrategy: { value: 'squash', raw: 'squash' },
       maxTaskTurns: { value: 60, raw: 60 },
     })

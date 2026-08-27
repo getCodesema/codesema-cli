@@ -1,6 +1,6 @@
 {
   "name": "@codesema/contract",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Shared review contract (types + sanitizers) between the codesema CLI and codesema.com.",
   "license": "MIT",
   "author": "Hasan TASKIN",
@@ -30,7 +30,7 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build",
-    "sync-brain-schemas": "node scripts/sync-brain-schemas.mjs"
+    "sync-hub-schemas": "node scripts/sync-hub-schemas.mjs"
   },
   "engines": {
     "node": ">=20"

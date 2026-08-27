@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { ArmTicket } from './contract.js'
 import { addProject, type Project } from './projects.js'
-import { createBrainTicketTask, resolveBrainTicketOrigin } from './task-brain-ticket.js'
+import { createHubTicketTask, resolveHubTicketOrigin } from './task-hub-ticket.js'
 import type { TaskActionResult, TaskRunner, TaskRunnerOptions } from './task-runner.js'
 import { createTaskManager } from './task-server.js'
 import { listTasks, readTaskEvents } from './tasks-store.js'
@@ -17,7 +17,7 @@ const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
 const cleanups: string[] = []
 
 beforeEach(() => {
-  configDir = mkdtempSync(join(tmpdir(), 'codesema-brain-ticket-cfg-'))
+  configDir = mkdtempSync(join(tmpdir(), 'codesema-hub-ticket-cfg-'))
   cleanups.push(configDir)
   process.env.CODESEMA_CONFIG_DIR = configDir
 })
@@ -34,7 +34,7 @@ afterEach(() => {
 })
 
 function makeDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'codesema-brain-ticket-'))
+  const dir = mkdtempSync(join(tmpdir(), 'codesema-hub-ticket-'))
   cleanups.push(dir)
   return dir
 }
@@ -118,9 +118,9 @@ function fakeTicket(overrides: Partial<ArmTicket> = {}): ArmTicket {
   }
 }
 
-describe('resolveBrainTicketOrigin', () => {
-  test('a valid ticket resolves title, prompt, criteria and brainTicket', () => {
-    const origin = resolveBrainTicketOrigin('/repo', fakeTicket())
+describe('resolveHubTicketOrigin', () => {
+  test('a valid ticket resolves title, prompt, criteria and hubTicket', () => {
+    const origin = resolveHubTicketOrigin('/repo', fakeTicket())
     expect(origin.ok).toBe(true)
     if (!origin.ok) {
       return
@@ -129,14 +129,14 @@ describe('resolveBrainTicketOrigin', () => {
     expect(origin.prompt).toBe(VALID_BODY)
     expect(origin.criteria.length).toBe(3)
     expect(origin.criteria.every((c) => c.id.startsWith('ac-'))).toBe(true)
-    expect(origin.brainTicket).toEqual({ id: 'tkt-1', title: 'Persist onboarding progress' })
+    expect(origin.hubTicket).toEqual({ id: 'tkt-1', title: 'Persist onboarding progress' })
     expect(origin.issue).toBeNull()
     expect(origin.issueSnapshot).toBeNull()
     expect(origin.coverageGap).toBe(false)
   })
 
   test('an empty title refuses', () => {
-    const origin = resolveBrainTicketOrigin('/repo', fakeTicket({ title: '   ' }))
+    const origin = resolveHubTicketOrigin('/repo', fakeTicket({ title: '   ' }))
     expect(origin.ok).toBe(false)
     if (origin.ok) {
       return
@@ -146,7 +146,7 @@ describe('resolveBrainTicketOrigin', () => {
   })
 
   test('a body that fails T2.3 lint refuses, naming the problem', () => {
-    const origin = resolveBrainTicketOrigin('/repo', fakeTicket({ body: 'not a ticket at all' }))
+    const origin = resolveHubTicketOrigin('/repo', fakeTicket({ body: 'not a ticket at all' }))
     expect(origin.ok).toBe(false)
     if (origin.ok) {
       return
@@ -160,7 +160,7 @@ describe('resolveBrainTicketOrigin', () => {
       /\*\*Acceptance criteria\*\*[\s\S]*?\n\n\*\*Out of scope\*\*/,
       '**Acceptance criteria**\n- WHEN a user closes the tab THE SYSTEM SHALL persist progress\n\n**Out of scope**',
     )
-    const origin = resolveBrainTicketOrigin('/repo', fakeTicket({ body: shortBody }))
+    const origin = resolveHubTicketOrigin('/repo', fakeTicket({ body: shortBody }))
     expect(origin.ok).toBe(false)
     if (origin.ok) {
       return
@@ -168,8 +168,8 @@ describe('resolveBrainTicketOrigin', () => {
     expect(origin.refusal.error).toContain('at least 3')
   })
 
-  test('brainTicket.url prefers mr_url over the source issue url', () => {
-    const origin = resolveBrainTicketOrigin(
+  test('hubTicket.url prefers mr_url over the source issue url', () => {
+    const origin = resolveHubTicketOrigin(
       '/repo',
       fakeTicket({
         mr_url: 'https://forge.example/mr/1',
@@ -180,11 +180,11 @@ describe('resolveBrainTicketOrigin', () => {
     if (!origin.ok) {
       return
     }
-    expect(origin.brainTicket.url).toBe('https://forge.example/mr/1')
+    expect(origin.hubTicket.url).toBe('https://forge.example/mr/1')
   })
 
-  test('brainTicket.url falls back to the source issue url when there is no mr_url', () => {
-    const origin = resolveBrainTicketOrigin(
+  test('hubTicket.url falls back to the source issue url when there is no mr_url', () => {
+    const origin = resolveHubTicketOrigin(
       '/repo',
       fakeTicket({ mr_url: null, issue: { iid: '42', url: 'https://forge.example/issues/42' } }),
     )
@@ -192,26 +192,26 @@ describe('resolveBrainTicketOrigin', () => {
     if (!origin.ok) {
       return
     }
-    expect(origin.brainTicket.url).toBe('https://forge.example/issues/42')
+    expect(origin.hubTicket.url).toBe('https://forge.example/issues/42')
   })
 
-  test('no mr_url and no source issue: brainTicket carries no url at all', () => {
-    const origin = resolveBrainTicketOrigin('/repo', fakeTicket())
+  test('no mr_url and no source issue: hubTicket carries no url at all', () => {
+    const origin = resolveHubTicketOrigin('/repo', fakeTicket())
     expect(origin.ok).toBe(true)
     if (!origin.ok) {
       return
     }
-    expect('url' in origin.brainTicket).toBe(false)
+    expect('url' in origin.hubTicket).toBe(false)
   })
 })
 
-describe('createBrainTicketTask', () => {
-  test('a valid ticket creates a queued task with the right title, criteria and brain_ticket', async () => {
+describe('createHubTicketTask', () => {
+  test('a valid ticket creates a queued task with the right title, criteria and hub_ticket', async () => {
     const repo = makeRepo()
     const project = register(repo)
     const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
 
-    const created = await createBrainTicketTask(manager, project.path, fakeTicket())
+    const created = await createHubTicketTask(manager, project.path, fakeTicket())
 
     expect(created.ok).toBe(true)
     if (!created.ok) {
@@ -221,7 +221,7 @@ describe('createBrainTicketTask', () => {
     expect(created.record.title).toBe('Persist onboarding progress')
     expect(created.record.auto_ship).toBe(true)
     expect(created.record.criteria?.length).toBe(3)
-    expect(created.record.brain_ticket).toEqual({
+    expect(created.record.hub_ticket).toEqual({
       id: 'tkt-1',
       title: 'Persist onboarding progress',
     })
@@ -229,7 +229,7 @@ describe('createBrainTicketTask', () => {
     // On disk, not just in the in-memory return value.
     const onDisk = listTasks(project.path).find((t) => t.id === created.record.id)
     expect(onDisk?.criteria?.length).toBe(3)
-    expect(onDisk?.brain_ticket?.id).toBe('tkt-1')
+    expect(onDisk?.hub_ticket?.id).toBe('tkt-1')
 
     // The criteria landed with a journal line, same as a human validation would.
     const events = readTaskEvents(project.path, created.record.id)
@@ -241,7 +241,7 @@ describe('createBrainTicketTask', () => {
     const project = register(repo)
     const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
 
-    const created = await createBrainTicketTask(
+    const created = await createHubTicketTask(
       manager,
       project.path,
       fakeTicket({ body: 'not a ticket at all' }),
@@ -260,7 +260,7 @@ describe('createBrainTicketTask', () => {
     // Deliberately not registered.
     const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
 
-    const created = await createBrainTicketTask(manager, repo, fakeTicket())
+    const created = await createHubTicketTask(manager, repo, fakeTicket())
 
     expect(created.ok).toBe(false)
     if (created.ok) {

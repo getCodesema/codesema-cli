@@ -5,22 +5,22 @@
 # both). Runner-style split, same shape as gitlab-runner's install +
 # config.sh/svc.sh: this script only gets the OS ready (Node.js, gh, a
 # container runtime) and codesema/claude-code onto PATH; the systemd --user
-# unit itself is written by `codesema brain install-service`, never by this
+# unit itself is written by `codesema runner install-service`, never by this
 # script, so there is exactly one place that knows the unit's shape.
 #
 # Safe to re-run: every step checks before it acts. Reads its configuration
 # from the environment and falls back to an interactive prompt for whichever
 # required variable is missing and stdin is a terminal:
 #
-#   CODESEMA_BRAIN_URL          brain to connect to (default: https://codesema.com)
-#   CODESEMA_BRAIN_TOKEN        csk_<workspaceId>.<secret>, from `codesema link`
+#   CODESEMA_HUB_URL            hub to connect to (default: https://codesema.com)
+#   CODESEMA_HUB_TOKEN          csk_<workspaceId>.<secret>, from `codesema link`
 #   REPO_URL                    HTTPS clone URL of the repo this arm works
 #   GH_TOKEN                    GitHub token, "repo" scope
 #   CLAUDE_CODE_OAUTH_TOKEN     from `claude setup-token`
 #
 # Usage:
 #   REPO_URL=https://github.com/org/repo.git GH_TOKEN=... \
-#   CLAUDE_CODE_OAUTH_TOKEN=... CODESEMA_BRAIN_TOKEN=csk_... \
+#   CLAUDE_CODE_OAUTH_TOKEN=... CODESEMA_HUB_TOKEN=csk_... \
 #     bash install.sh
 #
 # Minting each value: docs/deploy-vm-arm.md.
@@ -76,14 +76,14 @@ require_var() {
     || fail "$name is required (set it in the environment, or run this script from an interactive terminal)"
 }
 
-: "${CODESEMA_BRAIN_URL:=https://codesema.com}"
+: "${CODESEMA_HUB_URL:=https://codesema.com}"
 
-prompt_var CODESEMA_BRAIN_TOKEN "Brain token (csk_<workspaceId>.<secret>, from 'codesema link')" secret
+prompt_var CODESEMA_HUB_TOKEN "Hub token (csk_<workspaceId>.<secret>, from 'codesema link')" secret
 prompt_var REPO_URL "Repository to clone (HTTPS URL)"
 prompt_var GH_TOKEN "GitHub token (repo scope)" secret
 prompt_var CLAUDE_CODE_OAUTH_TOKEN "Claude Code OAuth token (from 'claude setup-token')" secret
 
-require_var CODESEMA_BRAIN_TOKEN
+require_var CODESEMA_HUB_TOKEN
 require_var REPO_URL
 require_var GH_TOKEN
 require_var CLAUDE_CODE_OAUTH_TOKEN
@@ -178,7 +178,7 @@ fi
 
 # --- Base config: written only if absent, so a re-run never clobbers a
 # configuration already customized by hand (`codesema config`). Written
-# FIRST: `codesema brain connect` below loads this same file and merges its
+# FIRST: `codesema runner connect` below loads this same file and merges its
 # own three keys into it, it does not overwrite what is already there.
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/codesema"
 config_file="$config_dir/config.json"
@@ -195,13 +195,13 @@ JSON
   chmod 0600 "$config_file"
 fi
 
-codesema brain connect --url "$CODESEMA_BRAIN_URL" --token "$CODESEMA_BRAIN_TOKEN"
+codesema runner connect --url "$CODESEMA_HUB_URL" --token "$CODESEMA_HUB_TOKEN"
 
 # --- Runtime secrets for the systemd unit: only the two the DAEMON reads on
-# every ticket (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN). CODESEMA_BRAIN_TOKEN is
-# install-time only — `brain connect` above already turned it into
-# config.json's stored credentials — so it has no reason to also live here.
-env_file="$config_dir/brain.env"
+# every ticket (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN). CODESEMA_HUB_TOKEN is
+# install-time only: `runner connect` above already turned it into
+# config.json's stored credentials, so it has no reason to also live here.
+env_file="$config_dir/runner.env"
 umask 077
 cat > "$env_file" <<EOF
 CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN
@@ -209,8 +209,8 @@ GH_TOKEN=$GH_TOKEN
 EOF
 chmod 0600 "$env_file"
 
-( cd "$repo_dir" && codesema brain install-service --env-file "$env_file" )
+( cd "$repo_dir" && codesema runner install-service --env-file "$env_file" )
 
 log "done at $(date -u +%FT%TZ)"
-log "check it with: systemctl --user status codesema-brain.service"
-log "watch it with: journalctl --user -u codesema-brain.service -f"
+log "check it with: systemctl --user status codesema-runner.service"
+log "watch it with: journalctl --user -u codesema-runner.service -f"

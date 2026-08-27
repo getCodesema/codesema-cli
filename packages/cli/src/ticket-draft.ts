@@ -2,18 +2,11 @@
 // body conforming to the contract's grammar (ticket.ts), using the
 // configured agent as a one-shot writer rather than an interactive session.
 // Two publish paths share the same drafting core: `draftAndPublishTicket`
-// (one ticket, `POST /tickets`, driven by `codesema brain ticket`) and
+// (one ticket, `POST /tickets`, driven by `codesema runner ticket`) and
 // `draftAndSubmitTicketRequest` (one ticket, `POST /ticket-requests/:id/tickets`,
-// driven by the daemon against a brain-issued `ArmTicketRequest`).
+// driven by the daemon against a hub-issued `ArmTicketRequest`).
 
 import { runAgent } from './agent.js'
-import {
-  brainErrorMessage,
-  brainRemoteUrl,
-  createTicket,
-  failTicketRequest,
-  submitTicketRequestTickets,
-} from './brain-client.js'
 import { loadConfig } from './config.js'
 import {
   ACCEPTANCE_CRITERIA_HEADING,
@@ -31,6 +24,13 @@ import {
 } from './contract.js'
 import { getIssue } from './forge-issues.js'
 import { tryGit } from './git.js'
+import {
+  createTicket,
+  failTicketRequest,
+  hubErrorMessage,
+  hubRemoteUrl,
+  submitTicketRequestTickets,
+} from './hub-client.js'
 import { loadSyncCredentials } from './sync.js'
 
 /** No provider-specific flag needed beyond this: every AGENT_DEFS base command (wizard.ts) already reads a prompt on stdin and writes plain text to stdout. */
@@ -215,7 +215,7 @@ export type DraftAndPublishInput =
 
 export type PublishResult = { ok: true; ticket: ArmTicket } | { ok: false; reason: string }
 
-/** `codesema brain ticket`: draft one ticket and publish it with `POST /tickets`. */
+/** `codesema runner ticket`: draft one ticket and publish it with `POST /tickets`. */
 export async function draftAndPublishTicket(
   input: DraftAndPublishInput,
   seams: DraftSeams & { fetchImpl?: typeof fetch } = {},
@@ -223,9 +223,9 @@ export async function draftAndPublishTicket(
   const fetchImpl = seams.fetchImpl ?? fetch
   const creds = loadSyncCredentials()
   if (!creds) {
-    return { ok: false, reason: 'not connected to a brain: run `codesema brain connect` first' }
+    return { ok: false, reason: 'not connected to a hub: run `codesema runner connect` first' }
   }
-  const remoteUrl = brainRemoteUrl(input.cwd)
+  const remoteUrl = hubRemoteUrl(input.cwd)
   if (!remoteUrl) {
     return { ok: false, reason: 'this workspace has no git origin remote' }
   }
@@ -267,7 +267,7 @@ export async function draftAndPublishTicket(
     fetchImpl,
   )
   if (!created.ok) {
-    return { ok: false, reason: brainErrorMessage(created.error) }
+    return { ok: false, reason: hubErrorMessage(created.error) }
   }
   return { ok: true, ticket: created.data }
 }
@@ -280,7 +280,7 @@ export type TicketRequestDraftResult =
  * ticket from `request.prompt` and submit it with
  * `POST /ticket-requests/:id/tickets`. A drafting or submission failure calls
  * `failTicketRequest` (best-effort: its own failure does not change the
- * outcome reported here) so the brain does not keep the request stuck
+ * outcome reported here) so the hub does not keep the request stuck
  * claimed by a run that gave up on it.
  */
 export async function draftAndSubmitTicketRequest(
@@ -291,7 +291,7 @@ export async function draftAndSubmitTicketRequest(
   const fetchImpl = seams.fetchImpl ?? fetch
   const creds = loadSyncCredentials()
   if (!creds) {
-    return { ok: false, reason: 'not connected to a brain' }
+    return { ok: false, reason: 'not connected to a hub' }
   }
 
   const drafted = await draftTicketBody({ cwd, promptContext: request.prompt }, seams)
@@ -307,7 +307,7 @@ export async function draftAndSubmitTicketRequest(
     fetchImpl,
   )
   if (!submitted.ok) {
-    const reason = brainErrorMessage(submitted.error)
+    const reason = hubErrorMessage(submitted.error)
     await failTicketRequest(creds, request.id, reason, fetchImpl)
     return { ok: false, reason }
   }

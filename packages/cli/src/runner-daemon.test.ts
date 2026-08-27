@@ -3,10 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { startBrainDaemon } from './brain-daemon.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import type { ArmTicket, ArmTicketRequest, TaskRecord } from './contract.js'
 import type { Project } from './projects.js'
+import { startRunnerDaemon } from './runner-daemon.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskCreateResult, TaskManager } from './task-server.js'
 
@@ -165,7 +165,7 @@ function fastSleep(_ms: number, signal: AbortSignal): Promise<void> {
 
 /**
  * Answers `order` on the FIRST heartbeat only, `null` on every one after
- * (the real brain purges an order the moment it hands it back, D19), and an
+ * (the real hub purges an order the moment it hands it back, D19), and an
  * otherwise-empty tick everywhere else. `fastSleep` drives several
  * heartbeat-loop iterations within one `settle()` window, so a stub that
  * kept re-serving the same order would make a dispatch test see it applied
@@ -188,7 +188,7 @@ function fetchHeartbeatOrder(order: unknown, calls: Call[]): typeof fetch {
   }) as unknown as typeof fetch
 }
 
-describe('startBrainDaemon', () => {
+describe('startRunnerDaemon', () => {
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   let configDir: string
   let cwd: string
@@ -213,7 +213,7 @@ describe('startBrainDaemon', () => {
     const calls: Call[] = []
     const lines: string[] = []
     const manager = fakeManager({ cwd })
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, {}, calls),
@@ -227,7 +227,7 @@ describe('startBrainDaemon', () => {
   test('no git origin remote: logs once and makes no HTTP call', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -235,7 +235,7 @@ describe('startBrainDaemon', () => {
     const calls: Call[] = []
     const lines: string[] = []
     const manager = fakeManager({ cwd })
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, {}, calls),
@@ -249,14 +249,14 @@ describe('startBrainDaemon', () => {
   test('flushes the outbox on every tick', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
     initRepo(cwd, 'https://github.com/o/r.git')
     mkdirSync(join(cwd, '.codesema'), { recursive: true })
     writeFileSync(
-      join(cwd, '.codesema', 'brain-outbox.jsonl'),
+      join(cwd, '.codesema', 'hub-outbox.jsonl'),
       `${JSON.stringify({
         kind: 'transition',
         key: 'k1',
@@ -266,7 +266,7 @@ describe('startBrainDaemon', () => {
     )
     const calls: Call[] = []
     const manager = fakeManager({ cwd })
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, { requests: [], tickets: [] }, calls),
@@ -274,14 +274,14 @@ describe('startBrainDaemon', () => {
     })
     await handle.stop()
     expect(
-      calls.some((c) => c.url === 'https://brain.example/api/cli/tickets/tkt1/transitions'),
+      calls.some((c) => c.url === 'https://hub.example/api/cli/tickets/tkt1/transitions'),
     ).toBe(true)
   })
 
   test('a non-terminal record blocks claiming, admitted or not', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -291,7 +291,7 @@ describe('startBrainDaemon', () => {
       cwd,
       records: [{ id: 'existing-task', status: 'waiting_for_you' } as TaskRecord],
     })
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, { requests: [], tickets: [validTicket] }, calls),
@@ -301,10 +301,10 @@ describe('startBrainDaemon', () => {
     expect(calls.some((c) => c.url.includes('/api/cli/tickets?'))).toBe(false)
   })
 
-  test('an interrupted brain task is resumed instead of blocking the loop', async () => {
+  test('an interrupted hub-ticket task is resumed instead of blocking the loop', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -318,11 +318,11 @@ describe('startBrainDaemon', () => {
         {
           id: 'parked-task',
           status: 'interrupted',
-          brain_ticket: { id: validTicket.id, title: validTicket.title },
+          hub_ticket: { id: validTicket.id, title: validTicket.title },
         } as TaskRecord,
       ],
     })
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, { requests: [], tickets: [validTicket] }, calls),
@@ -336,7 +336,7 @@ describe('startBrainDaemon', () => {
   test('a ticket that already has a local task is not claimed again', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -348,11 +348,11 @@ describe('startBrainDaemon', () => {
         {
           id: 'shipped-task',
           status: 'shipped',
-          brain_ticket: { id: validTicket.id, title: validTicket.title },
+          hub_ticket: { id: validTicket.id, title: validTicket.title },
         } as TaskRecord,
       ],
     })
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, { requests: [], tickets: [validTicket] }, calls),
@@ -365,7 +365,7 @@ describe('startBrainDaemon', () => {
   test('no active task and a published ticket: claims it and starts a task on the same manager', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -376,7 +376,7 @@ describe('startBrainDaemon', () => {
       createCalls,
       createResult: {
         ok: true,
-        record: fakeRecord({ id: 'newtask', brain_ticket: { id: 'tkt1', title: 'Add a thing' } }),
+        record: fakeRecord({ id: 'newtask', hub_ticket: { id: 'tkt1', title: 'Add a thing' } }),
       },
     })
     const calls: Call[] = []
@@ -398,16 +398,14 @@ describe('startBrainDaemon', () => {
       }
       return new Response(JSON.stringify({}), { status: 200 })
     }) as unknown as typeof fetch
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl,
       logFn: (line) => lines.push(line),
     })
     await handle.stop()
-    expect(calls.some((c) => c.url === 'https://brain.example/api/cli/tickets/tkt1/claim')).toBe(
-      true,
-    )
+    expect(calls.some((c) => c.url === 'https://hub.example/api/cli/tickets/tkt1/claim')).toBe(true)
     expect(createCalls.length).toBe(1)
     expect(lines.some((l) => l.includes('started task newtask'))).toBe(true)
   })
@@ -415,7 +413,7 @@ describe('startBrainDaemon', () => {
   test('a queued ticket request is drafted and submitted through draftFn', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -446,7 +444,7 @@ describe('startBrainDaemon', () => {
     const draftCalls: { requestId: string; cwd: string }[] = []
     const manager = fakeManager({ cwd })
     const lines: string[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl,
@@ -464,7 +462,7 @@ describe('startBrainDaemon', () => {
   test('backs off after a network failure, not after a 4xx', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -472,7 +470,7 @@ describe('startBrainDaemon', () => {
     const manager = fakeManager({ cwd })
 
     const offlineDurations: number[] = []
-    const offlineHandle = startBrainDaemon({
+    const offlineHandle = startRunnerDaemon({
       manager,
       cwd,
       intervalMs: 1000,
@@ -487,7 +485,7 @@ describe('startBrainDaemon', () => {
     expect(offlineDurations.find((d) => d !== 45_000)).toBe(2000)
 
     const badRequestDurations: number[] = []
-    const badRequestHandle = startBrainDaemon({
+    const badRequestHandle = startRunnerDaemon({
       manager,
       cwd,
       intervalMs: 1000,
@@ -502,20 +500,20 @@ describe('startBrainDaemon', () => {
     expect(badRequestDurations.find((d) => d !== 45_000)).toBe(1000)
   })
 
-  test('heartbeats the active brain-ticket task on its own schedule', async () => {
+  test('heartbeats the active hub-ticket task on its own schedule', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
     initRepo(cwd, 'https://github.com/o/r.git')
     const { claimActive } = await import('./task-queue.js')
     claimActive(cwd, 'active1')
-    const record = fakeRecord({ id: 'active1', brain_ticket: { id: 'tkt1', title: 'Add a thing' } })
+    const record = fakeRecord({ id: 'active1', hub_ticket: { id: 'tkt1', title: 'Add a thing' } })
     const manager = fakeManager({ cwd, records: [record] })
     const calls: Call[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, { requests: [], tickets: [] }, calls),
@@ -524,18 +522,18 @@ describe('startBrainDaemon', () => {
     })
     await settle(30)
     await handle.stop()
-    expect(
-      calls.some((c) => c.url === 'https://brain.example/api/cli/tickets/tkt1/heartbeat'),
-    ).toBe(true)
+    expect(calls.some((c) => c.url === 'https://hub.example/api/cli/tickets/tkt1/heartbeat')).toBe(
+      true,
+    )
   })
 
-  test('heartbeats a waiting_for_you brain-ticket task even when the memory slot is free', async () => {
+  test('heartbeats a waiting_for_you hub-ticket task even when the memory slot is free', async () => {
     // Regression: the memory slot (claimActive/activeTask) empties the moment
     // a turn's promise settles, so a task parked on waiting_for_you must be
     // found from the PERSISTED record, never from that slot.
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -543,11 +541,11 @@ describe('startBrainDaemon', () => {
     const record = fakeRecord({
       id: 'active1',
       status: 'waiting_for_you',
-      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+      hub_ticket: { id: 'tkt1', title: 'Add a thing' },
     })
     const manager = fakeManager({ cwd, records: [record] })
     const calls: Call[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, { requests: [], tickets: [] }, calls),
@@ -556,15 +554,15 @@ describe('startBrainDaemon', () => {
     })
     await settle(30)
     await handle.stop()
-    expect(
-      calls.some((c) => c.url === 'https://brain.example/api/cli/tickets/tkt1/heartbeat'),
-    ).toBe(true)
+    expect(calls.some((c) => c.url === 'https://hub.example/api/cli/tickets/tkt1/heartbeat')).toBe(
+      true,
+    )
   })
 
   test('the heartbeat carries the persisted status as local_status', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -572,11 +570,11 @@ describe('startBrainDaemon', () => {
     const record = fakeRecord({
       id: 'active1',
       status: 'waiting_for_you',
-      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+      hub_ticket: { id: 'tkt1', title: 'Add a thing' },
     })
     const manager = fakeManager({ cwd, records: [record] })
     const calls: Call[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchStub(200, { requests: [], tickets: [] }, calls),
@@ -594,7 +592,7 @@ describe('startBrainDaemon', () => {
   test('a ship order from the heartbeat response ships the task', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -602,13 +600,13 @@ describe('startBrainDaemon', () => {
     const record = fakeRecord({
       id: 'active1',
       status: 'waiting_for_you',
-      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+      hub_ticket: { id: 'tkt1', title: 'Add a thing' },
     })
     const shipCalls: Array<{ projectId: string; id: string }> = []
     const manager = fakeManager({ cwd, records: [record], shipCalls })
     const order = { action: 'ship', instruction: null, issued_at: '2026-01-01T00:00:00.000Z' }
     const calls: Call[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchHeartbeatOrder(order, calls),
@@ -623,7 +621,7 @@ describe('startBrainDaemon', () => {
   test('a reply order from the heartbeat response replies with the instruction', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -631,7 +629,7 @@ describe('startBrainDaemon', () => {
     const record = fakeRecord({
       id: 'active1',
       status: 'waiting_for_you',
-      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+      hub_ticket: { id: 'tkt1', title: 'Add a thing' },
     })
     const replyCalls: Array<{ projectId: string; id: string; message: string }> = []
     const manager = fakeManager({ cwd, records: [record], replyCalls })
@@ -641,7 +639,7 @@ describe('startBrainDaemon', () => {
       issued_at: '2026-01-01T00:00:00.000Z',
     }
     const calls: Call[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchHeartbeatOrder(order, calls),
@@ -658,7 +656,7 @@ describe('startBrainDaemon', () => {
   test('an abandon order from the heartbeat response abandons the task', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -666,13 +664,13 @@ describe('startBrainDaemon', () => {
     const record = fakeRecord({
       id: 'active1',
       status: 'waiting_for_you',
-      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+      hub_ticket: { id: 'tkt1', title: 'Add a thing' },
     })
     const abandonCalls: Array<{ projectId: string; id: string }> = []
     const manager = fakeManager({ cwd, records: [record], abandonCalls })
     const order = { action: 'abandon', instruction: null, issued_at: '2026-01-01T00:00:00.000Z' }
     const calls: Call[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchHeartbeatOrder(order, calls),
@@ -687,7 +685,7 @@ describe('startBrainDaemon', () => {
   test('no order in the heartbeat response: nothing is dispatched', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -695,14 +693,14 @@ describe('startBrainDaemon', () => {
     const record = fakeRecord({
       id: 'active1',
       status: 'waiting_for_you',
-      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+      hub_ticket: { id: 'tkt1', title: 'Add a thing' },
     })
     const shipCalls: Array<{ projectId: string; id: string }> = []
     const replyCalls: Array<{ projectId: string; id: string; message: string }> = []
     const abandonCalls: Array<{ projectId: string; id: string }> = []
     const manager = fakeManager({ cwd, records: [record], shipCalls, replyCalls, abandonCalls })
     const calls: Call[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchHeartbeatOrder(null, calls),
@@ -719,7 +717,7 @@ describe('startBrainDaemon', () => {
   test('a manager refusal applying an order is logged, not thrown', async () => {
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
@@ -727,7 +725,7 @@ describe('startBrainDaemon', () => {
     const record = fakeRecord({
       id: 'active1',
       status: 'waiting_for_you',
-      brain_ticket: { id: 'tkt1', title: 'Add a thing' },
+      hub_ticket: { id: 'tkt1', title: 'Add a thing' },
     })
     const manager = fakeManager({
       cwd,
@@ -737,7 +735,7 @@ describe('startBrainDaemon', () => {
     const order = { action: 'ship', instruction: null, issued_at: '2026-01-01T00:00:00.000Z' }
     const calls: Call[] = []
     const lines: string[] = []
-    const handle = startBrainDaemon({
+    const handle = startRunnerDaemon({
       manager,
       cwd,
       fetchImpl: fetchHeartbeatOrder(order, calls),

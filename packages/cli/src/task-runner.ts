@@ -62,12 +62,12 @@ import {
 } from './load-cap.js'
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
-import { reportBrainTransition } from './task-brain.js'
 import {
   bootstrapWorktreeInstall,
   type BootstrapInstallResult,
   type BootstrapWorktreeInstallOptions,
 } from './task-checks.js'
+import { reportHubTransition } from './task-hub.js'
 import {
   agentHomeVolume,
   CAGE_FORWARDED_ENV,
@@ -1874,8 +1874,8 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       // later, can genuinely succeed. Same argument as the abort path above.
       const retryable = code !== null && !isTerminalReason(code)
       record.status = retryable ? 'interrupted' : 'failed'
-      if (!retryable && record.brain_ticket) {
-        void reportBrainTransition(opts.cwd, record, { type: 'failed', error_message: message })
+      if (!retryable && record.hub_ticket) {
+        void reportHubTransition(opts.cwd, record, { type: 'failed', error_message: message })
       }
       emit(record.id, {
         // The event names the same outcome as the status. A task parked on
@@ -3199,8 +3199,8 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         // Everything else abandoned mid-cycle is discarded work: failed.
         if (current.status !== 'shipped') {
           current.status = 'failed'
-          if (current.brain_ticket) {
-            void reportBrainTransition(opts.cwd, current, {
+          if (current.hub_ticket) {
+            void reportHubTransition(opts.cwd, current, {
               type: 'failed',
               error_message: 'worktree removed, task abandoned',
             })
