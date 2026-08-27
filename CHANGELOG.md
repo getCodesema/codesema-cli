@@ -3,6 +3,12 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.16.0] - unreleased
+
+### Added
+
+- **The three global brain-loop settings now have a panel in the local web UI, not only `codesema config` or a hand-edited config file.** `GET /api/settings` reports `brainAutoMerge`, `mergeStrategy` and `maxTaskTurns` as both their resolved, effective value (`config.ts`'s own `resolveBrainAutoMerge`/`resolveMergeSettings`/`resolveMaxTaskTurns`) and their raw configured one; `PUT /api/settings` accepts a partial update, validates every field against the same bounds the config file parser itself enforces (an integer turn budget between 1 and 500, one of the three forge merge strategies), refuses any other key, and never writes a partial update when one field fails validation. The repo settings screen gains a Brain integration section, a toggle, a strategy selector and a turn-budget field, saving through the existing global config token and `saveGlobalConfig`, the same function the CLI wizard already writes through. `mergeStrategy` also joins the `codesema config` menu itself, alongside `brainAutoMerge` and the turn budget, with its own "not set (forge default)" state shown and selectable.
+
 ## [0.15.0] - 2026-08-26
 
 ### Added

@@ -550,6 +550,89 @@ describe('startServer', () => {
     expect(JSON.parse(afterToggle.body)).toMatchObject({ syncAutoPush: true })
   })
 
+  test('reports the effective brain settings with their resolved defaults', async () => {
+    const res = await rawRequest(port, '/api/settings')
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({
+      brainAutoMerge: { value: true },
+      mergeStrategy: {},
+      maxTaskTurns: { value: 30 },
+    })
+  })
+
+  test('rejects settings mutations without a valid config token', async () => {
+    const noToken = await rawRequest(port, '/api/settings', {
+      method: 'PUT',
+      body: '{"brainAutoMerge":false}',
+    })
+    expect(noToken.status).toBe(403)
+    const badToken = await rawRequest(port, '/api/settings', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': 'wrong' },
+      body: '{"brainAutoMerge":false}',
+    })
+    expect(badToken.status).toBe(403)
+  })
+
+  test('validates every settings field and never writes a partial update', async () => {
+    const html = await rawRequest(port, '/')
+    const tokenMatch = /__CODESEMA_CONFIG_TOKEN__="([a-f0-9]{32})"/.exec(html.body)
+    expect(tokenMatch).not.toBeNull()
+    const token = tokenMatch![1]!
+
+    const rejections = [
+      '{"nope":true}',
+      '{"brainAutoMerge":"yes"}',
+      '{"mergeStrategy":"fast-forward"}',
+      '{"maxTaskTurns":0}',
+      '{"maxTaskTurns":501}',
+      '{"maxTaskTurns":1.5}',
+      '{"maxTaskTurns":"30"}',
+    ]
+    for (const body of rejections) {
+      const res = await rawRequest(port, '/api/settings', {
+        method: 'PUT',
+        headers: { 'x-codesema-config-token': token },
+        body,
+      })
+      expect(res.status).toBe(400)
+    }
+
+    const stillDefault = await rawRequest(port, '/api/settings')
+    expect(JSON.parse(stillDefault.body)).toEqual({
+      brainAutoMerge: { value: true },
+      mergeStrategy: {},
+      maxTaskTurns: { value: 30 },
+    })
+
+    const written = await rawRequest(port, '/api/settings', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': token },
+      body: JSON.stringify({ brainAutoMerge: false, mergeStrategy: 'squash', maxTaskTurns: 60 }),
+    })
+    expect(written.status).toBe(200)
+    expect(JSON.parse(written.body)).toEqual({
+      brainAutoMerge: { value: false, raw: false },
+      mergeStrategy: { value: 'squash', raw: 'squash' },
+      maxTaskTurns: { value: 60, raw: 60 },
+    })
+
+    const afterWrite = await rawRequest(port, '/api/settings')
+    expect(JSON.parse(afterWrite.body)).toEqual(JSON.parse(written.body))
+
+    const partial = await rawRequest(port, '/api/settings', {
+      method: 'PUT',
+      headers: { 'x-codesema-config-token': token },
+      body: '{"brainAutoMerge":true}',
+    })
+    expect(partial.status).toBe(200)
+    expect(JSON.parse(partial.body)).toEqual({
+      brainAutoMerge: { value: true, raw: true },
+      mergeStrategy: { value: 'squash', raw: 'squash' },
+      maxTaskTurns: { value: 60, raw: 60 },
+    })
+  })
+
   test('reports the open MRs as unavailable when the repo has no remote', async () => {
     const res = await rawRequest(port, '/api/mrs')
     expect(res.status).toBe(200)

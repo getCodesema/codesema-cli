@@ -245,6 +245,10 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'config.maxTurnsQuestion': 'How many turns may one task spend before replies are refused?',
   'config.maxTurnsDefaultHint': 'default',
   'config.maxTurnsSaved': 'turn budget {cap}: {path}',
+  'config.mergeStrategyEntry': 'Merge strategy',
+  'config.mergeStrategyUnset': 'not set (forge default)',
+  'config.mergeStrategyQuestion': 'Which strategy should the forge use to merge a task branch?',
+  'config.mergeStrategySaved': 'merge strategy {state}: {path}',
   'config.back': 'Back',
   'config.languageSaved': 'language saved: {path}',
 
@@ -769,6 +773,11 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
     'Combien de tours une tâche peut-elle dépenser avant que les relances soient refusées ?',
   'config.maxTurnsDefaultHint': 'défaut',
   'config.maxTurnsSaved': 'budget de tours {cap} : {path}',
+  'config.mergeStrategyEntry': 'Stratégie de fusion',
+  'config.mergeStrategyUnset': 'non définie (défaut de la forge)',
+  'config.mergeStrategyQuestion':
+    'Quelle stratégie la forge doit-elle utiliser pour fusionner une branche de tâche ?',
+  'config.mergeStrategySaved': 'stratégie de fusion {state} : {path}',
   'config.back': 'Retour',
   'config.languageSaved': 'langue enregistrée : {path}',
 
