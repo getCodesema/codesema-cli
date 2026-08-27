@@ -29,13 +29,13 @@ import {
   actionableFindingIds,
   applyChecksGate,
   blockingFindingsDetail,
-  brainSettleTransition,
   buildAutoFixTurnPrompt,
   buildFixTurnPrompt,
   checksBlockReady,
   checksFailedDetail,
   createTaskReviewer,
   hasBlockingFindings,
+  hubSettleTransition,
   readTaskReview,
   taskReviewVerdict,
   terminalChecksResult,
@@ -2235,14 +2235,14 @@ describe('buildAutoFixTurnPrompt (T3.3)', () => {
   })
 })
 
-describe('brainSettleTransition', () => {
+describe('hubSettleTransition', () => {
   test('review_ok with no reviewOutcome (the empty-diff short-circuit): an approve, no findings_total', () => {
-    const transition = brainSettleTransition({ status: 'review_ok' })
+    const transition = hubSettleTransition({ status: 'review_ok' })
     expect(transition).toEqual({ type: 'review_result', verdict: 'approve' })
   })
 
   test('review_ok with a reviewOutcome: an approve, carrying findings_total', () => {
-    const transition = brainSettleTransition({
+    const transition = hubSettleTransition({
       status: 'review_ok',
       reviewOutcome: fakeReview('approve', [{ file: 'a.ts', severity: 'minor', message: 'nit' }]),
     })
@@ -2250,7 +2250,7 @@ describe('brainSettleTransition', () => {
   })
 
   test('review_ko with a reviewOutcome (a verdict was produced, possibly overridden): request_changes', () => {
-    const transition = brainSettleTransition({
+    const transition = hubSettleTransition({
       status: 'review_ko',
       reviewOutcome: fakeReview('request_changes', [
         { file: 'a.ts', severity: 'major', message: 'bug' },
@@ -2267,13 +2267,13 @@ describe('brainSettleTransition', () => {
     // No reviewer ever produced a verdict here: reporting review_result would
     // be indistinguishable from a reviewer that looked at the work and
     // rejected it.
-    const transition = brainSettleTransition({ status: 'review_ko' })
+    const transition = hubSettleTransition({ status: 'review_ko' })
     expect(transition).toEqual({ type: 'failed' })
   })
 
   test('review_ko with no reviewOutcome and a reason: failed, carrying the reason as error_message', () => {
     const reason: TaskReason = { code: 'review_blocked', detail: 'review failed: agent crashed' }
-    const transition = brainSettleTransition({ status: 'review_ko', reason })
+    const transition = hubSettleTransition({ status: 'review_ko', reason })
     expect(transition).toEqual({
       type: 'failed',
       error_message: 'review failed: agent crashed',
@@ -2282,14 +2282,14 @@ describe('brainSettleTransition', () => {
 
   test('a reason with no detail adds no error_message', () => {
     const reason: TaskReason = { code: 'review_blocked' }
-    const transition = brainSettleTransition({ status: 'review_ko', reason })
+    const transition = hubSettleTransition({ status: 'review_ko', reason })
     expect(transition).toEqual({ type: 'failed' })
   })
 
   test('costTicks rides along on a review_result, omitted entirely when absent', () => {
-    const withCost = brainSettleTransition({ status: 'review_ok', costTicks: 42 })
+    const withCost = hubSettleTransition({ status: 'review_ok', costTicks: 42 })
     expect(withCost).toEqual({ type: 'review_result', verdict: 'approve', cost_ticks: 42 })
-    const withoutCost = brainSettleTransition({ status: 'review_ok' })
+    const withoutCost = hubSettleTransition({ status: 'review_ok' })
     expect('cost_ticks' in withoutCost).toBe(false)
   })
 })

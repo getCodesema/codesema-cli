@@ -6,12 +6,12 @@
 // repo, the workspace opens on the existing registry (possibly empty — add
 // projects from the UI). The process stays in the foreground: tasks live as
 // long as it runs. D21 introduces one targeted exception to that:
-// `codesema brain serve --detach` (brain-commands.ts) backgrounds the brain
+// `codesema runner serve --detach` (runner-commands.ts) backgrounds the runner
 // daemon behind a detached child process; every other entry point (bare
-// `codesema workspace`, `codesema review`, `codesema brain serve` without the
-// flag) stays foreground-only. Whenever CODESEMA_BRAIN_MODE is set, a
-// repo-local `<cwd>/.codesema/brain.pid` (brain-pidfile.ts) records
-// {pid, port, started_at} once the port is known, so `brain stop`/`brain
+// `codesema workspace`, `codesema review`, `codesema runner serve` without the
+// flag) stays foreground-only. Whenever CODESEMA_RUNNER_MODE is set, a
+// repo-local `<cwd>/.codesema/runner.pid` (runner-pidfile.ts) records
+// {pid, port, started_at} once the port is known, so `runner stop`/`runner
 // status`, run later from a different process, can find this daemon; it
 // is erased on shutdown, right beside the lock below. The first
 // Ctrl-C shuts down gracefully (agents SIGTERMed, the turns IN FLIGHT
@@ -26,7 +26,6 @@
 // racing this one's registry and task stores.
 
 import { knownAgent, type WatchdogBudgets } from './agent.js'
-import { removeBrainPidfile, writeBrainPidfile } from './brain-pidfile.js'
 import {
   globalConfigPath,
   hasInvalidPositiveIntKey,
@@ -49,6 +48,7 @@ import { t, uiLocale } from './i18n.js'
 import { createMrReviewRunner } from './mr-review-runner.js'
 import { openBrowser } from './open.js'
 import { addProject, listProjects, type Project } from './projects.js'
+import { removeRunnerPidfile, writeRunnerPidfile } from './runner-pidfile.js'
 import { createSession, startServer } from './serve.js'
 import {
   DEFAULT_ISOLATION_ALLOWED_DOMAINS,
@@ -384,8 +384,8 @@ function installShutdownHandlers(deps: {
         lock.release()
         // Mirrors the write at lock.setPort() below: only ever written and
         // removed together, gated on the same env var.
-        if (process.env.CODESEMA_BRAIN_MODE === '1') {
-          removeBrainPidfile(cwd)
+        if (process.env.CODESEMA_RUNNER_MODE === '1') {
+          removeRunnerPidfile(cwd)
         }
         process.exit(0)
       }
@@ -606,8 +606,8 @@ export async function workspace(
     throw err
   }
   lock.setPort(started.port)
-  if (process.env.CODESEMA_BRAIN_MODE === '1') {
-    writeBrainPidfile(repoRoot ?? opts.cwd, process.pid, started.port)
+  if (process.env.CODESEMA_RUNNER_MODE === '1') {
+    writeRunnerPidfile(repoRoot ?? opts.cwd, process.pid, started.port)
   }
 
   console.log('')

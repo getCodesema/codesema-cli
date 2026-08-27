@@ -765,7 +765,7 @@ export type TicketCriteriaLintResult =
  *
  * `requireProofMethod` defaults to `false`, and that default is the whole
  * lint's behavior before D17 existed, byte-for-byte: nothing changes for a
- * caller that does not pass this. Only `brain-draft.ts` passes `true`, to gate
+ * caller that does not pass this. Only `ticket-draft.ts` passes `true`, to gate
  * drafts on carrying a `[proof:...]` tag per criterion; the ADMISSION lint
  * (task-from-issue) and boot-time reconciliation are deliberately left at the
  * default, so an existing ticket written before D17 keeps linting exactly as
@@ -1322,7 +1322,7 @@ function problemsForCriterion(
     )
   }
   // Off by default (byte-identical to the lint's pre-D17 behavior): only
-  // `brain-draft.ts` opts in today. When it does, a criterion with no valid
+  // `ticket-draft.ts` opts in today. When it does, a criterion with no valid
   // `[proof:<method> <argument>]` tag is refused by name, same as a criterion
   // that fails EARS.
   if (opts.requireProofMethod && !parseCriterionProof(text)) {

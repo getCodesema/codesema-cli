@@ -1,29 +1,34 @@
-// Background loop for `codesema workspace --brain` / `codesema brain serve`:
+// Background loop for `codesema workspace --runner` / `codesema runner serve`:
 // on the SAME TaskManager and process as the local web server, it flushes
-// anything task-brain.ts's outbox could not send earlier, drafts and submits
-// any ticket request the brain has queued for this repo, and — once the
+// anything task-hub.ts's outbox could not send earlier, drafts and submits
+// any ticket request the hub has queued for this repo, and — once the
 // workspace has no task already running here — claims the next published
 // ticket and hands it to the task manager exactly as if it had been typed by
-// hand. A claimed brain-ticket task is kept alive with a heartbeat every 45s,
+// hand. A claimed hub-ticket task is kept alive with a heartbeat every 45s,
 // on its own schedule, independent of the main tick's backoff, and a
 // decision a human made from the dashboard while that ticket sat waiting
 // (D19) rides back on that same heartbeat and is applied here: ship, reply,
 // or abandon.
 
+import { runnerEnvPath } from './config.js'
+import { isActiveTaskStatus, type ArmOrder, type ArmTicketRequest } from './contract.js'
 import {
-  brainRemoteUrl,
+  claimPendingSecret,
   claimTicket,
   claimTicketRequest,
+  hubRemoteUrl,
   listTicketRequests,
   listTickets,
-} from './brain-client.js'
-import { draftAndSubmitTicketRequest } from './brain-draft.js'
-import { isActiveTaskStatus, type ArmOrder, type ArmTicketRequest } from './contract.js'
+} from './hub-client.js'
+import { loadRunnerIdentity } from './runner-identity.js'
+import { applySecretsToEnvFile, sanitizeRunnerSecretsPayload } from './runner-secrets.js'
+import { unseal } from './sealed-box.js'
 import { loadSyncCredentials, type SyncCredentials } from './sync.js'
-import { createBrainTicketTask } from './task-brain-ticket.js'
-import { flushBrainOutbox, heartbeatBrainTicket } from './task-brain.js'
+import { createHubTicketTask } from './task-hub-ticket.js'
+import { flushHubOutbox, heartbeatHubTicket } from './task-hub.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskManager } from './task-server.js'
+import { draftAndSubmitTicketRequest } from './ticket-draft.js'
 
 const DEFAULT_INTERVAL_MS = 25_000
 const MAX_BACKOFF_MS = 5 * 60_000
@@ -47,6 +52,11 @@ type DaemonContext = {
   log: (line: string) => void
   /** Once per distinct `key` for the whole daemon lifetime, never per tick. */
   logOnce: (key: string, line: string) => void
+  loadIdentityFn: typeof loadRunnerIdentity
+  claimSecretFn: typeof claimPendingSecret
+  unsealFn: typeof unseal
+  sanitizeSecretsFn: typeof sanitizeRunnerSecretsPayload
+  applySecretsFn: typeof applySecretsToEnvFile
 }
 
 /** Whether this half-tick saw a network failure or a 5xx: the ONLY conditions that back off the next tick. */
@@ -66,7 +76,7 @@ async function draftQueuedRequests(
   const result = await listTicketRequests(creds, remoteUrl, ctx.fetchImpl)
   if (!result.ok) {
     if (result.error.kind === 'unavailable') {
-      ctx.logOnce('requests-unavailable', 'this brain has no ticket-requests route yet; skipping')
+      ctx.logOnce('requests-unavailable', 'this hub has no ticket-requests route yet; skipping')
       return 'ok'
     }
     return isRetryable(result.error) ? 'retryable' : 'ok'
@@ -107,23 +117,23 @@ async function claimNextTicket(
   if (!entry) {
     ctx.logOnce(
       'no-project',
-      'brain mode is on but this directory is not a registered project; not claiming',
+      'runner mode is on but this directory is not a registered project; not claiming',
     )
     return 'ok'
   }
-  // A brain task parked on 'interrupted' (daemon killed mid-turn, machine
+  // A hub-ticket task parked on 'interrupted' (daemon killed mid-turn, machine
   // rebooted) would otherwise freeze the loop forever: the guard below blocks
   // new claims while nothing human ever resumes it. 24/7 means the daemon is
   // that resumer for its own tickets; human-created tasks keep their manual
   // resume affordance untouched.
   const interrupted = entry.records.find(
-    (record) => record.status === 'interrupted' && record.brain_ticket,
+    (record) => record.status === 'interrupted' && record.hub_ticket,
   )
   if (interrupted) {
     const outcome = ctx.manager.resume(entry.project.id, interrupted.id)
     if (outcome.ok) {
       ctx.log(
-        `resumed interrupted task ${interrupted.id} for ticket ${interrupted.brain_ticket?.id ?? ''}`,
+        `resumed interrupted task ${interrupted.id} for ticket ${interrupted.hub_ticket?.id ?? ''}`,
       )
       return 'ok'
     }
@@ -148,7 +158,7 @@ async function claimNextTicket(
   const result = await listTickets(creds, remoteUrl, 'published', ctx.fetchImpl)
   if (!result.ok) {
     if (result.error.kind === 'unavailable') {
-      ctx.logOnce('tickets-unavailable', 'this brain has no tickets route yet; skipping')
+      ctx.logOnce('tickets-unavailable', 'this hub has no tickets route yet; skipping')
       return 'ok'
     }
     return isRetryable(result.error) ? 'retryable' : 'ok'
@@ -158,9 +168,7 @@ async function claimNextTicket(
     return 'ok'
   }
   if (
-    entry.records.some(
-      (record) => record.brain_ticket?.id === next.id && record.status !== 'failed',
-    )
+    entry.records.some((record) => record.hub_ticket?.id === next.id && record.status !== 'failed')
   ) {
     ctx.logOnce(
       `ticket-${next.id}`,
@@ -175,7 +183,7 @@ async function claimNextTicket(
     }
     return isRetryable(claim.error) ? 'retryable' : 'ok'
   }
-  const created = await createBrainTicketTask(ctx.manager, ctx.cwd, claim.data.ticket)
+  const created = await createHubTicketTask(ctx.manager, ctx.cwd, claim.data.ticket)
   ctx.log(
     created.ok
       ? `started task ${created.record.id} from ticket ${next.id}`
@@ -184,20 +192,77 @@ async function claimNextTicket(
   return 'ok'
 }
 
+/**
+ * Claims and applies whatever secret the hub is holding for this machine's
+ * runner identity, as steady-state rotation, distinct from the one-time
+ * provisioning at `codesema runner connect`. Every failure mode short of a
+ * programming error degrades to a no-op: no local identity yet (the machine
+ * never registered as a runner), no pending secret (the routine case on
+ * almost every tick), an unreadable blob (undecryptable, not valid JSON, or
+ * failing payload validation), or a network failure (the main tick's own
+ * backoff already covers reachability, so this stays silent rather than
+ * doubling up on it). Only the unreadable-blob failures are worth a log
+ * line, since those point at a misconfigured hub or runner rather than
+ * routine network flakiness.
+ */
+async function checkPendingSecretRotation(
+  ctx: DaemonContext,
+  creds: SyncCredentials,
+): Promise<void> {
+  const identity = ctx.loadIdentityFn()
+  if (!identity) {
+    ctx.logOnce(
+      'no-runner-identity',
+      'runner mode is on but this machine has no runner identity yet',
+    )
+    return
+  }
+  const claimed = await ctx.claimSecretFn(creds, identity.fingerprint, ctx.fetchImpl)
+  if (!claimed.ok || !claimed.data) {
+    return
+  }
+  const plaintext = ctx.unsealFn(identity.privateKey, claimed.data.ciphertext)
+  if (!plaintext) {
+    ctx.log('could not decrypt the pending runner secret; skipping this rotation')
+    return
+  }
+  let parsedPlaintext: unknown
+  try {
+    parsedPlaintext = JSON.parse(plaintext.toString('utf8'))
+  } catch {
+    ctx.log('the decrypted runner secret is not valid JSON; skipping this rotation')
+    return
+  }
+  const payload = ctx.sanitizeSecretsFn(parsedPlaintext)
+  if (!payload) {
+    ctx.log('the decrypted runner secret failed validation; skipping this rotation')
+    return
+  }
+  ctx.applySecretsFn(runnerEnvPath(), payload.secrets)
+  Object.assign(process.env, payload.secrets)
+  const appliedKeys = Object.keys(payload.secrets)
+  if (appliedKeys.length > 0) {
+    ctx.log(`applied rotated runner secret(s): ${appliedKeys.join(', ')}`)
+  }
+}
+
 async function tick(ctx: DaemonContext): Promise<TickOutcome> {
-  await flushBrainOutbox(ctx.cwd, ctx.fetchImpl)
+  await flushHubOutbox(ctx.cwd, ctx.fetchImpl)
 
   const creds = loadSyncCredentials()
   if (!creds) {
     ctx.logOnce(
       'not-connected',
-      'brain mode is on but not connected (run `codesema brain connect`)',
+      'runner mode is on but not connected (run `codesema runner connect`)',
     )
     return 'ok'
   }
-  const remoteUrl = brainRemoteUrl(ctx.cwd)
+
+  await checkPendingSecretRotation(ctx, creds)
+
+  const remoteUrl = hubRemoteUrl(ctx.cwd)
   if (!remoteUrl) {
-    ctx.logOnce('no-remote', 'brain mode is on but this workspace has no git origin remote')
+    ctx.logOnce('no-remote', 'runner mode is on but this workspace has no git origin remote')
     return 'ok'
   }
 
@@ -226,7 +291,7 @@ function dispatchArmOrder(
  * waiting (D19): ship, reply with the human's instruction, or abandon. A
  * refusal from the manager (its own status guards: already shipped, a ship
  * already in flight, and so on) is JOURNALED here, never retried: the same
- * order rides the next heartbeat only if the brain still has it to hand
+ * order rides the next heartbeat only if the hub still has it to hand
  * back, and a manager guard is what keeps a duplicate delivery from
  * double-applying anything.
  */
@@ -260,12 +325,12 @@ async function heartbeatTick(ctx: DaemonContext): Promise<void> {
     return
   }
   const found = entry.records.find(
-    (record) => record.brain_ticket && isActiveTaskStatus(record.status),
+    (record) => record.hub_ticket && isActiveTaskStatus(record.status),
   )
   if (!found) {
     return
   }
-  const order = await heartbeatBrainTicket(ctx.cwd, found, found.status, ctx.fetchImpl)
+  const order = await heartbeatHubTicket(ctx.cwd, found, found.status, ctx.fetchImpl)
   if (order) {
     await applyArmOrder(ctx, entry.project.id, found.id, order)
   }
@@ -289,9 +354,9 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-export type BrainDaemonHandle = { stop: () => Promise<void> }
+export type RunnerDaemonHandle = { stop: () => Promise<void> }
 
-export type StartBrainDaemonOptions = {
+export type StartRunnerDaemonOptions = {
   manager: TaskManager
   cwd: string
   intervalMs?: number
@@ -302,14 +367,29 @@ export type StartBrainDaemonOptions = {
   draftFn?: DraftRequestFn
   /** Test seam: an injectable, abortable sleep instead of the real timers. */
   sleepFn?: (ms: number, signal: AbortSignal) => Promise<void>
+  /** Test seam. */
+  loadIdentityFn?: typeof loadRunnerIdentity
+  /** Test seam. */
+  claimSecretFn?: typeof claimPendingSecret
+  /** Test seam. */
+  unsealFn?: typeof unseal
+  /** Test seam. */
+  sanitizeSecretsFn?: typeof sanitizeRunnerSecretsPayload
+  /** Test seam. */
+  applySecretsFn?: typeof applySecretsToEnvFile
 }
 
-export function startBrainDaemon(opts: StartBrainDaemonOptions): BrainDaemonHandle {
+export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS
   const fetchImpl = opts.fetchImpl ?? fetch
-  const log = opts.logFn ?? ((line: string) => console.log(`[brain] ${line}`))
+  const log = opts.logFn ?? ((line: string) => console.log(`[runner] ${line}`))
   const draftFn = opts.draftFn ?? draftAndSubmitTicketRequest
   const sleepFn = opts.sleepFn ?? sleep
+  const loadIdentityFn = opts.loadIdentityFn ?? loadRunnerIdentity
+  const claimSecretFn = opts.claimSecretFn ?? claimPendingSecret
+  const unsealFn = opts.unsealFn ?? unseal
+  const sanitizeSecretsFn = opts.sanitizeSecretsFn ?? sanitizeRunnerSecretsPayload
+  const applySecretsFn = opts.applySecretsFn ?? applySecretsToEnvFile
   const controller = new AbortController()
   const loggedOnce = new Set<string>()
 
@@ -326,6 +406,11 @@ export function startBrainDaemon(opts: StartBrainDaemonOptions): BrainDaemonHand
       loggedOnce.add(key)
       log(line)
     },
+    loadIdentityFn,
+    claimSecretFn,
+    unsealFn,
+    sanitizeSecretsFn,
+    applySecretsFn,
   }
 
   let backoffMs = intervalMs

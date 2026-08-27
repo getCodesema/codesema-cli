@@ -8,13 +8,13 @@ import {
   sanitizeTaskEvent,
   sanitizeTaskRecord,
   TASK_AGENT_MAX,
-  TASK_BRAIN_TICKET_ID_MAX,
   TASK_CHECK_COMMAND_MAX,
   TASK_CHECK_TAIL_MAX,
   TASK_CHECKS_ERROR_MAX,
   TASK_CHECKS_LIST_MAX,
   TASK_EVENT_DATA_KEYS_MAX,
   TASK_EVENT_DATA_STRING_MAX,
+  TASK_HUB_TICKET_ID_MAX,
   TASK_ISSUE_PROJECT_MAX,
   TASK_ISSUE_URL_MAX,
   TASK_STATUS_VALUES,
@@ -45,10 +45,10 @@ const validIssue: TaskIssueRef = {
   url: 'https://github.com/getCodesema/codesema-cli/issues/42',
 }
 
-const validBrainTicket = {
+const validHubTicket = {
   id: 'tick-1',
   title: 'Add rate limiting',
-  url: 'https://brain.local/tickets/tick-1',
+  url: 'https://hub.local/tickets/tick-1',
 }
 
 const CRITERION_TEXT = 'WHEN x THE SYSTEM SHALL y'
@@ -921,73 +921,97 @@ describe('sanitizeTaskRecord — issue binding (T2.4)', () => {
   })
 })
 
-describe('sanitizeTaskRecord — brain ticket binding', () => {
-  test('a record with brain_ticket round-trips unchanged', () => {
-    const withTicket = { ...validRecord, brain_ticket: validBrainTicket }
+describe('sanitizeTaskRecord — hub ticket binding', () => {
+  test('a record with hub_ticket round-trips unchanged', () => {
+    const withTicket = { ...validRecord, hub_ticket: validHubTicket }
     expect(sanitizeTaskRecord(structuredClone(withTicket))).toEqual(withTicket)
   })
 
-  test('brain_ticket without a url round-trips unchanged (url is optional)', () => {
-    const { url: _drop, ...withoutUrl } = validBrainTicket
-    const withTicket = { ...validRecord, brain_ticket: withoutUrl }
+  test('hub_ticket without a url round-trips unchanged (url is optional)', () => {
+    const { url: _drop, ...withoutUrl } = validHubTicket
+    const withTicket = { ...validRecord, hub_ticket: withoutUrl }
     expect(sanitizeTaskRecord(structuredClone(withTicket))).toEqual(withTicket)
   })
 
-  test('a record without brain_ticket carries no key, same as any record predating this field', () => {
+  test('a record without hub_ticket carries no key, same as any record predating this field', () => {
     const r = sanitizeTaskRecord(structuredClone(validRecord))
     expect(r).toEqual(validRecord)
-    expect(r && 'brain_ticket' in r).toBe(false)
+    expect(r && 'hub_ticket' in r).toBe(false)
   })
 
-  test('brain_ticket: a non-object drops the whole field rather than inventing one', () => {
+  test('hub_ticket: a non-object drops the whole field rather than inventing one', () => {
     for (const junk of [null, 'tick-1', 42, [], true]) {
-      const r = sanitizeTaskRecord({ ...validRecord, brain_ticket: junk })
-      expect(r && 'brain_ticket' in r).toBe(false)
+      const r = sanitizeTaskRecord({ ...validRecord, hub_ticket: junk })
+      expect(r && 'hub_ticket' in r).toBe(false)
     }
   })
 
-  test('brain_ticket: a missing or blank id drops the whole field: no usable identity', () => {
+  test('hub_ticket: a missing or blank id drops the whole field: no usable identity', () => {
     for (const id of [undefined, '', '   ', 42, null]) {
-      const r = sanitizeTaskRecord({ ...validRecord, brain_ticket: { ...validBrainTicket, id } })
-      expect(r && 'brain_ticket' in r).toBe(false)
+      const r = sanitizeTaskRecord({ ...validRecord, hub_ticket: { ...validHubTicket, id } })
+      expect(r && 'hub_ticket' in r).toBe(false)
     }
   })
 
-  test('brain_ticket: id and title are truncated to their bounds, never rejected for length', () => {
+  test('hub_ticket: id and title are truncated to their bounds, never rejected for length', () => {
     const r = sanitizeTaskRecord({
       ...validRecord,
-      brain_ticket: {
-        ...validBrainTicket,
-        id: 'i'.repeat(TASK_BRAIN_TICKET_ID_MAX + 50),
+      hub_ticket: {
+        ...validHubTicket,
+        id: 'i'.repeat(TASK_HUB_TICKET_ID_MAX + 50),
         title: 't'.repeat(TASK_TITLE_MAX + 50),
       },
     })
-    expect(r?.brain_ticket?.id.length).toBe(TASK_BRAIN_TICKET_ID_MAX)
-    expect(r?.brain_ticket?.title.length).toBe(TASK_TITLE_MAX)
+    expect(r?.hub_ticket?.id.length).toBe(TASK_HUB_TICKET_ID_MAX)
+    expect(r?.hub_ticket?.title.length).toBe(TASK_TITLE_MAX)
   })
 
-  test('brain_ticket: title degrades to an empty string rather than dropping the field', () => {
+  test('hub_ticket: title degrades to an empty string rather than dropping the field', () => {
     const r = sanitizeTaskRecord({
       ...validRecord,
-      brain_ticket: { id: validBrainTicket.id, title: 42 },
+      hub_ticket: { id: validHubTicket.id, title: 42 },
     })
-    expect(r?.brain_ticket).toEqual({ id: validBrainTicket.id, title: '' })
+    expect(r?.hub_ticket).toEqual({ id: validHubTicket.id, title: '' })
   })
 
-  test('brain_ticket: url must be an http(s) URL, or the key is simply omitted', () => {
+  test('hub_ticket: url must be an http(s) URL, or the key is simply omitted', () => {
     for (const url of ['not a url', 'ftp://example.com/1', 'javascript:alert(1)']) {
-      const r = sanitizeTaskRecord({ ...validRecord, brain_ticket: { ...validBrainTicket, url } })
-      expect(r && r.brain_ticket && 'url' in r.brain_ticket).toBe(false)
+      const r = sanitizeTaskRecord({ ...validRecord, hub_ticket: { ...validHubTicket, url } })
+      expect(r && r.hub_ticket && 'url' in r.hub_ticket).toBe(false)
     }
   })
 
-  test('brain_ticket: url is truncated to its bound, never rejected for length', () => {
-    const longUrl = `https://brain.local/${'x'.repeat(TASK_ISSUE_URL_MAX)}`
+  test('hub_ticket: url is truncated to its bound, never rejected for length', () => {
+    const longUrl = `https://hub.local/${'x'.repeat(TASK_ISSUE_URL_MAX)}`
     const r = sanitizeTaskRecord({
       ...validRecord,
-      brain_ticket: { ...validBrainTicket, url: longUrl },
+      hub_ticket: { ...validHubTicket, url: longUrl },
     })
-    expect(r?.brain_ticket?.url?.length).toBe(TASK_ISSUE_URL_MAX)
+    expect(r?.hub_ticket?.url?.length).toBe(TASK_ISSUE_URL_MAX)
+  })
+})
+
+describe('sanitizeTaskRecord — legacy brain_ticket compat', () => {
+  test('a record with only legacy brain_ticket normalizes to hub_ticket in the output', () => {
+    const legacy = { ...validRecord, brain_ticket: validHubTicket }
+    const r = sanitizeTaskRecord(structuredClone(legacy))
+    expect(r?.hub_ticket).toEqual(validHubTicket)
+    expect(r && 'brain_ticket' in r).toBe(false)
+  })
+
+  test('legacy brain_ticket goes through the same validation as hub_ticket: ids are truncated, not rejected', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      brain_ticket: { ...validHubTicket, id: 'i'.repeat(TASK_HUB_TICKET_ID_MAX + 50) },
+    })
+    expect(r?.hub_ticket?.id.length).toBe(TASK_HUB_TICKET_ID_MAX)
+  })
+
+  test('when both brain_ticket and hub_ticket are present, hub_ticket wins', () => {
+    const legacyTicket = { id: 'legacy-1', title: 'Legacy title' }
+    const both = { ...validRecord, brain_ticket: legacyTicket, hub_ticket: validHubTicket }
+    const r = sanitizeTaskRecord(structuredClone(both))
+    expect(r?.hub_ticket).toEqual(validHubTicket)
   })
 })
 

@@ -20,11 +20,11 @@ import {
 import {
   DEFAULT_MERGE_SETTINGS,
   loadGlobalConfig,
-  resolveBrainAutoMerge,
   resolveMaxAutoFixRounds,
   resolveProjectAgentCommand,
   resolveProjectConfig,
   resolveReviewMode,
+  resolveRunnerAutoMerge,
   resolveWatchdogBudgets,
   type IsolationMode,
   type MergeSettings,
@@ -68,8 +68,6 @@ import {
   type Project,
 } from './projects.js'
 import { readChecksConfig } from './repo-config.js'
-import { resolveBrainTicketOrigin } from './task-brain-ticket.js'
-import { reportBrainTransition } from './task-brain.js'
 import { runChecks } from './task-checks.js'
 import {
   applyFixLoopDecision,
@@ -82,6 +80,8 @@ import {
   decideFixLoop,
   type FixLoopDecision,
 } from './task-fix-loop.js'
+import { resolveHubTicketOrigin } from './task-hub-ticket.js'
+import { reportHubTransition } from './task-hub.js'
 import {
   agentHomeVolume,
   isolationDefaults,
@@ -268,16 +268,16 @@ export type CreateTaskManagerInput = {
    */
   issue?: CreateTaskManagerIssueInput
   /**
-   * Arm/brain integration: creates the task FROM this ticket the local
-   * brain owns, instead of a bare title+prompt or a forge issue. Mutually
+   * Arm/hub integration: creates the task FROM this ticket the local
+   * hub owns, instead of a bare title+prompt or a forge issue. Mutually
    * exclusive in effect with `issue` and with `title`/`prompt`: when given,
    * they are ignored and this wins, same convention `issue` already has over
    * `title`/`prompt`. The ticket's own title and (linted) body take their
-   * place, and the task's record carries `brain_ticket` and its already
-   * brain-validated `criteria` (see `resolveBrainTicketOrigin`,
-   * task-brain-ticket.ts).
+   * place, and the task's record carries `hub_ticket` and its already
+   * hub-validated `criteria` (see `resolveHubTicketOrigin`,
+   * task-hub-ticket.ts).
    */
-  brainTicket?: ArmTicket
+  hubTicket?: ArmTicket
   /**
    * Per-task agent CLI (id or full known command). Validated with
    * `resolveKnownAgentCommand`; unknown/custom is a 400. Absent: the
@@ -1020,9 +1020,9 @@ type TaskOrigin =
       issueSnapshot: TaskIssueSnapshot | null
       /** T2.4/DP13: true when the issue's raw body carries content the edit-detector cannot see. Always false off the title+prompt path. */
       coverageGap: boolean
-      /** Arm/brain integration: the ticket this task was created from, when it was one. Absent off every other origin. */
-      brainTicket?: { id: string; title: string; url?: string } | null
-      /** The brain's already-validated criteria, frozen onto the record at creation. Absent off every other origin. */
+      /** Arm/hub integration: the ticket this task was created from, when it was one. Absent off every other origin. */
+      hubTicket?: { id: string; title: string; url?: string } | null
+      /** The hub's already-validated criteria, frozen onto the record at creation. Absent off every other origin. */
       criteria?: AcceptanceCriterion[] | null
     }
   | { ok: false; refusal: Extract<TaskCreateResult, { ok: false }> }
@@ -1875,14 +1875,14 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       record.status = 'shipped'
       // D20, same write as the status above: advanced to 'merge' when the
       // chained runMergeStep below will actually attempt one — the SAME
-      // settings/brainAutoMerge it resolves a few lines later — or cleared
-      // when it will not (mergePolicy 'human', no brain override), so the
+      // settings/runnerAutoMerge it resolves a few lines later — or cleared
+      // when it will not (mergePolicy 'human', no runner override), so the
       // record never claims to be mid-step when nothing is about to run.
       if (
         effectiveMergePolicyIsAuto(
           record,
           opts.mergeSettings ?? DEFAULT_MERGE_SETTINGS,
-          resolveBrainAutoMerge(loadGlobalConfig()),
+          resolveRunnerAutoMerge(loadGlobalConfig()),
         )
       ) {
         record.cycle_step = 'merge'
@@ -1899,11 +1899,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // `codesema:reviewing` with the `review_ok` it comes from, so the
       // nominal auto-ship spends nothing at all here.
       trackCycleLabel(mirrorCycleLabel(projectId, cwd, record))
-      // Arm/brain integration: the same "after the persisted transition,
+      // Arm/hub integration: the same "after the persisted transition,
       // never instead of it" discipline as the cycle label right above.
-      // Never awaited: a brain round trip must not hold up the ship's own
+      // Never awaited: a hub round trip must not hold up the ship's own
       // answer, exactly like the label.
-      void reportBrainTransition(cwd, record, {
+      void reportHubTransition(cwd, record, {
         type: 'mr_opened',
         ...(outcome.mrUrl ? { mr_url: outcome.mrUrl } : {}),
         branch: record.branch,
@@ -2121,12 +2121,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           cwd,
           task: record,
           settings,
-          // Arm/brain integration: `brainAutoMerge` is GLOBAL-ONLY (see its own
+          // Arm/runner integration: `runnerAutoMerge` is GLOBAL-ONLY (see its own
           // field comment, config.ts), resolved HERE, once, from the global
           // file alone, and handed to `mergeTask` as a plain value rather than
           // read there: a repo file can never contribute to it, and a merge
           // module that read config itself would blur that boundary.
-          brainAutoMerge: resolveBrainAutoMerge(loadGlobalConfig()),
+          runnerAutoMerge: resolveRunnerAutoMerge(loadGlobalConfig()),
           ...(opts.degradedMergeKeys && opts.degradedMergeKeys.length > 0
             ? { degradedKeys: opts.degradedMergeKeys }
             : {}),
@@ -2178,7 +2178,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // belongs to is already done, see `schedulePostMergeReplay`'s own
         // doc. `.catch()` rather than a bare `void`, same discipline as
         // `trackCycleLabel` above: nothing in this hook's own contract is
-        // "never rejects" the way `reportBrainTransition`'s is, so an
+        // "never rejects" the way `reportHubTransition`'s is, so an
         // unexpected throw is turned into a notice instead of an unhandled
         // rejection.
         void schedulePostMergeReplay(ctx, record).catch((err: unknown) => {
@@ -3535,9 +3535,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // Reads the issue exactly as `create` does — `admitIssue` never writes —
       // and then throws the snapshot away: D-d, previewing is not launching, so
       // nothing dates the ticket of a task that does not exist. Same
-      // brainTicket > issue > title/prompt order `create()` resolves with.
-      const origin = input.brainTicket
-        ? resolveBrainTicketOrigin(project.path, input.brainTicket)
+      // hubTicket > issue > title/prompt order `create()` resolves with.
+      const origin = input.hubTicket
+        ? resolveHubTicketOrigin(project.path, input.hubTicket)
         : input.issue
           ? await resolveIssueOrigin(project.path, input.issue, opts.issueExecFn)
           : resolveTitlePromptOrigin(input)
@@ -3576,13 +3576,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (!ctx) {
         return unknownProject
       }
-      // `brainTicket` wins over `issue`, which wins over a bare
+      // `hubTicket` wins over `issue`, which wins over a bare
       // title+prompt: the same "one origin, and it decides everything
-      // else" convention `issue` already has. `resolveBrainTicketOrigin` is
+      // else" convention `issue` already has. `resolveHubTicketOrigin` is
       // synchronous (no forge round trip: the ticket arrives already
-      // resolved and validated by the brain), unlike `resolveIssueOrigin`.
-      const origin = input.brainTicket
-        ? resolveBrainTicketOrigin(ctx.project.path, input.brainTicket)
+      // resolved and validated by the hub), unlike `resolveIssueOrigin`.
+      const origin = input.hubTicket
+        ? resolveHubTicketOrigin(ctx.project.path, input.hubTicket)
         : input.issue
           ? await resolveIssueOrigin(ctx.project.path, input.issue, opts.issueExecFn)
           : resolveTitlePromptOrigin(input)
@@ -3595,7 +3595,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         issue: issueRef,
         issueSnapshot,
         coverageGap,
-        brainTicket,
+        hubTicket,
         criteria,
       } = origin
       // Every guard below — base/branch exclusivity and shape, the work-on
@@ -3649,12 +3649,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // resolveIssueOrigin/resolveTitlePromptOrigin) — one guard, not two,
         // so a future drift here cannot silently split the pair.
         ...(issueRef && issueSnapshot ? { issue: issueRef, issueSnapshot } : {}),
-        // Arm/brain integration: both land in the SAME write as everything
+        // Arm/hub integration: both land in the SAME write as everything
         // else above. Criteria in particular must never trail the record by
         // a second write: the task's very first turn already reads
         // `taskCriteria(record)` to build its prompt, and criteria arriving
         // even one write later would race that read.
-        ...(brainTicket ? { brainTicket } : {}),
+        ...(hubTicket ? { hubTicket } : {}),
         ...(criteria && criteria.length > 0 ? { criteria } : {}),
       })
       // The WHY is journaled on the task itself: an 'auto' workspace that fell
@@ -3699,11 +3699,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           })
         }
       }
-      // Arm/brain integration: the same 'criteria'/'validated' line
+      // Arm/hub integration: the same 'criteria'/'validated' line
       // POST /api/tasks/:id/criteria journals for a human-validated list
-      // (task-criteria.ts); the brain played that role instead, so the
+      // (task-criteria.ts); the hub played that role instead, so the
       // record's journal says so the same way.
-      if (brainTicket && criteria && criteria.length > 0) {
+      if (hubTicket && criteria && criteria.length > 0) {
         const criteriaEvent = appendTaskEvent(ctx.project.path, record.id, {
           type: 'criteria',
           data: {
@@ -3746,9 +3746,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           task_id: failure.id,
           event: { name: 'task_event', data: event },
         })
-        // Never awaited: the caller must not wait on a brain round trip for a
+        // Never awaited: the caller must not wait on a hub round trip for a
         // task that just failed to even start.
-        void reportBrainTransition(ctx.project.path, failure, {
+        void reportHubTransition(ctx.project.path, failure, {
           type: 'failed',
           error_message: started.error,
         })

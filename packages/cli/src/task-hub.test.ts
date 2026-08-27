@@ -1,17 +1,17 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
 import type { ArmOrder, TaskEvent, TaskRecord, TaskTurn } from './contract.js'
 import {
-  flushBrainOutbox,
-  heartbeatBrainTicket,
-  queueBrainEvent,
-  reportBrainTransition,
-  resetPendingBrainEventBatches,
-} from './task-brain.js'
+  flushHubOutbox,
+  heartbeatHubTicket,
+  queueHubEvent,
+  reportHubTransition,
+  resetPendingHubEventBatches,
+} from './task-hub.js'
 
 type Call = { url: string; init: RequestInit }
 
@@ -38,6 +38,10 @@ function requestBody(call: Call): Record<string, unknown> {
 }
 
 function outboxPath(cwd: string): string {
+  return join(cwd, '.codesema', 'hub-outbox.jsonl')
+}
+
+function legacyOutboxPath(cwd: string): string {
   return join(cwd, '.codesema', 'brain-outbox.jsonl')
 }
 
@@ -53,7 +57,7 @@ function outboxLines(cwd: string): unknown[] {
 
 async function settle(): Promise<void> {
   // Lets a fire-and-forget effect's own microtask/macrotask chain (fetchStub's
-  // resolved Response, its own .then chain inside postToBrain) run to
+  // resolved Response, its own .then chain inside postToHub) run to
   // completion before an assertion reads its side effect.
   await new Promise((resolve) => setTimeout(resolve, 20))
 }
@@ -75,7 +79,7 @@ function fakeRecord(overrides: Partial<TaskRecord> = {}): TaskRecord {
     auto_ship: true,
     work_on: false,
     isolation: 'policy',
-    brain_ticket: { id: 'tkt-1', title: 't' },
+    hub_ticket: { id: 'tkt-1', title: 't' },
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -96,31 +100,31 @@ function fakeEvent(seq: number): TaskEvent {
   return { seq, at: '2026-01-01T00:00:00.000Z', type: 'commit', data: { message: `commit ${seq}` } }
 }
 
-/** exactOptionalPropertyTypes forbids `{ brain_ticket: undefined }`: the key must be ABSENT, not present-as-undefined. */
-function withoutBrainTicket(record: TaskRecord): TaskRecord {
-  const { brain_ticket: _dropped, ...rest } = record
+/** exactOptionalPropertyTypes forbids `{ hub_ticket: undefined }`: the key must be ABSENT, not present-as-undefined. */
+function withoutHubTicket(record: TaskRecord): TaskRecord {
+  const { hub_ticket: _dropped, ...rest } = record
   return rest
 }
 
-describe('task-brain', () => {
+describe('task-hub', () => {
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   let configDir: string
   let cwd: string
 
   beforeEach(() => {
-    configDir = mkdtempSync(join(tmpdir(), 'codesema-brain-cfg-'))
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-hub-cfg-'))
     process.env.CODESEMA_CONFIG_DIR = configDir
-    cwd = mkdtempSync(join(tmpdir(), 'codesema-brain-repo-'))
+    cwd = mkdtempSync(join(tmpdir(), 'codesema-hub-repo-'))
     saveGlobalConfig({
       ...loadGlobalConfig(),
-      syncUrl: 'https://brain.example',
+      syncUrl: 'https://hub.example',
       syncWorkspaceId: 'ws1',
       syncSecret: 'sec1',
     })
   })
 
   afterEach(() => {
-    resetPendingBrainEventBatches()
+    resetPendingHubEventBatches()
     rmSync(configDir, { recursive: true, force: true })
     rmSync(cwd, { recursive: true, force: true })
     if (previousConfigDir === undefined) {
@@ -130,18 +134,18 @@ describe('task-brain', () => {
     }
   })
 
-  describe('reportBrainTransition', () => {
+  describe('reportHubTransition', () => {
     test('a successful report carries the right URL, Bearer header and body', async () => {
       const calls: Call[] = []
       const record = fakeRecord()
-      await reportBrainTransition(
+      await reportHubTransition(
         cwd,
         record,
         { type: 'mr_opened', mr_url: 'https://forge.example/mr/1', branch: 'codesema/task-t' },
         fetchStub(200, {}, calls),
       )
       expect(calls.length).toBe(1)
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/tickets/tkt-1/transitions')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/tickets/tkt-1/transitions')
       expect(calls[0]?.init.method).toBe('POST')
       const headers = calls[0]?.init.headers as Record<string, string>
       expect(headers.authorization).toBe('Bearer csk_ws1.sec1')
@@ -157,17 +161,17 @@ describe('task-brain', () => {
 
     test('two review_result reports for the same task at different turn counts get distinct idempotency keys', async () => {
       // A fix-loop round settles a SECOND, genuinely different verdict on the
-      // same task; the brain must not read it as a retry of the first and
+      // same task; the hub must not read it as a retry of the first and
       // drop it as an already-applied duplicate.
       const calls: Call[] = []
       const fetchImpl = fetchStub(200, {}, calls)
-      await reportBrainTransition(
+      await reportHubTransition(
         cwd,
         fakeRecord({ turns: [] }),
         { type: 'review_result', verdict: 'request_changes' },
         fetchImpl,
       )
-      await reportBrainTransition(
+      await reportHubTransition(
         cwd,
         fakeRecord({ turns: [fakeTurn()] }),
         { type: 'review_result', verdict: 'approve' },
@@ -177,16 +181,16 @@ describe('task-brain', () => {
       expect(keys).toEqual(['abc123def456:review_result:0', 'abc123def456:review_result:1'])
     })
 
-    test('a task with no brain_ticket is a no-op', async () => {
+    test('a task with no hub_ticket is a no-op', async () => {
       const calls: Call[] = []
-      const record = withoutBrainTicket(fakeRecord())
-      await reportBrainTransition(cwd, record, { type: 'mr_opened' }, fetchStub(200, {}, calls))
+      const record = withoutHubTicket(fakeRecord())
+      await reportHubTransition(cwd, record, { type: 'mr_opened' }, fetchStub(200, {}, calls))
       expect(calls.length).toBe(0)
     })
 
     test('a network failure queues the report in the outbox', async () => {
       const record = fakeRecord()
-      await reportBrainTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
       const lines = outboxLines(cwd)
       expect(lines.length).toBe(1)
       const entry = lines[0] as { kind: string; ticket_id: string; transition: { type: string } }
@@ -198,7 +202,7 @@ describe('task-brain', () => {
     test('a 5xx queues the report in the outbox', async () => {
       const calls: Call[] = []
       const record = fakeRecord()
-      await reportBrainTransition(
+      await reportHubTransition(
         cwd,
         record,
         { type: 'merged' },
@@ -210,7 +214,7 @@ describe('task-brain', () => {
     test('a 4xx is logged and abandoned, never queued', async () => {
       const calls: Call[] = []
       const record = fakeRecord()
-      await reportBrainTransition(
+      await reportHubTransition(
         cwd,
         record,
         { type: 'failed', error_message: 'boom' },
@@ -221,61 +225,61 @@ describe('task-brain', () => {
     })
   })
 
-  describe('flushBrainOutbox', () => {
+  describe('flushHubOutbox', () => {
     test('replays a queued transition and empties the outbox on success', async () => {
       const record = fakeRecord()
-      await reportBrainTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
       expect(outboxLines(cwd).length).toBe(1)
 
       const calls: Call[] = []
-      await flushBrainOutbox(cwd, fetchStub(200, {}, calls))
+      await flushHubOutbox(cwd, fetchStub(200, {}, calls))
       expect(calls.length).toBe(1)
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/tickets/tkt-1/transitions')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/tickets/tkt-1/transitions')
       expect(outboxLines(cwd)).toEqual([])
     })
 
     test('a 409 on replay drops the entry rather than keeping it queued', async () => {
       const record = fakeRecord()
-      await reportBrainTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
       expect(outboxLines(cwd).length).toBe(1)
 
       const calls: Call[] = []
-      await flushBrainOutbox(cwd, fetchStub(409, { error: 'already applied' }, calls))
+      await flushHubOutbox(cwd, fetchStub(409, { error: 'already applied' }, calls))
       expect(calls.length).toBe(1)
       expect(outboxLines(cwd)).toEqual([])
     })
 
     test('still offline: the entry is kept, not lost', async () => {
       const record = fakeRecord()
-      await reportBrainTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
       expect(outboxLines(cwd).length).toBe(1)
 
-      await flushBrainOutbox(cwd, fetchOffline('still offline'))
+      await flushHubOutbox(cwd, fetchOffline('still offline'))
       expect(outboxLines(cwd).length).toBe(1)
     })
 
     test('no outbox file: a no-op', async () => {
       const calls: Call[] = []
-      await flushBrainOutbox(cwd, fetchStub(200, {}, calls))
+      await flushHubOutbox(cwd, fetchStub(200, {}, calls))
       expect(calls.length).toBe(0)
     })
   })
 
-  describe('heartbeatBrainTicket', () => {
+  describe('heartbeatHubTicket', () => {
     test('posts to the ticket heartbeat route with the Bearer header', async () => {
       const calls: Call[] = []
-      await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchStub(200, {}, calls))
+      await heartbeatHubTicket(cwd, fakeRecord(), undefined, fetchStub(200, {}, calls))
       expect(calls.length).toBe(1)
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/tickets/tkt-1/heartbeat')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/tickets/tkt-1/heartbeat')
       const headers = calls[0]?.init.headers as Record<string, string>
       expect(headers.authorization).toBe('Bearer csk_ws1.sec1')
     })
 
-    test('a task with no brain_ticket is a no-op', async () => {
+    test('a task with no hub_ticket is a no-op', async () => {
       const calls: Call[] = []
-      await heartbeatBrainTicket(
+      await heartbeatHubTicket(
         cwd,
-        withoutBrainTicket(fakeRecord()),
+        withoutHubTicket(fakeRecord()),
         undefined,
         fetchStub(200, {}, calls),
       )
@@ -284,24 +288,24 @@ describe('task-brain', () => {
 
     test('sends local_status in the body when given', async () => {
       const calls: Call[] = []
-      await heartbeatBrainTicket(cwd, fakeRecord(), 'waiting_for_you', fetchStub(200, {}, calls))
+      await heartbeatHubTicket(cwd, fakeRecord(), 'waiting_for_you', fetchStub(200, {}, calls))
       expect(requestBody(calls[0] as Call)).toEqual({ local_status: 'waiting_for_you' })
     })
 
     test('omits local_status from the body when not given', async () => {
       const calls: Call[] = []
-      await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchStub(200, {}, calls))
+      await heartbeatHubTicket(cwd, fakeRecord(), undefined, fetchStub(200, {}, calls))
       expect(requestBody(calls[0] as Call)).toEqual({})
     })
 
-    test('returns the sanitized order the brain hands back', async () => {
+    test('returns the sanitized order the hub hands back', async () => {
       const order: ArmOrder = {
         action: 'ship',
         instruction: null,
         issued_at: '2026-01-01T00:00:00.000Z',
       }
       const fetchImpl = fetchStub(200, { lease_expires_at: '2026-01-01T00:05:00.000Z', order }, [])
-      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchImpl)
+      const result = await heartbeatHubTicket(cwd, fakeRecord(), undefined, fetchImpl)
       expect(result).toEqual(order)
     })
 
@@ -311,40 +315,40 @@ describe('task-brain', () => {
         { lease_expires_at: '2026-01-01T00:05:00.000Z', order: null },
         [],
       )
-      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchImpl)
+      const result = await heartbeatHubTicket(cwd, fakeRecord(), undefined, fetchImpl)
       expect(result).toBeNull()
     })
 
     test('returns null, without throwing, when the success body is empty or not JSON', async () => {
       const fetchImpl = (() =>
         Promise.resolve(new Response('', { status: 200 }))) as unknown as typeof fetch
-      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchImpl)
+      const result = await heartbeatHubTicket(cwd, fakeRecord(), undefined, fetchImpl)
       expect(result).toBeNull()
     })
 
     test('returns null, without throwing, on a network failure', async () => {
-      const result = await heartbeatBrainTicket(cwd, fakeRecord(), undefined, fetchOffline())
+      const result = await heartbeatHubTicket(cwd, fakeRecord(), undefined, fetchOffline())
       expect(result).toBeNull()
     })
   })
 
-  describe('queueBrainEvent', () => {
+  describe('queueHubEvent', () => {
     test('flushes once the batch reaches its cap, as one POST /api/cli/events', async () => {
       const calls: Call[] = []
       const record = fakeRecord()
       const fetchImpl = fetchStub(200, {}, calls)
       for (let i = 1; i <= 20; i++) {
-        queueBrainEvent({
+        queueHubEvent({
           cwd,
           taskId: record.id,
-          ticketId: record.brain_ticket?.id ?? '',
+          ticketId: record.hub_ticket?.id ?? '',
           event: fakeEvent(i),
           fetchImpl,
         })
       }
       await settle()
       expect(calls.length).toBe(1)
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/events')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/events')
       const body = requestBody(calls[0] as Call)
       expect(body.run_id).toBe(record.id)
       expect(body.ticket_id).toBe('tkt-1')
@@ -361,7 +365,7 @@ describe('task-brain', () => {
       const calls: Call[] = []
       const fetchImpl = fetchStub(200, {}, calls)
       for (let i = 1; i <= 20; i++) {
-        queueBrainEvent({
+        queueHubEvent({
           cwd,
           taskId: 'task-a',
           ticketId: 'tkt-1',
@@ -378,7 +382,7 @@ describe('task-brain', () => {
       // cached URL rather than a fresh (and now null) read.
       execFileSync('git', ['remote', 'remove', 'origin'], { cwd, stdio: 'ignore' })
       for (let i = 1; i <= 20; i++) {
-        queueBrainEvent({
+        queueHubEvent({
           cwd,
           taskId: 'task-b',
           ticketId: 'tkt-1',
@@ -389,6 +393,67 @@ describe('task-brain', () => {
       await settle()
       expect(calls.length).toBe(2)
       expect(requestBody(calls[1] as Call).remote_url).toBe('git@github.com:o/r.git')
+    })
+  })
+
+  describe('legacy brain-outbox.jsonl migration', () => {
+    function writeLegacyOutbox(entries: unknown[]): void {
+      mkdirSync(join(cwd, '.codesema'), { recursive: true })
+      writeFileSync(
+        legacyOutboxPath(cwd),
+        entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''),
+      )
+    }
+
+    test('a legacy outbox is renamed and its entries replayed by flushHubOutbox', async () => {
+      writeLegacyOutbox([
+        {
+          kind: 'transition',
+          key: 'legacy-1',
+          ticket_id: 'tkt-1',
+          transition: {
+            type: 'merged',
+            idempotency_key: 'legacy-1',
+            at: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      ])
+      const calls: Call[] = []
+      await flushHubOutbox(cwd, fetchStub(200, {}, calls))
+      expect(calls.length).toBe(1)
+      expect(existsSync(legacyOutboxPath(cwd))).toBe(false)
+      expect(outboxLines(cwd)).toEqual([])
+    })
+
+    test('a legacy outbox is migrated on write too: a new offline report lands beside the old entries', async () => {
+      writeLegacyOutbox([
+        {
+          kind: 'transition',
+          key: 'legacy-1',
+          ticket_id: 'tkt-1',
+          transition: {
+            type: 'merged',
+            idempotency_key: 'legacy-1',
+            at: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      ])
+      await reportHubTransition(cwd, fakeRecord(), { type: 'failed' }, fetchOffline())
+      expect(existsSync(legacyOutboxPath(cwd))).toBe(false)
+      expect(outboxLines(cwd).length).toBe(2)
+    })
+
+    test('a legacy file reappearing after hub-outbox.jsonl already exists is never touched again', async () => {
+      await reportHubTransition(cwd, fakeRecord(), { type: 'failed' }, fetchOffline())
+      expect(outboxLines(cwd).length).toBe(1)
+      // hub-outbox.jsonl already exists (even once flushed empty below), so the
+      // migration guard (`!existsSync(path)`) skips a legacy file from here on.
+      writeLegacyOutbox([
+        { kind: 'transition', key: 'legacy-2', ticket_id: 'tkt-1', transition: {} },
+      ])
+      await flushHubOutbox(cwd, fetchStub(200, {}, []))
+      expect(existsSync(legacyOutboxPath(cwd))).toBe(true)
+      expect(outboxLines(cwd)).toEqual([])
     })
   })
 })

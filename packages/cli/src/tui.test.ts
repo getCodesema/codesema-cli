@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseYesNo } from './tui.js'
+import { maskCharacters, parseYesNo, textInput } from './tui.js'
 
 describe('parseYesNo', () => {
   test('accepts english yes/no in any case, trimmed', () => {
@@ -23,5 +23,27 @@ describe('parseYesNo', () => {
     expect(parseYesNo('maybe')).toBe(null)
     expect(parseYesNo('yess')).toBe(null)
     expect(parseYesNo('0')).toBe(null)
+  })
+})
+
+describe('maskCharacters', () => {
+  test('renders one * per character, never the value itself', () => {
+    expect(maskCharacters('')).toBe('')
+    expect(maskCharacters('a')).toBe('*')
+    expect(maskCharacters('ghp_super_secret_token')).toBe(
+      '*'.repeat('ghp_super_secret_token'.length),
+    )
+  })
+
+  test('counts by character length, unrelated to the actual bytes typed', () => {
+    expect(maskCharacters('12345')).toBe('*****')
+    expect(maskCharacters('     ')).toBe('*****')
+  })
+})
+
+describe('textInput mask option', () => {
+  test('outside a TTY, resolves to null the same way whether masked or not', async () => {
+    expect(await textInput({ title: 'token' })).toBeNull()
+    expect(await textInput({ title: 'token', mask: true })).toBeNull()
   })
 })

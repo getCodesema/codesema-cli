@@ -1,13 +1,13 @@
-// The three global brain-loop settings (packages/cli/src/config.ts:
-// brainAutoMerge, mergeStrategy, maxTaskTurns), read and written through
+// The three global runner-loop settings (packages/cli/src/config.ts:
+// runnerAutoMerge, mergeStrategy, maxTaskTurns), read and written through
 // GET/PUT /api/settings. Pure parsing and validation live here so they stay
 // testable without mounting RepoSettings.vue; the fetches themselves stay in
 // the component, same split as useChecks.ts.
 
 export type MergeStrategy = 'merge' | 'squash' | 'rebase'
 
-export type BrainSettings = {
-  brainAutoMerge: boolean
+export type RunnerSettings = {
+  runnerAutoMerge: boolean
   /** Undefined is a real, honest state here: the forge applies its own
    * default merge strategy when none was ever configured (config.ts D13). */
   mergeStrategy: MergeStrategy | undefined
@@ -27,11 +27,11 @@ export function isMergeStrategyOption(value: string): value is MergeStrategy {
  * default the server's own resolveXxx would apply, never a crash: the same
  * whitelist-and-fallback doctrine `config.ts` documents for itself.
  */
-export function parseSettingsSnapshot(raw: unknown): BrainSettings {
+export function parseSettingsSnapshot(raw: unknown): RunnerSettings {
   const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
 
-  const brainAutoMergeValue = (body.brainAutoMerge as { value?: unknown } | undefined)?.value
-  const brainAutoMerge = typeof brainAutoMergeValue === 'boolean' ? brainAutoMergeValue : true
+  const runnerAutoMergeValue = (body.runnerAutoMerge as { value?: unknown } | undefined)?.value
+  const runnerAutoMerge = typeof runnerAutoMergeValue === 'boolean' ? runnerAutoMergeValue : true
 
   const mergeStrategyValue = (body.mergeStrategy as { value?: unknown } | undefined)?.value
   const mergeStrategy =
@@ -47,5 +47,5 @@ export function parseSettingsSnapshot(raw: unknown): BrainSettings {
       ? maxTaskTurnsValue
       : 30
 
-  return { brainAutoMerge, mergeStrategy, maxTaskTurns }
+  return { runnerAutoMerge, mergeStrategy, maxTaskTurns }
 }

@@ -161,12 +161,12 @@ const en = {
   'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
   'settings.effortLabel': 'Reasoning effort',
   'settings.effortDefault': 'CLI default',
-  'settings.brainTitle': 'Brain integration',
-  'settings.brainAutoMergeHint':
-    'Automatically merge a task created from a brain ticket once it ships, passes review and checks, instead of waiting for a human to approve the merge. Global setting: applies to every repository.',
-  'settings.brainAutoMergeOn': 'Auto-merge: on',
-  'settings.brainAutoMergeOff': 'Auto-merge: off',
-  'settings.brainAutoMergeError': 'Could not update auto-merge.',
+  'settings.runnerTitle': 'Runner',
+  'settings.runnerAutoMergeHint':
+    'Automatically merge a task created from a hub ticket once it ships, passes review and checks, instead of waiting for a human to approve the merge. Global setting: applies to every repository.',
+  'settings.runnerAutoMergeOn': 'Auto-merge: on',
+  'settings.runnerAutoMergeOff': 'Auto-merge: off',
+  'settings.runnerAutoMergeError': 'Could not update auto-merge.',
   'settings.mergeStrategyLabel': 'Merge strategy',
   'settings.mergeStrategyHint':
     'Strategy passed to the forge CLI when a task branch merges. Left unset, the forge applies its own default.',
@@ -1050,12 +1050,12 @@ const fr: Record<MessageKey, string> = {
   'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
   'settings.effortLabel': 'Effort de raisonnement',
   'settings.effortDefault': 'défaut du CLI',
-  'settings.brainTitle': 'Intégration cerveau',
-  'settings.brainAutoMergeHint':
-    "Fusionner automatiquement une tâche créée depuis un ticket du cerveau une fois livrée, revue et vérifiée, sans attendre l'approbation d'un humain. Réglage global : s'applique à tous les dépôts.",
-  'settings.brainAutoMergeOn': 'Fusion auto : activée',
-  'settings.brainAutoMergeOff': 'Fusion auto : désactivée',
-  'settings.brainAutoMergeError': 'Impossible de mettre à jour la fusion automatique.',
+  'settings.runnerTitle': 'Runner',
+  'settings.runnerAutoMergeHint':
+    "Fusionner automatiquement une tâche créée depuis un ticket du hub une fois livrée, revue et vérifiée, sans attendre l'approbation d'un humain. Réglage global : s'applique à tous les dépôts.",
+  'settings.runnerAutoMergeOn': 'Fusion auto : activée',
+  'settings.runnerAutoMergeOff': 'Fusion auto : désactivée',
+  'settings.runnerAutoMergeError': 'Impossible de mettre à jour la fusion automatique.',
   'settings.mergeStrategyLabel': 'Stratégie de fusion',
   'settings.mergeStrategyHint':
     "Stratégie transmise à l'outil de forge lors de la fusion d'une branche de tâche. Non définie, la forge applique son propre défaut.",

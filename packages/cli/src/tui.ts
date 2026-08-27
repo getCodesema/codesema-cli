@@ -215,12 +215,79 @@ export async function select<T>(opts: {
   })
 }
 
-export async function textInput(opts: {
+/** One `*` per character typed: what a masked `textInput` shows on screen instead of the value itself. */
+export function maskCharacters(value: string): string {
+  return '*'.repeat(value.length)
+}
+
+/**
+ * Same raw-mode/keypress mechanics as `select`, but echoing `maskCharacters`
+ * instead of the real value: used for secrets (tokens) a masked `textInput`
+ * must never print in the clear, even transiently while typing.
+ */
+async function maskedTextInput(opts: {
   title: string
   placeholder?: string
 }): Promise<string | null> {
+  const { stdin, stdout } = process
+  emitKeypressEvents(stdin)
+  const wasRaw = stdin.isRaw
+  stdin.setRawMode(true)
+  stdin.resume()
+
+  let value = ''
+  const suffix = opts.placeholder ? ` ${faint(`(${opts.placeholder})`)}` : ''
+  const render = () => {
+    stdout.write(`\r\x1b[2K  ${color('?', ACCENT)} ${opts.title}${suffix} ${maskCharacters(value)}`)
+  }
+
+  return new Promise<string | null>((resolve) => {
+    const finish = (result: string | null) => {
+      stdin.removeListener('keypress', onKeypress)
+      stdin.setRawMode(Boolean(wasRaw))
+      stdin.pause()
+      stdout.write('\n')
+      resolve(result)
+    }
+
+    const onKeypress = (char: string | undefined, key: KeypressEvent) => {
+      if (key.ctrl && key.name === 'c') {
+        stdin.setRawMode(Boolean(wasRaw))
+        stdout.write('\n')
+        process.exit(130)
+      }
+      if (key.name === 'return' || key.name === 'enter') {
+        return finish(value.trim() || null)
+      }
+      if (key.name === 'escape') {
+        return finish(null)
+      }
+      if (key.name === 'backspace') {
+        value = value.slice(0, -1)
+        return render()
+      }
+      if (char && !key.ctrl && char >= ' ' && char !== '\x7f') {
+        value += char
+        return render()
+      }
+    }
+
+    stdin.on('keypress', onKeypress)
+    render()
+  })
+}
+
+export async function textInput(opts: {
+  title: string
+  placeholder?: string
+  /** Echoes `*` per keystroke instead of the real value: use for tokens/secrets. */
+  mask?: boolean
+}): Promise<string | null> {
   if (!isInteractive()) {
     return null
+  }
+  if (opts.mask) {
+    return maskedTextInput(opts)
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   try {

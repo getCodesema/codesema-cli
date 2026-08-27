@@ -496,7 +496,7 @@ export async function runOnboarding(cwd: string): Promise<string | null> {
 }
 
 export type ConfigEntryId =
-  'agent' | 'language' | 'autoSync' | 'brainAutoMerge' | 'mergeStrategy' | 'maxTaskTurns' | 'back'
+  'agent' | 'language' | 'autoSync' | 'runnerAutoMerge' | 'mergeStrategy' | 'maxTaskTurns' | 'back'
 
 export type ConfigEntry = {
   id: ConfigEntryId
@@ -521,9 +521,9 @@ function autoSyncLabel(syncAutoPush: boolean | undefined): string {
   return syncAutoPush ? t('config.autoSyncOn') : t('config.autoSyncOff')
 }
 
-/** Unlike autoSyncLabel, no "unset" state: resolveBrainAutoMerge (config.ts) treats absent as on. */
-function brainAutoMergeLabel(brainAutoMerge: boolean | undefined): string {
-  return (brainAutoMerge ?? true) ? t('config.brainAutoMergeOn') : t('config.brainAutoMergeOff')
+/** Unlike autoSyncLabel, no "unset" state: resolveRunnerAutoMerge (config.ts) treats absent as on. */
+function runnerAutoMergeLabel(runnerAutoMerge: boolean | undefined): string {
+  return (runnerAutoMerge ?? true) ? t('config.runnerAutoMergeOn') : t('config.runnerAutoMergeOff')
 }
 
 /** Like autoSyncLabel, absence IS its own displayed state: resolveMergeSettings
@@ -544,9 +544,9 @@ export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
     { id: 'language', label: t('config.languageEntry'), hint: languageLabel(current.language) },
     { id: 'autoSync', label: t('config.autoSyncEntry'), hint: autoSyncLabel(current.syncAutoPush) },
     {
-      id: 'brainAutoMerge',
-      label: t('config.brainAutoMergeEntry'),
-      hint: brainAutoMergeLabel(current.brainAutoMerge),
+      id: 'runnerAutoMerge',
+      label: t('config.runnerAutoMergeEntry'),
+      hint: runnerAutoMergeLabel(current.runnerAutoMerge),
     },
     {
       id: 'mergeStrategy',
@@ -648,30 +648,30 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
       continue
     }
 
-    if (picked === 'brainAutoMerge') {
+    if (picked === 'runnerAutoMerge') {
       const choice = await select<'on' | 'off'>({
-        title: t('config.brainAutoMergeQuestion'),
+        title: t('config.runnerAutoMergeQuestion'),
         options: [
-          { label: t('config.brainAutoMergeOff'), hint: '', value: 'off' },
+          { label: t('config.runnerAutoMergeOff'), hint: '', value: 'off' },
           {
-            label: t('config.brainAutoMergeOn'),
-            hint: t('config.brainAutoMergeOnHint'),
+            label: t('config.runnerAutoMergeOn'),
+            hint: t('config.runnerAutoMergeOnHint'),
             value: 'on',
           },
         ],
-        initialIndex: (current.brainAutoMerge ?? true) ? 1 : 0,
+        initialIndex: (current.runnerAutoMerge ?? true) ? 1 : 0,
         summary: false,
       })
       if (choice === null) {
         continue
       }
       // GLOBAL-ONLY, same doctrine as autoSync/mergePolicy (config.ts's own
-      // doc on brainAutoMerge): a consent to merge without asking is the
+      // doc on runnerAutoMerge): a consent to merge without asking is the
       // machine owner's to give, not a cloned repository's.
-      const path = saveGlobalConfig({ ...loadGlobalConfig(), brainAutoMerge: choice === 'on' })
+      const path = saveGlobalConfig({ ...loadGlobalConfig(), runnerAutoMerge: choice === 'on' })
       console.log('')
       console.log(
-        `  ${t('config.brainAutoMergeSaved', { state: brainAutoMergeLabel(choice === 'on'), path })}`,
+        `  ${t('config.runnerAutoMergeSaved', { state: runnerAutoMergeLabel(choice === 'on'), path })}`,
       )
       console.log('')
       continue
@@ -691,7 +691,7 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
       if (choice === null) {
         continue
       }
-      // GLOBAL-ONLY, same doctrine as brainAutoMerge/maxTaskTurns (config.ts's
+      // GLOBAL-ONLY, same doctrine as runnerAutoMerge/maxTaskTurns (config.ts's
       // own doc on mergeStrategy): how a repository merges is the machine
       // owner's call, not a cloned repository's. 'unset' clears the key
       // rather than storing a sentinel, so the forge keeps applying its own

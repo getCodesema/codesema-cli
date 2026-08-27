@@ -1,26 +1,34 @@
-import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import type { ArmTicket, ArmTicketRequest, RunnerListEntry } from './contract.js'
 import {
-  brainErrorMessage,
+  claimPendingSecret,
   claimTicket,
   claimTicketRequest,
   createTicket,
+  depositRunnerSecret,
   failTicketRequest,
   getTicket,
   heartbeat,
+  hubErrorMessage,
   listInFlightTickets,
+  listRunners,
   listTicketRequests,
   listTickets,
-  parseBrainToken,
+  parseHubToken,
   pushEvents,
+  registerRunnerKey,
   submitTicketRequestTickets,
   transition,
-} from './brain-client.js'
-import type { ArmTicket, ArmTicketRequest } from './contract.js'
+} from './hub-client.js'
+import { loadOrCreateRunnerIdentity } from './runner-identity.js'
 import type { SyncCredentials } from './sync.js'
 
 type Call = { url: string; init: RequestInit }
 
-/** Same stub as sync.test.ts / task-brain.test.ts: records every call, answers one fixed response. */
+/** Same stub as sync.test.ts / task-hub.test.ts: records every call, answers one fixed response. */
 function fetchStub(status: number, body: unknown, calls: Call[]): typeof fetch {
   return ((url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} })
@@ -37,7 +45,7 @@ function fetchOffline(): typeof fetch {
   return (() => Promise.reject(new Error('network unreachable'))) as unknown as typeof fetch
 }
 
-const creds: SyncCredentials = { url: 'https://brain.example', workspaceId: 'w1', secret: 's1' }
+const creds: SyncCredentials = { url: 'https://hub.example', workspaceId: 'w1', secret: 's1' }
 
 const validTicket: ArmTicket = {
   id: 't1',
@@ -65,34 +73,43 @@ const validRequest: ArmTicketRequest = {
   created_at: '2026-01-01T00:00:00.000Z',
 }
 
-describe('parseBrainToken', () => {
+/** A sha256 hex digest (fingerprint) and a base64-encoded 32-byte key (public_key): the exact shapes `sanitizeRunnerListEntry` requires, not placeholders. */
+const validRunnerListEntry: RunnerListEntry = {
+  name: 'my-laptop',
+  fingerprint: '597fbc141b11df74a6642a6d8381d1b77ae49de801b177957cfa624fc13db748',
+  public_key: '6y91HfIciBvPrgZlyIYTjRcUvzSzlEJQroZRfdEPx5M=',
+  last_seen_at: '2026-01-01T00:00:00.000Z',
+  has_pending_secret: false,
+}
+
+describe('parseHubToken', () => {
   test('splits on the first dot', () => {
-    expect(parseBrainToken('csk_ws1.se.cret')).toEqual({ workspaceId: 'ws1', secret: 'se.cret' })
+    expect(parseHubToken('csk_ws1.se.cret')).toEqual({ workspaceId: 'ws1', secret: 'se.cret' })
   })
 
   test('rejects a token missing the csk_ prefix', () => {
-    expect(parseBrainToken('ws1.secret')).toBeNull()
+    expect(parseHubToken('ws1.secret')).toBeNull()
   })
 
   test('rejects a token with no dot', () => {
-    expect(parseBrainToken('csk_ws1secret')).toBeNull()
+    expect(parseHubToken('csk_ws1secret')).toBeNull()
   })
 
   test('rejects an empty workspace id or secret', () => {
-    expect(parseBrainToken('csk_.secret')).toBeNull()
-    expect(parseBrainToken('csk_ws1.')).toBeNull()
+    expect(parseHubToken('csk_.secret')).toBeNull()
+    expect(parseHubToken('csk_ws1.')).toBeNull()
   })
 
   test('trims surrounding whitespace', () => {
-    expect(parseBrainToken('  csk_ws1.secret  ')).toEqual({ workspaceId: 'ws1', secret: 'secret' })
+    expect(parseHubToken('  csk_ws1.secret  ')).toEqual({ workspaceId: 'ws1', secret: 'secret' })
   })
 })
 
-describe('brainErrorMessage', () => {
+describe('hubErrorMessage', () => {
   test('renders each error kind distinctly', () => {
-    expect(brainErrorMessage({ kind: 'network' })).toContain('could not reach')
-    expect(brainErrorMessage({ kind: 'unavailable' })).toContain('does not support')
-    expect(brainErrorMessage({ kind: 'http', status: 409, error: 'ticket_in_flight' })).toContain(
+    expect(hubErrorMessage({ kind: 'network' })).toContain('could not reach')
+    expect(hubErrorMessage({ kind: 'unavailable' })).toContain('does not support')
+    expect(hubErrorMessage({ kind: 'http', status: 409, error: 'ticket_in_flight' })).toContain(
       'ticket_in_flight',
     )
   })
@@ -252,7 +269,7 @@ describe('listInFlightTickets', () => {
     expect(result).toEqual({ ok: true, data: [{ ...validTicket, arm_local_status: 'executing' }] })
   })
 
-  test('degrades arm_local_status to null when the brain does not send it (older brain)', async () => {
+  test('degrades arm_local_status to null when the hub does not send it (older hub)', async () => {
     const result = await listInFlightTickets(
       creds,
       'https://github.com/o/r.git',
@@ -350,5 +367,177 @@ describe('heartbeat / transition / pushEvents', () => {
     const body = JSON.parse(String(calls[0]?.init.body)) as { run_id: string; ticket_id: string }
     expect(body.run_id).toBe('run1')
     expect(body.ticket_id).toBe('t1')
+  })
+})
+
+describe('registerRunnerKey', () => {
+  test('sends the public key and name, parses the fingerprint back', async () => {
+    const calls: Call[] = []
+    const result = await registerRunnerKey(
+      creds,
+      { public_key: 'pk1', name: 'my-laptop' },
+      fetchStub(200, { fingerprint: 'fp1' }, calls),
+    )
+    expect(result).toEqual({ ok: true, data: { fingerprint: 'fp1' } })
+    const body = JSON.parse(String(calls[0]?.init.body)) as { public_key: string; name: string }
+    expect(body).toEqual({ public_key: 'pk1', name: 'my-laptop' })
+  })
+
+  test('a malformed response is refused', async () => {
+    const result = await registerRunnerKey(
+      creds,
+      { public_key: 'pk1', name: 'my-laptop' },
+      fetchStub(200, {}, []),
+    )
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe('listRunners', () => {
+  test('parses a valid collection response', async () => {
+    const calls: Call[] = []
+    const result = await listRunners(
+      creds,
+      fetchStub(200, { runners: [validRunnerListEntry] }, calls),
+    )
+    expect(result).toEqual({ ok: true, data: [validRunnerListEntry] })
+    expect(calls[0]?.url).toBe('https://hub.example/api/cli/runners')
+    expect(calls[0]?.init.method).toBe('GET')
+  })
+
+  /**
+   * The one place this file's list* behavior intentionally diverges from
+   * `sanitizeList`'s all-or-nothing doctrine: a malformed row is dropped,
+   * the rest of the listing still comes back `ok: true`.
+   */
+  test('drops an invalid entry instead of refusing the whole list', async () => {
+    const result = await listRunners(
+      creds,
+      fetchStub(200, { runners: [validRunnerListEntry, { nope: true }] }, []),
+    )
+    expect(result).toEqual({ ok: true, data: [validRunnerListEntry] })
+  })
+
+  test('a 404 on this collection route degrades to unavailable', async () => {
+    const result = await listRunners(creds, fetchStub(404, { error: 'not found' }, []))
+    expect(result).toEqual({ ok: false, error: { kind: 'unavailable' } })
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await listRunners(creds, fetchOffline())
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
+  })
+})
+
+describe('depositRunnerSecret', () => {
+  test('sends the ciphertext to the fingerprint-scoped route', async () => {
+    const calls: Call[] = []
+    const result = await depositRunnerSecret(
+      creds,
+      'fp1',
+      'ciphertext-blob',
+      fetchStub(200, {}, calls),
+    )
+    expect(result).toEqual({ ok: true, data: undefined })
+    expect(calls[0]?.url).toBe('https://hub.example/api/cli/runners/fp1/secret')
+    const body = JSON.parse(String(calls[0]?.init.body)) as { ciphertext: string }
+    expect(body).toEqual({ ciphertext: 'ciphertext-blob' })
+  })
+
+  test('a by-id 404 is a normal http error, not unavailable', async () => {
+    const result = await depositRunnerSecret(
+      creds,
+      'unknown-fp',
+      'blob',
+      fetchStub(404, { error: 'unknown runner' }, []),
+    )
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'http', status: 404, error: 'unknown runner' },
+    })
+  })
+})
+
+describe('claimPendingSecret', () => {
+  test('parses the claimed ciphertext', async () => {
+    const result = await claimPendingSecret(
+      creds,
+      'fp1',
+      fetchStub(
+        200,
+        { secret: { ciphertext: 'sealed-blob', pushed_at: '2026-01-01T00:00:00.000Z' } },
+        [],
+      ),
+    )
+    expect(result).toEqual({ ok: true, data: { ciphertext: 'sealed-blob' } })
+  })
+
+  test('a 404 (nothing pending) resolves as ok(null), not an error', async () => {
+    const result = await claimPendingSecret(creds, 'fp1', fetchStub(404, { error: 'none' }, []))
+    expect(result).toEqual({ ok: true, data: null })
+  })
+
+  test('a malformed secret body is refused', async () => {
+    const result = await claimPendingSecret(
+      creds,
+      'fp1',
+      fetchStub(200, { secret: { nope: true } }, []),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await claimPendingSecret(creds, 'fp1', fetchOffline())
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
+  })
+})
+
+/**
+ * Isolated via `CODESEMA_CONFIG_DIR` (same pattern as runner-daemon.test.ts),
+ * never via module mocking: a `mock.module` override of `./runner-identity.js`
+ * is process-wide and, under the project's parallel test runner, was
+ * observed leaking into runner-identity.test.ts's own suite running
+ * concurrently in another file. A real, isolated identity file exercises the
+ * same `request()` code path without that risk.
+ */
+describe('runner identity header propagation', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-hubclient-identity-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true })
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+  })
+
+  test('sends no runner header when no identity exists yet', async () => {
+    const calls: Call[] = []
+    await listTicketRequests(
+      creds,
+      'https://github.com/o/r.git',
+      fetchStub(200, { requests: [] }, calls),
+    )
+    const headers = calls[0]?.init.headers as Record<string, string> | undefined
+    expect(headers?.['x-codesema-runner']).toBeUndefined()
+  })
+
+  test('adds x-codesema-runner to every request once an identity exists', async () => {
+    const identity = loadOrCreateRunnerIdentity()
+    const calls: Call[] = []
+    await listTicketRequests(
+      creds,
+      'https://github.com/o/r.git',
+      fetchStub(200, { requests: [] }, calls),
+    )
+    const headers = calls[0]?.init.headers as Record<string, string> | undefined
+    expect(headers?.['x-codesema-runner']).toBe(identity.fingerprint)
   })
 })

@@ -21,6 +21,7 @@ import {
   resolveProjectConfig,
   resolveReviewMode,
   resolveWatchdogBudgets,
+  runnerEnvPath,
   saveGlobalConfig,
   saveRepoConfig,
   trustedProjectAgentCommand,
@@ -68,6 +69,29 @@ describe('repo agent trust store', () => {
   test('trust is scoped to the repo path', () => {
     trustRepoAgent('/repo-a', 'claude -p')
     expect(isRepoAgentTrusted('/repo-b', 'claude -p')).toBe(false)
+  })
+})
+
+describe('runner env path', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-runner-env-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+  })
+
+  afterEach(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+  })
+
+  test('lives in the global config dir', () => {
+    expect(runnerEnvPath()).toBe(join(configDir, 'runner.env'))
   })
 })
 

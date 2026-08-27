@@ -64,23 +64,23 @@ From the page you can also:
 
 **Merging.** The workspace does not merge on its own unless you ask it to: `mergePolicy` defaults to `human`. Task state lives under `.codesema/tasks/<id>/` in the repository it belongs to.
 
-## Brain mode
+## Runner mode
 
-A brain is a small local service that owns a backlog of tickets for a repository. Pointed at one, the workspace runs a hands-off loop: the brain publishes tickets, the workspace codes them, ships them, reviews them and reports every transition back.
+A runner is a background process that connects the workspace to the codesema hub (codesema.com, or your own instance) and works hands-off through its backlog of tickets for a repository: the hub publishes tickets, the runner codes them, ships them, reviews them and reports every transition back.
 
 ```bash
-codesema brain connect --url http://localhost:3000 --token csk_<workspaceId>.<secret>
-codesema brain status                            # brain, account, this repo, ready ticket count
-codesema brain ticket --issue 42                 # draft and publish a ticket from a forge issue
-codesema brain ticket --title "…" --prompt "…"   # same, from a free-form prompt
-codesema workspace --brain                       # workspace plus the brain daemon, same process
-codesema brain serve [--detach]                  # alias for the line above
-codesema brain stop                              # stops a detached daemon for this repo
+codesema runner connect --url http://localhost:3000 --token csk_<workspaceId>.<secret>
+codesema runner status                            # hub, account, this repo, ready ticket count
+codesema runner ticket --issue 42                 # draft and publish a ticket from a forge issue
+codesema runner ticket --title "…" --prompt "…"   # same, from a free-form prompt
+codesema workspace --runner                       # workspace plus the runner daemon, same process
+codesema runner serve [--detach]                  # alias for the line above
+codesema runner stop                              # stops a detached daemon for this repo
 ```
 
-A brain and a sync workspace are the same account: `brain connect` stores its token next to the `codesema sync` credentials. `brain ticket` runs the configured agent once, outside the workspace, to write the ticket body in the grammar the brain requires; a body the lint rejects gets one retry with the lint's reasons folded into the prompt.
+A runner and a sync workspace are the same account: `runner connect` stores its token next to the `codesema sync` credentials. `runner ticket` runs the configured agent once, outside the workspace, to write the ticket body in the grammar the hub requires; a body the lint rejects gets one retry with the lint's reasons folded into the prompt.
 
-With `--brain`, the workspace polls the brain in the background, drafts the ticket requests waiting on this repository and, when no task is already running here, claims the next published ticket and hands it to the same task manager the UI drives. Reports the brain could not receive are queued and replayed. Auto-merging a brain ticket's task once it ships clean is controlled by `brainAutoMerge` (on by default), independently of `mergePolicy`.
+With `--runner`, the workspace polls the hub in the background, drafts the ticket requests waiting on this repository and, when no task is already running here, claims the next published ticket and hands it to the same task manager the UI drives. Reports the hub could not receive are queued and replayed. Auto-merging a hub ticket's task once it ships clean is controlled by `runnerAutoMerge` (on by default), independently of `mergePolicy`.
 
 ## Working without a forge
 
@@ -98,7 +98,7 @@ Without an `origin` remote, without `gh`/`glab`, or offline, codesema keeps work
 | Command                                                               | What it does                                                                       |
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `codesema`                                                            | Opens the workspace in an interactive terminal; behaves like `review` otherwise    |
-| `codesema workspace [--brain]`                                        | The workspace, explicitly                                                          |
+| `codesema workspace [--runner]`                                       | The workspace, explicitly                                                          |
 | `codesema review [--branch] [--target] [--full] [--dual] [--fail-on]` | Reviews a local branch                                                             |
 | `codesema menu`                                                       | Terminal menu: workspace, review, dual review, show, cloud (sync and link), config |
 | `codesema config`                                                     | Language, agent, model, effort, auto-sync and the other settings                   |
@@ -107,7 +107,7 @@ Without an `origin` remote, without `gh`/`glab`, or offline, codesema keeps work
 | `codesema export [--review] [--out]`                                  | Exports the review as Markdown (`--out -` for stdout)                              |
 | `codesema sync` / `codesema sync delete`                              | Pushes the latest review to a codesema.com workspace, or erases everything synced  |
 | `codesema link [code]`                                                | Links this workspace to a codesema.com account                                     |
-| `codesema brain <action>`                                             | See [Brain mode](#brain-mode)                                                      |
+| `codesema runner <action>`                                            | See [Runner mode](#runner-mode)                                                    |
 
 Shared flags: `--agent <cmd>`, `--port <n>` (default 4400, 20 ports scanned from there), `--timeout <s>` (default 900), `--no-open`, `--force` (sync), `-h`, `-v`. `codesema --help` lists them all.
 
@@ -145,7 +145,7 @@ Some keys are global only: they govern the machine (its load, its disk) or give 
 | `mergeStrategy`                                            | unset (`merge`, `squash`, `rebase`) | global only     |
 | `deleteBranchAfterMerge`                                   | `false`                             | global only     |
 | `allowMergeWithoutChecks`                                  | `false`                             | global only     |
-| `brainAutoMerge`                                           | `true`                              | global only     |
+| `runnerAutoMerge`                                          | `true`                              | global only     |
 | `syncUrl`, `syncWorkspaceId`, `syncSecret`, `syncAutoPush` | unset                               | global only     |
 
 `maxParallelTasks` is the former name of `maxConcurrentAgents`. It is still honoured, with a warning at startup.
@@ -204,7 +204,7 @@ Workspace tasks are the opposite case, since they exist to edit code: they are c
 | `XDG_CONFIG_HOME`               | Base of that default when `CODESEMA_CONFIG_DIR` is unset |
 | `CODESEMA_NO_UPDATE_CHECK`      | Any non-empty value skips the startup npm version check  |
 | `CODESEMA_SYNC_URL`             | Points `sync`/`link` at another codesema.com host        |
-| `CODESEMA_BRAIN_MODE`           | Set by `workspace --brain`; starts the brain daemon      |
+| `CODESEMA_RUNNER_MODE`          | Set by `workspace --runner`; starts the runner daemon    |
 | `NO_COLOR`, `TERM=dumb`         | Turn coloured terminal output off                        |
 | `LC_ALL`, `LC_MESSAGES`, `LANG` | Preselect the wizard's language question                 |
 

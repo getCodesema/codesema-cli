@@ -591,18 +591,18 @@ export type TaskRecord = {
    */
   criteria?: AcceptanceCriterion[]
   /**
-   * The brain ticket this task was created from, when it was (arm/brain
+   * The hub ticket this task was created from, when it was (arm/hub
    * integration): a stable pointer back to the ticket that owns this task, so
-   * a reader can open it without knowing the brain's own routing. WRITE-ONCE,
+   * a reader can open it without knowing the hub's own routing. WRITE-ONCE,
    * same discipline as `issue`: fixed at creation, never re-decided by a
    * later turn.
    *
    * OPTIONAL, and absence is the honest default: a record predating this
-   * field, and a task never claimed from a brain ticket (title+prompt, or a
+   * field, and a task never claimed from a hub ticket (title+prompt, or a
    * forge issue per T2.4/T2.5), name no ticket, exactly what "no
-   * brain_ticket" always meant before this field existed.
+   * hub_ticket" always meant before this field existed.
    */
-  brain_ticket?: {
+  hub_ticket?: {
     id: string
     title: string
     url?: string
@@ -649,8 +649,8 @@ export const TASK_EVENT_DATA_STRING_MAX = 2_000
 export const TASK_ISSUE_PROJECT_MAX = 200
 /** Bound of `TaskIssueRef.url`: a forge issue URL, never long in practice. */
 export const TASK_ISSUE_URL_MAX = 500
-/** Bound of `TaskRecord.brain_ticket.id`: an id from an external system, not this store's own 12-hex TASK_ID_RE. */
-export const TASK_BRAIN_TICKET_ID_MAX = 64
+/** Bound of `TaskRecord.hub_ticket.id`: an id from an external system, not this store's own 12-hex TASK_ID_RE. */
+export const TASK_HUB_TICKET_ID_MAX = 64
 
 const TASK_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'queued',
@@ -1015,17 +1015,17 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
 /**
  * Whitelist and truncate, never throw: a non-object, or one whose `id` is
  * missing or blank, drops the WHOLE field, same doctrine as `sanitizeIssueRef`
- * above, since a brain ticket pointer nobody can identify is worse than none.
+ * above, since a hub ticket pointer nobody can identify is worse than none.
  * `title` degrades to an empty string rather than nulling the field, and
  * `url` is kept only when it is an http(s) URL, same rule `isHttpUrl` applies
  * everywhere else in this module.
  */
-function sanitizeBrainTicket(raw: unknown): { id: string; title: string; url?: string } | null {
+function sanitizeHubTicket(raw: unknown): { id: string; title: string; url?: string } | null {
   if (!raw || typeof raw !== 'object') {
     return null
   }
   const r = raw as Record<string, unknown>
-  const id = str(r.id, TASK_BRAIN_TICKET_ID_MAX)
+  const id = str(r.id, TASK_HUB_TICKET_ID_MAX)
   if (!id) {
     return null
   }
@@ -1080,7 +1080,8 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
   const issue = sanitizeIssueRef(r.issue)
   const issueSnapshot = sanitizeIssueSnapshot(r.issue_snapshot)
   const criteria = sanitizeAcceptanceCriteria(r.criteria)
-  const brainTicket = sanitizeBrainTicket(r.brain_ticket)
+  // Legacy on-disk tasks.json may still carry `brain_ticket`; `hub_ticket` wins when both are present.
+  const hubTicket = sanitizeHubTicket(r.hub_ticket !== undefined ? r.hub_ticket : r.brain_ticket)
   return {
     version: 1,
     id,
@@ -1155,7 +1156,7 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     // than trusted.
     ...(issue ? { issue } : {}),
     ...(issueSnapshot ? { issue_snapshot: issueSnapshot } : {}),
-    ...(brainTicket ? { brain_ticket: brainTicket } : {}),
+    ...(hubTicket ? { hub_ticket: hubTicket } : {}),
     // Optional and whitelisted, same doctrine as `checks_status`: absence is
     // "not currently shipping or merging", which is also what an unknown or
     // stale token degrades to rather than being trusted as a step in progress.

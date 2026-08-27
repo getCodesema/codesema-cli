@@ -2,7 +2,6 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { brainCommand } from './brain-commands.js'
 import { loadConfig } from './config.js'
 import { exportCommand } from './export.js'
 import { tryGit } from './git.js'
@@ -10,6 +9,7 @@ import { setLanguage, t } from './i18n.js'
 import { reviewFlagsPassed, runMenu } from './menu.js'
 import { prep } from './prep.js'
 import { review, REVIEW_GATE_VALUES, type ReviewGate } from './review.js'
+import { runnerCommand } from './runner-commands.js'
 import { show } from './show.js'
 import { linkCommand, syncCommand } from './sync.js'
 import { isInteractive } from './tui.js'
@@ -43,7 +43,7 @@ type ParsedValues = {
   'no-open'?: boolean | undefined
   help?: boolean | undefined
   version?: boolean | undefined
-  brain?: boolean | undefined
+  runner?: boolean | undefined
   url?: string | undefined
   token?: string | undefined
   issue?: string | undefined
@@ -51,6 +51,10 @@ type ParsedValues = {
   prompt?: string | undefined
   detach?: boolean | undefined
   'env-file'?: string | undefined
+  fingerprint?: string | undefined
+  'gh-token-from-gh'?: boolean | undefined
+  'claude-token'?: string | undefined
+  'repo-url'?: string | undefined
 }
 
 export const COMMAND_NAMES = [
@@ -63,7 +67,7 @@ export const COMMAND_NAMES = [
   'export',
   'sync',
   'link',
-  'brain',
+  'runner',
 ] as const
 
 export type CommandName = (typeof COMMAND_NAMES)[number]
@@ -173,12 +177,12 @@ async function runCommand(
       })
       break
     case 'workspace':
-      if (values.brain) {
+      if (values.runner) {
         // workspace() (workspace.ts) has a fixed options type with no room
-        // for a brain flag; the signal crosses into startServer (serve.ts)
+        // for a runner flag; the signal crosses into startServer (serve.ts)
         // the same way CODESEMA_SYNC_URL/CODESEMA_DEV_VITE already do in
         // this codebase, read at the one place that needs it.
-        process.env.CODESEMA_BRAIN_MODE = '1'
+        process.env.CODESEMA_RUNNER_MODE = '1'
       }
       await workspace({
         port: parseIntFlag('port', values.port, 1, 65535),
@@ -211,8 +215,8 @@ async function runCommand(
     case 'link':
       await linkCommand({ code: arg })
       break
-    case 'brain':
-      await brainCommand({
+    case 'runner':
+      await runnerCommand({
         action: arg,
         cwd: process.cwd(),
         url: values.url,
@@ -222,6 +226,11 @@ async function runCommand(
         prompt: values.prompt,
         detach: values.detach,
         envFile: values['env-file'],
+        fingerprint: values.fingerprint,
+        ghTokenFromGh: values['gh-token-from-gh'],
+        claudeToken: values['claude-token'],
+        repoUrl: values['repo-url'],
+        timeoutSeconds: parseIntFlag('timeout', values.timeout, 1, 86400),
       })
       break
   }
@@ -245,7 +254,7 @@ async function main(): Promise<void> {
       'no-open': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
-      brain: { type: 'boolean' },
+      runner: { type: 'boolean' },
       url: { type: 'string' },
       token: { type: 'string' },
       issue: { type: 'string' },
@@ -253,6 +262,10 @@ async function main(): Promise<void> {
       prompt: { type: 'string' },
       detach: { type: 'boolean' },
       'env-file': { type: 'string' },
+      fingerprint: { type: 'string' },
+      'gh-token-from-gh': { type: 'boolean' },
+      'claude-token': { type: 'string' },
+      'repo-url': { type: 'string' },
     },
   })
 

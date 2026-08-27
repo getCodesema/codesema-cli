@@ -163,7 +163,7 @@ describe('resolveCommand — the ten routed commands', () => {
       'export',
       'sync',
       'link',
-      'brain',
+      'runner',
     ])
   })
 
@@ -315,5 +315,42 @@ describe('codesema workspace passes its CLI flags on', () => {
     expect(
       /timeout:\s*parseIntFlag\('timeout',\s*values\.timeout,\s*1,\s*86400\)/.test(block),
     ).toBe(true)
+  })
+})
+
+// The runner autoconfig/await-secrets flags: same source-shape assertion as
+// the workspace block above, and for the same reason (runCommand is not
+// exported, each branch runs a real subsystem).
+describe('codesema runner passes its autoconfig/await-secrets flags on', () => {
+  test('--fingerprint, --gh-token-from-gh, --claude-token, --repo-url and --timeout reach runnerCommand()', () => {
+    const source = readFileSync(join(import.meta.dir, 'index.ts'), 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+      .join('\n')
+    const marker = "case 'runner':"
+    const start = source.indexOf(marker)
+    expect(start).toBeGreaterThanOrEqual(0)
+    const block = source.slice(start, source.indexOf('break', start))
+    expect(block).toContain('await runnerCommand({')
+    expect(block).toContain('fingerprint: values.fingerprint')
+    expect(block).toContain("ghTokenFromGh: values['gh-token-from-gh']")
+    expect(block).toContain("claudeToken: values['claude-token']")
+    expect(block).toContain("repoUrl: values['repo-url']")
+    expect(
+      /timeoutSeconds:\s*parseIntFlag\('timeout',\s*values\.timeout,\s*1,\s*86400\)/.test(block),
+    ).toBe(true)
+  })
+
+  test('the new flags are declared in parseArgs', () => {
+    const source = readFileSync(join(import.meta.dir, 'index.ts'), 'utf8')
+    const declarations = [
+      "fingerprint: { type: 'string' }",
+      "'gh-token-from-gh': { type: 'boolean' }",
+      "'claude-token': { type: 'string' }",
+      "'repo-url': { type: 'string' }",
+    ]
+    for (const flag of declarations) {
+      expect(source).toContain(flag)
+    }
   })
 })

@@ -3,6 +3,16 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.18.0] - 2026-08-27
+
+### Added
+
+- **A server can now receive its GitHub token and Claude Code credentials through the hub without the hub itself ever being able to read them.** `codesema runner connect --url <url> --token <token>` mints this machine's own identity and prints a fingerprint for it; the new `codesema runner await-secrets --env-file <path> [--timeout <s>]` then blocks until a human runs the new `codesema runner autoconfig` from their own workstation and delivers the repository URL and the two runtime secrets over a sealed channel (X25519 key agreement, AES-256-GCM), writing the env file itself (mode `0600`) and printing the repository URL on stdout, empty if the wait times out, so the caller never has to parse the file back out. The hub only ever relays sealed bytes it cannot read. The one manual step this exchange still asks for, comparing the fingerprint `runner connect` printed against the one `runner autoconfig` shows, is the whole defense against a hub that lied about which machine it was handing the secrets to: the same trust-on-first-use doctrine SSH host keys use. `codesema runner list` shows the identities a workspace has minted this way. `packages/cli/assets/deploy/install.sh` needs only `CODESEMA_HUB_TOKEN` to boot now: leaving `REPO_URL`, `GH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` unset switches it from direct mode into this exchange automatically, re-run-safe the same way the rest of the script already is. It also now checks that a detected `docker` is actually usable (`docker info` as the invoking user), not merely installed, and fails with the missing-group fix rather than at the first ticket's container run; rootless podman needs no such check.
+
+### Changed
+
+- **The "brain" vocabulary is gone from the CLI: a runner is the local daemon working tickets, a hub is the remote store that owns them (codesema.com or self-hosted).** `codesema brain <action>` is now `codesema runner <action>` across the board (`connect`, `status`, `ticket`, `serve`, `stop`, `install-service`, `uninstall-service`), and `codesema workspace --brain` is `codesema workspace --runner`. `install-service` now writes and enables `codesema-runner.service`, generated from the template shipped at `assets/systemd/codesema-runner.service`, and removes a previously installed `codesema-brain.service` unit automatically. The daemon's env file is `runner.env` (`~/.config/codesema/runner.env`), and the two identifiers it reads changed from `CODESEMA_BRAIN_URL`/`CODESEMA_BRAIN_TOKEN` to `CODESEMA_HUB_URL`/`CODESEMA_HUB_TOKEN`. The web settings panel's auto-merge field is `runnerAutoMerge`; the old `brainAutoMerge` key is still read from an existing config file, so nothing already saved breaks. `@codesema/contract` 0.9.0 renames the wire field `brain_ticket` to `hub_ticket`, with the old name still accepted on read. On boot, this repository's outbox and pidfile migrate in place to their new names, `.codesema/hub-outbox.jsonl` and `.codesema/runner.pid`.
+
 ## [0.17.0] - 2026-08-27
 
 ### Added

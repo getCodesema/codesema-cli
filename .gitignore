@@ -19,4 +19,4 @@ packages/cli/README.md
 
 # filled-in deploy templates: real secrets, never the .example versioned above
 packages/cli/assets/deploy/*.local.yaml
-packages/cli/assets/deploy/brain.env
+packages/cli/assets/deploy/runner.env

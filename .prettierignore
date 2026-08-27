@@ -5,7 +5,7 @@ coverage
 bun.lock
 CHANGELOG.md
 
-# Committed copies of the brain repo's own generated JSON Schemas
-# (packages/contract/scripts/sync-brain-schemas.mjs). Left in the brain's own
+# Committed copies of the hub repo's own generated JSON Schemas
+# (packages/contract/scripts/sync-hub-schemas.mjs). Left in the hub's own
 # export format so a sync is a plain copy, never a copy plus a reformat.
-packages/contract/fixtures/cerveau-schemas
+packages/contract/fixtures/hub-schemas

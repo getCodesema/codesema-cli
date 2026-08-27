@@ -4,8 +4,8 @@ import { firstTokenBin, parseModelFlag } from '../composables/agentCommand'
 import {
   isMergeStrategyOption,
   parseSettingsSnapshot,
-  type BrainSettings,
   type MergeStrategy,
+  type RunnerSettings,
 } from '../composables/useSettings'
 import type { AgentOption } from '../types'
 
@@ -43,18 +43,18 @@ const agentError = ref<string | null>(null)
 const model = ref('')
 const effort = ref('')
 
-const brainAutoMerge = ref(true)
+const runnerAutoMerge = ref(true)
 const mergeStrategy = ref<MergeStrategy | undefined>(undefined)
 const maxTaskTurns = ref(30)
-const savingBrainAutoMerge = ref(false)
-const brainAutoMergeError = ref<string | null>(null)
+const savingRunnerAutoMerge = ref(false)
+const runnerAutoMergeError = ref<string | null>(null)
 const savingMergeStrategy = ref(false)
 const mergeStrategyError = ref<string | null>(null)
 const savingMaxTaskTurns = ref(false)
 const maxTaskTurnsError = ref<string | null>(null)
 
-function applySettings(settings: BrainSettings): void {
-  brainAutoMerge.value = settings.brainAutoMerge
+function applySettings(settings: RunnerSettings): void {
+  runnerAutoMerge.value = settings.runnerAutoMerge
   mergeStrategy.value = settings.mergeStrategy
   maxTaskTurns.value = settings.maxTaskTurns
 }
@@ -91,8 +91,12 @@ async function load() {
 }
 
 async function putSettings(
-  partial: Partial<{ brainAutoMerge: boolean; mergeStrategy: MergeStrategy; maxTaskTurns: number }>,
-): Promise<BrainSettings> {
+  partial: Partial<{
+    runnerAutoMerge: boolean
+    mergeStrategy: MergeStrategy
+    maxTaskTurns: number
+  }>,
+): Promise<RunnerSettings> {
   if (!configToken) {
     throw new Error('missing config token')
   }
@@ -108,21 +112,21 @@ async function putSettings(
   return parseSettingsSnapshot(await res.json())
 }
 
-async function saveBrainAutoMerge(next: boolean) {
-  if (!configToken || savingBrainAutoMerge.value) {
+async function saveRunnerAutoMerge(next: boolean) {
+  if (!configToken || savingRunnerAutoMerge.value) {
     return
   }
-  const previous = brainAutoMerge.value
-  brainAutoMerge.value = next
-  savingBrainAutoMerge.value = true
-  brainAutoMergeError.value = null
+  const previous = runnerAutoMerge.value
+  runnerAutoMerge.value = next
+  savingRunnerAutoMerge.value = true
+  runnerAutoMergeError.value = null
   try {
-    applySettings(await putSettings({ brainAutoMerge: next }))
+    applySettings(await putSettings({ runnerAutoMerge: next }))
   } catch (e) {
-    brainAutoMerge.value = previous
-    brainAutoMergeError.value = e instanceof Error ? e.message : String(e)
+    runnerAutoMerge.value = previous
+    runnerAutoMergeError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    savingBrainAutoMerge.value = false
+    savingRunnerAutoMerge.value = false
   }
 }
 
@@ -431,22 +435,22 @@ onMounted(load)
       </section>
 
       <section class="cfg-section">
-        <h2 class="cfg-section-title">{{ $t('settings.brainTitle') }}</h2>
+        <h2 class="cfg-section-title">{{ $t('settings.runnerTitle') }}</h2>
 
-        <p class="cfg-hint codesema-muted">{{ $t('settings.brainAutoMergeHint') }}</p>
+        <p class="cfg-hint codesema-muted">{{ $t('settings.runnerAutoMergeHint') }}</p>
         <div class="cfg-section-actions">
           <button
             class="cfg-toggle-btn"
-            :class="{ 'cfg-toggle-btn--on': brainAutoMerge }"
-            :disabled="!configToken || savingBrainAutoMerge"
-            @click="saveBrainAutoMerge(!brainAutoMerge)"
+            :class="{ 'cfg-toggle-btn--on': runnerAutoMerge }"
+            :disabled="!configToken || savingRunnerAutoMerge"
+            @click="saveRunnerAutoMerge(!runnerAutoMerge)"
           >
             {{
-              brainAutoMerge ? $t('settings.brainAutoMergeOn') : $t('settings.brainAutoMergeOff')
+              runnerAutoMerge ? $t('settings.runnerAutoMergeOn') : $t('settings.runnerAutoMergeOff')
             }}
           </button>
-          <p v-if="brainAutoMergeError" class="cfg-error">
-            {{ $t('settings.brainAutoMergeError') }} ({{ brainAutoMergeError }})
+          <p v-if="runnerAutoMergeError" class="cfg-error">
+            {{ $t('settings.runnerAutoMergeError') }} ({{ runnerAutoMergeError }})
           </p>
         </div>
 

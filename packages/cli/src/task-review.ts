@@ -36,7 +36,6 @@ import {
 } from './review.js'
 import { createSession } from './serve.js'
 import { autoPushReview } from './sync.js'
-import { reportBrainTransition } from './task-brain.js'
 import { buildChecksChapter } from './task-checks.js'
 import {
   buildCriteriaChapter,
@@ -49,6 +48,7 @@ import {
   unmetCriteriaFixChapter,
   type CriteriaOutcome,
 } from './task-criteria-gate.js'
+import { reportHubTransition } from './task-hub.js'
 import {
   REVIEW_CUT_DETAIL,
   taskCriteria,
@@ -319,9 +319,9 @@ export function applyChecksGate(record: TaskRecord, checks: TaskChecks | null | 
 }
 
 /**
- * The arm/brain fact a settled turn reports, decided from what the turn
+ * The arm/hub fact a settled turn reports, decided from what the turn
  * actually produced rather than from `status` alone. `status: 'review_ko'`
- * covers two different situations, and the brain must not read them as the
+ * covers two different situations, and the hub must not read them as the
  * same fact:
  *
  *  - a `reviewOutcome` is present: a reviewer ran and returned a verdict,
@@ -338,7 +338,7 @@ export function applyChecksGate(record: TaskRecord, checks: TaskChecks | null | 
  * Pure and exported so this distinction is tested directly, with no fetch or
  * outbox to mock.
  */
-export function brainSettleTransition(opts: {
+export function hubSettleTransition(opts: {
   status: 'review_ok' | 'review_ko'
   reviewOutcome?: ReviewRecord
   reason?: TaskReason
@@ -380,7 +380,7 @@ const settle = (
   io: TaskTurnIo,
   status: 'review_ok' | 'review_ko',
   opts: {
-    /** MAIN repo root: only used for the arm/brain report below, never for I/O on `record` itself. */
+    /** MAIN repo root: only used for the arm/hub report below, never for I/O on `record` itself. */
     cwd: string
     /** Why a KO blocks; defaults to a bare `review_blocked`. Ignored on an OK. */
     blocked?: TaskReason
@@ -395,15 +395,15 @@ const settle = (
     delete record.reason
   }
   io.persist()
-  // Arm/brain integration: reported AFTER the persist, never instead of it,
+  // Arm/hub integration: reported AFTER the persist, never instead of it,
   // same discipline as every other fire-and-forget effect a settled turn
-  // triggers (task-labels.ts's cycle label). Never awaited: a brain round
+  // triggers (task-labels.ts's cycle label). Never awaited: a hub round
   // trip must not hold up the turn this settle ends.
-  if (record.brain_ticket) {
-    void reportBrainTransition(
+  if (record.hub_ticket) {
+    void reportHubTransition(
       opts.cwd,
       record,
-      brainSettleTransition({
+      hubSettleTransition({
         status,
         ...(opts.reviewOutcome ? { reviewOutcome: opts.reviewOutcome } : {}),
         ...(record.reason ? { reason: record.reason } : {}),
@@ -506,8 +506,8 @@ const settleInterrupted = (record: TaskRecord, io: TaskTurnIo, cwd: string): voi
   record.status = 'interrupted'
   record.reason = taskReason('interrupted_by_user', REVIEW_CUT_DETAIL)
   io.persist()
-  if (record.brain_ticket) {
-    void reportBrainTransition(cwd, record, { type: 'failed', error_message: REVIEW_CUT_DETAIL })
+  if (record.hub_ticket) {
+    void reportHubTransition(cwd, record, { type: 'failed', error_message: REVIEW_CUT_DETAIL })
   }
 }
 

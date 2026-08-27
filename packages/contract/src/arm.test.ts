@@ -1,10 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import Ajv from 'ajv'
 import { describe, expect, test } from 'bun:test'
-import claimBodySchema from '../fixtures/cerveau-schemas/claim.schema.json'
-import eventsBodySchema from '../fixtures/cerveau-schemas/events.schema.json'
-import heartbeatBodySchema from '../fixtures/cerveau-schemas/heartbeat.schema.json'
-import transitionsBodySchema from '../fixtures/cerveau-schemas/transitions.schema.json'
+import claimBodySchema from '../fixtures/hub-schemas/claim.schema.json'
+import eventsBodySchema from '../fixtures/hub-schemas/events.schema.json'
+import heartbeatBodySchema from '../fixtures/hub-schemas/heartbeat.schema.json'
+import transitionsBodySchema from '../fixtures/hub-schemas/transitions.schema.json'
 import {
   ARM_BODY_MAX,
   ARM_BRANCH_MAX,
@@ -41,7 +41,7 @@ import {
   type ArmTicket,
   type ArmTicketRequest,
   type ArmTransition,
-} from './brain.js'
+} from './arm.js'
 import { TASK_STATUS_VALUES } from './tasks.js'
 
 // --- Fixtures ----------------------------------------------------------------
@@ -1100,24 +1100,24 @@ describe('reverse cross test: armOrderSchema is not looser than sanitizeArmOrder
   })
 })
 
-// --- Cross-repo: brain schemas (D-contrat, asymmetric arbitration) --------
+// --- Cross-repo: hub schemas (D-contrat, asymmetric arbitration) --------
 //
-// The brain (a separate repo) exports its own TypeBox body schemas for the
+// The hub (a separate repo) exports its own TypeBox body schemas for the
 // four `/api/cli` routes this package's sanitizers exist to talk to, as
 // plain JSON Schema files synced here BY HAND (never over the network, never
-// wired into CI: scripts/sync-brain-schemas.mjs, see this package's README)
-// into fixtures/cerveau-schemas/. Everything above this point proves a
+// wired into CI: scripts/sync-hub-schemas.mjs, see this package's README)
+// into fixtures/hub-schemas/. Everything above this point proves a
 // sanitizer's output against THIS package's own published schema; the tests
-// below prove the same output against the BRAIN's independently-maintained
+// below prove the same output against the HUB's independently-maintained
 // schema, the only thing that can catch the two repos' copies of a shape
 // drifting apart.
 //
 // Concrete motivation: a 422 that crossed both repos' own test suites,
-// because the brain once required `run_id` to look like a uuid while the arm
+// because the hub once required `run_id` to look like a uuid while the arm
 // generates one as a 12-hex string (`randomBytes(6).toString('hex')`,
 // packages/cli/src/tasks-store.ts, reused below as `armRunId`). Each repo's
 // tests only ever checked its own copy of the shape, so neither caught the
-// mismatch. The tests below require the brain's copied schema to accept
+// mismatch. The tests below require the hub's copied schema to accept
 // exactly that shape, so a regression on either side fails here instead of
 // on a production heartbeat.
 
@@ -1143,11 +1143,11 @@ function sanitizedValidEvent(overrides: Partial<ArmEvent> = {}): ArmEvent {
 /**
  * The envelope POSTed to `/api/cli/tickets/:id/events`: `remote_url`/`run_id`/
  * `ticket_id` alongside the batch, on top of each item's own `run_id`
- * (cli-tickets.ts's `cliEventsBodySchema`, brain repo). Not a type this
+ * (cli-tickets.ts's `cliEventsBodySchema`, hub repo). Not a type this
  * package publishes (only the per-item `ArmEvent` is), so built here
  * directly. Override fields are typed `unknown`, not `ArmEvent`-shaped:
  * several tests below deliberately pass a shape sanitizeArmEvent would never
- * produce, to prove the BRAIN schema also refuses it.
+ * produce, to prove the HUB schema also refuses it.
  */
 function eventEnvelope(
   overrides: {
@@ -1166,25 +1166,25 @@ function eventEnvelope(
 }
 
 describe('cross-repo: claim and heartbeat request bodies (no dedicated sanitizer in this package)', () => {
-  // Mirrors the brain's own MAX_LEASE_SECONDS and 1-second floor
+  // Mirrors the hub's own MAX_LEASE_SECONDS and 1-second floor
   // (backend/src/modules/tickets/adapters/ticket-claim.ts), duplicated here
   // rather than imported: same asymmetric arbitration as the rest of this
-  // block, this package has no dependency on the brain repo.
-  const BRAIN_LEASE_SECONDS_MIN = 1
-  const BRAIN_LEASE_SECONDS_MAX = 900
+  // block, this package has no dependency on the hub repo.
+  const HUB_LEASE_SECONDS_MIN = 1
+  const HUB_LEASE_SECONDS_MAX = 900
 
   test('an empty claim body (lease_seconds omitted) validates', () => {
     expect(validateClaimBody({})).toBe(true)
   })
 
-  test('a lease_seconds within the brain-documented bail range validates', () => {
-    for (const lease_seconds of [BRAIN_LEASE_SECONDS_MIN, 180, BRAIN_LEASE_SECONDS_MAX]) {
+  test('a lease_seconds within the hub-documented bail range validates', () => {
+    for (const lease_seconds of [HUB_LEASE_SECONDS_MIN, 180, HUB_LEASE_SECONDS_MAX]) {
       expect(validateClaimBody({ lease_seconds })).toBe(true)
     }
   })
 
-  test('a lease_seconds outside the brain-documented bail range is refused', () => {
-    for (const lease_seconds of [BRAIN_LEASE_SECONDS_MIN - 1, BRAIN_LEASE_SECONDS_MAX + 1, 0, -1]) {
+  test('a lease_seconds outside the hub-documented bail range is refused', () => {
+    for (const lease_seconds of [HUB_LEASE_SECONDS_MIN - 1, HUB_LEASE_SECONDS_MAX + 1, 0, -1]) {
       expect(validateClaimBody({ lease_seconds })).toBe(false)
     }
   })
@@ -1199,13 +1199,13 @@ describe('cross-repo: claim and heartbeat request bodies (no dedicated sanitizer
     expect(validateHeartbeatBody({ lease_seconds: 180 })).toBe(true)
   })
 
-  test('a local_status at the brain bound (40) validates, one over it is refused', () => {
+  test('a local_status at the hub bound (40) validates, one over it is refused', () => {
     expect(validateHeartbeatBody({ local_status: 'x'.repeat(40) })).toBe(true)
     expect(validateHeartbeatBody({ local_status: 'x'.repeat(41) })).toBe(false)
   })
 })
 
-describe('cross-repo: sanitizeArmTransition output validates against the brain schema', () => {
+describe('cross-repo: sanitizeArmTransition output validates against the hub schema', () => {
   test('the minimal transition validates', () => {
     expect(validateTransitionBody(sanitizeArmTransition(structuredClone(minimalTransition)))).toBe(
       true,
@@ -1218,7 +1218,7 @@ describe('cross-repo: sanitizeArmTransition output validates against the brain s
     )
   })
 
-  test('every valid transition type produces a brain-schema-valid transition', () => {
+  test('every valid transition type produces a hub-schema-valid transition', () => {
     const types = ['mr_opened', 'review_result', 'merged', 'failed'] as const
     for (const type of types) {
       expect(validateTransitionBody(sanitizeArmTransition({ ...minimalTransition, type }))).toBe(
@@ -1228,25 +1228,25 @@ describe('cross-repo: sanitizeArmTransition output validates against the brain s
   })
 })
 
-describe('reverse cross-repo: the brain schema is not looser than sanitizeArmTransition on the fields it constrains', () => {
-  test('a blank idempotency_key: refused by sanitizeArmTransition (null) and by the brain schema', () => {
+describe('reverse cross-repo: the hub schema is not looser than sanitizeArmTransition on the fields it constrains', () => {
+  test('a blank idempotency_key: refused by sanitizeArmTransition (null) and by the hub schema', () => {
     expect(sanitizeArmTransition({ ...minimalTransition, idempotency_key: '' })).toBeNull()
     expect(validateTransitionBody({ ...minimalTransition, idempotency_key: '' })).toBe(false)
   })
 
-  test('an unrecognized type: refused by sanitizeArmTransition (null) and by the brain schema', () => {
+  test('an unrecognized type: refused by sanitizeArmTransition (null) and by the hub schema', () => {
     expect(sanitizeArmTransition({ ...minimalTransition, type: 'not-a-type' })).toBeNull()
     expect(validateTransitionBody({ ...minimalTransition, type: 'not-a-type' })).toBe(false)
   })
 
-  test('a missing idempotency_key: refused by sanitizeArmTransition (null) and by the brain schema', () => {
+  test('a missing idempotency_key: refused by sanitizeArmTransition (null) and by the hub schema', () => {
     const { idempotency_key: _drop, ...withoutKey } = minimalTransition
     expect(sanitizeArmTransition(withoutKey)).toBeNull()
     expect(validateTransitionBody(withoutKey)).toBe(false)
   })
 })
 
-describe('cross-repo: closes the run_id class (12-hex arm task id vs the brain schema)', () => {
+describe('cross-repo: closes the run_id class (12-hex arm task id vs the hub schema)', () => {
   test('a 12-hex run_id, the shape the arm actually generates, validates at the envelope level', () => {
     expect(validateEventsBody(eventEnvelope())).toBe(true)
   })
@@ -1258,59 +1258,59 @@ describe('cross-repo: closes the run_id class (12-hex arm task id vs the brain s
 
   // Mirrors sanitizeArmEvent's own "a missing or blank run_id: no usable
   // identity, null" table (above), at the ENVELOPE level, where the original
-  // incident actually lived: an empty run_id has length 0, so the brain's
+  // incident actually lived: an empty run_id has length 0, so the hub's
   // own `minLength: 1` catches it exactly like sanitizeArmEvent does.
-  test('an empty run_id: refused by sanitizeArmEvent (null) and by the brain schema (minLength 1)', () => {
+  test('an empty run_id: refused by sanitizeArmEvent (null) and by the hub schema (minLength 1)', () => {
     expect(sanitizeArmEvent({ ...validEvent, run_id: '' })).toBeNull()
     expect(validateEventsBody(eventEnvelope({ run_id: '' }))).toBe(false)
   })
 
   // A DIFFERENT case from the empty string above, and deliberately NOT
   // asserted as refused: `minLength` counts raw characters, it does not trim
-  // first, so a whitespace-only run_id (length 3) satisfies the brain's
-  // `minLength: 1` even though sanitizeArmEvent refuses it as blank. Brain
+  // first, so a whitespace-only run_id (length 3) satisfies the hub's
+  // `minLength: 1` even though sanitizeArmEvent refuses it as blank. Hub
   // schema looser than this package's sanitizer is fine per the D-contrat
-  // arbitration (only the reverse, brain stricter than what the arm actually
+  // arbitration (only the reverse, hub stricter than what the arm actually
   // produces, is the bug class this suite exists to catch), and
   // sanitizeArmEvent never lets a whitespace-only run_id reach the wire in
   // the first place, so this asymmetry has no real payload to bite on.
-  test('a whitespace-only run_id: refused by sanitizeArmEvent (null), but the brain schema does not trim, so it accepts the raw shape', () => {
+  test('a whitespace-only run_id: refused by sanitizeArmEvent (null), but the hub schema does not trim, so it accepts the raw shape', () => {
     expect(sanitizeArmEvent({ ...validEvent, run_id: '   ' })).toBeNull()
     expect(validateEventsBody(eventEnvelope({ run_id: '   ' }))).toBe(true)
   })
 
-  test('a run_id over the brain envelope bound (64) is refused', () => {
+  test('a run_id over the hub envelope bound (64) is refused', () => {
     expect(validateEventsBody(eventEnvelope({ run_id: 'a'.repeat(65) }))).toBe(false)
   })
 
   // Documents a real asymmetry rather than asserting a failure for it: the
-  // brain's ITEM-level run_id has no maxLength, unlike its own envelope-level
+  // hub's ITEM-level run_id has no maxLength, unlike its own envelope-level
   // run_id (64) or this package's own ARM_RUN_ID_MAX (64) truncation. A
-  // brain schema looser than this package's sanitizer is fine per the
-  // D-contrat arbitration; only the reverse (brain stricter than what the arm
+  // hub schema looser than this package's sanitizer is fine per the
+  // D-contrat arbitration; only the reverse (hub stricter than what the arm
   // actually produces) is the bug class this suite exists to catch.
-  test('the brain schema is looser than this package at the item level: an over-length item run_id still validates there', () => {
+  test('the hub schema is looser than this package at the item level: an over-length item run_id still validates there', () => {
     const item = sanitizedValidEvent({ run_id: armRunId })
     const overLength = { ...item, run_id: 'x'.repeat(200) }
     expect(validateEventsBody(eventEnvelope({ events: [overLength] }))).toBe(true)
   })
 })
 
-describe('cross-repo: ticket_id, when present, must be a real uuid (brain-side format check)', () => {
+describe('cross-repo: ticket_id, when present, must be a real uuid (hub-side format check)', () => {
   test('a real uuid ticket_id validates', () => {
     expect(validateEventsBody(eventEnvelope({ ticket_id: randomUUID() }))).toBe(true)
   })
 
   // ArmTicket.id (sanitizeArmTicket, above) only requires a non-blank string
   // up to ARM_ID_MAX: it does NOT enforce a uuid shape. `ticket_id` here is
-  // exactly that id, echoed back by packages/cli's task-brain.ts
-  // (`ticketId = record.brain_ticket?.id`) when it reports events for a
+  // exactly that id, echoed back by packages/cli's task-hub.ts
+  // (`ticketId = record.hub_ticket?.id`) when it reports events for a
   // claimed ticket. Verified structurally today, since every ticket id the
-  // brain currently hands out IS a uuid, but nothing in this package's own
+  // hub currently hands out IS a uuid, but nothing in this package's own
   // sanitizer enforces that, so this is the same class of risk as the
   // run_id incident, one hop over: noted here rather than silently assumed
   // away.
-  test('a non-uuid ticket_id is refused by the brain schema', () => {
+  test('a non-uuid ticket_id is refused by the hub schema', () => {
     expect(validateEventsBody(eventEnvelope({ ticket_id: 'not-a-uuid' }))).toBe(false)
   })
 })

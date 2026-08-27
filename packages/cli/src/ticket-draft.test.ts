@@ -4,13 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
+import { loadGlobalConfig, saveGlobalConfig } from './config.js'
+import type { ArmTicket, ArmTicketRequest } from './contract.js'
 import {
   draftAndPublishTicket,
   draftAndSubmitTicketRequest,
   draftTicketBody,
-} from './brain-draft.js'
-import { loadGlobalConfig, saveGlobalConfig } from './config.js'
-import type { ArmTicket, ArmTicketRequest } from './contract.js'
+} from './ticket-draft.js'
 
 type Call = { url: string; init: RequestInit }
 
@@ -106,7 +106,7 @@ function runAgentSequence(outputs: string[]): {
   }
 }
 
-describe('brain-draft', () => {
+describe('ticket-draft', () => {
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   let configDir: string
   let cwd: string
@@ -214,18 +214,18 @@ describe('brain-draft', () => {
   })
 
   describe('draftAndPublishTicket', () => {
-    test('fails fast when no brain is connected', async () => {
+    test('fails fast when no hub is connected', async () => {
       const result = await draftAndPublishTicket({ kind: 'prompt', cwd, title: 'T', prompt: 'x' })
       expect(result).toEqual({
         ok: false,
-        reason: 'not connected to a brain: run `codesema brain connect` first',
+        reason: 'not connected to a hub: run `codesema runner connect` first',
       })
     })
 
     test('fails fast when the repo has no origin remote', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
@@ -237,7 +237,7 @@ describe('brain-draft', () => {
     test('drafts then publishes with POST /tickets, from a free-form prompt', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
@@ -249,7 +249,7 @@ describe('brain-draft', () => {
         { runAgentFn: agent.fn, fetchImpl: fetchStub(201, { ticket: validTicket }, calls) },
       )
       expect(result).toEqual({ ok: true, ticket: validTicket })
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/tickets')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/tickets')
       const body = JSON.parse(String(calls[0]?.init.body)) as { title: string; remote_url: string }
       expect(body.title).toBe('Add a thing')
       expect(body.remote_url).toBe('https://github.com/o/r.git')
@@ -258,7 +258,7 @@ describe('brain-draft', () => {
     test('surfaces a publish rejection (e.g. lint refused server-side) as a reason', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
@@ -288,7 +288,7 @@ describe('brain-draft', () => {
     test('drafts a title and body from the bare prompt, then submits one ticket', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
@@ -299,7 +299,7 @@ describe('brain-draft', () => {
         fetchImpl: fetchStub(200, { tickets: [validTicket] }, calls),
       })
       expect(result).toEqual({ ok: true, tickets: [validTicket] })
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/ticket-requests/req1/tickets')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/ticket-requests/req1/tickets')
       const body = JSON.parse(String(calls[0]?.init.body)) as {
         tickets: { title: string; body: string }[]
       }
@@ -309,7 +309,7 @@ describe('brain-draft', () => {
     test('a drafting failure calls failTicketRequest with the reason and reports it', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
-        syncUrl: 'https://brain.example',
+        syncUrl: 'https://hub.example',
         syncWorkspaceId: 'ws1',
         syncSecret: 'sec1',
       })
@@ -320,7 +320,7 @@ describe('brain-draft', () => {
         fetchImpl: fetchStub(200, {}, calls),
       })
       expect(result.ok).toBe(false)
-      expect(calls[0]?.url).toBe('https://brain.example/api/cli/ticket-requests/req1/fail')
+      expect(calls[0]?.url).toBe('https://hub.example/api/cli/ticket-requests/req1/fail')
       const body = JSON.parse(String(calls[0]?.init.body)) as { error_message: string }
       expect(body.error_message).toBeTruthy()
     })
@@ -328,7 +328,7 @@ describe('brain-draft', () => {
     test('not connected fails without ever calling the agent', async () => {
       const agent = runAgentSequence([VALID_BODY])
       const result = await draftAndSubmitTicketRequest(request, cwd, { runAgentFn: agent.fn })
-      expect(result).toEqual({ ok: false, reason: 'not connected to a brain' })
+      expect(result).toEqual({ ok: false, reason: 'not connected to a hub' })
       expect(agent.calls.length).toBe(0)
     })
   })

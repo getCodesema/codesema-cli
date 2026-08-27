@@ -1,24 +1,24 @@
-// Fire-and-forget reporting from the arm (this CLI) back to the brain: the
+// Fire-and-forget reporting from the arm (this CLI) back to the hub: the
 // local SaaS that owns a ticket while this workspace executes it. Same
 // doctrine as task-labels.ts, its closest sibling: never blocks a task
 // transition on a network round trip, and a failure that could not be
 // recovered by the outbox is always logged, never swallowed.
 //
-// The brain is reached at the SAME base URL and with the SAME bearer
+// The hub is reached at the SAME base URL and with the SAME bearer
 // credentials as codesema.com cloud sync (sync.ts): `loadSyncCredentials()`
 // and `authHeader()`. No credentials configured, or a task with no
-// `brain_ticket`: every export here degrades to a no-op, never a throw, the
+// `hub_ticket`: every export here degrades to a no-op, never a throw, the
 // same degrade-to-nothing contract as `pushReview`/`autoPushReview`.
 //
-// Outbox (`.codesema/brain-outbox.jsonl`): same append-only recipe as
+// Outbox (`.codesema/hub-outbox.jsonl`): same append-only recipe as
 // tasks-store.ts's events.jsonl, one JSON line per entry. A report that hit
 // a network failure or a 5xx is appended here and replayed by
-// `flushBrainOutbox`; a 4xx (the brain itself rejected the body, a stale
+// `flushHubOutbox`; a 4xx (the hub itself rejected the body, a stale
 // idempotency key included, on a 409) is logged once and dropped, never
 // retried: resending the exact same rejected body would only repeat the
 // rejection.
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ensureWorkDir } from './config.js'
 import {
@@ -35,9 +35,9 @@ import {
 import { tryGitAsync } from './git.js'
 import { authHeader, loadSyncCredentials, type SyncCredentials } from './sync.js'
 
-const BRAIN_REQUEST_TIMEOUT_MS = 10_000
-const BRAIN_EVENT_BATCH_MAX = 20
-const BRAIN_EVENT_BATCH_DELAY_MS = 5_000
+const HUB_REQUEST_TIMEOUT_MS = 10_000
+const HUB_EVENT_BATCH_MAX = 20
+const HUB_EVENT_BATCH_DELAY_MS = 5_000
 
 /**
  * A separator that cannot appear in a `cwd` (an absolute path) or a 12-hex
@@ -50,17 +50,34 @@ const BRAIN_EVENT_BATCH_DELAY_MS = 5_000
  */
 const KEY_SEP = String.fromCharCode(0)
 
-function brainOutboxPath(cwd: string): string {
+function hubOutboxPath(cwd: string): string {
+  return join(cwd, '.codesema', 'hub-outbox.jsonl')
+}
+
+function legacyOutboxPath(cwd: string): string {
   return join(cwd, '.codesema', 'brain-outbox.jsonl')
+}
+
+// Pre-rename `brain-outbox.jsonl` is migrated to `hub-outbox.jsonl` on first access; failure leaves the legacy file in place.
+function migrateLegacyOutbox(cwd: string): void {
+  const legacyPath = legacyOutboxPath(cwd)
+  const path = hubOutboxPath(cwd)
+  if (existsSync(legacyPath) && !existsSync(path)) {
+    try {
+      renameSync(legacyPath, path)
+    } catch {
+      // Best-effort: an unwritable directory just leaves the legacy file in place.
+    }
+  }
 }
 
 /**
  * One entry of the outbox. `key` is a local label only (never sent to the
- * brain): it names the report in a log line and lets a caller recognise its
+ * hub): it names the report in a log line and lets a caller recognise its
  * own write, never a server-side idempotency mechanism. Only
  * `ArmTransition.idempotency_key`, inside `transition`, is that.
  */
-type BrainOutboxEntry =
+type HubOutboxEntry =
   | { kind: 'transition'; key: string; ticket_id: string; transition: ArmTransition }
   | {
       kind: 'events'
@@ -71,20 +88,21 @@ type BrainOutboxEntry =
       events: ArmEvent[]
     }
 
-function appendToOutbox(cwd: string, entry: BrainOutboxEntry): void {
+function appendToOutbox(cwd: string, entry: HubOutboxEntry): void {
   ensureWorkDir(cwd)
+  migrateLegacyOutbox(cwd)
   try {
     const line = `${JSON.stringify(entry)}\n`
-    writeFileSync(brainOutboxPath(cwd), line, { flag: 'a' })
+    writeFileSync(hubOutboxPath(cwd), line, { flag: 'a' })
   } catch (err) {
     // The outbox itself could not be written (disk full, permissions): the
     // report is lost, and that is said rather than silently swallowed.
-    logBrainFailure(`outbox write (${entry.kind}, ${entry.key})`, errorMessage(err))
+    logHubFailure(`outbox write (${entry.kind}, ${entry.key})`, errorMessage(err))
   }
 }
 
-function logBrainFailure(action: string, detail: string): void {
-  console.warn(`[brain] ${action}: ${detail}`)
+function logHubFailure(action: string, detail: string): void {
+  console.warn(`[hub] ${action}: ${detail}`)
 }
 
 function errorMessage(err: unknown): string {
@@ -102,7 +120,7 @@ function errorMessage(err: unknown): string {
 const originRemoteUrlCache = new Map<string, Promise<string | null>>()
 
 /**
- * Same read as server-context.ts: raw, unnormalized; the brain normalizes it
+ * Same read as server-context.ts: raw, unnormalized; the hub normalizes it
  * server-side. `tryGitAsync`, never the synchronous `tryGit`: this runs on
  * every event-batch flush, and a synchronous git call would block the WHOLE
  * process for its duration (git.ts's own doc comment on `tryGitAsync`
@@ -118,24 +136,24 @@ function originRemoteUrl(cwd: string): Promise<string | null> {
   return promise
 }
 
-type BrainPostOutcome =
+type HubPostOutcome =
   | { kind: 'ok'; body: unknown }
   | { kind: 'client_error'; status: number; detail: string }
   | { kind: 'retryable'; detail: string }
 
-async function postToBrain(
+async function postToHub(
   path: string,
   body: unknown,
   creds: SyncCredentials,
   fetchImpl: typeof fetch,
-): Promise<BrainPostOutcome> {
+): Promise<HubPostOutcome> {
   let res: Response
   try {
     res = await fetchImpl(`${creds.url}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeader(creds) },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(BRAIN_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(HUB_REQUEST_TIMEOUT_MS),
     })
   } catch (err) {
     return { kind: 'retryable', detail: errorMessage(err) }
@@ -151,7 +169,7 @@ async function postToBrain(
   }
   const parsed = (await res.json().catch(() => ({}))) as { error?: unknown }
   const detail = typeof parsed.error === 'string' ? parsed.error : `HTTP ${res.status}`
-  // 5xx: the brain itself is unwell, worth a retry once it recovers. Anything
+  // 5xx: the hub itself is unwell, worth a retry once it recovers. Anything
   // else in the 4xx family: the request itself was refused (bad body, unknown
   // ticket, a 409 replay of an idempotency key already applied) and a retry
   // would only repeat the same refusal.
@@ -161,10 +179,10 @@ async function postToBrain(
 }
 
 /**
- * Reports one fact about a brain ticket's execution back to the brain:
+ * Reports one fact about a hub ticket's execution back to the hub:
  * `mr_opened` on ship, `review_result` on a settled review verdict, `merged`
  * on a landed merge, `failed` on a failure or an explicit interruption. A
- * no-op for a task that carries no `brain_ticket`, and for a machine with no
+ * no-op for a task that carries no `hub_ticket`, and for a machine with no
  * sync credentials configured.
  *
  * `idempotency_key` and `at` are computed here, never by the caller: the key
@@ -173,20 +191,20 @@ async function postToBrain(
  * outbox replay) land on the SAME fact rather than mint a second one, while
  * still telling apart two DIFFERENT facts of the same type on the same task
  * (`review_result` after each of several fix-loop rounds carries a genuinely
- * different verdict; a constant key would have the brain read every round
+ * different verdict; a constant key would have the hub read every round
  * past the first as a duplicate of the first and drop it).
  *
- * Never throws. Offline, or a 5xx: appended to `.codesema/brain-outbox.jsonl`
- * for `flushBrainOutbox` to replay later. A 4xx: logged once and abandoned,
+ * Never throws. Offline, or a 5xx: appended to `.codesema/hub-outbox.jsonl`
+ * for `flushHubOutbox` to replay later. A 4xx: logged once and abandoned,
  * never retried.
  */
-export async function reportBrainTransition(
+export async function reportHubTransition(
   cwd: string,
   record: TaskRecord,
   transition: Omit<ArmTransition, 'idempotency_key' | 'at'>,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  const ticketId = record.brain_ticket?.id
+  const ticketId = record.hub_ticket?.id
   if (!ticketId) {
     return
   }
@@ -198,11 +216,11 @@ export async function reportBrainTransition(
   const label = `transition '${transition.type}' for task ${record.id}`
   const creds = loadSyncCredentials()
   if (!creds) {
-    logBrainFailure(label, 'no sync credentials configured')
+    logHubFailure(label, 'no sync credentials configured')
     return
   }
   try {
-    const outcome = await postToBrain(
+    const outcome = await postToHub(
       `/api/cli/tickets/${encodeURIComponent(ticketId)}/transitions`,
       full,
       creds,
@@ -212,13 +230,10 @@ export async function reportBrainTransition(
       return
     }
     if (outcome.kind === 'client_error') {
-      logBrainFailure(
-        label,
-        `rejected by the brain (${outcome.status}): ${outcome.detail}; abandoned`,
-      )
+      logHubFailure(label, `rejected by the hub (${outcome.status}): ${outcome.detail}; abandoned`)
       return
     }
-    logBrainFailure(label, `${outcome.detail}; queued for retry`)
+    logHubFailure(label, `${outcome.detail}; queued for retry`)
     appendToOutbox(cwd, {
       kind: 'transition',
       key: full.idempotency_key,
@@ -226,11 +241,11 @@ export async function reportBrainTransition(
       transition: full,
     })
   } catch (err) {
-    // The seam contract says postToBrain never rejects, but a fire-and-forget
+    // The seam contract says postToHub never rejects, but a fire-and-forget
     // effect must not depend on that holding forever (same discipline as
     // task-labels.ts's syncCycleLabel): caught here rather than left to
     // become an unhandled rejection.
-    logBrainFailure(label, `${errorMessage(err)}; queued for retry`)
+    logHubFailure(label, `${errorMessage(err)}; queued for retry`)
     appendToOutbox(cwd, {
       kind: 'transition',
       key: full.idempotency_key,
@@ -242,7 +257,7 @@ export async function reportBrainTransition(
 
 /**
  * Reads the `order` field off a heartbeat response body without assuming its
- * shape: `body` is `unknown` (postToBrain only ever confirms "this parsed as
+ * shape: `body` is `unknown` (postToHub only ever confirms "this parsed as
  * JSON"), so this is the one narrowing step between the wire and
  * `sanitizeArmOrder`, which validates everything else about it.
  */
@@ -253,32 +268,32 @@ function orderFieldOf(body: unknown): unknown {
 }
 
 /**
- * Sends a heartbeat for a task's brain ticket lease, and returns the order a
+ * Sends a heartbeat for a task's hub ticket lease, and returns the order a
  * human decided from the dashboard while this ticket sat waiting (D19):
  * ship, reply with an instruction, or abandon. `null` on every ordinary tick
  * nothing is waiting on, and on any failure.
  *
  * No outbox: a missed heartbeat is superseded by the next one (the daemon
  * owns the 45s timer, not this module), and a stale order is superseded the
- * same way (the brain purges an order the moment it hands it back, so the
+ * same way (the hub purges an order the moment it hands it back, so the
  * next heartbeat only ever carries a fresh one, or none). Retrying either is
  * never useful. Never throws.
  *
- * `localStatus`, when given, rides along as `local_status` so the brain can
+ * `localStatus`, when given, rides along as `local_status` so the hub can
  * show this ticket as waiting (or not) on its own dashboard; omitted, the
  * body is `{}`, same as before D19.
  *
  * `cwd` (unused) is kept for call-shape symmetry with this module's other
- * exports (`reportBrainTransition`, `queueBrainEvent`), all of which the
+ * exports (`reportHubTransition`, `queueHubEvent`), all of which the
  * daemon calls the same way; a heartbeat needs only the ticket id.
  */
-export async function heartbeatBrainTicket(
+export async function heartbeatHubTicket(
   _cwd: string,
   record: TaskRecord,
   localStatus?: TaskStatus,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ArmOrder | null> {
-  const ticketId = record.brain_ticket?.id
+  const ticketId = record.hub_ticket?.id
   if (!ticketId) {
     return null
   }
@@ -288,19 +303,19 @@ export async function heartbeatBrainTicket(
   }
   const label = `heartbeat for task ${record.id}`
   try {
-    const outcome = await postToBrain(
+    const outcome = await postToHub(
       `/api/cli/tickets/${encodeURIComponent(ticketId)}/heartbeat`,
       localStatus ? { local_status: localStatus } : {},
       creds,
       fetchImpl,
     )
     if (outcome.kind !== 'ok') {
-      logBrainFailure(label, outcome.detail)
+      logHubFailure(label, outcome.detail)
       return null
     }
     return sanitizeArmOrder(orderFieldOf(outcome.body))
   } catch (err) {
-    logBrainFailure(label, errorMessage(err))
+    logHubFailure(label, errorMessage(err))
     return null
   }
 }
@@ -317,7 +332,7 @@ type PendingEventBatch = {
 
 const pendingEventBatches = new Map<string, PendingEventBatch>()
 
-/** The label a journal line carries to the brain: its own message, its own name, or its bare type. */
+/** The label a journal line carries to the hub: its own message, its own name, or its bare type. */
 function armEventLabel(event: TaskEvent): string {
   const data = event.data as Record<string, unknown> | undefined
   if (typeof data?.message === 'string' && data.message) {
@@ -334,7 +349,7 @@ function armEventFrom(taskId: string, event: TaskEvent): ArmEvent {
     run_id: taskId,
     at: event.at,
     event_type: event.type,
-    // Bounded HERE, not only by the brain's schema: one oversized label (a
+    // Bounded HERE, not only by the hub's schema: one oversized label (a
     // forge CLI dumping its usage text into a message) must degrade to a cut
     // label, never poison its whole batch with a 422.
     label: cutCodePoints(armEventLabel(event), ARM_LABEL_MAX) || event.type,
@@ -352,7 +367,7 @@ async function flushEventBatch(key: string, fetchImpl: typeof fetch): Promise<vo
   const label = `${batch.events.length} event(s) for task ${batch.runId}`
   const creds = loadSyncCredentials()
   if (!creds) {
-    logBrainFailure(label, 'no sync credentials configured')
+    logHubFailure(label, 'no sync credentials configured')
     return
   }
   const remoteUrl = await originRemoteUrl(batch.cwd)
@@ -373,35 +388,32 @@ async function flushEventBatch(key: string, fetchImpl: typeof fetch): Promise<vo
     })
   }
   try {
-    const outcome = await postToBrain('/api/cli/events', body, creds, fetchImpl)
+    const outcome = await postToHub('/api/cli/events', body, creds, fetchImpl)
     if (outcome.kind === 'ok') {
       return
     }
     if (outcome.kind === 'client_error') {
-      logBrainFailure(
-        label,
-        `rejected by the brain (${outcome.status}): ${outcome.detail}; abandoned`,
-      )
+      logHubFailure(label, `rejected by the hub (${outcome.status}): ${outcome.detail}; abandoned`)
       return
     }
-    logBrainFailure(label, `${outcome.detail}; queued for retry`)
+    logHubFailure(label, `${outcome.detail}; queued for retry`)
     enqueueForRetry()
   } catch (err) {
-    logBrainFailure(label, `${errorMessage(err)}; queued for retry`)
+    logHubFailure(label, `${errorMessage(err)}; queued for retry`)
     enqueueForRetry()
   }
 }
 
 /**
- * Queues one task journal line for the brain, batched with its task's other
+ * Queues one task journal line for the hub, batched with its task's other
  * pending lines into ONE `POST /api/cli/events`, sent once 20 events have
  * queued, or 5s after the first one did, whichever comes first. Meant to be
- * called only for a task that carries a `brain_ticket` (`tasks-store.ts`'s
+ * called only for a task that carries a `hub_ticket` (`tasks-store.ts`'s
  * `appendTaskEvent` is the one caller, gated on that); `ticketId` is taken
  * from it directly rather than re-derived, so this module never has to load
  * a task record to do its job. Never throws.
  */
-export function queueBrainEvent(opts: {
+export function queueHubEvent(opts: {
   cwd: string
   taskId: string
   ticketId: string
@@ -414,14 +426,14 @@ export function queueBrainEvent(opts: {
   const existing = pendingEventBatches.get(key)
   if (existing) {
     existing.events.push(armEvent)
-    if (existing.events.length >= BRAIN_EVENT_BATCH_MAX) {
+    if (existing.events.length >= HUB_EVENT_BATCH_MAX) {
       void flushEventBatch(key, fetchImpl)
     }
     return
   }
   const timer = setTimeout(() => {
     void flushEventBatch(key, fetchImpl)
-  }, BRAIN_EVENT_BATCH_DELAY_MS)
+  }, HUB_EVENT_BATCH_DELAY_MS)
   // A pending batch must never keep the process alive on its own: shutdown
   // must not wait out a 5s timer nobody else is blocking on.
   timer.unref?.()
@@ -432,7 +444,7 @@ export function queueBrainEvent(opts: {
  * Test hygiene: drops every pending batch and its timer, and the cached
  * origin-remote reads alongside it. Never used in production code.
  */
-export function resetPendingBrainEventBatches(): void {
+export function resetPendingHubEventBatches(): void {
   for (const batch of pendingEventBatches.values()) {
     clearTimeout(batch.timer)
   }
@@ -442,7 +454,7 @@ export function resetPendingBrainEventBatches(): void {
 
 // --- outbox replay -----------------------------------------------------------
 
-function outboxRequest(entry: BrainOutboxEntry): { path: string; body: unknown } {
+function outboxRequest(entry: HubOutboxEntry): { path: string; body: unknown } {
   if (entry.kind === 'transition') {
     return {
       path: `/api/cli/tickets/${encodeURIComponent(entry.ticket_id)}/transitions`,
@@ -461,19 +473,17 @@ function outboxRequest(entry: BrainOutboxEntry): { path: string; body: unknown }
 }
 
 /**
- * Replays every entry `.codesema/brain-outbox.jsonl` holds, in file order,
+ * Replays every entry `.codesema/hub-outbox.jsonl` holds, in file order,
  * and rewrites the file with only what still could not be sent. A line this
  * process cannot parse (a hand edit, a crash-truncated tail) is dropped
  * rather than kept forever unreadable, the same tolerance
  * `tasks-store.ts`'s own journal reader gives a corrupt event line. A 4xx on
- * replay (a 409 included: the brain already applied this idempotency key)
+ * replay (a 409 included: the hub already applied this idempotency key)
  * drops the entry for good, same rule as a fresh send. Never throws.
  */
-export async function flushBrainOutbox(
-  cwd: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<void> {
-  const path = brainOutboxPath(cwd)
+export async function flushHubOutbox(cwd: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  migrateLegacyOutbox(cwd)
+  const path = hubOutboxPath(cwd)
   if (!existsSync(path)) {
     return
   }
@@ -484,14 +494,14 @@ export async function flushBrainOutbox(
     return
   }
   const creds = loadSyncCredentials()
-  const remaining: BrainOutboxEntry[] = []
+  const remaining: HubOutboxEntry[] = []
   for (const line of raw.split('\n')) {
     if (!line.trim()) {
       continue
     }
-    let entry: BrainOutboxEntry
+    let entry: HubOutboxEntry
     try {
-      entry = JSON.parse(line) as BrainOutboxEntry
+      entry = JSON.parse(line) as HubOutboxEntry
     } catch {
       continue
     }
@@ -502,19 +512,19 @@ export async function flushBrainOutbox(
     const { path: requestPath, body } = outboxRequest(entry)
     const label = `outbox replay (${entry.kind}, ${entry.key})`
     try {
-      const outcome = await postToBrain(requestPath, body, creds, fetchImpl)
+      const outcome = await postToHub(requestPath, body, creds, fetchImpl)
       if (outcome.kind === 'retryable') {
-        logBrainFailure(label, `${outcome.detail}; kept for retry`)
+        logHubFailure(label, `${outcome.detail}; kept for retry`)
         remaining.push(entry)
       } else if (outcome.kind === 'client_error') {
-        logBrainFailure(
+        logHubFailure(
           label,
-          `rejected by the brain (${outcome.status}): ${outcome.detail}; abandoned`,
+          `rejected by the hub (${outcome.status}): ${outcome.detail}; abandoned`,
         )
       }
       // 'ok': dropped in silence, a successful replay is not news.
     } catch (err) {
-      logBrainFailure(label, `${errorMessage(err)}; kept for retry`)
+      logHubFailure(label, `${errorMessage(err)}; kept for retry`)
       remaining.push(entry)
     }
   }

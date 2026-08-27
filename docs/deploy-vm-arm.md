@@ -1,17 +1,18 @@
 # Deploying an arm on a VM
 
-Arm mode runs `codesema brain serve` unattended on a machine you do not sit
-in front of, connected to a brain (today: the codesema.com production
-brain), working one repository around the clock. This is the runbook for
+Arm mode runs `codesema runner serve` unattended on a machine you do not sit
+in front of, connected to the codesema hub (codesema.com, or your own
+instance), working one repository around the clock. This is the runbook for
 standing one up: first as a local rehearsal VM (multipass), later — once the
 gate below is lifted — on a real server, from the exact same artifact.
 
 The provisioning content lives in `packages/cli/assets/deploy/`:
 
-- `cloud-init.yaml.example` — the full cloud-init file for a fresh machine.
-  Copy it to `cloud-init.local.yaml` (gitignored) and fill in every
-  `__PLACEHOLDER__`.
-- `brain.env.example` — the five values `cloud-init.local.yaml` (and
+- `cloud-init.yaml.example`: the full cloud-init file for a fresh machine.
+  Copy it to `cloud-init.local.yaml` (gitignored); autoconfig mode needs only
+  `CODESEMA_HUB_TOKEN` filled in, direct mode needs the three commented-out
+  lines too.
+- `runner.env.example`: the five values `cloud-init.local.yaml` (and
   `install.sh`, below) need, with one line each on where to mint them.
 - `install.sh` — the same installer `cloud-init.yaml.example` calls under
   the hood, runnable directly against a server you already have instead of
@@ -23,18 +24,19 @@ The provisioning content lives in `packages/cli/assets/deploy/`:
 checks are safe to run today: the VM is outbound-only on your own machine,
 so the blast radius of anything going wrong is near zero.
 
-**Step 8 (a real, internet-facing server) is gated.** The order channel a
-brain uses to tell an arm to ship or reply to a task has no signature or
+**Step 8 (a real, internet-facing server) is gated.** The order channel the
+hub uses to tell an arm to ship or reply to a task has no signature or
 confirmation yet, and there is no kill switch to cut an arm off. Exposing a
 24/7 arm on a machine you do not control physical access to, before that
-hardening lands, means an attacker who reaches the brain's order channel
+hardening lands, means an attacker who reaches the hub's order channel
 reaches your server. Do not run step 8 until that work has shipped.
 
 ## Prerequisites
 
 - **On your workstation:** `/dev/kvm` present, and `multipass` (`sudo snap
-install multipass`). `codesema` and `claude` installed globally (both are
-  needed only to mint tokens below, not to run the arm itself).
+install multipass`). `codesema` and `claude` installed globally (needed to
+  mint tokens directly, or to run `codesema runner autoconfig`; never to run
+  the arm itself).
 - **A GitHub personal access token** with `repo` scope, for the bench
   repository the arm will clone and push to.
 - **codesema.com prod reachable and current.** `curl -s -o /dev/null -w
@@ -45,9 +47,51 @@ install multipass`). `codesema` and `claude` installed globally (both are
 - **The bench repository already registered** in your codesema.com account
   (connected through the dashboard's GitHub integration).
 
-## 1. Mint a brain token against prod
+## Autoconfig (recommended)
 
-`codesema brain connect` takes a token in the form
+The fastest path, and the one where your GitHub token and Claude Code
+credentials never reach the hub in the clear: the exchange runs over a
+sealed channel (X25519 key agreement, AES-256-GCM), so the hub only ever relays
+bytes it cannot read.
+
+1. Mint just the hub token, [as in step 1 below](#1-mint-a-hub-token-against-prod),
+   then run the install with only that value set:
+
+   ```bash
+   CODESEMA_HUB_TOKEN=csk_... bash packages/cli/assets/deploy/install.sh
+   ```
+
+   For the VM path, fill in only `CODESEMA_HUB_TOKEN` in
+   `cloud-init.local.yaml`'s `runner.env` section and leave the three
+   commented-out lines there alone; see [step 3](#3-fill-in-the-templates).
+
+2. The install registers an identity with the hub, prints a fingerprint for
+   it, and then blocks, waiting.
+
+3. From your own workstation, inside the repository this arm will work:
+
+   ```bash
+   codesema runner autoconfig
+   ```
+
+   It asks what it needs and shows its own fingerprint for this exchange.
+   Compare that fingerprint, by eye, against the one the server printed in
+   step 2, before confirming anything. This comparison is the only defense
+   here: encryption proves nobody in the middle can read the secrets in
+   transit, not that you are encrypting them to the machine you think you
+   are. A mismatch means stop and investigate, never retry and hope.
+
+4. Once confirmed, the server receives the repository URL and both runtime
+   secrets and continues exactly as direct mode does from here: see
+   [Verify](#6-verify).
+
+Direct mode, starting at [step 1](#1-mint-a-hub-token-against-prod) below,
+remains available: mint and paste in all four values yourself, with no
+exchange to compare fingerprints on.
+
+## 1. Mint a hub token against prod
+
+`codesema runner connect` takes a token in the form
 `csk_<workspaceId>.<secret>` — the same shape `codesema sync`/`codesema
 link` already use, minted the same way, in a scratch config directory so it
 never touches your own workspace credentials:
@@ -65,11 +109,11 @@ the CLI prints "linked":
 ```bash
 WORKSPACE_ID=$(node -p "require('/tmp/codesema-mint/config.json').syncWorkspaceId")
 SECRET=$(node -p "require('/tmp/codesema-mint/config.json').syncSecret")
-echo "csk_${WORKSPACE_ID}.${SECRET}"   # → CODESEMA_BRAIN_TOKEN
+echo "csk_${WORKSPACE_ID}.${SECRET}"   # → CODESEMA_HUB_TOKEN
 rm -rf /tmp/codesema-mint
 ```
 
-Copy the printed value into `brain.env`'s `CODESEMA_BRAIN_TOKEN` (or
+Copy the printed value into `runner.env`'s `CODESEMA_HUB_TOKEN` (or
 straight into `cloud-init.local.yaml`), then clear your terminal scrollback.
 
 ## 2. Generate the other two tokens
@@ -90,20 +134,20 @@ from your GitHub account settings.
 cp packages/cli/assets/deploy/cloud-init.yaml.example packages/cli/assets/deploy/cloud-init.local.yaml
 ```
 
-Edit `cloud-init.local.yaml` and replace:
+Edit `cloud-init.local.yaml`'s `/etc/codesema/runner.env` section: replace
+`CODESEMA_HUB_TOKEN`'s placeholder with the token from step 1, then
+uncomment and fill in the three direct-mode lines (`CLAUDE_CODE_OAUTH_TOKEN`,
+`GH_TOKEN`, `REPO_URL`) with the tokens from step 2 and the bench
+repository's HTTPS clone URL. Leave those three commented out instead to use
+[autoconfig](#autoconfig-recommended) once the VM is up.
 
-- the three `__PLACEHOLDER__` values in the `/etc/codesema/brain.env`
-  section, with the tokens from steps 1-2;
-- `__CODESEMA_BENCH_REPO_URL__` in `provision.sh`, with the bench
-  repository's HTTPS clone URL.
-
-`cloud-init.local.yaml` and any `brain.env` are gitignored — this is the one
+`cloud-init.local.yaml` and any `runner.env` are gitignored: this is the one
 file in this workflow that ever holds real secrets.
 
 ## 4. Switch the repository to arm mode
 
 In the codesema.com dashboard, open the bench repository's settings and
-switch its execution mode from server to arm. This tells the brain to stop
+switch its execution mode from server to arm. This tells the hub to stop
 waiting for its own scheduler on this repository and instead hand tickets to
 whichever arm connects and claims them.
 
@@ -124,11 +168,11 @@ the initial `node:26` pull). Progress is logged to
 ```bash
 multipass shell codesema-arm
 sudo tail -f /var/log/codesema-provision.log   # until it prints "done"
-sudo systemctl --user -M codesema@ status codesema-brain.service
-sudo journalctl --user -M codesema@ -u codesema-brain.service -f
+sudo systemctl --user -M codesema@ status codesema-runner.service
+sudo journalctl --user -M codesema@ -u codesema-runner.service -f
 ```
 
-From your workstation, `codesema brain status` (run against the same
+From your workstation, `codesema runner status` (run against the same
 account you linked in step 1) should list the bench repository with a
 recent heartbeat once the arm has claimed a ticket.
 
@@ -150,7 +194,7 @@ recent heartbeat once the arm has claimed a ticket.
   privileged group" property this runbook otherwise holds to. Only take this
   path if rootless podman is provably unavailable, and say so in your
   provisioning notes.
-- **`codesema brain serve` exits immediately.** `WorkingDirectory` in the
+- **`codesema runner serve` exits immediately.** `WorkingDirectory` in the
   unit must be a git clone, not an empty directory — check the clone step's
   log in `/var/log/codesema-provision.log`.
 
@@ -163,40 +207,52 @@ this runbook changes.
 
 ## Existing server (BYOC)
 
-Already have a server — a VPS, a machine in your own fleet — instead of
+Already have a server, a VPS, a machine in your own fleet, instead of
 provisioning a fresh one? Skip the VM and cloud-init entirely and run the
 installer directly on it. Same artifact, same end state: `install.sh` is
 exactly what `cloud-init.yaml.example`'s own `provision.sh` calls once it
 has bootstrapped just enough (Node.js, `npm i -g codesema`) to run it, so
-there is one place — not two — that knows how to turn a machine into a
+there is one place, not two, that knows how to turn a machine into a
 running arm.
+
+The simplest invocation is [autoconfig mode](#autoconfig-recommended):
+
+```bash
+CODESEMA_HUB_TOKEN=csk_... bash packages/cli/assets/deploy/install.sh
+```
+
+Direct mode mints and passes all four values upfront instead, with no
+fingerprint to compare:
 
 ```bash
 REPO_URL=https://github.com/org/repo.git \
 GH_TOKEN=... \
 CLAUDE_CODE_OAUTH_TOKEN=... \
-CODESEMA_BRAIN_TOKEN=csk_... \
+CODESEMA_HUB_TOKEN=csk_... \
   bash packages/cli/assets/deploy/install.sh
 ```
 
-The same five values `brain.env.example` documents (steps 1-2 above mint
+The same five values `runner.env.example` documents (steps 1-2 above mint
 them the same way), passed as environment variables instead of pasted into
-a YAML file — `CODESEMA_BRAIN_URL` defaults to `https://codesema.com` if
-left unset. Any of the other four left unset is prompted for interactively
-when the script is run from a terminal; a piped or otherwise non-interactive
-run fails loudly instead of hanging on a prompt nobody can answer.
+a YAML file: `CODESEMA_HUB_URL` defaults to `https://codesema.com` if left
+unset. REPO_URL, GH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are all optional:
+leave any of them unset (the default for a non-interactive run, or by
+answering blank at its prompt for an interactive one) and the script
+switches to autoconfig mode instead of requiring them upfront.
 
 `install.sh` is idempotent, the same "check before acting" doctrine
 throughout this file: Node.js (>= 20, else nodesource), `gh` (else the
 official apt repo), a container runtime (docker or podman, installing
-rootless podman only if neither is present) and `codesema`/`claude-code` are
-all checked before anything is installed, the repository is cloned only if
-not already there, and the run ends by calling `codesema brain
-install-service` itself — it never writes the systemd unit by hand.
+rootless podman only if neither is present, and docker specifically
+checked with `docker info` for one that is actually usable, not merely
+installed) and `codesema`/`claude-code` are all checked before anything is
+installed, the repository is cloned only if not already there, and the run
+ends by calling `codesema runner install-service` itself: it never writes
+the systemd unit by hand.
 
 **Same gate as step 7 above (a real server).** This puts a 24/7 arm on a
 machine whose order channel has no signature or confirmation and no kill
-switch yet — the constraint is the brain's order channel, not how the
+switch yet: the constraint is the hub's order channel, not how the
 machine was provisioned, so it applies here exactly as it does to a fresh
 VPS. Do not point this at a real, internet-facing server until that
 hardening has shipped.
@@ -212,13 +268,13 @@ heartbeat.
 **Existing server**:
 
 ```bash
-codesema brain uninstall-service   # stops and removes the systemd --user unit
-codesema brain disconnect          # clears the locally stored brain credentials
+codesema runner uninstall-service   # stops and removes the systemd --user unit
+codesema runner disconnect          # clears the locally stored hub credentials
 npm uninstall -g codesema @anthropic-ai/claude-code
 ```
 
-Then, in the dashboard, revoke this arm from the repository's Settings —
-`brain disconnect` only clears this machine's own copy of the credentials,
-it does not revoke them server-side — and switch the repository's execution
-mode back from arm to server if you want the brain's own scheduler to pick
+Then, in the dashboard, revoke this arm from the repository's Settings
+(`runner disconnect` only clears this machine's own copy of the credentials,
+it does not revoke them server-side), and switch the repository's execution
+mode back from arm to server if you want the hub's own scheduler to pick
 this repository back up.
