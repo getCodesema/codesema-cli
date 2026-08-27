@@ -1188,6 +1188,55 @@ export function watchdogMessage(cause: AgentWatchdogCause, elapsedMs: number): s
   return cause === 'inactivity' ? t('agent.inactivity', { m }) : t('agent.toolBudget', { m })
 }
 
+const FAILURE_DETAIL_MAX = 400
+
+/**
+ * What a non-zero agent exit actually said: the last result frame of a claude
+ * JSONL stream when there is one, the tail of raw output otherwise. Without
+ * this the run's dying words are captured and then thrown away, and every
+ * failure reads "exited with code 1".
+ */
+export function agentFailureDetail(out: string): string | null {
+  const lines = out.trimEnd().split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim()
+    if (!line || !line.startsWith('{')) {
+      continue
+    }
+    let frame: unknown
+    try {
+      frame = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (typeof frame !== 'object' || frame === null) {
+      continue
+    }
+    const f = frame as { type?: unknown; subtype?: unknown; result?: unknown; error?: unknown }
+    if (f.type !== 'result') {
+      continue
+    }
+    const text =
+      typeof f.result === 'string' && f.result.length > 0
+        ? f.result
+        : typeof f.error === 'string'
+          ? f.error
+          : ''
+    const subtype = typeof f.subtype === 'string' && f.subtype !== 'success' ? f.subtype : ''
+    const detail = [subtype, text].filter((part) => part.length > 0).join(': ')
+    return detail.length > 0 ? detail.slice(0, FAILURE_DETAIL_MAX) : null
+  }
+  const tail = lines.slice(-3).join(' ').trim()
+  return tail.length > 0 ? tail.slice(0, FAILURE_DETAIL_MAX) : null
+}
+
+/** The exit-code message, carrying the agent's dying words when it left any. */
+export function agentExitError(code: number | null, out: string): Error {
+  const base = t('agent.exitCode', { code })
+  const detail = agentFailureDetail(out)
+  return new Error(detail === null ? base : `${base}: ${detail}`)
+}
+
 // --- clocks, spawning, and the shape of a kill ------------------------------
 
 /** Time source and timers of a run; injected so no test ever waits out a budget. */
@@ -1500,7 +1549,7 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
       } else if (code === 0) {
         resolve(parser ? (parser.finalText() ?? out) : out)
       } else {
-        reject(new Error(t('agent.exitCode', { code })))
+        reject(agentExitError(code, out))
       }
     }
 

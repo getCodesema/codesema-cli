@@ -3,6 +3,13 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.18.3] - 2026-08-28
+
+### Fixed
+
+- **The task egress proxy died at boot on rootful docker, silently taking every caged turn with it.** The generated squid.conf logged to /dev/stdout; squid drops from root to its `proxy` user after start, that user cannot reopen the container stdout pipe, and squid exits FATAL seconds after `run -d` reported success. With `--rm` erasing the evidence, each turn then ran with no route to the API and died minutes later as an opaque "agent command exited with code 1". The access log now goes to squid own log directory, and ensureEgressProxy probes the container right after start: a proxy that dies is reported immediately, with the crash output. Found on the first production runner, where no caged turn had ever actually reached the API.
+- **A non-zero agent exit now carries the agent last words.** The final result frame of the claude stream (or the raw output tail) is appended to the exit-code error, on the host and in the cage, instead of being captured and thrown away.
+
 ## [0.18.2] - 2026-08-28
 
 ### Fixed

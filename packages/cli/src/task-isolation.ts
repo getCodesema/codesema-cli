@@ -34,6 +34,7 @@ import {
   AGENT_KILL_GRACE_MS,
   AGENT_SETTLE_GRACE_MS,
   AGENT_WATCHDOG_DEFAULTS,
+  agentExitError,
   AgentWatchdogError,
   armStreamWatchdog,
   flagPresent,
@@ -900,7 +901,10 @@ export function buildSquidConfig(domains: readonly string[]): string {
     ...(clean.length > 0 ? ['http_access allow CONNECT allowed'] : []),
     'http_access deny all',
     'cache deny all',
-    'access_log stdio:/dev/stdout',
+    // squid starts as root then drops to its 'proxy' user, which cannot
+    // reopen the container's stdout pipe: logging to /dev/stdout is FATAL on
+    // rootful docker and kills the proxy at boot (verified against squid 6.13).
+    'access_log stdio:/var/log/squid/access.log',
     'pid_filename none',
     '',
   ]
@@ -929,6 +933,8 @@ export type EnsureEgressProxyOptions = {
   allowedDomains?: readonly string[]
   /** Directory the generated squid.conf is written to; defaults to a tmp dir. */
   configDir?: string
+  /** Wait before the liveness probe; 0 in tests (no real container to settle). */
+  probeDelayMs?: number
 }
 
 /**
@@ -1006,6 +1012,39 @@ export async function ensureEgressProxy(opts: EnsureEgressProxyOptions): Promise
         throw new Error(t('isolation.proxyFailed', { error: buildFailure(connected) }))
       }
       startedProxies.add(container)
+      // A broken squid.conf kills squid AFTER `run -d` reported success, and
+      // --rm erases the evidence: without this probe the crash surfaces as an
+      // opaque agent failure minutes later, with nothing left to inspect.
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, opts.probeDelayMs ?? 1_500))
+      const alive = await exec(
+        opts.runtime,
+        ['container', 'inspect', '--format', '{{.State.Running}}', container],
+        { timeoutMs: 20_000 },
+      )
+      if (alive.code !== 0 || alive.stdout.trim() !== 'true') {
+        const crash = await exec(
+          opts.runtime,
+          [
+            'run',
+            '--rm',
+            '--network',
+            egressNetwork,
+            '-v',
+            `${configPath}:/etc/squid/squid.conf:ro`,
+            '--security-opt',
+            'no-new-privileges',
+            '--memory',
+            '512m',
+            EGRESS_PROXY_IMAGE,
+          ],
+          { timeoutMs: 30_000 },
+        ).catch(() => null)
+        const detail =
+          crash === null ? 'container gone before it could be inspected' : buildFailure(crash)
+        throw new Error(
+          t('isolation.proxyFailed', { error: `egress proxy exited right after start: ${detail}` }),
+        )
+      }
     }
     return {
       network,
@@ -1798,7 +1837,7 @@ export const spawnContainer: ContainerSpawnFn = (opts) =>
       } else if (code === 0) {
         resolve(out)
       } else {
-        reject(new Error(t('agent.exitCode', { code })))
+        reject(agentExitError(code, out))
       }
     }
     const killClient = (signal: NodeJS.Signals): void => {

@@ -6,6 +6,8 @@ import {
   AGENT_SETTLE_GRACE_MS,
   AGENT_WATCHDOG_DEFAULTS,
   agentEnv,
+  agentExitError,
+  agentFailureDetail,
   agentReasonCode,
   AgentWatchdogError,
   boundedReadOnlyReviewCommand,
@@ -2133,5 +2135,52 @@ describe('createClaudeTaskParser cost', () => {
     parser.push(assistant('claude-opus-5', { input_tokens: 200, output_tokens: 80 }, 'b'))
     // Tokens are counted whether or not the model can be priced.
     expect(tokens).toEqual([150, 430])
+  })
+})
+
+describe('agentFailureDetail', () => {
+  test('reads the last result frame of a claude stream', () => {
+    const out = [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"result","subtype":"error_during_execution","result":"Request timed out"}',
+    ].join('\n')
+    expect(agentFailureDetail(out)).toBe('error_during_execution: Request timed out')
+  })
+
+  test('a success frame with text keeps the text, without the subtype', () => {
+    const out = '{"type":"result","subtype":"success","result":"done"}'
+    expect(agentFailureDetail(out)).toBe('done')
+  })
+
+  test('falls back to the raw tail when nothing parses as a result frame', () => {
+    expect(agentFailureDetail('warming up\nRequest timed out')).toBe('warming up Request timed out')
+  })
+
+  test('empty output has no detail', () => {
+    expect(agentFailureDetail('')).toBeNull()
+    expect(agentFailureDetail('   \n  ')).toBeNull()
+  })
+
+  test('detail is capped, never a page of stream dump', () => {
+    const detail = agentFailureDetail(
+      `{"type":"result","subtype":"success","result":"${'x'.repeat(2000)}"}`,
+    )
+    expect(detail).toHaveLength(400)
+  })
+})
+
+describe('agentExitError', () => {
+  test('carries the dying words next to the exit code', () => {
+    const err = agentExitError(
+      1,
+      '{"type":"result","subtype":"error_during_execution","result":"Request timed out"}',
+    )
+    expect(err.message).toContain('exited with code 1')
+    expect(err.message).toContain('Request timed out')
+  })
+
+  test('stays the bare exit message when the run said nothing', () => {
+    const err = agentExitError(127, '')
+    expect(err.message).toBe('agent command exited with code 127')
   })
 })
