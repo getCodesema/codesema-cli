@@ -47,6 +47,12 @@ Usage:
                                       foreground
   codesema brain stop                Stop a brain daemon started with --detach (or under systemd) for
                                       this repo
+  codesema brain disconnect          Forget the connected brain (clears local credentials only —
+                                      also revoke this arm in the dashboard's Settings)
+  codesema brain install-service [--env-file <path>]
+                                      Install a systemd --user unit that runs \`codesema brain serve\`
+                                      for this repo, enabled and started now
+  codesema brain uninstall-service   Stop and remove that systemd --user unit
 
 Options:
   --branch <name>     Local branch to review (default: interactive picker, else current branch)
@@ -69,6 +75,7 @@ Options:
   --url, --token      \`brain connect\`: the brain's URL and a csk_<workspaceId>.<secret> token
   --issue <n>         \`brain ticket\`: draft from this forge issue number
   --title, --prompt   \`brain ticket\`: draft from a free-form title and prompt instead of an issue
+  --env-file <path>   \`brain install-service\`: EnvironmentFile= for the generated systemd unit
   -h, --help          Show this help
   -v, --version       Show version
 
@@ -369,9 +376,10 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'sync.unreachable': 'could not reach {url}: check your connection or CODESEMA_SYNC_URL',
   'sync.badResponse': 'unexpected response from {url}: required fields are missing or invalid',
 
-  'brain.usage': 'usage: codesema brain <connect|status|ticket|serve|stop>',
+  'brain.usage':
+    'usage: codesema brain <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
   'brain.unknownAction':
-    'unknown brain action: {action} (expected connect, status, ticket, serve or stop)',
+    'unknown brain action: {action} (expected connect, disconnect, status, ticket, serve, stop, install-service or uninstall-service)',
   'brain.connectMissingFlags':
     '`codesema brain connect` needs both --url <url> and --token <token>',
   'brain.badToken': 'malformed token: expected csk_<workspaceId>.<secret>',
@@ -408,6 +416,26 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'brain.heartbeatMinutes': '{n}min ago',
   'brain.heartbeatHours': '{n}h ago',
   'brain.heartbeatDays': '{n}d ago',
+  'brain.disconnected': 'Disconnected from the brain.',
+  'brain.alreadyDisconnected': 'Already disconnected.',
+  'brain.disconnectRevokeReminder':
+    "Also revoke this arm in the dashboard's repo Settings — this only cleared local credentials.",
+  'brain.serviceNotARepo':
+    '`codesema brain install-service` must be run inside the git repository this daemon should serve',
+  'brain.systemctlNotFound':
+    'systemctl not found: this machine has no user systemd session to install into. Run the daemon in the foreground (`codesema brain serve`) or backgrounded (`codesema brain serve --detach`) instead.',
+  'brain.envFileNotFound': 'env file not found: {path}',
+  'brain.serviceExecPathUnknown':
+    'could not determine the path to the running codesema binary (process.argv[1] is empty)',
+  'brain.serviceInstalled': 'Brain service installed and started.',
+  'brain.serviceUninstalled': 'Brain service stopped and removed.',
+  'brain.serviceNotInstalled': 'No brain service installed (nothing to do).',
+  'brain.fieldUnit': 'unit',
+  'brain.fieldWorkingDirectory': 'working directory',
+  'brain.fieldExecStart': 'exec start',
+  'brain.fieldEnvironmentFile': 'environment file',
+  'brain.lingerFailed':
+    "could not enable lingering ({reason}): the service will stop when this user's session ends. Common in containers/WSL with no full systemd — run `sudo loginctl enable-linger $(whoami)` yourself if your host supports it.",
 
   'menu.title': 'What do you want to do?',
   'menu.review': 'Simple review',
@@ -574,6 +602,13 @@ Usage :
   codesema brain ticket --title <t> --prompt <p>
                                       Rédige et publie un ticket depuis un titre et un prompt libres
   codesema brain serve               Alias de \`codesema workspace --brain\`
+  codesema brain disconnect          Oublie le cerveau connecté (efface seulement les identifiants
+                                      locaux, pensez aussi à révoquer ce bras dans les Settings du
+                                      dashboard)
+  codesema brain install-service [--env-file <chemin>]
+                                      Installe une unité systemd --user qui lance
+                                      \`codesema brain serve\` pour ce dépôt, activée et démarrée
+  codesema brain uninstall-service   Arrête et supprime cette unité systemd --user
 
 Options :
   --branch <nom>      Branche locale à passer en revue (défaut : sélecteur interactif, sinon branche courante)
@@ -597,6 +632,7 @@ Options :
   --url, --token      \`brain connect\` : l'URL du cerveau et un jeton csk_<workspaceId>.<secret>
   --issue <n>         \`brain ticket\` : rédige depuis ce numéro d'issue du forge
   --title, --prompt   \`brain ticket\` : rédige depuis un titre et un prompt libres plutôt qu'une issue
+  --env-file <chemin> \`brain install-service\` : EnvironmentFile= de l'unité systemd générée
   -h, --help          Afficher cette aide
   -v, --version       Afficher la version
 
@@ -910,9 +946,10 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'sync.unreachable': 'impossible de joindre {url} : vérifiez votre connexion ou CODESEMA_SYNC_URL',
   'sync.badResponse': 'réponse inattendue de {url} : champs requis manquants ou invalides',
 
-  'brain.usage': 'usage : codesema brain <connect|status|ticket|serve|stop>',
+  'brain.usage':
+    'usage : codesema brain <connect|disconnect|status|ticket|serve|stop|install-service|uninstall-service>',
   'brain.unknownAction':
-    'action brain inconnue : {action} (attendu connect, status, ticket, serve ou stop)',
+    'action brain inconnue : {action} (attendu connect, disconnect, status, ticket, serve, stop, install-service ou uninstall-service)',
   'brain.connectMissingFlags': '`codesema brain connect` nécessite --url <url> et --token <token>',
   'brain.badToken': 'jeton malformé : format attendu csk_<workspaceId>.<secret>',
   'brain.connected': 'Connecté au cerveau à {url}.',
@@ -948,6 +985,26 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'brain.heartbeatMinutes': 'il y a {n}min',
   'brain.heartbeatHours': 'il y a {n}h',
   'brain.heartbeatDays': 'il y a {n}j',
+  'brain.disconnected': 'Déconnecté du cerveau.',
+  'brain.alreadyDisconnected': 'Déjà déconnecté.',
+  'brain.disconnectRevokeReminder':
+    "Pensez aussi à révoquer ce bras dans les Settings du dépôt sur le dashboard : ceci n'a effacé que les identifiants locaux.",
+  'brain.serviceNotARepo':
+    '`codesema brain install-service` doit être lancé depuis le dépôt git que ce daemon doit servir',
+  'brain.systemctlNotFound':
+    "systemctl introuvable : cette machine n'a pas de session systemd utilisateur pour y installer le service. Lancez plutôt le daemon au premier plan (`codesema brain serve`) ou en arrière-plan (`codesema brain serve --detach`).",
+  'brain.envFileNotFound': 'fichier env introuvable : {path}',
+  'brain.serviceExecPathUnknown':
+    "impossible de déterminer le chemin du binaire codesema en cours d'exécution (process.argv[1] est vide)",
+  'brain.serviceInstalled': 'Service brain installé et démarré.',
+  'brain.serviceUninstalled': 'Service brain arrêté et supprimé.',
+  'brain.serviceNotInstalled': 'Aucun service brain installé (rien à faire).',
+  'brain.fieldUnit': 'unité',
+  'brain.fieldWorkingDirectory': 'répertoire de travail',
+  'brain.fieldExecStart': 'commande de démarrage',
+  'brain.fieldEnvironmentFile': 'fichier env',
+  'brain.lingerFailed':
+    "impossible d'activer le lingering ({reason}) : le service s'arrêtera à la fin de la session de cet utilisateur. Fréquent dans les conteneurs/WSL sans systemd complet : lancez vous-même `sudo loginctl enable-linger $(whoami)` si votre hôte le permet.",
 
   'menu.title': 'Que voulez-vous faire ?',
   'menu.review': 'Revue simple',

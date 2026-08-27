@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# Idempotent codesema arm installer for an EXISTING Ubuntu/Debian server (the
+# "bring your own compute" path; cloud-init.yaml.example is the equivalent
+# for a fresh VM provisioned from scratch — see docs/deploy-vm-arm.md for
+# both). Runner-style split, same shape as gitlab-runner's install +
+# config.sh/svc.sh: this script only gets the OS ready (Node.js, gh, a
+# container runtime) and codesema/claude-code onto PATH; the systemd --user
+# unit itself is written by `codesema brain install-service`, never by this
+# script, so there is exactly one place that knows the unit's shape.
+#
+# Safe to re-run: every step checks before it acts. Reads its configuration
+# from the environment and falls back to an interactive prompt for whichever
+# required variable is missing and stdin is a terminal:
+#
+#   CODESEMA_BRAIN_URL          brain to connect to (default: https://codesema.com)
+#   CODESEMA_BRAIN_TOKEN        csk_<workspaceId>.<secret>, from `codesema link`
+#   REPO_URL                    HTTPS clone URL of the repo this arm works
+#   GH_TOKEN                    GitHub token, "repo" scope
+#   CLAUDE_CODE_OAUTH_TOKEN     from `claude setup-token`
+#
+# Usage:
+#   REPO_URL=https://github.com/org/repo.git GH_TOKEN=... \
+#   CLAUDE_CODE_OAUTH_TOKEN=... CODESEMA_BRAIN_TOKEN=csk_... \
+#     bash install.sh
+#
+# Minting each value: docs/deploy-vm-arm.md.
+
+set -euo pipefail
+
+log() {
+  echo "[codesema-install] $*"
+}
+
+fail() {
+  echo "[codesema-install] $*" >&2
+  exit 1
+}
+
+# OS package steps only: root if we already are, sudo otherwise. Never used
+# for the npm install below — see the prefix check next to it — since
+# blanket sudo there is a known way to install into root's npm prefix
+# instead of a user-managed one (nvm/volta/fnm), silently leaving the
+# freshly "installed" binary off the invoking user's PATH.
+as_root() {
+  if [ "$(id -u)" = "0" ]; then
+    "$@"
+  else
+    command -v sudo >/dev/null 2>&1 \
+      || fail "not root and sudo not found: run this script as root, or install sudo first"
+    sudo "$@"
+  fi
+}
+
+# $1: var name, $2: prompt text, $3 (optional): "secret" to hide input.
+# Leaves the variable untouched if already set, and never blocks a
+# non-interactive run (piped install, CI, cloud-init): it silently does
+# nothing when stdin is not a terminal, leaving require_var below to fail
+# loud instead of this hanging on a read nobody can answer.
+prompt_var() {
+  local name="$1" text="$2" mode="${3:-}" value=""
+  if [ -n "${!name:-}" ] || [ ! -t 0 ]; then
+    return
+  fi
+  if [ "$mode" = "secret" ]; then
+    read -r -s -p "$text: " value
+    echo
+  else
+    read -r -p "$text: " value
+  fi
+  printf -v "$name" '%s' "$value"
+}
+
+require_var() {
+  local name="$1"
+  [ -n "${!name:-}" ] \
+    || fail "$name is required (set it in the environment, or run this script from an interactive terminal)"
+}
+
+: "${CODESEMA_BRAIN_URL:=https://codesema.com}"
+
+prompt_var CODESEMA_BRAIN_TOKEN "Brain token (csk_<workspaceId>.<secret>, from 'codesema link')" secret
+prompt_var REPO_URL "Repository to clone (HTTPS URL)"
+prompt_var GH_TOKEN "GitHub token (repo scope)" secret
+prompt_var CLAUDE_CODE_OAUTH_TOKEN "Claude Code OAuth token (from 'claude setup-token')" secret
+
+require_var CODESEMA_BRAIN_TOKEN
+require_var REPO_URL
+require_var GH_TOKEN
+require_var CLAUDE_CODE_OAUTH_TOKEN
+export GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+
+log "starting at $(date -u +%FT%TZ)"
+
+# --- Node.js >= 20 (nodesource, only if missing or too old).
+node_major() {
+  command -v node >/dev/null 2>&1 || { echo 0; return; }
+  node -p 'process.versions.node.split(".")[0]'
+}
+
+if [ "$(node_major)" -lt 20 ]; then
+  log "installing Node.js 22 (nodesource)"
+  curl -fsSL https://deb.nodesource.com/setup_22.x | as_root bash -
+  as_root apt-get install -y nodejs
+else
+  log "node $(node -v) already >= 20, skipping"
+fi
+
+# --- GitHub CLI (official repo, only if missing).
+if command -v gh >/dev/null 2>&1; then
+  log "gh already present, skipping"
+else
+  log "installing gh (official apt repo)"
+  as_root install -d -m 0755 /usr/share/keyrings
+  # tee, not curl -o: this script is not guaranteed to run as root, unlike
+  # cloud-init's own runcmd, so writing into /usr/share/keyrings needs the
+  # same curl-as-yourself/write-as-root split apt.gpg installs always use.
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | as_root tee /usr/share/keyrings/githubcli-archive-keyring.gpg >/dev/null
+  as_root chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | as_root tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  as_root apt-get update
+  as_root apt-get install -y gh
+fi
+
+# --- A container runtime: docker OR rootless podman: only install podman
+# (the default this project documents) when NEITHER is already present.
+if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
+  log "container runtime already present ($(command -v docker || command -v podman)), skipping"
+else
+  log "installing rootless podman"
+  as_root apt-get install -y podman uidmap slirp4netns
+  if ! grep -q "^$(id -un):" /etc/subuid 2>/dev/null; then
+    as_root usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+    log "subuid/subgid ranges added for $(id -un): log out and back in (or 'loginctl terminate-user \$(whoami)') before the first container run"
+  fi
+fi
+
+# --- codesema + claude-code on PATH. Presence-gated, not version-gated: a
+# locked-down service account (no sudo, by design — see
+# cloud-init.yaml.example's `codesema` user) can reach this script with
+# both already installed by root moments earlier, and must be able to
+# finish the install without ever touching npm's root-owned prefix.
+# A human re-running this by hand to pick up a new codesema release should
+# just `npm install -g codesema@latest` themselves first; this script's job
+# is "make sure it's here", not "keep it current".
+if command -v codesema >/dev/null 2>&1 && command -v claude >/dev/null 2>&1; then
+  log "codesema and claude already on PATH, skipping npm install"
+else
+  log "installing codesema and @anthropic-ai/claude-code (npm -g)"
+  npm_prefix="$(npm config get prefix 2>/dev/null || echo /usr/local)"
+  if [ -w "$npm_prefix" ]; then
+    npm install -g codesema@latest @anthropic-ai/claude-code
+  else
+    as_root npm install -g codesema@latest @anthropic-ai/claude-code
+  fi
+  command -v codesema >/dev/null 2>&1 \
+    || fail "codesema not on PATH after npm install -g — check npm's global bin dir is in PATH"
+  command -v claude >/dev/null 2>&1 \
+    || fail "claude not on PATH after npm install -g — check npm's global bin dir is in PATH"
+fi
+
+# --- Clone the repository. gh's own credential helper authenticates the
+# clone from GH_TOKEN (already exported above), so the token never lands in
+# this repo's .git/config — only ~/.gitconfig gets a credential.helper line
+# naming gh, which reads GH_TOKEN again at call time.
+repo_name="$(basename "$REPO_URL" .git)"
+repo_dir="$HOME/$repo_name"
+
+gh auth setup-git
+
+if [ -d "$repo_dir/.git" ]; then
+  log "$repo_dir already cloned, skipping"
+else
+  log "cloning $REPO_URL into $repo_dir"
+  git clone "$REPO_URL" "$repo_dir"
+fi
+
+# --- Base config: written only if absent, so a re-run never clobbers a
+# configuration already customized by hand (`codesema config`). Written
+# FIRST: `codesema brain connect` below loads this same file and merges its
+# own three keys into it, it does not overwrite what is already there.
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/codesema"
+config_file="$config_dir/config.json"
+if [ -f "$config_file" ]; then
+  log "$config_file already exists, leaving it alone"
+else
+  mkdir -p "$config_dir"
+  cat > "$config_file" <<'JSON'
+{
+  "agent": "claude -p",
+  "isolation": "container"
+}
+JSON
+  chmod 0600 "$config_file"
+fi
+
+codesema brain connect --url "$CODESEMA_BRAIN_URL" --token "$CODESEMA_BRAIN_TOKEN"
+
+# --- Runtime secrets for the systemd unit: only the two the DAEMON reads on
+# every ticket (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN). CODESEMA_BRAIN_TOKEN is
+# install-time only — `brain connect` above already turned it into
+# config.json's stored credentials — so it has no reason to also live here.
+env_file="$config_dir/brain.env"
+umask 077
+cat > "$env_file" <<EOF
+CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN
+GH_TOKEN=$GH_TOKEN
+EOF
+chmod 0600 "$env_file"
+
+( cd "$repo_dir" && codesema brain install-service --env-file "$env_file" )
+
+log "done at $(date -u +%FT%TZ)"
+log "check it with: systemctl --user status codesema-brain.service"
+log "watch it with: journalctl --user -u codesema-brain.service -f"

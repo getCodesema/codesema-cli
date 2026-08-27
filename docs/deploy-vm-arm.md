@@ -8,10 +8,14 @@ gate below is lifted — on a real server, from the exact same artifact.
 
 The provisioning content lives in `packages/cli/assets/deploy/`:
 
-- `cloud-init.yaml.example` — the full cloud-init file. Copy it to
-  `cloud-init.local.yaml` (gitignored) and fill in every `__PLACEHOLDER__`.
-- `brain.env.example` — the three secrets `cloud-init.local.yaml` needs, with
-  one line each on where to mint them.
+- `cloud-init.yaml.example` — the full cloud-init file for a fresh machine.
+  Copy it to `cloud-init.local.yaml` (gitignored) and fill in every
+  `__PLACEHOLDER__`.
+- `brain.env.example` — the five values `cloud-init.local.yaml` (and
+  `install.sh`, below) need, with one line each on where to mint them.
+- `install.sh` — the same installer `cloud-init.yaml.example` calls under
+  the hood, runnable directly against a server you already have instead of
+  a fresh VM. See [Existing server (BYOC)](#existing-server-byoc) below.
 
 ## Security gate
 
@@ -156,3 +160,65 @@ Once the order-channel hardening has shipped, the same `cloud-init.local.yaml`
 targets a real VPS unchanged: hand it to the provider's cloud-init field at
 creation time instead of `multipass launch --cloud-init`. Nothing else in
 this runbook changes.
+
+## Existing server (BYOC)
+
+Already have a server — a VPS, a machine in your own fleet — instead of
+provisioning a fresh one? Skip the VM and cloud-init entirely and run the
+installer directly on it. Same artifact, same end state: `install.sh` is
+exactly what `cloud-init.yaml.example`'s own `provision.sh` calls once it
+has bootstrapped just enough (Node.js, `npm i -g codesema`) to run it, so
+there is one place — not two — that knows how to turn a machine into a
+running arm.
+
+```bash
+REPO_URL=https://github.com/org/repo.git \
+GH_TOKEN=... \
+CLAUDE_CODE_OAUTH_TOKEN=... \
+CODESEMA_BRAIN_TOKEN=csk_... \
+  bash packages/cli/assets/deploy/install.sh
+```
+
+The same five values `brain.env.example` documents (steps 1-2 above mint
+them the same way), passed as environment variables instead of pasted into
+a YAML file — `CODESEMA_BRAIN_URL` defaults to `https://codesema.com` if
+left unset. Any of the other four left unset is prompted for interactively
+when the script is run from a terminal; a piped or otherwise non-interactive
+run fails loudly instead of hanging on a prompt nobody can answer.
+
+`install.sh` is idempotent, the same "check before acting" doctrine
+throughout this file: Node.js (>= 20, else nodesource), `gh` (else the
+official apt repo), a container runtime (docker or podman, installing
+rootless podman only if neither is present) and `codesema`/`claude-code` are
+all checked before anything is installed, the repository is cloned only if
+not already there, and the run ends by calling `codesema brain
+install-service` itself — it never writes the systemd unit by hand.
+
+**Same gate as step 7 above (a real server).** This puts a 24/7 arm on a
+machine whose order channel has no signature or confirmation and no kill
+switch yet — the constraint is the brain's order channel, not how the
+machine was provisioned, so it applies here exactly as it does to a fresh
+VPS. Do not point this at a real, internet-facing server until that
+hardening has shipped.
+
+## Uninstall
+
+**VM**: `multipass delete codesema-arm --purge`. Separately, in the
+dashboard, switch the repository's execution mode back from arm to server —
+deleting the VM does not do that for you. In-flight tickets need no manual
+cleanup: a claim's lease expires on its own once nothing renews it with a
+heartbeat.
+
+**Existing server**:
+
+```bash
+codesema brain uninstall-service   # stops and removes the systemd --user unit
+codesema brain disconnect          # clears the locally stored brain credentials
+npm uninstall -g codesema @anthropic-ai/claude-code
+```
+
+Then, in the dashboard, revoke this arm from the repository's Settings —
+`brain disconnect` only clears this machine's own copy of the credentials,
+it does not revoke them server-side — and switch the repository's execution
+mode back from arm to server if you want the brain's own scheduler to pick
+this repository back up.

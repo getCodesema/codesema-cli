@@ -50,6 +50,7 @@ type ParsedValues = {
   title?: string | undefined
   prompt?: string | undefined
   detach?: boolean | undefined
+  'env-file'?: string | undefined
 }
 
 export const COMMAND_NAMES = [
@@ -220,6 +221,7 @@ async function runCommand(
         title: values.title,
         prompt: values.prompt,
         detach: values.detach,
+        envFile: values['env-file'],
       })
       break
   }
@@ -250,6 +252,7 @@ async function main(): Promise<void> {
       title: { type: 'string' },
       prompt: { type: 'string' },
       detach: { type: 'boolean' },
+      'env-file': { type: 'string' },
     },
   })
 

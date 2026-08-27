@@ -20,7 +20,9 @@ import {
 } from './brain-client.js'
 import { draftAndPublishTicket } from './brain-draft.js'
 import { readBrainPidfile, removeBrainPidfile } from './brain-pidfile.js'
+import { installBrainService, uninstallBrainService, type ExecCommandFn } from './brain-service.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
+import { tryGit } from './git.js'
 import { t } from './i18n.js'
 import { loadSyncCredentials } from './sync.js'
 import { ACCENT, AMBER, dim, GREEN, paint, renderFieldRows, type FieldRow } from './ui.js'
@@ -53,12 +55,16 @@ export type BrainCommandOptions = {
   prompt?: string | undefined
   /** `brain serve --detach` only: background the daemon instead of running it here. */
   detach?: boolean | undefined
+  /** `brain install-service` only: EnvironmentFile= for the generated systemd unit. */
+  envFile?: string | undefined
   /** Test seam. */
   fetchImpl?: typeof fetch | undefined
   /** Test seam. */
   runAgentFn?: typeof runAgent | undefined
   /** Test seam for `brain serve --detach`: never forks a real process in tests. */
   spawnFn?: SpawnFn | undefined
+  /** Test seam for `brain install-service`/`uninstall-service`: never shells out to a real systemctl/loginctl in tests. */
+  execFn?: ExecCommandFn | undefined
   /** Test seams for `brain stop`'s bounded poll: real 10s/200ms by default. */
   stopTimeoutMs?: number | undefined
   stopPollIntervalMs?: number | undefined
@@ -84,6 +90,28 @@ async function brainConnect(opts: BrainCommandOptions): Promise<void> {
     { label: t('field.account'), value: parsed.workspaceId },
   ])
   console.log(`  ${t('brain.savedTo', { path })}`)
+  console.log('')
+}
+
+/**
+ * Local-only: clears the three credentials `brainConnect` wrote, the same
+ * destructure-and-omit `sync.ts`'s `deleteWorkspaceData` uses to drop
+ * `syncWorkspaceId`/`syncSecret` (here all three, since disconnecting a brain
+ * is meant to fully forget it, not just its data). No API call — the brain
+ * has its own revocation, shipped separately in its dashboard Settings — so
+ * this only ever touches the local file and reminds the caller to revoke
+ * there too.
+ */
+async function brainDisconnect(): Promise<void> {
+  const config = loadGlobalConfig()
+  if (!config.syncUrl && !config.syncWorkspaceId && !config.syncSecret) {
+    printResult(t('brain.alreadyDisconnected'), [])
+    return
+  }
+  const { syncUrl: _url, syncWorkspaceId: _id, syncSecret: _secret, ...rest } = config
+  saveGlobalConfig(rest)
+  printResult(t('brain.disconnected'), [])
+  console.log(`  ${paint(t('brain.disconnectRevokeReminder'), AMBER)}`)
   console.log('')
 }
 
@@ -370,10 +398,56 @@ async function brainStop(opts: BrainCommandOptions): Promise<void> {
   printResult(t('brain.stopped', { pid: pidfile.pid }), [])
 }
 
+/**
+ * Writes and enables the systemd --user unit (D-lifecycle): must run inside
+ * the repo the daemon should serve, same as `brain serve` itself, since that
+ * repo's top-level path becomes the unit's WorkingDirectory.
+ */
+async function brainInstallService(opts: BrainCommandOptions): Promise<void> {
+  const repoRoot = tryGit(['rev-parse', '--show-toplevel'], opts.cwd)
+  if (!repoRoot) {
+    throw new Error(t('brain.serviceNotARepo'))
+  }
+  const result = installBrainService({
+    workingDirectory: repoRoot,
+    cwd: opts.cwd,
+    envFile: opts.envFile,
+    execFn: opts.execFn,
+  })
+  const rows: FieldRow[] = [
+    { label: t('brain.fieldUnit'), value: result.unitPath },
+    { label: t('brain.fieldWorkingDirectory'), value: result.workingDirectory },
+    { label: t('brain.fieldExecStart'), value: result.execStart },
+  ]
+  if (result.environmentFile) {
+    rows.push({ label: t('brain.fieldEnvironmentFile'), value: result.environmentFile })
+  }
+  printResult(t('brain.serviceInstalled'), rows)
+  if (result.lingerError) {
+    console.log(`  ${paint(t('brain.lingerFailed', { reason: result.lingerError }), AMBER)}`)
+  }
+  console.log('')
+}
+
+/** Idempotent: no unit file on disk is success, the same "nothing to do" doctrine `brainStop` already has for an absent pidfile. */
+async function brainUninstallService(opts: BrainCommandOptions): Promise<void> {
+  const result = uninstallBrainService({ execFn: opts.execFn })
+  if (!result.removed) {
+    printResult(t('brain.serviceNotInstalled'), [])
+    return
+  }
+  printResult(t('brain.serviceUninstalled'), [
+    { label: t('brain.fieldUnit'), value: result.unitPath },
+  ])
+}
+
 export async function brainCommand(opts: BrainCommandOptions): Promise<void> {
   switch (opts.action) {
     case 'connect':
       await brainConnect(opts)
+      return
+    case 'disconnect':
+      await brainDisconnect()
       return
     case 'status':
       await brainStatus(opts)
@@ -386,6 +460,12 @@ export async function brainCommand(opts: BrainCommandOptions): Promise<void> {
       return
     case 'stop':
       await brainStop(opts)
+      return
+    case 'install-service':
+      await brainInstallService(opts)
+      return
+    case 'uninstall-service':
+      await brainUninstallService(opts)
       return
     case undefined:
       console.log(t('brain.usage'))
