@@ -5,475 +5,253 @@
 [![node](https://img.shields.io/node/v/codesema)](https://nodejs.org)
 [![license](https://img.shields.io/npm/l/codesema)](LICENSE)
 
-**Review your merge requests locally, with the AI agent you already use.**
+**Local merge request review and an agentic workspace, driven by the AI agent CLI you already use.**
 
-Run one command on a branch: `codesema` computes the MR diff, hands it to **your** AI agent (Claude Code, Codex, Gemini, Grok, …), and opens a local web UI where the review appears live. You then read it like a guided tour: what to look at first, step by step, with findings pinned to the diff.
+codesema computes the diff of a branch, hands it to your agent CLI (Claude Code, Codex, Gemini, Grok, OpenCode), and opens a local web page where the review appears while it is being written. The same web UI can also give that agent work to do: each task runs in its own git worktree and branch, gets reviewed automatically when it finishes, and can be pushed as a merge request.
 
-- **Your agent, your subscription.** The review runs through the agent CLI you already pay for. No account, no API key, no cloud: everything happens on your machine.
-- **Zero runtime dependencies.** `npm install codesema` installs exactly one package, shipped unminified so you can audit the code that reads your diff.
+Everything runs on your machine. There is no account to create and no API key to provide: the review is produced by the agent CLI you already pay for. The npm package has zero runtime dependencies and is shipped unminified, so you can read the code that reads your diff.
 
-🌐 Website: **[codesema.com](https://codesema.com)** · 📦 npm: [`codesema`](https://www.npmjs.com/package/codesema)
+Website: [codesema.com](https://codesema.com) · npm: [`codesema`](https://www.npmjs.com/package/codesema)
 
 ## Quick start
 
 ```bash
-npx -y codesema            # opens the agentic workspace (web UI, see below)
-npx -y codesema review     # guided review of a local branch
+npx -y codesema            # opens the agentic workspace (web UI)
+npx -y codesema review     # reviews a local branch
 ```
 
-The review flow:
+On the very first run, a short wizard asks for the language, the agent CLI (auto-detected on your `PATH`), the model and the reasoning effort. The answers are saved globally and never asked again; `codesema config` changes them.
 
-1. **First run only**: a short wizard asks which agent CLI to use (auto-detected on your PATH), the model and the reasoning effort. Saved globally, never asked again; change it anytime with `codesema config`.
-2. **Pick a branch**: your local branches, sorted by last commit, arrow keys + type-to-filter.
-3. **The web UI opens immediately**: the review runs in the background and the page fills in live, diff stats first, then verdict, summary and findings as the agent writes them (true token streaming with Claude Code, best-effort with other agents).
+## Reviewing a branch
 
-Re-running on the same branch reviews **incrementally**: the agent gets the previous review plus the diff since it, and updates it (pass `--full` to review from scratch).
+`codesema review` picks a branch (interactive list, or `--branch`), detects the target branch, computes the diff and starts the agent. The web UI opens right away and fills in as the review is produced: diff stats first, then verdict, summary and findings.
 
-## Workspace
+The review is a guided reading of the merge request: an ordered walkthrough with a risk, a take and a check per step, findings typed by category (`security`, `perf`, `convention`, `design`, `praise`, `why`) and by severity (`critical`, `major`, `minor`, `info`), and a diff viewer with inline notes.
 
-`codesema` (or `codesema workspace`) opens a **local agentic workspace**: a web UI where you hand tasks to your AI agent in natural language. Each task is a conversation that **owns a git branch** and works in its own worktree (`.codesema/worktrees/<task-id>/`), so several tasks run in parallel without touching your checkout. The agent never commits: the runner commits the worktree at the end of each turn.
+Running the review again on the same branch updates the previous one with the diff since then. `--full` reviews from scratch.
 
-**Fork, or work on.** A conversation either **forks** a fresh branch (`codesema/task-<slug>`) from a base — the default — or **works on** an existing branch directly, keeping its name and its history. A forked branch starts from your prompt's slug, then the agent renames it on its first turn with a short descriptive name of its own (`codesema/task-update-workspace-docs`) — that name is what the merge request will show. `origin/x` and `x` are the same branch (a remote-only branch gets a local tracking head), and a branch can only be owned by one active conversation at a time: starting a second one on it opens the existing conversation instead. Abandoning a conversation removes its worktree and deletes the branch only when it forked it — a branch you asked it to work on is never deleted.
+From the page you can also:
 
-**Your uncommitted work stays yours.** A conversation starts from a **committed point** — the base branch it forks, or the tip of the branch it works on — recorded as its `baseline`. Your working tree is read, never touched: nothing is stashed, moved, copied or committed, and your uncommitted changes do **not** travel into the task's worktree. If you had any when the task started, the conversation says so on its first turn (how many files, and which commit the agent is starting from) rather than letting you assume otherwise. The end-of-turn review then measures `baseline..HEAD`: exactly what the agent did, and — on a conversation working on an existing branch — none of the commits that predate it. The anchor is set once, at the **first** materialization — the one where the conversation still has no worktree, so nothing can yet be on its branch — and rebuilding a worktree never moves it: a conversation whose worktree disappeared takes its **own branch** back — that is where its commits are — so the turns already committed stay inside the measured range. If that branch cannot be had (someone checked it out elsewhere, or it is gone), the conversation is re-forked on a new branch; it then says so out loud — naming the branch it left behind, and how many commits stay there when that branch still exists — and re-anchors on the new fork point, otherwise the base's own commits would be credited to the agent. The reverse is stated too: if somebody pushed to the conversation's branch while its worktree was gone, the rebuild counts those commits and names them, because they land _after_ the anchor and would otherwise be measured — and shipped — as the agent's own work.
+- work in **focus mode**: actionable findings on the left with checkboxes, the selected note and its code excerpt on the right, and a "copy selection for agent" button;
+- **run fixes**: the configured agent applies the findings you selected to your working tree;
+- browse the repository's open merge requests and local branches, with commits, changed files and per-file diffs computed by git alone;
+- start a review from that panel, in a disposable worktree, one at a time;
+- edit `.codesema/RULES.md` and toggle auto-sync.
 
-**One workspace drives several repos.** Launched from inside a git repository, that repo is auto-registered as a project and becomes the current one; launched from anywhere else, the workspace opens on the projects you already registered (add more from the UI, by path, or pick one of the repos it finds next to your launch directory). The registry is a small global file (`~/.config/codesema/projects.json`) mapping stable ids to repo roots — each repo keeps its own tasks and worktrees under its own `.codesema/`, so removing a project only unregisters it and never touches the repo. Concurrency follows one rule: **one active task per repo**. Projects advance side by side (three registered repos can each be working), while a second conversation on the same repo waits its turn in that repo's own queue — `<repo>/.codesema/queue.json`, ordered, on disk, so it survives a Ctrl-C and picks back up at the next boot. Each waiting card shows its rank in the line, refreshed as the line moves. A repo stays busy until the turn's **automatic review** has given its verdict, not just until the agent stops talking: the review is another agent on the same branch, so the next conversation starts after `review_ok`/`review_ko`. That per-repo rule counts **active tasks**, not raw machine load: a second repo's turn is never blocked merely because a first one exists. Machine load — the checks container of a finished turn, the review agent, the agent turns themselves, confounded — is capped **separately and workspace-wide** by `maxConcurrentAgents` (see [Workspace keys](#workspace-keys) below): a task whose own repo is free can still wait its turn if every one of that shared budget's slots is taken by something running elsewhere.
+### Dual review
 
-**The UI is two menus and one stage.** A category rail, 215px and collapsible to a strip of icons, switches between **Conversation** and **Repository**, with a settings entry pinned to its foot. Under **Conversation**, the resizable list column next to it carries a search box and every conversation across every registered project, grouped under the project it belongs to and ordered inside each group by who is holding it up: the ones needing you first (a question to answer, a blocked review, a conversation stopped mid-turn), then the ones the machine is working on, then the ones ready to ship, then the finished pile — most recently active first on a tie. A button at the top starts a new one. Under **Repository**, that same column lists the repositories you registered and the ones codesema finds next to your launch directory, one click away from being registered, plus a field to add one by path. Past the rail and the list, one content zone shows exactly one thing at a time — the open conversation, the draft in progress, a repository's own view, or a review in full screen — never several side by side. Each conversation has **Conversation**, **Diff** and **Checks** tabs, quick-reply buttons extracted from the agent's own question, and a reply field that parks your message while the agent runs and sends it the moment the turn ends.
+`codesema review --dual` runs two reviewers in parallel with the same agent under two angles: one reads the merge request for the big picture and writes the walkthrough, the other hunts for bugs, regressions, security issues and edge cases and reports findings only. A judge, on the same provider's mid-tier model, then keeps, merges or rejects each finding; security findings are never rejected. Findings raised by both reviewers carry a consensus badge. It costs roughly two reviews plus a cheap judge pass.
 
-**A repository's own view has three tabs.** **Branches** — the one you land on — opens with four tiles (branch count, worktrees, active conversations, conversations needing you) above a table with one row per local branch and one per detached-HEAD worktree: whether a worktree is checked out, the branch name and its last commit, an open merge request, the conversations attached to it, and how long ago it last moved. Expanding a row opens one of those conversations, or starts a new one on that branch. A branch codesema forked for a conversation (`codesema/task-*`) never gets a row of its own — it already appears as a conversation under its base. **Issues** and **Merge requests** list the forge's own issues and merge requests for the repository.
+### CI gate
 
-**Starting a conversation no longer guesses a repository.** The **+** button always opens a fresh conversation with no repository attached — no branch, no worktree — and you attach one afterward, from the conversation itself; it used to target your first registered repo and fork its current branch instead. To start on a specific branch from the outset, use that repository's Branches table.
+`codesema review --fail-on <level>` runs the review once and exits `2` as soon as a finding sits at or above `<level>` (`critical`, `major`, `minor`, `info`), or when the reviewer requests changes (`--fail-on request_changes`). With this flag the browser is never opened, and the server stops as soon as the review ends. The branch picker is also skipped whenever stdin is not a terminal.
 
-A task moves through explicit statuses: `queued` → `running`, then `waiting_for_you` when the agent ends its turn on a question (reply to start the next turn), or — when a turn finishes with changes — `reviewing`: every finished turn passes an **automatic local review** (the same review engine as `codesema review`, on the task's branch) before anything leaves your machine, landing on `review_ok` or `review_ko`. A `review_ko` does not go straight back to you: the workspace chains an **automatic fix turn** on what the review blocked — its findings, or the acceptance criteria it judged unsatisfied — re-reviews it, and repeats up to **`maxAutoFixRounds`** times (default **2**). Each round is the ordinary "fix the findings" turn, so it queues under the machine cap, runs under the watchdog, and is committed by codesema and not by the agent. Once the bound is spent the task sits in **Needs you** saying which of the two still blocks it — never `failed`, and never a loop that keeps going against an agent that changes nothing. A reply of your own gives it a fresh budget, and the card says so, because a parked task no longer ships: **Ship** refuses it and names that way out. A round that never _started_ is the opposite case and parks nothing: a review that crashed before archiving anything, or a journal codesema could not read (so the budget already spent is unknown), leaves the conversation on `review_ko` — still yours to assume and ship — with a line saying why no automatic round was attempted. **Ship** then pushes the branch and opens the MR via `gh`/`glab` (status `shipped`); per-task **auto-ship** chains it without a click on a green review. `failed` and `interrupted` round out the lifecycle: a task whose turn was cut short (Ctrl-C, crash, **Stop**) keeps its worktree and its session, and sits in **Needs you** with a **Resume** button that restarts the very turn it died on — same instruction, no extra turn, the Claude session picked back up with `--resume` when there is one. Nothing that already ran restarts on its own: an agent that writes code and commits does not come back to life just because you started the workspace. A task that was only _waiting_ is untouched by a shutdown — it stays `queued`, keeps its place in the repo's queue, and the next boot simply resumes the line. When the last turn had already answered there is nothing to redo, so the conversation says so instead of offering a button. A task whose worktree disappeared behind codesema's back is rebuilt rather than refused: the rebuild checks the conversation's **own branch** back out, so its commits, its anchor and its review range are all where they were. Only a branch that is gone too — or taken by another checkout — leaves nothing to come back to, and that case is said out loud rather than papered over.
+## Agentic workspace
 
-**Checks run in a sandbox.** Alongside the review, every turn that commits runs the repo's typecheck, tests and lint in an ephemeral `docker`/`podman` container mounted on the task's worktree, with `--network none` and cpu/memory caps. The plan comes from your `checks` key in `.codesema/config.json` if you wrote one, otherwise from what the repo already declares — lefthook's `pre-push`/`pre-commit` hooks or its CI workflow jobs, filtered through a strict command allowlist — otherwise from the lockfile and the `typecheck`/`test`/`lint` scripts of `package.json`. If none of that fits, the Checks tab can ask your agent to _propose_ a configuration: it runs read-only on files codesema hands it, its JSON answer is sanitized, and nothing is written until you click Apply. Checks never block a task; they are a second opinion next to the review, visible in the tab and on the ready-to-ship card.
+`codesema` (or `codesema workspace`) opens a local web UI where you describe tasks in plain language and your agent does them.
 
-**Each task can run in its own container.** With `docker` or `podman` installed, the workspace cages every task by default: the turn runs inside a container built from your `.devcontainer` (or `node:26`), with the worktree as its only writable host mount, the repo's git directory mounted read-only so the agent can read its diff, log and status without being able to rewrite a single ref, its own `$HOME` volume so the agent session survives across turns, and an internal network whose only exit is a proxy allowing the agent's own API domains. Inside that box the agent keeps its full tool set — the container is the boundary, not a permission prompt. Commits stay on the host, so your git credentials never enter it, and the review and the checks remain independent counter-verification. The mode is decided once at startup and printed: `isolation` set to `container` makes the cage mandatory (a task refuses to start without it), `policy` always runs on your machine with the host hardening, and `auto` (the default) falls back to `policy` while telling you why. Only `claude` is caged today; the allowed domains are yours to change with `isolationAllowedDomains`.
+**One task, one branch, one worktree.** A task either forks a fresh branch from a base or works on an existing branch. It runs in `.codesema/worktrees/<task-id>/`, so your own checkout and your uncommitted changes are never touched. The agent does not commit: codesema commits the worktree at the end of each turn.
 
-There are no named agent roles: every task gets the same anonymous dev agent with a neutral prompt — you define your workflow in the tasks you write, the tool stays out of the way.
+**Several repositories, one workspace.** Launched inside a git repository, that repository is registered as a project. More can be added from the UI. Projects advance side by side, but a repository runs one active task at a time; the others wait in that repository's own queue (`.codesema/queue.json`), which survives a restart. Total machine load is capped separately by `maxConcurrentAgents` (default 4).
 
-Tasks live as long as the process runs (no detached daemon). The first Ctrl-C shuts down cleanly — agents stopped, the turns that were in flight persisted as `interrupted`, worktrees kept for resume, and a review already under way stopped like any other agent (its conversation lands in **Needs you** as `interrupted`, never on a verdict nobody produced) — and a second one force-quits. A shutdown that takes more than a moment says on the terminal what it is still waiting for, and it never waits forever: past 30 seconds it stops waiting, says which conversations it left as they stand on disk, and exits. The next start names those on the terminal and shows them in **Needs you**, one click away from resuming; the tasks that were merely _waiting_ stay `queued`, and the queue restarts as the last, announced step of the boot — once the server is listening and Ctrl-C is armed, so a resumed turn can be watched and stopped. Coming from a version older than the queue file, a `queued` task has no queue to prove it was ever scheduled: it becomes `interrupted` and waits for you in **Needs you** instead of an agent starting by surprise on your first boot. Task state (record, append-only event journal, latest checks run) is stored under `.codesema/tasks/<id>/` of the task's repo, and the waiting line in `.codesema/queue.json` next to it.
+**Every finished turn is reviewed.** A turn that produced commits goes through the same review engine as `codesema review`, on the task's branch, before anything leaves your machine. A blocked review triggers an automatic fix turn, re-reviewed, up to `maxAutoFixRounds` times (default 2). Past that the task waits for you and says which of the findings or the acceptance criteria still blocks it. Replying gives it a fresh budget.
+
+**Checks run in a sandbox.** Alongside the review, typecheck, tests and lint run in an ephemeral `docker` or `podman` container mounted on the task's worktree, with `--network none` and cpu/memory caps. The plan comes from your `checks` key, otherwise from what the repository already declares (lefthook hooks, CI workflow jobs, filtered through a command allowlist), otherwise from the lockfile and the `typecheck`/`test`/`lint` scripts of `package.json`. Checks never block a task: they are a second opinion next to the review.
+
+**Tasks can be caged.** With a container runtime available, a task runs inside a container built from your `.devcontainer` (or `node:26`): the worktree is the only writable host mount, the git directory is mounted read-only, and the only network exit is a proxy restricted to the agent's own API domains (`isolationAllowedDomains`). Commits stay on the host, so your git credentials never enter the container. `isolation` picks the mode: `auto` (default, falls back to host hardening and says why), `container` (mandatory) or `policy` (always on the host). `claude` and `opencode` are cageable today.
+
+**Statuses.** A task moves through `queued`, `running`, `waiting_for_you` (the agent ended its turn on a question), `reviewing`, then `review_ok` or `review_ko`, then `shipped` once the branch is pushed and the merge request opened via `gh`/`glab`. `interrupted` covers a turn cut short by Ctrl-C, a crash or the Stop button: the worktree and the agent session are kept, and a Resume button restarts that exact turn. Nothing restarts by itself at the next boot.
+
+**Merging.** The workspace does not merge on its own unless you ask it to: `mergePolicy` defaults to `human`. Task state lives under `.codesema/tasks/<id>/` in the repository it belongs to.
 
 ## Brain mode
 
-A **brain** is a small local SaaS that owns a backlog of tickets for a repository: standing up one and pointing a workspace at it turns `codesema workspace` into a hands-off loop — the brain proposes work, the workspace codes it, ships it, reviews it and merges it, reporting every transition back.
+A brain is a small local service that owns a backlog of tickets for a repository. Pointed at one, the workspace runs a hands-off loop: the brain publishes tickets, the workspace codes them, ships them, reviews them and reports every transition back.
 
 ```bash
-codesema brain connect --url http://localhost:3000 --token csk_<workspaceId>.<secret>   # same account/credentials as `codesema sync`
-codesema brain status                          # url, account, this repo's remote, ready ticket count
-codesema brain ticket --issue 42                # draft + publish a ticket from a forge issue
-codesema brain ticket --title "…" --prompt "…"  # draft + publish a ticket from a free-form prompt
-codesema workspace --brain                      # the workspace, plus the brain daemon in the same process
-codesema brain serve                            # alias for the line above
+codesema brain connect --url http://localhost:3000 --token csk_<workspaceId>.<secret>
+codesema brain status                            # brain, account, this repo, ready ticket count
+codesema brain ticket --issue 42                 # draft and publish a ticket from a forge issue
+codesema brain ticket --title "…" --prompt "…"   # same, from a free-form prompt
+codesema workspace --brain                       # workspace plus the brain daemon, same process
+codesema brain serve [--detach]                  # alias for the line above
+codesema brain stop                              # stops a detached daemon for this repo
 ```
 
-`brain connect` stores the token in the same global config credentials `codesema sync`/`codesema link` already use (`~/.config/codesema/config.json`, owner-only permissions): a brain and a sync workspace are the same account. `brain ticket` runs the configured agent once, off the interactive workspace, to write a ticket body in the grammar the brain requires (`**Context**`, `**Goal**`, `**Scope**`, `**Acceptance criteria**` as `WHEN … THE SYSTEM SHALL …` lines, `**Out of scope**`); a body the lint rejects gets one retry with the lint's own reasons folded back into the prompt before the command gives up.
+A brain and a sync workspace are the same account: `brain connect` stores its token next to the `codesema sync` credentials. `brain ticket` runs the configured agent once, outside the workspace, to write the ticket body in the grammar the brain requires; a body the lint rejects gets one retry with the lint's reasons folded into the prompt.
 
-With `--brain`, the workspace additionally polls the brain in the background — still no detached process, just another loop inside the same one `codesema workspace` already runs: it drafts and submits any ticket request waiting on this repo, and — once the workspace has no task already running here — claims the next published ticket and hands it to the very same task manager the web UI drives, exactly as if you had typed the prompt yourself. The claim is kept alive with a heartbeat every 45 seconds; a report the brain could not reach (a network blip, a 5xx) is queued and replayed on the next tick rather than lost. Auto-merging a brain ticket's task once it ships clean is controlled by `brainAutoMerge` (on by default, `codesema config`), independent of the repo's own `mergePolicy`.
+With `--brain`, the workspace polls the brain in the background, drafts the ticket requests waiting on this repository and, when no task is already running here, claims the next published ticket and hands it to the same task manager the UI drives. Reports the brain could not receive are queued and replayed. Auto-merging a brain ticket's task once it ships clean is controlled by `brainAutoMerge` (on by default), independently of `mergePolicy`.
 
-## Dual review
+## Working without a forge
 
-`codesema review --dual` (or "Dual review" in the menu) runs the review twice in parallel with the agent you already use, under two different angles: the **reviewer** reads the MR for the big picture and writes the guided narrative, while the **prosecutor** hunts for what breaks — bugs, regressions, security, edge cases — and reports findings only. A **judge** on the same provider's mid-tier model then adjudicates every finding: kept, merged as a duplicate, or rejected with a one-line reason. Security findings can never be rejected.
-
-The live UI shows both phases: the two reviewers face to face with a per-file consensus map (files both lanes flag light up as hot zones), then the deliberation where each decision resolves in real time. In the final review, findings raised by both reviewers carry a **consensus** badge — the strongest signal a finding deserves your attention. Cost: roughly two reviews plus one cheap judge pass; the display itself consumes zero extra tokens.
-
-## How it works
-
-```
-┌──────────────┐  prep   ┌───────────────────────┐  review   ┌───────────────────────┐  live SSE
-│ local branch │ ──────► │ .codesema/input.json  │ ────────► │ .codesema/review.json │ ─────────► local web UI
-└──────────────┘  (CLI)  └───────────────────────┘ (your AI  └───────────────────────┘ (opened before
-                                                     agent)                             the review ends)
-```
-
-1. **prep** detects the target branch (via `glab`/`gh` if an MR/PR exists, else `origin/HEAD`, else nearest merge-base among develop/main/master) and computes the MR diff.
-2. **Your agent** reviews the diff like a senior reviewer and writes a structured review: prologue, ordered steps with risk/take/check, typed findings (security/perf/convention/design/praise/why), and what to review first.
-3. **The local web UI** shows the review in progress, then switches to the full experience: guided step-by-step reading, split/unified diff with inline notes, file tree, read/checked progress.
-
-## In the review UI
-
-Beyond the review itself, the page opened by `codesema review` drives the whole loop:
-
-- **Focus mode**: a problems-first view — actionable findings with checkboxes on the left, the selected note and its code excerpt on the right, previous/next stepping, and "Copy selection for agent" scoped to what you checked.
-- **Run fixes**: asks the configured agent to apply the selected findings to your working tree (headless run with edit tools, warning when the branch moved since the review).
-- **Merge requests and branches sidebars**: the repo's open MRs (via `gh`/`glab`) and your local branches, each opening a detail panel with title, branches, commits and changed files.
-- **Preview**: the detail panel shows commits, changed files with +/- and a per-file diff, computed by git alone — no agent, no tokens.
-- **Run review / Run dual review** from that panel: the review runs in a disposable `git worktree` (removed afterwards, success or failure), archives into the main repo's `.codesema/reviews/` and streams into the same live UI. One review at a time; the sidebar marks which MR or branch is running.
-- **Repo settings**: edit `.codesema/RULES.md` and toggle auto-sync without leaving the page.
-
-## Privacy
-
-Everything runs on your machine. The MR diff, the prompt and the review are written under `.codesema/` and never leave your computer: the review itself is produced by the agent CLI you run locally, not by a codesema.com service.
-
-Two things do talk to codesema.com, both gated. The first is `codesema sync`: that command uploads the review record (**including the diff**) to a codesema.com workspace, and only after you confirm on first run. After a successful sync it offers, once, to also push every future completed review automatically; nothing is pushed automatically unless you accept, and the `codesema config` menu turns it on or off anytime. Your absolute local repo path is stripped from the payload; only the review, diff, commit subjects and the origin remote URL are sent. `codesema sync delete` erases everything.
-
-The second only exists once a workspace is linked: `codesema review` then asks that workspace for the repo's server context (conventions, learned rules, facts) and hands it to the agent alongside the diff. It is a read-only `GET`, authenticated with the stored workspace credentials, sending only the `origin` remote URL to resolve the repo — no diff, no code. Without stored credentials or an `origin` remote there is no request at all, and any failure (offline, unlinked workspace, malformed answer) silently degrades to no context: the review runs unchanged. `.codesema/RULES.md` stays local and always wins.
-
-Before uploading, sync scans the diff for anything that looks like a committed secret (dotenv files, private keys, and AWS/GitHub/Slack/Google/Stripe/OpenAI/Anthropic credentials) and refuses to send it. Fix the diff, or pass `--force` once you have checked.
-
-The review subprocess is locked down. The prompt already contains everything the agent needs (branch names, commit subjects, changed files, the diff), so `codesema review` runs the known agent CLIs with their tools switched off: `claude` gets `--tools "" --strict-mcp-config --setting-sources user` (no tools, no MCP servers, the repo's own `.claude/` settings ignored), `codex` gets `--sandbox read-only --ask-for-approval never` with `AGENTS.md` loading disabled, `grok` gets `--deny '*'` — a permission rule rather than a tool list, because an empty or unknown `--tools` value leaves every tool reachable while the rule refuses the shell and the file tools alike — and `opencode` is hardened through `reviewAgentEnv`, which injects `OPENCODE_CONFIG_CONTENT` denying every permission on the default `build`/`plan` agents and pinning `default_agent` to `build` so a repo `opencode.json` cannot re-enable tools via a custom-named agent. Grok still reads the repo's `AGENTS.md`/`CLAUDE.md` and offers no flag to stop it, so there the hardening buys the absence of execution, not the absence of injected instructions. Known agents also receive a minimal environment — `PATH`, `HOME`, locale, proxy settings and the provider's own variables — so your other credentials and tokens never reach the subprocess. Flags you set yourself and custom agent commands are left untouched, and "Run fixes" intentionally keeps the edit tools it needs.
-
-Workspace tasks are the opposite case — they exist to edit code — so they are contained instead: in a container when one is available, and otherwise on the host with `--strict-mcp-config --setting-sources user`, so a turn that writes a `.claude/settings.json` or `.mcp.json` into its own worktree cannot have it loaded by the next turn. A custom agent command gets none of this and says so at startup.
-
-## Without a forge
-
-**Decision D9, and this is where it is answered** — the same answer applies to a repo that has no remote at setup (D37). Without an `origin` remote, without `gh`/`glab`, or offline, codesema keeps working; it simply stops pretending it can do the things that need a forge, and **names** each one it cannot.
-
-**Still available**
-
-- Creating a conversation from a **title and a prompt** — the whole 0.12 path, unchanged. It reads no forge, and a repo with no remote is not a degraded repo for it.
-- Running that conversation: turns, replies, interrupt/resume, checks, the local review, the diff — none of it involves a forge.
-- A conversation **already bound to a ticket** carries on. Its ticket body and acceptance criteria were frozen in `issue_snapshot` when it was created, and that frozen copy is the **only** local cache of the degraded mode: it is read, never rewritten, and no other issue cache is written anywhere. The task is never blocked because the issue could not be re-read.
-- The workspace **says so**: the header shows "Forge unavailable" with the reason — no origin remote, no `gh`/`glab` installed **that this repo could use**, or the CLI you have did not answer. The answer is about _this_ repo: a machine with only `gh` is "no forge CLI" for a GitLab origin, because that is the CLI codesema would actually have to launch there.
-
-**Not available, and refused rather than faked**
-
-- **Binding an issue.** Creating a conversation _from_ an issue is refused with its reason, and leaves nothing behind: no record, no branch, no worktree, no queue entry.
-- **Posting a recap.** Shipping a conversation is refused outright when there is no remote to push to. When a remote exists but the machine cannot reach it — DNS, a refused or timed-out connection — the push is refused and named `offline`. When a remote exists, the push lands, and no forge CLI can open the merge request, the branch is still pushed and the answer says the merge request has to be opened by hand — it is never reported as opened.
-- **Merging.** There is nothing offline about the merge: it does not happen.
-- **Nothing is queued for later.** codesema keeps no pending write to replay when the forge comes back — a deferred write is a promise it cannot keep. And nothing restarts on its own when the forge answers again: the next step is always a human's.
-
-Each refusal carries the reason code `forge_unreachable` next to the readable message it already produced (never in its place), with the motif verbatim: `no-remote`, `no-cli`, `cli-error` — or `offline` for a push that never reached the host. `no-cli` ("install `gh` or `glab`") and `cli-error` ("the one installed here failed") stay distinct all the way to the UI. The rule itself lives in one place in the code, `packages/cli/src/degraded-mode.ts`, so it cannot quietly drift.
-
-What is **not** coded is just as deliberate. `forge_unreachable` is a _retryable_ reason, so it is claimed only for failures where nothing on the other side answered: the recognised phrases are the ones libcurl and OpenSSH print (`Could not resolve host`, `Failed to connect to`, `Connection refused`, `Connection timed out`), never git's own wrapper — git translates its sentences, and `unable to access …` covers an HTTP 403 just as much as a dead network. A push rejected non-fast-forward, refused by a hook, or turned away by authentication keeps git's own message and carries **no** reason code: a wrong code is worse than none, because that is what a resume decision is read from. Likewise, a repo codesema could not read at all (no `git`, an unreadable path) is reported as _unknown_, never as "no remote".
+Without an `origin` remote, without `gh`/`glab`, or offline, codesema keeps working and names what it cannot do. Creating and running a conversation, its turns, checks, review and diff need no forge. Binding an issue, posting a recap and merging are refused with a reason (`no-remote`, `no-cli`, `cli-error`, `offline`) rather than faked, and nothing is queued to be replayed later. A conversation already bound to a ticket carries on from the copy of the issue frozen when it was created.
 
 ## Requirements
 
-- Node.js ≥ 20 and `git`
-- An AI agent CLI: `claude` (Claude Code), `codex` (OpenAI), `gemini` (Google), `grok` (xAI) and `opencode` (OpenCode) are auto-detected; anything else works via the "Custom command" wizard option or `--agent '<cmd>'`. A CLI that cannot read its prompt from stdin at all takes it as a **file**: put `{promptFile}` where the path goes and codesema writes the prompt to a private temp file, substitutes its quoted path and deletes it when the run ends — that is how `grok` is run (`grok --prompt-file {promptFile}`)
-- Optional: `glab` or `gh` on the PATH, to auto-detect the target branch from the open MR/PR (and to list MRs and ship from the workspace)
-- Optional: `docker` or `podman`, for the workspace's sandboxed checks and per-task container isolation (without one, checks report they cannot run and tasks fall back to the host hardening)
-
-## Configuration
-
-```bash
-npx -y codesema config
-```
-
-Interactive: language → agent → model → effort, then where to save. Two levels, field by field:
-
-| Level  | File                             | When                                    |
-| ------ | -------------------------------- | --------------------------------------- |
-| Global | `~/.config/codesema/config.json` | Your default, every repo (onboarding)   |
-| Repo   | `.codesema/config.json`          | Team/project override, wins over global |
-
-CLI flags always win over both. `target`, `port`, `timeout` and `language` can also be set in either file.
-
-### Workspace keys
-
-| Key                         | File            | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentAgents`       | **global only** | Machine-wide load cap (default **4**): the most agent turns, end-of-turn reviews and checks runs — confounded in one budget — this workspace runs at once, across every registered project. The workspace still runs at most one **active** task per repo (queued the rest in `<repo>/.codesema/queue.json`); this is the SECOND, cross-project cap on top of that. A `.codesema/config.json` that sets it is **ignored with a warning**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `maxParallelTasks`          | **global only** | **Deprecated**, kept as an alias of `maxConcurrentAgents`: still read and honored from the global file, never silently dropped, but a boot that finds it set says so and names its replacement. When both keys are set, `maxConcurrentAgents` wins the value. A repo file that sets it is ignored with a warning, same as `maxConcurrentAgents`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `isolation`                 | global or repo  | `auto` (default), `container` (required, a task refuses to start without it) or `policy` (always run on the host). Resolved **per project**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `isolationAllowedDomains`   | global or repo  | Domains the caged agent may reach (default `api.anthropic.com`, `platform.claude.com`); max 32, plain hostnames only. Resolved **per project**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `timeout`                   | global or repo  | Last-resort turn ceiling in seconds. Resolved **per project**. `--timeout` on `codesema workspace` wins over both files for every project.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `agent`                     | global or repo  | Agent command. A repo-provided command is used only for that repo, and only after TOFU approval (`codesema review`). Resolved **per project**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `checks`                    | repo only       | `{ image, install, commands, network, timeoutSeconds }` — replaces the automatic detection of the sandboxed checks. Re-read on every checks run and every caged turn: a Checks-tab Apply is picked up without restarting the workspace.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `watchdogInactivitySeconds` | global or repo  | Silence, **tools aside**, past which a task's agent is considered dead and killed (default `1800`, 30 min). Resolved **per project**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `watchdogToolBudgetSeconds` | global or repo  | How long a tool may stay in flight before the agent is considered stuck (default `7200`, 2 h). The inactivity count is suspended while a tool runs. Resolved **per project**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `watchdogHeartbeatSeconds`  | global or repo  | Period of the liveness beat that tells a long task from a dead one (default `30`). Resolved **per project**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `reviewMode`                | global or repo  | Which flow the **end-of-turn review** of a task runs: `simple` (one reviewer, the default) or `dual` (two independent reviewers plus a judge). Resolved **per project**; a value outside the enum is dropped and `simple` stands. `dual` doubles the review agents, so it queues under `maxConcurrentAgents` rather than oversubscribing the machine.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `maxAutoFixRounds`          | global or repo  | How many **automatic fix turns** a task chains after a blocking end-of-turn review before it is handed back to you (default **2** — the answer to D14). Each round is the ordinary "fix the findings" turn, queued through the normal path: it takes a slot of `maxConcurrentAgents`, runs under the watchdog, and the runner commits it. At the bound the task lands on **needs-you** carrying `review_blocked` or `criteria_unmet`, never `failed`, and stops being shippable until you answer it; a reply of your own renews the budget. A round the loop could not even start (a crashed review, an unreadable journal) leaves the task on `review_ko` instead, shippable as before. Only an integer >= 1 is honoured — anything else (absent, `0`, negative, not a number) falls back to the default, without an error. Resolved **per project**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `taskRetentionCount`        | **global only** | How many of the most-recently-updated TERMINATED (shipped/failed) tasks are kept **per project**; the rest are purged — worktree, HOME volume, and the task's own `.codesema/tasks/<id>/` directory — at every boot (default `20`). Active and `interrupted` (resumable) tasks are never candidates, whatever this is set to; `0` purges every terminated task at the next boot. The worktree removal runs `git worktree remove --force`, which discards uncommitted content rather than refusing on it — a turn whose commit failed (missing git identity, a rejected hook) leaves real work sitting there. Retention checks first: a worktree carrying uncommitted changes is **kept, not purged**, and named in the boot notices instead (`worktree kept, it carries N uncommitted change(s)`); only a clean worktree is ever force-removed by this pass. That check overrides `status.showUntrackedFiles` and `diff.ignoreSubmodules`, so setting either does not blind it. A worktree git **refuses** to remove (a `git worktree lock`, a file owned by root) leaves its task fully in place — record included — and is retried at the next boot, rather than being counted as purged. One pass applies ONE count to **every** registered project, so the resource it governs is the workspace, not the repository: a `.codesema/config.json` that sets it is **ignored with a warning**, and the effective count stays the one in `~/.config/codesema/config.json`. |
-| `mergePolicy`               | **global only** | Whether the workspace ever merges a task's branch by itself once D12's four conditions hold: `auto`, or `human` — the **default**, which evaluates and journals the same four conditions and then stops before the call. Global by construction: "may this tool merge without me" is a statement its owner makes, so a `.codesema/config.json` that sets it is **ignored with a warning**. A value outside the enum falls back to `human` and is named at boot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `mergeStrategy`             | **global only** | `merge`, `squash` or `rebase`. **Absent by default, and that is a value**: no strategy option is passed to `gh`/`glab` at all, so the repository's own merge convention applies. See the `gh`/`glab` asymmetries below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `deleteBranchAfterMerge`    | **global only** | Whether the branch is deleted on the forge once the merge lands. Default **`false`**: a branch is a deliverable, not processing waste.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `allowMergeWithoutChecks`   | **global only** | Explicit, prior consent to merge automatically on a repository that legitimately configures **no** checks. Default **`false`**. It covers `unconfigured` and nothing else — never a broken checks runtime.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-
-| `forgeCycleLabels` | global or repo | **Opt-in, off by default** (decision D15): mirror the cycle of this project's tasks onto the forge issues they are bound to, as `codesema:*` labels. Resolved **per project**, so a repo `false` overrides a global `true`. See [Cycle labels on the forge](#cycle-labels-on-the-forge-opt-in). |
-
-`isolation`, `isolationAllowedDomains`, `timeout`, `agent`, `reviewMode`, `maxAutoFixRounds`, `forgeCycleLabels` and the three `watchdog*` keys are resolved **per project** (`resolveProjectConfig`): CLI flags > that repo's `.codesema/config.json` > `~/.config/codesema/config.json`. `checks` is repo-only and re-read on every run (`readChecksConfig`). Launching the workspace from repo A no longer copies A's isolation, timeout, allowlist or agent onto repo B. A task's `isolation` is decided at creation and then immutable: changing the project's config never rewrites a record that already exists. Seven keys stay **global-only by construction**. Three because what they bound is the machine or the whole workspace rather than one repository — `maxConcurrentAgents`, its deprecated alias `maxParallelTasks`, and `taskRetentionCount` — and four because they are a **consent**, which belongs to whoever runs the workspace and not to a repository they cloned: `mergePolicy`, `mergeStrategy`, `deleteBranchAfterMerge` and `allowMergeWithoutChecks`. A repo file that sets any of them is ignored **and named at boot** — never dropped in silence. Sync fields stay global-only too, silently (they are credentials).
-
-The watchdog measures **life, not duration**: the last frame the agent's stream produced, and whether a tool is still out. It watches both paths a turn can take — on the host and inside the container cage. `timeout` stays as the last-resort absolute ceiling under it, never as the thing that detects a dead task; on task turns that ceiling is automatically raised above the watchdog budgets, because a ceiling below them would fire first and cancel the watchdog outright.
-
-A task the watchdog kills is left **`interrupted`, not `failed`**: `inactivity_timeout` says the _run_ has to change, not the work on the branch, so the conversation stays resumable — its worktree, its branch and its commits are kept, and **Resume** re-runs the very turn that was cut. While a turn runs, its record carries a `heartbeat_at` stamp refreshed every heartbeat period: that is what tells a task deep inside a forty-minute tool call from one whose agent has died.
-
-### Merging (D12 / D13)
-
-Once a task ships, the workspace evaluates **four conditions**, in this order,
-and journals each of them **one by one — satisfied or not**, so that "checked
-and it passed" is never confused with "never checked":
-
-1. **the code review passed** — the archived end-of-turn verdict, with T3.3's
-   guard-rail: an `approve` still carrying an unresolved `critical` or `major`
-   finding is escalated to `request_changes` and opens nothing;
-2. **the repository's checks are green** — `passed`, strictly (see below);
-3. **every acceptance criterion is satisfied** — the per-criterion verdicts the
-   review archived, and a task with no criteria never merges by itself;
-4. **the branch is up to date with its target** — a **local** git ancestry
-   check, never a question to the forge. A stale `fetch` therefore yields a
-   cautious `branch_diverged` rather than an optimistic merge.
-
-No verdict, score or percentage produced by the agent enters that conjunction.
-If a condition is missing, the refusal carries the **first** missing one, in the
-order above, so the message is stable and reproducible for the same task.
-
-**`mergePolicy` is `human` by default**: the four conditions are evaluated and
-journaled exactly as under `auto`, no merge command is issued, and no status
-moves. That is not a degraded mode — it is what lets you watch the gate decide
-before authorizing it. Under `auto`, anything short of a completed merge lands
-the task on **needs-you** with its reason; a landed merge leaves it `shipped`
-and says so in the journal.
-
-**Ready ✓ / auto-merge ✗ — the asymmetry is deliberate.** A checks run that ends
-`unconfigured` (this repo configures none) or `error` (no container runtime, or
-an engine failure) does **not** block the "ready to merge" state: those are
-named degradations you are shown and can act on. They **do** block the automatic
-merge, under the reason code **`checks_unavailable`** — whose `detail` is
-`unconfigured`, `runtime_error` or `no_run` — and never under `checks_failed`,
-which would tell you your checks are red when they never ran. Two different
-gates, because one shows a human a state and the other takes an irreversible
-action.
-
-Three ways out, and the refusal message names the applicable ones: configure
-checks for the repository, set `mergePolicy` to `human` and merge by hand, or —
-for `unconfigured` **only** — set `allowMergeWithoutChecks: true`. That valve is
-a consent, so it is prior and explicit; it never covers a broken runtime, which
-is a machine condition nobody consents to in advance. When it applies, the
-condition is journaled as satisfied **by consent**, not as green.
-
-**A task with no validated criteria never merges by itself**, under the reason
-code **`criteria_missing`**, whose `detail` is `absent` or `pending_validation`.
-"Every criterion is met" is vacuously true of an empty list, and that is exactly
-the reasoning a merge must not make: a task nobody wrote criteria for is a task a
-human still owes a word on. `criteria_unmet` stays reserved for verdicts the
-gate actually returned. Nothing about the turn review changes for such a task.
-
-**A conflict is never resolved automatically.** The forge's refusal comes back
-as `merge_conflict`, the task waits for you, and the branch and worktree are
-left exactly as they are — no rebase, no reset, no deletion.
-
-**`gh` / `glab` asymmetries**, documented rather than papered over:
-
-|                   | `gh` 2.46               | `glab` 1.53                                                                                                                                                                        |
-| ----------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| merge commit      | `--merge`               | _no flag exists_ — the project's configured method applies                                                                                                                         |
-| squash / rebase   | `--squash` / `--rebase` | `--squash` / `--rebase`                                                                                                                                                            |
-| delete the branch | `--delete-branch`       | `--remove-source-branch`                                                                                                                                                           |
-| non-interactive   | default                 | `--yes`, plus `--auto-merge=false` — its `--auto-merge` defaults to **true**, which would register the MR for a later merge and report success for something that has not happened |
-
-With no `mergeStrategy` set, no strategy option is passed at all. On GitHub, a
-repository with several merge methods enabled will then refuse a
-non-interactive merge and `gh` says so in its own words — which is the honest
-outcome of letting the repository own its convention.
-
-### Language
-
-Onboarding starts with a language question, stored as `language` (ISO 639-1: `en` or `fr`). It drives the CLI output, the web UI and the language the agent writes the review in. Without it, the interface stays in English and the review follows the language of the commit messages.
-
-### Update check
-
-Every command checks the npm registry once at startup (a read-only `dist-tags` lookup, nothing about you or your code is sent). When a newer version exists, codesema says so and asks whether to upgrade now; accept and it runs the matching global install command (npm, pnpm, yarn or bun, detected from where codesema is installed), refuse and the current run continues unchanged. Interactive terminals only. Set `CODESEMA_NO_UPDATE_CHECK=1` to disable it; it is also skipped when stdout is not a terminal.
-
-### Repo-provided agent approval
-
-An `agent` command coming from a repo's `.codesema/config.json` runs on your machine, in your shell. codesema asks for a one-time approval per repo (remembered in your global config) and asks again whenever the command changes. Non-interactive runs refuse an unapproved repo agent: approve it once in a terminal, or pass `--agent '<cmd>'` explicitly.
+- Node.js ≥ 20 and `git`.
+- An agent CLI: `claude`, `codex`, `gemini`, `grok` and `opencode` are auto-detected. Anything else works through the wizard's custom command option or `--agent '<cmd>'`: it receives the prompt on stdin and must print the review JSON on stdout. A CLI that cannot read stdin takes the prompt as a file, by naming `{promptFile}` in its command (that is how `grok` is run).
+- Optional: `gh` or `glab`, to detect the target branch from an open merge request, list merge requests and ship from the workspace.
+- Optional: `docker` or `podman`, for sandboxed checks and per-task containers. Without one, checks report they cannot run and tasks fall back to host hardening.
 
 ## Commands
 
-```bash
-codesema                       # interactive terminal: opens the agentic workspace (web UI)
-codesema workspace             # same, explicit (accepts --port <n> and --no-open)
-codesema menu                  # navigable menu (workspace, review, show, sync, link, config)
-codesema review --branch feat/x --target develop   # non-interactive, CI-friendly
-codesema review --dual            # two reviewers in parallel + a judge (see above)
-codesema review --fail-on major   # CI gate: exit 2 if a finding is >= major (or use 'request_changes')
-codesema config                # change language / agent / model / effort
-codesema prep                  # only write .codesema/input.json for your own agent flow
-codesema show                  # only display .codesema/review.json (or the last archived review)
-codesema export --out review.md   # Markdown export (--out - for stdout)
-codesema sync                  # push the latest review to a free anonymous codesema.com workspace
-codesema sync delete           # erase all synced data and local credentials
-codesema link [code]           # attach to a codesema.com account (no code: confirm in the browser)
-```
+| Command                                                               | What it does                                                                       |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `codesema`                                                            | Opens the workspace in an interactive terminal; behaves like `review` otherwise    |
+| `codesema workspace [--brain]`                                        | The workspace, explicitly                                                          |
+| `codesema review [--branch] [--target] [--full] [--dual] [--fail-on]` | Reviews a local branch                                                             |
+| `codesema menu`                                                       | Terminal menu: workspace, review, dual review, show, cloud (sync and link), config |
+| `codesema config`                                                     | Language, agent, model, effort, auto-sync and the other settings                   |
+| `codesema prep [--target]`                                            | Only writes `.codesema/input.json`, for your own agent flow                        |
+| `codesema show [--review]`                                            | Only displays a review in the local web UI                                         |
+| `codesema export [--review] [--out]`                                  | Exports the review as Markdown (`--out -` for stdout)                              |
+| `codesema sync` / `codesema sync delete`                              | Pushes the latest review to a codesema.com workspace, or erases everything synced  |
+| `codesema link [code]`                                                | Links this workspace to a codesema.com account                                     |
+| `codesema brain <action>`                                             | See [Brain mode](#brain-mode)                                                      |
 
-Sync is opt-in and free; your review record (including the diff) is only sent when you run `codesema sync`, or automatically after a review if you enabled auto-sync (offered after the first sync, toggleable in `codesema config`). Workspace credentials are stored in the global config file (`~/.config/codesema/config.json`), written with owner-only permissions (`0600`); sync settings in a repo's `.codesema/config.json` are ignored.
+Shared flags: `--agent <cmd>`, `--port <n>` (default 4400, 20 ports scanned from there), `--timeout <s>` (default 900), `--no-open`, `--force` (sync), `-h`, `-v`. `codesema --help` lists them all.
 
-`codesema --help` lists every flag.
+## Configuration
 
-### The `--fail-on` gate
+Settings live in two files, and CLI flags win over both:
 
-`codesema review --fail-on <level>` runs the review once and exits `2` as soon as a finding sits at or above `<level>` (`critical`, `major`, `minor`, `info`) or when the reviewer requests changes — see [Exit codes](#exit-codes).
+| Level      | File                             | Purpose                                  |
+| ---------- | -------------------------------- | ---------------------------------------- |
+| Global     | `~/.config/codesema/config.json` | Your defaults, every repository          |
+| Repository | `.codesema/config.json`          | Team override, wins over the global file |
 
-Because that gate is meant to run unattended, `--fail-on` **never opens the browser**, even from an interactive terminal and even without `--no-open`: the local web UI is served while the review runs and its URL is printed, but codesema does not open it for you, and the server shuts down as soon as the review ends instead of staying up. A run without `--fail-on` keeps its historical behaviour (browser opened unless `--no-open`, server left up).
+Some keys are global only: they govern the machine (its load, its disk) or give a consent (merging, spending turns), so a cloned repository cannot set them on your behalf. A repository file that does is ignored, and says so at startup.
 
-`--fail-on` is also a review flag: `codesema --fail-on major` in a terminal runs the gated review, it does not open the workspace.
+| Key                                                        | Default                             | Scope           |
+| ---------------------------------------------------------- | ----------------------------------- | --------------- |
+| `agent`, `agentId`, `model`, `effort`                      | from the wizard                     | both            |
+| `language`                                                 | asked once (`en`, `fr`)             | both            |
+| `target`                                                   | auto-detected                       | both            |
+| `port`                                                     | `4400`                              | both            |
+| `timeout`                                                  | `900` seconds                       | both            |
+| `reviewMode`                                               | `simple` (or `dual`)                | both            |
+| `maxAutoFixRounds`                                         | `2`                                 | both            |
+| `isolation`                                                | `auto` (`container`, `policy`)      | both            |
+| `isolationAllowedDomains`                                  | the agent's own API domains         | both            |
+| `forgeCycleLabels`                                         | `false`                             | both            |
+| `checks`                                                   | inferred from the repository        | repository file |
+| `watchdogInactivitySeconds`                                | `1800`                              | both            |
+| `watchdogToolBudgetSeconds`                                | `7200`                              | both            |
+| `watchdogHeartbeatSeconds`                                 | `30`                                | both            |
+| `maxConcurrentAgents`                                      | `4`                                 | global only     |
+| `taskRetentionCount`                                       | `20` finished tasks per project     | global only     |
+| `maxTaskTurns`                                             | `30`                                | global only     |
+| `mergePolicy`                                              | `human` (or `auto`)                 | global only     |
+| `mergeStrategy`                                            | unset (`merge`, `squash`, `rebase`) | global only     |
+| `deleteBranchAfterMerge`                                   | `false`                             | global only     |
+| `allowMergeWithoutChecks`                                  | `false`                             | global only     |
+| `brainAutoMerge`                                           | `true`                              | global only     |
+| `syncUrl`, `syncWorkspaceId`, `syncSecret`, `syncAutoPush` | unset                               | global only     |
 
-## Agent skill (optional)
+`maxParallelTasks` is the former name of `maxConcurrentAgents`. It is still honoured, with a warning at startup.
 
-To drive the flow from inside your agent instead of the CLI, install the bundled skill (plain agent-agnostic markdown):
+Every setting is reachable from `codesema config`; none of them requires editing a file by hand.
 
-```bash
-# Claude Code, from a clone of this repo (global install):
-cp -r skills/codesema ~/.claude/skills/codesema
-```
+### Per-repository files
 
-Then, in any repo, on your feature branch, ask your agent: `/codesema`. It uses `codesema prep` + `codesema show` underneath.
+- `.codesema/PROMPT.md`: extra review instructions, merged into the agent prompt.
+- `.codesema/RULES.md`: your team's rules, one per line, hunted first by the reviewer and cited as `[C1]`, `[C2]` in convention findings. A line may carry optional `|`-separated segments: `(category) rule | Scope: … | Where to look: … | Bad: … | Good: … | Exceptions: …`. Telling the reviewer where to look is what makes a rule catch anything.
+- `.codesema-ignore`: glob patterns excluded from the diff. Lockfiles, minified files and sourcemaps are excluded by default.
 
-## Customize
+### Repo-provided agent commands
 
-- `.codesema/PROMPT.md`: your team's review instructions, merged into the agent prompt.
-- `.codesema/RULES.md`: your team's review rules, one per line, hunted first by the reviewer. Put the highest-yield rules on top; each line may extend the rule with optional `|`-separated segments the reviewer knows how to use: `(category) rule | Scope: where in the repo it applies | Where to look: files, imports or code shapes to inspect | Bad: literal rejected form | Good: literal expected form | Exceptions: tolerated legacy, never flagged`. Rules are cited as `[C1]`, `[C2]`, ... (file order) in convention findings. Telling the reviewer _where to look_ is what makes a rule catch violations.
-- `.codesema-ignore`: glob patterns excluded from the diff (lockfiles, minified files and sourcemaps are excluded by default).
+An `agent` command coming from a repository's `.codesema/config.json` runs in your shell. codesema asks for a one-time approval per repository, remembered globally, and asks again when the command changes. Non-interactive runs refuse an unapproved command; approve it once in a terminal, or pass `--agent` explicitly.
 
-## Troubleshooting
+## What leaves your machine
 
-- `could not detect the target branch`: no MR/PR found and no develop/main/master to compare against; pass `--target <branch>`.
-- `empty diff … nothing to review`: codesema reviews **committed** work, commit your changes first.
-- `agent timed out`: the run hit its absolute ceiling — raise it with `--timeout <seconds>` on `codesema review` (default 900), or with the `timeout` config key for the workspace.
-- `agent said nothing for … min` / `agent tool has been running for … min`: the semantic watchdog stopped a task it considers dead or stuck. The conversation stays `interrupted` and resumable, worktree intact; raise `watchdogInactivitySeconds` / `watchdogToolBudgetSeconds` if your agent legitimately goes quiet that long.
-- `no supported agent CLI found`: install `claude`, or pick "Custom command" in `codesema config` (the command receives the prompt on stdin — or on a file path, if it names `{promptFile}` — and must print the review JSON on stdout).
-- Port busy: codesema scans 20 ports from the preferred one (default 4400); pick another base with `--port <n>`.
-- The web page says the review failed: the terminal has the full error; the server stays up so you can read both.
+The diff, the prompt and the review are written under `.codesema/` and stay there. The review itself is produced by your local agent CLI, not by a codesema.com service.
 
-## Environment variables
+Two features talk to codesema.com, both opt-in:
 
-Ten variables change how the CLI behaves. Each row names the file that reads
-it, under `packages/cli/src/`.
+- `codesema sync` uploads the review record, **including the diff**, to a codesema.com workspace, after you confirm on first run. It then offers, once, to push future reviews automatically. Your absolute repository path is stripped; only the review, the diff, commit subjects and the `origin` URL are sent. Before uploading, the diff is scanned for committed secrets (dotenv files, private keys, AWS/GitHub/Slack/Google/Stripe/OpenAI/Anthropic credentials) and the upload is refused if one is found (`--force` to override). `codesema sync delete` erases everything.
+- Once a workspace is linked, `codesema review` fetches that repository's server context (conventions, learned rules, facts) and gives it to the agent. It is a read-only `GET` sending only the `origin` URL, and any failure degrades silently to no context. `.codesema/RULES.md` stays local and always wins.
 
-| Variable                   | Read in      | Effect                                                                                                                           |
-| -------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `CODESEMA_CONFIG_DIR`      | `config.ts`  | Override the global config directory (default `~/.config/codesema`).                                                             |
-| `XDG_CONFIG_HOME`          | `config.ts`  | Base of that default directory when `CODESEMA_CONFIG_DIR` is unset: `$XDG_CONFIG_HOME/codesema`, else `~/.config/codesema`.      |
-| `CODESEMA_NO_UPDATE_CHECK` | `version.ts` | Any non-empty value skips the startup npm version check (also skipped when stdout is not a TTY).                                 |
-| `CODESEMA_SYNC_URL`        | `sync.ts`    | Point `sync`/`link` at a different codesema.com host (self-hosted or staging); wins over the stored `syncUrl`.                   |
-| `CODESEMA_BRAIN_MODE`      | `serve.ts`   | Set by `codesema workspace --brain` / `codesema brain serve`: starts the background ticket-claiming daemon alongside the server. |
-| `NO_COLOR`                 | `ui.ts`      | Any non-empty value turns the coloured terminal output off.                                                                      |
-| `TERM`                     | `ui.ts`      | `dumb` turns the coloured terminal output off.                                                                                   |
-| `LC_ALL`                   | `wizard.ts`  | Preselects the onboarding language: a locale starting with `fr` preselects French, anything else English.                        |
-| `LC_MESSAGES`              | `wizard.ts`  | Same, consulted when `LC_ALL` is unset.                                                                                          |
-| `LANG`                     | `wizard.ts`  | Same, consulted when `LC_ALL` and `LC_MESSAGES` are unset.                                                                       |
+The review subprocess is locked down, because the prompt already contains everything the agent needs: `claude` runs with no tools and no MCP servers, `codex` read-only with no approvals, `grok` with a deny-all permission rule, and `opencode` with an injected config denying every permission. Known agents also get a minimal environment (`PATH`, `HOME`, locale, proxies and the provider's own variables), so your other credentials never reach them. Custom agent commands and the "run fixes" flow keep what they need, by design.
 
-The three locale variables only preselect an answer in the wizard: the choice
-you confirm is stored as `language` in the config and wins from then on.
-
-### What the subprocesses inherit
-
-These are not knobs to turn: they are what codesema keeps in — and strips from —
-the environment of the processes it spawns.
-
-- **A known review agent gets a minimal environment.** `agentEnv` (`agent.ts`)
-  keeps the 27 names of `BASE_ENV_VARS` — `PATH`, `HOME`, `USER`, `LOGNAME`,
-  `SHELL`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `TZ`, the 8 proxy
-  variables, the 4 `XDG_*` ones and the 4 CA-bundle ones — plus the provider's
-  own prefixes (`ANTHROPIC_`/`CLAUDE_`, `OPENAI_`/`CODEX_`,
-  `GEMINI_`/`GOOGLE_`, `XAI_`/`GROK_`, and for OpenCode `OPENCODE_`/`OPENROUTER_`
-  plus every other provider prefix it can authenticate with), widened to `AWS_` or `GOOGLE_`/`GCP_` only when
-  `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` is set. Review, checks and
-  eval wrap that in `reviewAgentEnv`, which additionally injects
-  `OPENCODE_CONFIG_CONTENT` (wildcard permission deny, including `agent.build` /
-  `agent.plan`, with `default_agent` pinned to `build`) when the command is OpenCode and the user did not set that
-  variable. Everything else in your environment — cloud keys, tokens, database
-  URLs — never reaches the subprocess. A custom agent command inherits the full
-  environment (its needs are unknowable, and you chose it explicitly), and so
-  does Windows, where narrowing the environment can break the spawn itself
-  (`reviewAgentEnv` still returns the full source plus the OpenCode inject).
-- **A caged task agent gets 6 provider variables, by name.**
-  `CAGE_FORWARDED_ENV` (`task-isolation.ts`) forwards
-  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-  `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`, and
-  only those. They are passed as `-e NAME`, never as `-e NAME=value`: a value in
-  argv would be readable in `ps` on the whole host. `CLAUDE_CODE_OAUTH_TOKEN`
-  also decides how the cage bootstraps its credentials — when it is set, nothing
-  is copied out of `~/.claude`.
-- **Git subprocesses lose the repo-location variables.** `subprocessEnv`
-  (`git.ts`) strips the 8 variables git sets on the hooks it invokes —
-  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
-  `GIT_COMMON_DIR`, `GIT_PREFIX`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and
-  `GIT_QUARANTINE_PATH` — so codesema invoked from inside a hook still reads the
-  repo it was pointed at, not the one that set them. This is deliberately not a
-  blanket `GIT_*`: `GIT_SSH_COMMAND`, `GIT_AUTHOR_*`/`GIT_COMMITTER_*` and
-  `GIT_CONFIG_GLOBAL` are legitimate settings and reach git unchanged.
+Workspace tasks are the opposite case, since they exist to edit code: they are contained instead, in a container when one is available, otherwise on the host with the repository's own agent settings ignored.
 
 ## Files
 
-| Path                                     | Contents                                                                                      |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `~/.config/codesema/config.json`         | Global config (language, agent, model, effort, sync credentials), mode `0600`.                |
-| `~/.config/codesema/projects.json`       | Global registry of workspace projects (id → git repo root).                                   |
-| `~/.config/codesema/trusted-agents.json` | Repo-provided `agent` commands you approved, one entry per repo root.                         |
-| `~/.config/codesema/workspace.lock`      | Guards against two workspace processes sharing this config directory.                         |
-| `.codesema/config.json`                  | Repo config, overrides the global one (also holds `checks`).                                  |
-| `.codesema/.gitignore`                   | Written on first use, contains `*`: everything codesema writes stays out of your repo's git.  |
-| `.codesema/input.json`                   | The prepared MR diff handed to the agent (`prep`).                                            |
-| `.codesema/review.json`                  | The latest review written by the agent.                                                       |
-| `.codesema/review.md`                    | Default output of `codesema export` (`--out <path>` to change, `--out -` for stdout).         |
-| `.codesema/reviews/`                     | Archived reviews (20 kept per branch, used for incremental re-review).                        |
-| `.codesema/agent-output.txt`             | Raw agent output, written only when it held no parseable JSON review.                         |
-| `.codesema/PROMPT.md`                    | Your team's extra review instructions, merged into the prompt.                                |
-| `.codesema/RULES.md`                     | Your team's review rules (one `[Cn]` grid line each), hunted first.                           |
-| `.codesema/tasks/<id>/task.json`         | One workspace task record (status, branch, turns, isolation mode).                            |
-| `.codesema/tasks/<id>/events.jsonl`      | That task's append-only event journal (one JSON line per event).                              |
-| `.codesema/tasks/<id>/checks.json`       | That task's latest sandboxed checks run (per-command status and output tail).                 |
-| `.codesema/queue.json`                   | That repo's task queue: the ids waiting their turn, in order, with when they joined the line. |
-| `.codesema/queue.json.corrupt`           | The last unreadable `queue.json`, kept aside before the queue was rebuilt from the records.   |
-| `.codesema/worktrees/<id>/`              | One isolated git worktree per workspace task.                                                 |
-| `.codesema/worktrees/.lock`              | Serializes worktree creation/removal on this repo (self-healed when its holder is gone).      |
-| `.codesema-ignore`                       | Glob patterns excluded from the diff.                                                         |
+| Path                                        | Contents                                                        |
+| ------------------------------------------- | --------------------------------------------------------------- |
+| `~/.config/codesema/config.json`            | Global config and sync credentials, mode `0600`                 |
+| `~/.config/codesema/projects.json`          | Registered workspace projects (id to repository root)           |
+| `~/.config/codesema/trusted-agents.json`    | Repo-provided agent commands you approved                       |
+| `~/.config/codesema/workspace.lock`         | Guards against two workspaces sharing a config directory        |
+| `.codesema/config.json`                     | Repository config, including `checks`                           |
+| `.codesema/.gitignore`                      | Written on first use, contains `*`                              |
+| `.codesema/input.json`                      | The prepared diff handed to the agent                           |
+| `.codesema/review.json`                     | The latest review                                               |
+| `.codesema/review.md`                       | Default output of `codesema export`                             |
+| `.codesema/reviews/`                        | Archived reviews, 20 per branch, used for incremental re-review |
+| `.codesema/agent-output.txt`                | Raw agent output, written only when it held no parseable review |
+| `.codesema/PROMPT.md`, `.codesema/RULES.md` | Your prompt additions and review rules                          |
+| `.codesema/tasks/<id>/`                     | One task: record, event journal, latest checks run              |
+| `.codesema/queue.json`                      | The repository's waiting line                                   |
+| `.codesema/worktrees/<id>/`                 | One worktree per task                                           |
+| `.codesema-ignore`                          | Glob patterns excluded from the diff                            |
+
+## Environment variables
+
+| Variable                        | Effect                                                   |
+| ------------------------------- | -------------------------------------------------------- |
+| `CODESEMA_CONFIG_DIR`           | Global config directory (default `~/.config/codesema`)   |
+| `XDG_CONFIG_HOME`               | Base of that default when `CODESEMA_CONFIG_DIR` is unset |
+| `CODESEMA_NO_UPDATE_CHECK`      | Any non-empty value skips the startup npm version check  |
+| `CODESEMA_SYNC_URL`             | Points `sync`/`link` at another codesema.com host        |
+| `CODESEMA_BRAIN_MODE`           | Set by `workspace --brain`; starts the brain daemon      |
+| `NO_COLOR`, `TERM=dumb`         | Turn coloured terminal output off                        |
+| `LC_ALL`, `LC_MESSAGES`, `LANG` | Preselect the wizard's language question                 |
+
+Every command checks the npm registry once at startup (a `dist-tags` lookup, nothing about you or your code is sent) and offers the upgrade in an interactive terminal.
 
 ## Exit codes
 
-| Code  | Meaning                                                                                          |
-| ----- | ------------------------------------------------------------------------------------------------ |
-| `0`   | Success (review completed; with `--fail-on`, nothing tripped the gate).                          |
-| `1`   | Error (bad invocation, agent failure, unusable output, or a blocked secret sync).                |
-| `2`   | `review --fail-on <level>` gate tripped (a finding at or above the level, or changes requested). |
-| `130` | Interrupted with Ctrl-C.                                                                         |
+| Code  | Meaning                                                                    |
+| ----- | -------------------------------------------------------------------------- |
+| `0`   | Success, and nothing tripped the `--fail-on` gate                          |
+| `1`   | Error: bad invocation, agent failure, unusable output, blocked secret sync |
+| `2`   | The `--fail-on` gate tripped                                               |
+| `130` | Interrupted with Ctrl-C                                                    |
 
-## Issue hierarchy (parent → child)
+## Troubleshooting
 
-`packages/cli/src/forge-issues.ts` extends its issue client with a single-level parent → child hierarchy (`linkChildIssue`, `unlinkChildIssue`, `listChildIssues`), taking the greatest common denominator of what both forges offer (D8) rather than smoothing the two into one shape. GitHub's sub-issues and GitLab's work-item hierarchy are genuinely different API models, not two dialects of one, and the asymmetries below are assumed and documented rather than hidden:
+| Message                              | What to do                                                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `could not detect the target branch` | No merge request found and no develop/main/master to compare against: pass `--target <branch>`                                       |
+| `empty diff … nothing to review`     | codesema reviews committed work: commit first                                                                                        |
+| `agent timed out`                    | The run hit its ceiling: raise `--timeout <seconds>`, or the `timeout` key for the workspace                                         |
+| `agent said nothing for … min`       | The watchdog stopped a task it considers stuck. It stays resumable; raise `watchdogInactivitySeconds` or `watchdogToolBudgetSeconds` |
+| `no supported agent CLI found`       | Install one, or pick "Custom command" in `codesema config`                                                                           |
+| Port busy                            | 20 ports are scanned from the preferred one: pick another base with `--port <n>`                                                     |
+| The page says the review failed      | The terminal has the full error, and the server stays up so you can read both                                                        |
 
-- **GitHub** goes through the sub-issues REST endpoints via `gh api` (checked against GitHub's current REST docs — an earlier note here claimed this was "verified … at gh 2.46.0", which is chronologically impossible: gh 2.46.0 shipped 2024-03-20, months before this REST API was even announced, on 2024-12-12): `POST …/issues/{parent}/sub_issues` to link, `DELETE …/issues/{parent}/sub_issue` to unlink, `GET …/issues/{parent}/sub_issues` to list. The parent keeps riding its plain issue **number** in the URL, like every other endpoint in this file, but the write body wants the child's internal database **id** — resolved first with one extra `gh api …/issues/{child}` read. Listing is a single call at `per_page=100`; GitHub's own docs describe "up to 100 sub-issues per parent" as a **product** limit, not a pagination guarantee this endpoint enforces, so `truncated` still follows the page length (a full page of exactly 100 is treated as possibly truncated) rather than being hard-coded to `false`. No `gh` version is cited for this surface, and that absence is deliberate: `gh api` is a bare REST passthrough with no shape of its own to verify, so the endpoint was checked against GitHub's current REST documentation rather than against one CLI build's behavior — attaching a version here would claim a verification that was never done.
-- **GitLab** goes through the GraphQL work-item hierarchy widget via `glab api graphql` (verified against **glab 1.53.0**, the version whose `api graphql` passthrough this module's mutation/query text was checked against — glab ships the GraphQL _client_, not the schema, so the query strings below are this module's own, not generated): the root field is `workItem(id: WorkItemID!)` — `Query.issue` has no `widgets` field at all — and the mutation is `workItemUpdate(input: {id, hierarchyWidget: {parentId}})`, `parentId: null` to unlink. Listing walks the `children` connection of the `WorkItemWidgetHierarchy` widget with a real cursor (`first: 100`, `after`, `pageInfo.{hasNextPage,endCursor}`), since GitLab silently clamps any `first` above 100 rather than refusing it; `hasNextPage: true` answered with no cursor to reach the next page still forces `truncated: true` rather than falling back to a page-length check a short page could pass by accident — and so does the walk's OTHER exit, hitting the page cap without ever seeing `hasNextPage: false` (round 4 fix: the last page's own `hasNextPage` is carried into that return too, not just the "no cursor" one, since a permission-filtered empty tail page can legitimately still say `hasNextPage: true`). A child's URL comes from `webPath` (relative, nullable) resolved against the parent's own REST-resolved origin — `webUrl` does not exist on this type — and its description/labels live in nested `WorkItemWidgetDescription`/`WorkItemWidgetLabels` widgets, found by which key they carry, never by position in the `widgets` array. GraphQL cannot resolve a project-scoped issue number by itself, so **both** ids are resolved first through the REST shortcut `projects/:fullpath/issues/{n}` this module already uses for `setLabels`, then rebuilt as the canonical `gid://gitlab/WorkItem/<id>` global id — the deprecated `gid://gitlab/Issue/<id>` alias is not used, since GitLab documents it as removable without notice.
-- **Unlinking is asymmetric.** GitHub's `DELETE …/sub_issue` validates the (parent, child) pair through the URL and the body together, and refuses if the child is not actually that parent's sub-issue. GitLab's `parentId: null` mutation takes no parent to confirm against: it clears whatever parent the child **currently** has, trusting the caller's `parent` argument rather than re-verifying it against the forge.
-- **Capability is probed, never assumed — narrowly.** Only a GraphQL top-level error whose message matches a _recognized_ schema-gap signature (a `"…doesn't exist on type…"` complaint naming the hierarchy widget or its input types) is reported as the **named** unavailability `{ available: false, reason: 'unsupported' }`, distinct from an ordinary `cli-error`. Any other top-level error — an authorization refusal, a malformed query, a business rejection nested under `data.<op>.errors` — stays an honest `cli-error`: classifying every GraphQL error as "the edition can't do this" would silently disguise this module's own bugs as a forge limitation forever, since `forgeIssueReason` maps `unsupported` to no D2 code at all (nothing would ever get journaled). GitHub's asymmetric case (a GitHub Enterprise Server old enough to lack sub-issues) is not distinguished from any other REST 404: the forge CLI's own words still surface as an honest `cli-error`, but not under the distinct `unsupported` name, since a REST 404 does not reliably tell "not found" apart from "not supported" the way a GraphQL schema error does.
-- **One level only (D8), enforced against the real forge — the only barrier GitHub has.** GitHub's own docs allow "up to eight levels of nested sub-issues": the forge never refuses a second level by itself, so this guard is not a courtesy that doubles a server-side rule, it is the sole thing enforcing D8 on GitHub. An auto-reference is refused purely locally. Beyond that, before any write, the guard reads the **real** forge state — the parent's actual current parent (`GET …/issues/{n}/parent` on GitHub, `WorkItemWidgetHierarchy.parent` on GitLab) and the child's actual children — rather than trusting only what this process happens to remember: a fresh call sharing no state with a previous one still catches "link A→B then B→C" or "link a parent to its own child". On GitHub, "no parent" is read from that endpoint's 404 answer, but ONLY when the message matches the exact phrase GitHub's API returns for a genuinely missing parent, `No parent issue found` (checked live against `api.github.com`) — any other 404-flavored text (a locked-issue validation error, a proxy's own 404 page relayed as a 502, a rate-limit message that happens to link a docs URL) is refused as an ordinary `cli-error` instead of guessed as "no parent": fail **closed**, never fail open, since a wrong guess here would let a real second level through. The caller-supplied `child → parent` cache (seeded by `listChildIssues`, updated by link/unlink) is consulted first and, on a hit, skips the forge read — an **accelerator**, never the source of truth. A non-`Map` value passed as `hierarchy` degrades to a fresh, empty cache rather than throwing. **The write is PINNED to whichever forge the guard's own reads actually answered from (round 4 fix)**: on a self-hosted remote where the forge is not known ahead of time, both `gh` and `glab` are probed until one answers, and a guard cleared entirely by `gh` must not let the following write fall through to `glab` on a blocked pre-write resolve — that would write to a forge whose state the guard never verified. When every guard read is answered by the SAME live forge (the only way a guard can clear at all — a cache hit only ever proves the opposite, a real parent or a real child, and refuses), the write ladder is narrowed to that one forge; a blocked resolve on it now refuses the call outright rather than trying the other.
-- **Reading never over-claims.** `listChildIssues` validates the forge's answer field by field, on the pattern of `parseGhMrList`/`parseGlabMrList`: the first shape mismatch — a truncated payload, one child of the wrong type — rejects the **whole** array rather than a partial one.
-- The hierarchy's unavailability never touches `packages/contract/src/reasons.ts`'s `REASON_CODES` table (DP5): that enum qualifies what stops a **task**, and a forge that cannot link a parent to a child stops nothing — it is carried entirely by the client's own result union, exactly like `no-remote`/`no-cli`/`cli-error`/`invalid-input` already are.
+## Agent skill
 
-## Cycle labels on the forge (opt-in)
+To drive the flow from inside your agent instead of the CLI, install the bundled skill (plain agent-agnostic Markdown). For Claude Code, from a clone of this repository:
 
-**Decision D15 is settled: cycle labels are opt-in per project, and disabled by default.** Nothing is written to any forge until a `.codesema/config.json` (or the global file) says `"forgeCycleLabels": true`.
+```bash
+cp -r skills/codesema ~/.claude/skills/codesema
+```
 
-The reason is the one that decided it: posting labels into somebody else's repository without being asked is a **pollution**, and native monitoring is not worth that price by default. Turning it on by default and letting people turn it off would invert the burden — a user who merely upgrades the CLI would find five new labels in a shared repo. The opt-in is **per project**, not global, because the price of the pollution is paid in one repository, so that repository is where it is accepted: `resolveProjectConfig` resolves it with the usual precedence (CLI flags > `.codesema/config.json` > `~/.config/codesema/config.json`), and a repo `false` therefore overrides a global `true`.
-
-Once it is on, a status transition poses **exactly one** `codesema:*` label on the issue the task is bound to:
-
-| Task status                                             | Label                  |
-| ------------------------------------------------------- | ---------------------- |
-| `queued`                                                | `codesema:queued`      |
-| `running`                                               | `codesema:in-progress` |
-| `reviewing`, `review_ok`, `shipped`                     | `codesema:reviewing`   |
-| `waiting_for_you`, `review_ko`, `failed`, `interrupted` | `codesema:blocked`     |
-| _(no status — posed by the merge itself)_               | `codesema:merged`      |
-
-The grouping reads as "what is happening to this ticket, seen from outside": the machine is working (`in-progress`), the work exists and is under review (`reviewing` — `review_ok` waits to be shipped, `shipped` waits for a human to merge its MR; neither is merged), or a person is needed (`blocked`). `codesema:merged` is deliberately reachable from **no** status: a task record stays `shipped` after its branch lands, so that label is posed by whatever performed the merge, never inferred.
-
-What this never does:
-
-- **It never touches a label that is not prefixed `codesema:`.** No forge CLI can _replace_ an issue's label set — `gh issue edit` and `glab issue update` only add or remove — so the write goes through `gh api` / `glab api`, which replaces everything. A partial write would therefore **destroy** the issue's other labels. Every pose is read-recompose-reemit: the current set is read, only the `codesema:` part is recomputed, and every other label is re-emitted verbatim. `codesema-legacy` has no colon, is not a cycle label, and survives untouched.
-- **It never reads on one forge and writes on the other.** The read walks the usual ladder (a self-hosted remote names neither forge, so both `gh` and `glab` are tried); everything after it — the catalog, the creation, the write — is **pinned to the forge that actually answered the read**. Without that pin, a repository where `gh` fails the read and succeeds the write would take GitLab's label set and `PUT` it whole onto GitHub's copy of the issue, which is not a missing label but somebody else's labels gone.
-- **It never writes twice for the same state.** The current set is compared to the target, and nothing is sent when they already agree.
-- **It never creates a label ahead of time.** A missing `codesema:*` label is created (through `gh label create` / `glab label create`) at the moment it is first needed, and only after the repository's label catalog proves it absent — a project whose tasks never reach a merge never sees `codesema:merged` appear.
-- **It never turns "that label already exists" into a failure.** The catalog is a snapshot and it can be wrong in ways being truncated does not cover: a human or a second process creating the label between the listing and the creation, or a name already held in a different casing. A creation the forge refuses **in those words** falls back on posing the label, which is what the label being there means; any other refusal is still a failure. Without that fallback a casing collision would be permanent — every later transition would re-attempt the same creation, get the same refusal, and never pose anything.
-- **It never leaves two cycle labels on an issue.** Ownership is the prefix and the prefix alone, but it is matched **case-insensitively**: a `Codesema:queued` is unmistakably one of ours to anyone reading the issue, so it is recomposed away rather than left to sit next to the label just posed. `codesema-legacy` still has no colon and is still not ours, in any casing.
-- **It never blocks a task.** A forge that cannot be reached, an absent `gh`/`glab`, a command that fails: the transition completes exactly as it would with the labels off — same status, same record — and the degradation is stated instead, as a journal line carrying `forge_unreachable`. The task record itself is never modified by this channel.
-
-**One asymmetry, documented rather than smoothed over (D8):** the prefix uses a **simple** colon, not GitLab's scoped-label form (`scope::value`). A scoped label would give GitLab forge-side mutual exclusion for free, but GitHub has no such notion, so half the users would get an exclusion the other half would not. The exclusion is therefore computed by codesema, identically on both forges; the consequence on GitLab is that `codesema:` labels are ordinary labels there — no scoped behaviour, no forge-side exclusion, no scoped rendering in its UI.
+Then, on a feature branch, ask your agent for `/codesema`. It uses `codesema prep` and `codesema show` underneath.
 
 ## Development
 
 ```bash
 bun install
-bun run build        # builds the web UI, embeds it in the CLI, builds the CLI
-node packages/cli/dist/index.mjs        # full interactive flow
-node packages/cli/dist/index.mjs show
+bun run build                             # web UI, embedded in the CLI, then the CLI
+node packages/cli/dist/index.mjs          # the full interactive flow
 ```
 
-Monorepo layout (`codesema-tools`): `packages/cli` (Node CLI: review/prep/show, native `node:http` ephemeral server + SSE, zero runtime dependencies), `packages/contract` (`@codesema/contract`: review types, sanitizers and grounding, bundled into the CLI and published for codesema.com), `packages/web` (Vue 3 + Vite SPA embedded in the CLI tarball), `skills/codesema` (the agent skill).
+The `codesema-tools` monorepo holds `packages/cli` (the Node CLI, a native `node:http` server with SSE, no runtime dependencies), `packages/contract` (`@codesema/contract`: review types, sanitizers and grounding, bundled into the CLI and published for codesema.com), `packages/web` (the Vue 3 SPA embedded in the tarball) and `skills/codesema`.
+
+Implementation notes that used to live here (forge issue hierarchy, cycle labels, subprocess environments) are in [docs/internals.md](docs/internals.md).
 
 ## License
 
