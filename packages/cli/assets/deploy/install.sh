@@ -238,7 +238,7 @@ else
     log "$env_file already holds both runtime secrets, skipping await-secrets"
   else
     log "waiting for secrets: on your workstation, run 'codesema runner autoconfig' and compare its fingerprint against the one printed above"
-    REPO_URL="$(codesema runner await-secrets --env-file "$env_file")"
+    REPO_URL="$(codesema runner await-secrets --secrets-file "$env_file")"
   fi
 
   if [ -z "${REPO_URL:-}" ]; then
@@ -277,7 +277,7 @@ else
   git clone "$REPO_URL" "$repo_dir"
 fi
 
-( cd "$repo_dir" && codesema runner install-service --env-file "$env_file" )
+( cd "$repo_dir" && codesema runner install-service --secrets-file "$env_file" )
 
 log "done at $(date -u +%FT%TZ)"
 log "check it with: systemctl --user status codesema-runner.service"

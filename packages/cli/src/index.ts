@@ -50,7 +50,7 @@ type ParsedValues = {
   title?: string | undefined
   prompt?: string | undefined
   detach?: boolean | undefined
-  'env-file'?: string | undefined
+  'secrets-file'?: string | undefined
   fingerprint?: string | undefined
   'gh-token-from-gh'?: boolean | undefined
   'claude-token'?: string | undefined
@@ -225,7 +225,7 @@ async function runCommand(
         title: values.title,
         prompt: values.prompt,
         detach: values.detach,
-        envFile: values['env-file'],
+        envFile: values['secrets-file'],
         fingerprint: values.fingerprint,
         ghTokenFromGh: values['gh-token-from-gh'],
         claudeToken: values['claude-token'],
@@ -261,7 +261,7 @@ async function main(): Promise<void> {
       title: { type: 'string' },
       prompt: { type: 'string' },
       detach: { type: 'boolean' },
-      'env-file': { type: 'string' },
+      'secrets-file': { type: 'string' },
       fingerprint: { type: 'string' },
       'gh-token-from-gh': { type: 'boolean' },
       'claude-token': { type: 'string' },

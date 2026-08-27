@@ -48,9 +48,9 @@ Usage:
                                       Pick a registered runner, collect a GH token and/or a Claude Code
                                       token for it, seal them to that runner's key and deposit them on
                                       the hub for it to pick up
-  codesema runner await-secrets [--env-file <path>] [--timeout <s>]
+  codesema runner await-secrets [--secrets-file <path>] [--timeout <s>]
                                       Run on the runner machine: wait for the secret \`autoconfig\` sealed
-                                      for it, decrypt it into --env-file and print the repo URL it carried
+                                      for it, decrypt it into --secrets-file and print the repo URL it carried
   codesema runner serve [--detach]    Alias for \`codesema workspace --runner\`; --detach backgrounds the
                                       daemon (prints its pid and log path) instead of running it in the
                                       foreground
@@ -58,7 +58,7 @@ Usage:
                                       this repo
   codesema runner disconnect          Forget the connected hub (clears local credentials only —
                                       also revoke this arm in the dashboard's Settings)
-  codesema runner install-service [--env-file <path>]
+  codesema runner install-service [--secrets-file <path>]
                                       Install a systemd --user unit that runs \`codesema runner serve\`
                                       for this repo, enabled and started now
   codesema runner uninstall-service   Stop and remove that systemd --user unit
@@ -89,7 +89,7 @@ Options:
   --gh-token-from-gh  \`runner autoconfig\`: capture GH_TOKEN from this machine's \`gh auth token\` without asking
   --claude-token <t>  \`runner autoconfig\`: Claude Code OAuth token to send instead of prompting for one
   --repo-url <url>    \`runner autoconfig\`: repo URL to send instead of the detected git remote
-  --env-file <path>   \`runner install-service\`'s EnvironmentFile=, or \`runner await-secrets\`'s
+  --secrets-file <path>   \`runner install-service\`'s EnvironmentFile=, or \`runner await-secrets\`'s
                       destination env file (default: the runner's own env file)
   -h, --help          Show this help
   -v, --version       Show version
@@ -661,15 +661,15 @@ Usage :
                                       Choisit un runner enregistré, récupère un jeton gh et/ou un jeton
                                       Claude Code pour lui, les scelle avec sa clé et les dépose sur le
                                       hub pour qu'il les récupère
-  codesema runner await-secrets [--env-file <chemin>] [--timeout <s>]
+  codesema runner await-secrets [--secrets-file <chemin>] [--timeout <s>]
                                       À lancer sur la machine runner : attend le secret scellé par
-                                      \`autoconfig\`, le déchiffre dans --env-file et affiche l'URL du
+                                      \`autoconfig\`, le déchiffre dans --secrets-file et affiche l'URL du
                                       dépôt reçue
   codesema runner serve               Alias de \`codesema workspace --runner\`
   codesema runner disconnect          Oublie le hub connecté (efface seulement les identifiants
                                       locaux, pensez aussi à révoquer ce bras dans les Settings du
                                       dashboard)
-  codesema runner install-service [--env-file <chemin>]
+  codesema runner install-service [--secrets-file <chemin>]
                                       Installe une unité systemd --user qui lance
                                       \`codesema runner serve\` pour ce dépôt, activée et démarrée
   codesema runner uninstall-service   Arrête et supprime cette unité systemd --user
@@ -701,7 +701,7 @@ Options :
   --gh-token-from-gh  \`runner autoconfig\` : capture GH_TOKEN via \`gh auth token\` sans confirmation
   --claude-token <j>  \`runner autoconfig\` : jeton OAuth Claude Code à envoyer plutôt que de le demander
   --repo-url <url>    \`runner autoconfig\` : URL de dépôt à envoyer plutôt que le remote détecté
-  --env-file <chemin> \`runner install-service\` : EnvironmentFile= de l'unité systemd générée, ou
+  --secrets-file <chemin> \`runner install-service\` : EnvironmentFile= de l'unité systemd générée, ou
                       fichier de destination de \`runner await-secrets\` (défaut : le fichier env du runner)
   -h, --help          Afficher cette aide
   -v, --version       Afficher la version

@@ -116,7 +116,7 @@ describe('installRunnerService / uninstallRunnerService', () => {
     ])
   })
 
-  test('resolves a relative --env-file against the given cwd, not process.cwd()', () => {
+  test('resolves a relative --secrets-file against the given cwd, not process.cwd()', () => {
     writeFileSync(join(cwd, 'runner.env'), 'GH_TOKEN=x\n')
     const result = installRunnerService({
       workingDirectory: '/repo',
@@ -129,7 +129,7 @@ describe('installRunnerService / uninstallRunnerService', () => {
     expect(written).toContain(`EnvironmentFile=${join(cwd, 'runner.env')}`)
   })
 
-  test('an absolute --env-file is used as-is', () => {
+  test('an absolute --secrets-file is used as-is', () => {
     const envFile = join(xdgConfigHome, 'runner.env')
     writeFileSync(envFile, 'GH_TOKEN=x\n')
     const result = installRunnerService({
@@ -141,7 +141,7 @@ describe('installRunnerService / uninstallRunnerService', () => {
     expect(result.environmentFile).toBe(envFile)
   })
 
-  test('a missing --env-file throws and writes nothing', () => {
+  test('a missing --secrets-file throws and writes nothing', () => {
     expect(() =>
       installRunnerService({
         workingDirectory: '/repo',
