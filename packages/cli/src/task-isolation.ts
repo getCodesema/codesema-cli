@@ -651,7 +651,12 @@ export function installCommandFor(agent: string, baseRef?: string): string {
           'if [ -x "$HOME/.local/bin/opencode" ]; then mv "$HOME/.local/bin/opencode" /usr/local/bin/opencode; fi',
         ]
       : [
-          'if [ -x "$HOME/.local/bin/claude" ]; then mv "$HOME/.local/bin/claude" /usr/local/bin/claude; fi',
+          // The native installer drops a SYMLINK into ~/.local/bin pointing at
+          // ~/.local/share/claude/versions/<v>. The build runs as root, so a
+          // moved symlink keeps its target under /root (0700) and the caged
+          // uid gets EACCES at run time. cp -L materializes the real binary;
+          // the source tree is removed in the same RUN so the layer holds one copy.
+          'if [ -x "$HOME/.local/bin/claude" ]; then cp -L "$HOME/.local/bin/claude" /usr/local/bin/claude && chmod 755 /usr/local/bin/claude && rm -rf "$HOME/.local/share/claude" "$HOME/.local/bin/claude"; fi',
         ]
   return [
     'if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then',
