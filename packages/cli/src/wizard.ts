@@ -8,6 +8,7 @@ import {
   saveRepoConfig,
   trustRepoAgent,
   type CodesemaConfig,
+  type MergeStrategy,
 } from './config.js'
 import { tryExecAsync, type ProbeExecFn } from './git.js'
 import { setLanguage, t, type SupportedLanguage } from './i18n.js'
@@ -495,7 +496,7 @@ export async function runOnboarding(cwd: string): Promise<string | null> {
 }
 
 export type ConfigEntryId =
-  'agent' | 'language' | 'autoSync' | 'brainAutoMerge' | 'maxTaskTurns' | 'back'
+  'agent' | 'language' | 'autoSync' | 'brainAutoMerge' | 'mergeStrategy' | 'maxTaskTurns' | 'back'
 
 export type ConfigEntry = {
   id: ConfigEntryId
@@ -525,6 +526,13 @@ function brainAutoMergeLabel(brainAutoMerge: boolean | undefined): string {
   return (brainAutoMerge ?? true) ? t('config.brainAutoMergeOn') : t('config.brainAutoMergeOff')
 }
 
+/** Like autoSyncLabel, absence IS its own displayed state: resolveMergeSettings
+ * (config.ts, D13) leaves an unset strategy out of the forge argv entirely,
+ * rather than defaulting to one of the three on the project's behalf. */
+function mergeStrategyLabel(mergeStrategy: MergeStrategy | undefined): string {
+  return mergeStrategy ?? t('config.mergeStrategyUnset')
+}
+
 /** Entries of the `codesema config` submenu, current values shown as hints. */
 export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
   return [
@@ -539,6 +547,11 @@ export function describeConfigEntries(current: CodesemaConfig): ConfigEntry[] {
       id: 'brainAutoMerge',
       label: t('config.brainAutoMergeEntry'),
       hint: brainAutoMergeLabel(current.brainAutoMerge),
+    },
+    {
+      id: 'mergeStrategy',
+      label: t('config.mergeStrategyEntry'),
+      hint: mergeStrategyLabel(current.mergeStrategy),
     },
     {
       id: 'maxTaskTurns',
@@ -660,6 +673,39 @@ export async function configCommand(repoRoot: string | null): Promise<void> {
       console.log(
         `  ${t('config.brainAutoMergeSaved', { state: brainAutoMergeLabel(choice === 'on'), path })}`,
       )
+      console.log('')
+      continue
+    }
+
+    if (picked === 'mergeStrategy') {
+      const strategies: MergeStrategy[] = ['merge', 'squash', 'rebase']
+      const choice = await select<MergeStrategy | 'unset'>({
+        title: t('config.mergeStrategyQuestion'),
+        options: [
+          { label: t('config.mergeStrategyUnset'), hint: '', value: 'unset' },
+          ...strategies.map((strategy) => ({ label: strategy, hint: '', value: strategy })),
+        ],
+        initialIndex: current.mergeStrategy ? strategies.indexOf(current.mergeStrategy) + 1 : 0,
+        summary: false,
+      })
+      if (choice === null) {
+        continue
+      }
+      // GLOBAL-ONLY, same doctrine as brainAutoMerge/maxTaskTurns (config.ts's
+      // own doc on mergeStrategy): how a repository merges is the machine
+      // owner's call, not a cloned repository's. 'unset' clears the key
+      // rather than storing a sentinel, so the forge keeps applying its own
+      // convention (D13) exactly as an unconfigured workspace already does.
+      const next = { ...loadGlobalConfig() }
+      if (choice === 'unset') {
+        delete next.mergeStrategy
+      } else {
+        next.mergeStrategy = choice
+      }
+      const path = saveGlobalConfig(next)
+      const state = mergeStrategyLabel(choice === 'unset' ? undefined : choice)
+      console.log('')
+      console.log(`  ${t('config.mergeStrategySaved', { state, path })}`)
       console.log('')
       continue
     }

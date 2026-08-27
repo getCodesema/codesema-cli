@@ -7,6 +7,7 @@
 // without a try/catch of its own.
 
 import {
+  ARM_STATUS_MAX,
   sanitizeArmClaimResult,
   sanitizeArmTicket,
   sanitizeArmTicketRequest,
@@ -242,6 +243,45 @@ export async function listTickets(
     method: 'GET',
     path: `/api/cli/tickets?${qs.toString()}`,
     parse: (body) => sanitizeList(body, 'tickets', sanitizeArmTicket),
+    fetchImpl,
+    collectionRoute: true,
+  })
+}
+
+/**
+ * An `ArmTicket` still in flight (in_progress/mr_opened/ready_to_merge, the
+ * `status=in_flight` alias the brain resolves server-side), plus the one
+ * extra field `brain status` needs that `ArmTicket` itself does not carry:
+ * the arm's own last-reported local reconciliation status for this ticket.
+ * `arm_local_status` is `null` on a brain build that predates that field,
+ * same degrade-not-break doctrine as every sanitizer in ./contract.js,
+ * applied here instead since the field is not (yet) part of the published
+ * wire contract.
+ */
+export type InFlightTicket = ArmTicket & { arm_local_status: string | null }
+
+function sanitizeInFlightTicket(raw: unknown): InFlightTicket | null {
+  const ticket = sanitizeArmTicket(raw)
+  if (!ticket) {
+    return null
+  }
+  const rawLocalStatus = field(raw, 'arm_local_status')
+  const armLocalStatus =
+    typeof rawLocalStatus === 'string' ? rawLocalStatus.trim().slice(0, ARM_STATUS_MAX).trim() : ''
+  return { ...ticket, arm_local_status: armLocalStatus || null }
+}
+
+/** Same collection-route doctrine as `listTickets`; `status=in_flight` is the alias the brain resolves to in_progress/mr_opened/ready_to_merge. */
+export async function listInFlightTickets(
+  creds: SyncCredentials,
+  remoteUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<BrainResult<InFlightTicket[]>> {
+  const qs = new URLSearchParams({ remote_url: remoteUrl, status: 'in_flight' })
+  return request(creds, {
+    method: 'GET',
+    path: `/api/cli/tickets?${qs.toString()}`,
+    parse: (body) => sanitizeList(body, 'tickets', sanitizeInFlightTicket),
     fetchImpl,
     collectionRoute: true,
   })

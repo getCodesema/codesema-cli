@@ -37,7 +37,8 @@ Usage:
   codesema link [code]       Link this workspace to your codesema.com account (no code: confirm in the browser)
   codesema brain connect --url <url> --token <token>
                                       Connect this workspace to a brain (same account as sync/link)
-  codesema brain status              Show the connected brain, this repo and its ready ticket count
+  codesema brain status              Show the connected brain, this repo, its ready ticket count and
+                                      in-flight tickets (executor, heartbeat age, stale lease)
   codesema brain ticket --issue <n>  Draft and publish a ticket from a forge issue
   codesema brain ticket --title <t> --prompt <p>
                                       Draft and publish a ticket from a free-form prompt
@@ -245,6 +246,10 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'config.maxTurnsQuestion': 'How many turns may one task spend before replies are refused?',
   'config.maxTurnsDefaultHint': 'default',
   'config.maxTurnsSaved': 'turn budget {cap}: {path}',
+  'config.mergeStrategyEntry': 'Merge strategy',
+  'config.mergeStrategyUnset': 'not set (forge default)',
+  'config.mergeStrategyQuestion': 'Which strategy should the forge use to merge a task branch?',
+  'config.mergeStrategySaved': 'merge strategy {state}: {path}',
   'config.back': 'Back',
   'config.languageSaved': 'language saved: {path}',
 
@@ -395,6 +400,14 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'brain.stopTimeout':
     'pid {pid} is still running {seconds}s after SIGTERM: send SIGKILL yourself, or `systemctl stop` if this runs as a systemd unit',
   'brain.detachSpawnFailed': 'could not start the detached brain daemon',
+  'brain.fieldInFlight': 'in flight tickets',
+  'brain.inFlightHeading': 'in flight',
+  'brain.fieldUnclaimed': 'unclaimed',
+  'brain.fieldStale': 'stale',
+  'brain.heartbeatSeconds': '{n}s ago',
+  'brain.heartbeatMinutes': '{n}min ago',
+  'brain.heartbeatHours': '{n}h ago',
+  'brain.heartbeatDays': '{n}d ago',
 
   'menu.title': 'What do you want to do?',
   'menu.review': 'Simple review',
@@ -555,7 +568,8 @@ Usage :
   codesema link [code]       Rattache ce workspace à votre compte codesema.com (sans code : confirmation navigateur)
   codesema brain connect --url <url> --token <token>
                                       Connecte ce workspace à un cerveau (même compte que sync/link)
-  codesema brain status              Affiche le cerveau connecté, ce dépôt et ses tickets prêts
+  codesema brain status              Affiche le cerveau connecté, ce dépôt, ses tickets prêts et ses
+                                      tickets en vol (exécutant, âge du battement, bail expiré)
   codesema brain ticket --issue <n>  Rédige et publie un ticket depuis une issue du forge
   codesema brain ticket --title <t> --prompt <p>
                                       Rédige et publie un ticket depuis un titre et un prompt libres
@@ -769,6 +783,11 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
     'Combien de tours une tâche peut-elle dépenser avant que les relances soient refusées ?',
   'config.maxTurnsDefaultHint': 'défaut',
   'config.maxTurnsSaved': 'budget de tours {cap} : {path}',
+  'config.mergeStrategyEntry': 'Stratégie de fusion',
+  'config.mergeStrategyUnset': 'non définie (défaut de la forge)',
+  'config.mergeStrategyQuestion':
+    'Quelle stratégie la forge doit-elle utiliser pour fusionner une branche de tâche ?',
+  'config.mergeStrategySaved': 'stratégie de fusion {state} : {path}',
   'config.back': 'Retour',
   'config.languageSaved': 'langue enregistrée : {path}',
 
@@ -921,6 +940,14 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'brain.stopTimeout':
     'le pid {pid} tourne toujours {seconds}s après SIGTERM : envoyez SIGKILL vous-même, ou `systemctl stop` si ça tourne en unité systemd',
   'brain.detachSpawnFailed': 'impossible de démarrer le démon brain détaché',
+  'brain.fieldInFlight': 'tickets en vol',
+  'brain.inFlightHeading': 'en vol',
+  'brain.fieldUnclaimed': 'non attribué',
+  'brain.fieldStale': 'expiré',
+  'brain.heartbeatSeconds': 'il y a {n}s',
+  'brain.heartbeatMinutes': 'il y a {n}min',
+  'brain.heartbeatHours': 'il y a {n}h',
+  'brain.heartbeatDays': 'il y a {n}j',
 
   'menu.title': 'Que voulez-vous faire ?',
   'menu.review': 'Revue simple',

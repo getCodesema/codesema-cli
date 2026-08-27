@@ -7,7 +7,16 @@ import { fileURLToPath } from 'node:url'
 import { brainErrorMessage, brainRemoteUrl, listTickets, type BrainError } from './brain-client.js'
 import { startBrainDaemon, type BrainDaemonHandle } from './brain-daemon.js'
 import { listLocalBranches, listWorktrees } from './branches.js'
-import { loadGlobalConfig, saveGlobalConfig, type CodesemaConfig } from './config.js'
+import {
+  isMergeStrategy,
+  loadGlobalConfig,
+  resolveBrainAutoMerge,
+  resolveMaxTaskTurns,
+  resolveMergeSettings,
+  saveGlobalConfig,
+  type CodesemaConfig,
+  type MergeStrategy,
+} from './config.js'
 import {
   isTaskId,
   sanitizeRecord,
@@ -637,6 +646,95 @@ function nextGlobalConfig(current: CodesemaConfig, picked: AgentSelection): Code
     delete next.effort
   }
   return next
+}
+
+type SettingsSnapshot = {
+  brainAutoMerge: { value: boolean; raw: boolean | undefined }
+  mergeStrategy: { value: MergeStrategy | undefined; raw: MergeStrategy | undefined }
+  maxTaskTurns: { value: number; raw: number | undefined }
+}
+
+function settingsSnapshot(config: CodesemaConfig): SettingsSnapshot {
+  const merge = resolveMergeSettings(config)
+  return {
+    brainAutoMerge: { value: resolveBrainAutoMerge(config), raw: config.brainAutoMerge },
+    mergeStrategy: { value: merge.strategy, raw: config.mergeStrategy },
+    maxTaskTurns: { value: resolveMaxTaskTurns(config), raw: config.maxTaskTurns },
+  }
+}
+
+function handleSettingsGet(res: ServerResponse): void {
+  return sendJson(res, 200, settingsSnapshot(loadGlobalConfig()))
+}
+
+const MAX_SETTINGS_BODY_BYTES = 1024
+const MAX_TASK_TURNS = 500
+
+type SettingsUpdate = Pick<CodesemaConfig, 'brainAutoMerge' | 'mergeStrategy' | 'maxTaskTurns'>
+const SETTINGS_KEYS: ReadonlySet<string> = new Set([
+  'brainAutoMerge',
+  'mergeStrategy',
+  'maxTaskTurns',
+])
+
+/**
+ * PUT /api/settings writes the three GLOBAL-ONLY brain-loop settings
+ * (config.ts: brainAutoMerge, mergeStrategy, maxTaskTurns), so it needs the
+ * same per-server CSRF token as the other /api/config/* mutations. Every
+ * field is validated before ANY write happens, so a bad field never leaves
+ * the other, valid ones written and the invalid one silently skipped.
+ */
+async function handleSettingsUpdate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  repoConfig: RepoConfigEndpoint,
+): Promise<void> {
+  if (req.headers['x-codesema-config-token'] !== repoConfig.token) {
+    return sendText(res, 403, 'forbidden')
+  }
+  let body: unknown
+  try {
+    body = await readJsonBody(req, MAX_SETTINGS_BODY_BYTES)
+  } catch {
+    return sendText(res, 400, 'bad request')
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return sendText(res, 400, 'bad request')
+  }
+  const payload = body as Record<string, unknown>
+  const unknownKey = Object.keys(payload).find((key) => !SETTINGS_KEYS.has(key))
+  if (unknownKey) {
+    return sendJson(res, 400, { error: `unknown setting: ${unknownKey}` })
+  }
+  const update: SettingsUpdate = {}
+  if ('brainAutoMerge' in payload) {
+    if (typeof payload.brainAutoMerge !== 'boolean') {
+      return sendJson(res, 400, { error: 'brainAutoMerge must be a boolean' })
+    }
+    update.brainAutoMerge = payload.brainAutoMerge
+  }
+  if ('mergeStrategy' in payload) {
+    if (!isMergeStrategy(payload.mergeStrategy)) {
+      return sendJson(res, 400, { error: 'mergeStrategy must be one of merge, squash, rebase' })
+    }
+    update.mergeStrategy = payload.mergeStrategy
+  }
+  if ('maxTaskTurns' in payload) {
+    const turns = payload.maxTaskTurns
+    if (
+      typeof turns !== 'number' ||
+      !Number.isInteger(turns) ||
+      turns < 1 ||
+      turns > MAX_TASK_TURNS
+    ) {
+      return sendJson(res, 400, {
+        error: `maxTaskTurns must be an integer between 1 and ${MAX_TASK_TURNS}`,
+      })
+    }
+    update.maxTaskTurns = turns
+  }
+  saveGlobalConfig({ ...loadGlobalConfig(), ...update })
+  return handleSettingsGet(res)
 }
 
 const MAX_TASK_BODY_BYTES = 64 * 1024
@@ -1469,6 +1567,9 @@ function createRequestHandler(handlerOpts: {
       if (pathname === '/api/config/agent') {
         return void handleConfigAgentUpdate(req, res, repoConfig, tasks)
       }
+      if (pathname === '/api/settings') {
+        return void handleSettingsUpdate(req, res, repoConfig)
+      }
       return sendText(res, 405, 'method not allowed')
     }
     if (req.method !== 'GET') {
@@ -1488,6 +1589,9 @@ function createRequestHandler(handlerOpts: {
       }
       if (pathname === '/api/config') {
         return void handleConfigGet(res, cwd, tasks, listAgents)
+      }
+      if (pathname === '/api/settings') {
+        return handleSettingsGet(res)
       }
       if (
         pathname === '/api/mrs' ||

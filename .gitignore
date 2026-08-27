@@ -16,3 +16,7 @@ DESIGN.md
 # prepack copies (source = repo root)
 packages/cli/LICENSE
 packages/cli/README.md
+
+# filled-in deploy templates: real secrets, never the .example versioned above
+packages/cli/assets/deploy/*.local.yaml
+packages/cli/assets/deploy/brain.env

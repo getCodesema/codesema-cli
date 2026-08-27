@@ -19,12 +19,13 @@ import {
 afterEach(() => setLanguage(null))
 
 describe('describeConfigEntries', () => {
-  test('lists agent, language, auto-sync, brain auto-merge, turn budget then back, with current values as hints', () => {
+  test('lists agent, language, auto-sync, brain auto-merge, merge strategy, turn budget then back, with current values as hints', () => {
     const entries = describeConfigEntries({
       agent: 'claude -p --model opus',
       language: 'fr',
       syncAutoPush: true,
       brainAutoMerge: false,
+      mergeStrategy: 'squash',
       maxTaskTurns: 60,
     })
     expect(entries.map((entry) => entry.id)).toEqual([
@@ -32,6 +33,7 @@ describe('describeConfigEntries', () => {
       'language',
       'autoSync',
       'brainAutoMerge',
+      'mergeStrategy',
       'maxTaskTurns',
       'back',
     ])
@@ -39,7 +41,8 @@ describe('describeConfigEntries', () => {
     expect(entries[1]?.hint).toBe('Français')
     expect(entries[2]?.hint).toBe(t('config.autoSyncOn'))
     expect(entries[3]?.hint).toBe(t('config.brainAutoMergeOff'))
-    expect(entries[4]?.hint).toBe('60')
+    expect(entries[4]?.hint).toBe('squash')
+    expect(entries[5]?.hint).toBe('60')
   })
 
   test('falls back to explicit placeholders when nothing is configured', () => {
@@ -49,6 +52,8 @@ describe('describeConfigEntries', () => {
     expect(entries[2]?.hint).toBe(t('config.autoSyncUnset'))
     // Unlike the other three, absent resolves to ON (resolveBrainAutoMerge's own doctrine), never an "unset" placeholder.
     expect(entries[3]?.hint).toBe(t('config.brainAutoMergeOn'))
+    // Like autoSync, absence IS its own state here (resolveMergeSettings, D13): no strategy is picked on the project's behalf.
+    expect(entries[4]?.hint).toBe(t('config.mergeStrategyUnset'))
   })
 
   test('a declined auto-sync opt-in shows as off', () => {

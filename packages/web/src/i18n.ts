@@ -161,6 +161,21 @@ const en = {
   'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
   'settings.effortLabel': 'Reasoning effort',
   'settings.effortDefault': 'CLI default',
+  'settings.brainTitle': 'Brain integration',
+  'settings.brainAutoMergeHint':
+    'Automatically merge a task created from a brain ticket once it ships, passes review and checks, instead of waiting for a human to approve the merge. Global setting: applies to every repository.',
+  'settings.brainAutoMergeOn': 'Auto-merge: on',
+  'settings.brainAutoMergeOff': 'Auto-merge: off',
+  'settings.brainAutoMergeError': 'Could not update auto-merge.',
+  'settings.mergeStrategyLabel': 'Merge strategy',
+  'settings.mergeStrategyHint':
+    'Strategy passed to the forge CLI when a task branch merges. Left unset, the forge applies its own default.',
+  'settings.mergeStrategyUnset': 'Not set (forge default)',
+  'settings.mergeStrategyError': 'Could not update the merge strategy.',
+  'settings.maxTaskTurnsLabel': 'Turn budget',
+  'settings.maxTaskTurnsHint':
+    'Maximum number of turns (creation, replies, automatic fixes) a task may spend before it needs a human. Between 1 and 500.',
+  'settings.maxTaskTurnsError': 'Could not update the turn budget.',
 
   'mrs.reasonNoRemote': 'No forge remote configured for this repo.',
   'mrs.reasonNoCli': 'Install gh (GitHub) or glab (GitLab) to list merge requests.',
@@ -1035,6 +1050,21 @@ const fr: Record<MessageKey, string> = {
   'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
   'settings.effortLabel': 'Effort de raisonnement',
   'settings.effortDefault': 'défaut du CLI',
+  'settings.brainTitle': 'Intégration cerveau',
+  'settings.brainAutoMergeHint':
+    "Fusionner automatiquement une tâche créée depuis un ticket du cerveau une fois livrée, revue et vérifiée, sans attendre l'approbation d'un humain. Réglage global : s'applique à tous les dépôts.",
+  'settings.brainAutoMergeOn': 'Fusion auto : activée',
+  'settings.brainAutoMergeOff': 'Fusion auto : désactivée',
+  'settings.brainAutoMergeError': 'Impossible de mettre à jour la fusion automatique.',
+  'settings.mergeStrategyLabel': 'Stratégie de fusion',
+  'settings.mergeStrategyHint':
+    "Stratégie transmise à l'outil de forge lors de la fusion d'une branche de tâche. Non définie, la forge applique son propre défaut.",
+  'settings.mergeStrategyUnset': 'Non définie (défaut de la forge)',
+  'settings.mergeStrategyError': 'Impossible de mettre à jour la stratégie de fusion.',
+  'settings.maxTaskTurnsLabel': 'Budget de tours',
+  'settings.maxTaskTurnsHint':
+    "Nombre maximal de tours (création, réponses, corrections automatiques) qu'une tâche peut consommer avant de requérir un humain. Entre 1 et 500.",
+  'settings.maxTaskTurnsError': 'Impossible de mettre à jour le budget de tours.',
 
   'mrs.reasonNoRemote': 'Aucun remote de forge configuré pour ce dépôt.',
   'mrs.reasonNoCli': 'Installe gh (GitHub) ou glab (GitLab) pour lister les merge requests.',

@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { firstTokenBin, parseModelFlag } from '../composables/agentCommand'
+import {
+  isMergeStrategyOption,
+  parseSettingsSnapshot,
+  type BrainSettings,
+  type MergeStrategy,
+} from '../composables/useSettings'
 import type { AgentOption } from '../types'
 
 type RepoConfigSnapshot = {
@@ -37,15 +43,37 @@ const agentError = ref<string | null>(null)
 const model = ref('')
 const effort = ref('')
 
+const brainAutoMerge = ref(true)
+const mergeStrategy = ref<MergeStrategy | undefined>(undefined)
+const maxTaskTurns = ref(30)
+const savingBrainAutoMerge = ref(false)
+const brainAutoMergeError = ref<string | null>(null)
+const savingMergeStrategy = ref(false)
+const mergeStrategyError = ref<string | null>(null)
+const savingMaxTaskTurns = ref(false)
+const maxTaskTurnsError = ref<string | null>(null)
+
+function applySettings(settings: BrainSettings): void {
+  brainAutoMerge.value = settings.brainAutoMerge
+  mergeStrategy.value = settings.mergeStrategy
+  maxTaskTurns.value = settings.maxTaskTurns
+}
+
 async function load() {
   loading.value = true
   loadError.value = null
   try {
-    const res = await fetch('/api/config')
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`)
+    const [configRes, settingsRes] = await Promise.all([
+      fetch('/api/config'),
+      fetch('/api/settings'),
+    ])
+    if (!configRes.ok) {
+      throw new Error(`HTTP ${configRes.status}`)
     }
-    const snapshot = (await res.json()) as RepoConfigSnapshot
+    if (!settingsRes.ok) {
+      throw new Error(`HTTP ${settingsRes.status}`)
+    }
+    const snapshot = (await configRes.json()) as RepoConfigSnapshot
     rulesContent.value = snapshot.rulesContent
     syncAutoPush.value = snapshot.syncAutoPush
     agent.value = snapshot.agent ?? ''
@@ -54,10 +82,93 @@ async function load() {
     // old enough to omit them from the snapshot.
     model.value = snapshot.model ?? parseModelFlag(agent.value)
     effort.value = snapshot.effort ?? ''
+    applySettings(parseSettingsSnapshot(await settingsRes.json()))
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
+  }
+}
+
+async function putSettings(
+  partial: Partial<{ brainAutoMerge: boolean; mergeStrategy: MergeStrategy; maxTaskTurns: number }>,
+): Promise<BrainSettings> {
+  if (!configToken) {
+    throw new Error('missing config token')
+  }
+  const res = await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-codesema-config-token': configToken },
+    body: JSON.stringify(partial),
+  })
+  if (!res.ok) {
+    const errorBody = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new Error(errorBody?.error ?? `HTTP ${res.status}`)
+  }
+  return parseSettingsSnapshot(await res.json())
+}
+
+async function saveBrainAutoMerge(next: boolean) {
+  if (!configToken || savingBrainAutoMerge.value) {
+    return
+  }
+  const previous = brainAutoMerge.value
+  brainAutoMerge.value = next
+  savingBrainAutoMerge.value = true
+  brainAutoMergeError.value = null
+  try {
+    applySettings(await putSettings({ brainAutoMerge: next }))
+  } catch (e) {
+    brainAutoMerge.value = previous
+    brainAutoMergeError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    savingBrainAutoMerge.value = false
+  }
+}
+
+async function saveMergeStrategy(next: string) {
+  if (
+    !configToken ||
+    savingMergeStrategy.value ||
+    !isMergeStrategyOption(next) ||
+    next === mergeStrategy.value
+  ) {
+    return
+  }
+  const previous = mergeStrategy.value
+  mergeStrategy.value = next
+  savingMergeStrategy.value = true
+  mergeStrategyError.value = null
+  try {
+    applySettings(await putSettings({ mergeStrategy: next }))
+  } catch (e) {
+    mergeStrategy.value = previous
+    mergeStrategyError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    savingMergeStrategy.value = false
+  }
+}
+
+async function saveMaxTaskTurns(next: string) {
+  const parsed = Number(next)
+  if (!configToken || savingMaxTaskTurns.value || !Number.isFinite(parsed)) {
+    return
+  }
+  const rounded = Math.trunc(parsed)
+  if (rounded === maxTaskTurns.value) {
+    return
+  }
+  const previous = maxTaskTurns.value
+  maxTaskTurns.value = rounded
+  savingMaxTaskTurns.value = true
+  maxTaskTurnsError.value = null
+  try {
+    applySettings(await putSettings({ maxTaskTurns: rounded }))
+  } catch (e) {
+    maxTaskTurns.value = previous
+    maxTaskTurnsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    savingMaxTaskTurns.value = false
   }
 }
 
@@ -315,6 +426,68 @@ onMounted(load)
           </button>
           <p v-if="syncError" class="cfg-error">
             {{ $t('settings.autoSyncError') }} ({{ syncError }})
+          </p>
+        </div>
+      </section>
+
+      <section class="cfg-section">
+        <h2 class="cfg-section-title">{{ $t('settings.brainTitle') }}</h2>
+
+        <p class="cfg-hint codesema-muted">{{ $t('settings.brainAutoMergeHint') }}</p>
+        <div class="cfg-section-actions">
+          <button
+            class="cfg-toggle-btn"
+            :class="{ 'cfg-toggle-btn--on': brainAutoMerge }"
+            :disabled="!configToken || savingBrainAutoMerge"
+            @click="saveBrainAutoMerge(!brainAutoMerge)"
+          >
+            {{
+              brainAutoMerge ? $t('settings.brainAutoMergeOn') : $t('settings.brainAutoMergeOff')
+            }}
+          </button>
+          <p v-if="brainAutoMergeError" class="cfg-error">
+            {{ $t('settings.brainAutoMergeError') }} ({{ brainAutoMergeError }})
+          </p>
+        </div>
+
+        <p class="cfg-hint codesema-muted">{{ $t('settings.mergeStrategyHint') }}</p>
+        <div class="cfg-section-actions">
+          <label class="cfg-model">
+            <span class="cfg-model-label">{{ $t('settings.mergeStrategyLabel') }}</span>
+            <select
+              class="cfg-select cfg-input"
+              :value="mergeStrategy ?? ''"
+              :disabled="!configToken || savingMergeStrategy"
+              @change="saveMergeStrategy(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="" disabled>{{ $t('settings.mergeStrategyUnset') }}</option>
+              <option value="merge">merge</option>
+              <option value="squash">squash</option>
+              <option value="rebase">rebase</option>
+            </select>
+          </label>
+          <p v-if="mergeStrategyError" class="cfg-error">
+            {{ $t('settings.mergeStrategyError') }} ({{ mergeStrategyError }})
+          </p>
+        </div>
+
+        <p class="cfg-hint codesema-muted">{{ $t('settings.maxTaskTurnsHint') }}</p>
+        <div class="cfg-section-actions">
+          <label class="cfg-model cfg-effort">
+            <span class="cfg-model-label">{{ $t('settings.maxTaskTurnsLabel') }}</span>
+            <input
+              class="cfg-input"
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+              :value="maxTaskTurns"
+              :disabled="!configToken || savingMaxTaskTurns"
+              @change="saveMaxTaskTurns(($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <p v-if="maxTaskTurnsError" class="cfg-error">
+            {{ $t('settings.maxTaskTurnsError') }} ({{ maxTaskTurnsError }})
           </p>
         </div>
       </section>
