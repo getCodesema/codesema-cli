@@ -741,6 +741,15 @@ describe('buildSquidConfig', () => {
     ).toHaveLength(1)
   })
 
+  // Squid drops from root to its 'proxy' user after boot, and that user cannot
+  // reopen the container's stdout pipe on rootful docker: logging to
+  // /dev/stdout is FATAL and kills the proxy seconds after `run -d` succeeded.
+  test('the access log goes to squid own log directory, never /dev/stdout', () => {
+    const config = buildSquidConfig(['api.anthropic.com'])
+    expect(config).toContain('access_log stdio:/var/log/squid/access.log')
+    expect(config).not.toContain('/dev/stdout')
+  })
+
   // Squid dies on startup ("Bungled squid.conf") when a domain is listed both
   // bare and dotted, taking the whole cage with it. The dotted form alone
   // matches the apex and every subdomain — verified against squid 6.13.
@@ -767,13 +776,18 @@ describe('buildSquidConfig', () => {
 describe('ensureEgressProxy', () => {
   test('creates an INTERNAL network, starts squid outside it, then connects it', async () => {
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const proxy = await ensureEgressProxy({
       runtime: 'docker',
       execFn: exec,
       allowedDomains: ['api.anthropic.com'],
       configDir: makeDir('codesema-proxy-conf-'),
+      probeDelayMs: 0,
     })
     expect(proxy.network).toMatch(/^codesema-net-[0-9a-f]{8}$/)
     expect(proxy.egressNetwork).toMatch(/^codesema-egress-[0-9a-f]{8}$/)
@@ -805,12 +819,26 @@ describe('ensureEgressProxy', () => {
 
   test('idempotent: a second task reuses the running proxy without touching the runtime', async () => {
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const configDir = makeDir('codesema-proxy-conf-')
-    const first = await ensureEgressProxy({ runtime: 'docker', execFn: exec, configDir })
+    const first = await ensureEgressProxy({
+      runtime: 'docker',
+      execFn: exec,
+      configDir,
+      probeDelayMs: 0,
+    })
     const before = calls.length
-    const second = await ensureEgressProxy({ runtime: 'docker', execFn: exec, configDir })
+    const second = await ensureEgressProxy({
+      runtime: 'docker',
+      execFn: exec,
+      configDir,
+      probeDelayMs: 0,
+    })
     expect(second).toEqual(first)
     expect(calls.length).toBe(before)
   })
@@ -821,27 +849,64 @@ describe('ensureEgressProxy', () => {
       runtime: 'podman',
       execFn: exec,
       configDir: makeDir('codesema-proxy-conf-'),
+      probeDelayMs: 0,
     })
     expect(argsOf(calls, 'network', 'create')).toHaveLength(0)
     expect(argsOf(calls, 'run')).toHaveLength(0)
   })
 
   test('a different allowlist gets its own network and proxy', async () => {
-    const { exec } = fakeExec((call) => (call.args[1] === 'inspect' ? ok({ code: 1 }) : ok()))
+    const { exec } = fakeExec((call) =>
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
+    )
     const configDir = makeDir('codesema-proxy-conf-')
     const a = await ensureEgressProxy({
       runtime: 'docker',
       execFn: exec,
       allowedDomains: ['api.anthropic.com'],
       configDir,
+      probeDelayMs: 0,
     })
     const b = await ensureEgressProxy({
       runtime: 'docker',
       execFn: exec,
       allowedDomains: ['api.anthropic.com', 'registry.npmjs.org'],
       configDir,
+      probeDelayMs: 0,
     })
     expect(b.network).not.toBe(a.network)
+  })
+
+  // squid can die AFTER `run -d` reported success (a directive its dropped
+  // 'proxy' user cannot honor), and --rm erases the evidence: the probe turns
+  // that into a clear failure carrying the crash output, instead of an opaque
+  // agent failure minutes later.
+  test('a proxy that dies right after start is a clear failure with the crash output', async () => {
+    const { exec } = fakeExec((call) => {
+      if (call.args.includes('{{.State.Running}}')) {
+        return ok({ stdout: 'false\n' })
+      }
+      if (call.args[1] === 'inspect') {
+        return ok({ code: 1 })
+      }
+      if (call.args[0] === 'run' && !call.args.includes('-d')) {
+        return ok({ code: 1, stderr: 'FATAL: Cannot open /dev/stdout for writing.' })
+      }
+      return ok()
+    })
+    await expect(
+      ensureEgressProxy({
+        runtime: 'docker',
+        execFn: exec,
+        allowedDomains: ['probe-dead.example'],
+        configDir: makeDir('codesema-proxy-conf-'),
+        probeDelayMs: 0,
+      }),
+    ).rejects.toThrow(/egress proxy exited right after start.*FATAL/s)
   })
 
   test('a failure to create the network is reported, never swallowed', async () => {
@@ -856,18 +921,24 @@ describe('ensureEgressProxy', () => {
         runtime: 'docker',
         execFn: exec,
         configDir: makeDir('codesema-proxy-conf-'),
+        probeDelayMs: 0,
       }),
     ).rejects.toThrow(/permission denied/)
   })
 
   test('teardown removes what THIS process started, and nothing else', async () => {
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const proxy = await ensureEgressProxy({
       runtime: 'docker',
       execFn: exec,
       configDir: makeDir('codesema-proxy-conf-'),
+      probeDelayMs: 0,
     })
     calls.length = 0
     await teardownEgressProxy({ runtime: 'docker', execFn: exec })
@@ -896,7 +967,11 @@ describe('bootstrapAgentHome', () => {
     const path = join(credentials, '.credentials.json')
     writeFileSync(path, '{"claudeAiOauth":{"accessToken":"sk-secret"}}')
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const home = await bootstrapAgentHome({
       runtime: 'podman',
@@ -925,7 +1000,11 @@ describe('bootstrapAgentHome', () => {
 
   test('an OAuth token in the environment means nothing is copied at all', async () => {
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const home = await bootstrapAgentHome({
       runtime: 'docker',
@@ -939,7 +1018,13 @@ describe('bootstrapAgentHome', () => {
   })
 
   test('no credentials on the host: honest "missing", the cage still runs', async () => {
-    const { exec } = fakeExec((call) => (call.args[1] === 'inspect' ? ok({ code: 1 }) : ok()))
+    const { exec } = fakeExec((call) =>
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
+    )
     const home = await bootstrapAgentHome({
       runtime: 'docker',
       taskId,
@@ -970,7 +1055,11 @@ describe('bootstrapAgentHome', () => {
     const path = join(dir, 'auth.json')
     writeFileSync(path, '{"token":"ok"}')
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const home = await bootstrapAgentHome({
       runtime: 'docker',
@@ -995,7 +1084,11 @@ describe('bootstrapAgentHome', () => {
 
   test('memoized per task: two turns bootstrap once', async () => {
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const opts = {
       runtime: 'docker',
@@ -1745,7 +1838,11 @@ describe('runContainerTurn', () => {
 
   function rig(over: { spawn?: (opts: ContainerSpawnOptions) => Promise<string> } = {}) {
     const { calls, exec } = fakeExec((call) =>
-      call.args[1] === 'inspect' ? ok({ code: 1 }) : ok(),
+      call.args.includes('{{.State.Running}}')
+        ? ok({ stdout: 'true\n' })
+        : call.args[1] === 'inspect'
+          ? ok({ code: 1 })
+          : ok(),
     )
     const spawned: ContainerSpawnOptions[] = []
     const spawnFn = (opts: ContainerSpawnOptions): Promise<string> => {

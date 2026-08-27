@@ -422,11 +422,10 @@ const INVALID_JSON_RETRY_NOTE =
   'Your previous output was not a valid JSON review. Output ONLY the JSON object now: no prose, no code fences.'
 
 export class AgentOutputError extends Error {
-  constructor(
-    message: string,
-    readonly raw: string,
-  ) {
+  readonly raw: string
+  constructor(message: string, raw: string) {
     super(message)
+    this.raw = raw
   }
 }
 
