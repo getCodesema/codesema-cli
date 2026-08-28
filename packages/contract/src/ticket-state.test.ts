@@ -28,6 +28,8 @@ const EXPECTED_TRANSITIONS: ReadonlyArray<[ArmTicketStatus, ArmTicketStatus]> = 
   ['ready_to_merge', 'failed'],
   ['failed', 'in_progress'],
   ['failed', 'published'],
+  ['failed', 'mr_opened'],
+  ['failed', 'failed'],
   ['done', 'mr_opened'],
 ]
 
@@ -80,7 +82,7 @@ describe('isLegalTicketTransition', () => {
     ['proposed', 'in_progress'],
     ['done', 'published'],
     ['done', 'done'],
-    ['failed', 'mr_opened'],
+    ['failed', 'ready_to_merge'],
     ['in_progress', 'ready_to_merge'],
     ['ready_to_merge', 'ready_to_merge'],
   ] as Array<[ArmTicketStatus, ArmTicketStatus]>)('%s → %s is refused', (from, to) => {

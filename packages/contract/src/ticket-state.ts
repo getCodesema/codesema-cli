@@ -39,6 +39,12 @@ export const TICKET_TRANSITIONS: readonly TicketTransition[] = [
   { from: 'ready_to_merge', to: 'failed' },
   { from: 'failed', to: 'in_progress' },
   { from: 'failed', to: 'published' },
+  // A human replying on the runner machine resumes a failed task WITHOUT a
+  // hub republish: the next ship re-reports mr_opened, and a run that fails
+  // again re-reports failed with the fresher error. Refusing either would
+  // strand the hub on a stale failed while the merge request moves on.
+  { from: 'failed', to: 'mr_opened' },
+  { from: 'failed', to: 'failed' },
   { from: 'done', to: 'mr_opened' },
 ]
 
