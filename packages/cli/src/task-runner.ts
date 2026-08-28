@@ -62,6 +62,7 @@ import {
 } from './load-cap.js'
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
+import { RUNNER_FALLBACK_GIT_IDENTITY } from './runner-secrets.js'
 import {
   bootstrapWorktreeInstall,
   type BootstrapInstallResult,
@@ -1614,10 +1615,26 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       return
     }
     const filesChanged = dirty.trim().split('\n').length
+    // A machine with no git identity at all (fresh server) fails every commit
+    // with "Please tell me who you are": sign as codesema rather than strand
+    // finished work uncommitted in the worktree.
+    const identityArgs = tryGit(['config', 'user.email'], record.worktree)?.trim()
+      ? []
+      : [
+          '-c',
+          `user.name=${RUNNER_FALLBACK_GIT_IDENTITY.name}`,
+          '-c',
+          `user.email=${RUNNER_FALLBACK_GIT_IDENTITY.email}`,
+        ]
     try {
       git(['add', '-A'], record.worktree)
       git(
-        ['commit', '-m', `task(${record.id}): ${record.title} — turn ${record.turns.length}`],
+        [
+          ...identityArgs,
+          'commit',
+          '-m',
+          `task(${record.id}): ${record.title} — turn ${record.turns.length}`,
+        ],
         record.worktree,
       )
     } catch (err) {

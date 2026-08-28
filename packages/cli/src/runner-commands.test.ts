@@ -21,6 +21,7 @@ import {
   generateRunnerKeyPair,
   runnerKeyFingerprint,
   seal,
+  unseal,
 } from './sealed-box.js'
 
 process.env.NO_COLOR = '1'
@@ -825,6 +826,56 @@ describe('runnerCommand', () => {
         expect(calls.length).toBe(2)
       })
 
+      test('--git-name/--git-email travel inside the sealed payload', async () => {
+        const { publicKey, privateKey } = generateRunnerKeyPair()
+        const entry = fakeRunnerEntry({
+          public_key: publicKey.toString('base64'),
+          fingerprint: runnerKeyFingerprint(publicKey),
+        })
+        const calls: Call[] = []
+        await runnerCommand({
+          action: 'autoconfig',
+          cwd,
+          fingerprint: entry.fingerprint,
+          ghTokenFromGh: true,
+          gitName: 'Naash',
+          gitEmail: 'naash@example.com',
+          execFn: () => 'ghp_from_gh',
+          fetchImpl: fetchSequence(
+            [
+              { status: 200, body: { runners: [entry] } },
+              { status: 200, body: {} },
+            ],
+            calls,
+          ),
+        })
+        const deposited = JSON.parse(String(calls[1]?.init.body)) as { ciphertext: string }
+        const plaintext = unseal(privateKey, deposited.ciphertext)
+        expect(plaintext).not.toBeNull()
+        expect(JSON.parse(plaintext?.toString('utf8') ?? '')).toEqual({
+          v: 1,
+          secrets: { GH_TOKEN: 'ghp_from_gh' },
+          git_identity: { name: 'Naash', email: 'naash@example.com' },
+        })
+      })
+
+      test('--git-name without --git-email fails before anything is sent', async () => {
+        const entry = fakeRunnerEntry()
+        const calls: Call[] = []
+        await expect(
+          runnerCommand({
+            action: 'autoconfig',
+            cwd,
+            fingerprint: entry.fingerprint,
+            ghTokenFromGh: true,
+            gitName: 'Naash',
+            execFn: () => 'ghp_from_gh',
+            fetchImpl: fetchSequence([{ status: 200, body: { runners: [entry] } }], calls),
+          }),
+        ).rejects.toThrow(t('runner.autoconfigGitIdentityFlagsIncomplete'))
+        expect(calls.length).toBe(1)
+      })
+
       test('--claude-token alone is enough: no gh token is required', async () => {
         const entry = fakeRunnerEntry()
         await expect(
@@ -984,6 +1035,30 @@ describe('runnerCommand', () => {
           })
           expect(lines).toEqual(['https://example.com/o/r.git'])
           expect(readFileSync(envPath, 'utf8')).toContain('GH_TOKEN=ghp_first_try')
+        })
+
+        test('a delivered git identity is applied through the seam, never the real global config', async () => {
+          const ciphertext = sealedPayload({
+            v: 1,
+            secrets: { GH_TOKEN: 'ghp_with_identity' },
+            git_identity: { name: 'Naash', email: 'naash@example.com' },
+          })
+          const applied: unknown[] = []
+          const errLines = await captureErr(async () => {
+            await runnerCommand({
+              action: 'await-secrets',
+              cwd,
+              envFile: envPath,
+              applyGitIdentityFn: (deliveredIdentity) => {
+                applied.push(deliveredIdentity)
+              },
+              fetchImpl: fetchSequence([{ status: 200, body: { secret: { ciphertext } } }], []),
+            })
+          })
+          expect(applied).toEqual([{ name: 'Naash', email: 'naash@example.com' }])
+          expect(errLines.join('\n')).toContain(
+            t('runner.awaitSecretsGitIdentityApplied', { name: 'Naash' }),
+          )
         })
 
         test('nothing is printed on STDOUT when no repo_url was sent', async () => {

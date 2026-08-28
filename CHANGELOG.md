@@ -3,6 +3,13 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.18.4] - 2026-08-28
+
+### Added
+
+- **`runner autoconfig` now ships your git identity with the sealed secrets.** The workstation offers its own `git config user.name`/`user.email` (confirmed interactively, or passed with `--git-name`/`--git-email`), the blob carries it end-to-end encrypted like the tokens, and the runner pins it as the machine global git config on delivery, through `runner await-secrets` and the daemon rotation alike. A fresh server no longer fails every turn commit with "Please tell me who you are".
+- **Commit signature of last resort.** When neither the payload nor the host carries any git identity, the runner signs its turn commits as `codesema <noreply@codesema.com>` instead of stranding finished work uncommitted in the worktree.
+
 ## [0.18.3] - 2026-08-28
 
 ### Fixed

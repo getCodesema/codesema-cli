@@ -35,7 +35,12 @@ import {
 import { t } from './i18n.js'
 import { loadOrCreateRunnerIdentity, loadRunnerIdentity } from './runner-identity.js'
 import { readRunnerPidfile, removeRunnerPidfile } from './runner-pidfile.js'
-import { applySecretsToEnvFile, sanitizeRunnerSecretsPayload } from './runner-secrets.js'
+import {
+  applyGitIdentity,
+  applySecretsToEnvFile,
+  sanitizeRunnerSecretsPayload,
+  type RunnerGitIdentity,
+} from './runner-secrets.js'
 import {
   installRunnerService,
   uninstallRunnerService,
@@ -68,6 +73,10 @@ function realExecCommand(command: string, args: readonly string[]): string {
   return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
+const realGitConfig = (args: readonly string[]): void => {
+  realExecCommand('git', args)
+}
+
 /** Same bkctl-style result block as sync.ts's own (private there, so restated here). */
 function printResult(statusMessage: string, rows: FieldRow[]): void {
   console.log('')
@@ -97,8 +106,13 @@ export type RunnerCommandOptions = {
   claudeToken?: string | undefined
   /** `runner autoconfig` only: repo URL to send, skips the detected-remote confirm/paste. */
   repoUrl?: string | undefined
+  /** `runner autoconfig` only: git author identity to send, skips the detected-identity confirm. Both or neither. */
+  gitName?: string | undefined
+  gitEmail?: string | undefined
   /** `runner await-secrets` only: seconds to poll before giving up (default 1800). */
   timeoutSeconds?: number | undefined
+  /** Test seam for the delivered git identity: never touches the real global git config in tests. */
+  applyGitIdentityFn?: typeof applyGitIdentity | undefined
   /** Test seam. */
   fetchImpl?: typeof fetch | undefined
   /** Test seam. */
@@ -706,6 +720,44 @@ async function resolveClaudeToken(
   return pasted ?? undefined
 }
 
+function tryGitConfig(execFn: ExecCommandFn, key: string): string | null {
+  try {
+    return execFn('git', ['config', key]).trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The workstation's own git identity, offered for the runner's commits: the
+ * runner signs every turn itself, and a fresh server has no identity at all.
+ * Non-interactive without the flags simply omits it (the runner falls back to
+ * the codesema signature at commit time).
+ */
+async function resolveGitIdentity(
+  opts: RunnerCommandOptions,
+  seams: AutoconfigPromptSeams & { execFn: ExecCommandFn },
+): Promise<RunnerGitIdentity | undefined> {
+  if (opts.gitName || opts.gitEmail) {
+    if (!opts.gitName || !opts.gitEmail) {
+      throw new Error(t('runner.autoconfigGitIdentityFlagsIncomplete'))
+    }
+    return { name: opts.gitName, email: opts.gitEmail }
+  }
+  if (!isInteractive()) {
+    return undefined
+  }
+  const name = tryGitConfig(seams.execFn, 'user.name')
+  const email = tryGitConfig(seams.execFn, 'user.email')
+  if (!name || !email) {
+    return undefined
+  }
+  const confirmed = await seams.confirmFn({
+    title: t('runner.autoconfigUseGitIdentity', { name, email }),
+  })
+  return confirmed ? { name, email } : undefined
+}
+
 async function resolveRepoUrl(
   opts: RunnerCommandOptions,
   seams: AutoconfigPromptSeams,
@@ -765,6 +817,7 @@ async function runnerAutoconfig(opts: RunnerCommandOptions): Promise<void> {
   const ghToken = await resolveGhToken(opts, { ...seams, execFn })
   const claudeToken = await resolveClaudeToken(opts, { ...seams, runInheritedFn })
   const repoUrl = await resolveRepoUrl(opts, seams)
+  const gitIdentity = await resolveGitIdentity(opts, { ...seams, execFn })
 
   const secrets = {
     ...(ghToken ? { GH_TOKEN: ghToken } : {}),
@@ -774,7 +827,12 @@ async function runnerAutoconfig(opts: RunnerCommandOptions): Promise<void> {
     throw new Error(t('runner.autoconfigNoSecrets'))
   }
 
-  const payload = { v: 1 as const, secrets, ...(repoUrl ? { repo_url: repoUrl } : {}) }
+  const payload = {
+    v: 1 as const,
+    secrets,
+    ...(repoUrl ? { repo_url: repoUrl } : {}),
+    ...(gitIdentity ? { git_identity: gitIdentity } : {}),
+  }
   const ciphertext = seal(
     Buffer.from(entry.public_key, 'base64'),
     Buffer.from(JSON.stringify(payload)),
@@ -848,6 +906,13 @@ async function runnerAwaitSecrets(opts: RunnerCommandOptions): Promise<void> {
           console.error(`  ${t('runner.awaitSecretsInvalidPayload')}`)
         } else {
           applySecretsToEnvFile(envPath, payload.secrets)
+          if (payload.git_identity) {
+            const applyGitIdentityFn = opts.applyGitIdentityFn ?? applyGitIdentity
+            applyGitIdentityFn(payload.git_identity, realGitConfig)
+            console.error(
+              `  ${t('runner.awaitSecretsGitIdentityApplied', { name: payload.git_identity.name })}`,
+            )
+          }
           if (payload.repo_url) {
             console.log(payload.repo_url)
           }

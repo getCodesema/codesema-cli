@@ -2,7 +2,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
-import { applySecretsToEnvFile, sanitizeRunnerSecretsPayload } from './runner-secrets.js'
+import {
+  applyGitIdentity,
+  applySecretsToEnvFile,
+  sanitizeRunnerSecretsPayload,
+} from './runner-secrets.js'
 
 describe('sanitizeRunnerSecretsPayload', () => {
   test('accepts a full valid payload and trims values', () => {
@@ -176,5 +180,69 @@ describe('applySecretsToEnvFile', () => {
     const envPath = join(dir, 'runner.env')
     applySecretsToEnvFile(envPath, { GH_TOKEN: 'abc' })
     expect(existsSync(`${envPath}.tmp`)).toBe(false)
+  })
+})
+
+describe('sanitizeRunnerSecretsPayload git_identity', () => {
+  test('accepts and trims a git identity next to the secrets', () => {
+    const result = sanitizeRunnerSecretsPayload({
+      v: 1,
+      secrets: { GH_TOKEN: 'token' },
+      git_identity: { name: '  Naash ', email: ' naash@example.com ' },
+    })
+    expect(result?.git_identity).toEqual({ name: 'Naash', email: 'naash@example.com' })
+  })
+
+  test('a git identity alone is a valid payload (secrets stay untouched elsewhere)', () => {
+    const result = sanitizeRunnerSecretsPayload({
+      v: 1,
+      secrets: {},
+      git_identity: { name: 'Naash', email: 'naash@example.com' },
+    })
+    expect(result).toEqual({
+      v: 1,
+      secrets: {},
+      git_identity: { name: 'Naash', email: 'naash@example.com' },
+    })
+  })
+
+  test('a repo_url alone is a valid payload too', () => {
+    const result = sanitizeRunnerSecretsPayload({
+      v: 1,
+      secrets: {},
+      repo_url: 'https://example.com/o/r.git',
+    })
+    expect(result?.repo_url).toBe('https://example.com/o/r.git')
+  })
+
+  test('a name carrying a control character rejects the whole payload (git config injection guard)', () => {
+    expect(
+      sanitizeRunnerSecretsPayload({
+        v: 1,
+        secrets: { GH_TOKEN: 'token' },
+        git_identity: { name: 'a\nb', email: 'naash@example.com' },
+      }),
+    ).toBeNull()
+  })
+
+  test('a half identity (name without email) rejects the payload', () => {
+    expect(
+      sanitizeRunnerSecretsPayload({
+        v: 1,
+        secrets: { GH_TOKEN: 'token' },
+        git_identity: { name: 'Naash' },
+      }),
+    ).toBeNull()
+  })
+})
+
+describe('applyGitIdentity', () => {
+  test('pins name and email as global git config, in that order', () => {
+    const calls: string[][] = []
+    applyGitIdentity({ name: 'Naash', email: 'naash@example.com' }, (args) => calls.push([...args]))
+    expect(calls).toEqual([
+      ['config', '--global', 'user.name', 'Naash'],
+      ['config', '--global', 'user.email', 'naash@example.com'],
+    ])
   })
 })
