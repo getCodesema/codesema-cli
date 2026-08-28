@@ -26,17 +26,22 @@ import {
   type CriterionVerdict,
   type Finding,
   type ReviewRecord,
+  type RunbookConfig,
   type TaskChecks,
   type TaskEvent,
   type TaskIssueRef,
   type TaskIssueSnapshot,
   type TaskRecord,
   type TaskStatus,
+  type TaskVerification,
   type Verdict,
 } from './contract.js'
 import type { ForgeCli, ForgeCliOutcome, ForgeIssuesExecFn } from './forge-issues.js'
 import { t as translate } from './i18n.js'
 import { createLoadCap } from './load-cap.js'
+import type { SandboxDriver, SandboxSweepOutcome } from './microsandbox-driver.js'
+import type { ProjectSnapshot } from './microvm-snapshot.js'
+import type { RunMicrovmTurnOptions } from './microvm-turn.js'
 import { addProject, listProjects, projectsPath, scratchProject, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
@@ -85,6 +90,11 @@ import {
   type TaskManager,
 } from './task-server.js'
 import type { ShipOutcome, ShipTaskOptions } from './task-ship.js'
+import {
+  readTaskVerification,
+  writeTaskVerification,
+  type VerifyTaskOptions,
+} from './task-verification.js'
 import {
   appendTaskEvent,
   createTask,
@@ -4500,6 +4510,7 @@ describe('task routes with a stub manager', () => {
       },
       getChecks: (projectId, id) =>
         known(projectId) && id === record.id ? readTaskChecks(project.path, id) : null,
+      getVerification: () => null,
       getReview: (projectId, id, ref) =>
         known(projectId) ? readTaskReview(project.path, id, ref) : null,
       checksSetup: (projectId) => {
@@ -4519,6 +4530,7 @@ describe('task routes with a stub manager', () => {
       }),
       startPending: () => Promise.resolve([]),
       sweepOrphanedVolumes: async () => {},
+      sweepOrphanedSandboxes: async () => {},
       applyRetention: async () => {},
       attach: (projectId, taskId, repoProjectId) => {
         if (!known(projectId)) {
@@ -8210,6 +8222,150 @@ describe('manager.sweepOrphanedVolumes', () => {
   })
 })
 
+describe('manager.sweepOrphanedSandboxes', () => {
+  const fakeDriver = { kind: 'fake' } as unknown as SandboxDriver
+  const microvmConfigured = {
+    available: true,
+    mode: 'microvm' as const,
+    reason: 'microsandbox is available',
+    configured: 'microvm' as const,
+    runtime: null,
+  }
+
+  test('a no-op, silently, when the workspace is not configured for microvm', async () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'a task')
+    const notices: string[] = []
+    let called = false
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      sandboxDriverFn: () => fakeDriver,
+      sweepOrphanedSandboxesFn: () => {
+        called = true
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedSandboxes()
+
+    expect(called).toBe(false)
+    expect(notices).toEqual([])
+  })
+
+  test("claimed ids span EVERY registered project, and the sweep's notices are forwarded verbatim", async () => {
+    const projectA = register(makeRepo())
+    const projectB = register(makeRepo())
+    const claimedA = seedTask(projectA.path, 'a task')
+    const claimedB = seedTask(projectB.path, 'b task')
+    const seenClaimed: ReadonlySet<string>[] = []
+    const notices: string[] = []
+    const outcome: SandboxSweepOutcome = {
+      removed: ['codesema-dev-orphan1'],
+      notices: ['orphaned sandbox codesema-dev-orphan1 removed at boot: no task record claims it'],
+    }
+    const manager = createTaskManager({
+      ...managerOpts,
+      isolation: microvmConfigured,
+      onNotice: (message) => notices.push(message),
+      sandboxDriverFn: () => fakeDriver,
+      sweepOrphanedSandboxesFn: (opts) => {
+        seenClaimed.push(opts.claimedIds)
+        expect(opts.driver).toBe(fakeDriver)
+        return Promise.resolve(outcome)
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedSandboxes()
+
+    expect(seenClaimed).toEqual([new Set([claimedA.id, claimedB.id])])
+    expect(notices).toEqual(outcome.notices)
+  })
+
+  test('an empty registry says exactly that, never that something could not be read', async () => {
+    const notices: string[] = []
+    const swept: unknown[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      isolation: microvmConfigured,
+      onNotice: (message) => notices.push(message),
+      sandboxDriverFn: () => fakeDriver,
+      sweepOrphanedSandboxesFn: (opts) => {
+        swept.push(opts)
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedSandboxes()
+
+    expect(swept).toHaveLength(0)
+    expect(notices).toEqual([
+      'orphaned microvm sandbox sweep skipped: no repository registered to claim them',
+    ])
+  })
+
+  test('a sweep that throws is reported as a notice, never as an unhandled rejection', async () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'a task')
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      isolation: microvmConfigured,
+      onNotice: (message) => notices.push(message),
+      sandboxDriverFn: () => fakeDriver,
+      sweepOrphanedSandboxesFn: () => Promise.reject(new Error('driver unreachable')),
+      ...fakeRunner(),
+    })
+
+    await expect(manager.sweepOrphanedSandboxes()).resolves.toBeUndefined()
+    expect(notices).toEqual(['orphaned microvm sandbox sweep failed: driver unreachable'])
+  })
+
+  test('the default driver (createMicrosandboxDriver, not yet implemented) is never reached when a seam is given', async () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'a task')
+    let sawDriver = false
+    const manager = createTaskManager({
+      ...managerOpts,
+      isolation: microvmConfigured,
+      sandboxDriverFn: () => {
+        sawDriver = true
+        return fakeDriver
+      },
+      sweepOrphanedSandboxesFn: () => Promise.resolve({ removed: [], notices: [] }),
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedSandboxes()
+
+    expect(sawDriver).toBe(true)
+  })
+
+  test('recheckClaimedIds narrows to null on a broken registry, same as the HOME volume sweep', async () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'x')
+    let recheck: (() => ReadonlySet<string> | null) | undefined
+    const manager = createTaskManager({
+      ...managerOpts,
+      isolation: microvmConfigured,
+      sandboxDriverFn: () => fakeDriver,
+      sweepOrphanedSandboxesFn: (opts) => {
+        recheck = opts.recheckClaimedIds
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+    await manager.sweepOrphanedSandboxes()
+    expect(recheck).toBeDefined()
+
+    writeFileSync(projectsPath(), '{ broken')
+    expect(recheck?.()).toBeNull()
+  })
+})
+
 describe('manager.applyRetention', () => {
   test('runs per registered project, with the configured keep count and the project name on each notice', async () => {
     const projectA = register(makeRepo())
@@ -11003,5 +11159,747 @@ describe('scratch conversations over HTTP', () => {
     } finally {
       await started.stop()
     }
+  })
+})
+
+// --- microvm wiring (lot C7) ------------------------------------------------
+
+describe('microvm wiring (lot C7)', () => {
+  const fakeDriver = { kind: 'fake' } as unknown as SandboxDriver
+  const microvmConfigured = {
+    available: true,
+    mode: 'microvm' as const,
+    reason: 'microsandbox is available',
+    configured: 'microvm' as const,
+    runtime: null,
+  }
+
+  function baseRunbook(overrides: Partial<RunbookConfig> = {}): RunbookConfig {
+    return {
+      version: 1,
+      image: 'node:26',
+      install: ['npm install'],
+      services: { host_up: [], compose_file: null },
+      healthchecks: [],
+      tests: ['npm test'],
+      egress: ['registry.npmjs.org'],
+      depends_on_files: [],
+      ...overrides,
+    }
+  }
+
+  function seedMicrovmTask(
+    cwd: string,
+    title = 'vm task',
+  ): { record: TaskRecord; worktree: string } {
+    const worktree = makeRepo()
+    const record = createTask(cwd, {
+      title,
+      prompt: 'do it',
+      autoShip: false,
+      base: '',
+      branch: '',
+      worktree,
+      isolation: 'microvm',
+    })
+    record.worktree = worktree
+    saveTask(cwd, record)
+    return { record, worktree }
+  }
+
+  describe('resolveMicrovmFn (dev turn)', () => {
+    test('resolves driver/runbook/image/snapshot from the task worktree, on a ready snapshot', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const snapshotCalls: unknown[] = []
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: (opts) => {
+          snapshotCalls.push(opts)
+          return Promise.resolve({
+            kind: 'ready',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot)
+        },
+        createRunnerFn: rig.createRunnerFn,
+      })
+      // Cheap way to trigger context() (and so createRunnerFn) with no commit needed.
+      manager.checks(project.id, record.id)
+
+      const microvm = await rig.runnerOptions().resolveMicrovmFn?.(record)
+      expect(microvm?.driver).toBe(fakeDriver)
+      expect(microvm?.snapshotName).toBe('codesema-p-hash')
+      expect(microvm?.image).toBe('node:26')
+      expect(microvm?.runbook).toEqual(runbook)
+      expect(snapshotCalls).toEqual([
+        { driver: fakeDriver, projectId: project.id, worktree: record.worktree, runbook },
+      ])
+    })
+
+    test('a missing snapshot triggers a build; a ready build feeds snapshotName', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const buildCalls: unknown[] = []
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({
+            kind: 'missing',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot),
+        buildProjectSnapshotFn: (opts) => {
+          buildCalls.push(opts)
+          return Promise.resolve({
+            kind: 'ready',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot)
+        },
+        createRunnerFn: rig.createRunnerFn,
+      })
+      manager.checks(project.id, record.id)
+
+      const microvm = await rig.runnerOptions().resolveMicrovmFn?.(record)
+      expect(microvm?.snapshotName).toBe('codesema-p-hash')
+      expect(buildCalls).toHaveLength(1)
+    })
+
+    test('a cold snapshot (flat root disk) leaves snapshotName null, and never builds', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      let buildCalled = false
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'flat root disk' } as ProjectSnapshot),
+        buildProjectSnapshotFn: () => {
+          buildCalled = true
+          return Promise.resolve({ kind: 'cold', reason: 'flat root disk' } as ProjectSnapshot)
+        },
+        createRunnerFn: rig.createRunnerFn,
+      })
+      manager.checks(project.id, record.id)
+
+      const microvm = await rig.runnerOptions().resolveMicrovmFn?.(record)
+      expect(microvm?.snapshotName).toBeNull()
+      expect(buildCalled).toBe(false)
+    })
+
+    test('no runbook: cold image falls back to the resolved base image, snapshot is never resolved', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      let snapshotCalled = false
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => null,
+        resolveProjectSnapshotFn: () => {
+          snapshotCalled = true
+          return Promise.resolve({ kind: 'cold', reason: 'unused' } as ProjectSnapshot)
+        },
+        createRunnerFn: rig.createRunnerFn,
+      })
+      manager.checks(project.id, record.id)
+
+      const microvm = await rig.runnerOptions().resolveMicrovmFn?.(record)
+      expect(microvm?.runbook).toBeNull()
+      expect(microvm?.snapshotName).toBeNull()
+      expect(microvm?.image).toBe('node:26')
+      expect(snapshotCalled).toBe(false)
+    })
+
+    test('secrets are built from CAGE_FORWARDED_ENV only, never from unrelated env vars', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => null,
+        createRunnerFn: rig.createRunnerFn,
+      })
+      manager.checks(project.id, record.id)
+
+      const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN
+      const previousUnrelated = process.env.SOME_UNRELATED_TEST_VAR
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = 'tok-secret'
+      process.env.SOME_UNRELATED_TEST_VAR = 'never-forwarded'
+      try {
+        const microvm = await rig.runnerOptions().resolveMicrovmFn?.(record)
+        expect(microvm?.secrets).toContainEqual({
+          env: 'CLAUDE_CODE_OAUTH_TOKEN',
+          value: 'tok-secret',
+          allowedHosts: ['api.anthropic.com', 'platform.claude.com'],
+        })
+        expect(microvm?.secrets.some((s) => s.env === 'SOME_UNRELATED_TEST_VAR')).toBe(false)
+      } finally {
+        if (previous === undefined) {
+          delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+        } else {
+          process.env.CLAUDE_CODE_OAUTH_TOKEN = previous
+        }
+        if (previousUnrelated === undefined) {
+          delete process.env.SOME_UNRELATED_TEST_VAR
+        } else {
+          process.env.SOME_UNRELATED_TEST_VAR = previousUnrelated
+        }
+      }
+    })
+  })
+
+  describe('prepareChecks executor', () => {
+    test("a 'microvm' task with a runbook runs checks through microvmStepExecutor", async () => {
+      const project = register(makeRepo())
+      const { record } = seedCommittedTask(project.path)
+      record.isolation = 'microvm'
+      saveTask(project.path, record)
+      const runbook = baseRunbook({ egress: ['api.example.com'] })
+      const seen: RunChecksOptions[] = []
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'ready', name: 'codesema-p-hash', hash: 'h' } as ProjectSnapshot),
+        runChecksFn: (options) => {
+          seen.push(options)
+          return Promise.resolve(finishedChecks())
+        },
+        reviewTurnFn: async () => {},
+        createRunnerFn: rig.createRunnerFn,
+      })
+
+      expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+      await until(() => seen.length > 0)
+      expect(seen[0]?.executor).toBeDefined()
+      expect(typeof seen[0]?.executor).toBe('function')
+    })
+
+    test("a 'policy' task never gets an executor", async () => {
+      const project = register(makeRepo())
+      const { record } = seedCommittedTask(project.path)
+      const seen: RunChecksOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        runChecksFn: (options) => {
+          seen.push(options)
+          return Promise.resolve(finishedChecks())
+        },
+        reviewTurnFn: async () => {},
+        ...fakeRunner(),
+      })
+
+      expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+      await until(() => seen.length > 0)
+      expect(seen[0]?.executor).toBeUndefined()
+    })
+
+    test('a microvm task with NO runbook still runs checks, cold, no executor egress override needed', async () => {
+      const project = register(makeRepo())
+      const { record } = seedCommittedTask(project.path)
+      record.isolation = 'microvm'
+      saveTask(project.path, record)
+      const seen: RunChecksOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => null,
+        runChecksFn: (options) => {
+          seen.push(options)
+          return Promise.resolve(finishedChecks())
+        },
+        reviewTurnFn: async () => {},
+        ...fakeRunner(),
+      })
+
+      expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+      await until(() => seen.length > 0)
+      expect(seen[0]?.executor).toBeDefined()
+    })
+  })
+
+  describe('ship wiring', () => {
+    test("a 'microvm' task ships with the driver and the forge token read from the process env", async () => {
+      const project = register(makeRepo())
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      record.isolation = 'microvm'
+      saveTask(cwd, record)
+      const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1', note: null })
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        shipTaskFn: stub.fn,
+        ...fakeRunner(),
+      })
+
+      const previous = process.env.GH_TOKEN
+      process.env.GH_TOKEN = 'gh-secret-token'
+      try {
+        expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+      } finally {
+        if (previous === undefined) {
+          delete process.env.GH_TOKEN
+        } else {
+          process.env.GH_TOKEN = previous
+        }
+      }
+      expect(stub.calls).toHaveLength(1)
+      expect(stub.calls[0]?.driver).toBe(fakeDriver)
+      expect(stub.calls[0]?.forgeToken).toBe('gh-secret-token')
+    })
+
+    test("a 'container' task ships with no driver and no forge token at all", async () => {
+      const project = register(makeRepo())
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      record.isolation = 'container'
+      saveTask(cwd, record)
+      const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1', note: null })
+      const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+
+      expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+      expect(stub.calls[0]?.driver).toBeUndefined()
+      expect(stub.calls[0]?.forgeToken).toBeUndefined()
+    })
+
+    test('GITLAB_TOKEN is used when GH_TOKEN is absent', async () => {
+      const project = register(makeRepo())
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      record.isolation = 'microvm'
+      saveTask(cwd, record)
+      const stub = shipStub({
+        pushed: true,
+        mrUrl: 'https://gitlab.com/o/r/-/merge_requests/1',
+        note: null,
+      })
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        shipTaskFn: stub.fn,
+        ...fakeRunner(),
+      })
+
+      const previousGh = process.env.GH_TOKEN
+      const previousGitlab = process.env.GITLAB_TOKEN
+      delete process.env.GH_TOKEN
+      process.env.GITLAB_TOKEN = 'glab-secret'
+      try {
+        expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+      } finally {
+        if (previousGh === undefined) {
+          delete process.env.GH_TOKEN
+        } else {
+          process.env.GH_TOKEN = previousGh
+        }
+        if (previousGitlab === undefined) {
+          delete process.env.GITLAB_TOKEN
+        } else {
+          process.env.GITLAB_TOKEN = previousGitlab
+        }
+      }
+      expect(stub.calls[0]?.forgeToken).toBe('glab-secret')
+    })
+  })
+
+  describe('review wiring', () => {
+    test('a workspace configured for microvm hands the reviewer a driver, secrets, and a resolveReviewContext resolving the runbook and a ready snapshot', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const seenOptions: CreateTaskReviewerOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        isolation: microvmConfigured,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({
+            kind: 'ready',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot),
+        createReviewerFn: (options) => {
+          seenOptions.push(options)
+          return async () => {}
+        },
+        ...fakeRunner(),
+      })
+
+      manager.checks(project.id, record.id)
+
+      expect(seenOptions).toHaveLength(1)
+      expect(seenOptions[0]?.driver).toBe(fakeDriver)
+      expect(seenOptions[0]?.projectId).toBe(project.id)
+      expect(typeof seenOptions[0]?.resolveReviewContext).toBe('function')
+      // The snapshot/runbook/verification are per-task-turn facts, resolved
+      // ONLY when the resolver is actually called with the reviewed record —
+      // never frozen at construction time (this ticket's whole point).
+      const ctx = await seenOptions[0]?.resolveReviewContext?.(record)
+      expect(ctx?.runbook).toEqual(runbook)
+      expect(ctx?.snapshotName).toBe('codesema-p-hash')
+      // No verification.json was ever written for this task.
+      expect(ctx?.verification).toBeNull()
+    })
+
+    test('a workspace NOT configured for microvm never builds the driver for its reviewer', async () => {
+      const project = register(makeRepo())
+      const record = seedTask(project.path)
+      const seenOptions: CreateTaskReviewerOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        createReviewerFn: (options) => {
+          seenOptions.push(options)
+          return async () => {}
+        },
+        ...fakeRunner(),
+      })
+
+      manager.checks(project.id, record.id)
+
+      expect(seenOptions).toHaveLength(1)
+      expect(seenOptions[0]?.driver).toBeUndefined()
+      expect(seenOptions[0]?.resolveReviewContext).toBeUndefined()
+    })
+
+    test("resolveReviewContext resolves a MISSING snapshot to null and never triggers a build (that stays the dev turn's job)", async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      let buildCalled = false
+      const seenOptions: CreateTaskReviewerOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        isolation: microvmConfigured,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({
+            kind: 'missing',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot),
+        buildProjectSnapshotFn: () => {
+          buildCalled = true
+          return Promise.resolve({
+            kind: 'ready',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot)
+        },
+        createReviewerFn: (options) => {
+          seenOptions.push(options)
+          return async () => {}
+        },
+        ...fakeRunner(),
+      })
+
+      manager.checks(project.id, record.id)
+
+      const ctx = await seenOptions[0]?.resolveReviewContext?.(record)
+      expect(ctx?.snapshotName).toBeNull()
+      expect(buildCalled).toBe(false)
+    })
+
+    test("resolveReviewContext reads the REVIEWED task's own last mechanical verification", async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const verification: TaskVerification = {
+        head_sha: 'deadbeef',
+        runbook_sha: '0123456789abcdef',
+        started_at: '2026-01-01T00:00:00.000Z',
+        finished_at: '2026-01-01T00:05:00.000Z',
+        status: 'passed',
+        checks: [
+          { command: 'npm test', status: 'passed', exit_code: 0, duration_ms: 10, tail: '' },
+        ],
+        integrity_ok: true,
+        changed_dependency_files: [],
+        error: null,
+      }
+      writeTaskVerification(project.path, record.id, verification)
+      const seenOptions: CreateTaskReviewerOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        isolation: microvmConfigured,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        createReviewerFn: (options) => {
+          seenOptions.push(options)
+          return async () => {}
+        },
+        ...fakeRunner(),
+      })
+
+      manager.checks(project.id, record.id)
+
+      const ctx = await seenOptions[0]?.resolveReviewContext?.(record)
+      expect(ctx?.verification).toEqual(verification)
+    })
+  })
+
+  describe('boot sweep wiring', () => {
+    test('workspace.ts calls sweepOrphanedSandboxes at boot, alongside sweepOrphanedVolumes', () => {
+      // Covered directly against the real function in workspace-boot.test.ts's
+      // spread-the-real-manager rig (out of this lot's file ownership); this
+      // asserts the manager-level contract the boot call depends on: a fresh
+      // manager exposes both sweeps as real async functions.
+      const manager = createTaskManager({ ...managerOpts, ...fakeRunner() })
+      expect(typeof manager.sweepOrphanedVolumes).toBe('function')
+      expect(typeof manager.sweepOrphanedSandboxes).toBe('function')
+    })
+  })
+
+  describe('mechanical verification (onTurnDone)', () => {
+    const jsonl = (events: unknown[]) => `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+    const claudeStream = (response: string) =>
+      jsonl([
+        { type: 'system', subtype: 'init', session_id: 'sess-verify' },
+        { type: 'result', result: response },
+      ])
+
+    function seedInterruptedMicrovmTask(cwd: string): { record: TaskRecord; worktree: string } {
+      const worktree = makeRepo()
+      mkdirSync(join(worktree, '.codesema'), { recursive: true })
+      writeFileSync(join(worktree, '.codesema', 'runbook.json'), '{}')
+      execFileSync('git', ['add', '-A'], { cwd: worktree, stdio: 'ignore' })
+      execFileSync('git', ['commit', '-m', 'runbook'], { cwd: worktree, stdio: 'ignore' })
+      const record = createTask(cwd, {
+        title: 'vm task',
+        prompt: 'do it',
+        autoShip: false,
+        base: '',
+        branch: '',
+        worktree,
+        isolation: 'microvm',
+      })
+      record.worktree = worktree
+      record.status = 'interrupted'
+      saveTask(cwd, record)
+      return { record, worktree }
+    }
+
+    test('a passed verification stamps runbook_sha/runbook_integrity, writes verification.json, keeps review_ok', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const verification: TaskVerification = {
+        head_sha: 'irrelevant-here',
+        runbook_sha: '0123456789abcdef',
+        started_at: '2026-01-01T00:00:00.000Z',
+        finished_at: '2026-01-01T00:05:00.000Z',
+        status: 'passed',
+        checks: [
+          { command: 'npm test', status: 'passed', exit_code: 0, duration_ms: 10, tail: '' },
+        ],
+        integrity_ok: true,
+        changed_dependency_files: [],
+        error: null,
+      }
+      const verifyCalls: VerifyTaskOptions[] = []
+      const envelopes: TaskEnvelope[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: (opts) => {
+          verifyCalls.push(opts)
+          return Promise.resolve(verification)
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+      manager.subscribe((envelope) => envelopes.push(envelope))
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+      expect(verifyCalls).toHaveLength(1)
+      expect(verifyCalls[0]?.worktree).toBe(worktree)
+      expect(verifyCalls[0]?.runbook).toEqual(runbook)
+      expect(verifyCalls[0]?.snapshotName).toBeNull()
+      expect(verifyCalls[0]?.validatedSha).toBeTruthy()
+
+      const final = loadTask(project.path, record.id)
+      expect(final?.runbook_sha).toBe('0123456789abcdef')
+      expect(final?.runbook_integrity).toBe(true)
+      expect(readTaskVerification(project.path, record.id)).toEqual(verification)
+      expect(
+        envelopes.some(
+          (e) =>
+            e.event.name === 'task_event' &&
+            e.event.data.type === 'checks' &&
+            e.event.data.data.status === 'passed',
+        ),
+      ).toBe(true)
+    })
+
+    test('a refused verification (runbook integrity drifted) sends the task back with checks_failed', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      const runbook = baseRunbook({ depends_on_files: ['package.json'] })
+      const verification: TaskVerification = {
+        head_sha: 'irrelevant-here',
+        runbook_sha: '0123456789abcdef',
+        started_at: '2026-01-01T00:00:00.000Z',
+        finished_at: '2026-01-01T00:05:00.000Z',
+        status: 'refused',
+        checks: [],
+        integrity_ok: false,
+        changed_dependency_files: ['package.json'],
+        error: null,
+      }
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: () => Promise.resolve(verification),
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ko')
+
+      const final = loadTask(project.path, record.id)
+      expect(final?.runbook_integrity).toBe(false)
+      expect(final?.reason?.code).toBe('checks_failed')
+      expect(final?.reason?.detail).toContain('package.json')
+      expect(readTaskVerification(project.path, record.id)?.status).toBe('refused')
+      void worktree
+    })
+
+    test('a task with no runbook settles normally: no verification attempted, no runbook_sha stamped', async () => {
+      const project = register(makeRepo())
+      const worktree = makeRepo()
+      const record = createTask(project.path, {
+        title: 'vm task',
+        prompt: 'do it',
+        autoShip: false,
+        base: '',
+        branch: '',
+        worktree,
+        isolation: 'microvm',
+      })
+      record.worktree = worktree
+      record.status = 'interrupted'
+      saveTask(project.path, record)
+      let verifyCalled = false
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => null,
+        verifyTaskFn: () => {
+          verifyCalled = true
+          return Promise.resolve({
+            head_sha: 'x',
+            runbook_sha: '0123456789abcdef',
+            started_at: 'x',
+            finished_at: 'y',
+            status: 'passed',
+            checks: [],
+            integrity_ok: true,
+            changed_dependency_files: [],
+            error: null,
+          })
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+      expect(verifyCalled).toBe(false)
+      expect(loadTask(project.path, record.id)?.runbook_sha).toBeUndefined()
+      expect(readTaskVerification(project.path, record.id)).toBeNull()
+    })
+
+    test("a 'container' task never triggers verification, even with a runbook present", async () => {
+      const project = register(makeRepo())
+      const { record: cworktreeRecord, worktree } = seedCommittedTask(project.path)
+      cworktreeRecord.isolation = 'container'
+      cworktreeRecord.status = 'review_ok'
+      saveTask(project.path, cworktreeRecord)
+      let verifyCalled = false
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => baseRunbook(),
+        verifyTaskFn: () => {
+          verifyCalled = true
+          return Promise.resolve({
+            head_sha: 'x',
+            runbook_sha: '0123456789abcdef',
+            started_at: 'x',
+            finished_at: 'y',
+            status: 'passed',
+            checks: [],
+            integrity_ok: true,
+            changed_dependency_files: [],
+            error: null,
+          })
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async () => {},
+        ...fakeRunner(),
+      })
+
+      expect(manager.checks(project.id, cworktreeRecord.id)).toEqual({ ok: true })
+      await until(() => readTaskChecks(project.path, cworktreeRecord.id)?.status !== undefined)
+      void worktree
+      expect(verifyCalled).toBe(false)
+    })
   })
 })

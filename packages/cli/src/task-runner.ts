@@ -40,6 +40,7 @@ import {
   TICKET_CRITERIA_MIN,
   type AcceptanceCriterion,
   type ReasonCode,
+  type RunbookConfig,
   type TaskEvent,
   type TaskRecord,
   type TaskStatus,
@@ -61,6 +62,8 @@ import {
   type LoadCap,
   type LoadCapSnapshot,
 } from './load-cap.js'
+import type { SandboxDriver, SandboxSecret } from './microsandbox-driver.js'
+import { runMicrovmTurn, type RunMicrovmTurnOptions } from './microvm-turn.js'
 import { projectIdFor } from './projects.js'
 import type { ChecksConfig } from './repo-config.js'
 import { RUNNER_FALLBACK_GIT_IDENTITY } from './runner-secrets.js'
@@ -566,6 +569,18 @@ export type TaskTurnOutcome =
       branchProposal?: string
     }
 
+export type RunTaskTurnMicrovmOptions = {
+  driver: SandboxDriver
+  /** Project snapshot to restore (image + install already done); null boots the image cold. */
+  snapshotName: string | null
+  /** Image to boot when there is no snapshot: the runbook image, else the resolved base image. */
+  image: string
+  /** The validated runbook, when the repository has one: its egress joins the allowlist. */
+  runbook: RunbookConfig | null
+  /** Secrets to declare on the sandbox, built from CAGE_FORWARDED_ENV; never passed as env. */
+  secrets: readonly SandboxSecret[]
+}
+
 export type RunTaskTurnOptions = {
   /** The task's worktree, not the main repo. */
   cwd: string
@@ -620,6 +635,15 @@ export type RunTaskTurnOptions = {
   getChecksConfig?: () => ChecksConfig | null | undefined
   /** Test seam for the caged path; the default drives real containers. */
   runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
+  /**
+   * The sandbox, snapshot, image, runbook and secrets a 'microvm' turn runs
+   * with — resolved by the caller (task-server.ts) fresh at each turn, since
+   * the worktree, the runbook and the snapshot can all change between turns.
+   * Required for a 'microvm' record; absent otherwise.
+   */
+  microvm?: RunTaskTurnMicrovmOptions | undefined
+  /** Test seam for the microvm path; the default drives a real sandbox. */
+  runMicrovmTurnFn?: (options: RunMicrovmTurnOptions) => Promise<string>
   /** Test seam for the repo's worktree lock; the default takes the real one. */
   worktreeLockFn?: WorktreeLockFn | undefined
 }
@@ -644,6 +668,18 @@ function domainsForTask(
 }
 
 /**
+ * A 'microvm' record with no `opts.microvm` is a caller bug (task-server.ts
+ * builds it fresh at every turn): fails loudly here rather than handing
+ * `runMicrovmTurn` an `undefined` driver it would fail on far less clearly.
+ */
+function requireMicrovmOptions(opts: RunTaskTurnOptions): RunTaskTurnMicrovmOptions {
+  if (!opts.microvm) {
+    throw new Error("runTaskTurn: a 'microvm' task requires opts.microvm")
+  }
+  return opts.microvm
+}
+
+/**
  * Runs one agent turn and reports what happened through events. The command
  * carries the stream-json flags itself, so runAgent's own claude parsing
  * stays off (it bails on an explicit --output-format) and onText delivers the
@@ -659,11 +695,14 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
     : null
   // The isolation is fixed on the record at creation: 'container' turns run
   // inside the task's own box (full agent tools, the cage is the guarantee),
-  // everything else keeps the host path with its policy hardening.
+  // 'microvm' the same box inside a disposable VM instead, everything else
+  // keeps the host path with its policy hardening.
   const caged = opts.task.isolation === 'container'
-  const command = caged
-    ? containerTaskCommandFor(rawCommand, { session })
-    : taskCommandFor(rawCommand, { session })
+  const microvmed = opts.task.isolation === 'microvm'
+  const command =
+    caged || microvmed
+      ? containerTaskCommandFor(rawCommand, { session })
+      : taskCommandFor(rawCommand, { session })
 
   opts.onEvent({
     type: 'turn_started',
@@ -711,7 +750,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
             },
             onCostDegraded: (degradation) => opts.onEvent(costEvent(degradation)),
           },
-          { at: startedAt, env: costRunEnv(caged, command) },
+          { at: startedAt, env: costRunEnv(caged || microvmed, command) },
         )
       : null
   let fed = 0
@@ -736,18 +775,14 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
   const absoluteCapMs = effectiveAbsoluteCapMs(opts.timeoutMs, budgets)
   const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
   const allowedDomains = domainsForTask(opts.task, opts)
+  const attachments = opts.task.attachments?.length
+    ? { attachments: opts.task.attachments.map((a) => ({ name: a.name, worktree: a.worktree })) }
+    : {}
   const raw = caged
     ? await (opts.runContainerTurnFn ?? runContainerTurn)({
         taskId: opts.task.id,
         worktree: opts.cwd,
-        ...(opts.task.attachments?.length
-          ? {
-              attachments: opts.task.attachments.map((a) => ({
-                name: a.name,
-                worktree: a.worktree,
-              })),
-            }
-          : {}),
+        ...attachments,
         command,
         prompt: opts.prompt,
         timeoutMs: absoluteCapMs,
@@ -758,17 +793,33 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
         ...(opts.signal ? { signal: opts.signal } : {}),
         onText,
       })
-    : await run({
-        command,
-        prompt: opts.prompt,
-        cwd: opts.cwd,
-        absoluteCapMs,
-        env: agentEnv(command),
-        watchdog: budgets,
-        ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
-        ...(opts.signal ? { signal: opts.signal } : {}),
-        onText,
-      })
+    : microvmed
+      ? await (opts.runMicrovmTurnFn ?? runMicrovmTurn)({
+          taskId: opts.task.id,
+          worktree: opts.cwd,
+          ...attachments,
+          command,
+          prompt: opts.prompt,
+          timeoutMs: absoluteCapMs,
+          watchdog: budgets,
+          ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
+          ...(allowedDomains ? { allowedDomains } : {}),
+          ...(checksConfig !== undefined ? { checksConfig } : {}),
+          ...(opts.signal ? { signal: opts.signal } : {}),
+          onText,
+          ...requireMicrovmOptions(opts),
+        })
+      : await run({
+          command,
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          absoluteCapMs,
+          env: agentEnv(command),
+          watchdog: budgets,
+          ...(opts.onHeartbeat ? { onHeartbeat: opts.onHeartbeat } : {}),
+          ...(opts.signal ? { signal: opts.signal } : {}),
+          onText,
+        })
   // The resolved value is the full stdout: replay whatever onText never saw
   // (an injected runAgentFn may resolve without streaming at all).
   if (parser && raw.length > fed) {
@@ -1134,6 +1185,15 @@ export type TaskRunnerOptions = {
   getChecksConfig?: () => ChecksConfig | null | undefined
   /** Test seam for the caged path; the default drives real containers. */
   runContainerTurnFn?: (options: RunContainerTurnOptions) => Promise<string>
+  /**
+   * Resolves the driver/snapshot/image/runbook/secrets a 'microvm' record's
+   * turn runs with, called fresh at each turn (the worktree, the runbook and
+   * the snapshot can all change between two turns of the same task). Never
+   * called for a record whose isolation is not 'microvm'.
+   */
+  resolveMicrovmFn?: (record: TaskRecord) => Promise<RunTaskTurnMicrovmOptions>
+  /** Test seam for the microvm path; the default drives a real sandbox. */
+  runMicrovmTurnFn?: (options: RunMicrovmTurnOptions) => Promise<string>
   /** Test seam for the repo's worktree lock; the default takes the real one. */
   worktreeLockFn?: WorktreeLockFn | undefined
   /** Test seam for the pre-turn dependency install; default drives a checks container. */
@@ -2458,9 +2518,15 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     const taskCommand = commandForTask(record, opts.command)
     // Re-read per attempt: the dead-session replay below clears
     // agent_session_id, and both the prompt (full context vs message-only)
-    // and the session flag are derived from it inside runTaskTurn.
-    const execute = (): Promise<TaskTurnOutcome> =>
-      runTaskTurn({
+    // and the session flag are derived from it inside runTaskTurn. Also
+    // re-resolved per attempt: a 'microvm' record's driver/runbook/snapshot
+    // are those of THIS turn, never a stale one from an earlier attempt.
+    const execute = async (): Promise<TaskTurnOutcome> => {
+      const microvm =
+        record.isolation === 'microvm' && opts.resolveMicrovmFn
+          ? await opts.resolveMicrovmFn(record)
+          : undefined
+      return runTaskTurn({
         cwd: record.worktree,
         task: record,
         prompt: composeTurnPrompt(record, taskCommand),
@@ -2480,7 +2546,10 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         ...(opts.pinAllowedDomains ? { pinAllowedDomains: true } : {}),
         ...(checksConfig !== undefined ? { checksConfig } : {}),
         ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
+        ...(microvm ? { microvm } : {}),
+        ...(opts.runMicrovmTurnFn ? { runMicrovmTurnFn: opts.runMicrovmTurnFn } : {}),
       })
+    }
     return (
       execute()
         // A stored session can stop existing under the task (the cage home

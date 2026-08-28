@@ -639,12 +639,15 @@ export async function workspace(
     draining,
     cwd: repoRoot ?? opts.cwd,
   })
-  // T1.9 housekeeping: orphaned HOME volumes and the retention purge of old
-  // terminated tasks. Neither gates the workspace being usable (both report
-  // through `notice` — the console today, see task-server.ts) and neither is
-  // awaited: a slow container runtime or a large tasks/ directory must not
-  // delay the line below any more than starting the queued tasks does.
+  // T1.9 housekeeping: orphaned HOME volumes, orphaned microvm sandboxes
+  // (a no-op unless this workspace is configured for microvm) and the
+  // retention purge of old terminated tasks. None of the three gates the
+  // workspace being usable (each reports through `notice` — the console
+  // today, see task-server.ts) and none is awaited: a slow runtime or a
+  // large tasks/ directory must not delay the line below any more than
+  // starting the queued tasks does.
   void taskManager.sweepOrphanedVolumes()
+  void taskManager.sweepOrphanedSandboxes()
   void taskManager.applyRetention()
   // ONLY NOW do the persisted queues restart. Everything above had to be true
   // first: the server listens (a task that starts has somewhere to report),

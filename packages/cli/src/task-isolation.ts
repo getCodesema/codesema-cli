@@ -56,6 +56,7 @@ import {
 } from './container-git.js'
 import { isTaskId, type TaskIsolation } from './contract.js'
 import { t } from './i18n.js'
+import type { SandboxDriver, SandboxSecret } from './microsandbox-driver.js'
 import type { ChecksConfig } from './repo-config.js'
 import { detectContainerRuntime, resolveChecksPlan, type ExecResult } from './task-checks.js'
 
@@ -236,6 +237,79 @@ const OPENCODE_FORWARDED_ENV: readonly string[] = [
   'GOOGLE_API_KEY',
   'XAI_API_KEY',
 ]
+
+/**
+ * The three `CAGE_FORWARDED_ENV` entries that are configuration, not a
+ * credential: overrides the agent CLI itself reads (which base URL, which
+ * model). The microVM turn (microvm-turn.ts) forwards these as plain sandbox
+ * env, never as a `SandboxSecret` — there is nothing in them for the network
+ * proxy to guard.
+ */
+const NON_SECRET_FORWARDED_ENV: ReadonlySet<string> = new Set([
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+])
+
+/**
+ * Every domain `isolationDomainsFor` can ever return for an opencode command:
+ * the safe union to grant an opencode provider secret at microVM-spec-build
+ * time, when the model (and therefore the one exact domain the running turn
+ * will actually need) is not known yet — `microvmSecretsFromEnv` only sees
+ * `env`, not the command line.
+ */
+const MICROVM_OPENCODE_SECRET_HOSTS: readonly string[] = [
+  ...DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+  'models.opencode.ai',
+  'openrouter.ai',
+  'opencode.ai',
+]
+
+/**
+ * Non-secret provider CONFIG forwarded into a microVM sandbox's plain env
+ * (never a `SandboxSecret`): base URL / model overrides the agent CLI reads
+ * directly, as opposed to `microvmSecretsFromEnv`'s credentials, which the
+ * guest never sees in clear.
+ */
+export function microvmNonSecretEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const name of NON_SECRET_FORWARDED_ENV) {
+    const value = env[name]
+    if (value) {
+      out[name] = value
+    }
+  }
+  return out
+}
+
+/**
+ * Secrets to declare on a microVM `SandboxSpec` for the provider credentials
+ * present in `env`: one per `CAGE_FORWARDED_ENV` / `OPENCODE_FORWARDED_ENV`
+ * name that is actually set, minus the three names that are configuration
+ * (see `microvmNonSecretEnv`). The guest only ever sees `$MSB_<name>`; the
+ * real value stays on the host and the network proxy substitutes it toward
+ * `allowedHosts` only (spike of 2026-08-28, criterion 6) — never passed as
+ * argv, never passed as plain env.
+ */
+export function microvmSecretsFromEnv(env: NodeJS.ProcessEnv): SandboxSecret[] {
+  const secrets: SandboxSecret[] = []
+  for (const name of CAGE_FORWARDED_ENV) {
+    if (NON_SECRET_FORWARDED_ENV.has(name)) {
+      continue
+    }
+    const value = env[name]
+    if (value) {
+      secrets.push({ env: name, value, allowedHosts: DEFAULT_ISOLATION_ALLOWED_DOMAINS })
+    }
+  }
+  for (const name of OPENCODE_FORWARDED_ENV) {
+    const value = env[name]
+    if (value) {
+      secrets.push({ env: name, value, allowedHosts: MICROVM_OPENCODE_SECRET_HOSTS })
+    }
+  }
+  return secrets
+}
 
 /** First PATH token of a command line (`/usr/bin/opencode run` → `opencode`). */
 function commandBin(command: string): string {
@@ -2143,13 +2217,26 @@ export type ProbeIsolationOptions = {
    */
   ignoreAgent?: boolean
   execFn?: IsolationExecFn
+  /**
+   * `configured === 'microvm'` only: the driver to probe. Defaults to a
+   * lazily-imported `createMicrosandboxDriver()` — plain callers never pay
+   * for loading the SDK module unless a project actually asks for microvm.
+   */
+  driver?: SandboxDriver
+}
+
+/** `probeIsolation`'s default microVM driver: imported lazily so the SDK only loads when a project opts into microvm. */
+async function defaultMicrovmDriver(): Promise<SandboxDriver> {
+  const mod = await import('./microsandbox-driver.js')
+  return mod.createMicrosandboxDriver()
 }
 
 /**
- * Boot probe: is a container runtime there, does it answer, and can the cage
- * run the configured agent at all? Deliberately cheap (no image build): a
- * build failure later fails that task loudly, it does not silently downgrade
- * the whole workspace.
+ * Boot probe: is a container runtime (or, for `configured === 'microvm'`, a
+ * microVM driver) there, does it answer, and can the cage run the configured
+ * agent at all? Deliberately cheap (no image build): a build failure later
+ * fails that task loudly, it does not silently downgrade the whole
+ * workspace.
  */
 export async function probeIsolation(opts: ProbeIsolationOptions): Promise<IsolationProbe> {
   const configured = opts.configured
@@ -2165,6 +2252,22 @@ export async function probeIsolation(opts: ProbeIsolationOptions): Promise<Isola
   }
   if (!opts.ignoreAgent && !cageableCommand(opts.command)) {
     return deny(t('isolation.reasonAgent', { command: opts.command }))
+  }
+  if (configured === 'microvm') {
+    const driver = opts.driver ?? (await defaultMicrovmDriver())
+    const sandboxProbe = await driver.probe()
+    if (!sandboxProbe.available) {
+      return deny(sandboxProbe.reason ?? t('isolation.reasonNoMicrovm'))
+    }
+    return {
+      available: true,
+      mode: 'microvm',
+      reason: sandboxProbe.version
+        ? `microsandbox ${sandboxProbe.version} is available`
+        : 'microsandbox is available',
+      configured,
+      runtime: null,
+    }
   }
   const runtime = await isolationRuntime(opts.execFn)
   if (!runtime) {
@@ -2233,6 +2336,26 @@ export function overlayIsolationProbe(
       runtime: machine.runtime,
     }
   }
+  if (configured === 'microvm') {
+    // No I/O here on purpose (this function is pure): a microVM probe needs
+    // the driver, which only `probeIsolation` touches. When the machine probe
+    // WAS itself taken with `configured: 'microvm'` (a workspace whose
+    // default is microvm, or a caller that probed this exact project
+    // directly), its available/mode/reason are reused as-is — same trick as
+    // `machine.runtime` below for container. Otherwise there is nothing
+    // machine-wide to reuse (the shared boot probe never tried a driver at
+    // all) and the project is refused until it is actually probed.
+    if (machine.configured === 'microvm') {
+      return { ...machine, configured }
+    }
+    return {
+      available: false,
+      mode: 'policy',
+      reason: t('isolation.reasonMicrovmNotProbed'),
+      configured,
+      runtime: machine.runtime,
+    }
+  }
   if (!machine.runtime) {
     return {
       available: false,
@@ -2268,14 +2391,14 @@ export function resolveTaskIsolation(
   isolation: TaskIsolation
   reason: string
 } | null {
-  if (probe.configured === 'container' && !probe.available) {
+  if ((probe.configured === 'container' || probe.configured === 'microvm') && !probe.available) {
     return null
   }
   const result: { isolation: TaskIsolation; reason: string } =
     probe.configured === 'policy'
       ? { isolation: 'policy', reason: probe.reason }
       : probe.available
-        ? { isolation: 'container', reason: probe.reason }
+        ? { isolation: probe.mode, reason: probe.reason }
         : { isolation: 'policy', reason: probe.reason }
   if (result.isolation === 'policy' && command !== undefined && isOpencode(command)) {
     return null

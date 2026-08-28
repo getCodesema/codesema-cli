@@ -31,6 +31,8 @@ import { DEFAULT_TIMEOUT_S } from './fix.js'
 import { refExists, tryGit } from './git.js'
 import { setLanguage } from './i18n.js'
 import { createLoadCap, type LoadCap } from './load-cap.js'
+import type { SandboxDriver } from './microsandbox-driver.js'
+import type { RunMicrovmTurnOptions } from './microvm-turn.js'
 import { projectIdFor } from './projects.js'
 import { CAGE_FORWARDED_ENV, type RunContainerTurnOptions } from './task-isolation.js'
 import {
@@ -54,6 +56,7 @@ import {
   supportsSessionResume,
   taskCommandFor,
   taskCriteria,
+  type RunTaskTurnMicrovmOptions,
   type TaskActionResult,
 } from './task-runner.js'
 import { branchCheckoutPath, type WorktreeLockFn } from './task-worktree.js'
@@ -3852,6 +3855,243 @@ describe('container isolation branch', () => {
     const last = readTaskEvents(repo, task.id).at(-1)
     expect(last?.type).toBe('interrupted')
     expect(last?.data.reason).toBe('shutdown')
+  })
+})
+
+describe('microvm isolation branch', () => {
+  const fakeDriver = { kind: 'fake' } as unknown as SandboxDriver
+
+  /** Captures the microvm path without ever touching a sandbox runtime. */
+  function fakeMicrovm(response = 'done in the vm') {
+    const calls: RunMicrovmTurnOptions[] = []
+    const run = (options: RunMicrovmTurnOptions): Promise<string> => {
+      calls.push(options)
+      const raw = claudeStream(response)
+      options.onText?.(raw)
+      return Promise.resolve(raw)
+    }
+    return { calls, run }
+  }
+
+  /** Captures the container path so a microvm test can assert it never fires. */
+  function fakeCage(response = 'should never run') {
+    const calls: RunContainerTurnOptions[] = []
+    const run = (options: RunContainerTurnOptions): Promise<string> => {
+      calls.push(options)
+      const raw = claudeStream(response)
+      options.onText?.(raw)
+      return Promise.resolve(raw)
+    }
+    return { calls, run }
+  }
+
+  const microvmOptions = (
+    over: Partial<RunTaskTurnMicrovmOptions> = {},
+  ): RunTaskTurnMicrovmOptions => ({
+    driver: fakeDriver,
+    snapshotName: 'codesema-p1-hash',
+    image: 'node:26',
+    runbook: null,
+    secrets: [],
+    ...over,
+  })
+
+  test("a 'microvm' record runs in the sandbox, never through the host agent nor the container path", async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'vmed', 'do it', 'microvm')
+    const vm = fakeMicrovm()
+    const cage = fakeCage()
+    const host = fakeClaude(() => 'should never run either')
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: host.run,
+      runContainerTurnFn: cage.run,
+      runMicrovmTurnFn: vm.run,
+      microvm: microvmOptions(),
+    })
+    expect(host.commands).toHaveLength(0)
+    expect(cage.calls).toHaveLength(0)
+    expect(vm.calls).toHaveLength(1)
+    expect(outcome.response).toBe('done in the vm')
+    expect(outcome.sessionId).toBe('sess-123')
+  })
+
+  test('the microvm command swaps the policy hardening for the cage flag, exactly like the container path', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'vmed', 'do it', 'microvm')
+    const vm = fakeMicrovm()
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runMicrovmTurnFn: vm.run,
+      microvm: microvmOptions(),
+    })
+    const command = vm.calls[0]?.command ?? ''
+    expect(command).toContain('--dangerously-skip-permissions')
+    expect(command).toContain('--output-format stream-json')
+    expect(command).toContain('--session-id')
+    expect(command).not.toContain('--strict-mcp-config')
+    expect(command).not.toContain('--setting-sources')
+  })
+
+  test('the vm receives the task id, its worktree, the allowlist, the checks config and the microvm build', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'vmed', 'do it', 'microvm')
+    const vm = fakeMicrovm()
+    const runbook = {
+      version: 1 as const,
+      image: 'node:26',
+      install: ['npm install'],
+      services: { host_up: [], compose_file: null },
+      healthchecks: [],
+      tests: ['npm test'],
+      egress: [],
+      depends_on_files: [],
+    }
+    const secrets = [
+      { env: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'tok', allowedHosts: ['api.anthropic.com'] },
+    ]
+    await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1234,
+      onEvent: () => {},
+      allowedDomains: ['api.anthropic.com', 'registry.npmjs.org'],
+      checksConfig: { image: 'oven/bun:1', commands: ['bun test'] },
+      runMicrovmTurnFn: vm.run,
+      microvm: microvmOptions({ snapshotName: null, image: 'node:26', runbook, secrets }),
+    })
+    const call = vm.calls[0]
+    expect(call?.taskId).toBe(task.id)
+    expect(call?.worktree).toBe(repo)
+    expect(call?.prompt).toBe('do it')
+    expect(call?.timeoutMs).toBe(effectiveAbsoluteCapMs(1234, AGENT_WATCHDOG_DEFAULTS))
+    expect(call?.watchdog).toEqual(AGENT_WATCHDOG_DEFAULTS)
+    expect(call?.allowedDomains).toEqual(['api.anthropic.com', 'registry.npmjs.org'])
+    expect(call?.checksConfig?.image).toBe('oven/bun:1')
+    expect(call?.driver).toBe(fakeDriver)
+    expect(call?.snapshotName).toBeNull()
+    expect(call?.image).toBe('node:26')
+    expect(call?.runbook).toEqual(runbook)
+    expect(call?.secrets).toEqual(secrets)
+  })
+
+  test('a microvm record with no opts.microvm fails loudly instead of calling runMicrovmTurn with an undefined build', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'vmed', 'do it', 'microvm')
+    const vm = fakeMicrovm()
+    await expect(
+      runTaskTurn({
+        cwd: repo,
+        task,
+        prompt: 'do it',
+        command: 'claude -p',
+        timeoutMs: 1000,
+        onEvent: () => {},
+        runMicrovmTurnFn: vm.run,
+      }),
+    ).rejects.toThrow(/microvm/)
+    expect(vm.calls).toHaveLength(0)
+  })
+
+  test("a 'policy' record never touches the microvm path even when a build is supplied", async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'host', 'do it')
+    const vm = fakeMicrovm()
+    const host = fakeClaude(() => 'done on the host')
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do it',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: () => {},
+      runAgentFn: host.run,
+      runMicrovmTurnFn: vm.run,
+      microvm: microvmOptions(),
+    })
+    expect(vm.calls).toHaveLength(0)
+    expect(outcome.response).toBe('done on the host')
+  })
+
+  test('createTaskRunner re-resolves the microvm build fresh at each turn', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'vmed', 'do it', 'microvm')
+    const calls: RunMicrovmTurnOptions[] = []
+    let snapshotName: string | null = 'codesema-p1-hash-1'
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      resolveMicrovmFn: () => Promise.resolve(microvmOptions({ snapshotName })),
+      runMicrovmTurnFn: (options) => {
+        calls.push(options)
+        return Promise.resolve(claudeStream('done in the vm'))
+      },
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(calls[0]?.snapshotName).toBe('codesema-p1-hash-1')
+    snapshotName = 'codesema-p1-hash-2'
+    expect(runner.reply(task.id, 'again')).toEqual({ ok: true })
+    await until(() => calls.length === 2)
+    expect(calls[1]?.snapshotName).toBe('codesema-p1-hash-2')
+  })
+
+  test('resolveMicrovmFn is never called for a non-microvm task', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'host', 'do it')
+    let resolveCalls = 0
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      resolveMicrovmFn: () => {
+        resolveCalls += 1
+        return Promise.resolve(microvmOptions())
+      },
+      runAgentFn: fakeClaude(() => 'done on the host').run,
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    expect(resolveCalls).toBe(0)
+  })
+
+  test('a microvm turn still gets its commit from the HOST runner (no git creds in the box)', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'Vmed feature', 'write feature.txt', 'microvm')
+    const calls: RunMicrovmTurnOptions[] = []
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      resolveMicrovmFn: () => Promise.resolve(microvmOptions()),
+      runMicrovmTurnFn: (options) => {
+        calls.push(options)
+        // The agent writes inside the copied worktree, as it would in its VM.
+        writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+        return Promise.resolve(claudeStream('feature written'))
+      },
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const record = loadTask(repo, task.id)
+    expect(record?.isolation).toBe('microvm')
+    expect(tryGit(['log', '-1', '--pretty=%s'], record?.worktree ?? '')).toBe(
+      `task(${task.id}): Vmed feature — turn 1`,
+    )
+    expect(calls[0]?.worktree).toBe(record?.worktree)
   })
 })
 

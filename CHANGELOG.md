@@ -3,6 +3,23 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.20.0] - 2026-08-28
+
+### Added
+
+- **`isolation: "microvm"`: a task's turn runs in a disposable Microsandbox VM.** Beside `container` and `policy`, the runner can now boot a throwaway microVM (libkrun/KVM, `microsandbox` SDK 0.6.15 as an optional dependency) per turn: the worktree is copied in, the agent runs as a non-root user with the same tools as the cage, the result is copied back and the VM is destroyed. Never picked by `auto`; `codesema runner serve` refuses to create a `microvm` task when the workspace was not probed for it (`msb doctor` is the way out). The seam is `SandboxDriver` (`microsandbox-driver.ts`, with a `FakeSandboxDriver` for every test) and `runMicrovmTurn`.
+- **The runbook: how a repository is installed, started and tested, validated by actually doing it.** `codesema runbook scan` lets an agent propose `.codesema/runbook.json` (image, install, services, healthchecks, tests, egress allowlist, `depends_on_files`), then replays it in a microVM and only keeps a runbook whose tests pass. The runner daemon claims and runs one queued hub runbook scan per tick in `microvm` mode. `@codesema/contract` 0.11.0 carries `RunbookConfig`, `RunbookValidation`, `RunbookScan` and their sanitizers.
+- **Mechanical verification of a microvm task.** After a turn's commit and before the review, `verifyTask` replays the validated runbook's `tests` in a fresh VM restored from the project snapshot; a drift of `depends_on_files` since validation refuses the verification outright. The verdict (`TaskVerification`) is persisted, reported to the hub, folded into the reviewer's prompt as a mandatory chapter, and a refused or failed verification sends the task back exactly like red checks.
+- **Warm per-project snapshot.** `microvm-snapshot.ts` builds one snapshot per project (image + `install` + services), keyed by a fingerprint of lockfiles, compose file and canonical runbook; older ones are purged, and a runbook needing a flat root disk (dockerd) falls back to a cold boot.
+- **Checks, review and ship run in their own sandboxes for a microvm task.** `runChecks`, `runAdHocCheck` and `bootstrapWorktreeInstall` accept a `StepExecutor` (`microvmStepExecutor`); the reviewer runs in a read-only VM distinct from the dev VM (`runMicrovmReview`, network limited to the Anthropic hosts); the push and the merge request come from a dedicated `codesema-gitops-<taskId>` sandbox with the forge token carried as a placeholder secret only, never in argv or env. Orphaned `codesema-*` sandboxes are swept at boot.
+- **Hub contract for the runbook loop.** New `hub-client` calls: `listRunbookScans`, `claimRunbookScan`, `reportRunbookScanResult`, `failRunbookScan`, `currentRunbook`, `verification`; the `merged` transition carries `changed_files` so the hub can mark a runbook stale.
+
+### Changed
+
+- **`TaskIsolation` gains `microvm`** (`@codesema/contract`, CLI config, web UI badge and plan): a task record carries `runbook_sha`/`runbook_integrity` when it was verified against a runbook.
+- **The reviewer resolves the microvm snapshot, runbook and mechanical verification per task turn** (`resolveReviewContext`) instead of freezing them once per project, and finding repro checks of a VM-isolated task run through the injected microvm `StepExecutor` instead of always falling back to docker/podman.
+- **The web workspace shows a microVM badge, plan label and build-image hint** for `microvm` tasks instead of folding them into `policy`.
+
 ## [0.19.0] - 2026-08-28
 
 ### Added

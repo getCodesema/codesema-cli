@@ -613,6 +613,9 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'isolation.reasonNoRuntime': 'no container runtime found (install docker or podman)',
   'isolation.reasonUnreachable': '{runtime} is installed but its engine does not answer',
   'isolation.reasonReady': '{runtime} is available',
+  'isolation.reasonNoMicrovm':
+    'no microVM runtime found (microsandbox unavailable, run `msb doctor`)',
+  'isolation.reasonMicrovmNotProbed': 'microvm isolation was not probed for this project',
 }
 
 export type MessageKey = keyof typeof en
@@ -1238,6 +1241,9 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'isolation.reasonNoRuntime': 'aucun runtime de container trouvé (installez docker ou podman)',
   'isolation.reasonUnreachable': '{runtime} est installé mais son moteur ne répond pas',
   'isolation.reasonReady': '{runtime} est disponible',
+  'isolation.reasonNoMicrovm':
+    'aucun runtime microVM trouvé (microsandbox indisponible, lancez `msb doctor`)',
+  'isolation.reasonMicrovmNotProbed': "l'isolation microvm n'a pas été sondée pour ce projet",
 }
 
 /**

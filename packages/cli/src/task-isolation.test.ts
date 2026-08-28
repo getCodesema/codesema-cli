@@ -22,6 +22,12 @@ import {
   prepareContainerGit,
   resolveWorktreeGitLink,
 } from './container-git.js'
+import type {
+  SandboxDriver,
+  SandboxHandle,
+  SandboxProbe,
+  SandboxSpec,
+} from './microsandbox-driver.js'
 import type { ExecResult } from './task-checks.js'
 import {
   agentContainerName,
@@ -48,6 +54,8 @@ import {
   HOME_VOLUME_OWNER_LABEL,
   installCommandFor,
   isolationDomainsFor,
+  microvmNonSecretEnv,
+  microvmSecretsFromEnv,
   overlayIsolationProbe,
   parseJsonc,
   probeIsolation,
@@ -66,6 +74,25 @@ import {
   type IsolationExecFn,
   type IsolationProbe,
 } from './task-isolation.js'
+
+/** Minimal `SandboxDriver` double for the microvm probe path: only `probe()` is exercised here. */
+function fakeSandboxDriver(probe: () => Promise<SandboxProbe>): SandboxDriver {
+  const notImplemented = (method: string) => (): never => {
+    throw new Error(`fakeSandboxDriver.${method} not implemented`)
+  }
+  return {
+    kind: 'fake',
+    probe,
+    create: notImplemented('create') as unknown as (spec: SandboxSpec) => Promise<SandboxHandle>,
+    snapshot: notImplemented('snapshot') as unknown as SandboxDriver['snapshot'],
+    listSandboxes: notImplemented('listSandboxes') as unknown as SandboxDriver['listSandboxes'],
+    listSnapshots: notImplemented('listSnapshots') as unknown as SandboxDriver['listSnapshots'],
+    destroy: notImplemented('destroy') as unknown as SandboxDriver['destroy'],
+    removeSnapshot: notImplemented('removeSnapshot') as unknown as SandboxDriver['removeSnapshot'],
+    ensureVolume: notImplemented('ensureVolume') as unknown as SandboxDriver['ensureVolume'],
+    removeVolume: notImplemented('removeVolume') as unknown as SandboxDriver['removeVolume'],
+  }
+}
 
 // --- rigs -----------------------------------------------------------------
 
@@ -2215,6 +2242,187 @@ describe('resolveTaskIsolation', () => {
 
   test('policy + opencode is refused (null), never a host policy run', () => {
     expect(resolveTaskIsolation(probe({ configured: 'policy' }), 'opencode run')).toBeNull()
+  })
+
+  test('microvm: the sandbox when the probe says it is there', () => {
+    expect(
+      resolveTaskIsolation(probe({ configured: 'microvm', mode: 'microvm', runtime: null }))
+        ?.isolation,
+    ).toBe('microvm')
+  })
+
+  test('microvm without a driver: refused (null = 409 at the creation), never a silent policy fallback', () => {
+    expect(
+      resolveTaskIsolation(
+        probe({ configured: 'microvm', available: false, mode: 'policy', runtime: null }),
+      ),
+    ).toBeNull()
+  })
+})
+
+describe('probeIsolation (microvm, lot C2)', () => {
+  test('an available driver makes the sandbox available', async () => {
+    const driver = fakeSandboxDriver(() =>
+      Promise.resolve({ available: true, reason: null, version: '0.6.15' }),
+    )
+    const probe = await probeIsolation({ configured: 'microvm', command: 'claude -p', driver })
+    expect(probe).toMatchObject({
+      available: true,
+      mode: 'microvm',
+      configured: 'microvm',
+      runtime: null,
+    })
+    expect(probe.reason).toContain('0.6.15')
+  })
+
+  test('an unavailable driver denies with its own reason, never a made-up one', async () => {
+    const driver = fakeSandboxDriver(() =>
+      Promise.resolve({ available: false, reason: 'no /dev/kvm access', version: null }),
+    )
+    const probe = await probeIsolation({ configured: 'microvm', command: 'claude -p', driver })
+    expect(probe.available).toBe(false)
+    expect(probe.mode).toBe('policy')
+    expect(probe.reason).toBe('no /dev/kvm access')
+  })
+
+  test('a driver refusing without a reason still gets a readable one', async () => {
+    const driver = fakeSandboxDriver(() =>
+      Promise.resolve({ available: false, reason: null, version: null }),
+    )
+    const probe = await probeIsolation({ configured: 'microvm', command: 'claude -p', driver })
+    expect(probe.available).toBe(false)
+    expect(probe.reason.length).toBeGreaterThan(0)
+  })
+
+  test('the cage only ships claude-code and opencode: another agent never touches the driver', async () => {
+    let probed = false
+    const driver = fakeSandboxDriver(() => {
+      probed = true
+      return Promise.resolve({ available: true, reason: null, version: '0.6.15' })
+    })
+    const probe = await probeIsolation({ configured: 'microvm', command: 'codex exec -', driver })
+    expect(probe.available).toBe(false)
+    expect(probe.reason).toContain('codex')
+    expect(probed).toBe(false)
+  })
+
+  test('configured policy never touches a driver either', async () => {
+    let probed = false
+    const driver = fakeSandboxDriver(() => {
+      probed = true
+      return Promise.resolve({ available: true, reason: null, version: '0.6.15' })
+    })
+    const probe = await probeIsolation({ configured: 'policy', command: 'claude -p', driver })
+    expect(probe.available).toBe(false)
+    expect(probed).toBe(false)
+  })
+})
+
+describe('overlayIsolationProbe (microvm, lot C2)', () => {
+  test('a machine probed for microvm and available is reused as-is', () => {
+    const machine: IsolationProbe = {
+      available: true,
+      mode: 'microvm',
+      reason: 'microsandbox 0.6.15 is available',
+      configured: 'microvm',
+      runtime: null,
+    }
+    const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
+    expect(overlaid).toMatchObject({ available: true, mode: 'microvm', configured: 'microvm' })
+    expect(resolveTaskIsolation(overlaid)?.isolation).toBe('microvm')
+  })
+
+  test('a machine probed for microvm and unavailable is reused, never silently upgraded', () => {
+    const machine: IsolationProbe = {
+      available: false,
+      mode: 'policy',
+      reason: 'no /dev/kvm access',
+      configured: 'microvm',
+      runtime: null,
+    }
+    const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
+    expect(overlaid.available).toBe(false)
+    expect(overlaid.reason).toBe('no /dev/kvm access')
+    expect(resolveTaskIsolation(overlaid)).toBeNull()
+  })
+
+  test('a machine probed for container tells a microvm project nothing about a driver it never asked for', () => {
+    const machine: IsolationProbe = {
+      available: true,
+      mode: 'container',
+      reason: 'docker is available',
+      configured: 'auto',
+      runtime: 'docker',
+    }
+    const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
+    expect(overlaid.available).toBe(false)
+    expect(overlaid.mode).toBe('policy')
+    expect(overlaid.reason).toMatch(/not probed/)
+    expect(resolveTaskIsolation(overlaid)).toBeNull()
+  })
+
+  test('a non-cageable agent is refused before the machine is even consulted', () => {
+    const machine: IsolationProbe = {
+      available: true,
+      mode: 'microvm',
+      reason: 'microsandbox 0.6.15 is available',
+      configured: 'microvm',
+      runtime: null,
+    }
+    const overlaid = overlayIsolationProbe(machine, {
+      configured: 'microvm',
+      command: 'codex exec -',
+    })
+    expect(overlaid.available).toBe(false)
+    expect(overlaid.reason).toContain('codex')
+  })
+})
+
+describe('microvmSecretsFromEnv / microvmNonSecretEnv (lot C2)', () => {
+  test('only the names actually present in env become secrets, never a value in a plain field', () => {
+    const secrets = microvmSecretsFromEnv({ CLAUDE_CODE_OAUTH_TOKEN: 'tok' } as NodeJS.ProcessEnv)
+    expect(secrets).toEqual([
+      {
+        env: 'CLAUDE_CODE_OAUTH_TOKEN',
+        value: 'tok',
+        allowedHosts: DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+      },
+    ])
+  })
+
+  test('ANTHROPIC_BASE_URL/MODEL/SMALL_FAST_MODEL are never secrets, even when set', () => {
+    const secrets = microvmSecretsFromEnv({
+      ANTHROPIC_BASE_URL: 'https://proxy.example.com',
+      ANTHROPIC_MODEL: 'claude-opus',
+      ANTHROPIC_SMALL_FAST_MODEL: 'claude-haiku',
+    } as NodeJS.ProcessEnv)
+    expect(secrets).toEqual([])
+  })
+
+  test('an opencode provider key becomes a secret scoped to the opencode/model hosts, not just anthropic', () => {
+    const secrets = microvmSecretsFromEnv({ OPENROUTER_API_KEY: 'or-key' } as NodeJS.ProcessEnv)
+    expect(secrets).toHaveLength(1)
+    expect(secrets[0]).toMatchObject({ env: 'OPENROUTER_API_KEY', value: 'or-key' })
+    expect(secrets[0]?.allowedHosts).toContain('openrouter.ai')
+    expect(secrets[0]?.allowedHosts).toContain('models.opencode.ai')
+  })
+
+  test('an empty env produces no secrets and no plain vars', () => {
+    expect(microvmSecretsFromEnv({} as NodeJS.ProcessEnv)).toEqual([])
+    expect(microvmNonSecretEnv({} as NodeJS.ProcessEnv)).toEqual({})
+  })
+
+  test('microvmNonSecretEnv carries exactly the three config vars, nothing forwarded as a secret', () => {
+    const env = {
+      ANTHROPIC_BASE_URL: 'https://proxy.example.com',
+      ANTHROPIC_MODEL: 'claude-opus',
+      CLAUDE_CODE_OAUTH_TOKEN: 'tok',
+      HOME: '/home/someone',
+    } as NodeJS.ProcessEnv
+    expect(microvmNonSecretEnv(env)).toEqual({
+      ANTHROPIC_BASE_URL: 'https://proxy.example.com',
+      ANTHROPIC_MODEL: 'claude-opus',
+    })
   })
 })
 

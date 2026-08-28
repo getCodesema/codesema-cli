@@ -9,19 +9,29 @@
 // back by GET /api/tasks/:id/review (readTaskReview), so a conversation can
 // open the review of ANY of its turns, not just the last one.
 
+import { randomUUID } from 'node:crypto'
 import { ensureWorkDir, type ReviewMode } from './config.js'
 import {
   sanitizeRecord,
   type Finding,
   type ReviewRecord,
+  type RunbookConfig,
+  type TaskCheckResult,
   type TaskChecks,
   type TaskReason,
   type TaskRecord,
+  type TaskVerification,
 } from './contract.js'
 import { verifyFindingRepros } from './finding-repro.js'
 import { buildAgentFixPrompt, isFixable } from './fix.js'
 import { isAncestor, refExists, tryGit } from './git.js'
 import { createLoadCap, DEFAULT_MAX_CONCURRENT_AGENTS, type LoadCap } from './load-cap.js'
+import {
+  sandboxName,
+  type SandboxDriver,
+  type SandboxNetworkPolicy,
+  type SandboxSecret,
+} from './microsandbox-driver.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview, readJson, resolveArchivePath } from './record.js'
 import {
@@ -35,7 +45,7 @@ import {
 } from './review.js'
 import { createSession } from './serve.js'
 import { autoPushReview } from './sync.js'
-import { buildChecksChapter } from './task-checks.js'
+import { buildChecksChapter, microvmStepExecutor } from './task-checks.js'
 import {
   buildCriteriaChapter,
   combineCriteriaOutcomes,
@@ -48,6 +58,11 @@ import {
   type CriteriaOutcome,
 } from './task-criteria-gate.js'
 import { reportHubTransition, type ArmTransitionDraft } from './task-hub.js'
+import {
+  containerTaskCommandFor,
+  DEFAULT_BASE_IMAGE,
+  DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+} from './task-isolation.js'
 import {
   REVIEW_CUT_DETAIL,
   taskCriteria,
@@ -299,6 +314,54 @@ export function checksFailedDetail(checks: TaskChecks): string {
   return 'repository checks failed'
 }
 
+/** How much of a verification check's tail this chapter spends, same bound as `CHECKS_CHAPTER_TAIL_MAX`. */
+const RUNBOOK_CHAPTER_TAIL_MAX = 600
+
+const runbookCheckLine = (check: TaskCheckResult): string => {
+  const line = `  - ${check.command}: ${check.status}`
+  return check.status === 'passed' || check.status === 'skipped'
+    ? line
+    : `${line}\n    ${check.tail.slice(-RUNBOOK_CHAPTER_TAIL_MAX)}`
+}
+
+const runbookImageAndTestsLines = (runbook: RunbookConfig): string[] => [
+  `- runbook image: ${runbook.image}`,
+  `- runbook tests: ${runbook.tests.join(', ')}`,
+]
+
+const runbookVerificationLines = (verification: TaskVerification): string[] => [
+  `- last verification: ${verification.status} (head ${verification.head_sha.slice(0, 12)}, runbook ${verification.runbook_sha})`,
+  ...verification.checks.map(runbookCheckLine),
+  `- runbook integrity: ${verification.integrity_ok ? 'intact' : 'DRIFTED'}`,
+  ...(verification.changed_dependency_files.length > 0
+    ? [
+        `- changed dependency files since validation: ${verification.changed_dependency_files.join(', ')}`,
+      ]
+    : []),
+  ...(verification.error ? [`- verification error: ${verification.error}`] : []),
+]
+
+/**
+ * Runbook + last mechanical verification, folded into the reviewer's prompt
+ * (lot C8) exactly like `buildChecksChapter`: what already ran, mechanically,
+ * before the model ever saw the diff. Null when the task carries neither.
+ */
+export function buildRunbookVerificationChapter(
+  runbook: RunbookConfig | null | undefined,
+  verification: TaskVerification | null | undefined,
+): string | null {
+  if (!runbook && !verification) {
+    return null
+  }
+  const lines = [
+    'Runbook and mechanical verification, MANDATORY chapter:',
+    ...(runbook ? runbookImageAndTestsLines(runbook) : []),
+    ...(verification ? runbookVerificationLines(verification) : []),
+    'These tests already ran once, mechanically, in an isolated VM restored from the project snapshot: a passed status is a fact, not a hypothesis to weigh against the code, and a failed, refused or errored one names exactly what still needs fixing before the runbook can be trusted again.',
+  ]
+  return lines.join('\n')
+}
+
 /**
  * Folds a finished checks run into the reviewer's persist. The reviewer stays
  * the unique writer of `review_ok`/`review_ko`: this mutates the in-memory
@@ -510,7 +573,37 @@ const settleInterrupted = (record: TaskRecord, io: TaskTurnIo, cwd: string): voi
   }
 }
 
+/**
+ * The snapshot, runbook and mechanical verification of ONE task's review —
+ * resolved per task-turn rather than frozen once per project, so a reviewer
+ * actually sees the snapshot a turn just warmed and the verification that
+ * turn just ran, instead of whatever the project's reviewer happened to be
+ * built with.
+ */
+export type ReviewMicrovmContext = {
+  /** Project snapshot the review VM restores; null boots the runbook image cold. */
+  snapshotName: string | null
+  /** The validated runbook, or null when the worktree carries none. */
+  runbook: RunbookConfig | null
+  /** The task's last mechanical verification, or null when none ran. */
+  verification: TaskVerification | null
+}
+
 export type CreateTaskReviewerOptions = {
+  /** Set for a 'microvm' task: the review runs in a fresh read-only VM instead of the host (lot C8). */
+  driver?: SandboxDriver | undefined
+  /**
+   * Resolves `ReviewMicrovmContext` for the task about to be reviewed, called
+   * ONCE at the start of the review (never re-read mid-review, see
+   * `createTaskReviewer`'s own call site). Absent → `{ snapshotName: null,
+   * runbook: null, verification: null }`, a cold boot with no runbook
+   * chapter, same as before this ticket.
+   */
+  resolveReviewContext?: (record: TaskRecord) => Promise<ReviewMicrovmContext>
+  /** Secrets declared on the review sandbox (CAGE_FORWARDED_ENV built by the caller); never passed as env. */
+  secrets?: readonly SandboxSecret[] | undefined
+  /** Project id, forwarded to `runMicrovmReview`. */
+  projectId?: string | undefined
   /** MAIN repo root: review archives land here, never in the disposable worktree. */
   cwd: string
   /** Raw configured agent command (the review flow applies its own hardening). */
@@ -570,8 +663,13 @@ type FlowRunnerPrompt = {
   prebuiltPrompt: string | null
 }
 
+/** `CreateTaskReviewerOptions` plus the VM-backed agent call built by `createTaskReviewer` when `opts.driver` is set: never part of the public options a caller builds by hand. */
+type ReviewFlowOptions = CreateTaskReviewerOptions & {
+  runAgentInVm?: ((prompt: string) => Promise<string>) | undefined
+}
+
 type FlowRunner = (
-  opts: CreateTaskReviewerOptions,
+  opts: ReviewFlowOptions,
   input: Awaited<ReturnType<typeof prep>>,
   io: TaskTurnIo,
   /** Bundled rather than two more params: max-params caps a function at 4. */
@@ -617,6 +715,7 @@ const runReviewFlow: FlowRunner = async (opts, input, io, { chapter, prebuiltPro
           spinner: { update: (status) => io.text(status) },
           ...(chapter ? { criteriaChapter: chapter } : {}),
           signal: io.signal,
+          ...(opts.runAgentInVm ? { runAgentInVm: opts.runAgentInVm } : {}),
         })
       : await runSimple({
           agentCommand: opts.command,
@@ -631,6 +730,7 @@ const runReviewFlow: FlowRunner = async (opts, input, io, { chapter, prebuiltPro
           // check on a true incremental review.
           incremental: prebuiltPrompt !== null,
           signal: io.signal,
+          ...(opts.runAgentInVm ? { runAgentInVm: opts.runAgentInVm } : {}),
         })
   } finally {
     unsubscribe()
@@ -708,8 +808,20 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       // never re-read mid-turn.
       const checks = terminalChecksResult(readTaskChecks(opts.cwd, record.id))
       const checksChapter = checks ? buildChecksChapter(checks, { purpose: 'review' }) : null
+      // Resolved ONCE, here, at the start of the review: the resolver reads
+      // the task's OWN worktree and OWN last verification, never re-read for
+      // the rest of this review even though it runs for minutes.
+      const reviewCtx: ReviewMicrovmContext = opts.resolveReviewContext
+        ? await opts.resolveReviewContext(record)
+        : { snapshotName: null, runbook: null, verification: null }
+      const runbookChapter = buildRunbookVerificationChapter(
+        reviewCtx.runbook,
+        reviewCtx.verification,
+      )
       const chapter =
-        [criteriaChapter, checksChapter].filter((c): c is string => Boolean(c)).join('\n\n') || null
+        [criteriaChapter, checksChapter, runbookChapter]
+          .filter((c): c is string => Boolean(c))
+          .join('\n\n') || null
 
       io.emit({ type: 'review_started', data: { turn: record.turns.length, mode } })
       const input = await prepFn({
@@ -780,10 +892,29 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           settleInterrupted(record, io, opts.cwd)
           return
         }
+        const command = opts.resolveCommand?.(record) ?? opts.command
+        const driver = opts.driver
+        const runAgentInVm = driver
+          ? (prompt: string): Promise<string> =>
+              runMicrovmReview({
+                driver,
+                worktree: record.worktree,
+                projectId: opts.projectId ?? '',
+                snapshotName: reviewCtx.snapshotName,
+                image: reviewCtx.runbook?.image ?? DEFAULT_BASE_IMAGE,
+                command,
+                prompt,
+                timeoutMs: opts.timeoutMs,
+                taskId: record.id,
+                ...(opts.secrets ? { secrets: opts.secrets } : {}),
+                signal: io.signal,
+              })
+          : undefined
         outcome = await runReviewFlow(
           {
             ...opts,
-            command: opts.resolveCommand?.(record) ?? opts.command,
+            command,
+            ...(runAgentInVm ? { runAgentInVm } : {}),
           },
           input,
           io,
@@ -818,6 +949,16 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       // never the model's raw, unverified claim.
       const reproOutcome = await verifyFindingRepros(outcome.record.review.findings, {
         worktree: record.worktree,
+        ...(opts.driver
+          ? {
+              executor: microvmStepExecutor({
+                driver: opts.driver,
+                projectId: opts.projectId ?? '',
+                snapshotName: reviewCtx.snapshotName,
+                ...(reviewCtx.runbook ? { allowedDomains: reviewCtx.runbook.egress } : {}),
+              }),
+            }
+          : {}),
       })
       outcome.record.review.findings = reproOutcome.findings
 
@@ -949,5 +1090,77 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         blocked: taskReason('review_blocked', message),
       })
     }
+  }
+}
+
+export type RunMicrovmReviewOptions = {
+  driver: SandboxDriver
+  worktree: string
+  projectId: string
+  snapshotName: string | null
+  image: string
+  command: string
+  prompt: string
+  timeoutMs: number
+  /** Distinguishes the sandbox name (`codesema-review-<taskId>`); a random suffix for a task-less, ad hoc review. */
+  taskId?: string | undefined
+  allowedDomains?: readonly string[]
+  secrets?: readonly SandboxSecret[]
+  onText?: (text: string) => void
+  signal?: AbortSignal
+}
+
+const MICROVM_REVIEW_DEFAULTS = {
+  cpus: 2,
+  memoryMib: 2048,
+  user: 'agent',
+  workDir: '/work',
+} as const
+
+/**
+ * Runs the review agent inside a fresh VM (worktree mounted read-only, never
+ * the dev VM), same raw-stdout contract as `runMicrovmTurn`. Routed through
+ * `runReviewFlow` when `opts.driver` is set (see `createTaskReviewer`).
+ */
+export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<string> {
+  const name = sandboxName('review', opts.taskId ?? randomUUID().slice(0, 8))
+  const network: SandboxNetworkPolicy = {
+    allowedDomains: opts.allowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+  }
+  const maxDurationSeconds = Math.max(1, Math.ceil(opts.timeoutMs / 1000))
+  const handle = await opts.driver.create({
+    name,
+    ...(opts.snapshotName ? { fromSnapshot: opts.snapshotName } : { image: opts.image }),
+    cpus: MICROVM_REVIEW_DEFAULTS.cpus,
+    memoryMib: MICROVM_REVIEW_DEFAULTS.memoryMib,
+    maxDurationSeconds,
+    network,
+    ...(opts.secrets ? { secrets: opts.secrets } : {}),
+    workdir: MICROVM_REVIEW_DEFAULTS.workDir,
+  })
+  try {
+    await handle.copyFromHost(opts.worktree, MICROVM_REVIEW_DEFAULTS.workDir)
+    // A fresh copy, never the dev VM's own worktree: turned read-only right
+    // after the copy so nothing the reviewer runs can write it back.
+    const chmod = await handle.shell(`chmod -R a-w ${MICROVM_REVIEW_DEFAULTS.workDir}`, {
+      timeoutMs: 30_000,
+    })
+    if (chmod.code !== 0) {
+      throw new Error(
+        `could not make the review worktree read-only: ${(chmod.stderr || chmod.stdout).trim()}`,
+      )
+    }
+    const command = containerTaskCommandFor(opts.command, { session: null })
+    const result = await handle.shell(command, {
+      timeoutMs: opts.timeoutMs,
+      cwd: MICROVM_REVIEW_DEFAULTS.workDir,
+      user: MICROVM_REVIEW_DEFAULTS.user,
+      input: opts.prompt,
+      ...(opts.onText ? { onText: opts.onText } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
+    return result.stdout
+  } finally {
+    await opts.driver.destroy(name)
   }
 }

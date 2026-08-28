@@ -4,14 +4,26 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { RecapRecord, TaskRecord } from './contract.js'
+import type {
+  SandboxDriver,
+  SandboxExecOptions,
+  SandboxExecResult,
+  SandboxHandle,
+  SandboxMetrics,
+  SandboxProbe,
+  SandboxSpec,
+  SnapshotInfo,
+} from './microsandbox-driver.js'
 import { readTaskRecap, renderRecapMarkdown } from './task-recap.js'
 import {
   boundCodePoints,
   buildMrDescription,
   extractMrUrl,
+  GITOPS_IMAGE,
   isMrAlreadyExistsError,
   MR_BODY_SUMMARY_MAX,
   shipTask,
+  toHttpsRemoteUrl,
   type ShipCliOutcome,
   type ShipForgeExecFn,
   type ShipGitExecFn,
@@ -960,5 +972,295 @@ describe('shipTask writes the task recap', () => {
       const body = forge.calls[0]?.args[forge.calls[0].args.indexOf('--body') + 1] ?? ''
       expect(body).not.toContain('AKIAIOSFODNN7EXAMPLE')
     }
+  })
+})
+
+// --- gitops sandbox (lot C9, 'microvm' isolation) --------------------------
+
+const OK: SandboxExecResult = { code: 0, stdout: '', stderr: '', timedOut: false }
+
+class FakeGitopsHandle implements SandboxHandle {
+  readonly name: string
+  private readonly driver: FakeGitopsDriver
+  constructor(driver: FakeGitopsDriver) {
+    this.driver = driver
+    this.name = driver.spec?.name ?? 'codesema-gitops-fake'
+  }
+
+  exec(
+    command: string,
+    args: readonly string[],
+    opts: SandboxExecOptions,
+  ): Promise<SandboxExecResult> {
+    this.driver.log.push(`exec:${command}`)
+    this.driver.execCalls.push({ command, args: [...args], opts })
+    return Promise.resolve(this.driver.forgeResult)
+  }
+
+  shell(script: string, opts: SandboxExecOptions): Promise<SandboxExecResult> {
+    const isPush = script.startsWith('git push')
+    this.driver.log.push(isPush ? 'shell:push' : `shell:${script.split(' ')[0]}`)
+    this.driver.shellCalls.push({ script, opts })
+    return Promise.resolve(isPush ? this.driver.pushResult : OK)
+  }
+
+  copyFromHost(hostPath: string, guestPath: string): Promise<void> {
+    this.driver.copyFromHostCalls.push({ hostPath, guestPath })
+    return Promise.resolve()
+  }
+
+  copyToHost(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  writeFile(guestPath: string, content: string): Promise<void> {
+    this.driver.writeFileCalls.push({ guestPath, content })
+    return Promise.resolve()
+  }
+
+  readFile(): Promise<string> {
+    return Promise.resolve('')
+  }
+
+  metrics(): Promise<SandboxMetrics> {
+    return Promise.resolve({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null })
+  }
+
+  stop(): Promise<void> {
+    return Promise.resolve()
+  }
+}
+
+/** Minimal SandboxDriver fake, local to this file: lot C1's FakeSandboxDriver is not implemented yet. */
+class FakeGitopsDriver implements SandboxDriver {
+  readonly kind = 'fake' as const
+  spec: SandboxSpec | null = null
+  destroyed: string[] = []
+  log: string[] = []
+  execCalls: { command: string; args: string[]; opts: SandboxExecOptions }[] = []
+  shellCalls: { script: string; opts: SandboxExecOptions }[] = []
+  copyFromHostCalls: { hostPath: string; guestPath: string }[] = []
+  writeFileCalls: { guestPath: string; content: string }[] = []
+  pushResult: SandboxExecResult = OK
+  forgeResult: SandboxExecResult = {
+    code: 0,
+    stdout: 'https://github.com/o/r/pull/1',
+    stderr: '',
+    timedOut: false,
+  }
+
+  probe(): Promise<SandboxProbe> {
+    return Promise.reject(new Error('not used by shipTask'))
+  }
+
+  create(spec: SandboxSpec): Promise<SandboxHandle> {
+    this.spec = spec
+    return Promise.resolve(new FakeGitopsHandle(this))
+  }
+
+  snapshot(): Promise<SnapshotInfo> {
+    return Promise.reject(new Error('not used by shipTask'))
+  }
+
+  listSandboxes(): Promise<string[]> {
+    return Promise.resolve([])
+  }
+
+  listSnapshots(): Promise<SnapshotInfo[]> {
+    return Promise.resolve([])
+  }
+
+  destroy(sandboxName: string): Promise<void> {
+    this.destroyed.push(sandboxName)
+    return Promise.resolve()
+  }
+
+  removeSnapshot(): Promise<void> {
+    return Promise.reject(new Error('not used by shipTask'))
+  }
+
+  ensureVolume(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  removeVolume(): Promise<void> {
+    return Promise.resolve()
+  }
+}
+
+describe('shipTask with a gitops sandbox driver (lot C9)', () => {
+  test('network policy is the forge host (+ its API host) and the alpine CDN only', async () => {
+    const cwd = makeRepoWithOrigin('https://github.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    const outcome = await shipTask({
+      cwd,
+      task: makeTask(),
+      driver,
+      forgeToken: 'tok-123',
+      forgeHost: 'github.com',
+    })
+    expect(outcome.pushed).toBe(true)
+    expect(driver.spec?.image).toBe(GITOPS_IMAGE)
+    expect((driver.spec?.network.allowedDomains ?? []).toSorted()).toEqual(
+      ['github.com', 'api.github.com', 'dl-cdn.alpinelinux.org'].toSorted(),
+    )
+  })
+
+  test('the forge token is declared as a secret, never placed in argv or in the plain env map', async () => {
+    const cwd = makeRepoWithOrigin('https://gitlab.example.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    driver.forgeResult = {
+      code: 0,
+      stdout: 'https://gitlab.example.com/o/r/-/merge_requests/9',
+      stderr: '',
+      timedOut: false,
+    }
+    await shipTask({
+      cwd,
+      task: makeTask(),
+      driver,
+      forgeToken: 'super-secret-token',
+      forgeHost: 'gitlab.example.com',
+    })
+    expect(driver.spec?.secrets).toEqual([
+      { env: 'GITLAB_TOKEN', value: 'super-secret-token', allowedHosts: ['gitlab.example.com'] },
+    ])
+    // Never in the plain env map (which the guest process can dump straight to stdout).
+    expect(driver.spec?.env).toBeUndefined()
+    for (const call of [
+      ...driver.shellCalls.map((c) => c.script),
+      ...driver.execCalls.flatMap((c) => c.args),
+    ]) {
+      expect(call).not.toContain('super-secret-token')
+    }
+  })
+
+  test('the worktree (cwd, not the task worktree) is copied into /work', async () => {
+    const cwd = makeRepoWithOrigin('https://github.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    const task = makeTask({ worktree: '/somewhere/else/not-copied' })
+    await shipTask({ cwd, task, driver, forgeToken: 't', forgeHost: 'github.com' })
+    expect(driver.copyFromHostCalls).toEqual([{ hostPath: cwd, guestPath: '/work' }])
+  })
+
+  test('push happens before the forge MR-create call, both inside the sandbox', async () => {
+    const cwd = makeRepoWithOrigin('https://github.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    await shipTask({ cwd, task: makeTask(), driver, forgeToken: 't', forgeHost: 'github.com' })
+    const pushIndex = driver.log.indexOf('shell:push')
+    const forgeIndex = driver.log.indexOf('exec:gh')
+    expect(pushIndex).toBeGreaterThanOrEqual(0)
+    expect(forgeIndex).toBeGreaterThan(pushIndex)
+  })
+
+  test('a failed push in the sandbox yields pushed:false with the error, and no forge call', async () => {
+    const cwd = makeRepoWithOrigin('https://github.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    driver.pushResult = {
+      code: 1,
+      stdout: '',
+      stderr: 'remote: permission denied',
+      timedOut: false,
+    }
+    const outcome = await shipTask({
+      cwd,
+      task: makeTask(),
+      driver,
+      forgeToken: 't',
+      forgeHost: 'github.com',
+    })
+    expect(outcome.pushed).toBe(false)
+    expect(outcome.pushed === false && outcome.error).toContain('permission denied')
+    expect(driver.execCalls).toHaveLength(0)
+  })
+
+  test('the sandbox is destroyed in finally, on both success and push failure', async () => {
+    const cwdOk = makeRepoWithOrigin('https://github.com/o/r.git')
+    const okDriver = new FakeGitopsDriver()
+    await shipTask({
+      cwd: cwdOk,
+      task: makeTask(),
+      driver: okDriver,
+      forgeToken: 't',
+      forgeHost: 'github.com',
+    })
+    expect(okDriver.destroyed).toEqual(okDriver.spec ? [okDriver.spec.name] : [])
+    expect(okDriver.destroyed).toHaveLength(1)
+
+    const cwdFail = makeRepoWithOrigin('https://github.com/o/r.git')
+    const failDriver = new FakeGitopsDriver()
+    failDriver.pushResult = { code: 1, stdout: '', stderr: 'denied', timedOut: false }
+    await shipTask({
+      cwd: cwdFail,
+      task: makeTask(),
+      driver: failDriver,
+      forgeToken: 't',
+      forgeHost: 'github.com',
+    })
+    expect(failDriver.destroyed).toEqual(failDriver.spec ? [failDriver.spec.name] : [])
+    expect(failDriver.destroyed).toHaveLength(1)
+  })
+
+  test('no sandbox is ever created when the ship never gets past the no-remote gate', async () => {
+    const cwd = makeDir()
+    execFileSync('git', ['init', '-b', 'main'], { cwd, stdio: 'ignore' })
+    const driver = new FakeGitopsDriver()
+    const outcome = await shipTask({
+      cwd,
+      task: makeTask(),
+      driver,
+      forgeToken: 't',
+      forgeHost: 'github.com',
+    })
+    expect(outcome.pushed).toBe(false)
+    expect(driver.spec).toBeNull()
+    expect(driver.destroyed).toEqual([])
+  })
+
+  test('a provided execGit/execForge test seam wins over the driver: the sandbox is never touched', async () => {
+    const cwd = makeDir()
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({ gh: { kind: 'ok', stdout: 'https://github.com/o/r/pull/1' } })
+    const driver = new FakeGitopsDriver()
+    const outcome = await shipTask({
+      cwd,
+      task: makeTask(),
+      driver,
+      forgeToken: 't',
+      forgeHost: 'github.com',
+      execGit: git.fn,
+      execForge: forge.fn,
+    })
+    expect(outcome.pushed).toBe(true)
+    expect(driver.spec).toBeNull()
+    expect(git.calls.some((c) => c.args[0] === 'push')).toBe(true)
+  })
+
+  test('without a driver, shipTask behaves exactly as before (host git/forge, no sandbox concepts)', async () => {
+    const cwd = makeDir()
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({ gh: { kind: 'ok', stdout: 'https://github.com/o/r/pull/1' } })
+    const outcome = await shipTask({ cwd, task: makeTask(), execGit: git.fn, execForge: forge.fn })
+    expect(outcome).toMatchObject({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1' })
+  })
+})
+
+describe('toHttpsRemoteUrl', () => {
+  test('leaves an https URL untouched', () => {
+    expect(toHttpsRemoteUrl('https://github.com/o/r.git')).toBe('https://github.com/o/r.git')
+  })
+
+  test('converts an scp-style ssh origin (git@host:path)', () => {
+    expect(toHttpsRemoteUrl('git@github.com:o/r.git')).toBe('https://github.com/o/r.git')
+  })
+
+  test('converts an ssh:// origin', () => {
+    expect(toHttpsRemoteUrl('ssh://git@gitlab.example.com:2222/o/r.git')).toBe(
+      'https://gitlab.example.com/o/r.git',
+    )
+  })
+
+  test('null on something unreadable as either shape', () => {
+    expect(toHttpsRemoteUrl('')).toBeNull()
   })
 })

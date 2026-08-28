@@ -151,8 +151,8 @@ describe('resolveCommand — version, help and unknown commands', () => {
   })
 })
 
-describe('resolveCommand — the ten routed commands', () => {
-  test('COMMAND_NAMES lists the ten commands the switch handles', () => {
+describe('resolveCommand — the eleven routed commands', () => {
+  test('COMMAND_NAMES lists the eleven commands the switch handles', () => {
     expect([...COMMAND_NAMES]).toEqual([
       'review',
       'prep',
@@ -164,10 +164,11 @@ describe('resolveCommand — the ten routed commands', () => {
       'sync',
       'link',
       'runner',
+      'runbook',
     ])
   })
 
-  test('each of the ten resolves to its own command, in a terminal and outside one', () => {
+  test('each of the eleven resolves to its own command, in a terminal and outside one', () => {
     for (const name of COMMAND_NAMES) {
       for (const ctx of [TERMINAL, PIPE]) {
         expect(resolveCommand({}, [name], ctx)).toEqual({ kind: 'command', name, arg: undefined })
@@ -352,5 +353,27 @@ describe('codesema runner passes its autoconfig/await-secrets flags on', () => {
     for (const flag of declarations) {
       expect(source).toContain(flag)
     }
+  })
+})
+
+// Same source-shape assertion as the two blocks above, and for the same
+// reason: `runCommand` is not exported, `codesema runbook scan` runs a real
+// microVM.
+describe('codesema runbook passes its --timeout and --agent flags on', () => {
+  test('the block reaches runbookCommand() with action, timeoutSeconds and agent', () => {
+    const source = readFileSync(join(import.meta.dir, 'index.ts'), 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+      .join('\n')
+    const marker = "case 'runbook':"
+    const start = source.indexOf(marker)
+    expect(start).toBeGreaterThanOrEqual(0)
+    const block = source.slice(start, source.indexOf('break', start))
+    expect(block).toContain('await runbookCommand({')
+    expect(block).toContain('action: arg')
+    expect(block).toContain('agent: values.agent')
+    expect(
+      /timeoutSeconds:\s*parseIntFlag\('timeout',\s*values\.timeout,\s*1,\s*86400\)/.test(block),
+    ).toBe(true)
   })
 })

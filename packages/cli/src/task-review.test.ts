@@ -5,17 +5,26 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
   acceptanceCriterionId,
+  RUNBOOK_VERSION,
   type AcceptanceCriterion,
   type CriterionVerdict,
   type Finding,
   type ReviewRecord,
+  type RunbookConfig,
   type TaskChecks,
   type TaskReason,
   type TaskRecord,
   type TaskStatus,
+  type TaskVerification,
   type Verdict,
 } from './contract.js'
 import { createLoadCap } from './load-cap.js'
+import type {
+  SandboxDriver,
+  SandboxExecResult,
+  SandboxHandle,
+  SandboxSpec,
+} from './microsandbox-driver.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview } from './record.js'
 import {
@@ -25,18 +34,21 @@ import {
   type runSimpleFlow,
   type SimpleOutcome,
 } from './review.js'
+import { DEFAULT_ISOLATION_ALLOWED_DOMAINS } from './task-isolation.js'
 import {
   actionableFindingIds,
   applyChecksGate,
   blockingFindingsDetail,
   buildAutoFixTurnPrompt,
   buildFixTurnPrompt,
+  buildRunbookVerificationChapter,
   checksBlockReady,
   checksFailedDetail,
   createTaskReviewer,
   hasBlockingFindings,
   hubSettleTransition,
   readTaskReview,
+  runMicrovmReview,
   taskReviewVerdict,
   terminalChecksResult,
   type CreateTaskReviewerOptions,
@@ -179,6 +191,114 @@ function reviewer(
     timeoutMs: 1000,
     ...overrides,
   })
+}
+
+function runbookOf(over: Partial<RunbookConfig> = {}): RunbookConfig {
+  return {
+    version: RUNBOOK_VERSION,
+    image: 'node:26',
+    install: ['npm ci'],
+    services: { host_up: [], compose_file: null },
+    healthchecks: [],
+    tests: ['bun test'],
+    egress: [],
+    depends_on_files: ['package.json'],
+    ...over,
+  }
+}
+
+function verificationOf(over: Partial<TaskVerification> = {}): TaskVerification {
+  return {
+    head_sha: 'a'.repeat(40),
+    runbook_sha: '0'.repeat(16),
+    started_at: '2026-08-28T10:00:00.000Z',
+    finished_at: '2026-08-28T10:01:00.000Z',
+    status: 'passed',
+    checks: [{ command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 10, tail: '' }],
+    integrity_ok: true,
+    changed_dependency_files: [],
+    error: null,
+    ...over,
+  }
+}
+
+/**
+ * Lot C1 (a parallel lot) has not implemented `FakeSandboxDriver` yet: a
+ * minimal fake of the same `SandboxDriver` interface, local to this test
+ * file only.
+ */
+function fakeMicrovmDriver(opts: { exec?: SandboxExecResult; chmodExitCode?: number } = {}): {
+  driver: SandboxDriver
+  calls: { method: string; args: unknown[] }[]
+  specs: SandboxSpec[]
+} {
+  const calls: { method: string; args: unknown[] }[] = []
+  const specs: SandboxSpec[] = []
+  const execResult: SandboxExecResult = opts.exec ?? {
+    code: 0,
+    stdout: '{"verdict":"approve","summary":"ok","findings":[]}',
+    stderr: '',
+    timedOut: false,
+  }
+  const chmodExitCode = opts.chmodExitCode ?? 0
+  const handle: SandboxHandle = {
+    name: 'fake',
+    exec: async (command, args, execOpts) => {
+      calls.push({ method: 'exec', args: [command, args, execOpts] })
+      return execResult
+    },
+    shell: async (script, execOpts) => {
+      calls.push({ method: 'shell', args: [script, execOpts] })
+      if (script.startsWith('chmod')) {
+        return {
+          code: chmodExitCode,
+          stdout: '',
+          stderr: chmodExitCode === 0 ? '' : 'permission denied',
+          timedOut: false,
+        }
+      }
+      return execResult
+    },
+    copyFromHost: async (hostPath, guestPath) => {
+      calls.push({ method: 'copyFromHost', args: [hostPath, guestPath] })
+    },
+    copyToHost: async (guestPath, hostPath) => {
+      calls.push({ method: 'copyToHost', args: [guestPath, hostPath] })
+    },
+    writeFile: async (guestPath, content) => {
+      calls.push({ method: 'writeFile', args: [guestPath, content] })
+    },
+    readFile: async (guestPath) => {
+      calls.push({ method: 'readFile', args: [guestPath] })
+      return ''
+    },
+    metrics: async () => ({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
+    stop: async () => {
+      calls.push({ method: 'stop', args: [] })
+    },
+  }
+  const driver: SandboxDriver = {
+    kind: 'fake',
+    probe: async () => ({ available: true, reason: null, version: '0.0.0' }),
+    create: async (spec) => {
+      calls.push({ method: 'create', args: [spec] })
+      specs.push(spec)
+      return handle
+    },
+    snapshot: async (sbName, snapName) => {
+      calls.push({ method: 'snapshot', args: [sbName, snapName] })
+      return { name: snapName, sizeBytes: null }
+    },
+    listSandboxes: async () => [],
+    listSnapshots: async () => [],
+    destroy: async (name) => {
+      calls.push({ method: 'destroy', args: [name] })
+    },
+    removeSnapshot: async () => {},
+    ensureVolume: async () => {},
+    removeVolume: async () => {},
+  }
+  return { driver, calls, specs }
 }
 
 // --- taskReviewVerdict ----------------------------------------------------
@@ -2291,5 +2411,506 @@ describe('hubSettleTransition', () => {
     expect(withCost).toEqual({ type: 'review_result', verdict: 'approve', cost_ticks: 42 })
     const withoutCost = hubSettleTransition({ status: 'review_ok' })
     expect('cost_ticks' in withoutCost).toBe(false)
+  })
+})
+
+// --- buildRunbookVerificationChapter (lot C8) ------------------------------
+
+describe('buildRunbookVerificationChapter', () => {
+  test('null when neither runbook nor verification is supplied', () => {
+    expect(buildRunbookVerificationChapter(null, null)).toBeNull()
+    expect(buildRunbookVerificationChapter(undefined, undefined)).toBeNull()
+  })
+
+  test('runbook alone: image and tests, no verification section', () => {
+    const chapter = buildRunbookVerificationChapter(runbookOf(), null)
+    expect(chapter).toContain('Runbook and mechanical verification, MANDATORY chapter:')
+    expect(chapter).toContain('runbook image: node:26')
+    expect(chapter).toContain('runbook tests: bun test')
+    expect(chapter).not.toContain('last verification')
+  })
+
+  test('verification alone: status, per-check summary, integrity, changed files', () => {
+    const chapter = buildRunbookVerificationChapter(
+      null,
+      verificationOf({
+        status: 'failed',
+        checks: [
+          { command: 'bun test', status: 'failed', exit_code: 1, duration_ms: 5, tail: 'boom' },
+        ],
+        integrity_ok: false,
+        changed_dependency_files: ['package.json', 'bun.lock'],
+      }),
+    )
+    expect(chapter).toContain('last verification: failed')
+    expect(chapter).toContain('bun test: failed')
+    expect(chapter).toContain('boom')
+    expect(chapter).toContain('runbook integrity: DRIFTED')
+    expect(chapter).toContain('changed dependency files since validation: package.json, bun.lock')
+  })
+
+  test('a passed check carries no tail; a failed one does', () => {
+    const chapter = buildRunbookVerificationChapter(
+      null,
+      verificationOf({
+        checks: [
+          {
+            command: 'bun test',
+            status: 'passed',
+            exit_code: 0,
+            duration_ms: 5,
+            tail: 'should not appear',
+          },
+          {
+            command: 'bun lint',
+            status: 'failed',
+            exit_code: 1,
+            duration_ms: 5,
+            tail: 'lint broke',
+          },
+        ],
+      }),
+    )
+    expect(chapter).not.toContain('should not appear')
+    expect(chapter).toContain('lint broke')
+  })
+
+  test('intact integrity and no changed files: no "changed dependency files" line', () => {
+    const chapter = buildRunbookVerificationChapter(null, verificationOf())
+    expect(chapter).toContain('runbook integrity: intact')
+    expect(chapter).not.toContain('changed dependency files')
+  })
+
+  test('a verification error is said', () => {
+    const chapter = buildRunbookVerificationChapter(
+      null,
+      verificationOf({ status: 'error', checks: [], error: 'VM boot failed' }),
+    )
+    expect(chapter).toContain('verification error: VM boot failed')
+  })
+
+  test('both present: both sections appear', () => {
+    const chapter = buildRunbookVerificationChapter(runbookOf(), verificationOf()) ?? ''
+    expect(chapter).toContain('runbook image')
+    expect(chapter).toContain('last verification')
+  })
+})
+
+// --- runMicrovmReview (lot C8) ---------------------------------------------
+
+describe('runMicrovmReview', () => {
+  test('names the sandbox codesema-review-<taskId>, boots the given image, opens only the reviewer allowlist', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    const stdout = await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'REVIEW THIS',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    expect(stdout).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
+    expect(fake.specs).toHaveLength(1)
+    expect(fake.specs[0]?.name).toBe('codesema-review-task-abc')
+    expect(fake.specs[0]?.image).toBe('node:26')
+    expect(fake.specs[0]?.fromSnapshot).toBeUndefined()
+    expect(fake.specs[0]?.network).toEqual({ allowedDomains: DEFAULT_ISOLATION_ALLOWED_DOMAINS })
+  })
+
+  test('a snapshot name restores from the snapshot instead of booting the image cold', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: 'codesema-project-proj-1',
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    expect(fake.specs[0]?.fromSnapshot).toBe('codesema-project-proj-1')
+    expect(fake.specs[0]?.image).toBeUndefined()
+  })
+
+  test('a custom allowedDomains list wins over the default', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      allowedDomains: ['forge.example.com'],
+    })
+
+    expect(fake.specs[0]?.network).toEqual({ allowedDomains: ['forge.example.com'] })
+  })
+
+  test('secrets, when supplied, are declared on the sandbox spec', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      secrets: [
+        {
+          env: 'CLAUDE_CODE_OAUTH_TOKEN',
+          value: 'real-token',
+          allowedHosts: ['api.anthropic.com'],
+        },
+      ],
+    })
+
+    expect(fake.specs[0]?.secrets).toEqual([
+      { env: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'real-token', allowedHosts: ['api.anthropic.com'] },
+    ])
+  })
+
+  test('no taskId: a random suffix names the sandbox, distinct across calls', async () => {
+    const repo = makeRepo()
+    const fake1 = fakeMicrovmDriver()
+    const fake2 = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake1.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+    })
+    await runMicrovmReview({
+      driver: fake2.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+    })
+
+    const name1 = fake1.specs[0]?.name ?? ''
+    const name2 = fake2.specs[0]?.name ?? ''
+    expect(name1.startsWith('codesema-review-')).toBe(true)
+    expect(name2.startsWith('codesema-review-')).toBe(true)
+    expect(name1).not.toBe(name2)
+  })
+
+  test('worktree copied then made read-only before the agent runs, in that order', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    const methods = fake.calls.map((c) => c.method)
+    expect(methods).toEqual(['create', 'copyFromHost', 'shell', 'shell', 'destroy'])
+    const copyCall = fake.calls[1]
+    expect(copyCall?.args[0]).toBe(repo)
+    expect(copyCall?.args[1]).toBe('/work')
+    const chmodCall = fake.calls[2]
+    expect(String(chmodCall?.args[0])).toBe('chmod -R a-w /work')
+  })
+
+  test('the guest command is the stream-json-injected, non-root claude invocation, with the prompt on stdin', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'REVIEW THIS DIFF',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    const agentCall = fake.calls[3]
+    expect(agentCall?.method).toBe('shell')
+    expect(agentCall?.args[0]).toBe(
+      'claude -p --dangerously-skip-permissions --output-format stream-json --include-partial-messages --verbose',
+    )
+    const execOpts = agentCall?.args[1] as { user?: string; cwd?: string; input?: string }
+    expect(execOpts.user).toBe('agent')
+    expect(execOpts.cwd).toBe('/work')
+    expect(execOpts.input).toBe('REVIEW THIS DIFF')
+  })
+
+  test('the sandbox is destroyed even when the chmod fails', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver({ chmodExitCode: 1 })
+
+    await expect(
+      runMicrovmReview({
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      }),
+    ).rejects.toThrow(/read-only/)
+
+    expect(fake.calls.map((c) => c.method)).toEqual(['create', 'copyFromHost', 'shell', 'destroy'])
+  })
+
+  test('the sandbox is destroyed even when the agent command times out', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver({
+      exec: { code: null, stdout: '', stderr: '', timedOut: true },
+    })
+
+    const stdout = await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    // A timeout is not thrown here (the caller reads the timedOut flag from
+    // the raw stdout contract, same as runMicrovmTurn's own doc comment) —
+    // what THIS test guards is that destroy still runs.
+    expect(stdout).toBe('')
+    expect(fake.calls.map((c) => c.method)).toContain('destroy')
+  })
+})
+
+// --- createTaskReviewer: microvm wiring (lot C8) ---------------------------
+
+describe('createTaskReviewer: microvm wiring', () => {
+  test('no driver: the flow receives no runAgentInVm, host path unchanged', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'host review')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls).toHaveLength(1)
+    expect(flow.calls[0]?.runAgentInVm).toBeUndefined()
+    expect(record.status).toBe('review_ok')
+  })
+
+  test('driver set: the flow receives a runAgentInVm wired to runMicrovmReview', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'vm review')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const fake = fakeMicrovmDriver()
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      driver: fake.driver,
+      projectId: 'proj-1',
+      resolveReviewContext: () =>
+        Promise.resolve({ snapshotName: null, runbook: null, verification: null }),
+    })(record, rig.io)
+
+    expect(flow.calls).toHaveLength(1)
+    const runAgentInVm = flow.calls[0]?.runAgentInVm
+    expect(typeof runAgentInVm).toBe('function')
+
+    // Calling it drives the fake driver exactly as `runMicrovmReview` alone
+    // does — the wiring built by `createTaskReviewer`, exercised end to end.
+    const raw = await runAgentInVm?.('hand-built prompt')
+    expect(raw).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
+    expect(fake.specs[0]?.name).toBe(`codesema-review-${record.id}`)
+    expect(fake.calls.map((c) => c.method)).toEqual([
+      'create',
+      'copyFromHost',
+      'shell',
+      'shell',
+      'destroy',
+    ])
+  })
+
+  test('driver set but no runbook: the image falls back to DEFAULT_BASE_IMAGE', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'vm review no runbook')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const fake = fakeMicrovmDriver()
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn, driver: fake.driver })(record, rig.io)
+
+    await flow.calls[0]?.runAgentInVm?.('p')
+    expect(fake.specs[0]?.image).toBe('node:26')
+  })
+
+  test('driver set with a runbook: the review VM boots the runbook image', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'vm review with runbook')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const fake = fakeMicrovmDriver()
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      driver: fake.driver,
+      resolveReviewContext: () =>
+        Promise.resolve({
+          snapshotName: null,
+          runbook: runbookOf({ image: 'custom/runbook-image:1' }),
+          verification: null,
+        }),
+    })(record, rig.io)
+
+    await flow.calls[0]?.runAgentInVm?.('p')
+    expect(fake.specs[0]?.image).toBe('custom/runbook-image:1')
+  })
+
+  test('runbook and verification, when supplied, reach the reviewer prompt as a mandatory chapter', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'runbook chapter')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      resolveReviewContext: () =>
+        Promise.resolve({
+          snapshotName: null,
+          runbook: runbookOf(),
+          verification: verificationOf({ status: 'passed' }),
+        }),
+    })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).toContain('Runbook and mechanical verification')
+    expect(prompt).toContain('node:26')
+    expect(prompt).toContain('bun test')
+    expect(prompt).toContain('last verification: passed')
+  })
+
+  test('neither runbook nor verification: no chapter added, prompt unchanged from before this ticket', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'no runbook chapter')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).not.toContain('Runbook and mechanical verification')
+  })
+
+  // This ticket: the three used to be frozen once at reviewer-construction
+  // time (once per PROJECT); now a resolver is called once per REVIEW, with
+  // the exact record being reviewed, and its answer is what actually drives
+  // both the prompt chapter and the VM the agent runs in.
+  test('resolveReviewContext is called ONCE, with the reviewed record, and its snapshot feeds fromSnapshot', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'per-task snapshot')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const fake = fakeMicrovmDriver()
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+    const calls: TaskRecord[] = []
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      driver: fake.driver,
+      resolveReviewContext: (r) => {
+        calls.push(r)
+        return Promise.resolve({
+          snapshotName: 'codesema-warm-snapshot',
+          runbook: runbookOf({ image: 'should-never-be-used:1' }),
+          verification: verificationOf({ status: 'passed' }),
+        })
+      },
+    })(record, rig.io)
+
+    expect(calls).toEqual([record])
+    expect(flow.calls[0]?.prompt).toContain('last verification: passed')
+    await flow.calls[0]?.runAgentInVm?.('p')
+    expect(fake.specs[0]?.fromSnapshot).toBe('codesema-warm-snapshot')
+    expect(fake.specs[0]?.image).toBeUndefined()
+  })
+
+  test('driver set: a major finding with a repro is verified through the SAME microvm driver, never docker', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'vm repro')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const fake = fakeMicrovmDriver()
+    const finding: Finding = {
+      file: 'feature.txt',
+      severity: 'major',
+      message: 'bug',
+      repro: { command: 'exit 1', expected: 'the bug fires' },
+    }
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReview('request_changes', [finding]),
+      reportLines: [],
+    })
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      driver: fake.driver,
+      projectId: 'proj-1',
+    })(record, rig.io)
+
+    // The fake simple flow never calls the review agent's own runAgentInVm
+    // (other tests in this file exercise that wiring separately), so the
+    // ONLY sandbox this review creates is the finding's repro ad hoc check —
+    // through the SAME fake driver, its command run verbatim, never a
+    // docker/podman fallback.
+    expect(fake.calls.filter((c) => c.method === 'create')).toHaveLength(1)
+    expect(fake.calls.filter((c) => c.method === 'destroy')).toHaveLength(1)
+    const shellCall = fake.calls.find((c) => c.method === 'shell')
+    expect(String(shellCall?.args[0])).toContain('exit 1')
   })
 })

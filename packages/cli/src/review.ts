@@ -432,6 +432,18 @@ export class AgentOutputError extends Error {
 type AgentRunner = (opts: AgentRunOptions) => Promise<string>
 
 /**
+ * A VM turn returns raw stdout only (no streamed partials, no cwd/env of its
+ * own): `runAgentInVm` receiving just the prompt is what makes this the same
+ * seam `runAgentJsonWithRetry` already exposes (its `runner` param) rather
+ * than a second call path.
+ */
+function agentRunnerFor(
+  runAgentInVm: ((prompt: string) => Promise<string>) | undefined,
+): AgentRunner {
+  return runAgentInVm ? (opts) => runAgentInVm(opts.prompt) : runAgent
+}
+
+/**
  * One retry with a corrective note when the agent output holds no parseable
  * JSON; agent run errors (crash, timeout) are never retried.
  */
@@ -492,6 +504,8 @@ export async function runSimpleFlow(opts: {
   onProgress?: (status: string) => void
   /** Aborting SIGTERMs the review agent's process group (workspace shutdown). */
   signal?: AbortSignal | undefined
+  /** Set for a 'microvm' task (lot C8): the agent call runs in a disposable VM instead of the host process. */
+  runAgentInVm?: ((prompt: string) => Promise<string>) | undefined
 }): Promise<SimpleOutcome> {
   const forwardPartial = createPartialForwarder(opts.session)
   const bounded = boundedReadOnlyReviewCommand(opts.agentCommand, opts.input.repo_root)
@@ -520,6 +534,7 @@ export async function runSimpleFlow(opts: {
         extractReviewJson(raw)
         return raw
       },
+      agentRunnerFor(opts.runAgentInVm),
     )
   } catch (err) {
     if (err instanceof AgentOutputError) {
@@ -579,6 +594,8 @@ export async function runDualFlow(opts: {
   criteriaChapter?: string | undefined
   /** Aborting SIGTERMs both lanes' agent process groups (workspace shutdown). */
   signal?: AbortSignal | undefined
+  /** Set for a 'microvm' task (lot C8): both lanes run in a disposable VM instead of the host process; the judge stays on the host. */
+  runAgentInVm?: ((prompt: string) => Promise<string>) | undefined
 }): Promise<DualOutcome> {
   const { agentCommand, input, dir, timeoutMs, session, spinner, signal } = opts
   const inputBlock = `<input>\n${JSON.stringify({ ...agentVisibleInput(input), diff: input.diff }, null, 2)}\n</input>`
@@ -613,6 +630,7 @@ export async function runDualFlow(opts: {
         },
       },
       (raw) => sanitizeReview(JSON.parse(extractReviewJson(raw))),
+      agentRunnerFor(opts.runAgentInVm),
     )
   }
 

@@ -13,11 +13,12 @@ import {
   type ChildProcess,
   type SpawnOptions,
 } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { closeSync, mkdirSync, openSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { runAgent } from './agent.js'
-import { loadGlobalConfig, runnerEnvPath, saveGlobalConfig } from './config.js'
+import { loadConfig, loadGlobalConfig, runnerEnvPath, saveGlobalConfig } from './config.js'
 import type { RunnerListEntry } from './contract.js'
 import { tryGit } from './git.js'
 import {
@@ -33,6 +34,13 @@ import {
   type InFlightTicket,
 } from './hub-client.js'
 import { t } from './i18n.js'
+import { createMicrosandboxDriver, type SandboxDriver } from './microsandbox-driver.js'
+import {
+  DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS,
+  runRunbookScan,
+  type RunbookScanOutcome,
+} from './runbook-runner.js'
+import { RUNBOOK_FILE } from './runbook-setup.js'
 import { loadOrCreateRunnerIdentity, loadRunnerIdentity } from './runner-identity.js'
 import { readRunnerPidfile, removeRunnerPidfile } from './runner-pidfile.js'
 import {
@@ -50,7 +58,8 @@ import { formatFingerprint, runnerKeyFingerprint, seal, unseal } from './sealed-
 import { loadSyncCredentials } from './sync.js'
 import { draftAndPublishTicket } from './ticket-draft.js'
 import { confirm, isInteractive, select, textInput, type SelectOption } from './tui.js'
-import { ACCENT, AMBER, dim, GREEN, paint, renderFieldRows, type FieldRow } from './ui.js'
+import { ACCENT, AMBER, dim, GREEN, paint, RED, renderFieldRows, type FieldRow } from './ui.js'
+import { AGENT_DEFS, defaultCommand, detectAgents } from './wizard.js'
 import { isPidAlive } from './workspace-lock.js'
 import { workspace } from './workspace.js'
 
@@ -972,5 +981,113 @@ export async function runnerCommand(opts: RunnerCommandOptions): Promise<void> {
       return
     default:
       throw new Error(t('runner.unknownAction', { action: opts.action }))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// `codesema runbook scan`: validates this repo's runbook (or lets an agent
+// propose one) by actually running it in a microVM, no hub involved. English
+// only, like the rest of the CLI's runner surface — this command has no
+// dashboard counterpart, so there is nothing for i18n.ts to serve.
+// ---------------------------------------------------------------------------
+
+export type RunbookCommandOptions = {
+  action?: string | undefined
+  cwd: string
+  /** `--timeout`; defaults to DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS. */
+  timeoutSeconds?: number | undefined
+  /** Overrides the configured/detected agent command. */
+  agent?: string | undefined
+  /** Test seam: never a real Microsandbox VM in a test. */
+  driver?: SandboxDriver | undefined
+  /** Test seam. */
+  runRunbookScanFn?: typeof runRunbookScan | undefined
+}
+
+/** sha256 (16 hex) of the worktree's absolute path: a stable local id when there is no hub project to name one. */
+function localProjectId(worktree: string): string {
+  return createHash('sha256').update(worktree).digest('hex').slice(0, 16)
+}
+
+/**
+ * `--agent` > this repo's `.codesema/config.json`/global `agent` > the first
+ * agent found on PATH. No TOFU dance here (unlike `codesema review`'s
+ * interactive trust prompt): the proposal agent never runs on the host, it
+ * runs read-only inside a disposable microVM, which is a different trust
+ * boundary than a repo-provided command executed directly on the machine.
+ */
+async function resolveRunbookScanCommand(
+  cwd: string,
+  explicit: string | undefined,
+): Promise<string> {
+  const configured = explicit ?? loadConfig(cwd).agent
+  if (configured) {
+    return configured
+  }
+  const detected = await detectAgents(cwd)
+  const first = detected[0]
+  if (!first) {
+    throw new Error(
+      `no agent found on PATH (looked for: ${AGENT_DEFS.map((d) => d.bin).join(', ')})`,
+    )
+  }
+  return defaultCommand(first)
+}
+
+function printRunbookScanOutcome(outcome: RunbookScanOutcome): void {
+  if (outcome.status === 'completed') {
+    printResult('Runbook validated.', [
+      { label: 'image', value: outcome.runbook.image },
+      { label: 'tests', value: String(outcome.runbook.tests.length) },
+      { label: 'attempts', value: String(outcome.attempts) },
+      { label: 'snapshot', value: outcome.snapshotName ?? '(none — cold boot only)' },
+      { label: 'runbook_sha', value: outcome.validation.runbook_sha },
+      { label: 'file', value: RUNBOOK_FILE },
+    ])
+    return
+  }
+  console.log('')
+  console.log(
+    `  ${paint('✘', RED)} runbook scan failed after ${outcome.attempts} attempt(s): ${outcome.error}`,
+  )
+  process.exitCode = 1
+}
+
+async function runbookScanCommand(opts: RunbookCommandOptions): Promise<void> {
+  const worktree = opts.cwd
+  const headSha = tryGit(['rev-parse', 'HEAD'], worktree)
+  if (!headSha) {
+    throw new Error('not a git repository (or no commits yet)')
+  }
+  const command = await resolveRunbookScanCommand(worktree, opts.agent)
+  const driver = opts.driver ?? createMicrosandboxDriver()
+  const run = opts.runRunbookScanFn ?? runRunbookScan
+  const timeoutMs =
+    (opts.timeoutSeconds ?? Math.round(DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS / 1000)) * 1000
+
+  console.log('')
+  console.log(`  ${dim('scanning for a runbook…')}`)
+  const outcome = await run({
+    worktree,
+    projectId: localProjectId(worktree),
+    headSha,
+    driver,
+    command,
+    timeoutMs,
+    onProgress: (line) => console.log(`  ${dim(line)}`),
+  })
+  printRunbookScanOutcome(outcome)
+}
+
+export async function runbookCommand(opts: RunbookCommandOptions): Promise<void> {
+  switch (opts.action) {
+    case 'scan':
+      await runbookScanCommand(opts)
+      return
+    case undefined:
+      console.log('usage: codesema runbook scan [--timeout <seconds>]')
+      return
+    default:
+      throw new Error(`unknown runbook action: ${opts.action}`)
   }
 }

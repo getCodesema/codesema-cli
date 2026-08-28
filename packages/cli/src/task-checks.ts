@@ -22,6 +22,7 @@ import {
   type TaskChecks,
   type TaskChecksSource,
 } from './contract.js'
+import { sandboxName, type SandboxDriver, type SandboxSpec } from './microsandbox-driver.js'
 import type { ChecksConfig } from './repo-config.js'
 
 /** Per-check wall-clock budget when the repo config does not set one. */
@@ -741,6 +742,8 @@ export function resolveChecksPlan(input: {
 }
 
 export type RunChecksOptions = {
+  /** Where each step runs: the docker/podman executor by default, `microvmStepExecutor` in microvm isolation. */
+  executor?: StepExecutor
   /** The task's worktree — the ONLY host path the container ever sees. */
   worktree: string
   /** Explicit repo config; null/absent falls back to auto-detection. */
@@ -762,57 +765,97 @@ export type RunChecksOptions = {
 type StepOutcome = { result: TaskCheckResult; hardError: string | null }
 
 type RunStepInput = {
+  /** Where the step actually runs; falls back to `dockerStepExecutor` built from `exec`/`runtime`/`gitMounts`/`extraArgs`. */
+  executor?: StepExecutor
   exec: ExecFn
   runtime: string
   step: { command: string; network: boolean }
   plan: ChecksPlan
   worktree: string
+  /** READ-ONLY `-v` arguments exposing the repo's git directory; see container-git.ts. Docker executor only. */
+  gitMounts: readonly string[]
+  /** Extra docker/podman argv (cache volume, --user, --userns=keep-id). Docker executor only. */
+  extraArgs?: readonly string[]
+  /** Package cache volume name, forwarded to the executor as `StepExecutorInput.cacheName`. */
+  cacheName?: string
+}
+
+export type DockerStepExecutorDeps = {
+  exec: ExecFn
+  runtime: string
   /** READ-ONLY `-v` arguments exposing the repo's git directory; see container-git.ts. */
   gitMounts: readonly string[]
   /** Extra docker/podman argv (cache volume, --user, --userns=keep-id). */
   extraArgs?: readonly string[]
+  /** Reserved for a future podman-specific arg shape; unused today (extraArgs already carries `--userns=keep-id`). */
+  podman?: boolean
 }
 
-/** One containerized step. Kills the container on timeout (killing the client alone leaves it running). */
+/** The default executor: today's docker/podman CLI invocation, byte-for-byte what `runStep` used to do inline. */
+export function dockerStepExecutor(deps: DockerStepExecutorDeps): StepExecutor {
+  return async (input: StepExecutorInput): Promise<StepExecutorResult> => {
+    // A unique name so a timed-out container can be killed by name; --rm reaps it.
+    const name = `codesema-checks-${randomBytes(6).toString('hex')}`
+    const args = [
+      'run',
+      '--rm',
+      '--name',
+      name,
+      '-v',
+      `${input.worktree}:${CHECKS_WORK_DIR}:rw`,
+      '-w',
+      CHECKS_WORK_DIR,
+      // Check commands are the repo's own: hooks, version stamps and test rigs
+      // routinely shell out to git, which a linked worktree alone cannot answer.
+      ...deps.gitMounts,
+      ...(deps.extraArgs ?? []),
+      ...gitSafeDirectoryEnvArgs(CHECKS_WORK_DIR),
+      ...(input.network ? [] : ['--network', 'none']),
+      '--cpus',
+      '2',
+      '--memory',
+      '2g',
+      input.image,
+      'sh',
+      '-lc',
+      deps.extraArgs && deps.extraArgs.length > 0
+        ? `mkdir -p "$HOME" "$npm_config_cache" "$BUN_INSTALL_CACHE_DIR" "$PIP_CACHE_DIR"; ${input.command}`
+        : input.command,
+    ]
+    const run = await deps.exec(deps.runtime, args, { timeoutMs: input.timeoutMs })
+    if (run.timedOut) {
+      // Best-effort: the docker client died but the container is still running.
+      void deps.exec(deps.runtime, ['kill', name], { timeoutMs: 10_000 }).catch(() => {})
+    }
+    return run
+  }
+}
+
+/** One step, routed through `input.executor` (docker by default). Timeout/exit-code interpretation is executor-agnostic. */
 async function runStep(input: RunStepInput): Promise<StepOutcome> {
-  const { exec, runtime, step, plan, worktree } = input
-  // A unique name so a timed-out container can be killed by name; --rm reaps it.
-  const name = `codesema-checks-${randomBytes(6).toString('hex')}`
-  const args = [
-    'run',
-    '--rm',
-    '--name',
-    name,
-    '-v',
-    `${worktree}:${CHECKS_WORK_DIR}:rw`,
-    '-w',
-    CHECKS_WORK_DIR,
-    // Check commands are the repo's own: hooks, version stamps and test rigs
-    // routinely shell out to git, which a linked worktree alone cannot answer.
-    ...input.gitMounts,
-    ...(input.extraArgs ?? []),
-    ...gitSafeDirectoryEnvArgs(CHECKS_WORK_DIR),
-    ...(step.network ? [] : ['--network', 'none']),
-    '--cpus',
-    '2',
-    '--memory',
-    '2g',
-    plan.image,
-    'sh',
-    '-lc',
-    input.extraArgs && input.extraArgs.length > 0
-      ? `mkdir -p "$HOME" "$npm_config_cache" "$BUN_INSTALL_CACHE_DIR" "$PIP_CACHE_DIR"; ${step.command}`
-      : step.command,
-  ]
+  const { step, plan, worktree } = input
+  const executor: StepExecutor =
+    input.executor ??
+    dockerStepExecutor({
+      exec: input.exec,
+      runtime: input.runtime,
+      gitMounts: input.gitMounts,
+      ...(input.extraArgs ? { extraArgs: input.extraArgs } : {}),
+    })
   const startedAt = Date.now()
-  const run = await exec(runtime, args, { timeoutMs: plan.timeoutSeconds * 1000 })
+  const run = await executor({
+    command: step.command,
+    network: step.network,
+    worktree,
+    image: plan.image,
+    timeoutMs: plan.timeoutSeconds * 1000,
+    ...(input.cacheName ? { cacheName: input.cacheName } : {}),
+  })
   const duration_ms = Date.now() - startedAt
   // Interleaving is lost across the two pipes; stdout-then-stderr keeps the
   // stderr end (where compilers put the verdict) inside the bounded tail.
   const tail = (run.stdout + run.stderr).slice(-TASK_CHECK_TAIL_MAX)
   if (run.timedOut) {
-    // Best-effort: the docker client died but the container is still running.
-    void exec(runtime, ['kill', name], { timeoutMs: 10_000 }).catch(() => {})
     return {
       result: { command: step.command, status: 'timeout', exit_code: null, duration_ms, tail },
       hardError: null,
@@ -870,23 +913,34 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
   // the ones `finish` derives) carries it.
   snapshot.source = plan.source
   opts.onUpdate?.({ ...snapshot })
-  const runtime = await containerRuntime(opts.execFn)
-  if (!runtime) {
-    return finish(
-      'error',
-      'no container runtime found: install docker or podman to run checks in a sandbox',
-    )
-  }
   const exec = opts.execFn ?? defaultExec
+  // A microvm (or any other injected) executor needs no docker/podman client
+  // at all: runtime detection and the docker-only cache-volume setup below
+  // are skipped whenever the caller supplied its own executor.
+  let runtime = ''
+  if (!opts.executor) {
+    const detected = await containerRuntime(opts.execFn)
+    if (!detected) {
+      return finish(
+        'error',
+        'no container runtime found: install docker or podman to run checks in a sandbox',
+      )
+    }
+    runtime = detected
+  }
   const git = prepareContainerGit({ worktree: opts.worktree, workDir: CHECKS_WORK_DIR })
   const gitMounts = git?.mountArgs ?? []
-  const installExtra = opts.projectId
-    ? await ensureInstallExtraArgs({
-        exec,
-        runtime,
-        projectId: opts.projectId,
-      })
-    : []
+  const installExtra =
+    !opts.executor && opts.projectId
+      ? await ensureInstallExtraArgs({
+          exec,
+          runtime,
+          projectId: opts.projectId,
+        })
+      : []
+  // Non-docker executors get the cache volume name itself, not the
+  // uid/chown-shaped docker argv: `microvmStepExecutor` mounts it directly.
+  const cacheName = opts.executor && opts.projectId ? pkgCacheVolume(opts.projectId) : undefined
   const steps = [
     ...(plan.install ? [{ command: plan.install, network: plan.network, install: true }] : []),
     ...plan.commands.map((command) => ({ command, network: false, install: false })),
@@ -911,7 +965,9 @@ export async function runChecks(opts: RunChecksOptions): Promise<TaskChecks> {
       plan,
       worktree: opts.worktree,
       gitMounts,
+      ...(opts.executor ? { executor: opts.executor } : {}),
       ...(step.install && installExtra.length > 0 ? { extraArgs: installExtra } : {}),
+      ...(step.install && cacheName ? { cacheName } : {}),
     })
     snapshot.checks.push(result)
     if (failure !== null) {
@@ -994,6 +1050,8 @@ async function ensureInstallExtraArgs(opts: {
 export const AD_HOC_CHECK_DEFAULT_TIMEOUT_SECONDS = 60
 
 export type RunAdHocCheckOptions = {
+  /** Where each step runs: the docker/podman executor by default, `microvmStepExecutor` in microvm isolation. */
+  executor?: StepExecutor
   /** The task's worktree: the ONLY host path the container ever sees, same as `RunChecksOptions`. */
   worktree: string
   /** The criterion's `[proof:command ...]` argument, run verbatim. */
@@ -1017,15 +1075,21 @@ export type RunAdHocCheckOptions = {
  */
 export async function runAdHocCheck(opts: RunAdHocCheckOptions): Promise<TaskCheckResult> {
   const exec = opts.execFn ?? defaultExec
-  const runtime = await containerRuntime(opts.execFn)
-  if (!runtime) {
-    return {
-      command: opts.command,
-      status: 'failed',
-      exit_code: null,
-      duration_ms: 0,
-      tail: 'no container runtime found: install docker or podman to run this check',
+  // No `executor` (finding-repro.ts's only call shape): docker/podman
+  // detection runs exactly as before. An injected executor skips it.
+  let runtime = ''
+  if (!opts.executor) {
+    const detected = await containerRuntime(opts.execFn)
+    if (!detected) {
+      return {
+        command: opts.command,
+        status: 'failed',
+        exit_code: null,
+        duration_ms: 0,
+        tail: 'no container runtime found: install docker or podman to run this check',
+      }
     }
+    runtime = detected
   }
   const git = prepareContainerGit({ worktree: opts.worktree, workDir: CHECKS_WORK_DIR })
   const { result } = await runStep({
@@ -1042,6 +1106,7 @@ export async function runAdHocCheck(opts: RunAdHocCheckOptions): Promise<TaskChe
     },
     worktree: opts.worktree,
     gitMounts: git?.mountArgs ?? [],
+    ...(opts.executor ? { executor: opts.executor } : {}),
   })
   return result
 }
@@ -1097,6 +1162,8 @@ export type BootstrapInstallResult = {
 }
 
 export type BootstrapWorktreeInstallOptions = {
+  /** Where each step runs: the docker/podman executor by default, `microvmStepExecutor` in microvm isolation. */
+  executor?: StepExecutor
   worktree: string
   projectId: string
   config?: ChecksConfig | null
@@ -1135,25 +1202,46 @@ export async function bootstrapWorktreeInstall(
       detail: 'lockfile unchanged',
     }
   }
-  opts.onStart?.(plan.install)
-  const runtime = await containerRuntime(opts.execFn)
-  if (!runtime) {
+  // A project snapshot (lot C6) already carries a completed install: running
+  // it again inside a microVM restored from that snapshot would only redo
+  // work the snapshot did at build time. Detected via the marker
+  // `microvmStepExecutor` stamps on the executor it returns.
+  const microvmSnapshot = (opts.executor as MicrovmTaggedExecutor | undefined)?.microvmSnapshotName
+  if (opts.executor && microvmSnapshot) {
     return {
-      status: 'failed',
+      status: 'skipped',
       command: plan.install,
       fingerprint,
-      detail: 'no container runtime found: install docker or podman to install dependencies',
+      detail: 'installed in the project snapshot',
     }
   }
+  opts.onStart?.(plan.install)
   const exec = opts.execFn ?? defaultExec
-  const extraArgs = await ensureInstallExtraArgs({
-    exec,
-    runtime,
-    projectId: opts.projectId,
-    ...(opts.uid !== undefined ? { uid: opts.uid } : {}),
-    ...(opts.gid !== undefined ? { gid: opts.gid } : {}),
-    ...(opts.podman !== undefined ? { podman: opts.podman } : {}),
-  })
+  // Docker-only setup (runtime detection, uid/chown cache volume argv) is
+  // skipped for an injected executor; it mounts the cache itself from
+  // `cacheName` instead.
+  let runtime = ''
+  let extraArgs: string[] = []
+  if (!opts.executor) {
+    const detected = await containerRuntime(opts.execFn)
+    if (!detected) {
+      return {
+        status: 'failed',
+        command: plan.install,
+        fingerprint,
+        detail: 'no container runtime found: install docker or podman to install dependencies',
+      }
+    }
+    runtime = detected
+    extraArgs = await ensureInstallExtraArgs({
+      exec,
+      runtime,
+      projectId: opts.projectId,
+      ...(opts.uid !== undefined ? { uid: opts.uid } : {}),
+      ...(opts.gid !== undefined ? { gid: opts.gid } : {}),
+      ...(opts.podman !== undefined ? { podman: opts.podman } : {}),
+    })
+  }
   const git = prepareContainerGit({ worktree: opts.worktree, workDir: CHECKS_WORK_DIR })
   const { result, hardError } = await runStep({
     exec,
@@ -1169,7 +1257,9 @@ export async function bootstrapWorktreeInstall(
     },
     worktree: opts.worktree,
     gitMounts: git?.mountArgs ?? [],
-    extraArgs,
+    ...(opts.executor ? { executor: opts.executor } : {}),
+    ...(extraArgs.length > 0 ? { extraArgs } : {}),
+    ...(opts.executor ? { cacheName: pkgCacheVolume(opts.projectId) } : {}),
   })
   if (hardError !== null || result.status !== 'passed') {
     return {
@@ -1180,4 +1270,100 @@ export async function bootstrapWorktreeInstall(
     }
   }
   return { status: 'passed', command: plan.install, fingerprint, detail: '' }
+}
+
+/**
+ * The seam between a check plan and the place its steps run. The default
+ * (docker/podman CLI, today's `runStep`) becomes `dockerStepExecutor`; the
+ * microvm one runs the same step in a sandbox restored from the project
+ * snapshot. Lot C3 implements both and routes `runStep` through it.
+ */
+export type StepExecutorInput = {
+  command: string
+  /** True only for an install step: egress opened to the runbook's hosts; checks never get network. */
+  network: boolean
+  worktree: string
+  image: string
+  timeoutMs: number
+  env?: Readonly<Record<string, string>>
+  /** Package cache mounted at /cache when set (`pkgCacheVolume(projectId)`). */
+  cacheName?: string
+}
+
+export type StepExecutorResult = ExecResult
+
+export type StepExecutor = (input: StepExecutorInput) => Promise<StepExecutorResult>
+
+export type MicrovmStepExecutorOptions = {
+  driver: SandboxDriver
+  projectId: string
+  /** Snapshot to restore for every step; null boots `input.image` cold. */
+  snapshotName: string | null
+  /** Extra egress for install steps (runbook.egress). */
+  allowedDomains?: readonly string[]
+}
+
+/** A `StepExecutor` built by `microvmStepExecutor`, tagged so `bootstrapWorktreeInstall` can tell it apart from a docker one without widening `StepExecutor` itself. */
+type MicrovmTaggedExecutor = StepExecutor & { microvmSnapshotName: string | null }
+
+/** Package-cache mount point inside a checks sandbox; matches the docker executor's `PKG_CACHE_DIR`. */
+const MICROVM_CACHE_DIR = PKG_CACHE_DIR
+
+/**
+ * Runs one step in a fresh microVM: created from `snapshotName` when set
+ * (cold `image` boot otherwise), the worktree copied in, an optional
+ * directory-backed cache volume mounted, the command run under a shell, the
+ * sandbox destroyed in `finally` whether the step passed, failed, or the
+ * driver itself threw. Never rejects: a driver-level failure (create/copy
+ * throwing) becomes a synthetic `failure` result, the same discipline the
+ * docker executor's ExecFn already follows.
+ */
+export function microvmStepExecutor(opts: MicrovmStepExecutorOptions): StepExecutor {
+  const executor: StepExecutor = async (input: StepExecutorInput): Promise<StepExecutorResult> => {
+    const id = `${opts.projectId}-${randomBytes(4).toString('hex')}`
+    const name = sandboxName('checks', id)
+    const allowedDomains = input.network ? [...(opts.allowedDomains ?? [])] : []
+    const spec: SandboxSpec = {
+      name,
+      cpus: 4,
+      memoryMib: 4096,
+      maxDurationSeconds: Math.ceil(input.timeoutMs / 1000) + 60,
+      network: { allowedDomains },
+      ...(opts.snapshotName ? { fromSnapshot: opts.snapshotName } : { image: input.image }),
+      ...(input.cacheName
+        ? { volumes: [{ guest: MICROVM_CACHE_DIR, name: input.cacheName }] }
+        : {}),
+    }
+    let created = false
+    try {
+      if (input.cacheName) {
+        await opts.driver.ensureVolume(input.cacheName, { kind: 'directory' })
+      }
+      const handle = await opts.driver.create(spec)
+      created = true
+      await handle.copyFromHost(input.worktree, CHECKS_WORK_DIR)
+      const result = await handle.shell(`cd ${CHECKS_WORK_DIR} && ${input.command}`, {
+        timeoutMs: input.timeoutMs,
+      })
+      return {
+        code: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        timedOut: result.timedOut,
+        failure: null,
+      }
+    } catch (err) {
+      // Driver-level breakage (boot failure, copy failure, ...): the same
+      // "process never ran" shape the docker executor reports for ENOENT.
+      const message = err instanceof Error ? err.message : String(err)
+      return { code: null, stdout: '', stderr: '', timedOut: false, failure: message }
+    } finally {
+      if (created) {
+        await opts.driver.destroy(name).catch(() => {})
+      }
+    }
+  }
+  return Object.assign(executor, {
+    microvmSnapshotName: opts.snapshotName,
+  }) as MicrovmTaggedExecutor
 }

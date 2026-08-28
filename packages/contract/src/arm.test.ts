@@ -42,6 +42,7 @@ import {
   type ArmTicketRequest,
   type ArmTransition,
 } from './arm.js'
+import { validate, type Schema } from './schema-validator.test-helper.js'
 import { TASK_STATUS_VALUES } from './tasks.js'
 
 // --- Fixtures ----------------------------------------------------------------
@@ -768,133 +769,9 @@ describe('armTicketSchema / armTransitionSchema', () => {
 // the schema is not looser than what the sanitizer actually accepts. Deliberately
 // local and tiny, like recap.test.ts's and index.test.ts's own validators: this
 // proves the SCHEMA against the SANITIZER, not a library's leniency, and is the
-// one automatic lock against a field added to one but not the other.
-
-type Schema = Record<string, unknown>
-
-function deref(schema: Schema, root: Schema): Schema {
-  const ref = schema.$ref
-  if (typeof ref !== 'string') {
-    return schema
-  }
-  const defs = (root.$defs ?? {}) as Record<string, Schema>
-  const key = ref.replace('#/$defs/', '')
-  const target = Object.hasOwn(defs, key) ? (defs[key] ?? {}) : {}
-  const { $ref: _drop, ...siblings } = schema
-  return { ...target, ...siblings }
-}
-
-function typeMatches(node: unknown, type: string): boolean {
-  switch (type) {
-    case 'null':
-      return node === null
-    case 'string':
-      return typeof node === 'string'
-    case 'boolean':
-      return typeof node === 'boolean'
-    case 'integer':
-      return typeof node === 'number' && Number.isInteger(node)
-    case 'array':
-      return Array.isArray(node)
-    case 'object':
-      return !!node && typeof node === 'object' && !Array.isArray(node)
-    default:
-      return false
-  }
-}
-
-function validateString(node: string, s: Schema, path: string): string[] {
-  const errors: string[] = []
-  const length = [...node].length
-  if (typeof s.maxLength === 'number' && length > s.maxLength) {
-    errors.push(`${path}: maxLength`)
-  }
-  if (typeof s.minLength === 'number' && length < s.minLength) {
-    errors.push(`${path}: minLength`)
-  }
-  if (typeof s.pattern === 'string' && !new RegExp(s.pattern, 'u').test(node)) {
-    errors.push(`${path}: pattern`)
-  }
-  return errors
-}
-
-function validateNumber(node: number, s: Schema, path: string): string[] {
-  const errors: string[] = []
-  if (typeof s.minimum === 'number' && node < s.minimum) {
-    errors.push(`${path}: minimum`)
-  }
-  if (typeof s.maximum === 'number' && node > s.maximum) {
-    errors.push(`${path}: maximum`)
-  }
-  return errors
-}
-
-function validateObject(node: object, s: Schema, root: Schema, path: string): string[] {
-  const errors: string[] = []
-  const record = node as Record<string, unknown>
-  const properties = (s.properties ?? {}) as Record<string, Schema>
-  for (const key of (s.required ?? []) as string[]) {
-    if (!Object.hasOwn(record, key)) {
-      errors.push(`${path}.${key}: required`)
-    }
-  }
-  for (const [key, value] of Object.entries(record)) {
-    const child = Object.hasOwn(properties, key) ? properties[key] : undefined
-    if (!child) {
-      if (s.additionalProperties === false) {
-        errors.push(`${path}.${key}: additionalProperties`)
-      }
-      continue
-    }
-    errors.push(...validate(value, child, root, `${path}.${key}`))
-  }
-  return errors
-}
-
-function validate(node: unknown, schema: Schema, root: Schema, path = '$'): string[] {
-  const s = deref(schema, root)
-  const types =
-    typeof s.type === 'string' ? [s.type] : Array.isArray(s.type) ? (s.type as string[]) : []
-  const hasAssertion = 'const' in s || 'enum' in s || types.length > 0 || Array.isArray(s.anyOf)
-  if (!hasAssertion) {
-    // A schema node that asserts NOTHING accepts every value that reaches it.
-    // Fail loudly here instead of quietly proving nothing.
-    throw new Error(`arm schema validator: '${path}' asserts nothing`)
-  }
-  const errors: string[] = []
-  if ('const' in s && node !== s.const) {
-    errors.push(`${path}: const`)
-  }
-  if (Array.isArray(s.enum) && !s.enum.includes(node)) {
-    errors.push(`${path}: enum`)
-  }
-  if (Array.isArray(s.anyOf)) {
-    const branches = s.anyOf as Schema[]
-    if (!branches.some((branch) => validate(node, branch, root, path).length === 0)) {
-      errors.push(`${path}: anyOf`)
-    }
-  }
-  if (types.length === 0) {
-    return errors
-  }
-  if (!types.some((type) => typeMatches(node, type))) {
-    errors.push(`${path}: type`)
-    return errors
-  }
-  if (typeof node === 'string') {
-    errors.push(...validateString(node, s, path))
-  } else if (typeof node === 'number') {
-    errors.push(...validateNumber(node, s, path))
-  } else if (Array.isArray(node)) {
-    const items = s.items as Schema | undefined
-    if (items) {
-      node.forEach((item, i) => errors.push(...validate(item, items, root, `${path}[${i}]`)))
-    }
-  } else if (node && typeof node === 'object') {
-    errors.push(...validateObject(node, s, root, path))
-  }
-  return errors
-}
+// one automatic lock against a field added to one but not the other. The
+// validator itself lives in schema-validator.test-helper.ts, shared with
+// tasks.test.ts and runbook.test.ts.
 
 const ticketSchemaErrors = (value: unknown): string[] =>
   validate(value, armTicketSchema as unknown as Schema, armTicketSchema as unknown as Schema)

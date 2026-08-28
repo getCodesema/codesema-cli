@@ -13,6 +13,7 @@ export default defineConfig({
   platform: 'node',
   target: 'node20',
   clean: true,
+  external: ['microsandbox'],
   dts: false,
   // Shipped unminified on purpose: users of a review tool should be able to
   // audit the exact code that runs on their diff.

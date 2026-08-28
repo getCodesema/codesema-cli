@@ -402,6 +402,30 @@ describe('runDualFlow', () => {
     expect(outcome.record.meta.dual).toEqual({ merged: 1, rejected: 0, added_by_b: 0 })
   }, 20000)
 
+  // Lot C8: a 'microvm' task's review runs both lanes in a disposable VM
+  // instead of spawning the host agent process; the judge, out of scope for
+  // this ticket, keeps running on the host.
+  test('runAgentInVm carries both lanes; the judge still runs on the host', async () => {
+    const finding =
+      '{"file":"a.ts","line":1,"severity":"major","kind":"design","title":"t","message":"broken"}'
+    const payload = `{"verdict":"comment","summary":"ok","findings":[${finding}],"decisions":[{"id":"A0","action":"keep"}]}`
+    const fixture = setupDualRepo(payload)
+    const vmCalls: string[] = []
+
+    const outcome = await runDualFlow({
+      ...flowOpts(fixture),
+      runAgentInVm: async (prompt) => {
+        vmCalls.push(prompt)
+        return payload
+      },
+    })
+
+    expect(outcome.ok).toBe(true)
+    expect(vmCalls).toHaveLength(2)
+    // Only the judge reached the host script: neither lane ever spawned it.
+    expect(readFileSync(fixture.callsPath, 'utf8').trim().split('\n')).toHaveLength(1)
+  }, 20000)
+
   // T1.2 re-review round 9: the abort has THREE propagation sites in this
   // module — the simple flow, each dual LANE, and the judge — and only the
   // first was held by a test. With the lane's signal dropped, a Ctrl-C during
@@ -914,6 +938,44 @@ describe('runSimpleFlow', () => {
       return
     }
     expect(outcome.failure).toBe('run')
+  }, 20000)
+
+  // Lot C8: a 'microvm' task's review agent runs in a disposable VM. The
+  // fixture's agentScript is a crashing agent (exit 1) on purpose — if the
+  // host process were ever spawned instead of `runAgentInVm`, the outcome
+  // would fail with `failure: 'run'`, exactly as the test just above.
+  test('runAgentInVm supplied: the host process is never spawned', async () => {
+    const fixture = setupSimpleRepo('', 1)
+    const calls: string[] = []
+
+    const outcome = await runSimpleFlow({
+      ...flowOpts(fixture),
+      runAgentInVm: async (prompt) => {
+        calls.push(prompt)
+        return REVIEW
+      },
+    })
+
+    expect(outcome.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain('<input>')
+  }, 20000)
+
+  test('runAgentInVm output that fails to parse is retried with the corrective note, same as the host path', async () => {
+    const fixture = setupSimpleRepo('', 1)
+    const calls: string[] = []
+
+    const outcome = await runSimpleFlow({
+      ...flowOpts(fixture),
+      runAgentInVm: async (prompt) => {
+        calls.push(prompt)
+        return calls.length === 1 ? 'garbage' : REVIEW
+      },
+    })
+
+    expect(outcome.ok).toBe(true)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toContain('not a valid JSON review')
   }, 20000)
 
   test('unparseable agent output surfaces an output failure with the raw text', async () => {

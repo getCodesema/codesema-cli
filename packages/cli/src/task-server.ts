@@ -38,6 +38,7 @@ import {
   type ArmTicket,
   type ReasonCode,
   type ReviewRecord,
+  type RunbookConfig,
   type TaskChecks,
   type TaskEvent,
   type TaskIsolation,
@@ -46,6 +47,7 @@ import {
   type TaskReason,
   type TaskRecord,
   type TaskStatus,
+  type TaskVerification,
 } from './contract.js'
 import {
   FORGE_ORIGIN_UNKNOWN,
@@ -59,8 +61,18 @@ import {
 } from './degraded-mode.js'
 import type { ForgeIssuesExecFn } from './forge-issues.js'
 import { refExists, tryGit, tryGitAsync } from './git.js'
+import { verification as reportHubVerification } from './hub-client.js'
 import { t } from './i18n.js'
 import { createLoadCap, type LoadCap, type LoadCapSnapshot } from './load-cap.js'
+import {
+  createMicrosandboxDriver,
+  sweepOrphanedSandboxes as sweepOrphanedSandboxesImpl,
+  type SandboxDriver,
+  type SandboxSecret,
+  type SandboxSweepOutcome,
+} from './microsandbox-driver.js'
+import { buildProjectSnapshot, resolveProjectSnapshot } from './microvm-snapshot.js'
+import type { RunMicrovmTurnOptions } from './microvm-turn.js'
 import {
   listProjectsDetailed,
   listWorkspaceProjects,
@@ -68,7 +80,13 @@ import {
   type Project,
 } from './projects.js'
 import { readChecksConfig } from './repo-config.js'
-import { runChecks } from './task-checks.js'
+import {
+  runbookSha as computeRunbookSha,
+  readRunbookConfig,
+  RUNBOOK_FILE,
+} from './runbook-setup.js'
+import { loadSyncCredentials } from './sync.js'
+import { microvmStepExecutor, runChecks } from './task-checks.js'
 import {
   applyFixLoopDecision,
   AUTO_FIX_EXHAUSTED_NAME,
@@ -84,10 +102,15 @@ import { resolveHubTicketOrigin } from './task-hub-ticket.js'
 import { reportHubTransition } from './task-hub.js'
 import {
   agentHomeVolume,
+  CAGE_FORWARDED_ENV,
+  DEFAULT_BASE_IMAGE,
+  DEFAULT_ISOLATION_ALLOWED_DOMAINS,
   isolationDefaults,
   isolationDomainsFor,
   overlayIsolationProbe,
+  readBaseImageInputs,
   releaseAgentHome,
+  resolveBaseImage,
   sweepOrphanedHomeVolumes,
   UNPROBED_ISOLATION,
   type HomeVolumeSweepOutcome,
@@ -127,17 +150,20 @@ import {
   readTaskReview,
   terminalChecksResult,
   type CreateTaskReviewerOptions,
+  type ReviewMicrovmContext,
 } from './task-review.js'
 import {
   commandForTask,
   createTaskRunner,
   pendingResumeTurn,
+  type RunTaskTurnMicrovmOptions,
   type TaskActionResult,
   type TaskRunner,
   type TaskRunnerOptions,
   type TaskTurnReviewFn,
 } from './task-runner.js'
 import { shipTask, type ShipOutcome } from './task-ship.js'
+import { readTaskVerification, verifyTask, writeTaskVerification } from './task-verification.js'
 import {
   appendTaskEvent,
   createTask,
@@ -368,6 +394,12 @@ export type TaskManager = {
   /** Latest persisted checks run; null on unknown project/task or never-run. */
   getChecks: (projectId: string, id: string) => TaskChecks | null
   /**
+   * Latest mechanical verification of a `'microvm'` task (lot C7); null on
+   * unknown project/task or a task that never had one — same doctrine as
+   * `getChecks`.
+   */
+  getVerification: (projectId: string, id: string) => TaskVerification | null
+  /**
    * The task's archived end-of-turn review (GET /api/tasks/:id/review).
    * `ref` — the archive path a review_done event carries — serves THAT turn's
    * review instead of the latest one, and is honored only inside the
@@ -441,6 +473,14 @@ export type TaskManager = {
    * notice, not a wider sweep (Risk 1 of design.md).
    */
   sweepOrphanedVolumes: () => Promise<void>
+  /**
+   * Same sweep as `sweepOrphanedVolumes`, for microvm sandboxes
+   * (`codesema-<role>-<id>`) instead of HOME volumes. A no-op, silently, when
+   * the workspace's configured isolation mode is not 'microvm': no sandbox
+   * was ever going to exist, so nothing is worth probing a sandbox runtime
+   * for. Never rejects, same doctrine as `sweepOrphanedVolumes`.
+   */
+  sweepOrphanedSandboxes: () => Promise<void>
   /**
    * T1.9. Purges terminated tasks past the retention window, project by
    * project (applyTaskRetention). Same explicit-step reasoning as
@@ -563,6 +603,8 @@ export type CreateTaskManagerOptions = {
   /** Egress allowlist of the cage; the isolation module's default applies when absent. */
   allowedDomains?: readonly string[] | undefined
   runAgentFn?: (options: AgentRunOptions) => Promise<string>
+  /** Test seam for the microvm turn path; the default drives a real sandbox. */
+  runMicrovmTurnFn?: (options: RunMicrovmTurnOptions) => Promise<string>
   /** Test seam: lets tests observe/replace the runner without spawning agents. */
   createRunnerFn?: (options: TaskRunnerOptions) => TaskRunner
   /**
@@ -597,6 +639,18 @@ export type CreateTaskManagerOptions = {
   releaseAgentHomeFn?: (opts: { taskId: string }) => Promise<ReleaseAgentHomeResult>
   /** T1.9: boot sweep of orphaned HOME volumes. Test seam; default drives the real runtime. */
   sweepOrphanedVolumesFn?: typeof sweepOrphanedHomeVolumes
+  /** Boot sweep of orphaned microvm sandboxes, microvm mode only. Test seam; default drives the real sandbox runtime. */
+  sweepOrphanedSandboxesFn?: typeof sweepOrphanedSandboxesImpl
+  /** Test seam: the default builds the real Microsandbox-backed driver (lot C1). */
+  sandboxDriverFn?: () => SandboxDriver
+  /** Test seam: the default reads `.codesema/runbook.json` off the worktree (lot C4). */
+  readRunbookConfigFn?: typeof readRunbookConfig
+  /** Test seam: the default resolves the project's warm snapshot (lot C6). */
+  resolveProjectSnapshotFn?: typeof resolveProjectSnapshot
+  /** Test seam: the default builds the project's warm snapshot when missing (lot C6). */
+  buildProjectSnapshotFn?: typeof buildProjectSnapshot
+  /** Test seam: the default replays `runbook.tests` in a fresh sandbox (lot C7). */
+  verifyTaskFn?: typeof verifyTask
   /** T1.9 review round 1: the default reads the global registry WITH its completeness flag. Test seam. */
   listProjectsDetailedFn?: typeof listProjectsDetailed
   /** T1.9: retention pass of one project. Test seam; default is the real applyTaskRetention. */
@@ -1442,6 +1496,123 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const forgeFacts = (project: Project | null): ForgeWorkspaceFacts =>
     forgeWorkspaceFacts(forgeProbe, project ? forgeRemote(project.path) : FORGE_ORIGIN_UNKNOWN)
   const createRunner = opts.createRunnerFn ?? createTaskRunner
+
+  /**
+   * `CAGE_FORWARDED_ENV`, declared to a microvm sandbox as secrets rather
+   * than as env: the guest sees `$MSB_<name>`, never the value in its own
+   * process environment or in argv (microsandbox-driver.ts's own guard
+   * rail). Mirrors `costRunEnv`'s caged branch, which forwards the exact
+   * same names by env instead — the container and the microvm cage grant an
+   * agent the same secrets, through each driver's own safe channel.
+   */
+  const microvmSecretsFromEnv = (env: NodeJS.ProcessEnv = process.env): SandboxSecret[] => {
+    const secrets: SandboxSecret[] = []
+    for (const name of CAGE_FORWARDED_ENV) {
+      const value = env[name]
+      if (value !== undefined) {
+        secrets.push({ env: name, value, allowedHosts: DEFAULT_ISOLATION_ALLOWED_DOMAINS })
+      }
+    }
+    return secrets
+  }
+
+  /**
+   * The driver, snapshot, image, runbook and secrets a 'microvm' task's turn,
+   * checks or verification runs with — resolved fresh from the record's OWN
+   * worktree, since the runbook and the snapshot travel with the branch, not
+   * with the project. `readRunbookConfigFn` is the repo's own
+   * `.codesema/runbook.json`; a repository with none gets `runbook: null`
+   * (cold boot, no install, no egress) rather than a hub round trip — the
+   * hub fallback (`hubClient.currentRunbook`) needs a hub-side repo id this
+   * manager has no resolver for yet (see api_notes of lot C7's report).
+   */
+  const resolveMicrovmBuild = async (
+    record: TaskRecord,
+    cwd: string,
+    projectId: string,
+    timeoutMs: number,
+  ): Promise<RunTaskTurnMicrovmOptions> => {
+    const driver = opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver()
+    const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
+    const runbook = readRunbook(record.worktree)
+    let snapshotName: string | null = null
+    if (runbook) {
+      const resolveSnapshot = opts.resolveProjectSnapshotFn ?? resolveProjectSnapshot
+      const snapshot = await resolveSnapshot({
+        driver,
+        projectId,
+        worktree: record.worktree,
+        runbook,
+      })
+      if (snapshot.kind === 'ready') {
+        snapshotName = snapshot.name
+      } else if (snapshot.kind === 'missing') {
+        const build = opts.buildProjectSnapshotFn ?? buildProjectSnapshot
+        const built = await build({
+          driver,
+          projectId,
+          worktree: record.worktree,
+          runbook,
+          timeoutMs,
+        })
+        snapshotName = built.kind === 'ready' ? built.name : null
+      }
+      // 'cold': snapshotName stays null, runMicrovmTurn boots the image directly.
+    }
+    const image =
+      runbook?.image ??
+      resolveBaseImage(readBaseImageInputs(record.worktree, readChecksConfig(cwd))).image ??
+      DEFAULT_BASE_IMAGE
+    return { driver, snapshotName, image, runbook, secrets: microvmSecretsFromEnv() }
+  }
+
+  /**
+   * The task's own validated runbook and a READY-ONLY snapshot name — never
+   * BUILDS a missing snapshot (that stays the dev turn's job, via
+   * `resolveMicrovmBuild` above). Shared by `resolveMicrovmChecksExecutor`
+   * and `reviewMicrovm`'s per-task `resolveReviewContext` below: both read
+   * exactly this pair, and neither owns the build step.
+   */
+  const resolveMicrovmRunbookSnapshot = async (
+    driver: SandboxDriver,
+    record: TaskRecord,
+    projectId: string,
+  ): Promise<{ runbook: RunbookConfig | null; snapshotName: string | null }> => {
+    const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
+    const runbook = readRunbook(record.worktree)
+    if (!runbook) {
+      return { runbook: null, snapshotName: null }
+    }
+    const resolveSnapshot = opts.resolveProjectSnapshotFn ?? resolveProjectSnapshot
+    const snapshot = await resolveSnapshot({
+      driver,
+      projectId,
+      worktree: record.worktree,
+      runbook,
+    })
+    return { runbook, snapshotName: snapshot.kind === 'ready' ? snapshot.name : null }
+  }
+
+  /**
+   * The checks/ad-hoc-check executor for a 'microvm' task: unlike
+   * `resolveMicrovmBuild`, this never BUILDS a missing snapshot (that stays
+   * the dev turn's job, via `resolveMicrovmFn` above) — a checks run against
+   * a still-missing snapshot simply boots the runbook image cold, once per
+   * step, the same honest fallback `microvmStepExecutor` itself documents.
+   */
+  const resolveMicrovmChecksExecutor = async (
+    record: TaskRecord,
+    projectId: string,
+  ): Promise<ReturnType<typeof microvmStepExecutor>> => {
+    const driver = opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver()
+    const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot(driver, record, projectId)
+    return microvmStepExecutor({
+      driver,
+      projectId,
+      snapshotName,
+      ...(runbook ? { allowedDomains: runbook.egress } : {}),
+    })
+  }
   /**
    * T2.4 round-4 adversarial review, majeur 3 — "never start a turn on a
    * ticketed task THIS SESSION has never compared to its forge".
@@ -1815,7 +1986,22 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       const run = opts.shipTaskFn ?? shipTask
       let outcome: ShipOutcome
       try {
-        outcome = await run({ cwd, task: record })
+        outcome = await run({
+          cwd,
+          task: record,
+          // A microvm task pushes and opens the MR from a dedicated sandbox
+          // (lot C9), never from the host's own gh/glab. The forge token is
+          // exactly what the runner's own secrets deposit already put in this
+          // process's env (runner-secrets.ts's applySecretsToEnvFile) — read
+          // here, never put in argv, and handed to shipTask as a placeholder
+          // secret (SandboxSecret), never as an env var forwarded into the box.
+          ...(record.isolation === 'microvm'
+            ? {
+                driver: opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver(),
+                forgeToken: process.env.GH_TOKEN ?? process.env.GITLAB_TOKEN ?? null,
+              }
+            : {}),
+        })
       } catch (err) {
         outcome = { pushed: false, error: err instanceof Error ? err.message : String(err) }
       }
@@ -2408,6 +2594,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
             projectId,
             headSha,
             onUpdate: (snapshot) => broadcast(snapshot),
+            ...(record.isolation === 'microvm'
+              ? { executor: await resolveMicrovmChecksExecutor(record, projectId) }
+              : {}),
           })
         } catch (err) {
           // runChecks never rejects by contract; a bug there must not strand
@@ -2497,6 +2686,102 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   /**
+   * The mechanical verification (lot C7): a `'microvm'` task whose worktree
+   * carries a validated runbook gets `runbook.tests` replayed in a FRESH VM
+   * restored from the project snapshot, right after the same commit checks
+   * would verify. Null when there is nothing to verify — no commit from
+   * THIS turn, no runbook, or the task is not `'microvm'` — never a signal
+   * of failure by itself.
+   *
+   * `validatedSha`: the last commit that touched `.codesema/runbook.json` in
+   * this worktree's own history. The hub is the authoritative owner of a
+   * runbook's `validated_sha` (RunbookValidation, reported by the scan that
+   * proposed it), but reaching it here needs a hub-side repository id this
+   * manager has no local→hub resolver for yet (api_notes, lot C7's report):
+   * the runbook is only ever committed to the repo AFTER a green scan
+   * (runbook-runner.ts), so the commit that carries it is a correct, purely
+   * local stand-in for that same fact.
+   */
+  const verifyAfterCommit = async (
+    ctx: ProjectContext,
+    record: TaskRecord,
+    timeoutMs: number,
+  ): Promise<TaskVerification | null> => {
+    if (record.isolation !== 'microvm') {
+      return null
+    }
+    try {
+      const commits = readTaskEvents(ctx.project.path, record.id).filter(
+        (event) => event.type === 'commit',
+      )
+      if (commits.at(-1)?.data.turn !== record.turns.length) {
+        return null
+      }
+      const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
+      const runbook = readRunbook(record.worktree)
+      if (!runbook) {
+        return null
+      }
+      const validatedSha = tryGit(['log', '-1', '--format=%H', '--', RUNBOOK_FILE], record.worktree)
+      if (!validatedSha) {
+        return null
+      }
+      const headSha = tryGit(['rev-parse', 'HEAD'], record.worktree) ?? ''
+      const build = await resolveMicrovmBuild(record, ctx.project.path, ctx.project.id, timeoutMs)
+      const run = opts.verifyTaskFn ?? verifyTask
+      return await run({
+        driver: build.driver,
+        worktree: record.worktree,
+        projectId: ctx.project.id,
+        taskId: record.id,
+        headSha,
+        runbook,
+        runbookSha: computeRunbookSha(runbook),
+        validatedSha,
+        snapshotName: build.snapshotName,
+        timeoutMs,
+      })
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Folds a finished mechanical verification into the reviewer's persist —
+   * same doctrine as `applyChecksGate` (task-review.ts), reusing its exact
+   * mechanism: a `'refused'`/`'failed'`/`'error'` verdict sends the ticket
+   * back to the dev turn exactly like a red checks run, under the SAME
+   * `checks_failed` reason code, so a runner UI or a fix-loop consumer never
+   * has to learn a second failure vocabulary for the same shape of problem.
+   * `record.runbook_sha`/`record.runbook_integrity` are stamped regardless of
+   * the verdict — they are a FACT about what ran, not a gate outcome.
+   */
+  const applyVerificationGate = (
+    record: TaskRecord,
+    verification: TaskVerification | null,
+  ): void => {
+    if (!verification) {
+      return
+    }
+    record.runbook_sha = verification.runbook_sha
+    record.runbook_integrity = verification.integrity_ok
+    if (record.status !== 'review_ok' || verification.status === 'passed') {
+      return
+    }
+    record.status = 'review_ko'
+    const detail =
+      verification.status === 'refused'
+        ? `runbook integrity drifted: ${verification.changed_dependency_files.join(', ')}`
+        : verification.status === 'error'
+          ? (verification.error ?? 'mechanical verification could not run')
+          : `mechanical verification failed (${verification.checks
+              .filter((c) => c.status !== 'passed')
+              .map((c) => c.command)
+              .join(', ')})`
+    record.reason = taskReason('checks_failed', detail)
+  }
+
+  /**
    * Lazy per-project assembly: store recovery, reviewer and runner are only
    * built once a project's tasks are actually touched, so a registry of ten
    * repos does not cost ten runners at boot. Null on an unregistered id — the
@@ -2529,8 +2814,47 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const cwd = project.path
     const runtime = projectRuntime(cwd)
     noticeProjectConfig(cwd, runtime)
-    const { command, timeoutMs, watchdog, allowedDomains, pinAllowedDomains, reviewMode } = runtime
+    const {
+      command,
+      timeoutMs,
+      watchdog,
+      allowedDomains,
+      pinAllowedDomains,
+      reviewMode,
+      isolationMode,
+    } = runtime
     const { maxAutoFixRounds } = runtime
+    /**
+     * `driver`, `secrets` and `projectId` are built once per project, never
+     * per task — `context()` itself is sync and cached forever. The snapshot,
+     * runbook and mechanical verification are per-task-TURN facts this sync
+     * call site has no way to hand over directly, so `resolveReviewContext`
+     * resolves them fresh from the TASK's own worktree (its runbook travels
+     * with the branch, not with the project) each time a review actually
+     * starts — see `createTaskReviewer`'s own call site (task-review.ts) for
+     * the "once per review, never mid-review" contract. Gated on the
+     * project's CONFIGURED mode so a project that never opted into microvm
+     * never pays for constructing the driver.
+     */
+    const reviewMicrovm =
+      isolationMode === 'microvm'
+        ? (() => {
+            const driver = opts.sandboxDriverFn
+              ? opts.sandboxDriverFn()
+              : createMicrosandboxDriver()
+            const resolveReviewContext = async (
+              record: TaskRecord,
+            ): Promise<ReviewMicrovmContext> => {
+              const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot(
+                driver,
+                record,
+                projectId,
+              )
+              return { snapshotName, runbook, verification: readTaskVerification(cwd, record.id) }
+            }
+            return { driver, secrets: microvmSecretsFromEnv(), projectId, resolveReviewContext }
+          })()
+        : {}
     // T4: every done turn flows through the automatic review before the human
     // sees a verdict. The reviewer is built with the project's command as a
     // fallback; resolveCommand picks the task's own CLI (`record.agent`) so
@@ -2553,6 +2877,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // exact argument list.
         mode: reviewMode,
         loadCap,
+        ...reviewMicrovm,
       })
     // T5: auto-ship chains on the review verdict, INSIDE the onTurnDone hook
     // so it only ever fires after the reviewer's final transition. Green
@@ -2568,6 +2893,44 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       const thisTurnChecks = await startChecksAfterCommit(ctx, record)
       const gateChecks =
         terminalChecksResult(thisTurnChecks) ?? terminalChecksResult(readTaskChecks(cwd, record.id))
+      // Lot C7: the mechanical verification, right after checks and BEFORE
+      // the review — a `'microvm'` task with a validated runbook gets
+      // `runbook.tests` replayed in a fresh VM. Null (no runbook, no commit
+      // from this turn, or not a 'microvm' task) means nothing to fold in.
+      const verification = await verifyAfterCommit(ctx, record, timeoutMs)
+      if (verification) {
+        const cleanVerification = writeTaskVerification(cwd, record.id, verification)
+        const verificationBlocking =
+          cleanVerification.status === 'refused' || cleanVerification.status === 'failed'
+        const verificationEvent = appendTaskEvent(cwd, record.id, {
+          type: 'checks',
+          data: {
+            status: cleanVerification.status,
+            passed: cleanVerification.checks.filter((c) => c.status === 'passed').length,
+            failed: cleanVerification.checks.filter(
+              (c) => c.status === 'failed' || c.status === 'timeout',
+            ).length,
+            ...(cleanVerification.error ? { error: cleanVerification.error } : {}),
+          },
+          ...(verificationBlocking ? { reason_code: 'checks_failed' as const } : {}),
+        })
+        emit({
+          project_id: projectId,
+          task_id: record.id,
+          event: { name: 'task_event', data: verificationEvent },
+        })
+        // Best-effort, never awaited: a hub round trip must not hold up the
+        // turn's own settle, same discipline as `reportHubTransition` below.
+        if (record.hub_ticket) {
+          const creds = loadSyncCredentials()
+          if (creds) {
+            void reportHubVerification(creds, record.hub_ticket.id, {
+              ...cleanVerification,
+              idempotency_key: `${record.id}:verification:${record.turns.length}`,
+            }).catch(() => {})
+          }
+        }
+      }
       // T3.3: whether THIS review got as far as archiving a verdict. A review
       // that crashed leaves `record.review_ref` pointing at a PREVIOUS turn's
       // archive, and a fix turn built from it would ask the agent to re-fix
@@ -2591,13 +2954,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
       /**
        * The gates the FINAL transition folds in, in order: the checks result
-       * (T3.1) then the fix loop (T3.3). Both mutate the in-memory record
-       * BEFORE `io.persist()` writes it, which is what keeps a single writer
-       * of that transition — the loop's "hand it back" is part of the
-       * reviewer's own write, never a second one landing after it.
+       * (T3.1), the mechanical verification (lot C7), then the fix loop
+       * (T3.3). All three mutate the in-memory record BEFORE `io.persist()`
+       * writes it, which is what keeps a single writer of that transition —
+       * the loop's "hand it back" is part of the reviewer's own write, never
+       * a second one landing after it.
        */
       const applyGates = (): void => {
         applyChecksGate(record, gateChecks)
+        applyVerificationGate(record, verification)
         if (state.decided) {
           return
         }
@@ -2808,6 +3173,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       ...(pinAllowedDomains ? { pinAllowedDomains } : {}),
       ...(opts.runAgentFn ? { runAgentFn: opts.runAgentFn } : {}),
       ...(opts.releaseAgentHomeFn ? { releaseAgentHomeFn: opts.releaseAgentHomeFn } : {}),
+      // The microvm build (driver/snapshot/image/runbook/secrets) is
+      // re-resolved fresh at EVERY turn — never called for a non-'microvm'
+      // record (see runTaskTurn's own gate).
+      resolveMicrovmFn: (record) => resolveMicrovmBuild(record, cwd, projectId, timeoutMs),
+      ...(opts.runMicrovmTurnFn ? { runMicrovmTurnFn: opts.runMicrovmTurnFn } : {}),
       onTask: (record) => {
         emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
         // T3.7: THE funnel for every transition the runner owns — 'running',
@@ -3496,6 +3866,48 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       }
     },
 
+    // Same doctrine as sweepOrphanedVolumes, for microvm sandboxes rather
+    // than HOME volumes — deliberately gated on the workspace's CONFIGURED
+    // isolation mode: unlike a HOME volume (which only 'container' tasks
+    // ever create, but every workspace probes the runtime for), booting the
+    // sandbox driver at all costs a real SDK round trip, and a workspace that
+    // never opted into microvm never has one to find orphaned.
+    async sweepOrphanedSandboxes() {
+      if (probe.configured !== 'microvm') {
+        return
+      }
+      const first = projectClaimedIds()
+      if (first.projectCount === 0) {
+        notice('orphaned microvm sandbox sweep skipped: no repository registered to claim them')
+        return
+      }
+      if (!first.complete) {
+        notice(
+          "orphaned microvm sandbox sweep skipped: the project registry or a project's task store could not be read completely",
+        )
+        return
+      }
+      const sweep = opts.sweepOrphanedSandboxesFn ?? sweepOrphanedSandboxesImpl
+      let outcome: SandboxSweepOutcome
+      try {
+        const driver = opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver()
+        outcome = await sweep({
+          driver,
+          claimedIds: first.ids,
+          recheckClaimedIds: () => {
+            const fresh = projectClaimedIds()
+            return fresh.complete && fresh.projectCount > 0 ? fresh.ids : null
+          },
+        })
+      } catch (err) {
+        notice(`orphaned microvm sandbox sweep failed: ${errorMessage(err)}`)
+        return
+      }
+      for (const line of outcome.notices) {
+        notice(line)
+      }
+    },
+
     async applyRetention() {
       const keep = opts.taskRetention ?? DEFAULT_TASK_RETENTION
       const run = opts.applyTaskRetentionFn ?? applyTaskRetention
@@ -3866,6 +4278,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     getChecks(projectId, id) {
       const project = findProject(projectId)
       return project ? readTaskChecks(project.path, id) : null
+    },
+
+    getVerification(projectId, id) {
+      const project = findProject(projectId)
+      return project ? readTaskVerification(project.path, id) : null
     },
 
     getReview(projectId, id, ref) {

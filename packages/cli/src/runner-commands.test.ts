@@ -5,15 +5,17 @@ import {
   type ChildProcess,
   type SpawnOptions,
 } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AgentRunOptions } from './agent.js'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
-import type { ArmTicket, RunnerListEntry } from './contract.js'
+import { RUNBOOK_VERSION, type ArmTicket, type RunnerListEntry } from './contract.js'
 import { t } from './i18n.js'
-import { runnerCommand } from './runner-commands.js'
+import type { RunbookScanOutcome } from './runbook-runner.js'
+import { RUNBOOK_FILE } from './runbook-setup.js'
+import { runbookCommand, runnerCommand } from './runner-commands.js'
 import { loadOrCreateRunnerIdentity } from './runner-identity.js'
 import { readRunnerPidfile, writeRunnerPidfile } from './runner-pidfile.js'
 import {
@@ -1259,5 +1261,186 @@ describe('runnerCommand', () => {
       ).resolves.toBeUndefined()
       expect(existsSync(unitPath())).toBe(false)
     })
+  })
+})
+
+describe('runbookCommand', () => {
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+  let configDir: string
+  let cwd: string
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-runbookcmd-cfg-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    cwd = mkdtempSync(join(tmpdir(), 'codesema-runbookcmd-repo-'))
+  })
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+  })
+
+  function completedOutcome(): RunbookScanOutcome {
+    return {
+      status: 'completed',
+      runbook: {
+        version: RUNBOOK_VERSION,
+        image: 'node:26',
+        install: [],
+        services: { host_up: [], compose_file: null },
+        healthchecks: [],
+        tests: ['bun test', 'bun run lint'],
+        egress: [],
+        depends_on_files: [],
+      },
+      validation: {
+        runbook_sha: '0123456789abcdef',
+        validated_sha: 'a'.repeat(40),
+        validated_at: '2026-01-01T00:00:00.000Z',
+        status: 'valid',
+      },
+      snapshotName: 'snap1',
+      checks: [],
+      attempts: 2,
+    }
+  }
+
+  test('no action prints usage and does not throw', async () => {
+    const lines = await captureLog(() => runbookCommand({ cwd }))
+    expect(lines.some((l) => l.includes('runbook scan'))).toBe(true)
+  })
+
+  test('an unknown action throws', async () => {
+    await expect(runbookCommand({ action: 'nope', cwd })).rejects.toThrow(/unknown runbook action/)
+  })
+
+  test('scan outside a git repository throws', async () => {
+    await expect(
+      runbookCommand({
+        action: 'scan',
+        cwd,
+        agent: 'claude -p',
+        runRunbookScanFn: async () => completedOutcome(),
+      }),
+    ).rejects.toThrow(/not a git repository/)
+  })
+
+  test('scan passes the explicit --agent, the resolved head sha, a stable projectId and timeoutMs', async () => {
+    initRepo(cwd)
+    const seen: { command: string; headSha: string; projectId: string; timeoutMs: number } = {
+      command: '',
+      headSha: '',
+      projectId: '',
+      timeoutMs: 0,
+    }
+    await runbookCommand({
+      action: 'scan',
+      cwd,
+      agent: 'claude -p',
+      timeoutSeconds: 42,
+      runRunbookScanFn: async (opts) => {
+        seen.command = opts.command
+        seen.headSha = opts.headSha
+        seen.projectId = opts.projectId
+        seen.timeoutMs = opts.timeoutMs
+        return completedOutcome()
+      },
+    })
+    expect(seen.command).toBe('claude -p')
+    expect(seen.headSha).toMatch(/^[0-9a-f]{40}$/)
+    expect(seen.projectId).toMatch(/^[0-9a-f]{16}$/)
+    expect(seen.timeoutMs).toBe(42_000)
+  })
+
+  test('the projectId is stable across two scans of the same worktree', async () => {
+    initRepo(cwd)
+    const seen: string[] = []
+    const runRunbookScanFn = async (opts: { projectId: string }): Promise<RunbookScanOutcome> => {
+      seen.push(opts.projectId)
+      return completedOutcome()
+    }
+    await runbookCommand({ action: 'scan', cwd, agent: 'claude -p', runRunbookScanFn })
+    await runbookCommand({ action: 'scan', cwd, agent: 'claude -p', runRunbookScanFn })
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toBe(seen[1])
+  })
+
+  test('with no --agent and no configured agent, falls back to .codesema/config.json', async () => {
+    initRepo(cwd)
+    mkdirSync(join(cwd, '.codesema'), { recursive: true })
+    writeFileSync(join(cwd, '.codesema', 'config.json'), JSON.stringify({ agent: 'grok -p' }))
+    const seen: { command: string } = { command: '' }
+    await runbookCommand({
+      action: 'scan',
+      cwd,
+      runRunbookScanFn: async (opts) => {
+        seen.command = opts.command
+        return completedOutcome()
+      },
+    })
+    expect(seen.command).toBe('grok -p')
+  })
+
+  test('a completed scan prints the runbook summary', async () => {
+    initRepo(cwd)
+    const lines = await captureLog(() =>
+      runbookCommand({
+        action: 'scan',
+        cwd,
+        agent: 'claude -p',
+        runRunbookScanFn: async () => completedOutcome(),
+      }),
+    )
+    const joined = lines.join('\n')
+    expect(joined).toContain('Runbook validated')
+    expect(joined).toContain('node:26')
+    expect(joined).toContain('snap1')
+    expect(joined).toContain('0123456789abcdef')
+    expect(joined).toContain(RUNBOOK_FILE)
+  })
+
+  test('a failed scan prints the error and sets a non-zero exit code', async () => {
+    initRepo(cwd)
+    const previousExitCode = process.exitCode
+    process.exitCode = undefined
+    try {
+      const lines = await captureLog(() =>
+        runbookCommand({
+          action: 'scan',
+          cwd,
+          agent: 'claude -p',
+          runRunbookScanFn: async () => ({
+            status: 'failed',
+            error: 'install always fails',
+            attempts: 5,
+            lastTail: 'boom',
+          }),
+        }),
+      )
+      expect(lines.join('\n')).toContain('install always fails')
+      expect(process.exitCode as unknown).toBe(1)
+    } finally {
+      process.exitCode = previousExitCode
+    }
+  })
+
+  test('with no driver override, a real (but unused) Microsandbox driver is constructed without throwing', async () => {
+    initRepo(cwd)
+    await expect(
+      runbookCommand({
+        action: 'scan',
+        cwd,
+        agent: 'claude -p',
+        runRunbookScanFn: async (opts) => {
+          expect(opts.driver.kind).toBe('microsandbox')
+          return completedOutcome()
+        },
+      }),
+    ).resolves.toBeUndefined()
   })
 })
