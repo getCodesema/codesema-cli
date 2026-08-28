@@ -81,7 +81,17 @@ const minimalTransition: ArmTransition = {
   type: 'mr_opened',
   idempotency_key: 'tick-1:mr_opened:1',
   at: '2026-08-14T10:10:00.000Z',
+  mr_url: 'https://github.com/getCodesema/codesema-cli/pull/7',
 }
+
+// A state requires its proof: what each type must carry (beyond
+// minimalTransition's own fields) for the sanitizer to keep it.
+const PROOF_BY_TYPE = {
+  mr_opened: {},
+  review_result: {},
+  merged: { merge_sha: 'a1b2c3d4e5' },
+  failed: {},
+} as const
 
 const fullTransition: ArmTransition = {
   type: 'review_result',
@@ -390,10 +400,24 @@ describe('sanitizeArmTransition', () => {
     }
   })
 
-  test('all valid types are kept', () => {
+  test('all valid types are kept, each carrying its own proof', () => {
     const types = ['mr_opened', 'review_result', 'merged', 'failed'] as const
     for (const type of types) {
-      expect(sanitizeArmTransition({ ...minimalTransition, type })?.type).toBe(type)
+      expect(
+        sanitizeArmTransition({ ...minimalTransition, type, ...PROOF_BY_TYPE[type] })?.type,
+      ).toBe(type)
+    }
+  })
+
+  test('mr_opened without a usable mr_url is refused whole, never degraded', () => {
+    for (const mr_url of [undefined, '', '   ', 'not a url', 'ftp://example.com/1', 42, null]) {
+      expect(sanitizeArmTransition({ ...minimalTransition, mr_url })).toBeNull()
+    }
+  })
+
+  test('merged without a usable merge_sha is refused whole, never degraded', () => {
+    for (const merge_sha of [undefined, '', 'NOT-HEX', 42, null]) {
+      expect(sanitizeArmTransition({ ...minimalTransition, type: 'merged', merge_sha })).toBeNull()
     }
   })
 
@@ -456,9 +480,9 @@ describe('sanitizeArmTransition', () => {
     expect(r?.merge_sha).toBe('a1b2c3d')
   })
 
-  test('mr_url must be an http(s) URL or the field is omitted', () => {
+  test('mr_url must be an http(s) URL: omitted on a type that needs no proof of it', () => {
     for (const mr_url of ['not a url', 'ftp://example.com/1']) {
-      const r = sanitizeArmTransition({ ...minimalTransition, mr_url })
+      const r = sanitizeArmTransition({ ...minimalTransition, type: 'failed', mr_url })
       expect(r && 'mr_url' in r).toBe(false)
     }
   })
@@ -996,8 +1020,11 @@ describe('cross test: sanitizeArmTransition output validates against armTransiti
   })
 
   test('hostile input, once sanitized, still validates', () => {
+    // `failed` deliberately: it requires no proof field, so every hostile
+    // field below degrades to absence and the record survives to be checked
+    // against the schema (a hostile `merged` is refused whole instead).
     const hostile = sanitizeArmTransition({
-      type: 'merged',
+      type: 'failed',
       idempotency_key: 'k'.repeat(500),
       at: 'x'.repeat(500),
       mr_iid: 42,
@@ -1015,9 +1042,11 @@ describe('cross test: sanitizeArmTransition output validates against armTransiti
   test('every valid type produces a validating transition', () => {
     const types = ['mr_opened', 'review_result', 'merged', 'failed'] as const
     for (const type of types) {
-      expect(transitionSchemaErrors(sanitizeArmTransition({ ...minimalTransition, type }))).toEqual(
-        [],
-      )
+      expect(
+        transitionSchemaErrors(
+          sanitizeArmTransition({ ...minimalTransition, type, ...PROOF_BY_TYPE[type] }),
+        ),
+      ).toEqual([])
     }
   })
 })
@@ -1221,9 +1250,11 @@ describe('cross-repo: sanitizeArmTransition output validates against the hub sch
   test('every valid transition type produces a hub-schema-valid transition', () => {
     const types = ['mr_opened', 'review_result', 'merged', 'failed'] as const
     for (const type of types) {
-      expect(validateTransitionBody(sanitizeArmTransition({ ...minimalTransition, type }))).toBe(
-        true,
-      )
+      expect(
+        validateTransitionBody(
+          sanitizeArmTransition({ ...minimalTransition, type, ...PROOF_BY_TYPE[type] }),
+        ),
+      ).toBe(true)
     }
   })
 })

@@ -19,6 +19,7 @@ export * from './reasons.js'
 export * from './recap.js'
 export * from './runner.js'
 export * from './tasks.js'
+export * from './ticket-state.js'
 export * from './ticket.js'
 
 export type NarrativeConfidence = 'high' | 'medium' | 'low'
