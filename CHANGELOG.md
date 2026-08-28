@@ -3,6 +3,19 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.19.0] - unreleased
+
+### Added
+
+- **The ticket state machine is now shared law.** `@codesema/contract` ships `ticket-state.ts`: the full table of legal `tickets.status` transitions (`TICKET_TRANSITIONS`), `isLegalTicketTransition(from, to)`, the derived `TICKET_TERMINAL_STATUSES`, and `targetTicketStatus(type, verdict)`. The runner refuses to report a transition the table forbids from the last status the hub answered with (tracked on the task record as `hub_ticket_status`); the hub validates the same table on its side.
+- **A state requires its proof.** `ArmTransition` is now a discriminated union: `mr_opened` requires `mr_url`, `merged` requires `merge_sha`, enforced at compile time, in `sanitizeArmTransition`, and in the JSON schema. After a landed merge the runner reads the merge commit back from the forge (`gh pr list --json number,mergeCommit` / glab's `merge_commit_sha`) and reports it; when the commit cannot be read, the report is skipped and journaled as `merged_sha_unknown` (the hub's forge webhook reconciles).
+
+### Fixed
+
+- **No more phantom `mr_opened`.** A ship whose `gh pr create` produced no URL used to be reported as `mr_opened` anyway; the hub then drafted a ticket on a merge request that did not exist. The runner now reports the failure it actually is, with the way out in the message.
+- **Merge settings are re-read at merge time.** `mergeStrategy`/`mergePolicy`/`deleteBranchAfterMerge`/`allowMergeWithoutChecks` were frozen at boot; a strategy set through the settings API was ignored until restart. The manager now re-reads them through a live getter (the `getChecksConfig` pattern).
+- **Auto-merge without a strategy is refused before the forge.** With no `mergeStrategy` configured, the auto-merge used to call `gh pr merge` blind and fail as a generic forge error. It is now refused up front with reason `merge_strategy_unconfigured` and the way out (set a strategy, retry); the manual-merge path keeps D13 untouched.
+
 ## [0.18.5] - 2026-08-28
 
 ### Fixed
