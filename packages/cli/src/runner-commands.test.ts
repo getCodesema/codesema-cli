@@ -741,7 +741,9 @@ describe('runnerCommand', () => {
 
   describe('autoconfig', () => {
     test('throws when not connected', async () => {
-      await expect(runnerCommand({ action: 'autoconfig', cwd })).rejects.toThrow()
+      await expect(
+        runnerCommand({ action: 'autoconfig', cwd, runInheritedFn: () => {} }),
+      ).rejects.toThrow()
     })
 
     describe('connected, non-interactive (no TTY in this test environment)', () => {
@@ -755,7 +757,9 @@ describe('runnerCommand', () => {
       })
 
       test('without --fingerprint or a token flag, refuses immediately and lists what is missing', async () => {
-        await expect(runnerCommand({ action: 'autoconfig', cwd })).rejects.toThrow(
+        await expect(
+          runnerCommand({ action: 'autoconfig', cwd, runInheritedFn: () => {} }),
+        ).rejects.toThrow(
           t('runner.autoconfigMissingFlags', {
             flags: '--fingerprint <fingerprint>, --gh-token-from-gh and/or --claude-token <token>',
           }),
@@ -766,6 +770,7 @@ describe('runnerCommand', () => {
         await expect(
           runnerCommand({
             action: 'autoconfig',
+            runInheritedFn: () => {},
             cwd,
             fingerprint: 'a'.repeat(64),
             ghTokenFromGh: true,
@@ -780,6 +785,7 @@ describe('runnerCommand', () => {
         await expect(
           runnerCommand({
             action: 'autoconfig',
+            runInheritedFn: () => {},
             cwd,
             fingerprint: entry.fingerprint,
             ghTokenFromGh: true,
@@ -794,6 +800,7 @@ describe('runnerCommand', () => {
         await expect(
           runnerCommand({
             action: 'autoconfig',
+            runInheritedFn: () => {},
             cwd,
             fingerprint: entry.fingerprint,
             ghTokenFromGh: true,
@@ -811,6 +818,7 @@ describe('runnerCommand', () => {
         await expect(
           runnerCommand({
             action: 'autoconfig',
+            runInheritedFn: () => {},
             cwd,
             fingerprint: entry.fingerprint,
             ghTokenFromGh: true,
@@ -837,6 +845,7 @@ describe('runnerCommand', () => {
         const calls: Call[] = []
         await runnerCommand({
           action: 'autoconfig',
+          runInheritedFn: () => {},
           cwd,
           fingerprint: entry.fingerprint,
           ghTokenFromGh: true,
@@ -867,6 +876,7 @@ describe('runnerCommand', () => {
         await expect(
           runnerCommand({
             action: 'autoconfig',
+            runInheritedFn: () => {},
             cwd,
             fingerprint: entry.fingerprint,
             ghTokenFromGh: true,
@@ -883,6 +893,7 @@ describe('runnerCommand', () => {
         await expect(
           runnerCommand({
             action: 'autoconfig',
+            runInheritedFn: () => {},
             cwd,
             fingerprint: entry.fingerprint,
             claudeToken: 'claude-token-value',
@@ -958,6 +969,7 @@ describe('runnerCommand', () => {
         await expect(
           runnerCommand({
             action: 'autoconfig',
+            runInheritedFn: () => {},
             cwd,
             fetchImpl: fetchStub(200, { runners: [entry] }, calls),
             selectFn: async () => entry,
