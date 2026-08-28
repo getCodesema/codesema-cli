@@ -3,6 +3,11 @@
 // whitelist and truncate, never throw. Everything read back from disk goes
 // through here before being trusted.
 
+// Type-only, erased at compile time: arm.ts imports this module's runtime
+// constants, so a runtime import back into arm.js would cycle. The runtime
+// counterpart is the locally spelled TASK_HUB_TICKET_STATUSES below, locked
+// to arm.ts's own set by a cross-module test.
+import type { ArmTicketStatus } from './arm.js'
 import {
   sanitizeReasonCode,
   sanitizeTaskReason,
@@ -608,6 +613,17 @@ export type TaskRecord = {
     url?: string
   }
   /**
+   * The hub ticket's last status as the hub itself reported it (claim and
+   * transition responses both return the ticket), so the runner can refuse
+   * to report a transition the shared table forbids from that status.
+   * MUTABLE, unlike `hub_ticket`: it tracks the hub's answer over time.
+   * OPTIONAL, and absence is the honest default: a record predating this
+   * field, or one whose hub round trips all failed, knows no hub status;
+   * the runner-side table guard lets an unknown status pass rather than
+   * inventing one, and the hub revalidates every report anyway.
+   */
+  hub_ticket_status?: ArmTicketStatus
+  /**
    * Which half of ship/merge this task is currently inside, when it is
    * (D20). Written at the start of that step and cleared at its end, success
    * or failure alike, and on every reply, resume or abandon, so a stale value
@@ -1020,6 +1036,23 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
  * `url` is kept only when it is an http(s) URL, same rule `isHttpUrl` applies
  * everywhere else in this module.
  */
+// Restates ArmTicketStatus's members rather than importing arm.ts's own
+// ARM_TICKET_STATUSES: that import would be a runtime cycle (arm.ts already
+// imports this module's constants). The Set<ArmTicketStatus> typing refuses
+// a stray member; the cross-module equality test in tasks.test.ts catches a
+// missing one.
+const TASK_HUB_TICKET_STATUSES: ReadonlySet<ArmTicketStatus> = new Set<ArmTicketStatus>([
+  'proposed',
+  'rejected',
+  'published',
+  'in_progress',
+  'mr_opened',
+  'ready_to_merge',
+  'done',
+  'failed',
+  'already_implemented',
+])
+
 function sanitizeHubTicket(raw: unknown): { id: string; title: string; url?: string } | null {
   if (!raw || typeof raw !== 'object') {
     return null
@@ -1157,6 +1190,12 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     ...(issue ? { issue } : {}),
     ...(issueSnapshot ? { issue_snapshot: issueSnapshot } : {}),
     ...(hubTicket ? { hub_ticket: hubTicket } : {}),
+    // Unknown or unusable → absent, never fabricated (same rule as
+    // ArmTicket.status): the runner-side table guard treats absence as
+    // "status unknown, let the hub decide".
+    ...(hubTicket && TASK_HUB_TICKET_STATUSES.has(r.hub_ticket_status as ArmTicketStatus)
+      ? { hub_ticket_status: r.hub_ticket_status as ArmTicketStatus }
+      : {}),
     // Optional and whitelisted, same doctrine as `checks_status`: absence is
     // "not currently shipping or merging", which is also what an unknown or
     // stale token degrades to rather than being trusted as a step in progress.

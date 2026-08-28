@@ -12,7 +12,6 @@
 import { ensureWorkDir, type ReviewMode } from './config.js'
 import {
   sanitizeRecord,
-  type ArmTransition,
   type Finding,
   type ReviewRecord,
   type TaskChecks,
@@ -48,7 +47,7 @@ import {
   unmetCriteriaFixChapter,
   type CriteriaOutcome,
 } from './task-criteria-gate.js'
-import { reportHubTransition } from './task-hub.js'
+import { reportHubTransition, type ArmTransitionDraft } from './task-hub.js'
 import {
   REVIEW_CUT_DETAIL,
   taskCriteria,
@@ -343,7 +342,7 @@ export function hubSettleTransition(opts: {
   reviewOutcome?: ReviewRecord
   reason?: TaskReason
   costTicks?: number
-}): Omit<ArmTransition, 'idempotency_key' | 'at'> {
+}): ArmTransitionDraft {
   if (opts.status === 'review_ko' && !opts.reviewOutcome) {
     return {
       type: 'failed',

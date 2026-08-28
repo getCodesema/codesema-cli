@@ -341,15 +341,21 @@ describe('heartbeat / transition / pushEvents', () => {
     await transition(
       creds,
       't1',
-      { type: 'merged', idempotency_key: 'k1', at: '2026-01-01T00:00:00.000Z' },
+      {
+        type: 'merged',
+        merge_sha: 'a1b2c3d4e5',
+        idempotency_key: 'k1',
+        at: '2026-01-01T00:00:00.000Z',
+      },
       fetchStub(200, {}, calls),
     )
-    const body = JSON.parse(String(calls[0]?.init.body)) as {
-      type: string
-      idempotency_key: string
-      at: string
-    }
-    expect(body).toEqual({ type: 'merged', idempotency_key: 'k1', at: '2026-01-01T00:00:00.000Z' })
+    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>
+    expect(body).toEqual({
+      type: 'merged',
+      merge_sha: 'a1b2c3d4e5',
+      idempotency_key: 'k1',
+      at: '2026-01-01T00:00:00.000Z',
+    })
   })
 
   test('pushEvents sends run/ticket ids and the event batch', async () => {

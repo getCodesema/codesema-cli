@@ -647,6 +647,15 @@ export type CreateTaskManagerOptions = {
    */
   mergeSettings?: MergeSettings
   /**
+   * Same four settings, RE-READ at the moment a merge decision is made
+   * (same live-getter pattern as `getChecksConfig`): a `mergeStrategy` set
+   * through the settings API used to be ignored until the next restart,
+   * because the boot-time `mergeSettings` value was the only one ever
+   * consulted. When present it wins over `mergeSettings`, which stays as the
+   * static fallback tests and plain servers hand in.
+   */
+  getMergeSettings?: () => MergeSettings
+  /**
    * T3.6: merge keys found on the global config file, present but unusable.
    * Passed through so the degradation is named on the TASK's journal too, not
    * only on the boot line a user may have scrolled past.
@@ -1881,7 +1890,8 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (
         effectiveMergePolicyIsAuto(
           record,
-          opts.mergeSettings ?? DEFAULT_MERGE_SETTINGS,
+          (opts.getMergeSettings ? opts.getMergeSettings() : opts.mergeSettings) ??
+            DEFAULT_MERGE_SETTINGS,
           resolveRunnerAutoMerge(loadGlobalConfig()),
         )
       ) {
@@ -1903,11 +1913,27 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // never instead of it" discipline as the cycle label right above.
       // Never awaited: a hub round trip must not hold up the ship's own
       // answer, exactly like the label.
-      void reportHubTransition(cwd, record, {
-        type: 'mr_opened',
-        ...(outcome.mrUrl ? { mr_url: outcome.mrUrl } : {}),
-        branch: record.branch,
-      })
+      //
+      // `mr_opened` ONLY when the forge answered with the MR's URL: a push
+      // whose `gh pr create` failed used to be reported as `mr_opened`
+      // anyway, and the hub then built on a merge request that did not exist
+      // (the 2026-08-28 phantom-ticket incident). A state requires its
+      // proof; without one this reports the failure it actually is.
+      if (outcome.mrUrl) {
+        void reportHubTransition(cwd, record, {
+          type: 'mr_opened',
+          mr_url: outcome.mrUrl,
+          branch: record.branch,
+        })
+      } else {
+        void reportHubTransition(cwd, record, {
+          type: 'failed',
+          error_message:
+            outcome.note ??
+            'branch pushed but no merge request URL came back from the forge: open the MR by hand or retry the ship',
+          branch: record.branch,
+        })
+      }
       // T1.9: nothing was ever created for a 'policy' task, so nothing is
       // attempted for one either — same gate as the runner's abandon path.
       if (record.isolation === 'container') {
@@ -2113,7 +2139,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     }
     ctx.merging.add(id)
     try {
-      const settings = opts.mergeSettings ?? DEFAULT_MERGE_SETTINGS
+      const settings =
+        (opts.getMergeSettings ? opts.getMergeSettings() : opts.mergeSettings) ??
+        DEFAULT_MERGE_SETTINGS
       const run = opts.mergeTaskFn ?? mergeTask
       let outcome: MergeOutcome
       try {

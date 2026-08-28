@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   acceptanceCriterionId,
+  ARM_TICKET_STATUSES,
   isActiveTaskStatus,
   isTaskId,
   isTaskStatus,
@@ -964,6 +965,45 @@ describe('sanitizeTaskRecord — hub ticket binding', () => {
     })
     expect(r?.hub_ticket?.id.length).toBe(TASK_HUB_TICKET_ID_MAX)
     expect(r?.hub_ticket?.title.length).toBe(TASK_TITLE_MAX)
+  })
+
+  test('hub_ticket_status: a known status round-trips beside its hub_ticket', () => {
+    const withStatus = {
+      ...validRecord,
+      hub_ticket: validHubTicket,
+      hub_ticket_status: 'mr_opened',
+    }
+    expect(sanitizeTaskRecord(structuredClone(withStatus))).toEqual(withStatus as TaskRecord)
+  })
+
+  test('hub_ticket_status: every status arm.ts knows round-trips, so the local list cannot lag', () => {
+    // The runtime set in tasks.ts is spelled locally (importing arm.ts's own
+    // would cycle); this loop is the lock that keeps the two identical.
+    for (const status of ARM_TICKET_STATUSES) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        hub_ticket: validHubTicket,
+        hub_ticket_status: status,
+      })
+      expect(r?.hub_ticket_status).toBe(status)
+    }
+  })
+
+  test('hub_ticket_status: an unknown value is dropped alone, the ticket itself survives', () => {
+    for (const junk of ['not-a-status', '', 42, null, {}]) {
+      const r = sanitizeTaskRecord({
+        ...validRecord,
+        hub_ticket: validHubTicket,
+        hub_ticket_status: junk,
+      })
+      expect(r?.hub_ticket).toEqual(validHubTicket)
+      expect(r && 'hub_ticket_status' in r).toBe(false)
+    }
+  })
+
+  test('hub_ticket_status: dropped without a hub_ticket to belong to', () => {
+    const r = sanitizeTaskRecord({ ...validRecord, hub_ticket_status: 'mr_opened' })
+    expect(r && 'hub_ticket_status' in r).toBe(false)
   })
 
   test('hub_ticket: title degrades to an empty string rather than dropping the field', () => {

@@ -24,7 +24,11 @@ import { ensureWorkDir } from './config.js'
 import {
   ARM_LABEL_MAX,
   cutCodePoints,
+  isLegalTicketTransition,
   sanitizeArmOrder,
+  sanitizeArmTicket,
+  sanitizeArmTransition,
+  targetTicketStatus,
   type ArmEvent,
   type ArmOrder,
   type ArmTransition,
@@ -178,6 +182,40 @@ async function postToHub(
     : { kind: 'client_error', status: res.status, detail }
 }
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+/**
+ * What a caller hands `reportHubTransition`: an `ArmTransition` minus the
+ * two fields it computes itself. Distributive on purpose: a plain `Omit`
+ * over the union would flatten the per-type proof requirements away, and the
+ * compiler is the first gate the doctrine leans on (`mr_opened` demands
+ * `mr_url`, `merged` demands `merge_sha`, at every call site).
+ */
+export type ArmTransitionDraft = DistributiveOmit<ArmTransition, 'idempotency_key' | 'at'>
+
+/**
+ * Remembers the ticket status the hub itself just answered with, so the next
+ * report can be checked against the shared transition table. Load, mutate
+ * and save have no await between them, so no concurrent record write can
+ * interleave. Best-effort by design: an unreadable body or a vanished record
+ * leaves the last known status in place, and the table guard treats absence
+ * as "unknown, let the hub decide".
+ */
+async function rememberHubTicketStatus(cwd: string, taskId: string, body: unknown): Promise<void> {
+  // Dynamic on purpose: tasks-store.ts statically imports this module
+  // (queueHubEvent), so a static import back would be a module cycle.
+  const { loadTask, saveTask } = await import('./tasks-store.js')
+  const ticket = sanitizeArmTicket((body as { ticket?: unknown } | undefined)?.ticket)
+  if (!ticket) {
+    return
+  }
+  const current = loadTask(cwd, taskId)
+  if (!current?.hub_ticket || current.hub_ticket_status === ticket.status) {
+    return
+  }
+  saveTask(cwd, { ...current, hub_ticket_status: ticket.status })
+}
+
 /**
  * Reports one fact about a hub ticket's execution back to the hub:
  * `mr_opened` on ship, `review_result` on a settled review verdict, `merged`
@@ -197,23 +235,51 @@ async function postToHub(
  * Never throws. Offline, or a 5xx: appended to `.codesema/hub-outbox.jsonl`
  * for `flushHubOutbox` to replay later. A 4xx: logged once and abandoned,
  * never retried.
+ *
+ * Two refusals happen HERE, before anything is posted (recovery doctrine,
+ * rule 3: both sides refuse an out-of-table transition): a report without
+ * its proof (`sanitizeArmTransition` returns null), and a report whose
+ * claimed status is not a legal move from the last status the hub itself
+ * answered with (`hub_ticket_status`, remembered below on every successful
+ * round trip; unknown on legacy records, which then pass: the hub
+ * revalidates every report anyway).
  */
 export async function reportHubTransition(
   cwd: string,
   record: TaskRecord,
-  transition: Omit<ArmTransition, 'idempotency_key' | 'at'>,
+  transition: ArmTransitionDraft,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
   const ticketId = record.hub_ticket?.id
   if (!ticketId) {
     return
   }
-  const full: ArmTransition = {
+  const label = `transition '${transition.type}' for task ${record.id}`
+  // The same sanitizer the hub-facing schema mirrors: a proof-less claim
+  // (mr_opened without mr_url, merged without merge_sha) comes back null and
+  // is never posted. Refusing here is the whole point: a phantom state on
+  // the hub is worse than a missing report (the forge webhook reconciles).
+  const full = sanitizeArmTransition({
     ...transition,
     idempotency_key: `${record.id}:${transition.type}:${record.turns.length}`,
     at: new Date().toISOString(),
+  })
+  if (!full) {
+    logHubFailure(
+      label,
+      'refused before posting: a state requires its proof and this report carries none',
+    )
+    return
   }
-  const label = `transition '${transition.type}' for task ${record.id}`
+  const claimed = targetTicketStatus(full.type, full.verdict)
+  const lastKnown = record.hub_ticket_status
+  if (claimed && lastKnown && !isLegalTicketTransition(lastKnown, claimed)) {
+    logHubFailure(
+      label,
+      `refused before posting: ${lastKnown} → ${claimed} is not in the shared transition table`,
+    )
+    return
+  }
   const creds = loadSyncCredentials()
   if (!creds) {
     logHubFailure(label, 'no sync credentials configured')
@@ -227,6 +293,7 @@ export async function reportHubTransition(
       fetchImpl,
     )
     if (outcome.kind === 'ok') {
+      await rememberHubTicketStatus(cwd, record.id, outcome.body)
       return
     }
     if (outcome.kind === 'client_error') {

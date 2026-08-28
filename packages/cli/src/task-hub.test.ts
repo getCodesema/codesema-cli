@@ -4,14 +4,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
-import type { ArmOrder, TaskEvent, TaskRecord, TaskTurn } from './contract.js'
+import type { ArmOrder, ArmTicket, TaskEvent, TaskRecord, TaskTurn } from './contract.js'
 import {
   flushHubOutbox,
   heartbeatHubTicket,
   queueHubEvent,
   reportHubTransition,
   resetPendingHubEventBatches,
+  type ArmTransitionDraft,
 } from './task-hub.js'
+import { loadTask, saveTask } from './tasks-store.js'
 
 type Call = { url: string; init: RequestInit }
 
@@ -106,6 +108,25 @@ function withoutHubTicket(record: TaskRecord): TaskRecord {
   return rest
 }
 
+function fakeArmTicket(status: ArmTicket['status']): ArmTicket {
+  return {
+    id: 'tkt-1',
+    repo_remote_url: 'https://github.com/o/r.git',
+    title: 't',
+    body: 'b',
+    status,
+    depends_on: null,
+    executed_by: 'cli:ws1',
+    lease_expires_at: null,
+    issue: null,
+    branch: 'codesema/task-t',
+    mr_iid: null,
+    mr_url: null,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+  }
+}
+
 describe('task-hub', () => {
   const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
   let configDir: string
@@ -184,13 +205,23 @@ describe('task-hub', () => {
     test('a task with no hub_ticket is a no-op', async () => {
       const calls: Call[] = []
       const record = withoutHubTicket(fakeRecord())
-      await reportHubTransition(cwd, record, { type: 'mr_opened' }, fetchStub(200, {}, calls))
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'mr_opened', mr_url: 'https://hub.example/mr/1' },
+        fetchStub(200, {}, calls),
+      )
       expect(calls.length).toBe(0)
     })
 
     test('a network failure queues the report in the outbox', async () => {
       const record = fakeRecord()
-      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'merged', merge_sha: 'a1b2c3d4e5' },
+        fetchOffline(),
+      )
       const lines = outboxLines(cwd)
       expect(lines.length).toBe(1)
       const entry = lines[0] as { kind: string; ticket_id: string; transition: { type: string } }
@@ -205,7 +236,7 @@ describe('task-hub', () => {
       await reportHubTransition(
         cwd,
         record,
-        { type: 'merged' },
+        { type: 'merged', merge_sha: 'a1b2c3d4e5' },
         fetchStub(503, { error: 'down' }, calls),
       )
       expect(outboxLines(cwd).length).toBe(1)
@@ -223,12 +254,110 @@ describe('task-hub', () => {
       expect(calls.length).toBe(1)
       expect(outboxLines(cwd)).toEqual([])
     })
+
+    test('a report without its proof is refused before any network call', async () => {
+      const calls: Call[] = []
+      // The compiler already forbids this shape; the cast proves the RUNTIME
+      // gate holds for a record that reached here past it (a replayed file,
+      // an older caller).
+      await reportHubTransition(
+        cwd,
+        fakeRecord(),
+        { type: 'mr_opened' } as unknown as ArmTransitionDraft,
+        fetchStub(200, {}, calls),
+      )
+      await reportHubTransition(
+        cwd,
+        fakeRecord(),
+        { type: 'merged' } as unknown as ArmTransitionDraft,
+        fetchStub(200, {}, calls),
+      )
+      expect(calls).toEqual([])
+      expect(outboxLines(cwd)).toEqual([])
+    })
+
+    test('an out-of-table transition is refused before any network call', async () => {
+      const calls: Call[] = []
+      const record = fakeRecord({ hub_ticket_status: 'published' })
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'mr_opened', mr_url: 'https://hub.example/mr/1' },
+        fetchStub(200, {}, calls),
+      )
+      expect(calls).toEqual([])
+      expect(outboxLines(cwd)).toEqual([])
+    })
+
+    test('an unknown local hub status lets the report through: the hub revalidates', async () => {
+      const calls: Call[] = []
+      await reportHubTransition(
+        cwd,
+        fakeRecord(),
+        { type: 'mr_opened', mr_url: 'https://hub.example/mr/1' },
+        fetchStub(200, {}, calls),
+      )
+      expect(calls.length).toBe(1)
+    })
+
+    test('a legal transition from the last known status is posted', async () => {
+      const calls: Call[] = []
+      const record = fakeRecord({ hub_ticket_status: 'in_progress' })
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'mr_opened', mr_url: 'https://hub.example/mr/1' },
+        fetchStub(200, {}, calls),
+      )
+      expect(calls.length).toBe(1)
+    })
+
+    test('a review verdict short of approve is not a transition: never table-checked', async () => {
+      const calls: Call[] = []
+      const record = fakeRecord({ hub_ticket_status: 'published' })
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'review_result', verdict: 'request_changes' },
+        fetchStub(200, {}, calls),
+      )
+      expect(calls.length).toBe(1)
+    })
+
+    test('the ticket status the hub answers with is remembered on the record', async () => {
+      const record = fakeRecord({ hub_ticket_status: 'mr_opened' })
+      saveTask(cwd, record)
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'review_result', verdict: 'approve' },
+        fetchStub(200, { ticket: fakeArmTicket('ready_to_merge') }, []),
+      )
+      expect(loadTask(cwd, record.id)?.hub_ticket_status).toBe('ready_to_merge')
+    })
+
+    test('an answer without a readable ticket leaves the last known status alone', async () => {
+      const record = fakeRecord({ hub_ticket_status: 'mr_opened' })
+      saveTask(cwd, record)
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'review_result', verdict: 'approve' },
+        fetchStub(200, {}, []),
+      )
+      expect(loadTask(cwd, record.id)?.hub_ticket_status).toBe('mr_opened')
+    })
   })
 
   describe('flushHubOutbox', () => {
     test('replays a queued transition and empties the outbox on success', async () => {
       const record = fakeRecord()
-      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'merged', merge_sha: 'a1b2c3d4e5' },
+        fetchOffline(),
+      )
       expect(outboxLines(cwd).length).toBe(1)
 
       const calls: Call[] = []
@@ -240,7 +369,12 @@ describe('task-hub', () => {
 
     test('a 409 on replay drops the entry rather than keeping it queued', async () => {
       const record = fakeRecord()
-      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'merged', merge_sha: 'a1b2c3d4e5' },
+        fetchOffline(),
+      )
       expect(outboxLines(cwd).length).toBe(1)
 
       const calls: Call[] = []
@@ -251,7 +385,12 @@ describe('task-hub', () => {
 
     test('still offline: the entry is kept, not lost', async () => {
       const record = fakeRecord()
-      await reportHubTransition(cwd, record, { type: 'merged' }, fetchOffline())
+      await reportHubTransition(
+        cwd,
+        record,
+        { type: 'merged', merge_sha: 'a1b2c3d4e5' },
+        fetchOffline(),
+      )
       expect(outboxLines(cwd).length).toBe(1)
 
       await flushHubOutbox(cwd, fetchOffline('still offline'))

@@ -99,18 +99,22 @@ export type ArmTransitionType = 'mr_opened' | 'review_result' | 'merged' | 'fail
 /**
  * One fact the arm reports back to the hub about a ticket it executed.
  *
- * `idempotency_key` is MANDATORY, unlike every other field below: the
+ * `idempotency_key` is MANDATORY, unlike most other fields: the
  * hub's report endpoint uses it to tell a retried report from a second,
  * real transition apart. A transition this sanitizer cannot name one for is
  * not a degraded transition, it is unsafe to apply, so `sanitizeArmTransition`
  * refuses the whole record rather than keeping the rest of it.
+ *
+ * A state requires its proof (recovery doctrine, rung 0): `mr_opened` is a
+ * claim that a merge request exists, so it REQUIRES `mr_url`; `merged` is a
+ * claim that a commit landed, so it REQUIRES `merge_sha`. The discriminated
+ * union makes a proof-less claim unrepresentable at compile time, and
+ * `sanitizeArmTransition` refuses one at runtime.
  */
 export type ArmTransition = {
-  type: ArmTransitionType
   idempotency_key: string
   at: string
   mr_iid?: string
-  mr_url?: string
   branch?: string
   /**
    * Same literal union as `Verdict` (index.ts), restated rather than
@@ -121,10 +125,14 @@ export type ArmTransition = {
    */
   verdict?: 'approve' | 'request_changes' | 'comment'
   findings_total?: number
-  merge_sha?: string
   error_message?: string
   cost_ticks?: number
-}
+} & (
+  | { type: 'mr_opened'; mr_url: string; merge_sha?: string }
+  | { type: 'review_result'; mr_url?: string; merge_sha?: string }
+  | { type: 'merged'; merge_sha: string; mr_url?: string }
+  | { type: 'failed'; mr_url?: string; merge_sha?: string }
+)
 
 /** One line of the arm's own execution journal for a ticket run, reported to the hub. */
 export type ArmEvent = {
@@ -189,7 +197,7 @@ export const ARM_RUN_ID_MAX = 64
 export const ARM_EVENT_TYPE_MAX = 100
 export const ARM_LABEL_MAX = 500
 
-const ARM_TICKET_STATUSES: ReadonlySet<ArmTicketStatus> = new Set([
+export const ARM_TICKET_STATUSES: ReadonlySet<ArmTicketStatus> = new Set([
   'proposed',
   'rejected',
   'published',
@@ -274,7 +282,7 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
-function sanitizeArmSha(raw: unknown): string | undefined {
+export function sanitizeArmSha(raw: unknown): string | undefined {
   if (typeof raw !== 'string') {
     return undefined
   }
@@ -369,10 +377,13 @@ export function sanitizeArmTicket(raw: unknown): ArmTicket | null {
 
 /**
  * Revalidates an `ArmTransition` before it is sent to, or read back from,
- * the hub's report endpoint. Two fields gate the whole record: `type`
+ * the hub's report endpoint. Two fields gate every record: `type`
  * (same never-fabricate rule as `ArmTicket.status`) and `idempotency_key`,
- * mandatory per this type's own doc comment. Every other field is optional
- * and degrades to absence, never to an invented placeholder.
+ * mandatory per this type's own doc comment. Two more gate their own type,
+ * because a state requires its proof: an `mr_opened` without a usable
+ * `mr_url` and a `merged` without a `merge_sha` are refused whole, never
+ * degraded to a proof-less claim. Every other field is optional and
+ * degrades to absence, never to an invented placeholder.
  */
 export function sanitizeArmTransition(raw: unknown): ArmTransition | null {
   if (!raw || typeof raw !== 'object') {
@@ -387,25 +398,41 @@ export function sanitizeArmTransition(raw: unknown): ArmTransition | null {
     return null
   }
   const mrIid = str(r.mr_iid, ARM_MR_IID_MAX)
-  const mrUrl = str(r.mr_url, ARM_MR_URL_MAX)
+  const rawMrUrl = str(r.mr_url, ARM_MR_URL_MAX)
+  const mrUrl = rawMrUrl && isHttpUrl(rawMrUrl) ? rawMrUrl : null
   const branch = str(r.branch, ARM_BRANCH_MAX)
   const verdict = ARM_VERDICTS.has(r.verdict as ArmVerdict) ? (r.verdict as ArmVerdict) : null
   const findingsTotal = optionalNonNegativeInt(r.findings_total)
   const mergeSha = sanitizeArmSha(r.merge_sha)
   const errorMessage = str(r.error_message, ARM_ERROR_MESSAGE_MAX)
   const costTicks = optionalNonNegativeInt(r.cost_ticks)
-  return {
-    type,
+  const base = {
     idempotency_key,
     at: isoOrNow(r.at),
     ...(mrIid ? { mr_iid: mrIid } : {}),
-    ...(mrUrl && isHttpUrl(mrUrl) ? { mr_url: mrUrl } : {}),
     ...(branch ? { branch } : {}),
     ...(verdict ? { verdict } : {}),
     ...(findingsTotal !== null ? { findings_total: findingsTotal } : {}),
-    ...(mergeSha ? { merge_sha: mergeSha } : {}),
     ...(errorMessage ? { error_message: errorMessage } : {}),
     ...(costTicks !== null ? { cost_ticks: costTicks } : {}),
+  }
+  if (type === 'mr_opened') {
+    if (!mrUrl) {
+      return null
+    }
+    return { ...base, type, mr_url: mrUrl, ...(mergeSha ? { merge_sha: mergeSha } : {}) }
+  }
+  if (type === 'merged') {
+    if (!mergeSha) {
+      return null
+    }
+    return { ...base, type, merge_sha: mergeSha, ...(mrUrl ? { mr_url: mrUrl } : {}) }
+  }
+  return {
+    ...base,
+    type,
+    ...(mrUrl ? { mr_url: mrUrl } : {}),
+    ...(mergeSha ? { merge_sha: mergeSha } : {}),
   }
 }
 
@@ -633,10 +660,11 @@ export const armTicketSchema = {
 
 /**
  * JSON Schema (draft 2020-12) for an `ArmTransition`, same pattern and same
- * forward/backward guarantee as `armTicketSchema` above. Every field beyond
- * `type`/`idempotency_key`/`at` is optional here exactly as it is on the
- * type: `sanitizeArmTransition` omits rather than blanks an unusable one, so
- * none of them is in `required`.
+ * forward/backward guarantee as `armTicketSchema` above. Fields beyond
+ * `type`/`idempotency_key`/`at` are optional here exactly as they are on the
+ * type, except the per-type proof fields (`mr_url` on `mr_opened`,
+ * `merge_sha` on `merged`), required through the `allOf` conditionals below,
+ * mirroring the discriminated union and `sanitizeArmTransition`'s refusals.
  */
 export const armTransitionSchema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -658,6 +686,18 @@ export const armTransitionSchema = {
     error_message: { type: 'string', maxLength: ARM_ERROR_MESSAGE_MAX, pattern: NON_BLANK },
     cost_ticks: { type: 'integer', minimum: 0, maximum: 9_007_199_254_740_991 },
   },
+  allOf: [
+    {
+      if: { properties: { type: { const: 'mr_opened' } }, required: ['type'] },
+      // oxlint-disable-next-line no-thenable -- JSON Schema conditional keyword, not a thenable
+      then: { required: ['mr_url'] },
+    },
+    {
+      if: { properties: { type: { const: 'merged' } }, required: ['type'] },
+      // oxlint-disable-next-line no-thenable -- JSON Schema conditional keyword, not a thenable
+      then: { required: ['merge_sha'] },
+    },
+  ],
 } as const
 
 /**
