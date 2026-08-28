@@ -1230,11 +1230,22 @@ export function agentFailureDetail(out: string): string | null {
   return tail.length > 0 ? tail.slice(0, FAILURE_DETAIL_MAX) : null
 }
 
+/** Stderr kept per run for the exit error; the stream stays teed to the real stderr. */
+export const AGENT_STDERR_TAIL_MAX = 8192
+
+/** claude's own wording when a --resume target no longer exists (recycled cage home volume, cleared provider state). */
+export function isDeadSessionError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('No conversation found with session ID')
+}
+
 /** The exit-code message, carrying the agent's dying words when it left any. */
-export function agentExitError(code: number | null, out: string): Error {
+export function agentExitError(code: number | null, out: string, errTail = ''): Error {
   const base = t('agent.exitCode', { code })
-  const detail = agentFailureDetail(out)
-  return new Error(detail === null ? base : `${base}: ${detail}`)
+  const fromStream = agentFailureDetail(out)
+  const fromStderr =
+    errTail.trim().split('\n').slice(-3).join(' ').trim().slice(0, FAILURE_DETAIL_MAX) || null
+  const detail = [fromStream, fromStderr].filter((part) => part !== null).join('; ')
+  return new Error(detail.length === 0 ? base : `${base}: ${detail}`)
 }
 
 // --- clocks, spawning, and the shape of a kill ------------------------------
@@ -1481,7 +1492,7 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     const child = spawnFn(command, {
       shell: true,
       cwd: opts.cwd,
-      stdio: ['pipe', 'pipe', 'inherit'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       detached,
       ...(opts.env !== undefined ? { env: opts.env } : {}),
     })
@@ -1490,6 +1501,13 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
     // Registered BEFORE anything can close stdin: an agent that crashes closes
     // it early, and without this handler the EPIPE would kill the host process.
     stdin?.on('error', () => {})
+    // Teed, not swallowed: fatal reasons (session gone, auth) go to stderr,
+    // not the JSONL stream — keep them visible live AND in the exit error.
+    let errTail = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      process.stderr.write(chunk)
+      errTail = (errTail + chunk.toString('utf8')).slice(-AGENT_STDERR_TAIL_MAX)
+    })
 
     let out = ''
     let capped = false
@@ -1549,7 +1567,7 @@ export function runAgent(opts: AgentRunOptions): Promise<string> {
       } else if (code === 0) {
         resolve(parser ? (parser.finalText() ?? out) : out)
       } else {
-        reject(agentExitError(code, out))
+        reject(agentExitError(code, out, errTail))
       }
     }
 

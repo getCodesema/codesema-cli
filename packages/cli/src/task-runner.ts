@@ -23,6 +23,7 @@ import {
   emitsClaudeStreamJson,
   emitsOpencodeJson,
   flagPresent,
+  isDeadSessionError,
   knownAgent,
   runAgent,
   type AgentHeartbeat,
@@ -2455,7 +2456,10 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
     const attempt: TurnAttempt = { cost: null, folded: false }
     const checksConfig = opts.getChecksConfig ? opts.getChecksConfig() : opts.checksConfig
     const taskCommand = commandForTask(record, opts.command)
-    return (
+    // Re-read per attempt: the dead-session replay below clears
+    // agent_session_id, and both the prompt (full context vs message-only)
+    // and the session flag are derived from it inside runTaskTurn.
+    const execute = (): Promise<TaskTurnOutcome> =>
       runTaskTurn({
         cwd: record.worktree,
         task: record,
@@ -2477,6 +2481,26 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         ...(checksConfig !== undefined ? { checksConfig } : {}),
         ...(opts.runContainerTurnFn ? { runContainerTurnFn: opts.runContainerTurnFn } : {}),
       })
+    return (
+      execute()
+        // A stored session can stop existing under the task (the cage home
+        // volume was recycled, the provider state was cleared): claude then
+        // dies at birth. One replay with the session dropped rebuilds the
+        // whole context into the prompt instead of failing the turn.
+        .catch((err: unknown) => {
+          if (controller.signal.aborted || !record.agent_session_id || !isDeadSessionError(err)) {
+            throw err
+          }
+          record.agent_session_id = null
+          persist(record)
+          emit(record.id, {
+            type: 'message',
+            data: {
+              text: 'the stored agent session no longer exists: replaying the turn with rebuilt context',
+            },
+          })
+          return execute()
+        })
         .then((outcome) => {
           // The agent process is done: the task stops being interruptible as a
           // running turn here, even though the review that follows still holds

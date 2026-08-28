@@ -3,6 +3,13 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.18.5] - 2026-08-28
+
+### Fixed
+
+- **A turn no longer dies when its stored agent session has vanished.** The cage home volume can be recycled between turns (it is released when the task first parks), and `claude --resume` then exits with "No conversation found". The runner now drops the dead session and replays the turn once with the full context rebuilt into the prompt.
+- **Agent stderr reaches the exit error.** Fatal reasons (a vanished session, an auth failure) go to stderr, not the JSONL stream; both the host and caged runs now tee stderr live AND carry its tail in the "exited with code N" message.
+
 ## [0.18.4] - 2026-08-28
 
 ### Added
