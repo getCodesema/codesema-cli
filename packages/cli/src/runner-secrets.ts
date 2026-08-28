@@ -1,6 +1,11 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { nodeAtomicWriteIo, writeFileAtomic, type AtomicWriteIo } from './atomic-write.js'
 
+export type RunnerGitIdentity = {
+  name: string
+  email: string
+}
+
 export type RunnerSecretsPayload = {
   v: 1
   secrets: {
@@ -8,11 +13,20 @@ export type RunnerSecretsPayload = {
     GH_TOKEN?: string
   }
   repo_url?: string
+  git_identity?: RunnerGitIdentity
+}
+
+/** Commit signature of last resort when neither the payload nor the host carries one. */
+export const RUNNER_FALLBACK_GIT_IDENTITY: RunnerGitIdentity = {
+  name: 'codesema',
+  email: 'noreply@codesema.com',
 }
 
 const SECRET_KEYS = ['CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN'] as const
 const SECRET_VALUE_MAX = 4096
 const REPO_URL_MAX = 2048
+const GIT_IDENTITY_NAME_MAX = 128
+const GIT_IDENTITY_EMAIL_MAX = 254
 // \p{Cc} covers every Unicode control character (newline, carriage return,
 // tab, ...). A secret or URL carrying one is either corrupted or an attempt
 // to inject extra lines into the KEY=value env file applySecretsToEnvFile
@@ -51,9 +65,6 @@ export function sanitizeRunnerSecretsPayload(raw: unknown): RunnerSecretsPayload
     }
     secrets[key] = value
   }
-  if (Object.keys(secrets).length === 0) {
-    return null
-  }
 
   let repoUrl: string | undefined
   if (r.repo_url !== undefined) {
@@ -64,7 +75,43 @@ export function sanitizeRunnerSecretsPayload(raw: unknown): RunnerSecretsPayload
     repoUrl = value
   }
 
-  return { v: 1, secrets, ...(repoUrl !== undefined ? { repo_url: repoUrl } : {}) }
+  let gitIdentity: RunnerGitIdentity | undefined
+  if (r.git_identity !== undefined) {
+    if (!r.git_identity || typeof r.git_identity !== 'object') {
+      return null
+    }
+    const rawIdentity = r.git_identity as Record<string, unknown>
+    const name = sanitizeBoundedToken(rawIdentity.name, GIT_IDENTITY_NAME_MAX)
+    const email = sanitizeBoundedToken(rawIdentity.email, GIT_IDENTITY_EMAIL_MAX)
+    if (name === null || email === null) {
+      return null
+    }
+    gitIdentity = { name, email }
+  }
+
+  if (Object.keys(secrets).length === 0 && repoUrl === undefined && gitIdentity === undefined) {
+    return null
+  }
+
+  return {
+    v: 1,
+    secrets,
+    ...(repoUrl !== undefined ? { repo_url: repoUrl } : {}),
+    ...(gitIdentity !== undefined ? { git_identity: gitIdentity } : {}),
+  }
+}
+
+export type GitConfigExecFn = (args: readonly string[]) => void
+
+/**
+ * Pins the delivered identity as the machine's global git config: the runner
+ * commits every turn itself (task-runner.ts::commitTurn), and a server
+ * installed from a bare cloud image has no identity at all, which fails every
+ * commit with "Please tell me who you are".
+ */
+export function applyGitIdentity(identity: RunnerGitIdentity, runGit: GitConfigExecFn): void {
+  runGit(['config', '--global', 'user.name', identity.name])
+  runGit(['config', '--global', 'user.email', identity.email])
 }
 
 function parseEnvFile(contents: string): Map<string, string> {

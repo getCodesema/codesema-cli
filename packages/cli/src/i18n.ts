@@ -475,6 +475,11 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'runner.autoconfigReuseClaudeToken': "Reuse this machine's Claude Code OAuth token?",
   'runner.autoconfigPasteClaudeToken': 'Paste the Claude Code OAuth token to send',
   'runner.autoconfigUseDetectedRepoUrl': "Use {url} as this runner's repo?",
+  'runner.autoconfigUseGitIdentity':
+    'Send your git identity {name} <{email}> for the runner commits?',
+  'runner.autoconfigGitIdentityFlagsIncomplete':
+    '--git-name and --git-email must be provided together',
+  'runner.awaitSecretsGitIdentityApplied': 'git identity applied: {name}',
   'runner.autoconfigRepoUrl': 'Repository URL for this runner',
   'runner.autoconfigNoSecrets':
     'no secret to send: provide at least a GH token or a Claude Code token',
@@ -1102,6 +1107,11 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'runner.autoconfigReuseClaudeToken': 'Réutiliser le jeton OAuth Claude Code de cette machine ?',
   'runner.autoconfigPasteClaudeToken': 'Collez le jeton OAuth Claude Code à envoyer',
   'runner.autoconfigUseDetectedRepoUrl': 'Utiliser {url} comme dépôt de ce runner ?',
+  'runner.autoconfigUseGitIdentity':
+    'Envoyer ton identité git {name} <{email}> pour les commits du runner ?',
+  'runner.autoconfigGitIdentityFlagsIncomplete':
+    '--git-name et --git-email doivent être fournis ensemble',
+  'runner.awaitSecretsGitIdentityApplied': 'identité git appliquée : {name}',
   'runner.autoconfigRepoUrl': 'URL du dépôt pour ce runner',
   'runner.autoconfigNoSecrets':
     'aucun secret à envoyer : fournissez au moins un jeton gh ou un jeton Claude Code',

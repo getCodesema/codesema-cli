@@ -859,6 +859,41 @@ describe('startRunnerDaemon', () => {
       }
     })
 
+    test('a delivered git identity is applied through the seam and logged by name', async () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const applied: unknown[] = []
+      const payload: RunnerSecretsPayload = {
+        v: 1,
+        secrets: {},
+        git_identity: { name: 'Naash', email: 'naash@example.com' },
+      }
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadIdentityFn: () => fakeRunnerIdentity,
+        claimSecretFn: async () => ({ ok: true, data: { ciphertext: 'sealed-blob' } }),
+        unsealFn: () => Buffer.from(JSON.stringify(payload), 'utf8'),
+        sanitizeSecretsFn: (raw) => raw as RunnerSecretsPayload,
+        applySecretsFn: () => {},
+        applyGitIdentityFn: (identity) => {
+          applied.push(identity)
+        },
+      })
+      await handle.stop()
+      expect(applied).toEqual([{ name: 'Naash', email: 'naash@example.com' }])
+      expect(lines.some((l) => l.includes('applied git identity: Naash'))).toBe(true)
+    })
+
     test('an undecryptable blob logs a warning and mutates nothing', async () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),

@@ -55,6 +55,8 @@ type ParsedValues = {
   'gh-token-from-gh'?: boolean | undefined
   'claude-token'?: string | undefined
   'repo-url'?: string | undefined
+  'git-name'?: string | undefined
+  'git-email'?: string | undefined
 }
 
 export const COMMAND_NAMES = [
@@ -230,6 +232,8 @@ async function runCommand(
         ghTokenFromGh: values['gh-token-from-gh'],
         claudeToken: values['claude-token'],
         repoUrl: values['repo-url'],
+        gitName: values['git-name'],
+        gitEmail: values['git-email'],
         timeoutSeconds: parseIntFlag('timeout', values.timeout, 1, 86400),
       })
       break
@@ -266,6 +270,8 @@ async function main(): Promise<void> {
       'gh-token-from-gh': { type: 'boolean' },
       'claude-token': { type: 'string' },
       'repo-url': { type: 'string' },
+      'git-name': { type: 'string' },
+      'git-email': { type: 'string' },
     },
   })
 

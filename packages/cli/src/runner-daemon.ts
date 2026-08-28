@@ -10,6 +10,7 @@
 // (D19) rides back on that same heartbeat and is applied here: ship, reply,
 // or abandon.
 
+import { execFileSync } from 'node:child_process'
 import { runnerEnvPath } from './config.js'
 import { isActiveTaskStatus, type ArmOrder, type ArmTicketRequest } from './contract.js'
 import {
@@ -21,7 +22,12 @@ import {
   listTickets,
 } from './hub-client.js'
 import { loadRunnerIdentity } from './runner-identity.js'
-import { applySecretsToEnvFile, sanitizeRunnerSecretsPayload } from './runner-secrets.js'
+import {
+  applyGitIdentity,
+  applySecretsToEnvFile,
+  sanitizeRunnerSecretsPayload,
+  type RunnerGitIdentity,
+} from './runner-secrets.js'
 import { unseal } from './sealed-box.js'
 import { loadSyncCredentials, type SyncCredentials } from './sync.js'
 import { createHubTicketTask } from './task-hub-ticket.js'
@@ -57,6 +63,7 @@ type DaemonContext = {
   unsealFn: typeof unseal
   sanitizeSecretsFn: typeof sanitizeRunnerSecretsPayload
   applySecretsFn: typeof applySecretsToEnvFile
+  applyGitIdentityFn: (identity: RunnerGitIdentity) => void
 }
 
 /** Whether this half-tick saw a network failure or a 5xx: the ONLY conditions that back off the next tick. */
@@ -244,6 +251,14 @@ async function checkPendingSecretRotation(
   if (appliedKeys.length > 0) {
     ctx.log(`applied rotated runner secret(s): ${appliedKeys.join(', ')}`)
   }
+  if (payload.git_identity) {
+    try {
+      ctx.applyGitIdentityFn(payload.git_identity)
+      ctx.log(`applied git identity: ${payload.git_identity.name}`)
+    } catch (err) {
+      ctx.log(`could not apply the delivered git identity: ${errorMessage(err)}`)
+    }
+  }
 }
 
 async function tick(ctx: DaemonContext): Promise<TickOutcome> {
@@ -375,6 +390,7 @@ export type StartRunnerDaemonOptions = {
   unsealFn?: typeof unseal
   /** Test seam. */
   sanitizeSecretsFn?: typeof sanitizeRunnerSecretsPayload
+  applyGitIdentityFn?: (identity: RunnerGitIdentity) => void
   /** Test seam. */
   applySecretsFn?: typeof applySecretsToEnvFile
 }
@@ -390,6 +406,13 @@ export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonH
   const unsealFn = opts.unsealFn ?? unseal
   const sanitizeSecretsFn = opts.sanitizeSecretsFn ?? sanitizeRunnerSecretsPayload
   const applySecretsFn = opts.applySecretsFn ?? applySecretsToEnvFile
+  const applyGitIdentityFn =
+    opts.applyGitIdentityFn ??
+    ((identity: RunnerGitIdentity): void => {
+      applyGitIdentity(identity, (args) =>
+        execFileSync('git', [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+      )
+    })
   const controller = new AbortController()
   const loggedOnce = new Set<string>()
 
@@ -411,6 +434,7 @@ export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonH
     unsealFn,
     sanitizeSecretsFn,
     applySecretsFn,
+    applyGitIdentityFn,
   }
 
   let backoffMs = intervalMs
