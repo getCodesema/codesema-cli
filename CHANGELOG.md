@@ -20,6 +20,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **The reviewer resolves the microvm snapshot, runbook and mechanical verification per task turn** (`resolveReviewContext`) instead of freezing them once per project, and finding repro checks of a VM-isolated task run through the injected microvm `StepExecutor` instead of always falling back to docker/podman.
 - **The web workspace shows a microVM badge, plan label and build-image hint** for `microvm` tasks instead of folding them into `policy`.
 
+### Fixed
+
+- **Review findings folded in before release** (adversarial review of the microvm lots, 23 confirmed findings). Ship: an origin URL embedding credentials is stripped before it reaches the gitops sandbox, host-side `credential.helper`/`http.*.extraheader` are purged in the guest, and an unknown forge gets both `GH_TOKEN` and `GITLAB_TOKEN` declared instead of a guess; the forge token is picked from the project's actual remote, never from whichever env var happens to exist. Checks: `microvmStepExecutor` copies `/work` back after every step (an install step's result reached nobody before), mounts the linked worktree's git common dir and removes the synthetic `.git` pointer before the copy-back. Review: dual mode gave both lanes the same sandbox name; the review VM's destroy is guarded and its duration carries the same headroom as checks. Turn: `destroy()` is memoised and awaited after the worktree copy-back (a killed turn could lose its files), and the guest user name is validated before being interpolated in root scripts. Runbook scan: the claim is renewed every half-lease while the scan runs and no result is reported once the lease is lost; a scan whose `head_sha` does not match the local HEAD is skipped instead of validating the wrong commit. `merged` transitions now carry `changed_files` so the hub can mark a runbook stale. `sanitizeTaskVerification` refuses a record without `head_sha` and bounds its timestamps like the hub does; the real Microsandbox driver refuses a sandbox without a network policy, like the fake always did.
+
+
 ## [0.19.0] - 2026-08-28
 
 ### Added

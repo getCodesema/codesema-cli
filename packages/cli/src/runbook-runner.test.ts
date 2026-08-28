@@ -10,6 +10,7 @@ import type {
 import type { ProjectSnapshot } from './microvm-snapshot.js'
 import {
   DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS,
+  RUNBOOK_SCAN_LEASE_SECONDS,
   RUNBOOK_SCAN_MAX_ATTEMPTS,
   runOneRunbookScan,
   runRunbookScan,
@@ -727,6 +728,171 @@ describe('runOneRunbookScan', () => {
     expect(reported).toEqual([{ error: 'install always fails' }])
   })
 
+  test('claims with the hub-capped lease by default', async () => {
+    const scan = fakeScan()
+    const claimBodies: unknown[] = []
+    const { fetchImpl } = fetchRouter({
+      '/runbook-scans': () => new Response(JSON.stringify({ scans: [scan] }), { status: 200 }),
+      '/claim': (init) => {
+        claimBodies.push(init?.body ? JSON.parse(String(init.body)) : null)
+        return new Response(
+          JSON.stringify({ scan, lease_expires_at: '2026-01-01T00:05:00.000Z' }),
+          { status: 200 },
+        )
+      },
+      '/result': () =>
+        new Response(JSON.stringify({ runbook_id: 'rb1', already_recorded: false }), {
+          status: 200,
+        }),
+    })
+    await runOneRunbookScan({
+      creds,
+      driver,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      resolveWorktree: async () => ({ worktree: '/r', projectId: 'p', headSha: 'a'.repeat(40) }),
+      fetchImpl,
+      runRunbookScanFn: async () => ({
+        status: 'completed',
+        runbook: sampleRunbook(),
+        validation: {
+          runbook_sha: WRITTEN_SHA,
+          validated_sha: 'a'.repeat(40),
+          validated_at: '2026-01-01T00:00:00.000Z',
+          status: 'valid',
+        },
+        snapshotName: null,
+        checks: [],
+        attempts: 1,
+      }),
+    })
+    expect(claimBodies[0]).toEqual({ lease_seconds: RUNBOOK_SCAN_LEASE_SECONDS })
+  })
+
+  test('renews the lease periodically while the scan runs, and stops renewing once it settles', async () => {
+    const scan = fakeScan()
+    const claimBodies: unknown[] = []
+    let resolveScan: (outcome: RunbookScanOutcome) => void = () => {}
+    const scanPromise = new Promise<RunbookScanOutcome>((resolve) => {
+      resolveScan = resolve
+    })
+    const { fetchImpl } = fetchRouter({
+      '/runbook-scans': () => new Response(JSON.stringify({ scans: [scan] }), { status: 200 }),
+      '/claim': (init) => {
+        claimBodies.push(init?.body ? JSON.parse(String(init.body)) : null)
+        // Resolve the scan itself only after the initial claim plus at least
+        // two renewals: proves the loop ticks more than once, not just once.
+        if (claimBodies.length >= 3) {
+          resolveScan({
+            status: 'completed',
+            runbook: sampleRunbook(),
+            validation: {
+              runbook_sha: WRITTEN_SHA,
+              validated_sha: 'a'.repeat(40),
+              validated_at: '2026-01-01T00:00:00.000Z',
+              status: 'valid',
+            },
+            snapshotName: null,
+            checks: [],
+            attempts: 1,
+          })
+        }
+        return new Response(
+          JSON.stringify({ scan, lease_expires_at: '2026-01-01T00:05:00.000Z' }),
+          { status: 200 },
+        )
+      },
+      '/result': () =>
+        new Response(JSON.stringify({ runbook_id: 'rb1', already_recorded: false }), {
+          status: 200,
+        }),
+    })
+    const result = await runOneRunbookScan({
+      creds,
+      driver,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      resolveWorktree: async () => ({ worktree: '/r', projectId: 'p', headSha: 'a'.repeat(40) }),
+      fetchImpl,
+      leaseSeconds: 10,
+      renewSleepFn: async () => {},
+      runRunbookScanFn: () => scanPromise,
+    })
+    expect(claimBodies[0]).toEqual({ lease_seconds: 10 })
+    expect(claimBodies.length).toBeGreaterThanOrEqual(3)
+    expect(result.claimed).toBe(true)
+    expect((result as { outcome: RunbookScanOutcome }).outcome.status).toBe('completed')
+    // The renewal loop is awaited before runOneRunbookScan returns, so no
+    // further claim call should ever land after that.
+    const countAtSettle = claimBodies.length
+    await new Promise((r) => setTimeout(r, 0))
+    expect(claimBodies.length).toBe(countAtSettle)
+  })
+
+  test('a failed lease renewal aborts the in-flight scan and reports nothing to the hub', async () => {
+    const scan = fakeScan()
+    let claimCount = 0
+    const reportedResult: unknown[] = []
+    const reportedFail: unknown[] = []
+    const { fetchImpl } = fetchRouter({
+      '/runbook-scans': () => new Response(JSON.stringify({ scans: [scan] }), { status: 200 }),
+      '/claim': () => {
+        claimCount += 1
+        if (claimCount === 1) {
+          return new Response(
+            JSON.stringify({ scan, lease_expires_at: '2026-01-01T00:05:00.000Z' }),
+            { status: 200 },
+          )
+        }
+        return new Response(
+          JSON.stringify({ error: 'runbook scan not claimed by this executor' }),
+          { status: 409 },
+        )
+      },
+      '/result': (init) => {
+        reportedResult.push(init)
+        return new Response(JSON.stringify({ runbook_id: 'rb1', already_recorded: false }), {
+          status: 200,
+        })
+      },
+      '/fail': (init) => {
+        reportedFail.push(init)
+        return new Response(JSON.stringify({}), { status: 200 })
+      },
+    })
+    const lines: string[] = []
+    const result = await runOneRunbookScan({
+      creds,
+      driver,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      resolveWorktree: async () => ({ worktree: '/r', projectId: 'p', headSha: 'a'.repeat(40) }),
+      fetchImpl,
+      leaseSeconds: 10,
+      renewSleepFn: async () => {},
+      onProgress: (line) => lines.push(line),
+      // Mirrors what the real scan does under an aborted shared signal: it
+      // never resolves on its own, only when the signal fires.
+      runRunbookScanFn: (scanOpts) =>
+        new Promise((resolve) => {
+          scanOpts.signal?.addEventListener('abort', () => {
+            resolve({
+              status: 'failed',
+              error: 'runbook scan aborted',
+              attempts: 1,
+              lastTail: null,
+            })
+          })
+        }),
+    })
+    expect(claimCount).toBe(2)
+    expect(reportedResult).toHaveLength(0)
+    expect(reportedFail).toHaveLength(0)
+    expect(result.claimed).toBe(true)
+    expect((result as { outcome: RunbookScanOutcome }).outcome.status).toBe('failed')
+    expect(lines.some((l) => l.includes('lost the lease'))).toBe(true)
+  })
+
   test('a hub error reporting the result still returns claimed true, logged rather than thrown', async () => {
     const scan = fakeScan()
     const { fetchImpl } = fetchRouter({
@@ -772,5 +938,9 @@ describe('constants', () => {
 
   test('RUNBOOK_SCAN_MAX_ATTEMPTS is 5', () => {
     expect(RUNBOOK_SCAN_MAX_ATTEMPTS).toBe(5)
+  })
+
+  test('RUNBOOK_SCAN_LEASE_SECONDS matches the hub cap (900s)', () => {
+    expect(RUNBOOK_SCAN_LEASE_SECONDS).toBe(900)
   })
 })

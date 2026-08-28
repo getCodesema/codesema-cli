@@ -862,6 +862,25 @@ describe('createMicrosandboxDriver.create', () => {
     expect(builderCalls).toEqual([])
   })
 
+  test('rejects a missing network policy before touching the SDK', async () => {
+    const { sdk, builderCalls } = makeFakeSdk()
+    const driver = createMicrosandboxDriver({ sdk })
+    const spec = { ...baseSpec(), network: undefined } as unknown as SandboxSpec
+    await expect(driver.create(spec)).rejects.toThrow(/SandboxSpec.network is required/)
+    expect(builderCalls).toEqual([])
+  })
+
+  test('rejects a non-array allowedDomains before touching the SDK', async () => {
+    const { sdk, builderCalls } = makeFakeSdk()
+    const driver = createMicrosandboxDriver({ sdk })
+    const spec = {
+      ...baseSpec(),
+      network: { allowedDomains: 'api.anthropic.com' },
+    } as unknown as SandboxSpec
+    await expect(driver.create(spec)).rejects.toThrow(/SandboxSpec.network is required/)
+    expect(builderCalls).toEqual([])
+  })
+
   test('applies a deny-by-default, port-443, exact-domain network policy for an image sandbox', async () => {
     let captured: RecordedSandboxConfig | undefined
     const { sdk } = makeFakeSdk({

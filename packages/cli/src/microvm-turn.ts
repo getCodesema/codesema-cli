@@ -84,6 +84,15 @@ function shellSingleQuote(value: string): string {
   return `'${value.split("'").join(`'\\''`)}'`
 }
 
+/** Matches how `useradd` names a user; enforced before `user` is spliced unquoted into any shell script below. */
+const GUEST_USER_PATTERN = /^[a-z_][a-z0-9_-]*$/
+
+function assertValidGuestUser(user: string): void {
+  if (!GUEST_USER_PATTERN.test(user)) {
+    throw new Error(`invalid guest user "${user}": must match ${GUEST_USER_PATTERN}`)
+  }
+}
+
 /** `useradd -m` the guest user if it does not already exist; idempotent, safe to re-run. */
 function agentUserBootstrapScript(user: string): string {
   return [
@@ -181,16 +190,16 @@ async function syncWorktreeOut(handle: SandboxHandle, opts: RunMicrovmTurnOption
  * `SandboxHandle.exec`/`shell` already understand `timeoutMs` and `signal`
  * (SandboxExecOptions), so this does not reimplement the container flow's own
  * process-kill escalation: a watchdog expiry, an external abort, or the
- * absolute cap all abort ONE internal AbortController, which both stops the
- * driver's own exec and (via `onKill`) starts destroying the sandbox — the
- * two race, and destroy is idempotent-safe either way.
+ * absolute cap all abort ONE internal AbortController, which the driver's own
+ * exec already treats as a kill signal. The sandbox itself is destroyed
+ * separately by the caller, once, after it has had a chance to copy the
+ * worktree back out — see `runMicrovmTurn`.
  */
 type RunMicrovmExecOptions = {
   handle: SandboxHandle
   script: string
   turn: RunMicrovmTurnOptions
   clock: AgentClock
-  onKill: () => void
 }
 
 function runMicrovmExec({
@@ -198,7 +207,6 @@ function runMicrovmExec({
   script,
   turn: opts,
   clock,
-  onKill,
 }: RunMicrovmExecOptions): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = ''
@@ -238,7 +246,6 @@ function runMicrovmExec({
       }
       killing = true
       armed.stop()
-      onKill()
       controller.abort()
     }
 
@@ -318,6 +325,7 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
   const driver = opts.driver
   const clock = opts.clock ?? systemClock
   const user = opts.user ?? MICROVM_TURN_DEFAULTS.user
+  assertValidGuestUser(user)
   const name = sandboxName('dev', opts.taskId)
   const maxDurationSeconds = Math.ceil(opts.timeoutMs / 1000) + 60
   // Deliberately as generous as the container flow's own egress for this
@@ -348,18 +356,18 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
   }
 
   const handle = await driver.create(spec)
-  // Deduped at THIS level, not left to the driver: a watchdog cut or an
-  // external abort destroys the sandbox from `onKill` to actually stop a
-  // hung exec, and the outer `finally` below destroys it again on every
-  // other path — without the guard the two would race a redundant second
-  // `driver.destroy()` call on the same name for every cut/abort/timeout.
-  let destroyed = false
+  // Destroyed exactly once, by the outer `finally` below, strictly AFTER
+  // `syncWorktreeOut` has had its chance to copy whatever the agent produced
+  // back to the host: a watchdog cut, an external abort, or the absolute cap
+  // only abort the shared AbortController above (which the driver's own exec
+  // already treats as a kill signal) — none of them destroy the sandbox
+  // directly, so the copy-back is never racing a sandbox disappearing under
+  // it. The promise is still memoized so a second call (if one is ever added)
+  // observes the same real completion instead of a bare `true` flag.
+  let destroyPromise: Promise<void> | null = null
   const destroy = (): Promise<void> => {
-    if (destroyed) {
-      return Promise.resolve()
-    }
-    destroyed = true
-    return driver.destroy(name).catch(() => undefined)
+    destroyPromise ??= driver.destroy(name).catch(() => undefined)
+    return destroyPromise
   }
 
   try {
@@ -394,7 +402,6 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
         script,
         turn: opts,
         clock,
-        onKill: () => void destroy(),
       })
     } catch (err) {
       turnError = err

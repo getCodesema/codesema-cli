@@ -43,6 +43,16 @@ export const RUNBOOK_SCAN_MAX_ATTEMPTS = 5
 /** The whole scan's per-command timeout when the caller does not set one (10 min). */
 export const DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS = 600_000
 
+/**
+ * The lease a scan claims with, bounded to the hub's own cap
+ * (MAX_RUNBOOK_LEASE_SECONDS in runbook-scans.ts). A scan can run far longer
+ * than any single lease (up to RUNBOOK_SCAN_MAX_ATTEMPTS attempts, each with
+ * install + services + healthchecks + tests), so `runOneRunbookScan` renews
+ * this lease periodically instead of claiming once and hoping the scan
+ * finishes before it expires.
+ */
+export const RUNBOOK_SCAN_LEASE_SECONDS = 900
+
 /** How often a healthcheck is retried before the attempt's shared deadline. */
 export const RUNBOOK_HEALTHCHECK_RETRY_MS = 2_000
 
@@ -62,6 +72,30 @@ function tailOf(value: string): string {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Half the lease, with a floor so a tiny test-only lease never busy-loops. */
+function leaseRenewalIntervalMs(leaseSeconds: number): number {
+  return Math.max(1000, Math.floor((leaseSeconds * 1000) / 2))
+}
+
+/** An abortable sleep for the lease-renewal loop: resolves early the instant `signal` aborts. */
+function defaultRenewSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      { once: true },
+    )
+  })
 }
 
 /** Single-quotes a value for `sh -c '...'`, escaping any embedded single quote. */
@@ -446,11 +480,20 @@ export type RunbookScanRunnerOptions = {
   fetchImpl?: typeof fetch
   /** Test seam: isolates the claim/report plumbing from the real proposal/execution loop. */
   runRunbookScanFn?: typeof runRunbookScan
+  /** Test seam: overrides RUNBOOK_SCAN_LEASE_SECONDS so a test does not wait real minutes between renewals. */
+  leaseSeconds?: number
+  /** Test seam: an injectable, abortable sleep instead of the real timer, driving the lease-renewal loop. */
+  renewSleepFn?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
 /**
  * Claims one queued scan from the hub, runs it, reports the result (or the
- * failure). Returns what it did so the daemon tick can log it.
+ * failure). The claim's lease is renewed periodically (every half-lease) for
+ * as long as the scan runs, since a scan can take far longer than any single
+ * lease: a renewal that fails (the lease was already lost to another
+ * executor) aborts the in-flight scan and skips reporting anything, since
+ * this executor no longer owns the claim. Returns what it did so the daemon
+ * tick can log it.
  */
 export async function runOneRunbookScan(
   opts: RunbookScanRunnerOptions,
@@ -480,7 +523,13 @@ export async function runOneRunbookScan(
     return { claimed: false }
   }
 
-  const claimResult = await claimRunbookScan(opts.creds, target.scan.id, {}, fetchImpl)
+  const leaseSeconds = opts.leaseSeconds ?? RUNBOOK_SCAN_LEASE_SECONDS
+  const claimResult = await claimRunbookScan(
+    opts.creds,
+    target.scan.id,
+    { leaseSeconds },
+    fetchImpl,
+  )
   if (!claimResult.ok) {
     opts.onProgress?.(
       `could not claim runbook scan ${target.scan.id}: ${hubErrorMessage(claimResult.error)}`,
@@ -488,16 +537,55 @@ export async function runOneRunbookScan(
     return { claimed: false }
   }
 
+  const renewSleep = opts.renewSleepFn ?? defaultRenewSleep
+  const renewalIntervalMs = leaseRenewalIntervalMs(leaseSeconds)
+  const controller = new AbortController()
+  let leaseLost = false
+  const renewalLoop = (async () => {
+    while (!controller.signal.aborted) {
+      await renewSleep(renewalIntervalMs, controller.signal)
+      if (controller.signal.aborted) {
+        break
+      }
+      const renewed = await claimRunbookScan(
+        opts.creds,
+        target.scan.id,
+        { leaseSeconds },
+        fetchImpl,
+      )
+      if (!renewed.ok) {
+        leaseLost = true
+        opts.onProgress?.(
+          `lost the lease for runbook scan ${target.scan.id}: ${hubErrorMessage(renewed.error)}`,
+        )
+        controller.abort()
+        break
+      }
+    }
+  })()
+
   const runScan = opts.runRunbookScanFn ?? runRunbookScan
-  const outcome = await runScan({
-    worktree: target.resolved.worktree,
-    projectId: target.resolved.projectId,
-    headSha: target.resolved.headSha,
-    driver: opts.driver,
-    command: opts.command,
-    timeoutMs: opts.timeoutMs,
-    ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
-  })
+  let outcome: RunbookScanOutcome
+  try {
+    outcome = await runScan({
+      worktree: target.resolved.worktree,
+      projectId: target.resolved.projectId,
+      headSha: target.resolved.headSha,
+      driver: opts.driver,
+      command: opts.command,
+      timeoutMs: opts.timeoutMs,
+      signal: controller.signal,
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+    })
+  } finally {
+    controller.abort()
+    await renewalLoop
+  }
+
+  if (leaseLost) {
+    opts.onProgress?.(`runbook scan ${target.scan.id}: lease lost mid-scan, not reporting a result`)
+    return { claimed: true, scanId: target.scan.id, outcome }
+  }
 
   if (outcome.status === 'completed') {
     const lastTail = outcome.checks.at(-1)?.tail

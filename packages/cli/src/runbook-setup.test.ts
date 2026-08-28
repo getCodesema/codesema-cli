@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { RUNBOOK_VERSION, type RunbookConfig } from './contract.js'
+import { RUNBOOK_COMMAND_MAX, RUNBOOK_VERSION, type RunbookConfig } from './contract.js'
 import {
   buildRunbookSetupPrompt,
   PREVIOUS_FAILURE_MAX_CHARS,
@@ -199,6 +199,69 @@ describe('sanitizeRunbookProposal', () => {
     )
     expect(result.ok).toBe(false)
     expect((result as { reason: string }).reason).toContain('absolute path')
+  })
+
+  test('an absolute path glued onto a flag ("--output=/etc/x") is refused', () => {
+    const result = sanitizeRunbookProposal(
+      JSON.stringify({ ...CLEAN_PROPOSAL, install: ['cp x --output=/etc/cron.d/x'] }),
+    )
+    expect(result.ok).toBe(false)
+    expect((result as { reason: string }).reason).toContain('absolute path')
+  })
+
+  test('an absolute path glued onto an env var assignment ("FOO=/etc/x cmd") is refused', () => {
+    const result = sanitizeRunbookProposal(
+      JSON.stringify({ ...CLEAN_PROPOSAL, tests: ['FOO=/etc/passwd bun test'] }),
+    )
+    expect(result.ok).toBe(false)
+    expect((result as { reason: string }).reason).toContain('absolute path')
+  })
+
+  test('an absolute path opening a quoted argument is refused', () => {
+    for (const command of [`sh -c "/bin/sh -c foo"`, `sh -c '/bin/sh -c foo'`]) {
+      const result = sanitizeRunbookProposal(
+        JSON.stringify({ ...CLEAN_PROPOSAL, install: [command] }),
+      )
+      expect(result.ok).toBe(false)
+      expect((result as { reason: string }).reason).toContain('absolute path')
+    }
+  })
+
+  test('an absolute path after a host:path pair ("user@host:/etc/x") is refused', () => {
+    const result = sanitizeRunbookProposal(
+      JSON.stringify({ ...CLEAN_PROPOSAL, install: ['scp file user@host:/etc/passwd'] }),
+    )
+    expect(result.ok).toBe(false)
+    expect((result as { reason: string }).reason).toContain('absolute path')
+  })
+
+  test('a URL scheme ("://") is never mistaken for an absolute path token', () => {
+    const result = sanitizeRunbookProposal(
+      JSON.stringify({
+        ...CLEAN_PROPOSAL,
+        healthchecks: ['curl http://localhost:8080/health'],
+      }),
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  test('a command exactly RUNBOOK_COMMAND_MAX characters long is accepted', () => {
+    const command = 'a'.repeat(RUNBOOK_COMMAND_MAX)
+    const result = sanitizeRunbookProposal(
+      JSON.stringify({ ...CLEAN_PROPOSAL, install: [command] }),
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  test('a command longer than RUNBOOK_COMMAND_MAX is refused', () => {
+    const command = 'a'.repeat(RUNBOOK_COMMAND_MAX + 1)
+    const result = sanitizeRunbookProposal(
+      JSON.stringify({ ...CLEAN_PROPOSAL, install: [command] }),
+    )
+    expect(result.ok).toBe(false)
+    expect((result as { reason: string }).reason).toContain(
+      `exceeds ${RUNBOOK_COMMAND_MAX} characters`,
+    )
   })
 
   test('a non-exact egress host is refused', () => {

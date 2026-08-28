@@ -77,12 +77,21 @@ type ShellCall = { script: string; opts: SandboxExecOptions }
  * that one is the controllable "turn" call, resolved/rejected/pushed to by
  * the test. Nothing here spawns a real process or SDK.
  */
-function fakeMicrovmDriver() {
+/**
+ * `controlDestroy: true` makes `driver.destroy()` return a promise the test
+ * settles itself via `resolveDestroy()`, instead of resolving immediately —
+ * needed to observe ordering/sequencing around destroy (F15). Off by default
+ * so every pre-existing test (which never calls `resolveDestroy`) keeps
+ * working unchanged.
+ */
+function fakeMicrovmDriver(rigOptions: { controlDestroy?: boolean } = {}) {
   const shellCalls: ShellCall[] = []
   const copyFromHostCalls: Array<[string, string]> = []
   const copyToHostCalls: Array<[string, string]> = []
   const writeFileCalls: Array<[string, string]> = []
   const destroyedNames: string[] = []
+  const callOrder: string[] = []
+  const destroyResolvers: Array<() => void> = []
   let createdSpec: SandboxSpec | null = null
   let turnResolve: ((r: SandboxExecResult) => void) | null = null
   let turnReject: ((e: unknown) => void) | null = null
@@ -123,6 +132,7 @@ function fakeMicrovmDriver() {
     },
     copyToHost: (guestPath, hostPath) => {
       copyToHostCalls.push([guestPath, hostPath])
+      callOrder.push('copyToHost')
       return Promise.resolve()
     },
     writeFile: (guestPath, content) => {
@@ -147,7 +157,13 @@ function fakeMicrovmDriver() {
     listSnapshots: () => Promise.resolve([]),
     destroy: (name) => {
       destroyedNames.push(name)
-      return Promise.resolve()
+      callOrder.push('destroy')
+      if (!rigOptions.controlDestroy) {
+        return Promise.resolve()
+      }
+      return new Promise<void>((resolve) => {
+        destroyResolvers.push(resolve)
+      })
     },
     removeSnapshot: () => Promise.resolve(),
     ensureVolume: () => Promise.resolve(),
@@ -162,6 +178,7 @@ function fakeMicrovmDriver() {
     copyToHostCalls,
     writeFileCalls,
     destroyedNames,
+    callOrder,
     getSpec: () => createdSpec,
     pushText: (chunk: string) => turnOnText?.(chunk),
     resolveTurn: (r: Partial<SandboxExecResult> = {}) =>
@@ -169,6 +186,7 @@ function fakeMicrovmDriver() {
     rejectTurn: (e: unknown) => turnReject?.(e),
     isTurnAborted: () => turnAborted,
     turnShellCall: () => shellCalls.find((c) => /\bsu\s+\S+\s+-c\s/.test(c.script)),
+    resolveDestroy: () => destroyResolvers.shift()?.(),
   }
 }
 
@@ -213,11 +231,14 @@ const SECRETS: SandboxSecret[] = [
   },
 ]
 
-function baseOptions(over: Partial<RunMicrovmTurnOptions> = {}): {
+function baseOptions(
+  over: Partial<RunMicrovmTurnOptions> = {},
+  rigOptions: { controlDestroy?: boolean } = {},
+): {
   opts: RunMicrovmTurnOptions
   rig: ReturnType<typeof fakeMicrovmDriver>
 } {
-  const rig = fakeMicrovmDriver()
+  const rig = fakeMicrovmDriver(rigOptions)
   const opts: RunMicrovmTurnOptions = {
     taskId: 'a1b2c3d4e5f6',
     worktree: makeDir(),
@@ -640,6 +661,101 @@ describe('runMicrovmTurn: watchdog, timeout and abort (T1.7 parity)', () => {
     clock.advance(30_000)
     expect(beats.length).toBeGreaterThan(0)
     expect(rig.isTurnAborted()).toBe(false)
+    rig.resolveTurn({ stdout: 'ok' })
+    await promise
+  })
+})
+
+describe('runMicrovmTurn: destroy sequencing after a kill (F15)', () => {
+  const BUDGETS = { inactivityMs: 30 * 60_000, toolBudgetMs: 120 * 60_000, heartbeatMs: 30_000 }
+
+  test('the worktree is copied back BEFORE the sandbox is destroyed, after a watchdog cut', async () => {
+    const clock = fakeClock()
+    const { opts, rig } = baseOptions(
+      { clock, watchdog: BUDGETS, timeoutMs: 10 * 60 * 60_000 },
+      { controlDestroy: true },
+    )
+    const promise = runMicrovmTurn(opts)
+    await flush()
+    clock.advance(30 * 60_000)
+    expect(rig.isTurnAborted()).toBe(true)
+    rig.rejectTurn(new Error('aborted'))
+    await flush()
+    expect(rig.copyToHostCalls).toContainEqual([CAGE_WORK_DIR, opts.worktree])
+    expect(rig.destroyedNames).toEqual([rig.getSpec()!.name])
+    expect(rig.callOrder.indexOf('copyToHost')).toBeLessThan(rig.callOrder.indexOf('destroy'))
+    rig.resolveDestroy()
+    await expect(promise).rejects.toBeInstanceOf(AgentWatchdogError)
+  })
+
+  test('the worktree is copied back BEFORE the sandbox is destroyed, after the absolute timeout cap', async () => {
+    const clock = fakeClock()
+    const { opts, rig } = baseOptions({ clock, timeoutMs: 60_000 }, { controlDestroy: true })
+    const promise = runMicrovmTurn(opts)
+    await flush()
+    clock.advance(60_000)
+    expect(rig.isTurnAborted()).toBe(true)
+    rig.rejectTurn(new Error('aborted'))
+    await flush()
+    expect(rig.copyToHostCalls).toContainEqual([CAGE_WORK_DIR, opts.worktree])
+    expect(rig.callOrder.indexOf('copyToHost')).toBeLessThan(rig.callOrder.indexOf('destroy'))
+    rig.resolveDestroy()
+    await expect(promise).rejects.toThrow(/timed out/)
+  })
+
+  test('an external abort does not let the turn settle before the (single) destroy call actually resolves', async () => {
+    const controller = new AbortController()
+    const { opts, rig } = baseOptions({ signal: controller.signal }, { controlDestroy: true })
+    const promise = runMicrovmTurn(opts)
+    await flush()
+    controller.abort()
+    expect(rig.isTurnAborted()).toBe(true)
+    rig.rejectTurn(new Error('aborted'))
+    await flush()
+    // The copy-back already ran and destroy() has already been invoked once,
+    // but its promise is still pending: the turn must not have settled yet.
+    expect(rig.copyToHostCalls).toContainEqual([CAGE_WORK_DIR, opts.worktree])
+    expect(rig.destroyedNames).toEqual([rig.getSpec()!.name])
+    let settled = false
+    promise.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await flush()
+    expect(settled).toBe(false)
+    rig.resolveDestroy()
+    await expect(promise).rejects.toThrow('interrupted')
+    expect(settled).toBe(true)
+    // Only ever one real driver.destroy() call for the whole turn.
+    expect(rig.destroyedNames).toEqual([rig.getSpec()!.name])
+  })
+})
+
+describe('runMicrovmTurn: guest user validation (M10)', () => {
+  test('rejects a guest user carrying shell metacharacters before ever touching the driver', async () => {
+    const { opts, rig } = baseOptions({ user: 'agent; rm -rf /' })
+    await expect(runMicrovmTurn(opts)).rejects.toThrow(/invalid guest user/)
+    expect(rig.getSpec()).toBeNull()
+    expect(rig.shellCalls).toHaveLength(0)
+  })
+
+  test('rejects a guest user starting with a digit or containing whitespace', async () => {
+    const { opts: withDigit } = baseOptions({ user: '2agent' })
+    await expect(runMicrovmTurn(withDigit)).rejects.toThrow(/invalid guest user/)
+    const { opts: withSpace } = baseOptions({ user: 'agent two' })
+    await expect(runMicrovmTurn(withSpace)).rejects.toThrow(/invalid guest user/)
+  })
+
+  test('accepts a guest user with digits, underscores and dashes, and uses it unmodified', async () => {
+    const { opts, rig } = baseOptions({ user: 'runner-2_x' })
+    const promise = runMicrovmTurn(opts)
+    await flush()
+    expect(rig.getSpec()?.user).toBe('runner-2_x')
+    expect(rig.shellCalls[0]?.script).toContain('useradd -m -s /bin/bash runner-2_x')
     rig.resolveTurn({ stdout: 'ok' })
     await promise
   })

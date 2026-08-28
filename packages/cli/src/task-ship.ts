@@ -27,13 +27,14 @@
 import { execFile } from 'node:child_process'
 import { type ReasonCode, type RecapRecord, type SecretMatch, type TaskRecord } from './contract.js'
 import type { ForgeDegradation } from './degraded-mode.js'
-import { detectForgeHint, subprocessEnv } from './git.js'
+import { detectForgeHint, forgeHintOfUrl, subprocessEnv, type ForgeHint } from './git.js'
 import { t, type MessageKey } from './i18n.js'
 import {
   sandboxName,
   type SandboxDriver,
   type SandboxExecResult,
   type SandboxHandle,
+  type SandboxSecret,
   type SandboxSpec,
 } from './microsandbox-driver.js'
 import { scanRecapSecrets } from './task-recap-publish.js'
@@ -70,16 +71,26 @@ const GITOPS_MAX_DURATION_SECONDS = 300
 const GITOPS_ROOT_DISK_MIB = 2048
 const GITOPS_CREDENTIAL_HELPER_PATH = '/usr/local/bin/codesema-git-credential'
 
-type GitopsForge = 'github' | 'gitlab'
-
-/** Same "contains the word" heuristic as `forgeHintOfUrl` (git.ts), applied to a bare host. */
-function gitopsForgeOfHost(host: string): GitopsForge {
-  return host.toLowerCase().includes('gitlab') ? 'gitlab' : 'github'
+/** gh reads `GH_TOKEN`, glab reads `GITLAB_TOKEN` — both natively, no flag needed. */
+function gitopsSecretEnv(forge: ForgeHint): 'GH_TOKEN' | 'GITLAB_TOKEN' {
+  return forge === 'gitlab' ? 'GITLAB_TOKEN' : 'GH_TOKEN'
 }
 
-/** gh reads `GH_TOKEN`, glab reads `GITLAB_TOKEN` — both natively, no flag needed. */
-function gitopsSecretEnv(forge: GitopsForge): 'GH_TOKEN' | 'GITLAB_TOKEN' {
-  return forge === 'gitlab' ? 'GITLAB_TOKEN' : 'GH_TOKEN'
+/**
+ * The forge token(s) to declare as sandbox secrets. `forgeCandidates`
+ * (below, reusing git.ts's `forgeHintOfUrl` like this does) tries BOTH `gh`
+ * and `glab` when the hint is 'unknown' — a self-hosted host whose name says
+ * neither 'github' nor 'gitlab' — so declaring only one native token env
+ * would leave whichever CLI runs second reading nothing.
+ */
+function gitopsSecretDeclarations(
+  forge: ForgeHint,
+  forgeToken: string,
+  allowedHosts: readonly string[],
+): SandboxSecret[] {
+  const envs: readonly ('GH_TOKEN' | 'GITLAB_TOKEN')[] =
+    forge === 'unknown' ? ['GH_TOKEN', 'GITLAB_TOKEN'] : [gitopsSecretEnv(forge)]
+  return envs.map((env) => ({ env, value: forgeToken, allowedHosts }))
 }
 
 /** `forgeHost` plus its API host, when github.com's push host and API host differ. */
@@ -104,9 +115,29 @@ function gitopsAllowedDomains(forgeHost: string): string[] {
  * outbound HTTPS request lands on an `allowedHosts` domain, which is exactly
  * why the push URL must be https (see `toHttpsRemoteUrl`).
  */
-function gitCredentialScript(forge: GitopsForge, secretEnv: string): string {
+function gitCredentialScript(forge: ForgeHint, secretEnv: string): string {
   const username = forge === 'gitlab' ? 'oauth2' : 'x-access-token'
   return `#!/bin/sh\nif [ "$1" = "get" ]; then\n  echo "username=${username}"\n  echo "password=$${secretEnv}"\nfi\n`
+}
+
+/**
+ * `copyFromHost` copies the whole repo, `.git` included: any LOCAL (not just
+ * `--global`) `credential.helper` or `http.<url>.extraheader` already sitting
+ * in the host's `.git/config` — a per-repo helper, a bearer header a CI
+ * checkout leaves behind — lands in the guest verbatim and OUTRANKS the
+ * `--global credential.helper` set right after (local scope always wins).
+ * Run once, right after the copy, before that placeholder helper is
+ * installed. Best-effort on purpose: the ordinary case is that neither key
+ * is present, so every line tolerates a no-op failure.
+ */
+function gitopsStripHostCredentialConfigScript(): string {
+  return [
+    'git config --local --unset-all credential.helper || true',
+    "for key in $(git config --local --name-only --get-regexp '^http\\..*\\.extraheader$' 2>/dev/null); do",
+    '  git config --local --unset-all "$key"',
+    'done',
+    'true',
+  ].join('\n')
 }
 
 /** POSIX single-quoting for a value interpolated into a shell command run in the sandbox. */
@@ -125,7 +156,7 @@ function shellQuote(value: string): string {
 export function toHttpsRemoteUrl(url: string): string | null {
   const trimmed = url.trim()
   if (/^https:\/\//i.test(trimmed)) {
-    return trimmed
+    return stripEmbeddedCredentials(trimmed)
   }
   const ssh = /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i.exec(trimmed)
   if (ssh?.[1] !== undefined && ssh[2] !== undefined) {
@@ -136,6 +167,18 @@ export function toHttpsRemoteUrl(url: string): string | null {
     return `https://${scp[1]}/${scp[2].replace(/^\/+/, '')}`
   }
   return null
+}
+
+/**
+ * Drops a `user[:token]@` prefix embedded in an https origin (a GitLab
+ * CI-job-token remote, a PAT pasted into origin for automation). That value
+ * is not the sandbox's declared placeholder secret — letting it ride into the
+ * push command would put the real token in plain text on the wire into the
+ * guest. The credential helper supplies auth from here on, so the userinfo
+ * is dropped rather than trusted.
+ */
+function stripEmbeddedCredentials(httpsUrl: string): string {
+  return httpsUrl.replace(/^(https:\/\/)[^/]*@/i, '$1')
 }
 
 /** `SandboxExecResult` -> `ShipCliOutcome`, so the sandbox path reuses every host-side outcome rule verbatim. */
@@ -260,7 +303,7 @@ function createGitopsSession(opts: ShipTaskOptions, driver: SandboxDriver): Gito
   const name = sandboxName('gitops', opts.task.id)
   let handlePromise: Promise<SandboxHandle> | null = null
 
-  const ensureHandle = (forgeHost: string, forge: GitopsForge): Promise<SandboxHandle> => {
+  const ensureHandle = (forgeHost: string, forge: ForgeHint): Promise<SandboxHandle> => {
     if (!handlePromise) {
       handlePromise = (async () => {
         const spec: SandboxSpec = {
@@ -274,13 +317,11 @@ function createGitopsSession(opts: ShipTaskOptions, driver: SandboxDriver): Gito
           workdir: '/work',
           ...(opts.forgeToken
             ? {
-                secrets: [
-                  {
-                    env: gitopsSecretEnv(forge),
-                    value: opts.forgeToken,
-                    allowedHosts: gitopsAllowedHosts(forgeHost),
-                  },
-                ],
+                secrets: gitopsSecretDeclarations(
+                  forge,
+                  opts.forgeToken,
+                  gitopsAllowedHosts(forgeHost),
+                ),
               }
             : {}),
         }
@@ -295,6 +336,10 @@ function createGitopsSession(opts: ShipTaskOptions, driver: SandboxDriver): Gito
           )
         }
         await handle.copyFromHost(opts.cwd, '/work')
+        await handle.shell(gitopsStripHostCredentialConfigScript(), {
+          cwd: '/work',
+          timeoutMs: 10_000,
+        })
         await handle.writeFile(
           GITOPS_CREDENTIAL_HELPER_PATH,
           gitCredentialScript(forge, gitopsSecretEnv(forge)),
@@ -340,7 +385,7 @@ function createGitopsSession(opts: ShipTaskOptions, driver: SandboxDriver): Gito
       } catch (err) {
         return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
       }
-      const handle = await ensureHandle(forgeHost, gitopsForgeOfHost(forgeHost))
+      const handle = await ensureHandle(forgeHost, forgeHintOfUrl(forgeHost))
       const result = await handle.shell(
         `git push -u ${shellQuote(httpsUrl)} ${shellQuote(opts.task.branch)}`,
         { cwd: '/work', timeoutMs: SHIP_EXEC_TIMEOUT_MS },

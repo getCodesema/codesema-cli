@@ -1217,6 +1217,58 @@ describe('shipTask with a gitops sandbox driver (lot C9)', () => {
     expect(driver.destroyed).toEqual([])
   })
 
+  test('an origin URL with embedded credentials is stripped before it reaches the sandbox shell', async () => {
+    const cwd = makeRepoWithOrigin('https://git-user:s3cr3t-forge-token@github.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    await shipTask({
+      cwd,
+      task: makeTask(),
+      driver,
+      forgeToken: 't',
+      forgeHost: 'github.com',
+    })
+    for (const call of [
+      ...driver.shellCalls.map((c) => c.script),
+      ...driver.execCalls.flatMap((c) => c.args),
+    ]) {
+      expect(call).not.toContain('s3cr3t-forge-token')
+      expect(call).not.toContain('git-user')
+    }
+    const pushCall = driver.shellCalls.find((c) => c.script.startsWith('git push'))
+    expect(pushCall?.script).toContain("'https://github.com/o/r.git'")
+  })
+
+  test('host git config that could carry credentials (credential.helper, http.*.extraheader) is neutralized before the placeholder helper is installed', async () => {
+    const cwd = makeRepoWithOrigin('https://github.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    await shipTask({ cwd, task: makeTask(), driver, forgeToken: 't', forgeHost: 'github.com' })
+    const scripts = driver.shellCalls.map((c) => c.script)
+    const stripIndex = scripts.findIndex(
+      (s) => s.includes('unset-all credential.helper') && s.includes('extraheader'),
+    )
+    const globalHelperIndex = scripts.findIndex((s) =>
+      s.includes('git config --global credential.helper'),
+    )
+    expect(stripIndex).toBeGreaterThanOrEqual(0)
+    expect(globalHelperIndex).toBeGreaterThan(stripIndex)
+  })
+
+  test('an ambiguous (self-hosted) forge host declares both GH_TOKEN and GITLAB_TOKEN, matching the two-CLI probe forgeCandidates runs on the same hint', async () => {
+    const cwd = makeRepoWithOrigin('https://git.company.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    await shipTask({
+      cwd,
+      task: makeTask(),
+      driver,
+      forgeToken: 'ambiguous-token',
+      forgeHost: 'git.company.com',
+    })
+    expect(driver.spec?.secrets).toEqual([
+      { env: 'GH_TOKEN', value: 'ambiguous-token', allowedHosts: ['git.company.com'] },
+      { env: 'GITLAB_TOKEN', value: 'ambiguous-token', allowedHosts: ['git.company.com'] },
+    ])
+  })
+
   test('a provided execGit/execForge test seam wins over the driver: the sandbox is never touched', async () => {
     const cwd = makeDir()
     const git = gitExec({ kind: 'ok', stdout: '' })
@@ -1262,5 +1314,17 @@ describe('toHttpsRemoteUrl', () => {
 
   test('null on something unreadable as either shape', () => {
     expect(toHttpsRemoteUrl('')).toBeNull()
+  })
+
+  test('strips embedded userinfo credentials from an https origin', () => {
+    expect(toHttpsRemoteUrl('https://git-user:s3cr3t-token@github.com/o/r.git')).toBe(
+      'https://github.com/o/r.git',
+    )
+  })
+
+  test('leaves an https origin with no userinfo untouched', () => {
+    expect(toHttpsRemoteUrl('https://gitlab.example.com/o/r.git')).toBe(
+      'https://gitlab.example.com/o/r.git',
+    )
   })
 })

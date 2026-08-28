@@ -227,7 +227,9 @@ function verificationOf(over: Partial<TaskVerification> = {}): TaskVerification 
  * minimal fake of the same `SandboxDriver` interface, local to this test
  * file only.
  */
-function fakeMicrovmDriver(opts: { exec?: SandboxExecResult; chmodExitCode?: number } = {}): {
+function fakeMicrovmDriver(
+  opts: { exec?: SandboxExecResult; chmodExitCode?: number; destroyError?: Error } = {},
+): {
   driver: SandboxDriver
   calls: { method: string; args: unknown[] }[]
   specs: SandboxSpec[]
@@ -293,6 +295,9 @@ function fakeMicrovmDriver(opts: { exec?: SandboxExecResult; chmodExitCode?: num
     listSnapshots: async () => [],
     destroy: async (name) => {
       calls.push({ method: 'destroy', args: [name] })
+      if (opts.destroyError) {
+        throw opts.destroyError
+      }
     },
     removeSnapshot: async () => {},
     ensureVolume: async () => {},
@@ -2517,7 +2522,7 @@ describe('runMicrovmReview', () => {
 
     expect(stdout).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
     expect(fake.specs).toHaveLength(1)
-    expect(fake.specs[0]?.name).toBe('codesema-review-task-abc')
+    expect(fake.specs[0]?.name).toMatch(/^codesema-review-task-abc-[0-9a-f]{8}$/)
     expect(fake.specs[0]?.image).toBe('node:26')
     expect(fake.specs[0]?.fromSnapshot).toBeUndefined()
     expect(fake.specs[0]?.network).toEqual({ allowedDomains: DEFAULT_ISOLATION_ALLOWED_DOMAINS })
@@ -2719,6 +2724,105 @@ describe('runMicrovmReview', () => {
     expect(stdout).toBe('')
     expect(fake.calls.map((c) => c.method)).toContain('destroy')
   })
+
+  test("the same taskId used concurrently (dual mode's two lanes) still names each sandbox uniquely, each destroyed on its own name", async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await Promise.all([
+      runMicrovmReview({
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'lane a prompt',
+        timeoutMs: 5000,
+        taskId: 'task-shared',
+      }),
+      runMicrovmReview({
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'lane b prompt',
+        timeoutMs: 5000,
+        taskId: 'task-shared',
+      }),
+    ])
+
+    const names = fake.specs.map((s) => s.name)
+    expect(names).toHaveLength(2)
+    expect(new Set(names).size).toBe(2)
+    for (const name of names) {
+      expect(name.startsWith('codesema-review-task-shared-')).toBe(true)
+    }
+    const destroyNames = fake.calls.filter((c) => c.method === 'destroy').map((c) => c.args[0])
+    expect(destroyNames.toSorted()).toEqual(names.toSorted())
+  })
+
+  test('maxDurationSeconds carries the same headroom buffer as microvmStepExecutor, for copyFromHost + chmod ahead of the timed command', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    expect(fake.specs[0]?.maxDurationSeconds).toBe(Math.ceil(5000 / 1000) + 60)
+  })
+
+  test('a destroy failure after a successful run does not mask the review result', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver({ destroyError: new Error('sandbox already gone') })
+
+    const stdout = await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    expect(stdout).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
+  })
+
+  test('a destroy failure after a chmod failure does not replace the read-only error', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver({
+      chmodExitCode: 1,
+      destroyError: new Error('sandbox already gone'),
+    })
+
+    await expect(
+      runMicrovmReview({
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      }),
+    ).rejects.toThrow(/read-only/)
+  })
 })
 
 // --- createTaskReviewer: microvm wiring (lot C8) ---------------------------
@@ -2762,7 +2866,7 @@ describe('createTaskReviewer: microvm wiring', () => {
     // does — the wiring built by `createTaskReviewer`, exercised end to end.
     const raw = await runAgentInVm?.('hand-built prompt')
     expect(raw).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
-    expect(fake.specs[0]?.name).toBe(`codesema-review-${record.id}`)
+    expect(fake.specs[0]?.name).toMatch(new RegExp(`^codesema-review-${record.id}-[0-9a-f]{8}$`))
     expect(fake.calls.map((c) => c.method)).toEqual([
       'create',
       'copyFromHost',
@@ -2770,6 +2874,37 @@ describe('createTaskReviewer: microvm wiring', () => {
       'shell',
       'destroy',
     ])
+  })
+
+  test('dual mode: both lanes calling the SAME runAgentInVm closure concurrently get distinct sandboxes, each destroying only its own', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'vm review dual')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const fake = fakeMicrovmDriver()
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, {
+      runSimpleFlowFn: flow.fn,
+      driver: fake.driver,
+      projectId: 'proj-1',
+      resolveReviewContext: () =>
+        Promise.resolve({ snapshotName: null, runbook: null, verification: null }),
+    })(record, rig.io)
+
+    const runAgentInVm = flow.calls[0]?.runAgentInVm
+    // Both `laneRun('a', ...)` and `laneRun('b', ...)` in `runDualFlow` invoke
+    // this SAME closure: the race F12 was about.
+    await Promise.all([runAgentInVm?.('lane a prompt'), runAgentInVm?.('lane b prompt')])
+
+    const names = fake.specs.map((s) => s.name)
+    expect(names).toHaveLength(2)
+    expect(new Set(names).size).toBe(2)
+    for (const name of names) {
+      expect(name).toMatch(new RegExp(`^codesema-review-${record.id}-[0-9a-f]{8}$`))
+    }
+    const destroyNames = fake.calls.filter((c) => c.method === 'destroy').map((c) => c.args[0])
+    expect(destroyNames.toSorted()).toEqual(names.toSorted())
   })
 
   test('driver set but no runbook: the image falls back to DEFAULT_BASE_IMAGE', async () => {

@@ -237,7 +237,13 @@ function repoFullNameFromRemoteUrl(remoteUrl: string): string | null {
 /**
  * This daemon manages exactly one project (`ctx.cwd`, the same one
  * `claimNextTicket` scopes tickets to): a queued scan resolves here only when
- * its `repo_full_name` names THIS repo's origin remote.
+ * its `repo_full_name` names THIS repo's origin remote AND, when the hub
+ * asked for a specific commit (`scan.head_sha` non-null), the local HEAD
+ * still matches it. A mismatch (the daemon's checkout momentarily behind or
+ * ahead of the commit the hub queued the scan for) resolves to null so this
+ * tick simply skips the scan rather than validating the wrong commit while
+ * reporting `validated_sha` as if it were the one requested; a later tick
+ * picks it up once HEAD catches up.
  */
 async function resolveDaemonRunbookWorktree(
   ctx: DaemonContext,
@@ -250,6 +256,9 @@ async function resolveDaemonRunbookWorktree(
   }
   const headSha = tryGit(['rev-parse', 'HEAD'], ctx.cwd)
   if (!headSha) {
+    return null
+  }
+  if (scan.head_sha && scan.head_sha.toLowerCase() !== headSha.toLowerCase()) {
     return null
   }
   return { worktree: ctx.cwd, projectId: scan.repo_id, headSha }

@@ -584,6 +584,9 @@ async function createMicrosandboxSandbox(
   spec: SandboxSpec,
   opts: MicrosandboxDriverOptions,
 ): Promise<SandboxHandle> {
+  if (!spec.network || !Array.isArray(spec.network.allowedDomains)) {
+    throw new Error('SandboxSpec.network is required')
+  }
   const hasImage = spec.image !== undefined
   const hasSnapshot = spec.fromSnapshot !== undefined
   if (hasImage === hasSnapshot) {

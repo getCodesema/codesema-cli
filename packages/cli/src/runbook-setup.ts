@@ -86,8 +86,18 @@ const PIPE_TO_SHELL_RE = /\|\s*(sh|bash)\b/
 const RM_RF_ROOT_RE = /\brm\s+-rf\s+\//
 const NEWLINE_RE = /[\r\n]/
 
+/**
+ * Catches an absolute path even when it is not its own whitespace-delimited
+ * token: glued onto a flag ("--output=/etc/x"), an env var assignment
+ * ("FOO=/etc/x cmd"), a quoted argument ('"/etc/x"'), or a host:path pair
+ * ("user@host:/etc/x"). A colon immediately followed by "//" is a URL scheme
+ * (http://, ssh://...), not a path, and is deliberately excluded so a normal
+ * healthcheck URL still passes.
+ */
+const ABSOLUTE_PATH_RE = /(?:^|[\s='"])\/|:\/(?!\/)/
+
 function hasAbsolutePathToken(command: string): boolean {
-  return command.split(/\s+/).some((token) => token.startsWith('/'))
+  return ABSOLUTE_PATH_RE.test(command)
 }
 
 function validateImage(raw: unknown): FieldResult<string> {

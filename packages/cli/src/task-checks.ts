@@ -15,7 +15,13 @@ import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { gitSafeDirectoryEnvArgs, prepareContainerGit } from './container-git.js'
+import {
+  CAGE_GIT_COMMON_DIR,
+  gitPointerContent,
+  gitSafeDirectoryEnvArgs,
+  prepareContainerGit,
+  resolveWorktreeGitLink,
+} from './container-git.js'
 import {
   TASK_CHECK_TAIL_MAX,
   type TaskCheckResult,
@@ -810,6 +816,9 @@ export function dockerStepExecutor(deps: DockerStepExecutorDeps): StepExecutor {
       ...deps.gitMounts,
       ...(deps.extraArgs ?? []),
       ...gitSafeDirectoryEnvArgs(CHECKS_WORK_DIR),
+      ...(input.env
+        ? Object.entries(input.env).flatMap(([key, value]) => ['-e', `${key}=${value}`])
+        : []),
       ...(input.network ? [] : ['--network', 'none']),
       '--cpus',
       '2',
@@ -1311,12 +1320,17 @@ const MICROVM_CACHE_DIR = PKG_CACHE_DIR
 
 /**
  * Runs one step in a fresh microVM: created from `snapshotName` when set
- * (cold `image` boot otherwise), the worktree copied in, an optional
- * directory-backed cache volume mounted, the command run under a shell, the
- * sandbox destroyed in `finally` whether the step passed, failed, or the
- * driver itself threw. Never rejects: a driver-level failure (create/copy
- * throwing) becomes a synthetic `failure` result, the same discipline the
- * docker executor's ExecFn already follows.
+ * (cold `image` boot otherwise), the worktree (and, for a linked worktree,
+ * the shared git directory) copied in, an optional directory-backed cache
+ * volume mounted, the command run under a shell, the guest work dir copied
+ * back onto the host worktree, the sandbox destroyed in `finally` whether the
+ * step passed, failed, or the driver itself threw. There is no live bind
+ * mount here (unlike the docker executor): each step gets its own fresh
+ * sandbox copied from the host, so the copy-back is what lets a later step
+ * (an install's node_modules, say) see an earlier one's result at all. Never
+ * rejects: a driver-level failure (create/copy throwing) becomes a synthetic
+ * `failure` result, the same discipline the docker executor's ExecFn already
+ * follows.
  */
 export function microvmStepExecutor(opts: MicrovmStepExecutorOptions): StepExecutor {
   const executor: StepExecutor = async (input: StepExecutorInput): Promise<StepExecutorResult> => {
@@ -1342,9 +1356,27 @@ export function microvmStepExecutor(opts: MicrovmStepExecutorOptions): StepExecu
       const handle = await opts.driver.create(spec)
       created = true
       await handle.copyFromHost(input.worktree, CHECKS_WORK_DIR)
+      // A linked worktree's `.git` is a one-line file pointing at a HOST path
+      // (container-git.ts); copied verbatim it resolves nowhere inside the
+      // guest, so every check that shells to git dies with "not a git
+      // repository". The shared git directory is copied in too, and the
+      // worktree's `.git` is rewritten to point at it there instead.
+      const link = resolveWorktreeGitLink(input.worktree)
+      if (link) {
+        await handle.copyFromHost(link.commonDir, CAGE_GIT_COMMON_DIR)
+        await handle.writeFile(`${CHECKS_WORK_DIR}/.git`, gitPointerContent(link))
+      }
       const result = await handle.shell(`cd ${CHECKS_WORK_DIR} && ${input.command}`, {
         timeoutMs: input.timeoutMs,
+        ...(input.env ? { env: input.env } : {}),
       })
+      if (link) {
+        // The synthetic pointer above must never reach the host: copied back
+        // as-is it would overwrite the worktree's REAL `.git` file with a
+        // path that only resolves inside this guest.
+        await handle.shell(`rm -f ${CHECKS_WORK_DIR}/.git`, { timeoutMs: input.timeoutMs })
+      }
+      await handle.copyToHost(CHECKS_WORK_DIR, input.worktree)
       return {
         code: result.code,
         stdout: result.stdout,

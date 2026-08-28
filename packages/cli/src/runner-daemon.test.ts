@@ -1264,6 +1264,31 @@ describe('startRunnerDaemon', () => {
         const resolved = await resolver(fakeScan({ repo_full_name: 'someone/else' }))
         expect(resolved).toBeNull()
       })
+
+      test('a scan whose head_sha matches the local HEAD resolves normally', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd }).toString().trim()
+        const resolved = await resolver(fakeScan({ repo_full_name: 'o/r', head_sha: headSha }))
+        expect(resolved).not.toBeNull()
+        expect(resolved?.headSha).toBe(headSha)
+      })
+
+      test('head_sha matching is case-insensitive', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd }).toString().trim()
+        const resolved = await resolver(
+          fakeScan({ repo_full_name: 'o/r', head_sha: headSha.toUpperCase() }),
+        )
+        expect(resolved).not.toBeNull()
+      })
+
+      test('a scan whose head_sha does not match the local HEAD resolves to null (skips this tick instead of validating the wrong commit)', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const resolved = await resolver(
+          fakeScan({ repo_full_name: 'o/r', head_sha: 'f'.repeat(40) }),
+        )
+        expect(resolved).toBeNull()
+      })
     })
   })
 })

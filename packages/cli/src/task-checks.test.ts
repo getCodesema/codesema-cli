@@ -103,7 +103,9 @@ type MicrovmCall =
   | { method: 'ensureVolume'; name: string; kind: 'disk' | 'directory' }
   | { method: 'create'; spec: SandboxSpec }
   | { method: 'copyFromHost'; hostPath: string; guestPath: string }
-  | { method: 'shell'; script: string; timeoutMs: number }
+  | { method: 'copyToHost'; guestPath: string; hostPath: string }
+  | { method: 'writeFile'; guestPath: string; content: string }
+  | { method: 'shell'; script: string; timeoutMs: number; env?: Readonly<Record<string, string>> }
   | { method: 'destroy'; name: string }
 
 function callsOf<M extends MicrovmCall['method']>(
@@ -118,6 +120,7 @@ function fakeMicrovmDriver(opts: {
   shell?: (script: string) => SandboxExecResult
   failOnCreate?: boolean
   failOnCopy?: boolean
+  failOnCopyToHost?: boolean
 }): { driver: SandboxDriver; calls: MicrovmCall[] } {
   const calls: MicrovmCall[] = []
   const driver: SandboxDriver = {
@@ -132,7 +135,12 @@ function fakeMicrovmDriver(opts: {
         name: spec.name,
         exec: () => Promise.reject(new Error('unused in this rig')),
         shell: (script: string, execOpts: SandboxExecOptions) => {
-          calls.push({ method: 'shell', script, timeoutMs: execOpts.timeoutMs })
+          calls.push({
+            method: 'shell',
+            script,
+            timeoutMs: execOpts.timeoutMs,
+            ...(execOpts.env ? { env: execOpts.env } : {}),
+          })
           return Promise.resolve(
             opts.shell?.(script) ?? { code: 0, stdout: '', stderr: '', timedOut: false },
           )
@@ -141,8 +149,16 @@ function fakeMicrovmDriver(opts: {
           calls.push({ method: 'copyFromHost', hostPath, guestPath })
           return opts.failOnCopy ? Promise.reject(new Error('copy failed')) : Promise.resolve()
         },
-        copyToHost: () => Promise.resolve(),
-        writeFile: () => Promise.resolve(),
+        copyToHost: (guestPath: string, hostPath: string) => {
+          calls.push({ method: 'copyToHost', guestPath, hostPath })
+          return opts.failOnCopyToHost
+            ? Promise.reject(new Error('copy back failed'))
+            : Promise.resolve()
+        },
+        writeFile: (guestPath: string, content: string) => {
+          calls.push({ method: 'writeFile', guestPath, content })
+          return Promise.resolve()
+        },
         readFile: () => Promise.resolve(''),
         metrics: () =>
           Promise.resolve({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
@@ -1208,6 +1224,27 @@ describe('dockerStepExecutor', () => {
     expect(name).toMatch(/^codesema-checks-[0-9a-f]{12}$/)
     expect(calls.find((c) => c.args[0] === 'kill')?.args).toEqual(['kill', name])
   })
+
+  // M5: StepExecutorInput.env, forwarded to the container's process.
+  test('input.env becomes -e KEY=value docker args', async () => {
+    const { calls, exec } = fakeExec((call) =>
+      call.args[0] === '--version' ? ok({ stdout: 'Docker version 27' }) : ok({ stdout: 'ok' }),
+    )
+    const executor = dockerStepExecutor({ exec, runtime: 'docker', gitMounts: [] })
+    await executor({
+      command: 'echo hi',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+      env: { FOO: 'bar', BAZ: 'qux' },
+    })
+    const run = calls.find((c) => c.args.at(-1) === 'echo hi')
+    const args = run?.args ?? []
+    const envPairs = args.flatMap((arg, i) => (arg === '-e' ? [[arg, args[i + 1]]] : []))
+    expect(envPairs).toContainEqual(['-e', 'FOO=bar'])
+    expect(envPairs).toContainEqual(['-e', 'BAZ=qux'])
+  })
 })
 
 describe('microvmStepExecutor', () => {
@@ -1501,6 +1538,165 @@ describe('microvmStepExecutor', () => {
     expect(create?.spec.cpus).toBe(4)
     expect(create?.spec.memoryMib).toBe(4096)
   })
+
+  // F8: with no live bind mount (unlike the docker executor), a step's
+  // result only survives past its own ephemeral sandbox if it is copied
+  // back onto the host worktree before that sandbox is destroyed.
+  test('copies /work back to the host worktree before the sandbox is destroyed', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [copyBack] = callsOf(calls, 'copyToHost')
+    expect(copyBack).toEqual({ method: 'copyToHost', guestPath: '/work', hostPath: worktree })
+    const copyBackIndex = calls.findIndex((c) => c.method === 'copyToHost')
+    const destroyIndex = calls.findIndex((c) => c.method === 'destroy')
+    expect(copyBackIndex).toBeGreaterThanOrEqual(0)
+    expect(copyBackIndex).toBeLessThan(destroyIndex)
+  })
+
+  test('a driver failure during copyToHost still destroys the sandbox and reports a synthetic failure', async () => {
+    const { driver, calls } = fakeMicrovmDriver({ failOnCopyToHost: true })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(result.failure).toBe('copy back failed')
+    expect(callsOf(calls, 'destroy')).toHaveLength(1)
+  })
+
+  // F9: a task worktree is normally a LINKED git worktree whose `.git` is a
+  // one-line file pointing at a HOST path (container-git.ts) -- copied
+  // verbatim it resolves nowhere inside the guest.
+  test('a linked worktree gets its shared git dir copied in and /work/.git rewritten to point at it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codesema-checks-git-'))
+    cleanupDirs.push(root)
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    const run = (args: string[]): void => {
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        cwd: repo,
+        stdio: 'ignore',
+      })
+    }
+    run(['init', '-b', 'main'])
+    writeFileSync(join(repo, 'base.txt'), 'a\n')
+    run(['add', '-A'])
+    run(['commit', '-m', 'init'])
+    const linked = join(root, 'wt')
+    run(['worktree', 'add', linked, '-b', 'task'])
+    cleanupDirs.push(containerGitStateDir(linked))
+
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'git status',
+      network: false,
+      worktree: linked,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+
+    const gitCopy = callsOf(calls, 'copyFromHost').find((c) => c.guestPath === '/gitcommon')
+    expect(gitCopy?.hostPath).toBe(join(repo, '.git'))
+    const [pointer] = callsOf(calls, 'writeFile')
+    expect(pointer?.guestPath).toBe('/work/.git')
+    expect(pointer?.content).toContain('gitdir: /gitcommon/worktrees/')
+
+    // The synthetic pointer must be gone before the copy-back, or it would
+    // overwrite the worktree's REAL `.git` file with a path that only
+    // resolves inside this guest.
+    const commandIndex = calls.findIndex(
+      (c) => c.method === 'shell' && c.script === 'cd /work && git status',
+    )
+    const cleanupIndex = calls.findIndex(
+      (c) => c.method === 'shell' && c.script === 'rm -f /work/.git',
+    )
+    const copyBackIndex = calls.findIndex((c) => c.method === 'copyToHost')
+    expect(commandIndex).toBeGreaterThanOrEqual(0)
+    expect(cleanupIndex).toBeGreaterThan(commandIndex)
+    expect(copyBackIndex).toBeGreaterThan(cleanupIndex)
+  })
+
+  test('a plain (non-linked) worktree gets no /gitcommon copy and no .git rewrite', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(callsOf(calls, 'copyFromHost')).toHaveLength(1)
+    expect(callsOf(calls, 'writeFile')).toHaveLength(0)
+    expect(callsOf(calls, 'shell').some((c) => c.script === 'rm -f /work/.git')).toBe(false)
+  })
+
+  test('a cleanup failure on the synthetic .git pointer is never swallowed into a silent copy-back', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codesema-checks-git-'))
+    cleanupDirs.push(root)
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    const run = (args: string[]): void => {
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        cwd: repo,
+        stdio: 'ignore',
+      })
+    }
+    run(['init', '-b', 'main'])
+    writeFileSync(join(repo, 'base.txt'), 'a\n')
+    run(['add', '-A'])
+    run(['commit', '-m', 'init'])
+    const linked = join(root, 'wt')
+    run(['worktree', 'add', linked, '-b', 'task'])
+    cleanupDirs.push(containerGitStateDir(linked))
+
+    const { driver, calls } = fakeMicrovmDriver({
+      shell: (script) => {
+        if (script === 'rm -f /work/.git') {
+          throw new Error('cleanup failed')
+        }
+        return { code: 0, stdout: '', stderr: '', timedOut: false }
+      },
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'git status',
+      network: false,
+      worktree: linked,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+    expect(result.failure).toBe('cleanup failed')
+    expect(callsOf(calls, 'copyToHost')).toHaveLength(0)
+    expect(callsOf(calls, 'destroy')).toHaveLength(1)
+  })
+
+  // M5: StepExecutorInput.env, forwarded to the sandbox's process.
+  test('input.env is forwarded to the sandbox shell call', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+      env: { FOO: 'bar' },
+    })
+    const [shell] = callsOf(calls, 'shell')
+    expect(shell?.env).toEqual({ FOO: 'bar' })
+  })
 })
 
 describe('runChecks routed through a microvm executor', () => {
@@ -1576,6 +1772,33 @@ describe('runChecks routed through a microvm executor', () => {
       execFn: fakeExec(() => ok()).exec,
     })
     expect(result.checks.map((c) => c.status)).toEqual(['passed', 'timeout'])
+  })
+
+  // F8 regression: each step boots its OWN fresh sandbox copied from the
+  // host worktree (no live bind mount here) -- so the install step's result
+  // MUST be copied back to the host before the next step's sandbox is
+  // created, or that next step boots blind to what the install produced.
+  test("the install step's result reaches the host before the next step's sandbox is created", async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { driver, calls } = fakeMicrovmDriver({
+      shell: () => ({ code: 0, stdout: 'ok', stderr: '', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await runChecks({
+      worktree,
+      headSha: 'abc',
+      executor,
+      projectId: 'proj1',
+      execFn: fakeExec(() => ok()).exec,
+    })
+    // Two steps (install, bun test), each with its own sandbox.
+    expect(callsOf(calls, 'create')).toHaveLength(2)
+    expect(callsOf(calls, 'copyToHost')).toHaveLength(2)
+    const methods = calls.map((c) => c.method)
+    const firstCopyBack = methods.indexOf('copyToHost')
+    const secondCreate = methods.indexOf('create', methods.indexOf('create') + 1)
+    expect(firstCopyBack).toBeGreaterThanOrEqual(0)
+    expect(firstCopyBack).toBeLessThan(secondCreate)
   })
 })
 

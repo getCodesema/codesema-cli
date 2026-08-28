@@ -11435,8 +11435,8 @@ describe('microvm wiring (lot C7)', () => {
   })
 
   describe('ship wiring', () => {
-    test("a 'microvm' task ships with the driver and the forge token read from the process env", async () => {
-      const project = register(makeRepo())
+    test("a 'microvm' task ships with the driver and GH_TOKEN when the origin is a github remote", async () => {
+      const project = register(makeRepoWithRemote('https://github.com/acme/repo.git'))
       const cwd = project.path
       const record = seedShippable(cwd)
       record.isolation = 'microvm'
@@ -11479,8 +11479,8 @@ describe('microvm wiring (lot C7)', () => {
       expect(stub.calls[0]?.forgeToken).toBeUndefined()
     })
 
-    test('GITLAB_TOKEN is used when GH_TOKEN is absent', async () => {
-      const project = register(makeRepo())
+    test('GITLAB_TOKEN is used when the origin is a gitlab remote', async () => {
+      const project = register(makeRepoWithRemote('https://gitlab.com/o/r.git'))
       const cwd = project.path
       const record = seedShippable(cwd)
       record.isolation = 'microvm'
@@ -11516,6 +11516,80 @@ describe('microvm wiring (lot C7)', () => {
         }
       }
       expect(stub.calls[0]?.forgeToken).toBe('glab-secret')
+    })
+
+    test('a GH_TOKEN never rides along to a gitlab origin, even with no GITLAB_TOKEN set', async () => {
+      const project = register(makeRepoWithRemote('https://gitlab.com/o/r.git'))
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      record.isolation = 'microvm'
+      saveTask(cwd, record)
+      const stub = shipStub({
+        pushed: true,
+        mrUrl: 'https://gitlab.com/o/r/-/merge_requests/1',
+        note: null,
+      })
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        shipTaskFn: stub.fn,
+        ...fakeRunner(),
+      })
+
+      const previousGh = process.env.GH_TOKEN
+      const previousGitlab = process.env.GITLAB_TOKEN
+      process.env.GH_TOKEN = 'gh-secret-token'
+      delete process.env.GITLAB_TOKEN
+      try {
+        expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+      } finally {
+        if (previousGh === undefined) {
+          delete process.env.GH_TOKEN
+        } else {
+          process.env.GH_TOKEN = previousGh
+        }
+        if (previousGitlab === undefined) {
+          delete process.env.GITLAB_TOKEN
+        } else {
+          process.env.GITLAB_TOKEN = previousGitlab
+        }
+      }
+      expect(stub.calls[0]?.forgeToken).toBeNull()
+    })
+
+    test('a GITLAB_TOKEN never rides along to a github origin, even with no GH_TOKEN set', async () => {
+      const project = register(makeRepoWithRemote('https://github.com/acme/repo.git'))
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      record.isolation = 'microvm'
+      saveTask(cwd, record)
+      const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/1', note: null })
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        shipTaskFn: stub.fn,
+        ...fakeRunner(),
+      })
+
+      const previousGh = process.env.GH_TOKEN
+      const previousGitlab = process.env.GITLAB_TOKEN
+      delete process.env.GH_TOKEN
+      process.env.GITLAB_TOKEN = 'glab-secret'
+      try {
+        expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+      } finally {
+        if (previousGh === undefined) {
+          delete process.env.GH_TOKEN
+        } else {
+          process.env.GH_TOKEN = previousGh
+        }
+        if (previousGitlab === undefined) {
+          delete process.env.GITLAB_TOKEN
+        } else {
+          process.env.GITLAB_TOKEN = previousGitlab
+        }
+      }
+      expect(stub.calls[0]?.forgeToken).toBeNull()
     })
   })
 
@@ -11808,6 +11882,54 @@ describe('microvm wiring (lot C7)', () => {
       expect(final?.reason?.code).toBe('checks_failed')
       expect(final?.reason?.detail).toContain('package.json')
       expect(readTaskVerification(project.path, record.id)?.status).toBe('refused')
+      void worktree
+    })
+
+    test('a HEAD lookup that fails skips verification instead of crashing the turn settle', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      let verifyCalled = false
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        headShaFn: () => null,
+        verifyTaskFn: () => {
+          verifyCalled = true
+          return Promise.resolve({
+            head_sha: 'x',
+            runbook_sha: '0123456789abcdef',
+            started_at: 'x',
+            finished_at: 'y',
+            status: 'passed',
+            checks: [],
+            integrity_ok: true,
+            changed_dependency_files: [],
+            error: null,
+          })
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+      expect(verifyCalled).toBe(false)
+      expect(loadTask(project.path, record.id)?.runbook_sha).toBeUndefined()
+      expect(readTaskVerification(project.path, record.id)).toBeNull()
       void worktree
     })
 

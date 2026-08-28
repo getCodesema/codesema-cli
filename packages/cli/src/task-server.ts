@@ -55,6 +55,7 @@ import {
   forgeWorkspaceFacts,
   probeOriginRemote,
   UNPROBED_FORGE,
+  type ForgeOrigin,
   type ForgeProbe,
   type ForgeRemoteProbeFn,
   type ForgeWorkspaceFacts,
@@ -68,7 +69,6 @@ import {
   createMicrosandboxDriver,
   sweepOrphanedSandboxes as sweepOrphanedSandboxesImpl,
   type SandboxDriver,
-  type SandboxSecret,
   type SandboxSweepOutcome,
 } from './microsandbox-driver.js'
 import { buildProjectSnapshot, resolveProjectSnapshot } from './microvm-snapshot.js'
@@ -102,11 +102,10 @@ import { resolveHubTicketOrigin } from './task-hub-ticket.js'
 import { reportHubTransition } from './task-hub.js'
 import {
   agentHomeVolume,
-  CAGE_FORWARDED_ENV,
   DEFAULT_BASE_IMAGE,
-  DEFAULT_ISOLATION_ALLOWED_DOMAINS,
   isolationDefaults,
   isolationDomainsFor,
+  microvmSecretsFromEnv,
   overlayIsolationProbe,
   readBaseImageInputs,
   releaseAgentHome,
@@ -651,6 +650,7 @@ export type CreateTaskManagerOptions = {
   buildProjectSnapshotFn?: typeof buildProjectSnapshot
   /** Test seam: the default replays `runbook.tests` in a fresh sandbox (lot C7). */
   verifyTaskFn?: typeof verifyTask
+  headShaFn?: typeof resolveHeadSha
   /** T1.9 review round 1: the default reads the global registry WITH its completeness flag. Test seam. */
   listProjectsDetailedFn?: typeof listProjectsDetailed
   /** T1.9: retention pass of one project. Test seam; default is the real applyTaskRetention. */
@@ -983,6 +983,10 @@ function withQueuePositions(queue: TaskQueue, records: TaskRecord[]): TaskRecord
  * describes a task nobody asked a question about and leaves the reader with no
  * idea that answering it is what unblocks the ship.
  */
+function resolveHeadSha(worktree: string): string | null {
+  return tryGit(['rev-parse', 'HEAD'], worktree)
+}
+
 function shipRefusal(record: TaskRecord): TaskActionResult | null {
   if (record.status === 'shipped') {
     return { ok: false, code: 409, error: 'task is already shipped' }
@@ -1498,25 +1502,6 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const createRunner = opts.createRunnerFn ?? createTaskRunner
 
   /**
-   * `CAGE_FORWARDED_ENV`, declared to a microvm sandbox as secrets rather
-   * than as env: the guest sees `$MSB_<name>`, never the value in its own
-   * process environment or in argv (microsandbox-driver.ts's own guard
-   * rail). Mirrors `costRunEnv`'s caged branch, which forwards the exact
-   * same names by env instead — the container and the microvm cage grant an
-   * agent the same secrets, through each driver's own safe channel.
-   */
-  const microvmSecretsFromEnv = (env: NodeJS.ProcessEnv = process.env): SandboxSecret[] => {
-    const secrets: SandboxSecret[] = []
-    for (const name of CAGE_FORWARDED_ENV) {
-      const value = env[name]
-      if (value !== undefined) {
-        secrets.push({ env: name, value, allowedHosts: DEFAULT_ISOLATION_ALLOWED_DOMAINS })
-      }
-    }
-    return secrets
-  }
-
-  /**
    * The driver, snapshot, image, runbook and secrets a 'microvm' task's turn,
    * checks or verification runs with — resolved fresh from the record's OWN
    * worktree, since the runbook and the snapshot travel with the branch, not
@@ -1563,7 +1548,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       runbook?.image ??
       resolveBaseImage(readBaseImageInputs(record.worktree, readChecksConfig(cwd))).image ??
       DEFAULT_BASE_IMAGE
-    return { driver, snapshotName, image, runbook, secrets: microvmSecretsFromEnv() }
+    return { driver, snapshotName, image, runbook, secrets: microvmSecretsFromEnv(process.env) }
   }
 
   /**
@@ -1932,6 +1917,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     })
   }
 
+  const shipForgeToken = (
+    origin: ForgeOrigin,
+    env: NodeJS.ProcessEnv = process.env,
+  ): string | null => {
+    const hint = origin.kind === 'origin' ? origin.hint : 'unknown'
+    if (hint === 'github') {
+      return env.GH_TOKEN ?? null
+    }
+    if (hint === 'gitlab') {
+      return env.GITLAB_TOKEN ?? null
+    }
+    return null
+  }
+
   /**
    * T5. Never rejects: a push failure comes back as a plain error result with
    * an 'error' journal event, status untouched — the branch and worktree are
@@ -1998,7 +1997,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           ...(record.isolation === 'microvm'
             ? {
                 driver: opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver(),
-                forgeToken: process.env.GH_TOKEN ?? process.env.GITLAB_TOKEN ?? null,
+                forgeToken: shipForgeToken(forgeRemote(cwd)),
               }
             : {}),
         })
@@ -2726,7 +2725,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (!validatedSha) {
         return null
       }
-      const headSha = tryGit(['rev-parse', 'HEAD'], record.worktree) ?? ''
+      const getHeadSha = opts.headShaFn ?? resolveHeadSha
+      const headSha = getHeadSha(record.worktree)
+      if (!headSha) {
+        return null
+      }
       const build = await resolveMicrovmBuild(record, ctx.project.path, ctx.project.id, timeoutMs)
       const run = opts.verifyTaskFn ?? verifyTask
       return await run({
@@ -2852,7 +2855,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
               )
               return { snapshotName, runbook, verification: readTaskVerification(cwd, record.id) }
             }
-            return { driver, secrets: microvmSecretsFromEnv(), projectId, resolveReviewContext }
+            return {
+              driver,
+              secrets: microvmSecretsFromEnv(process.env),
+              projectId,
+              resolveReviewContext,
+            }
           })()
         : {}
     // T4: every done turn flows through the automatic review before the human

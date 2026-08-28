@@ -1102,7 +1102,7 @@ export type RunMicrovmReviewOptions = {
   command: string
   prompt: string
   timeoutMs: number
-  /** Distinguishes the sandbox name (`codesema-review-<taskId>`); a random suffix for a task-less, ad hoc review. */
+  /** Folded into the sandbox name (`codesema-review-<taskId>-<random>`) alongside a fresh random suffix on every call, so concurrent invocations sharing the same taskId (dual mode's two lanes) never collide on one sandbox. */
   taskId?: string | undefined
   allowedDomains?: readonly string[]
   secrets?: readonly SandboxSecret[]
@@ -1117,17 +1117,24 @@ const MICROVM_REVIEW_DEFAULTS = {
   workDir: '/work',
 } as const
 
+/** Headroom added on top of the agent's own timeout, for copyFromHost + chmod ahead of the timed command (matches microvmStepExecutor's checks sandbox). */
+const MICROVM_REVIEW_DURATION_BUFFER_SECONDS = 60
+
 /**
  * Runs the review agent inside a fresh VM (worktree mounted read-only, never
  * the dev VM), same raw-stdout contract as `runMicrovmTurn`. Routed through
  * `runReviewFlow` when `opts.driver` is set (see `createTaskReviewer`).
  */
 export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<string> {
-  const name = sandboxName('review', opts.taskId ?? randomUUID().slice(0, 8))
+  const suffix = randomUUID().slice(0, 8)
+  const name = sandboxName('review', opts.taskId ? `${opts.taskId}-${suffix}` : suffix)
   const network: SandboxNetworkPolicy = {
     allowedDomains: opts.allowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS,
   }
-  const maxDurationSeconds = Math.max(1, Math.ceil(opts.timeoutMs / 1000))
+  const maxDurationSeconds = Math.max(
+    1,
+    Math.ceil(opts.timeoutMs / 1000) + MICROVM_REVIEW_DURATION_BUFFER_SECONDS,
+  )
   const handle = await opts.driver.create({
     name,
     ...(opts.snapshotName ? { fromSnapshot: opts.snapshotName } : { image: opts.image }),
@@ -1161,6 +1168,6 @@ export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<s
     })
     return result.stdout
   } finally {
-    await opts.driver.destroy(name)
+    await opts.driver.destroy(name).catch(() => {})
   }
 }

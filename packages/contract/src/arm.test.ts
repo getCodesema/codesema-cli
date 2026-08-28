@@ -8,6 +8,8 @@ import transitionsBodySchema from '../fixtures/hub-schemas/transitions.schema.js
 import {
   ARM_BODY_MAX,
   ARM_BRANCH_MAX,
+  ARM_CHANGED_FILE_PATH_MAX,
+  ARM_CHANGED_FILES_MAX,
   ARM_ERROR_MESSAGE_MAX,
   ARM_EVENT_TYPE_MAX,
   ARM_ID_MAX,
@@ -145,6 +147,8 @@ test('published bounds are locked to their literal values', () => {
   expect(ARM_PROMPT_MAX).toBe(20_000)
   expect(ARM_STATUS_MAX).toBe(100)
   expect(ARM_BRANCH_MAX).toBe(200)
+  expect(ARM_CHANGED_FILES_MAX).toBe(500)
+  expect(ARM_CHANGED_FILE_PATH_MAX).toBe(500)
   expect(ARM_MR_IID_MAX).toBe(64)
   expect(ARM_MR_URL_MAX).toBe(2_000)
   expect(ARM_ISSUE_IID_MAX).toBe(64)
@@ -378,6 +382,10 @@ describe('sanitizeArmTicket', () => {
 
 // --- sanitizeArmTransition -------------------------------------------------------
 
+/** `changed_files` only exists on the `merged` variant: narrows the union for those tests. */
+type MergedTransition = Extract<ArmTransition, { type: 'merged' }>
+const asMerged = (t: ArmTransition | null): MergedTransition | null => t as MergedTransition | null
+
 describe('sanitizeArmTransition', () => {
   test('a minimal transition (required fields only) round-trips unchanged', () => {
     expect(sanitizeArmTransition(structuredClone(minimalTransition))).toEqual(minimalTransition)
@@ -513,6 +521,86 @@ describe('sanitizeArmTransition', () => {
     expect(r?.idempotency_key).toBe(r?.idempotency_key.trim())
     expect(r?.error_message).toBe(r?.error_message?.trim())
     expect(transitionSchemaErrors(r)).toEqual([])
+  })
+
+  test('changed_files: absent on a merged transition stays absent', () => {
+    const r = sanitizeArmTransition({ ...minimalTransition, type: 'merged', merge_sha: 'a1b2c3d' })
+    expect(r && 'changed_files' in r).toBe(false)
+  })
+
+  test('changed_files: a valid list is kept, deduplicated', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 'src/b.ts', 'src/a.ts'],
+    })
+    expect(asMerged(r)?.changed_files).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+
+  test('changed_files: non-string entries are ignored', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 42, null, {}, ['nested'], 'src/b.ts'],
+    })
+    expect(asMerged(r)?.changed_files).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+
+  test('changed_files: a non-array value is omitted, never coerced', () => {
+    for (const changed_files of ['src/a.ts', 42, {}, null]) {
+      const r = sanitizeArmTransition({
+        ...minimalTransition,
+        type: 'merged',
+        merge_sha: 'a1b2c3d',
+        changed_files,
+      })
+      expect(r && 'changed_files' in r).toBe(false)
+    }
+  })
+
+  test('changed_files: an all-blank or empty list is omitted, never sent as []', () => {
+    for (const changed_files of [[], ['', '   ']]) {
+      const r = sanitizeArmTransition({
+        ...minimalTransition,
+        type: 'merged',
+        merge_sha: 'a1b2c3d',
+        changed_files,
+      })
+      expect(r && 'changed_files' in r).toBe(false)
+    }
+  })
+
+  test('changed_files: each path is truncated at ARM_CHANGED_FILE_PATH_MAX', () => {
+    const longPath = 'x'.repeat(ARM_CHANGED_FILE_PATH_MAX + 50)
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: [longPath],
+    })
+    expect(asMerged(r)?.changed_files?.[0]?.length).toBe(ARM_CHANGED_FILE_PATH_MAX)
+  })
+
+  test('changed_files: the list is capped at ARM_CHANGED_FILES_MAX entries', () => {
+    const many = Array.from({ length: ARM_CHANGED_FILES_MAX + 50 }, (_, i) => `src/file-${i}.ts`)
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: many,
+    })
+    expect(asMerged(r)?.changed_files?.length).toBe(ARM_CHANGED_FILES_MAX)
+  })
+
+  test('changed_files on a type other than merged is dropped, same as merge_sha would be', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'mr_opened',
+      changed_files: ['src/a.ts'],
+    })
+    expect(r && 'changed_files' in r).toBe(false)
   })
 })
 
@@ -926,6 +1014,16 @@ describe('cross test: sanitizeArmTransition output validates against armTransiti
       ).toEqual([])
     }
   })
+
+  test('a merged transition with changed_files validates', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 'src/b.ts'],
+    })
+    expect(transitionSchemaErrors(r)).toEqual([])
+  })
 })
 
 describe('reverse cross test: armTransitionSchema is not looser than sanitizeArmTransition accepts', () => {
@@ -1133,6 +1231,20 @@ describe('cross-repo: sanitizeArmTransition output validates against the hub sch
         ),
       ).toBe(true)
     }
+  })
+
+  // The actual motivation for this whole exchange: changed_files is the hub's
+  // own field (transitions.schema.json), not one this package invented, so
+  // the hub's independently-maintained copy is what proves the shape it
+  // sanitizes actually matches.
+  test('a merged transition with changed_files validates against the hub schema', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 'src/b.ts'],
+    })
+    expect(validateTransitionBody(r)).toBe(true)
   })
 })
 
