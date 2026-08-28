@@ -34,7 +34,8 @@ export type ReasonCodeEntry = {
 
 /**
  * The ten codes of decision D2, plus the two the automatic merge gate needed
- * and could not honestly borrow (T3.6, decisions DP1 and DP2). Order is
+ * and could not honestly borrow (T3.6, decisions DP1 and DP2), plus the
+ * merge-strategy gate's own refusal code (recovery doctrine, lot 1). Order is
  * documentation, not semantics: the terminal ones first, then the retryable
  * ones.
  *
@@ -114,6 +115,16 @@ export const REASON_CODES = [
     // Terminal: waiting writes no criteria either. The expected action is
     // human — validate a list, or merge by hand.
     code: 'criteria_missing',
+    terminal: true,
+  },
+  {
+    // The automatic merge was refused BEFORE any forge CLI ran because no
+    // mergeStrategy is configured (recovery doctrine: a consent nobody gave
+    // is not defaulted, and a blind non-interactive `gh pr merge` on a
+    // multi-method repo fails with gh's own flag demand). Terminal: waiting
+    // configures no strategy. The way out is one setting (mergeStrategy via
+    // `codesema config` or the runner settings API), then a retried merge.
+    code: 'merge_strategy_unconfigured',
     terminal: true,
   },
   // --- Retryable: the run or its environment has to change -------------------

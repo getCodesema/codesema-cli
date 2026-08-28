@@ -50,6 +50,7 @@ const EXPECTED_CODES = [
   'branch_diverged',
   'checks_unavailable',
   'criteria_missing',
+  'merge_strategy_unconfigured',
   'agent_error',
   'inactivity_timeout',
   'interrupted_by_user',
@@ -73,6 +74,9 @@ const EXPECTED_TERMINAL: Record<(typeof EXPECTED_CODES)[number], boolean> = {
   // both ask for is a person, so both are terminal.
   checks_unavailable: true,
   criteria_missing: true,
+  // Waiting configures no merge strategy either: the way out is one setting,
+  // then a retried merge.
+  merge_strategy_unconfigured: true,
 }
 
 describe('REASON_CODES', () => {
@@ -108,20 +112,20 @@ describe('REASON_CODES', () => {
     }
   })
 
-  test('today the table is D2 plus T3.6: twelve codes, no more, no less', () => {
+  test('today the table is D2 plus T3.6 plus the merge-strategy gate: thirteen codes', () => {
     // The snapshot of the CURRENT roster. Only a deliberate extension touches
     // this line — never a rename, which the two lock tests above catch first.
     expect(REASON_CODES.map((entry) => entry.code)).toEqual([...EXPECTED_CODES])
-    expect(REASON_CODES).toHaveLength(12)
+    expect(REASON_CODES).toHaveLength(13)
   })
 
   test('each code is classified the way this contract documents it', () => {
     for (const entry of REASON_CODES) {
       expect(entry.terminal).toBe(EXPECTED_TERMINAL[entry.code])
     }
-    // Seven terminal since T3.6 (D2's five plus `checks_unavailable` and
-    // `criteria_missing`); the retryable half is untouched at five.
-    expect(REASON_CODES.filter((entry) => entry.terminal)).toHaveLength(7)
+    // Eight terminal (D2's five plus `checks_unavailable`, `criteria_missing`
+    // and `merge_strategy_unconfigured`); the retryable half is untouched at five.
+    expect(REASON_CODES.filter((entry) => entry.terminal)).toHaveLength(8)
     expect(REASON_CODES.filter((entry) => !entry.terminal)).toHaveLength(5)
   })
 })

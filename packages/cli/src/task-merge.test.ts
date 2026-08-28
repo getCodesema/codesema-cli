@@ -698,7 +698,7 @@ describe("the merge gate's git reads are bounded (MAJEUR 2)", () => {
       `  cwd: ${JSON.stringify(cwd)},`,
       `  runnerAutoMerge: true,`,
       `  task: ${JSON.stringify(greenTask())},`,
-      `  settings: ${JSON.stringify(settings({ policy: 'auto' }))},`,
+      `  settings: ${JSON.stringify(settings({ policy: 'auto', strategy: 'merge' }))},`,
       // Injected: this test is about the ONE git read left on this path.
       `  inputs: ${JSON.stringify(greenInputs())},`,
       `  execForge: () => Promise.resolve({ kind: 'ok', stdout: 'https://forge/mr/1' }),`,
@@ -786,7 +786,8 @@ describe('mergeTask under mergePolicy: human (the default)', () => {
 })
 
 describe('mergeTask under mergePolicy: auto', () => {
-  const auto = (over: Partial<MergeSettings> = {}) => settings({ policy: 'auto', ...over })
+  const auto = (over: Partial<MergeSettings> = {}) =>
+    settings({ policy: 'auto', strategy: 'merge', ...over })
 
   test('four green conditions call gh pr merge with the expected argv', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
@@ -801,7 +802,7 @@ describe('mergeTask under mergePolicy: auto', () => {
     })
     expect(outcome.kind).toBe('merged')
     expect(forge.calls).toEqual([
-      { cli: 'gh', args: ['pr', 'merge', 'codesema/task-add-rate-limiting'] },
+      { cli: 'gh', args: ['pr', 'merge', 'codesema/task-add-rate-limiting', '--merge'] },
     ])
     expect(outcome.events.at(-1)?.data).toMatchObject({ name: 'merged', cli: 'gh' })
   })
@@ -825,20 +826,25 @@ describe('mergeTask under mergePolicy: auto', () => {
     ])
   })
 
-  test('no mergeStrategy means NO strategy option: the convention is the repo’s', async () => {
+  test('no mergeStrategy refuses the auto-merge BEFORE any forge call, with the way out', async () => {
     const repo = makeRepoWithOrigin('git@github.com:o/r.git')
     const forge = recordingForge()
-    await mergeTask({
+    const outcome = await mergeTask({
       runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
-      settings: auto(),
+      settings: settings({ policy: 'auto' }),
       inputs: greenInputs(),
       execForge: forge.exec,
     })
-    for (const flag of ['--merge', '--squash', '--rebase']) {
-      expect(forge.calls[0]?.args).not.toContain(flag)
-    }
+    expect(outcome.kind).toBe('refused')
+    expect(outcome.kind === 'refused' && outcome.reason.code).toBe('merge_strategy_unconfigured')
+    expect(outcome.kind === 'refused' && outcome.reason.detail).toContain('mergeStrategy')
+    expect(forge.calls).toEqual([])
+    expect(outcome.events.at(-1)?.data).toMatchObject({
+      name: 'refused',
+      message: expect.stringContaining('mergeStrategy'),
+    })
   })
 
   test('an explicit strategy reaches the argv, per CLI', async () => {
@@ -906,6 +912,61 @@ describe('mergeTask under mergePolicy: auto', () => {
       execForge: deleted.exec,
     })
     expect(deleted.calls[0]?.args).toContain('--delete-branch')
+  })
+
+  test('a ticketed merge reads the merge commit back: the proof travels on the journal', async () => {
+    const answers: ShipCliOutcome[] = [
+      { kind: 'ok', stdout: 'Merged pull request https://github.com/o/r/pull/7' },
+      { kind: 'ok', stdout: JSON.stringify([{ number: 7, mergeCommit: { oid: 'A1B2C3D4E5F6' } }]) },
+    ]
+    const calls: { cli: string; args: string[] }[] = []
+    const outcome = await mergeTask({
+      runnerAutoMerge: true,
+      cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
+      task: greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' } }),
+      settings: auto(),
+      inputs: greenInputs(),
+      execForge: (cli, args) => {
+        calls.push({ cli, args })
+        return Promise.resolve(answers[calls.length - 1] as ShipCliOutcome)
+      },
+    })
+    expect(outcome.kind).toBe('merged')
+    expect(calls[1]?.args).toContain('number,mergeCommit')
+    const merged = outcome.events.find((event) => event.data.name === 'merged')
+    expect(merged?.data.sha).toBe('a1b2c3d4e5f6')
+    expect(outcome.events.some((event) => event.data.name === 'merged_sha_unknown')).toBe(false)
+  })
+
+  test('a landed merge whose commit cannot be read says merged_sha_unknown out loud', async () => {
+    const forge = recordingForge({ kind: 'ok', stdout: 'Merged pull request #7' })
+    const outcome = await mergeTask({
+      runnerAutoMerge: true,
+      cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
+      task: greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' } }),
+      settings: auto(),
+      inputs: greenInputs(),
+      execForge: forge.exec,
+    })
+    expect(outcome.kind).toBe('merged')
+    const unknown = outcome.events.find((event) => event.data.name === 'merged_sha_unknown')
+    expect(unknown?.data.message).toContain('webhook')
+    const merged = outcome.events.find((event) => event.data.name === 'merged')
+    expect(merged && 'sha' in merged.data).toBe(false)
+  })
+
+  test('a task with no hub_ticket never pays the proof read', async () => {
+    const forge = recordingForge({ kind: 'ok', stdout: 'Merged pull request #7' })
+    const outcome = await mergeTask({
+      runnerAutoMerge: true,
+      cwd: makeRepoWithOrigin('git@github.com:o/r.git'),
+      task: greenTask(),
+      settings: auto(),
+      inputs: greenInputs(),
+      execForge: forge.exec,
+    })
+    expect(outcome.kind).toBe('merged')
+    expect(forge.calls).toHaveLength(1)
   })
 
   test('a missing condition emits NO merge command at all', async () => {
@@ -1044,12 +1105,14 @@ describe('arm/runner integration: runnerAutoMerge overrides mergePolicy for a ti
       cwd: repo,
       runnerAutoMerge: true,
       task: ticketedGreenTask(),
-      settings: settings({ policy: 'human' }),
+      settings: settings({ policy: 'human', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge: forge.exec,
     })
     expect(outcome.kind).toBe('merged')
-    expect(forge.calls.length).toBe(1)
+    // Two calls since the proof read: the merge itself, then the bounded
+    // merged-list read that fetches the merge commit for the hub report.
+    expect(forge.calls.length).toBe(2)
   })
 
   test('runnerAutoMerge: false holds a ticketed task, like any human-policy task', async () => {
@@ -1108,7 +1171,7 @@ describe('arm/runner integration: runnerAutoMerge overrides mergePolicy for a ti
       cwd: repo,
       runnerAutoMerge: false,
       task: ticketedGreenTask(),
-      settings: settings({ policy: 'auto' }),
+      settings: settings({ policy: 'auto', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge: forge.exec,
     })
@@ -1185,7 +1248,7 @@ describe('what the merge never does', () => {
       runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
-      settings: settings({ policy: 'auto' }),
+      settings: settings({ policy: 'auto', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge: forge.exec,
     })
@@ -1208,7 +1271,7 @@ describe('what the merge never does', () => {
       runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
-      settings: settings({ policy: 'auto' }),
+      settings: settings({ policy: 'auto', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge: forge.exec,
     })
@@ -1228,7 +1291,7 @@ describe('what the merge never does', () => {
       runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
-      settings: settings({ policy: 'auto' }),
+      settings: settings({ policy: 'auto', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge: forge.exec,
     })
@@ -1268,7 +1331,7 @@ describe('D20 idempotence: a branch the forge already merged is never merged twi
       runnerAutoMerge: true,
       cwd: repo,
       task,
-      settings: settings({ policy: 'auto' }),
+      settings: settings({ policy: 'auto', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge,
     })
@@ -1288,7 +1351,7 @@ describe('D20 idempotence: a branch the forge already merged is never merged twi
       '--limit',
       '1',
       '--json',
-      'number',
+      'number,mergeCommit',
     ])
     const mergedEvent = outcome.events.find((event) => event.data.name === 'merged')
     expect(mergedEvent?.data.already_merged).toBe(true)
@@ -1304,7 +1367,7 @@ describe('D20 idempotence: a branch the forge already merged is never merged twi
       runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
-      settings: settings({ policy: 'auto' }),
+      settings: settings({ policy: 'auto', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge: forge.exec,
     })
@@ -1330,7 +1393,7 @@ describe('D20 idempotence: a branch the forge already merged is never merged twi
       runnerAutoMerge: true,
       cwd: repo,
       task: greenTask(),
-      settings: settings({ policy: 'auto' }),
+      settings: settings({ policy: 'auto', strategy: 'merge' }),
       inputs: greenInputs(),
       execForge,
     })
@@ -1375,7 +1438,7 @@ describe('the merge really runs a forge CLI when nothing is injected', () => {
       `  cwd: ${JSON.stringify(repo)},`,
       `  runnerAutoMerge: true,`,
       `  task: ${JSON.stringify(greenTask())},`,
-      `  settings: ${JSON.stringify(settings({ policy: 'auto' }))},`,
+      `  settings: ${JSON.stringify(settings({ policy: 'auto', strategy: 'merge' }))},`,
       `  inputs: ${JSON.stringify(greenInputs())},`,
       `})`,
       `process.stdout.write(`,
@@ -1406,6 +1469,7 @@ describe('the merge really runs a forge CLI when nothing is injected', () => {
       'pr',
       'merge',
       'codesema/task-add-rate-limiting',
+      '--merge',
     ])
   }, 30_000)
 })

@@ -33,6 +33,7 @@
 import { DEFAULT_MERGE_SETTINGS, type MergeSettings, type MergeStrategy } from './config.js'
 import {
   isTerminalReason,
+  sanitizeArmSha,
   type ChecksUnavailableDetail,
   type CriteriaMissingDetail,
   type ReasonCode,
@@ -636,15 +637,28 @@ export function isMergeConflictError(message: string): boolean {
  * either way, so the ordinary forge failure this guards falls through and
  * surfaces exactly as it always has.
  */
-async function branchAlreadyMerged(
+async function fetchMergedProof(
   cli: 'gh' | 'glab',
   cwd: string,
   branch: string,
   execForge: ShipForgeExecFn,
-): Promise<boolean> {
+): Promise<{ merged: boolean; sha: string | null }> {
+  // gh's `mergeCommit` is `{oid}`; GitLab answers `merge_commit_sha`, or
+  // `squash_commit_sha` when the MR landed as a squash (the other is null
+  // then). One list call answers both "is it merged" and "as what commit".
   const args =
     cli === 'gh'
-      ? ['pr', 'list', `--head=${branch}`, '--state', 'merged', '--limit', '1', '--json', 'number']
+      ? [
+          'pr',
+          'list',
+          `--head=${branch}`,
+          '--state',
+          'merged',
+          '--limit',
+          '1',
+          '--json',
+          'number,mergeCommit',
+        ]
       : [
           'mr',
           'list',
@@ -657,14 +671,60 @@ async function branchAlreadyMerged(
         ]
   const outcome = await execForge(cli, args, cwd)
   if (outcome.kind !== 'ok') {
-    return false
+    return { merged: false, sha: null }
   }
   try {
     const data: unknown = JSON.parse(outcome.stdout)
-    return Array.isArray(data) && data.length > 0
+    if (!Array.isArray(data) || data.length === 0) {
+      return { merged: false, sha: null }
+    }
+    const entry = data[0] as {
+      mergeCommit?: { oid?: unknown } | null
+      merge_commit_sha?: unknown
+      squash_commit_sha?: unknown
+    }
+    const candidate =
+      cli === 'gh' ? entry.mergeCommit?.oid : (entry.merge_commit_sha ?? entry.squash_commit_sha)
+    return { merged: true, sha: sanitizeArmSha(candidate) ?? null }
   } catch {
-    return false
+    return { merged: false, sha: null }
   }
+}
+
+/**
+ * Reports `merged` to the hub WITH its proof, or says out loud why it will
+ * not: a landed merge whose commit the forge did not answer with is journaled
+ * as `merged_sha_unknown` and never posted: `merged` without `merge_sha` is
+ * exactly the phantom-state shape the contract refuses, and the hub's own
+ * forge webhook (which carries the sha) reconciles the ticket instead.
+ */
+function reportMergedWithProof(
+  opts: MergeTaskOptions,
+  cli: 'gh' | 'glab',
+  sha: string | null,
+  events: AppendTaskEventInput[],
+): void {
+  if (!opts.task.hub_ticket) {
+    return
+  }
+  if (!sha) {
+    events.push({
+      type: MERGE_EVENT,
+      data: {
+        name: 'merged_sha_unknown',
+        cli,
+        branch: opts.task.branch,
+        message:
+          'merge landed but the forge did not answer with the merge commit; hub report skipped, the forge webhook reconciles the ticket',
+      },
+    })
+    return
+  }
+  void reportHubTransition(opts.cwd, opts.task, {
+    type: 'merged',
+    branch: opts.task.branch,
+    merge_sha: sha,
+  })
 }
 
 // --- outcome ---------------------------------------------------------------
@@ -836,6 +896,34 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
     })
     return { kind: 'refused', reason, readiness, events }
   }
+  if (!settings.strategy) {
+    // Refused BEFORE any forge CLI runs (recovery doctrine, rung 0/3): a
+    // strategy nobody configured is never defaulted on their behalf (D13),
+    // and a blind non-interactive `gh pr merge` on a multi-method repo fails
+    // with gh's own flag demand anyway. One named refusal that carries the
+    // way out beats a raw forge error read as `forge_unreachable`.
+    const reason = taskReason(
+      'merge_strategy_unconfigured',
+      'auto-merge refused: no mergeStrategy configured. Set one (codesema config, or the runner settings API), then retry the merge',
+    )
+    events.push({
+      type: MERGE_EVENT,
+      data: {
+        name: 'refused',
+        policy: settings.policy,
+        terminal: isTerminalReason(reason.code),
+        ...(reason.detail ? { message: reason.detail } : {}),
+      },
+      reason_code: reason.code,
+    })
+    if (opts.task.hub_ticket) {
+      void reportHubTransition(opts.cwd, opts.task, {
+        type: 'failed',
+        error_message: reason.detail ?? 'auto-merge refused: no mergeStrategy configured',
+      })
+    }
+    return { kind: 'refused', reason, readiness, events }
+  }
 
   const execForge = opts.execForge ?? ((cli, args, cwd) => execCli(cli, args, cwd))
   let note: string | null = null
@@ -873,9 +961,15 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
       // branch, and the forge's own refusal (already merged, the PR/MR no
       // longer open) reads exactly like any other error — never a conflict,
       // so it never took the branch above. Asked here, not before the call:
-      // see branchAlreadyMerged's own header for why the cost is paid only
+      // see fetchMergedProof's own header for why the cost is paid only
       // once a fresh attempt has already failed.
-      if (await branchAlreadyMerged(candidate.cli, opts.cwd, opts.task.branch, execForge)) {
+      const priorProof = await fetchMergedProof(
+        candidate.cli,
+        opts.cwd,
+        opts.task.branch,
+        execForge,
+      )
+      if (priorProof.merged) {
         events.push({
           type: MERGE_EVENT,
           data: {
@@ -883,14 +977,10 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
             cli: candidate.cli,
             branch: opts.task.branch,
             already_merged: true,
+            ...(priorProof.sha ? { sha: priorProof.sha } : {}),
           },
         })
-        if (opts.task.hub_ticket) {
-          void reportHubTransition(opts.cwd, opts.task, {
-            type: 'merged',
-            branch: opts.task.branch,
-          })
-        }
+        reportMergedWithProof(opts, candidate.cli, priorProof.sha, events)
         return { kind: 'merged', cli: candidate.cli, url: null, readiness, events }
       }
       // Keep trying (a dual-remote setup may have the other CLI working) but
@@ -899,6 +989,14 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
       continue
     }
     const url = extractMrUrl(outcome.stdout)
+    // Neither `gh pr merge` nor `glab mr merge` hands the merge commit back
+    // on its own output, and `merged` without its sha is a claim the
+    // contract refuses, so the proof is read back from the forge in one
+    // bounded follow-up call (the same list read the idempotence guard uses).
+    const proof =
+      opts.task.hub_ticket === undefined
+        ? { merged: true, sha: null }
+        : await fetchMergedProof(candidate.cli, opts.cwd, opts.task.branch, execForge)
     events.push({
       type: MERGE_EVENT,
       data: {
@@ -908,15 +1006,10 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
         strategy: settings.strategy ?? 'forge default',
         deleted_branch: settings.deleteBranch,
         ...(url ? { url } : {}),
+        ...(proof.sha ? { sha: proof.sha } : {}),
       },
     })
-    if (opts.task.hub_ticket) {
-      // `merge_sha` is omitted: neither `gh pr merge` nor `glab mr merge`
-      // hands one back on this path (only the MR/PR url, when the forge
-      // gives one). The hub reads a `merged` transition with no sha as
-      // "landed, sha unknown" rather than a claim about a commit nobody read.
-      void reportHubTransition(opts.cwd, opts.task, { type: 'merged', branch: opts.task.branch })
-    }
+    reportMergedWithProof(opts, candidate.cli, proof.sha, events)
     return { kind: 'merged', cli: candidate.cli, url, readiness, events }
   }
 
