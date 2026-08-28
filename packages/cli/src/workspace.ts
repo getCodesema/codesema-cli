@@ -288,6 +288,11 @@ export function workspaceTaskManagerOptions(
       ? { taskRetention: config.taskRetentionCount }
       : {}),
     mergeSettings: resolveMergeSettings(config),
+    // Re-read from the global file at the moment a merge decision is made
+    // (the getChecksConfig pattern): a strategy set through the settings API
+    // used to stay invisible until the next restart because only the boot
+    // value above was ever consulted. The boot value stays as the fallback.
+    getMergeSettings: () => resolveMergeSettings(loadGlobalConfig()),
     // Named on the task's journal too, not only on the boot line: a user who
     // typed `mergePolicy: "Auto"` scrolled past the terminal long ago by the
     // time a task reaches its merge step.

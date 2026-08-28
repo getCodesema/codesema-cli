@@ -1427,6 +1427,18 @@ describe('the unusable merge keys reach the manager too (T3.6, M50)', () => {
     expect('degradedMergeKeys' in opts).toBe(false)
     expect(opts.mergeSettings?.policy).toBe('auto')
   })
+
+  test('getMergeSettings re-reads the global file: a strategy set after boot is seen', () => {
+    withGlobalJson({ mergePolicy: 'auto' })
+    const opts = workspaceTaskManagerOptions(loadGlobalConfig(), new AbortController(), boot())
+    expect(opts.mergeSettings?.strategy).toBeUndefined()
+    expect(opts.getMergeSettings?.().strategy).toBeUndefined()
+    // The exact shape of the settings-API bug this getter fixes: mergeStrategy
+    // written AFTER boot used to stay invisible until the next restart.
+    withGlobalJson({ mergePolicy: 'auto', mergeStrategy: 'squash' })
+    expect(opts.mergeSettings?.strategy).toBeUndefined()
+    expect(opts.getMergeSettings?.().strategy).toBe('squash')
+  })
 })
 
 // MAJEUR A2 (T1.4 review round 6). `applyRetention()` reads ONE keep count and
