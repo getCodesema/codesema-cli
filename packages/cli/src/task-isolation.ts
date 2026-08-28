@@ -33,6 +33,7 @@ import { join } from 'node:path'
 import {
   AGENT_KILL_GRACE_MS,
   AGENT_SETTLE_GRACE_MS,
+  AGENT_STDERR_TAIL_MAX,
   AGENT_WATCHDOG_DEFAULTS,
   agentExitError,
   AgentWatchdogError,
@@ -1794,10 +1795,19 @@ export const spawnContainer: ContainerSpawnFn = (opts) =>
   new Promise((resolve, reject) => {
     const clock = opts.clock ?? systemClock
     const spawnProcessFn = opts.spawnProcessFn ?? spawn
-    const child = spawnProcessFn(opts.file, opts.args, { stdio: ['pipe', 'pipe', 'inherit'] })
+    const child = spawnProcessFn(opts.file, opts.args, { stdio: ['pipe', 'pipe', 'pipe'] })
     const stdin = child.stdin
     const stdout = child.stdout
     stdin?.on('error', () => {})
+    // Teed, not swallowed: stderr still reaches the operator's journal live,
+    // AND its tail survives into the exit error — claude prints its fatal
+    // reason ("No conversation found with session ID …") there, not in the
+    // JSONL stream, and 'inherit' was throwing that reason away.
+    let errTail = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      process.stderr.write(chunk)
+      errTail = (errTail + chunk.toString('utf8')).slice(-AGENT_STDERR_TAIL_MAX)
+    })
 
     let out = ''
     let capped = false
@@ -1837,7 +1847,7 @@ export const spawnContainer: ContainerSpawnFn = (opts) =>
       } else if (code === 0) {
         resolve(out)
       } else {
-        reject(agentExitError(code, out))
+        reject(agentExitError(code, out, errTail))
       }
     }
     const killClient = (signal: NodeJS.Signals): void => {

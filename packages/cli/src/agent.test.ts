@@ -24,6 +24,7 @@ import {
   emitsOpencodeJson,
   hardenedReviewCommand,
   hostPolicyUnsafe,
+  isDeadSessionError,
   knownAgent,
   MAX_TIMER_MS,
   OPENCODE_REVIEW_CONFIG,
@@ -2182,5 +2183,36 @@ describe('agentExitError', () => {
   test('stays the bare exit message when the run said nothing', () => {
     const err = agentExitError(127, '')
     expect(err.message).toBe('agent command exited with code 127')
+  })
+})
+
+describe('agentExitError stderr tail', () => {
+  test('the stderr tail joins the stream detail in the message', () => {
+    const err = agentExitError(
+      1,
+      '{"type":"result","subtype":"error_during_execution"}',
+      'warming up\nNo conversation found with session ID: 0123\n',
+    )
+    expect(err.message).toContain('error_during_execution')
+    expect(err.message).toContain('No conversation found with session ID: 0123')
+  })
+
+  test('stderr alone still carries the reason', () => {
+    const err = agentExitError(1, '', 'FATAL: something broke\n')
+    expect(err.message).toBe('agent command exited with code 1: FATAL: something broke')
+  })
+})
+
+describe('isDeadSessionError', () => {
+  test('matches claude wording for a vanished --resume target, and nothing else', () => {
+    expect(
+      isDeadSessionError(
+        new Error(
+          'agent command exited with code 1: error_during_execution; No conversation found with session ID: 0123',
+        ),
+      ),
+    ).toBe(true)
+    expect(isDeadSessionError(new Error('agent command exited with code 1'))).toBe(false)
+    expect(isDeadSessionError('No conversation found with session ID: 0123')).toBe(false)
   })
 })
