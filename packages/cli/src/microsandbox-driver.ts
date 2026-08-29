@@ -915,7 +915,7 @@ export type MicrosandboxDriverOptions = {
   onNotice?: (notice: string) => void
 }
 
-/** The real driver, backed by the `microsandbox` SDK (0.6.15, lazily imported). */
+/** The real driver, backed by the `microsandbox` SDK (0.6.16, lazily imported). */
 export function createMicrosandboxDriver(opts: MicrosandboxDriverOptions = {}): SandboxDriver {
   return {
     kind: 'microsandbox',
