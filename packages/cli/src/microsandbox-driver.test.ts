@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
@@ -1314,19 +1315,15 @@ describe('createMicrosandboxDriver fs/metrics/stop', () => {
     expect(seenTimeout).toBe(10_000)
   })
 
-  test('writeFile/readFile/copyFromHost/copyToHost delegate to sandbox.fs()', async () => {
+  test('writeFile/readFile delegate to sandbox.fs()', async () => {
     const fsCalls: string[] = []
     const { sdk } = makeFakeSdk({
       onCreate: (config) => ({
         name: config.name,
         execStreamWith: async () => makeExecHandle([]),
         fs: () => ({
-          copyFromHost: async (h: string, g: string) => {
-            fsCalls.push(`copyFromHost:${h}:${g}`)
-          },
-          copyToHost: async (g: string, h: string) => {
-            fsCalls.push(`copyToHost:${g}:${h}`)
-          },
+          copyFromHost: async () => {},
+          copyToHost: async () => {},
           write: async (p: string, d: string) => {
             fsCalls.push(`write:${p}:${d}`)
           },
@@ -1344,16 +1341,167 @@ describe('createMicrosandboxDriver fs/metrics/stop', () => {
       }),
     })
     const handle = await createMicrosandboxDriver({ sdk }).create(baseSpec())
-    await handle.copyFromHost('/h/a', '/g/a')
-    await handle.copyToHost('/g/b', '/h/b')
     await handle.writeFile('/g/c', 'hi')
     expect(await handle.readFile('/g/c')).toBe('contents')
-    expect(fsCalls).toEqual([
-      'copyFromHost:/h/a:/g/a',
-      'copyToHost:/g/b:/h/b',
-      'write:/g/c:hi',
-      'readToString:/g/c',
-    ])
+    expect(fsCalls).toEqual(['write:/g/c:hi', 'readToString:/g/c'])
+  })
+})
+
+// --- createMicrosandboxDriver: copyFromHost/copyToHost directory trees --------
+//
+// `SdkFsOps.copyFromHost`/`copyToHost` only move a single file (the SDK's own
+// README example uses one, and a directory host path fails with EISDIR in the
+// real SDK, see microsandbox-driver.ts `copyTreeFromHost` for the spike that
+// found it). Every real caller in this codebase passes a worktree (a
+// directory), so the driver tars on one side and untars on the other; these
+// tests exercise that workaround directly, with a real `tar` binary and real
+// temp files on the host side (not a full guest, which the fake SDK cannot
+// provide).
+
+type FakeCopyFs = {
+  copyFromHost?: (hostPath: string, guestPath: string) => Promise<void>
+  copyToHost?: (guestPath: string, hostPath: string) => Promise<void>
+}
+
+/** Wires a fake sandbox whose `execStreamWith` routes straight to `execHandler`, no `onCreate`/`onExec` plumbing needed at each call site. */
+function fakeSdkWithExec(
+  execHandler: (
+    command: string,
+    execOpts: RecordedExecOptions,
+  ) => ReturnType<typeof makeExecHandle>,
+  fsOverrides: FakeCopyFs = {},
+) {
+  const { sdk } = makeFakeSdk({
+    onCreate: (config) => ({
+      name: config.name,
+      execStreamWith: async (
+        command: string,
+        configureExec: (b: FakeExecOptionsBuilder) => FakeExecOptionsBuilder,
+      ) => {
+        const { builder, recorded } = makeExecOptionsBuilder()
+        configureExec(builder)
+        return execHandler(command, recorded)
+      },
+      fs: () => ({
+        copyFromHost: async () => {},
+        copyToHost: async () => {},
+        write: async () => {},
+        readToString: async () => '',
+        ...fsOverrides,
+      }),
+      metrics: async () => ({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
+      stopWithTimeout: async () => {},
+    }),
+  })
+  return sdk
+}
+
+describe('createMicrosandboxDriver copyFromHost/copyToHost: directory trees via tar', () => {
+  test('copyFromHost on a plain file still delegates straight to sandbox.fs()', async () => {
+    const hostDir = makeDir()
+    const hostFile = join(hostDir, 'note.txt')
+    writeFileSync(hostFile, 'hello')
+    const fsCalls: string[] = []
+    const { sdk } = makeFakeSdk({
+      onCreate: (config) => ({
+        name: config.name,
+        execStreamWith: async () => makeExecHandle([]),
+        fs: () => ({
+          copyFromHost: async (h: string, g: string) => {
+            fsCalls.push(`copyFromHost:${h}:${g}`)
+          },
+          copyToHost: async () => {},
+          write: async () => {},
+          readToString: async () => '',
+        }),
+        metrics: async () => ({
+          memoryHostResidentBytes: null,
+          memoryBytes: null,
+          cpuPercent: null,
+        }),
+        stopWithTimeout: async () => {},
+      }),
+    })
+    const handle = await createMicrosandboxDriver({ sdk }).create(baseSpec())
+    await handle.copyFromHost(hostFile, '/g/note.txt')
+    expect(fsCalls).toEqual([`copyFromHost:${hostFile}:/g/note.txt`])
+  })
+
+  test('copyFromHost on a directory tars it on the host and untars it inside the guest', async () => {
+    const hostDir = makeDir()
+    writeFileSync(join(hostDir, 'a.txt'), 'a')
+    mkdirSync(join(hostDir, 'sub'))
+    writeFileSync(join(hostDir, 'sub', 'b.txt'), 'b')
+    const execScripts: string[] = []
+    let copiedTarHostPath: string | undefined
+    let copiedTarExistedAtCallTime = false
+    const sdk = fakeSdkWithExec(
+      (_command, execOpts) => {
+        execScripts.push(execOpts.args[1] ?? '')
+        return makeExecHandle([{ kind: 'exited', code: 0 }])
+      },
+      {
+        copyFromHost: async (h) => {
+          copiedTarHostPath = h
+          copiedTarExistedAtCallTime = existsSync(h)
+        },
+      },
+    )
+    const handle = await createMicrosandboxDriver({ sdk }).create(baseSpec())
+    await handle.copyFromHost(hostDir, '/work')
+    expect(copiedTarExistedAtCallTime).toBe(true)
+    expect(copiedTarHostPath).toMatch(/\.tar$/)
+    const untarScript = execScripts.find((s) => s.includes('tar -xf'))
+    expect(untarScript).toContain("mkdir -p '/work'")
+    expect(untarScript).toContain("-C '/work'")
+  })
+
+  test('copyFromHost on a directory throws when the guest untar fails', async () => {
+    const hostDir = makeDir()
+    writeFileSync(join(hostDir, 'a.txt'), 'a')
+    const sdk = fakeSdkWithExec(() => makeExecHandle([{ kind: 'exited', code: 1 }]))
+    const handle = await createMicrosandboxDriver({ sdk }).create(baseSpec())
+    await expect(handle.copyFromHost(hostDir, '/work')).rejects.toThrow(/guest untar failed/)
+  })
+
+  test('copyToHost on a non-directory guest path still delegates straight to sandbox.fs()', async () => {
+    const hostDir = makeDir()
+    const hostFile = join(hostDir, 'out.txt')
+    const fsCalls: string[] = []
+    const sdk = fakeSdkWithExec(() => makeExecHandle([{ kind: 'exited', code: 1 }]), {
+      copyToHost: async (g, h) => {
+        fsCalls.push(`copyToHost:${g}:${h}`)
+      },
+    })
+    const handle = await createMicrosandboxDriver({ sdk }).create(baseSpec())
+    await handle.copyToHost('/g/out.txt', hostFile)
+    expect(fsCalls).toEqual([`copyToHost:/g/out.txt:${hostFile}`])
+  })
+
+  test('copyToHost on a directory tars it inside the guest and untars it on the host', async () => {
+    const sourceDir = makeDir()
+    writeFileSync(join(sourceDir, 'result.txt'), 'built')
+    const localTar = join(makeDir(), 'guest-content.tar')
+    execFileSync('tar', ['-cf', localTar, '-C', sourceDir, '.'])
+    const destDir = join(makeDir(), 'dest')
+    const execScripts: string[] = []
+    const sdk = fakeSdkWithExec(
+      (_command, execOpts) => {
+        execScripts.push(execOpts.args[1] ?? '')
+        return makeExecHandle([{ kind: 'exited', code: 0 }])
+      },
+      {
+        copyToHost: async (_g, h) => {
+          writeFileSync(h, readFileSync(localTar))
+        },
+      },
+    )
+    const handle = await createMicrosandboxDriver({ sdk }).create(baseSpec())
+    await handle.copyToHost('/work', destDir)
+    expect(existsSync(join(destDir, 'result.txt'))).toBe(true)
+    expect(readFileSync(join(destDir, 'result.txt'), 'utf8')).toBe('built')
+    expect(execScripts.some((s) => s.startsWith('[ -d'))).toBe(true)
+    expect(execScripts.some((s) => s.includes('tar -cf'))).toBe(true)
   })
 })
 

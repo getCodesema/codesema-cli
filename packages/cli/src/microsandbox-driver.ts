@@ -17,9 +17,20 @@
  * - a flat root disk (required for dockerd) cannot be snapshotted in 0.6.15.
  */
 
-import { accessSync, constants, existsSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 export type SandboxRole = 'dev' | 'checks' | 'verify' | 'review' | 'gitops' | 'scan'
@@ -556,6 +567,92 @@ async function runSdkExec(
   return { code, stdout, stderr, timedOut: false }
 }
 
+/** Single-quote a value for a POSIX shell argument. */
+function shQuote(value: string): string {
+  return `'${value.split("'").join(`'\\''`)}'`
+}
+
+/** Generous but bounded: a worktree's tar/untar inside the guest, not an install. */
+const TREE_COPY_TIMEOUT_MS = 5 * 60_000
+
+/**
+ * `SdkFsOps.copyFromHost`/`copyToHost` only move a single FILE (confirmed
+ * against the SDK's own README example and BootStart-free in the spike):
+ * given a directory host path they fail with `EISDIR`. Every caller in this
+ * codebase passes a worktree (a directory), so this tars it on the host,
+ * copies the archive as one file, and untars it inside the guest.
+ */
+async function copyTreeFromHost(
+  sandbox: SdkSandboxInstance,
+  hostPath: string,
+  guestPath: string,
+): Promise<void> {
+  if (!statSync(hostPath).isDirectory()) {
+    await sandbox.fs().copyFromHost(hostPath, guestPath)
+    return
+  }
+  const tmpDir = mkdtempSync(join(tmpdir(), 'codesema-microvm-copy-'))
+  const hostTar = join(tmpDir, 'tree.tar')
+  const guestTar = `/tmp/codesema-copy-in-${randomBytes(8).toString('hex')}.tar`
+  try {
+    execFileSync('tar', ['-cf', hostTar, '-C', hostPath, '.'])
+    await sandbox.fs().copyFromHost(hostTar, guestTar)
+    const result = await runSdkExec(
+      sandbox,
+      'sh',
+      [
+        '-lc',
+        `mkdir -p ${shQuote(guestPath)} && tar -xf ${shQuote(guestTar)} -C ${shQuote(guestPath)} && rm -f ${shQuote(guestTar)}`,
+      ],
+      { timeoutMs: TREE_COPY_TIMEOUT_MS },
+    )
+    if (result.code !== 0 || result.timedOut) {
+      throw new Error(
+        `copyFromHost: guest untar failed: ${(result.stdout + result.stderr).slice(-2000)}`,
+      )
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
+/** Guest-side counterpart of `copyTreeFromHost`: same EISDIR limit, mirrored the other way. */
+async function copyTreeToHost(
+  sandbox: SdkSandboxInstance,
+  guestPath: string,
+  hostPath: string,
+): Promise<void> {
+  const probe = await runSdkExec(sandbox, 'sh', ['-lc', `[ -d ${shQuote(guestPath)} ]`], {
+    timeoutMs: 30_000,
+  })
+  if (probe.code !== 0) {
+    await sandbox.fs().copyToHost(guestPath, hostPath)
+    return
+  }
+  const tmpDir = mkdtempSync(join(tmpdir(), 'codesema-microvm-copy-'))
+  const hostTar = join(tmpDir, 'tree.tar')
+  const guestTar = `/tmp/codesema-copy-out-${randomBytes(8).toString('hex')}.tar`
+  try {
+    const tarResult = await runSdkExec(
+      sandbox,
+      'sh',
+      ['-lc', `tar -cf ${shQuote(guestTar)} -C ${shQuote(guestPath)} .`],
+      { timeoutMs: TREE_COPY_TIMEOUT_MS },
+    )
+    if (tarResult.code !== 0 || tarResult.timedOut) {
+      throw new Error(
+        `copyToHost: guest tar failed: ${(tarResult.stdout + tarResult.stderr).slice(-2000)}`,
+      )
+    }
+    await sandbox.fs().copyToHost(guestTar, hostTar)
+    mkdirSync(hostPath, { recursive: true })
+    execFileSync('tar', ['-xf', hostTar, '-C', hostPath])
+    await runSdkExec(sandbox, 'sh', ['-lc', `rm -f ${shQuote(guestTar)}`], { timeoutMs: 30_000 })
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
 function wrapSdkSandbox(sandbox: SdkSandboxInstance): SandboxHandle {
   return {
     name: sandbox.name,
@@ -564,8 +661,8 @@ function wrapSdkSandbox(sandbox: SdkSandboxInstance): SandboxHandle {
     // unlike `execStreamWith` — see internal/napi.d.ts. Routing through `sh
     // -lc` on top of `exec` is what gives `shell()` the same option surface.
     shell: (script, execOpts) => runSdkExec(sandbox, 'sh', ['-lc', script], execOpts),
-    copyFromHost: (hostPath, guestPath) => sandbox.fs().copyFromHost(hostPath, guestPath),
-    copyToHost: (guestPath, hostPath) => sandbox.fs().copyToHost(guestPath, hostPath),
+    copyFromHost: (hostPath, guestPath) => copyTreeFromHost(sandbox, hostPath, guestPath),
+    copyToHost: (guestPath, hostPath) => copyTreeToHost(sandbox, guestPath, hostPath),
     writeFile: (guestPath, content) => sandbox.fs().write(guestPath, content),
     readFile: (guestPath) => sandbox.fs().readToString(guestPath),
     metrics: async () => {
