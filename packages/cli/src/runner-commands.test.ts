@@ -1465,7 +1465,7 @@ describe('runbookCommand', () => {
       expect(lines.join('\n')).toContain('install always fails')
       expect(process.exitCode as unknown).toBe(1)
     } finally {
-      process.exitCode = previousExitCode
+      process.exitCode = previousExitCode ?? 0
     }
   })
 
