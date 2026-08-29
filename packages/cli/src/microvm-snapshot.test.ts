@@ -13,6 +13,7 @@ import type {
   SandboxSpec,
   SnapshotInfo,
 } from './microsandbox-driver.js'
+import { AGENT_INSTALL_DOMAINS } from './microvm-bootstrap.js'
 import {
   buildProjectSnapshot,
   projectSnapshotFingerprint,
@@ -142,6 +143,8 @@ afterEach(() => {
   rmSync(worktree, { recursive: true, force: true })
 })
 
+const agentId = 'claude'
+
 function baseRunbook(overrides: Partial<RunbookConfig> = {}): RunbookConfig {
   return {
     version: RUNBOOK_VERSION,
@@ -170,8 +173,8 @@ describe('projectSnapshotFingerprint', () => {
   test('is deterministic for identical inputs', () => {
     writeFileSync(join(worktree, 'bun.lock'), 'lock-content')
     const runbook = baseRunbook()
-    const a = projectSnapshotFingerprint(worktree, runbook)
-    const b = projectSnapshotFingerprint(worktree, runbook)
+    const a = projectSnapshotFingerprint(worktree, runbook, agentId)
+    const b = projectSnapshotFingerprint(worktree, runbook, agentId)
     expect(a).toBe(b)
     expect(a).toMatch(/^[0-9a-f]{16}$/)
   })
@@ -179,26 +182,27 @@ describe('projectSnapshotFingerprint', () => {
   test('changes when a lockfile content changes', () => {
     writeFileSync(join(worktree, 'bun.lock'), 'lock-v1')
     const runbook = baseRunbook()
-    const before = projectSnapshotFingerprint(worktree, runbook)
+    const before = projectSnapshotFingerprint(worktree, runbook, agentId)
     writeFileSync(join(worktree, 'bun.lock'), 'lock-v2')
-    const after = projectSnapshotFingerprint(worktree, runbook)
+    const after = projectSnapshotFingerprint(worktree, runbook, agentId)
     expect(after).not.toBe(before)
   })
 
   test('changes when a lockfile appears', () => {
     const runbook = baseRunbook()
-    const before = projectSnapshotFingerprint(worktree, runbook)
+    const before = projectSnapshotFingerprint(worktree, runbook, agentId)
     writeFileSync(join(worktree, 'package-lock.json'), '{}')
-    const after = projectSnapshotFingerprint(worktree, runbook)
+    const after = projectSnapshotFingerprint(worktree, runbook, agentId)
     expect(after).not.toBe(before)
   })
 
   test('changes when the runbook changes', () => {
     writeFileSync(join(worktree, 'bun.lock'), 'lock-content')
-    const before = projectSnapshotFingerprint(worktree, baseRunbook())
+    const before = projectSnapshotFingerprint(worktree, baseRunbook(), agentId)
     const after = projectSnapshotFingerprint(
       worktree,
       baseRunbook({ install: ['bun install', 'bun run build'] }),
+      agentId,
     )
     expect(after).not.toBe(before)
   })
@@ -207,24 +211,31 @@ describe('projectSnapshotFingerprint', () => {
     writeFileSync(join(worktree, 'bun.lock'), 'lock-content')
     writeFileSync(join(worktree, 'docker-compose.yml'), 'services: {a: 1}')
     const runbook = baseRunbook({ services: { host_up: [], compose_file: 'docker-compose.yml' } })
-    const before = projectSnapshotFingerprint(worktree, runbook)
+    const before = projectSnapshotFingerprint(worktree, runbook, agentId)
     writeFileSync(join(worktree, 'docker-compose.yml'), 'services: {a: 2}')
-    const after = projectSnapshotFingerprint(worktree, runbook)
+    const after = projectSnapshotFingerprint(worktree, runbook, agentId)
     expect(after).not.toBe(before)
   })
 
   test('does not throw when the compose file is declared but missing on disk', () => {
     const runbook = baseRunbook({ services: { host_up: [], compose_file: 'missing.yml' } })
-    expect(() => projectSnapshotFingerprint(worktree, runbook)).not.toThrow()
+    expect(() => projectSnapshotFingerprint(worktree, runbook, agentId)).not.toThrow()
   })
 
   test('is unaffected by lockfile listing order (sorted internally)', () => {
     writeFileSync(join(worktree, 'bun.lock'), 'a')
     writeFileSync(join(worktree, 'go.sum'), 'b')
     const runbook = baseRunbook()
-    const first = projectSnapshotFingerprint(worktree, runbook)
-    const second = projectSnapshotFingerprint(worktree, runbook)
+    const first = projectSnapshotFingerprint(worktree, runbook, agentId)
+    const second = projectSnapshotFingerprint(worktree, runbook, agentId)
     expect(first).toBe(second)
+  })
+
+  test('changes when the agent id changes', () => {
+    const runbook = baseRunbook()
+    const claude = projectSnapshotFingerprint(worktree, runbook, 'claude')
+    const opencode = projectSnapshotFingerprint(worktree, runbook, 'opencode')
+    expect(claude).not.toBe(opencode)
   })
 })
 
@@ -234,7 +245,13 @@ describe('resolveProjectSnapshot', () => {
   test('answers cold when services.host_up is non-empty (flat disk)', async () => {
     const driver = new LocalFakeDriver()
     const runbook = baseRunbook({ services: { host_up: ['dockerd'], compose_file: null } })
-    const result = await resolveProjectSnapshot({ driver, projectId: 'p1', worktree, runbook })
+    const result = await resolveProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId,
+    })
     expect(result).toEqual({
       kind: 'cold',
       reason: 'flat root disk cannot be snapshotted (microsandbox 0.6.15)',
@@ -244,14 +261,26 @@ describe('resolveProjectSnapshot', () => {
   test('answers cold when services.compose_file is set (flat disk)', async () => {
     const driver = new LocalFakeDriver()
     const runbook = baseRunbook({ services: { host_up: [], compose_file: 'docker-compose.yml' } })
-    const result = await resolveProjectSnapshot({ driver, projectId: 'p1', worktree, runbook })
+    const result = await resolveProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId,
+    })
     expect(result.kind).toBe('cold')
   })
 
   test('answers missing when no matching snapshot exists', async () => {
     const driver = new LocalFakeDriver()
     const runbook = baseRunbook()
-    const result = await resolveProjectSnapshot({ driver, projectId: 'p1', worktree, runbook })
+    const result = await resolveProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId,
+    })
     expect(result.kind).toBe('missing')
     if (result.kind === 'missing') {
       expect(result.name).toBe(projectSnapshotName('p1', result.hash))
@@ -260,11 +289,34 @@ describe('resolveProjectSnapshot', () => {
 
   test('answers ready when the hashed snapshot already exists', async () => {
     const runbook = baseRunbook()
-    const hash = projectSnapshotFingerprint(worktree, runbook)
+    const hash = projectSnapshotFingerprint(worktree, runbook, agentId)
     const name = projectSnapshotName('p1', hash)
     const driver = new LocalFakeDriver({ existingSnapshots: [name] })
-    const result = await resolveProjectSnapshot({ driver, projectId: 'p1', worktree, runbook })
+    const result = await resolveProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId,
+    })
     expect(result).toEqual({ kind: 'ready', name, hash })
+  })
+
+  test('answers missing when the ready snapshot found was built for a different agent id', async () => {
+    const runbook = baseRunbook()
+    const claudeName = projectSnapshotName(
+      'p1',
+      projectSnapshotFingerprint(worktree, runbook, 'claude'),
+    )
+    const driver = new LocalFakeDriver({ existingSnapshots: [claudeName] })
+    const result = await resolveProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId: 'opencode',
+    })
+    expect(result.kind).toBe('missing')
   })
 })
 
@@ -273,7 +325,7 @@ describe('resolveProjectSnapshot', () => {
 describe('buildProjectSnapshot', () => {
   test('creates, installs, stops, snapshots, destroys and purges older snapshots', async () => {
     const runbook = baseRunbook({ install: ['bun install', 'bun run build'] })
-    const hash = projectSnapshotFingerprint(worktree, runbook)
+    const hash = projectSnapshotFingerprint(worktree, runbook, agentId)
     const name = projectSnapshotName('p1', hash)
     const oldName = 'codesema-p1-oldoldoldold0000'
     const driver = new LocalFakeDriver({ existingSnapshots: [oldName] })
@@ -283,6 +335,7 @@ describe('buildProjectSnapshot', () => {
       projectId: 'p1',
       worktree,
       runbook,
+      agentId,
       timeoutMs: 60_000,
     })
 
@@ -312,9 +365,19 @@ describe('buildProjectSnapshot', () => {
       },
     })
 
-    await buildProjectSnapshot({ driver, projectId: 'p1', worktree, runbook, timeoutMs: 60_000 })
+    await buildProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId,
+      timeoutMs: 60_000,
+    })
 
-    expect(executed).toEqual(['step1', 'step2'])
+    // The agent-install probe (`command -v claude`) runs after the install
+    // steps, in order; the fake driver answers code 0 for every command, so
+    // the probe alone satisfies `ensureAgentInstalled` (agent "already there").
+    expect(executed).toEqual(['step1', 'step2', 'command -v claude'])
   })
 
   test('throws with the tail output and still destroys the sandbox when install fails', async () => {
@@ -324,7 +387,14 @@ describe('buildProjectSnapshot', () => {
     })
 
     await expect(
-      buildProjectSnapshot({ driver, projectId: 'p1', worktree, runbook, timeoutMs: 60_000 }),
+      buildProjectSnapshot({
+        driver,
+        projectId: 'p1',
+        worktree,
+        runbook,
+        agentId,
+        timeoutMs: 60_000,
+      }),
     ).rejects.toThrow(/bad-cmd/)
 
     expect(driver.destroyed).toHaveLength(1)
@@ -338,14 +408,21 @@ describe('buildProjectSnapshot', () => {
     })
 
     await expect(
-      buildProjectSnapshot({ driver, projectId: 'p1', worktree, runbook, timeoutMs: 60_000 }),
+      buildProjectSnapshot({
+        driver,
+        projectId: 'p1',
+        worktree,
+        runbook,
+        agentId,
+        timeoutMs: 60_000,
+      }),
     ).rejects.toThrow(/slow-cmd/)
     expect(driver.destroyed).toHaveLength(1)
   })
 
   test('returns the existing ready snapshot without creating a sandbox when already built', async () => {
     const runbook = baseRunbook()
-    const hash = projectSnapshotFingerprint(worktree, runbook)
+    const hash = projectSnapshotFingerprint(worktree, runbook, agentId)
     const name = projectSnapshotName('p1', hash)
     const driver = new LocalFakeDriver({ existingSnapshots: [name] })
 
@@ -354,6 +431,7 @@ describe('buildProjectSnapshot', () => {
       projectId: 'p1',
       worktree,
       runbook,
+      agentId,
       timeoutMs: 60_000,
     })
 
@@ -370,11 +448,70 @@ describe('buildProjectSnapshot', () => {
       projectId: 'p1',
       worktree,
       runbook,
+      agentId,
       timeoutMs: 60_000,
     })
 
     expect(result.kind).toBe('cold')
     expect(driver.created).toHaveLength(0)
+  })
+
+  test('opens registry.npmjs.org for the install sandbox on top of the runbook egress', async () => {
+    const runbook = baseRunbook({ egress: ['example.com'] })
+    const driver = new LocalFakeDriver()
+
+    await buildProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId,
+      timeoutMs: 60_000,
+    })
+
+    expect(driver.created[0]?.network.allowedDomains).toEqual([
+      'example.com',
+      ...AGENT_INSTALL_DOMAINS,
+    ])
+  })
+
+  test('installs the agent (npm, root) when the guest PATH probe finds it missing', async () => {
+    const runbook = baseRunbook({ install: ['step1'] })
+    const shellCalls: Array<{ script: string; user: string | undefined }> = []
+    const driver = new LocalFakeDriver({
+      shellScript: (command) => {
+        if (command === `command -v ${agentId}`) {
+          return { code: 1, stdout: '', stderr: 'not found', timedOut: false }
+        }
+        return { code: 0, stdout: '', stderr: '', timedOut: false }
+      },
+    })
+    // Wrap create() to observe the `user` option each shell call is made with,
+    // since LocalFakeHandle.shell does not record it on its own.
+    const originalCreate = driver.create.bind(driver)
+    driver.create = async (spec) => {
+      const handle = await originalCreate(spec)
+      const originalShell = handle.shell.bind(handle)
+      handle.shell = async (script, opts) => {
+        shellCalls.push({ script, user: opts.user })
+        return originalShell(script, opts)
+      }
+      return handle
+    }
+
+    await buildProjectSnapshot({
+      driver,
+      projectId: 'p1',
+      worktree,
+      runbook,
+      agentId,
+      timeoutMs: 60_000,
+    })
+
+    const install = shellCalls.find((call) => call.script.includes(`npm install -g`))
+    expect(install).toBeDefined()
+    expect(install?.script).toContain('@anthropic-ai/claude-code')
+    expect(install?.user).toBe('root')
   })
 })
 

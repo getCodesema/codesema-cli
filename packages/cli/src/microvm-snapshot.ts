@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { canonicalRunbookJson, type RunbookConfig } from './contract.js'
 import { sandboxName, type SandboxDriver, type SandboxSpec } from './microsandbox-driver.js'
+import { AGENT_INSTALL_DOMAINS, ensureAgentInstalled } from './microvm-bootstrap.js'
 
 export const SNAPSHOT_NAME_PREFIX = 'codesema-'
 
@@ -33,8 +34,16 @@ export function projectSnapshotName(projectId: string, hash: string): string {
   return `${SNAPSHOT_NAME_PREFIX}${projectId}-${hash}`
 }
 
-/** sha256 (16 hex) over the lockfiles, the compose file and the canonical runbook. */
-export function projectSnapshotFingerprint(worktree: string, runbook: RunbookConfig): string {
+/**
+ * sha256 (16 hex) over the lockfiles, the compose file, the canonical runbook
+ * and the agent id: a snapshot built for `claude` is never handed to an
+ * `opencode` turn, and switching a project's agent rebuilds the snapshot.
+ */
+export function projectSnapshotFingerprint(
+  worktree: string,
+  runbook: RunbookConfig,
+  agentId: string,
+): string {
   const hash = createHash('sha256')
   const lockfileNames = LOCKFILE_NAMES.toSorted()
   for (const name of lockfileNames) {
@@ -57,6 +66,7 @@ export function projectSnapshotFingerprint(worktree: string, runbook: RunbookCon
     hash.update(composeFile).update('\0').update(body).update('\0')
   }
   hash.update(canonicalRunbookJson(runbook))
+  hash.update('\0').update(agentId)
   return hash.digest('hex').slice(0, 16)
 }
 
@@ -70,6 +80,8 @@ export type ResolveProjectSnapshotOptions = {
   projectId: string
   worktree: string
   runbook: RunbookConfig
+  /** The agent this snapshot must be able to run; folds into its fingerprint. */
+  agentId: string
 }
 
 function requiresFlatDisk(runbook: RunbookConfig): boolean {
@@ -80,11 +92,11 @@ function requiresFlatDisk(runbook: RunbookConfig): boolean {
 export async function resolveProjectSnapshot(
   opts: ResolveProjectSnapshotOptions,
 ): Promise<ProjectSnapshot> {
-  const { driver, projectId, worktree, runbook } = opts
+  const { driver, projectId, worktree, runbook, agentId } = opts
   if (requiresFlatDisk(runbook)) {
     return { kind: 'cold', reason: 'flat root disk cannot be snapshotted (microsandbox 0.6.15)' }
   }
-  const hash = projectSnapshotFingerprint(worktree, runbook)
+  const hash = projectSnapshotFingerprint(worktree, runbook, agentId)
   const name = projectSnapshotName(projectId, hash)
   const snapshots = await driver.listSnapshots()
   const exists = snapshots.some((snap) => snap.name === name)
@@ -96,11 +108,15 @@ export type BuildProjectSnapshotOptions = ResolveProjectSnapshotOptions & {
   onProgress?: (line: string) => void
 }
 
-/** Boots the image, runs `runbook.install`, stops, snapshots, purges the project's older snapshots. */
+/**
+ * Boots the image, runs `runbook.install`, installs the agent CLI so every
+ * later boot from this snapshot has it already on the guest PATH, stops,
+ * snapshots, purges the project's older snapshots.
+ */
 export async function buildProjectSnapshot(
   opts: BuildProjectSnapshotOptions,
 ): Promise<ProjectSnapshot> {
-  const { driver, projectId, worktree, runbook, timeoutMs, onProgress } = opts
+  const { driver, projectId, worktree, runbook, agentId, timeoutMs, onProgress } = opts
   const resolved = await resolveProjectSnapshot(opts)
   if (resolved.kind !== 'missing') {
     return resolved
@@ -113,7 +129,7 @@ export async function buildProjectSnapshot(
     memoryMib: 4096,
     rootDisk: { kind: 'managed', sizeMib: 8192 },
     maxDurationSeconds: Math.ceil(timeoutMs / 1000),
-    network: { allowedDomains: runbook.egress },
+    network: { allowedDomains: Array.from(new Set([...runbook.egress, ...AGENT_INSTALL_DOMAINS])) },
   }
   const handle = await driver.create(spec)
   try {
@@ -130,6 +146,8 @@ export async function buildProjectSnapshot(
         throw new Error(`runbook install failed: ${command}\n${tail}`)
       }
     }
+    onProgress?.(`installing ${agentId}`)
+    await ensureAgentInstalled(handle, agentId, { install: true })
     await handle.stop()
     await driver.snapshot(spec.name, name)
   } finally {
