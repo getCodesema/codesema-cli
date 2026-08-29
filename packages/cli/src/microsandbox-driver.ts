@@ -1105,7 +1105,7 @@ const defaultNotice = (notice: string): void => {
 let sharedRealOpts: MicrosandboxDriverOptions | null = null
 let sharedRealDriver: SandboxDriver | null = null
 
-/** The real driver, backed by the `microsandbox` SDK (0.6.15, lazily imported). */
+/** The real driver, backed by the `microsandbox` SDK (0.6.16, lazily imported). */
 export function createMicrosandboxDriver(opts: MicrosandboxDriverOptions = {}): SandboxDriver {
   if (opts.sdk) {
     // A test's own injected SDK: never shared, never touches the real cache.

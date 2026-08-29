@@ -19,6 +19,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **`TaskIsolation` gains `microvm`** (`@codesema/contract`, CLI config, web UI badge and plan): a task record carries `runbook_sha`/`runbook_integrity` when it was verified against a runbook.
 - **The reviewer resolves the microvm snapshot, runbook and mechanical verification per task turn** (`resolveReviewContext`) instead of freezing them once per project, and finding repro checks of a VM-isolated task run through the injected microvm `StepExecutor` instead of always falling back to docker/podman.
 - **The web workspace shows a microVM badge, plan label and build-image hint** for `microvm` tasks instead of folding them into `policy`.
+- **Microsandbox SDK pinned to 0.6.16** (was 0.6.15), which requires an `msb` 0.6.16 runtime and a store created by it: the published 0.6.16 cannot open a store created by 0.6.15 (its migration `m20260818_sandbox_network_slot` is ordered before 0.6.15's last one), so an existing `~/.microsandbox` from 0.6.15 has to be moved aside and the project snapshots rebuilt.
 
 ### Fixed
 
