@@ -14,6 +14,7 @@ import type {
   SandboxSecret,
   SandboxSpec,
 } from './microsandbox-driver.js'
+import { AGENT_INSTALL_DOMAINS } from './microvm-bootstrap.js'
 import {
   MICROVM_TURN_DEFAULTS,
   runMicrovmTurn,
@@ -83,8 +84,18 @@ type ShellCall = { script: string; opts: SandboxExecOptions }
  * needed to observe ordering/sequencing around destroy (F15). Off by default
  * so every pre-existing test (which never calls `resolveDestroy`) keeps
  * working unchanged.
+ *
+ * `shellResponder`, when given, overrides the default `{ code: 0 }` answer
+ * for a specific non-turn script (bootstrap: useradd, the agent-install
+ * probe/install) — undefined for a script it does not care about falls
+ * through to the default, so most tests never need it.
  */
-function fakeMicrovmDriver(rigOptions: { controlDestroy?: boolean } = {}) {
+function fakeMicrovmDriver(
+  rigOptions: {
+    controlDestroy?: boolean
+    shellResponder?: (script: string) => Partial<SandboxExecResult> | undefined
+  } = {},
+) {
   const shellCalls: ShellCall[] = []
   const copyFromHostCalls: Array<[string, string]> = []
   const copyToHostCalls: Array<[string, string]> = []
@@ -115,7 +126,14 @@ function fakeMicrovmDriver(rigOptions: { controlDestroy?: boolean } = {}) {
       shellCalls.push({ script, opts })
       const isTurn = /\bsu\s+\S+\s+-c\s/.test(script)
       if (!isTurn) {
-        return Promise.resolve({ code: 0, stdout: '', stderr: '', timedOut: false })
+        const overridden = rigOptions.shellResponder?.(script)
+        return Promise.resolve({
+          code: 0,
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+          ...overridden,
+        })
       }
       turnOnText = opts.onText
       opts.signal?.addEventListener('abort', () => {
@@ -233,7 +251,7 @@ const SECRETS: SandboxSecret[] = [
 
 function baseOptions(
   over: Partial<RunMicrovmTurnOptions> = {},
-  rigOptions: { controlDestroy?: boolean } = {},
+  rigOptions: Parameters<typeof fakeMicrovmDriver>[0] = {},
 ): {
   opts: RunMicrovmTurnOptions
   rig: ReturnType<typeof fakeMicrovmDriver>
@@ -259,14 +277,66 @@ function baseOptions(
 // --- tests -------------------------------------------------------------------
 
 describe('runMicrovmTurn: sandbox spec', () => {
-  test('never omits a network policy, and defaults it to the standard allowlist', async () => {
+  test('never omits a network policy, and defaults it to the standard allowlist plus the agent install domain (cold boot)', async () => {
     const { opts, rig } = baseOptions()
     const promise = runMicrovmTurn(opts)
     await flush()
     const spec = rig.getSpec()
-    expect(spec?.network.allowedDomains).toEqual([...DEFAULT_ISOLATION_ALLOWED_DOMAINS])
+    expect(spec?.network.allowedDomains).toEqual([
+      ...DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+      ...AGENT_INSTALL_DOMAINS,
+    ])
     rig.resolveTurn({ stdout: 'ok' })
     await promise
+  })
+
+  test('a snapshot restore does not open the agent install domain', async () => {
+    const { opts, rig } = baseOptions({ snapshotName: 'snap-abc' })
+    const promise = runMicrovmTurn(opts)
+    await flush()
+    expect(rig.getSpec()?.network.allowedDomains).toEqual([...DEFAULT_ISOLATION_ALLOWED_DOMAINS])
+    rig.resolveTurn({ stdout: 'ok' })
+    await promise
+  })
+
+  describe('agent bootstrap', () => {
+    test('a cold boot npm-installs the agent derived from the command when the guest PATH probe finds it missing', async () => {
+      const { opts, rig } = baseOptions(
+        { command: 'opencode run --model x' },
+        {
+          shellResponder: (script) =>
+            script === 'command -v opencode' ? { code: 1, stderr: 'not found' } : undefined,
+        },
+      )
+      const promise = runMicrovmTurn(opts)
+      await flush()
+      const install = rig.shellCalls.find((c) => c.script.includes('npm install -g'))
+      expect(install?.script).toContain('opencode-ai')
+      expect(install?.opts.user).toBe('root')
+      rig.resolveTurn({ stdout: 'ok' })
+      await promise
+    })
+
+    test('a cold boot never installs when the guest PATH probe already finds the agent', async () => {
+      const { opts, rig } = baseOptions()
+      const promise = runMicrovmTurn(opts)
+      await flush()
+      expect(rig.shellCalls.some((c) => c.script.includes('npm install -g'))).toBe(false)
+      rig.resolveTurn({ stdout: 'ok' })
+      await promise
+    })
+
+    test('a snapshot boot never installs, and rejects with a readable error when the agent is missing', async () => {
+      const { opts, rig } = baseOptions(
+        { snapshotName: 'snap-abc' },
+        {
+          shellResponder: (script) =>
+            script === 'command -v claude' ? { code: 1, stderr: 'not found' } : undefined,
+        },
+      )
+      await expect(runMicrovmTurn(opts)).rejects.toThrow(/not installed in this microVM/)
+      expect(rig.shellCalls.some((c) => c.script.includes('npm install -g'))).toBe(false)
+    })
   })
 
   test('a validated runbook joins its egress to the allowlist for the whole turn', async () => {

@@ -45,8 +45,15 @@ import {
   type SandboxSpec,
 } from './microsandbox-driver.js'
 import {
+  AGENT_INSTALL_DOMAINS,
+  assertValidGuestUser,
+  ensureAgentInstalled,
+  ensureGuestUser,
+} from './microvm-bootstrap.js'
+import {
   CAGE_HOME_DIR,
   CAGE_WORK_DIR,
+  commandBin,
   DEFAULT_ISOLATION_ALLOWED_DOMAINS,
   microvmNonSecretEnv,
   type RunContainerTurnOptions,
@@ -82,25 +89,6 @@ const BOOTSTRAP_TIMEOUT_MS = 60_000
 /** Quote a value for a POSIX single-quoted shell argument. */
 function shellSingleQuote(value: string): string {
   return `'${value.split("'").join(`'\\''`)}'`
-}
-
-/** Matches how `useradd` names a user; enforced before `user` is spliced unquoted into any shell script below. */
-const GUEST_USER_PATTERN = /^[a-z_][a-z0-9_-]*$/
-
-function assertValidGuestUser(user: string): void {
-  if (!GUEST_USER_PATTERN.test(user)) {
-    throw new Error(`invalid guest user "${user}": must match ${GUEST_USER_PATTERN}`)
-  }
-}
-
-/** `useradd -m` the guest user if it does not already exist; idempotent, safe to re-run. */
-function agentUserBootstrapScript(user: string): string {
-  return [
-    'set -e',
-    `if ! id -u ${user} >/dev/null 2>&1; then`,
-    `  useradd -m -s /bin/bash ${user}`,
-    'fi',
-  ].join('\n')
 }
 
 /**
@@ -328,6 +316,12 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
   assertValidGuestUser(user)
   const name = sandboxName('dev', opts.taskId)
   const maxDurationSeconds = Math.ceil(opts.timeoutMs / 1000) + 60
+  // A snapshot restore already has the agent installed (microvm-snapshot.ts
+  // bakes it in); a cold boot (no snapshot yet, or none for this repo) does
+  // not, so this turn installs it itself — which needs registry.npmjs.org on
+  // top of whatever else this boot is allowed to reach.
+  const cold = opts.snapshotName === null
+  const agentId = commandBin(opts.command) || 'claude'
   // Deliberately as generous as the container flow's own egress for this
   // command PLUS the runbook's install/services domains: unlike the runbook
   // runner (which opens `egress` only for install and services, then closes
@@ -338,6 +332,7 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
     new Set([
       ...(opts.allowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS),
       ...(opts.runbook?.egress ?? []),
+      ...(cold ? AGENT_INSTALL_DOMAINS : []),
     ]),
   )
   const env = opts.env ?? process.env
@@ -375,12 +370,11 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
 
   try {
     // Root only for the steps that need it: creating the non-root user,
-    // preparing /work, and the `su` wrapper below that drops to it. The
-    // agent itself never runs as root.
-    await handle.shell(agentUserBootstrapScript(user), {
-      timeoutMs: BOOTSTRAP_TIMEOUT_MS,
-      user: 'root',
-    })
+    // installing the agent CLI when this boot is cold, preparing /work, and
+    // the `su` wrapper below that drops to it. The agent itself never runs
+    // as root.
+    await ensureGuestUser(handle, user)
+    await ensureAgentInstalled(handle, agentId, { install: cold })
     await handle.shell(`mkdir -p ${CAGE_WORK_DIR}`, {
       timeoutMs: BOOTSTRAP_TIMEOUT_MS,
       user: 'root',
