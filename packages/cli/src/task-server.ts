@@ -3930,13 +3930,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     },
 
     // Same doctrine as sweepOrphanedVolumes, for microvm sandboxes rather
-    // than HOME volumes — deliberately gated on the workspace's CONFIGURED
-    // isolation mode: unlike a HOME volume (which only 'container' tasks
-    // ever create, but every workspace probes the runtime for), booting the
-    // sandbox driver at all costs a real SDK round trip, and a workspace that
-    // never opted into microvm never has one to find orphaned.
+    // than HOME volumes — gated on the MACHINE's microVM CAPABILITY
+    // (`probe.microvm?.available`), never on `probe.configured`: the boot
+    // probe workspace.ts builds always asks with `configured: 'auto'`
+    // (Decouverte 6), so a `probe.configured === 'microvm'` gate never fired
+    // in production — the sweep silently never ran. `probe.microvm` is set
+    // whenever the machine probe actually asked the sandbox driver
+    // ('auto' or 'microvm' — see `IsolationProbe.microvm`'s own doc,
+    // task-isolation.ts), independent of which mode the probe itself
+    // resolved to. Booting the sandbox driver at all costs a real SDK round
+    // trip, and a machine that never answered the capability probe
+    // ('container'/'policy' configured probes never ask) has none to find
+    // orphaned.
     async sweepOrphanedSandboxes() {
-      if (probe.configured !== 'microvm') {
+      if (probe.microvm?.available !== true) {
         return
       }
       const first = projectClaimedIds()

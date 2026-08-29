@@ -8230,6 +8230,11 @@ describe('manager.sweepOrphanedSandboxes', () => {
     reason: 'microsandbox is available',
     configured: 'microvm' as const,
     runtime: null,
+    // The gate reads THIS capability field, never `configured` — see the
+    // sweep's own doc (task-server.ts) for why: the boot probe never
+    // actually reaches this manager with `configured: 'microvm'` in
+    // production, only ever 'auto'.
+    microvm: { available: true, reason: 'microsandbox is available' },
   }
 
   test('a no-op, silently, when the workspace is not configured for microvm', async () => {
@@ -8363,6 +8368,67 @@ describe('manager.sweepOrphanedSandboxes', () => {
 
     writeFileSync(projectsPath(), '{ broken')
     expect(recheck?.()).toBeNull()
+  })
+
+  test('a boot probe configured "auto" (the real production shape) still triggers the sweep when the machine reports microvm capability', async () => {
+    // workspace.ts's boot probe always calls probeIsolation with
+    // `configured: 'auto'`, never 'microvm' — this is the exact shape a
+    // gate on `probe.configured === 'microvm'` never saw, so the sweep
+    // never ran in production even on a machine that CAN run microvm.
+    const project = register(makeRepo())
+    seedTask(project.path, 'a task')
+    let called = false
+    const manager = createTaskManager({
+      ...managerOpts,
+      isolation: {
+        available: true,
+        mode: 'container',
+        reason: 'docker is available',
+        configured: 'auto',
+        runtime: 'docker',
+        microvm: { available: true, reason: 'microsandbox is available' },
+      },
+      sandboxDriverFn: () => fakeDriver,
+      sweepOrphanedSandboxesFn: () => {
+        called = true
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedSandboxes()
+
+    expect(called).toBe(true)
+  })
+
+  test('the machine capability answering "unavailable" skips the sweep, even for a project explicitly configured for microvm', async () => {
+    const project = register(makeRepo())
+    seedTask(project.path, 'a task')
+    let called = false
+    const notices: string[] = []
+    const manager = createTaskManager({
+      ...managerOpts,
+      onNotice: (message) => notices.push(message),
+      isolation: {
+        available: false,
+        mode: 'policy',
+        reason: 'microsandbox is not installed',
+        configured: 'microvm',
+        runtime: null,
+        microvm: { available: false, reason: 'microsandbox is not installed' },
+      },
+      sandboxDriverFn: () => fakeDriver,
+      sweepOrphanedSandboxesFn: () => {
+        called = true
+        return Promise.resolve({ removed: [], notices: [] })
+      },
+      ...fakeRunner(),
+    })
+
+    await manager.sweepOrphanedSandboxes()
+
+    expect(called).toBe(false)
+    expect(notices).toEqual([])
   })
 })
 
