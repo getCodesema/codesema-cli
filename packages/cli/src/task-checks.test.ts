@@ -1316,7 +1316,7 @@ describe('microvmStepExecutor', () => {
     expect(create?.spec.fromSnapshot).toBeUndefined()
   })
 
-  test('a cacheName mounts a directory-backed volume, ensured before create', async () => {
+  test('a cacheName mounts a directory-backed volume with ensureExists, no separate ensureVolume call', async () => {
     const { driver, calls } = fakeMicrovmDriver({})
     const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
     await executor({
@@ -1327,18 +1327,13 @@ describe('microvmStepExecutor', () => {
       timeoutMs: 5000,
       cacheName: 'codesema-pkgcache-proj1',
     })
-    const [ensure] = callsOf(calls, 'ensureVolume')
-    expect(ensure).toEqual({
-      method: 'ensureVolume',
-      name: 'codesema-pkgcache-proj1',
-      kind: 'directory',
-    })
+    // No separate ensureVolume call left to race with create(): the mount's
+    // ensureExists makes the driver create-or-reuse atomically inside create().
+    expect(callsOf(calls, 'ensureVolume')).toHaveLength(0)
     const [create] = callsOf(calls, 'create')
-    expect(create?.spec.volumes).toEqual([{ guest: '/cache', name: 'codesema-pkgcache-proj1' }])
-    // ensureVolume happens before the sandbox that mounts it is created.
-    const ensureIndex = calls.findIndex((c) => c.method === 'ensureVolume')
-    const createIndex = calls.findIndex((c) => c.method === 'create')
-    expect(ensureIndex).toBeLessThan(createIndex)
+    expect(create?.spec.volumes).toEqual([
+      { guest: '/cache', name: 'codesema-pkgcache-proj1', ensureExists: true },
+    ])
   })
 
   test('no cacheName: no volume is ensured, no volumes on the spec', async () => {
@@ -1728,7 +1723,9 @@ describe('runChecks routed through a microvm executor', () => {
     expect(creates).toHaveLength(2)
     // Install: network open to the runbook's domains, cache mounted.
     expect(creates[0]?.spec.network).toEqual({ allowedDomains: ['registry.npmjs.org'] })
-    expect(creates[0]?.spec.volumes).toEqual([{ guest: '/cache', name: pkgCacheVolume('proj1') }])
+    expect(creates[0]?.spec.volumes).toEqual([
+      { guest: '/cache', name: pkgCacheVolume('proj1'), ensureExists: true },
+    ])
     // Check: no egress at all, no cache volume.
     expect(creates[1]?.spec.network).toEqual({ allowedDomains: [] })
     expect(creates[1]?.spec.volumes).toBeUndefined()
@@ -1874,7 +1871,9 @@ describe('bootstrapWorktreeInstall with a microvm executor', () => {
     const creates = callsOf(calls, 'create')
     expect(creates).toHaveLength(1)
     expect(creates[0]?.spec.network).toEqual({ allowedDomains: [] })
-    expect(creates[0]?.spec.volumes).toEqual([{ guest: '/cache', name: pkgCacheVolume('proj1') }])
+    expect(creates[0]?.spec.volumes).toEqual([
+      { guest: '/cache', name: pkgCacheVolume('proj1'), ensureExists: true },
+    ])
   })
 
   test('an install failure inside the microVM is reported failed, sandbox still destroyed', async () => {

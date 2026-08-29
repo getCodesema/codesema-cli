@@ -427,7 +427,13 @@ describe('sweepOrphanedSandboxes', () => {
 type RecordedRule = { domain: string; port: number | null }
 type RecordedPolicy = { defaultEgress: string; defaultIngress: string; rules: RecordedRule[] }
 type RecordedSecret = { env: string; value: string; allowedHosts: string[] }
-type RecordedVolume = { guest: string; name: string; readonly: boolean }
+type RecordedVolume = {
+  guest: string
+  name: string
+  readonly: boolean
+  mode?: string | null
+  kind?: string | null
+}
 type RecordedRootDisk = { kind: 'managed' | 'flat'; sizeMib: number }
 
 type RecordedSandboxConfig = {
@@ -717,12 +723,22 @@ function makeFakeSdk(hooks: FakeSdkHooks = {}) {
       },
       volume: (
         guest: string,
-        configure: (m: { named: (name: string) => unknown; readonly: () => unknown }) => unknown,
+        configure: (m: {
+          named: (name: string) => unknown
+          namedWith: (name: string, mode?: string | null, kind?: string | null) => unknown
+          readonly: () => unknown
+        }) => unknown,
       ) => {
         const mount: RecordedVolume = { guest, name: '', readonly: false }
         const m = {
           named: (volumeName: string) => {
             mount.name = volumeName
+            return m
+          },
+          namedWith: (volumeName: string, mode?: string | null, kind?: string | null) => {
+            mount.name = volumeName
+            mount.mode = mode ?? null
+            mount.kind = kind ?? null
             return m
           },
           readonly: () => {
@@ -1135,6 +1151,41 @@ describe('createMicrosandboxDriver.create', () => {
     expect(captured?.volumes).toEqual([
       { guest: '/work', name: 'codesema-home-t1', readonly: false },
       { guest: '/cache', name: 'codesema-cache', readonly: true },
+    ])
+  })
+
+  test('ensureExists mounts with namedWith("ensure-exists"), not the existing-only named()', async () => {
+    let captured: RecordedSandboxConfig | undefined
+    const { sdk } = makeFakeSdk({
+      onCreate: (config) => {
+        captured = config
+        return {
+          name: config.name,
+          execStreamWith: async () => makeExecHandle([]),
+          fs: () => ({}) as never,
+          metrics: async () => ({
+            memoryHostResidentBytes: null,
+            memoryBytes: null,
+            cpuPercent: null,
+          }),
+          stopWithTimeout: async () => {},
+        }
+      },
+    })
+    const driver = createMicrosandboxDriver({ sdk })
+    await driver.create(
+      baseSpec({
+        volumes: [{ guest: '/cache', name: 'codesema-pkgcache-proj1', ensureExists: true }],
+      }),
+    )
+    expect(captured?.volumes).toEqual([
+      {
+        guest: '/cache',
+        name: 'codesema-pkgcache-proj1',
+        readonly: false,
+        mode: 'ensure-exists',
+        kind: 'directory',
+      },
     ])
   })
 

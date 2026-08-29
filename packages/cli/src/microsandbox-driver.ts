@@ -70,6 +70,14 @@ export type SandboxVolumeMount = {
   guest: string
   name: string
   readonly?: boolean
+  /**
+   * `named()` mounts are existing-only per the SDK's own docs and fail the
+   * whole `create()` with "volume not found" when the volume was created by
+   * a separate prior call (observed on 0.6.15 even right after `ensureVolume`
+   * returned). `namedWith(name, 'ensure-exists')` creates-or-reuses inside
+   * the SAME call, atomically, which is what this flag switches to.
+   */
+  ensureExists?: boolean
 }
 
 export type SandboxSpec = {
@@ -340,6 +348,7 @@ type SdkSecretBuilder = {
 
 type SdkMountBuilder = {
   named(name: string): SdkMountBuilder
+  namedWith(name: string, mode?: string | null, kind?: string | null): SdkMountBuilder
   readonly(): SdkMountBuilder
 }
 
@@ -864,7 +873,9 @@ function applyVolumes(
   let b = builder
   for (const mount of volumes) {
     b = b.volume(mount.guest, (m) => {
-      const named = m.named(mount.name)
+      const named = mount.ensureExists
+        ? m.namedWith(mount.name, 'ensure-exists', 'directory')
+        : m.named(mount.name)
       return mount.readonly ? named.readonly() : named
     })
   }

@@ -1345,14 +1345,13 @@ export function microvmStepExecutor(opts: MicrovmStepExecutorOptions): StepExecu
       network: { allowedDomains },
       ...(opts.snapshotName ? { fromSnapshot: opts.snapshotName } : { image: input.image }),
       ...(input.cacheName
-        ? { volumes: [{ guest: MICROVM_CACHE_DIR, name: input.cacheName }] }
+        ? {
+            volumes: [{ guest: MICROVM_CACHE_DIR, name: input.cacheName, ensureExists: true }],
+          }
         : {}),
     }
     let created = false
     try {
-      if (input.cacheName) {
-        await opts.driver.ensureVolume(input.cacheName, { kind: 'directory' })
-      }
       const handle = await opts.driver.create(spec)
       created = true
       await handle.copyFromHost(input.worktree, CHECKS_WORK_DIR)
