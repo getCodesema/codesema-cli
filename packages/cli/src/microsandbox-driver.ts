@@ -12,12 +12,18 @@
  * - domain rules are restricted to port 443;
  * - secrets are declared on the SandboxBuilder (`.secret()` / `.secretEnv()`),
  *   never through `network()`, which substitutes nothing;
- * - `destroy` also purges the sandbox's rows from the runtime store, which
- *   keeps secret values in clear after removal;
+ * - `destroy` stops the native instance `create()` returned before removing
+ *   by name: a handle re-fetched with `Sandbox.get` never reaps the host VM
+ *   process (the only exception is the orphan of a failed `create()`, for
+ *   which the SDK returns no instance);
+ * - nothing writes to the runtime store while a process has the SDK loaded:
+ *   the store keeps secret values in clear in its WAL, so it is scrubbed once
+ *   per process before the SDK first touches it and again once the process
+ *   exits;
  * - a flat root disk (required for dockerd) cannot be snapshotted in 0.6.15.
  */
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
   accessSync,
@@ -25,13 +31,16 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export type SandboxRole = 'dev' | 'checks' | 'verify' | 'review' | 'gitops' | 'scan'
 
@@ -416,12 +425,38 @@ function errCode(err: unknown): string | null {
   return null
 }
 
-async function loadSdk(opts: MicrosandboxDriverOptions): Promise<MicrosandboxSdk> {
+let realSdk: Promise<MicrosandboxSdk> | null = null
+let storeReady: Promise<void> | null = null
+let storeInUse = false
+let exitScrubScheduled = false
+
+/**
+ * The SDK opens its store on the first operation, not on import: every
+ * caller but the probe passes through `storeReady`, which scrubs the store
+ * once per process and arms the scrub that follows this process's exit
+ * before the SDK can touch it.
+ */
+async function loadSdk(
+  opts: MicrosandboxDriverOptions,
+  options: { store?: boolean } = {},
+): Promise<MicrosandboxSdk> {
   if (opts.sdk) {
     return opts.sdk as MicrosandboxSdk
   }
-  const mod = await import('microsandbox')
-  return mod as unknown as MicrosandboxSdk
+  if (options.store !== false) {
+    storeReady ??= scrubSandboxStore(opts.onNotice).then(() => {
+      storeInUse = true
+      scheduleScrubAfterExit()
+    })
+    await storeReady
+  }
+  realSdk ??= import('microsandbox')
+    .then((mod) => mod as unknown as MicrosandboxSdk)
+    .catch((err: unknown) => {
+      realSdk = null
+      throw err
+    })
+  return realSdk
 }
 
 function readSdkVersion(): string | null {
@@ -437,7 +472,7 @@ function readSdkVersion(): string | null {
 
 async function probeMicrosandbox(opts: MicrosandboxDriverOptions): Promise<SandboxProbe> {
   try {
-    await loadSdk(opts)
+    await loadSdk(opts, { store: false })
   } catch (err) {
     return {
       available: false,
@@ -465,65 +500,149 @@ function buildNetworkPolicy(mod: MicrosandboxSdk, policy: SandboxNetworkPolicy):
   return builder.build()
 }
 
-function quoteIdentifier(id: string): string {
-  return `"${id.replace(/"/g, '""')}"`
+function sandboxStoreDbPath(): string {
+  const base = process.env.MSB_HOME ?? join(homedir(), '.microsandbox')
+  return join(base, 'db', 'msb.db')
 }
 
-/**
- * Best-effort purge of this sandbox's rows from `~/.microsandbox/db/msb.db`
- * (or `$MSB_HOME/db/msb.db`): the runtime keeps secret values in clear there
- * after `stop()`/`remove()` (spike, critère 6, "Persistance côté hôte").
- * `destroy` must succeed either way — a failure here is a notice, never a
- * thrown error. `bun:sqlite` is unavailable under a plain Node runtime, which
- * is the common case: that import failure is itself just another notice.
- */
-async function purgeSandboxStore(
-  sbName: string,
-  onNotice: ((notice: string) => void) | undefined,
-): Promise<void> {
-  const notify = (msg: string): void => {
-    onNotice?.(msg)
+function fdTargets(pid: string): string[] {
+  const targets: string[] = []
+  let fds: string[]
+  try {
+    fds = readdirSync(`/proc/${pid}/fd`)
+  } catch {
+    return targets
   }
-  const base = process.env.MSB_HOME ?? join(homedir(), '.microsandbox')
-  const dbPath = join(base, 'db', 'msb.db')
+  for (const fd of fds) {
+    try {
+      targets.push(readlinkSync(`/proc/${pid}/fd/${fd}`))
+    } catch {
+      continue
+    }
+  }
+  return targets
+}
+
+/** Pids other than ours holding the store (or its WAL/SHM) open, read from `/proc`. */
+function sandboxStoreHolders(dbPath: string): number[] {
+  let pids: string[]
+  try {
+    pids = readdirSync('/proc')
+  } catch {
+    return []
+  }
+  return pids
+    .filter((pid) => /^\d+$/.test(pid) && Number(pid) !== process.pid)
+    .filter((pid) => fdTargets(pid).some((t) => t === dbPath || t.startsWith(`${dbPath}-`)))
+    .map(Number)
+}
+
+type CheckpointRow = { busy: number; log: number; checkpointed: number }
+
+/**
+ * Truncates the WAL and vacuums `~/.microsandbox/db/msb.db` (or
+ * `$MSB_HOME/db/msb.db`): the runtime writes secret values there in clear and
+ * `Sandbox.remove()` leaves them in the WAL (spike, critère 6). Only safe
+ * while nobody has the store open: a checkpoint under a live SDK connection,
+ * from this process or another, breaks every later `create()` (FOREIGN KEY
+ * / disk I/O errors, reproduced on 0.6.15 and 0.6.16). So it refuses to run
+ * once the SDK uses the store here, skips when another process holds the file
+ * (checked again right before the VACUUM), and treats a busy checkpoint as a
+ * skip. Failures are notices, never errors.
+ */
+export async function scrubSandboxStore(
+  onNotice?: (notice: string) => void,
+): Promise<'scrubbed' | 'skipped'> {
+  const skip = (reason: string): 'skipped' => {
+    onNotice?.(`sandbox store scrub skipped: ${reason}`)
+    return 'skipped'
+  }
+  if (storeInUse) {
+    return skip('the SDK already uses the store in this process')
+  }
+  const dbPath = sandboxStoreDbPath()
   if (!existsSync(dbPath)) {
-    return
+    return 'skipped'
+  }
+  const holders = sandboxStoreHolders(dbPath)
+  if (holders.length > 0) {
+    return skip(`open in process ${holders.join(', ')}`)
   }
   try {
     const { Database } = await import('bun:sqlite')
     const db = new Database(dbPath)
     try {
-      const tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
-        name: string
-      }[]
-      for (const { name: table } of tables) {
-        const columns = db.query(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as {
-          name: string
-        }[]
-        const targetColumns = columns
-          .map((c) => c.name)
-          .filter((n) => n === 'name' || n === 'sandbox')
-        for (const column of targetColumns) {
-          try {
-            db.query(
-              `DELETE FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(column)} LIKE ?`,
-            ).run(`%${sbName}%`)
-          } catch (err) {
-            notify(`could not purge ${table}.${column} for ${sbName}: ${errMessage(err)}`)
-          }
-        }
+      db.run('PRAGMA busy_timeout = 5000')
+      const checkpoint = db.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as CheckpointRow | null
+      if (checkpoint?.busy) {
+        return skip('the WAL checkpoint found the store busy')
       }
-      try {
-        db.query('PRAGMA wal_checkpoint(TRUNCATE)').run()
-      } catch (err) {
-        notify(`wal checkpoint failed after purging ${sbName}: ${errMessage(err)}`)
+      const lateHolders = sandboxStoreHolders(dbPath)
+      if (lateHolders.length > 0) {
+        return skip(`opened meanwhile by process ${lateHolders.join(', ')}`)
       }
+      db.run('VACUUM')
     } finally {
       db.close()
     }
+    return 'scrubbed'
   } catch (err) {
-    notify(`sandbox store purge skipped for ${sbName}: ${errMessage(err)}`)
+    return skip(errMessage(err))
   }
+}
+
+const EXIT_SCRUB_SCRIPT = [
+  'const ppid = Number(process.env.CODESEMA_SCRUB_PPID)',
+  'for (;;) {',
+  '  try {',
+  '    process.kill(ppid, 0)',
+  '  } catch {',
+  '    break',
+  '  }',
+  '  await new Promise((resolve) => setTimeout(resolve, 1000))',
+  '}',
+  'const mod = await import(process.env.CODESEMA_SCRUB_MODULE)',
+  'await mod.scrubSandboxStore()',
+].join('\n')
+
+/**
+ * Spawns a detached watcher that waits for `pid` to exit (however it exits,
+ * a SIGKILL included) and then scrubs the store: the SDK's connection dies
+ * with that process, which leaves the secrets of every sandbox it ran in a
+ * WAL nobody holds. Bun only: the scrub needs `bun:sqlite`, and a Node
+ * runtime never scrubbed anything. The watcher gets a minimal environment,
+ * never the caller's tokens.
+ */
+export function spawnScrubAfterProcess(pid: number): boolean {
+  if (!process.versions.bun) {
+    return false
+  }
+  const env: Record<string, string> = {
+    CODESEMA_SCRUB_PPID: String(pid),
+    CODESEMA_SCRUB_MODULE: fileURLToPath(import.meta.url),
+  }
+  for (const name of ['PATH', 'HOME', 'MSB_HOME']) {
+    const value = process.env[name]
+    if (value !== undefined) {
+      env[name] = value
+    }
+  }
+  const child = spawn(process.execPath, ['-e', EXIT_SCRUB_SCRIPT], {
+    detached: true,
+    stdio: 'ignore',
+    env,
+  })
+  child.unref()
+  return true
+}
+
+/** Once per process, as soon as the real SDK is loaded: a scrub follows this process's exit. */
+export function scheduleScrubAfterExit(): void {
+  if (exitScrubScheduled) {
+    return
+  }
+  exitScrubScheduled = true
+  spawnScrubAfterProcess(process.pid)
 }
 
 async function runSdkExec(
@@ -674,6 +793,8 @@ async function copyTreeToHost(
   }
 }
 
+const STOP_TIMEOUT_MS = 10_000
+
 function wrapSdkSandbox(sandbox: SdkSandboxInstance): SandboxHandle {
   return {
     name: sandbox.name,
@@ -694,7 +815,7 @@ function wrapSdkSandbox(sandbox: SdkSandboxInstance): SandboxHandle {
         cpuPercent: m.cpuPercent,
       }
     },
-    stop: () => sandbox.stopWithTimeout(10_000),
+    stop: () => sandbox.stopWithTimeout(STOP_TIMEOUT_MS),
   }
 }
 
@@ -805,6 +926,7 @@ async function createWithRetry(
 async function createMicrosandboxSandbox(
   spec: SandboxSpec,
   opts: MicrosandboxDriverOptions,
+  live: Map<string, SdkSandboxInstance>,
 ): Promise<SandboxHandle> {
   if (!spec.network || !Array.isArray(spec.network.allowedDomains)) {
     throw new Error('SandboxSpec.network is required')
@@ -816,6 +938,7 @@ async function createMicrosandboxSandbox(
   }
   const mod = await loadSdk(opts)
   const sandbox = await createWithRetry(spec, mod)
+  live.set(spec.name, sandbox)
   return wrapSdkSandbox(sandbox)
 }
 
@@ -848,20 +971,46 @@ async function listMicrosandboxSnapshots(opts: MicrosandboxDriverOptions): Promi
     .map((h) => ({ name: h.name, sizeBytes: h.sizeBytes !== null ? Number(h.sizeBytes) : null }))
 }
 
-async function destroyMicrosandbox(sbName: string, opts: MicrosandboxDriverOptions): Promise<void> {
-  const mod = await loadSdk(opts)
+async function stopLiveInstance(instance: SdkSandboxInstance): Promise<boolean> {
   try {
-    const handle = await mod.Sandbox.get(sbName)
+    await instance.stopWithTimeout(STOP_TIMEOUT_MS)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Stops the native instance `create()` returned before removing: only that
+ * instance owns the host VM process, a handle re-fetched with `Sandbox.get`
+ * stops the sandbox but never reaps the process, which then lingers as a
+ * zombie until a GC finalizer and races the store on the next `create()`
+ * (observed on microsandbox 0.6.15 and 0.6.16).
+ */
+async function destroyMicrosandbox(
+  sbName: string,
+  opts: MicrosandboxDriverOptions,
+  live: Map<string, SdkSandboxInstance>,
+): Promise<void> {
+  const mod = await loadSdk(opts)
+  const liveInstance = live.get(sbName)
+  live.delete(sbName)
+  const stopped = liveInstance !== undefined && (await stopLiveInstance(liveInstance))
+  if (!stopped) {
     try {
-      await handle.stop()
-    } catch {
-      // best-effort: the sandbox may already be stopped
-    }
-  } catch (err) {
-    if (errCode(err) !== 'sandboxNotFound') {
-      throw err
+      const handle = await mod.Sandbox.get(sbName)
+      try {
+        await handle.stop()
+      } catch {
+        // best-effort: the sandbox may already be stopped
+      }
+    } catch (err) {
+      if (errCode(err) !== 'sandboxNotFound') {
+        throw err
+      }
     }
   }
+
   try {
     await mod.Sandbox.remove(sbName)
   } catch (err) {
@@ -869,7 +1018,6 @@ async function destroyMicrosandbox(sbName: string, opts: MicrosandboxDriverOptio
       throw err
     }
   }
-  await purgeSandboxStore(sbName, opts.onNotice)
 }
 
 async function removeMicrosandboxSnapshot(
@@ -911,19 +1059,20 @@ async function removeMicrosandboxVolume(
 export type MicrosandboxDriverOptions = {
   /** Override the SDK module (tests, alternate runtime path). */
   sdk?: unknown
-  /** Best-effort diagnostics that don't belong in a thrown error (e.g. a skipped store purge). */
+  /** Best-effort diagnostics that don't belong in a thrown error (e.g. a skipped store scrub). */
   onNotice?: (notice: string) => void
 }
 
 function buildMicrosandboxDriver(opts: MicrosandboxDriverOptions): SandboxDriver {
+  const live = new Map<string, SdkSandboxInstance>()
   return {
     kind: 'microsandbox',
     probe: () => probeMicrosandbox(opts),
-    create: (spec) => createMicrosandboxSandbox(spec, opts),
+    create: (spec) => createMicrosandboxSandbox(spec, opts, live),
     snapshot: (sbName, snapName) => snapshotMicrosandbox(sbName, snapName, opts),
     listSandboxes: () => listMicrosandboxes(opts),
     listSnapshots: () => listMicrosandboxSnapshots(opts),
-    destroy: (sbName) => destroyMicrosandbox(sbName, opts),
+    destroy: (sbName) => destroyMicrosandbox(sbName, opts, live),
     removeSnapshot: (snapName) => removeMicrosandboxSnapshot(snapName, opts),
     ensureVolume: (name, volOpts) => ensureMicrosandboxVolume(name, volOpts, opts),
     removeVolume: (name) => removeMicrosandboxVolume(name, opts),
@@ -931,16 +1080,17 @@ function buildMicrosandboxDriver(opts: MicrosandboxDriverOptions): SandboxDriver
 }
 
 /**
- * Shared across the whole process (hypothesis, lot E2E rejeu 2026-08-29): every
- * real call site (`task-server.ts`'s per-request `resolveMicrovmBuild` /
- * `resolveMicrovmChecksExecutor` / `reviewMicrovm` / `ship` / the boot sweeps,
- * `runner-commands.ts`) built its OWN driver — a fresh `opts` object each
- * time, never reused. The isolated spike scripts that never reproduced the
- * store's raw sqlite errors (FK/disk I/O on `create()`) all shared one driver
- * across every call in the same process; the real server never did. `opts`
- * itself is mutated in place (never replaced) so a later real caller's own
- * `onNotice` still reaches this one shared driver.
+ * Shared across the whole process: the sandbox `create()` returns in one call
+ * site (`task-server.ts`'s per-request executors, `runner-commands.ts`, the
+ * boot sweeps) is destroyed from another, and `destroyMicrosandbox` must find
+ * the native instance `create()` returned. `opts` itself is mutated in place
+ * (never replaced) so a later real caller's own `onNotice` still reaches this
+ * one shared driver.
  */
+const defaultNotice = (notice: string): void => {
+  console.warn(`microsandbox: ${notice}`)
+}
+
 let sharedRealOpts: MicrosandboxDriverOptions | null = null
 let sharedRealDriver: SandboxDriver | null = null
 
@@ -951,12 +1101,10 @@ export function createMicrosandboxDriver(opts: MicrosandboxDriverOptions = {}): 
     return buildMicrosandboxDriver(opts)
   }
   if (!sharedRealDriver || !sharedRealOpts) {
-    sharedRealOpts = { ...opts }
+    sharedRealOpts = { ...opts, onNotice: opts.onNotice ?? defaultNotice }
     sharedRealDriver = buildMicrosandboxDriver(sharedRealOpts)
-  } else if (opts.onNotice) {
-    sharedRealOpts.onNotice = opts.onNotice
   } else {
-    delete sharedRealOpts.onNotice
+    sharedRealOpts.onNotice = opts.onNotice ?? defaultNotice
   }
   return sharedRealDriver
 }

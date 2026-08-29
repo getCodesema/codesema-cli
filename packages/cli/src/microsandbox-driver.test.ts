@@ -1,7 +1,17 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
@@ -9,6 +19,8 @@ import {
   FakeSandboxDriver,
   SANDBOX_NAME_PREFIX,
   sandboxName,
+  scrubSandboxStore,
+  spawnScrubAfterProcess,
   sweepOrphanedSandboxes,
   type SandboxDriver,
   type SandboxExecOptions,
@@ -850,14 +862,12 @@ describe('createMicrosandboxDriver.probe', () => {
   })
 })
 
-// Every real call site (task-server.ts's per-request resolveMicrovmBuild /
-// resolveMicrovmChecksExecutor / reviewMicrovm / ship / the boot sweeps,
-// runner-commands.ts) builds its own `createMicrosandboxDriver()` with no
-// `sdk` override — the real path. A single process ending up with several
-// independent driver instances there (never reproduced by any isolated,
-// single-driver script) is the working hypothesis for the store's raw sqlite
-// errors on `create()`: this pins the real path down to ONE shared instance,
-// while every test's own injected `sdk` keeps its own, unshared driver.
+// Every real call site (task-server.ts's per-request executors, the boot
+// sweeps, runner-commands.ts) builds its own `createMicrosandboxDriver()` with
+// no `sdk` override: the sandbox `create()` returns in one of them is destroyed
+// from another, and `destroy()` must find the native instance `create()`
+// returned, so the real path is ONE shared instance while every test's own
+// injected `sdk` keeps its own, unshared driver.
 describe('createMicrosandboxDriver: the real (no sdk override) path is a process-wide singleton', () => {
   test('two calls with no sdk override return the exact same driver instance', () => {
     const a = createMicrosandboxDriver()
@@ -1797,6 +1807,113 @@ describe('createMicrosandboxDriver volumes', () => {
 // --- createMicrosandboxDriver: destroy -----------------------------------------
 
 describe('createMicrosandboxDriver.destroy', () => {
+  function liveInstance(name: string, stopWithTimeout: (timeoutMs: number) => Promise<void>) {
+    return {
+      name,
+      execStreamWith: async () => makeExecHandle([{ kind: 'exited', code: 0 }]),
+      fs: () => ({
+        copyFromHost: async () => {},
+        copyToHost: async () => {},
+        write: async () => {},
+        readToString: async () => '',
+      }),
+      metrics: async () => ({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
+      stopWithTimeout,
+    }
+  }
+
+  test('stops the native instance create() returned, never a re-fetched handle, then removes', async () => {
+    const calls: string[] = []
+    const { sdk } = makeFakeSdk({
+      onCreate: (config) =>
+        liveInstance(config.name, async (timeoutMs) => {
+          calls.push(`live-stop:${timeoutMs}`)
+        }),
+      onGet: (name) => ({
+        name,
+        stop: async () => {
+          calls.push('refetched-stop')
+        },
+        snapshot: async () => ({ sizeBytes: null }),
+      }),
+      onSandboxRemove: (name) => {
+        calls.push(`remove:${name}`)
+      },
+    })
+    const driver = createMicrosandboxDriver({ sdk, onNotice: () => {} })
+    await driver.create(baseSpec({ name: 'codesema-dev-t1' }))
+    await driver.destroy('codesema-dev-t1')
+    expect(calls).toEqual(['live-stop:10000', 'remove:codesema-dev-t1'])
+  })
+
+  test('falls back to the re-fetched handle when the native instance refuses to stop', async () => {
+    const calls: string[] = []
+    const { sdk } = makeFakeSdk({
+      onCreate: (config) =>
+        liveInstance(config.name, async () => {
+          calls.push('live-stop')
+          throw new Error('runtime process already gone')
+        }),
+      onGet: (name) => ({
+        name,
+        stop: async () => {
+          calls.push('refetched-stop')
+        },
+        snapshot: async () => ({ sizeBytes: null }),
+      }),
+      onSandboxRemove: (name) => {
+        calls.push(`remove:${name}`)
+      },
+    })
+    const driver = createMicrosandboxDriver({ sdk, onNotice: () => {} })
+    await driver.create(baseSpec({ name: 'codesema-dev-t1' }))
+    await driver.destroy('codesema-dev-t1')
+    expect(calls).toEqual(['live-stop', 'refetched-stop', 'remove:codesema-dev-t1'])
+  })
+
+  test('forgets the native instance once destroyed: a second destroy goes through Sandbox.get', async () => {
+    const calls: string[] = []
+    const { sdk } = makeFakeSdk({
+      onCreate: (config) =>
+        liveInstance(config.name, async () => {
+          calls.push('live-stop')
+        }),
+      onGet: (name) => ({
+        name,
+        stop: async () => {
+          calls.push('refetched-stop')
+        },
+        snapshot: async () => ({ sizeBytes: null }),
+      }),
+      onSandboxRemove: () => {
+        calls.push('remove')
+      },
+    })
+    const driver = createMicrosandboxDriver({ sdk, onNotice: () => {} })
+    await driver.create(baseSpec({ name: 'codesema-dev-t1' }))
+    await driver.destroy('codesema-dev-t1')
+    await driver.destroy('codesema-dev-t1')
+    expect(calls).toEqual(['live-stop', 'remove', 'refetched-stop', 'remove'])
+  })
+
+  test('only stops the instance of the sandbox being destroyed, other live sandboxes keep running', async () => {
+    const calls: string[] = []
+    const { sdk } = makeFakeSdk({
+      onCreate: (config) =>
+        liveInstance(config.name, async () => {
+          calls.push(`live-stop:${config.name}`)
+        }),
+      onSandboxRemove: (name) => {
+        calls.push(`remove:${name}`)
+      },
+    })
+    const driver = createMicrosandboxDriver({ sdk, onNotice: () => {} })
+    await driver.create(baseSpec({ name: 'codesema-dev-t1' }))
+    await driver.create(baseSpec({ name: 'codesema-review-t1' }))
+    await driver.destroy('codesema-dev-t1')
+    expect(calls).toEqual(['live-stop:codesema-dev-t1', 'remove:codesema-dev-t1'])
+  })
+
   test('stops the sandbox then removes it via the static Sandbox.remove', async () => {
     let stopped = false
     let removed: string | undefined
@@ -1897,9 +2014,21 @@ describe('createMicrosandboxDriver.destroy', () => {
   })
 })
 
-// --- destroy: real sqlite store purge ------------------------------------------
+// --- scrubSandboxStore: real sqlite store ---------------------------------------
 
-describe('destroy purges the sandbox store', () => {
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return predicate()
+}
+
+describe('scrubSandboxStore', () => {
+  const onLinux = process.platform === 'linux'
   let msbHome: string
   let originalMsbHome: string | undefined
 
@@ -1922,61 +2051,183 @@ describe('destroy purges the sandbox store', () => {
     return join(msbHome, 'db', 'msb.db')
   }
 
-  test('deletes rows naming the destroyed sandbox from every table with a name/sandbox column, and leaves others', async () => {
+  /**
+   * What the runtime leaves behind: a process wrote the secret into a WAL
+   * store, deleted the row, and died without closing (no checkpoint, the
+   * WAL file keeps the bytes).
+   */
+  function plantSecretFromDeadProcess(): string {
+    const secret = `sk-ant-oat01-${Math.random().toString(36).slice(2, 14)}`
+    const script = [
+      'const { Database } = await import("bun:sqlite")',
+      `const db = new Database(${JSON.stringify(dbPath())})`,
+      'db.run("PRAGMA journal_mode = WAL")',
+      'db.run("CREATE TABLE IF NOT EXISTS sandbox (id INTEGER PRIMARY KEY, name TEXT, config TEXT)")',
+      `db.run("INSERT INTO sandbox (name, config) VALUES (?, ?)", ["codesema-dev-t1", ${JSON.stringify(secret)}])`,
+      'db.run("DELETE FROM sandbox WHERE name = ?", ["codesema-dev-t1"])',
+      'process.kill(process.pid, "SIGKILL")',
+    ].join('\n')
+    const planted = Bun.spawnSync(['bun', '-e', script])
+    if (planted.signalCode !== 'SIGKILL') {
+      throw new Error(`plant failed: ${planted.stderr.toString()}`)
+    }
+    return secret
+  }
+
+  function traces(secret: string): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const suffix of ['', '-wal', '-shm']) {
+      const p = `${dbPath()}${suffix}`
+      if (!existsSync(p)) {
+        out[`msb.db${suffix}`] = 0
+        continue
+      }
+      const buf = readFileSync(p)
+      let n = 0
+      let idx = 0
+      while ((idx = buf.indexOf(secret, idx)) !== -1) {
+        n++
+        idx += secret.length
+      }
+      out[`msb.db${suffix}`] = n
+    }
+    return out
+  }
+
+  test('truncates the WAL and vacuums the store: a secret left by a dead process is gone', async () => {
+    const secret = plantSecretFromDeadProcess()
+    expect(traces(secret)['msb.db-wal']).toBeGreaterThan(0)
+    const notices: string[] = []
+    await expect(scrubSandboxStore((n) => notices.push(n))).resolves.toBe('scrubbed')
+    expect(notices).toEqual([])
+    expect(traces(secret)).toEqual({ 'msb.db': 0, 'msb.db-wal': 0, 'msb.db-shm': 0 })
     const db = new Database(dbPath())
-    db.run('CREATE TABLE secrets (id INTEGER PRIMARY KEY, sandbox TEXT, value TEXT)')
-    db.run('CREATE TABLE sandboxes (id INTEGER PRIMARY KEY, name TEXT)')
-    db.run('CREATE TABLE unrelated (id INTEGER PRIMARY KEY, note TEXT)')
-    db.run("INSERT INTO secrets (sandbox, value) VALUES ('codesema-dev-t1', 'sk-ant-oat01-secret')")
-    db.run("INSERT INTO secrets (sandbox, value) VALUES ('codesema-dev-other', 'kept')")
-    db.run("INSERT INTO sandboxes (name) VALUES ('codesema-dev-t1')")
-    db.run("INSERT INTO sandboxes (name) VALUES ('codesema-dev-other')")
-    db.run("INSERT INTO unrelated (note) VALUES ('codesema-dev-t1 mentioned in passing')")
+    expect(db.query('SELECT count(*) AS c FROM sandbox').get()).toEqual({ c: 0 })
     db.close()
-
-    const { sdk } = makeFakeSdk({
-      onGet: () => {
-        throw sdkError('sandboxNotFound', 'gone')
-      },
-      onSandboxRemove: () => {
-        throw sdkError('sandboxNotFound', 'gone')
-      },
-    })
-    await createMicrosandboxDriver({ sdk }).destroy('codesema-dev-t1')
-
-    const after = new Database(dbPath())
-    const secrets = after.query('SELECT sandbox, value FROM secrets').all() as {
-      sandbox: string
-      value: string
-    }[]
-    const sandboxes = after.query('SELECT name FROM sandboxes').all() as { name: string }[]
-    after.close()
-
-    expect(secrets).toEqual([{ sandbox: 'codesema-dev-other', value: 'kept' }])
-    expect(sandboxes).toEqual([{ name: 'codesema-dev-other' }])
   })
 
-  test('never throws when the db file does not exist', async () => {
-    rmSync(dbPath(), { force: true })
+  test('is a silent no-op when the db file does not exist', async () => {
     expect(existsSync(dbPath())).toBe(false)
-    const { sdk } = makeFakeSdk({
-      onGet: () => {
-        throw sdkError('sandboxNotFound', 'gone')
-      },
-      onSandboxRemove: () => {
-        throw sdkError('sandboxNotFound', 'gone')
-      },
-    })
-    await expect(
-      createMicrosandboxDriver({ sdk }).destroy('codesema-dev-t1'),
-    ).resolves.toBeUndefined()
+    const notices: string[] = []
+    await expect(scrubSandboxStore((n) => notices.push(n))).resolves.toBe('skipped')
+    expect(notices).toEqual([])
   })
 
-  test('reports a purge failure through onNotice instead of throwing', async () => {
-    // A directory where the db file should be makes `new Database(path)` fail.
-    rmSync(dbPath(), { force: true })
+  test.skipIf(!onLinux)(
+    'skips with a notice naming the pid while another process holds the store open',
+    async () => {
+      const secret = plantSecretFromDeadProcess()
+      const holder = Bun.spawn(['sh', '-c', 'exec 3<"$1"; exec sleep 30', 'sh', dbPath()])
+      try {
+        let open = false
+        for (let i = 0; i < 100 && !open; i++) {
+          try {
+            open = readdirSync(`/proc/${holder.pid}/fd`).some(
+              (fd) => readlinkSync(`/proc/${holder.pid}/fd/${fd}`) === dbPath(),
+            )
+          } catch {
+            open = false
+          }
+          if (!open) {
+            await new Promise((r) => setTimeout(r, 20))
+          }
+        }
+        expect(open).toBe(true)
+        const notices: string[] = []
+        await expect(scrubSandboxStore((n) => notices.push(n))).resolves.toBe('skipped')
+        expect(notices).toEqual([`sandbox store scrub skipped: open in process ${holder.pid}`])
+        expect(traces(secret)['msb.db-wal']).toBeGreaterThan(0)
+      } finally {
+        holder.kill()
+        await holder.exited
+      }
+    },
+  )
+
+  test('reports the store busy instead of claiming a scrub when the WAL checkpoint cannot complete', async () => {
+    const secret = plantSecretFromDeadProcess()
+    const reader = new Database(dbPath())
+    reader.run('BEGIN')
+    reader.query('SELECT count(*) AS c FROM sandbox').get()
+    try {
+      const notices: string[] = []
+      await expect(scrubSandboxStore((n) => notices.push(n))).resolves.toBe('skipped')
+      expect(notices).toEqual([
+        'sandbox store scrub skipped: the WAL checkpoint found the store busy',
+      ])
+      expect(traces(secret)['msb.db-wal']).toBeGreaterThan(0)
+    } finally {
+      reader.run('ROLLBACK')
+      reader.close()
+    }
+  }, 20_000)
+
+  test.skipIf(!onLinux)(
+    'spawnScrubAfterProcess: a detached child scrubs the store once the given process has exited',
+    async () => {
+      const secret = plantSecretFromDeadProcess()
+      const parent = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 1000)'])
+      expect(spawnScrubAfterProcess(parent.pid)).toBe(true)
+      expect(traces(secret)['msb.db-wal']).toBeGreaterThan(0)
+      await parent.exited
+      expect(
+        await waitUntil(() => Object.values(traces(secret)).every((n) => n === 0), 15_000),
+      ).toBe(true)
+      expect(traces(secret)).toEqual({ 'msb.db': 0, 'msb.db-wal': 0, 'msb.db-shm': 0 })
+    },
+    30_000,
+  )
+
+  test.skipIf(!onLinux)(
+    'scheduleScrubAfterExit: a process that loaded the SDK leaves a clean store behind it',
+    async () => {
+      const secret = plantSecretFromDeadProcess()
+      const modulePath = fileURLToPath(new URL('./microsandbox-driver.ts', import.meta.url))
+      const script = `const mod = await import(${JSON.stringify(modulePath)})\nmod.scheduleScrubAfterExit()\nmod.scheduleScrubAfterExit()\nawait new Promise((resolve) => setTimeout(resolve, 300))`
+      const proc = Bun.spawn([process.execPath, '-e', script], {
+        stderr: 'pipe',
+        env: { ...process.env, MSB_HOME: msbHome },
+      })
+      const stderr = await new Response(proc.stderr).text()
+      expect(await proc.exited).toBe(0)
+      expect(stderr).toBe('')
+      expect(
+        await waitUntil(() => Object.values(traces(secret)).every((n) => n === 0), 15_000),
+      ).toBe(true)
+      expect(traces(secret)).toEqual({ 'msb.db': 0, 'msb.db-wal': 0, 'msb.db-shm': 0 })
+    },
+    30_000,
+  )
+
+  test.skipIf(!onLinux)(
+    'probe() only imports the SDK: the planted WAL stays untouched and no exit scrub is armed',
+    async () => {
+      const secret = plantSecretFromDeadProcess()
+      const modulePath = fileURLToPath(new URL('./microsandbox-driver.ts', import.meta.url))
+      const script = `const mod = await import(${JSON.stringify(modulePath)})\nawait mod.createMicrosandboxDriver().probe()\nawait new Promise((resolve) => setTimeout(resolve, 300))`
+      const proc = Bun.spawn([process.execPath, '-e', script], {
+        stderr: 'pipe',
+        env: { ...process.env, MSB_HOME: msbHome },
+      })
+      const stderr = await new Response(proc.stderr).text()
+      expect(await proc.exited).toBe(0)
+      expect(stderr).toBe('')
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+      expect(traces(secret)['msb.db-wal']).toBeGreaterThan(0)
+    },
+    30_000,
+  )
+
+  test('reports an unreadable store through onNotice instead of throwing', async () => {
     mkdirSync(dbPath())
     const notices: string[] = []
+    await expect(scrubSandboxStore((n) => notices.push(n))).resolves.toBe('skipped')
+    expect(notices.some((n) => n.startsWith('sandbox store scrub skipped:'))).toBe(true)
+  })
+
+  test('destroy leaves the store alone: an external write under the live SDK breaks every later create', async () => {
+    const secret = plantSecretFromDeadProcess()
+    const before = traces(secret)
     const { sdk } = makeFakeSdk({
       onGet: () => {
         throw sdkError('sandboxNotFound', 'gone')
@@ -1985,10 +2236,12 @@ describe('destroy purges the sandbox store', () => {
         throw sdkError('sandboxNotFound', 'gone')
       },
     })
+    const notices: string[] = []
     await createMicrosandboxDriver({ sdk, onNotice: (n) => notices.push(n) }).destroy(
       'codesema-dev-t1',
     )
-    expect(notices.some((n) => n.includes('sandbox store purge skipped'))).toBe(true)
+    expect(notices).toEqual([])
+    expect(traces(secret)).toEqual(before)
   })
 })
 
