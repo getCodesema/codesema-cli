@@ -83,7 +83,7 @@ import { readChecksConfig } from './repo-config.js'
 import {
   runbookSha as computeRunbookSha,
   readRunbookConfig,
-  RUNBOOK_FILE,
+  readRunbookValidation,
 } from './runbook-setup.js'
 import { loadSyncCredentials } from './sync.js'
 import { microvmStepExecutor, runChecks } from './task-checks.js'
@@ -645,6 +645,8 @@ export type CreateTaskManagerOptions = {
   sandboxDriverFn?: () => SandboxDriver
   /** Test seam: the default reads `.codesema/runbook.json` off the worktree (lot C4). */
   readRunbookConfigFn?: typeof readRunbookConfig
+  /** Test seam: the default reads `.codesema/runbook.validation.json` off the project root. */
+  readRunbookValidationFn?: typeof readRunbookValidation
   /** Test seam: the default resolves the project's warm snapshot (lot C6). */
   resolveProjectSnapshotFn?: typeof resolveProjectSnapshot
   /** Test seam: the default builds the project's warm snapshot when missing (lot C6). */
@@ -2737,17 +2739,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    * carries a validated runbook gets `runbook.tests` replayed in a FRESH VM
    * restored from the project snapshot, right after the same commit checks
    * would verify. Null when there is nothing to verify — no commit from
-   * THIS turn, no runbook, or the task is not `'microvm'` — never a signal
-   * of failure by itself.
+   * THIS turn, no runbook, no local validation record, or the task is not
+   * `'microvm'` — never a signal of failure by itself. A runbook whose sha
+   * no longer matches its own local validation record (edited by hand, or
+   * simply re-scanned since) is REFUSED outright rather than silently
+   * verified against expectations it no longer meets.
    *
-   * `validatedSha`: the last commit that touched `.codesema/runbook.json` in
-   * this worktree's own history. The hub is the authoritative owner of a
-   * runbook's `validated_sha` (RunbookValidation, reported by the scan that
-   * proposed it), but reaching it here needs a hub-side repository id this
-   * manager has no local→hub resolver for yet (api_notes, lot C7's report):
-   * the runbook is only ever committed to the repo AFTER a green scan
-   * (runbook-runner.ts), so the commit that carries it is a correct, purely
-   * local stand-in for that same fact.
+   * `validatedSha`: read from `.codesema/runbook.validation.json` at the
+   * PROJECT root — written by the scan (runbook-runner.ts) right alongside
+   * `.codesema/runbook.json` itself. Never derived from git history: that
+   * file is gitignored and never committed, so no commit ever touches it.
    */
   const verifyAfterCommit = async (
     ctx: ProjectContext,
@@ -2768,14 +2769,30 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (!runbook) {
         return null
       }
-      const validatedSha = tryGit(['log', '-1', '--format=%H', '--', RUNBOOK_FILE], record.worktree)
-      if (!validatedSha) {
+      const readValidation = opts.readRunbookValidationFn ?? readRunbookValidation
+      const validation = readValidation(ctx.project.path)
+      if (!validation) {
         return null
       }
       const getHeadSha = opts.headShaFn ?? resolveHeadSha
       const headSha = getHeadSha(record.worktree)
       if (!headSha) {
         return null
+      }
+      const runbookSha = computeRunbookSha(runbook)
+      if (validation.runbook_sha !== runbookSha) {
+        const startedAt = new Date().toISOString()
+        return {
+          head_sha: headSha,
+          runbook_sha: runbookSha,
+          started_at: startedAt,
+          finished_at: new Date().toISOString(),
+          status: 'refused',
+          checks: [],
+          integrity_ok: false,
+          changed_dependency_files: [],
+          error: 'runbook changed since its validation, rerun codesema runbook scan',
+        }
       }
       const build = await resolveMicrovmBuild(record, {
         cwd: ctx.project.path,
@@ -2791,8 +2808,8 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         taskId: record.id,
         headSha,
         runbook,
-        runbookSha: computeRunbookSha(runbook),
-        validatedSha,
+        runbookSha,
+        validatedSha: validation.validated_sha,
         snapshotName: build.snapshotName,
         timeoutMs,
       })
@@ -2824,9 +2841,17 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       return
     }
     record.status = 'review_ko'
+    // 'refused' covers two distinct causes: a `depends_on_files` drift
+    // (changed_dependency_files non-empty) and a runbook whose sha no
+    // longer matches its own local validation record (verifyAfterCommit
+    // returns that verdict with changed_dependency_files always empty) —
+    // the latter falls through to `error`, where verifyAfterCommit puts its
+    // own readable message.
     const detail =
       verification.status === 'refused'
-        ? `runbook integrity drifted: ${verification.changed_dependency_files.join(', ')}`
+        ? verification.changed_dependency_files.length > 0
+          ? `runbook integrity drifted: ${verification.changed_dependency_files.join(', ')}`
+          : (verification.error ?? 'runbook validation is stale')
         : verification.status === 'error'
           ? (verification.error ?? 'mechanical verification could not run')
           : `mechanical verification failed (${verification.checks

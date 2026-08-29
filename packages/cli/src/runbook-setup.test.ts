@@ -2,15 +2,23 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { RUNBOOK_COMMAND_MAX, RUNBOOK_VERSION, type RunbookConfig } from './contract.js'
+import {
+  RUNBOOK_COMMAND_MAX,
+  RUNBOOK_VERSION,
+  type RunbookConfig,
+  type RunbookValidation,
+} from './contract.js'
 import {
   buildRunbookSetupPrompt,
   PREVIOUS_FAILURE_MAX_CHARS,
   readRunbookConfig,
+  readRunbookValidation,
   RUNBOOK_FILE,
+  RUNBOOK_VALIDATION_FILE,
   runbookSha,
   sanitizeRunbookProposal,
   writeRunbookConfig,
+  writeRunbookValidation,
 } from './runbook-setup.js'
 
 let repo: string
@@ -43,6 +51,13 @@ const CLEAN_RUNBOOK: RunbookConfig = {
   tests: ['bun test'],
   egress: ['registry.npmjs.org'],
   depends_on_files: ['bun.lock', 'package.json'],
+}
+
+const CLEAN_VALIDATION: RunbookValidation = {
+  runbook_sha: runbookSha(CLEAN_RUNBOOK),
+  validated_sha: 'deadbeefdeadbeef',
+  validated_at: '2026-01-01T00:00:00.000Z',
+  status: 'valid',
 }
 
 // --- buildRunbookSetupPrompt -----------------------------------------------
@@ -369,6 +384,59 @@ describe('writeRunbookConfig / readRunbookConfig', () => {
     const other: RunbookConfig = { ...CLEAN_RUNBOOK, tests: ['bun run typecheck', 'bun test'] }
     writeRunbookConfig(repo, other)
     expect(readRunbookConfig(repo)).toEqual(other)
+  })
+})
+
+// --- writeRunbookValidation / readRunbookValidation -------------------------
+
+describe('writeRunbookValidation / readRunbookValidation', () => {
+  test('writes atomically (tmp file gone, target present) and round-trips', () => {
+    writeRunbookValidation(repo, CLEAN_VALIDATION)
+    const target = join(repo, RUNBOOK_VALIDATION_FILE)
+    expect(existsSync(target)).toBe(true)
+    expect(existsSync(`${target}.tmp`)).toBe(false)
+
+    expect(readRunbookValidation(repo)).toEqual(CLEAN_VALIDATION)
+  })
+
+  test('creates the .codesema directory on the first write', () => {
+    expect(existsSync(join(repo, '.codesema'))).toBe(false)
+    writeRunbookValidation(repo, CLEAN_VALIDATION)
+    expect(existsSync(join(repo, '.codesema'))).toBe(true)
+  })
+
+  test('readRunbookValidation returns null when the file is absent', () => {
+    expect(readRunbookValidation(repo)).toBeNull()
+  })
+
+  test('readRunbookValidation returns null on invalid JSON', () => {
+    mkdirSync(join(repo, '.codesema'), { recursive: true })
+    writeFileSync(join(repo, RUNBOOK_VALIDATION_FILE), '{ broken')
+    expect(readRunbookValidation(repo)).toBeNull()
+  })
+
+  test('readRunbookValidation returns null on a structurally invalid validation (bad shas, unknown status)', () => {
+    mkdirSync(join(repo, '.codesema'), { recursive: true })
+    writeFileSync(
+      join(repo, RUNBOOK_VALIDATION_FILE),
+      JSON.stringify({ runbook_sha: 'not-hex', validated_sha: 'x', status: 'unknown' }),
+    )
+    expect(readRunbookValidation(repo)).toBeNull()
+  })
+
+  test('a second write overwrites the first, never leaving a partial file', () => {
+    writeRunbookValidation(repo, CLEAN_VALIDATION)
+    const other: RunbookValidation = { ...CLEAN_VALIDATION, validated_sha: 'cafebabecafebabe' }
+    writeRunbookValidation(repo, other)
+    expect(readRunbookValidation(repo)).toEqual(other)
+  })
+
+  test('lives at a different path from RUNBOOK_FILE, and neither write touches the other', () => {
+    writeRunbookConfig(repo, CLEAN_RUNBOOK)
+    writeRunbookValidation(repo, CLEAN_VALIDATION)
+    expect(RUNBOOK_VALIDATION_FILE).not.toBe(RUNBOOK_FILE)
+    expect(readRunbookConfig(repo)).toEqual(CLEAN_RUNBOOK)
+    expect(readRunbookValidation(repo)).toEqual(CLEAN_VALIDATION)
   })
 })
 

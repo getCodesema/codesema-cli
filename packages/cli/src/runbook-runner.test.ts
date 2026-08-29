@@ -147,6 +147,7 @@ function baseOptions(overrides: Partial<RunRunbookScanOptions> = {}): RunRunbook
     buildPromptFn: () => 'the prompt',
     sanitizeProposalFn: () => ({ ok: true, runbook: sampleRunbook() }),
     writeRunbookConfigFn: () => WRITTEN_SHA,
+    writeRunbookValidationFn: () => {},
     buildProjectSnapshotFn: async () =>
       ({ kind: 'ready', name: 'snap1', hash: 'h1' }) as ProjectSnapshot,
     runProposalFn: async () => 'ignored: sanitizeProposalFn decides',
@@ -230,6 +231,28 @@ describe('runRunbookScan — happy path', () => {
     expect(specs).toHaveLength(1)
     expect(specs[0]?.network).toEqual({ allowedDomains: ['registry.npmjs.org', 'github.com'] })
     expect(specs[0]?.image).toBe('node:26')
+  })
+
+  test('a green scan writes the local validation record at the project root, right after RUNBOOK_FILE', async () => {
+    const writeCalls: { worktree: string; validation: unknown }[] = []
+    const outcome = await runRunbookScan(
+      baseOptions({
+        worktree: '/repo',
+        writeRunbookConfigFn: () => WRITTEN_SHA,
+        writeRunbookValidationFn: (worktree, validation) => {
+          writeCalls.push({ worktree, validation })
+        },
+      }),
+    )
+    expect(outcome.status).toBe('completed')
+    if (outcome.status !== 'completed') {
+      throw new Error('unreachable')
+    }
+    // Written to the SAME root RUNBOOK_FILE was just written to (the scan's
+    // own `opts.worktree`, always the project root in practice — never a
+    // task worktree), with exactly the RunbookValidation the outcome itself
+    // reports.
+    expect(writeCalls).toEqual([{ worktree: '/repo', validation: outcome.validation }])
   })
 })
 

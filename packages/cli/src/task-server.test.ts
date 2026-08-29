@@ -27,6 +27,7 @@ import {
   type Finding,
   type ReviewRecord,
   type RunbookConfig,
+  type RunbookValidation,
   type TaskChecks,
   type TaskEvent,
   type TaskIssueRef,
@@ -45,6 +46,7 @@ import type { RunMicrovmTurnOptions } from './microvm-turn.js'
 import { addProject, listProjects, projectsPath, scratchProject, type Project } from './projects.js'
 import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
+import { runbookSha as computeRunbookSha } from './runbook-setup.js'
 import { createSession, startServer } from './serve.js'
 import type { MicrovmStepExecutorOptions, RunChecksOptions, StepExecutor } from './task-checks.js'
 import {
@@ -11828,10 +11830,6 @@ describe('microvm wiring (lot C7)', () => {
 
     function seedInterruptedMicrovmTask(cwd: string): { record: TaskRecord; worktree: string } {
       const worktree = makeRepo()
-      mkdirSync(join(worktree, '.codesema'), { recursive: true })
-      writeFileSync(join(worktree, '.codesema', 'runbook.json'), '{}')
-      execFileSync('git', ['add', '-A'], { cwd: worktree, stdio: 'ignore' })
-      execFileSync('git', ['commit', '-m', 'runbook'], { cwd: worktree, stdio: 'ignore' })
       const record = createTask(cwd, {
         title: 'vm task',
         prompt: 'do it',
@@ -11845,6 +11843,25 @@ describe('microvm wiring (lot C7)', () => {
       record.status = 'interrupted'
       saveTask(cwd, record)
       return { record, worktree }
+    }
+
+    /**
+     * A local validation record whose `runbook_sha` matches `runbook` by
+     * default (the "valid, still current" case) — `readRunbookValidationFn`
+     * mocks read this the same way the real `.codesema/runbook.validation.json`
+     * would, written by the scan (runbook-runner.ts) at the project root.
+     */
+    function validRunbookValidation(
+      runbook: RunbookConfig,
+      overrides: Partial<RunbookValidation> = {},
+    ): RunbookValidation {
+      return {
+        runbook_sha: computeRunbookSha(runbook),
+        validated_sha: 'deadbeefdeadbeef',
+        validated_at: '2026-01-01T00:00:00.000Z',
+        status: 'valid',
+        ...overrides,
+      }
     }
 
     test('a passed verification stamps runbook_sha/runbook_integrity, writes verification.json, keeps review_ok', async () => {
@@ -11864,12 +11881,14 @@ describe('microvm wiring (lot C7)', () => {
         changed_dependency_files: [],
         error: null,
       }
+      const validation = validRunbookValidation(runbook)
       const verifyCalls: VerifyTaskOptions[] = []
       const envelopes: TaskEnvelope[] = []
       const manager = createTaskManager({
         ...managerOpts,
         sandboxDriverFn: () => fakeDriver,
         readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => validation,
         resolveProjectSnapshotFn: () =>
           Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
         verifyTaskFn: (opts) => {
@@ -11897,7 +11916,7 @@ describe('microvm wiring (lot C7)', () => {
       expect(verifyCalls[0]?.worktree).toBe(worktree)
       expect(verifyCalls[0]?.runbook).toEqual(runbook)
       expect(verifyCalls[0]?.snapshotName).toBeNull()
-      expect(verifyCalls[0]?.validatedSha).toBeTruthy()
+      expect(verifyCalls[0]?.validatedSha).toBe(validation.validated_sha)
 
       const final = loadTask(project.path, record.id)
       expect(final?.runbook_sha).toBe('0123456789abcdef')
@@ -11932,6 +11951,7 @@ describe('microvm wiring (lot C7)', () => {
         ...managerOpts,
         sandboxDriverFn: () => fakeDriver,
         readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => validRunbookValidation(runbook),
         resolveProjectSnapshotFn: () =>
           Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
         verifyTaskFn: () => Promise.resolve(verification),
@@ -11968,6 +11988,7 @@ describe('microvm wiring (lot C7)', () => {
         ...managerOpts,
         sandboxDriverFn: () => fakeDriver,
         readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => validRunbookValidation(runbook),
         resolveProjectSnapshotFn: () =>
           Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
         headShaFn: () => null,
@@ -12124,6 +12145,10 @@ describe('microvm wiring (lot C7)', () => {
         // like a real task worktree — `.codesema/runbook.json` is gitignored
         // and never checked out there.
         readRunbookConfigFn: (cwd) => (cwd === project.path ? rootRunbook : null),
+        // Same doctrine for the local validation record: only a lookup
+        // rooted at the project path finds it.
+        readRunbookValidationFn: (cwd) =>
+          cwd === project.path ? validRunbookValidation(rootRunbook) : null,
         resolveProjectSnapshotFn: () =>
           Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
         verifyTaskFn: (opts) => {
@@ -12148,6 +12173,155 @@ describe('microvm wiring (lot C7)', () => {
 
       expect(verifyCalls).toHaveLength(1)
       expect(verifyCalls[0]?.runbook).toEqual(rootRunbook)
+      void worktree
+    })
+
+    test('no local validation record: verification is skipped, no runbook_sha stamped', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      let verifyCalled = false
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => null,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: () => {
+          verifyCalled = true
+          return Promise.resolve({
+            head_sha: 'x',
+            runbook_sha: '0123456789abcdef',
+            started_at: 'x',
+            finished_at: 'y',
+            status: 'passed',
+            checks: [],
+            integrity_ok: true,
+            changed_dependency_files: [],
+            error: null,
+          })
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+      expect(verifyCalled).toBe(false)
+      expect(loadTask(project.path, record.id)?.runbook_sha).toBeUndefined()
+      expect(readTaskVerification(project.path, record.id)).toBeNull()
+      void worktree
+    })
+
+    test('a runbook whose sha no longer matches its own local validation is REFUSED with a clear message, verifyTask never runs', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      // A validation record whose runbook_sha names a DIFFERENT runbook: the
+      // one on disk has drifted (hand-edited, or a scan since superseded).
+      const staleValidation = validRunbookValidation(runbook, {
+        runbook_sha: 'fedcba9876543210',
+      })
+      let verifyCalled = false
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => staleValidation,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: () => {
+          verifyCalled = true
+          return Promise.reject(new Error('verifyTask must never run on a stale runbook'))
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ko')
+
+      expect(verifyCalled).toBe(false)
+      const final = loadTask(project.path, record.id)
+      expect(final?.runbook_integrity).toBe(false)
+      expect(final?.reason?.code).toBe('checks_failed')
+      expect(final?.reason?.detail).toBe(
+        'runbook changed since its validation, rerun codesema runbook scan',
+      )
+      const stored = readTaskVerification(project.path, record.id)
+      expect(stored?.status).toBe('refused')
+      expect(stored?.changed_dependency_files).toEqual([])
+      expect(stored?.error).toBe(
+        'runbook changed since its validation, rerun codesema runbook scan',
+      )
+      void worktree
+    })
+
+    test('sha match: validatedSha handed to verifyTask is validation.validated_sha, never derived from git history', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const validation = validRunbookValidation(runbook, { validated_sha: 'abc1234abc1234ab' })
+      const verifyCalls: VerifyTaskOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => validation,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: (opts) => {
+          verifyCalls.push(opts)
+          return Promise.resolve({
+            head_sha: 'x',
+            runbook_sha: computeRunbookSha(runbook),
+            started_at: 'x',
+            finished_at: 'y',
+            status: 'passed' as const,
+            checks: [],
+            integrity_ok: true,
+            changed_dependency_files: [],
+            error: null,
+          })
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+      expect(verifyCalls).toHaveLength(1)
+      expect(verifyCalls[0]?.validatedSha).toBe('abc1234abc1234ab')
       void worktree
     })
   })

@@ -19,10 +19,21 @@ import {
   RUNBOOK_PATHS_MAX,
   RUNBOOK_VERSION,
   sanitizeRunbookConfig,
+  sanitizeRunbookValidation,
   type RunbookConfig,
+  type RunbookValidation,
 } from './contract.js'
 
 export const RUNBOOK_FILE = '.codesema/runbook.json'
+
+/**
+ * The scan's own local record of what it validated: written at the project
+ * root right after a green scan writes `RUNBOOK_FILE`, read back by the
+ * mechanical verification (task-verification.ts, via task-server.ts) so it
+ * never has to walk git history to find the commit a runbook was validated
+ * against.
+ */
+export const RUNBOOK_VALIDATION_FILE = '.codesema/runbook.validation.json'
 
 /** Tail kept of a retry's previous failure: enough context, never the whole log. */
 export const PREVIOUS_FAILURE_MAX_CHARS = 4_000
@@ -339,4 +350,26 @@ export function readRunbookConfig(worktree: string): RunbookConfig | null {
 /** sha256 of `canonicalRunbookJson(runbook)`, first 16 hex: the `runbook_sha` both repositories agree on. */
 export function runbookSha(runbook: RunbookConfig): string {
   return createHash('sha256').update(canonicalRunbookJson(runbook)).digest('hex').slice(0, 16)
+}
+
+/** Atomic write of `.codesema/runbook.validation.json` (temp file + rename). */
+export function writeRunbookValidation(worktree: string, validation: RunbookValidation): void {
+  writeJsonAtomic(join(worktree, RUNBOOK_VALIDATION_FILE), validation)
+}
+
+/** Reads and revalidates `.codesema/runbook.validation.json`; null when absent or invalid. */
+export function readRunbookValidation(worktree: string): RunbookValidation | null {
+  let raw: string
+  try {
+    raw = readFileSync(join(worktree, RUNBOOK_VALIDATION_FILE), 'utf8')
+  } catch {
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  return sanitizeRunbookValidation(parsed)
 }

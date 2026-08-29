@@ -34,6 +34,7 @@ import {
   buildRunbookSetupPrompt,
   sanitizeRunbookProposal,
   writeRunbookConfig,
+  writeRunbookValidation,
   type RunbookProposalInput,
 } from './runbook-setup.js'
 import type { SyncCredentials } from './sync.js'
@@ -173,6 +174,8 @@ export type RunRunbookScanOptions = {
   sanitizeProposalFn?: typeof sanitizeRunbookProposal
   /** Test seam: never a real file write in a test; returns the runbook_sha. */
   writeRunbookConfigFn?: (worktree: string, runbook: RunbookConfig) => string
+  /** Test seam: never a real file write in a test. */
+  writeRunbookValidationFn?: (worktree: string, validation: RunbookValidation) => void
   /** Test seam: never a real snapshot build in a test. */
   buildProjectSnapshotFn?: (opts: {
     driver: SandboxDriver
@@ -350,6 +353,7 @@ export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<Runbo
   const buildPrompt = opts.buildPromptFn ?? buildRunbookSetupPrompt
   const sanitizeProposal = opts.sanitizeProposalFn ?? sanitizeRunbookProposal
   const writeConfig = opts.writeRunbookConfigFn ?? writeRunbookConfig
+  const writeValidation = opts.writeRunbookValidationFn ?? writeRunbookValidation
   const buildSnapshot = opts.buildProjectSnapshotFn ?? buildProjectSnapshot
   const sleepFn = opts.sleepFn ?? defaultSleep
   const defaultImage = opts.defaultImage ?? DEFAULT_CHECKS_IMAGE
@@ -458,6 +462,12 @@ export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<Runbo
       validated_at: new Date().toISOString(),
       status: 'valid',
     }
+    // Written locally at the project root, alongside RUNBOOK_FILE: the
+    // mechanical verification (task-server.ts's verifyAfterCommit) reads it
+    // back to find the sha this runbook was validated against, rather than
+    // walking git history for a commit that touched RUNBOOK_FILE — that file
+    // is gitignored and never committed, so no such commit ever exists.
+    writeValidation(opts.worktree, validation)
     return {
       status: 'completed',
       runbook,
