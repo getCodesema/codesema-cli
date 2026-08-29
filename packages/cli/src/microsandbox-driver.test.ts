@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import {
+  accessSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -862,19 +864,43 @@ function sdkError(code: string, message: string): Error {
 // --- createMicrosandboxDriver: probe ------------------------------------------
 
 describe('createMicrosandboxDriver.probe', () => {
-  test('available with an injected sdk on a host with /dev/kvm access', async () => {
-    const { sdk } = makeFakeSdk()
-    const driver = createMicrosandboxDriver({ sdk })
-    const probe = await driver.probe()
-    expect(probe.available).toBe(true)
-    expect(probe.reason).toBeNull()
-  })
+  const kvmAccessible = (() => {
+    try {
+      accessSync('/dev/kvm', constants.R_OK | constants.W_OK)
+      return true
+    } catch {
+      return false
+    }
+  })()
+
+  test.skipIf(!kvmAccessible)(
+    'available with an injected sdk on a host with /dev/kvm access',
+    async () => {
+      const { sdk } = makeFakeSdk()
+      const driver = createMicrosandboxDriver({ sdk })
+      const probe = await driver.probe()
+      expect(probe.available).toBe(true)
+      expect(probe.reason).toBeNull()
+    },
+  )
+
+  test.skipIf(kvmAccessible)(
+    'unavailable, with the reason, on a host without /dev/kvm access',
+    async () => {
+      const { sdk } = makeFakeSdk()
+      const driver = createMicrosandboxDriver({ sdk })
+      const probe = await driver.probe()
+      expect(probe.available).toBe(false)
+      expect(probe.reason).toMatch(/^\/dev\/kvm is not accessible for read\/write: /)
+      expect(probe.version).toBe('0.6.16')
+    },
+  )
 
   test('surfaces the microsandbox SDK version from its own package.json regardless of the injected sdk', async () => {
     const { sdk } = makeFakeSdk()
     const driver = createMicrosandboxDriver({ sdk })
     const probe = await driver.probe()
-    expect(probe.version).toBe('0.6.15')
+    expect(probe.version).toBe('0.6.16')
   })
 })
 
