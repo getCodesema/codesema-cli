@@ -11237,7 +11237,13 @@ describe('microvm wiring (lot C7)', () => {
       expect(microvm?.image).toBe('node:26')
       expect(microvm?.runbook).toEqual(runbook)
       expect(snapshotCalls).toEqual([
-        { driver: fakeDriver, projectId: project.id, worktree: record.worktree, runbook },
+        {
+          driver: fakeDriver,
+          projectId: project.id,
+          worktree: record.worktree,
+          runbook,
+          agentId: 'claude',
+        },
       ])
     })
 

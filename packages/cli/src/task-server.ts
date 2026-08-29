@@ -102,6 +102,7 @@ import { resolveHubTicketOrigin } from './task-hub-ticket.js'
 import { reportHubTransition } from './task-hub.js'
 import {
   agentHomeVolume,
+  commandBin,
   DEFAULT_BASE_IMAGE,
   isolationDefaults,
   isolationDomainsFor,
@@ -1502,6 +1503,18 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const createRunner = opts.createRunnerFn ?? createTaskRunner
 
   /**
+   * The agent this record's turn actually runs, reduced to the binary id the
+   * project snapshot's fingerprint hashes on (microvm-snapshot.ts): the
+   * record's write-once agent when it has one, else the project's default
+   * command. MUST agree between every caller that resolves a snapshot for
+   * the SAME record (build, checks, review) — a different id here computes a
+   * different fingerprint and the "ready" snapshot the dev turn built is
+   * never found again.
+   */
+  const microvmAgentId = (record: TaskRecord, command: string): string =>
+    commandBin(commandForTask(record, command)) || 'claude'
+
+  /**
    * The driver, snapshot, image, runbook and secrets a 'microvm' task's turn,
    * checks or verification runs with — resolved fresh from the record's OWN
    * worktree, since the runbook and the snapshot travel with the branch, not
@@ -1513,13 +1526,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    */
   const resolveMicrovmBuild = async (
     record: TaskRecord,
-    cwd: string,
-    projectId: string,
-    timeoutMs: number,
+    params: { cwd: string; projectId: string; timeoutMs: number; command: string },
   ): Promise<RunTaskTurnMicrovmOptions> => {
+    const { cwd, projectId, timeoutMs, command } = params
     const driver = opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver()
     const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
     const runbook = readRunbook(record.worktree)
+    const agentId = microvmAgentId(record, command)
     let snapshotName: string | null = null
     if (runbook) {
       const resolveSnapshot = opts.resolveProjectSnapshotFn ?? resolveProjectSnapshot
@@ -1528,6 +1541,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         projectId,
         worktree: record.worktree,
         runbook,
+        agentId,
       })
       if (snapshot.kind === 'ready') {
         snapshotName = snapshot.name
@@ -1538,6 +1552,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           projectId,
           worktree: record.worktree,
           runbook,
+          agentId,
           timeoutMs,
         })
         snapshotName = built.kind === 'ready' ? built.name : null
@@ -1562,6 +1577,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     driver: SandboxDriver,
     record: TaskRecord,
     projectId: string,
+    command: string,
   ): Promise<{ runbook: RunbookConfig | null; snapshotName: string | null }> => {
     const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
     const runbook = readRunbook(record.worktree)
@@ -1574,6 +1590,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       projectId,
       worktree: record.worktree,
       runbook,
+      agentId: microvmAgentId(record, command),
     })
     return { runbook, snapshotName: snapshot.kind === 'ready' ? snapshot.name : null }
   }
@@ -1588,9 +1605,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   const resolveMicrovmChecksExecutor = async (
     record: TaskRecord,
     projectId: string,
+    command: string,
   ): Promise<ReturnType<typeof microvmStepExecutor>> => {
     const driver = opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver()
-    const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot(driver, record, projectId)
+    const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot(
+      driver,
+      record,
+      projectId,
+      command,
+    )
     return microvmStepExecutor({
       driver,
       projectId,
@@ -2594,7 +2617,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
             headSha,
             onUpdate: (snapshot) => broadcast(snapshot),
             ...(record.isolation === 'microvm'
-              ? { executor: await resolveMicrovmChecksExecutor(record, projectId) }
+              ? { executor: await resolveMicrovmChecksExecutor(record, projectId, ctx.command) }
               : {}),
           })
         } catch (err) {
@@ -2730,7 +2753,12 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (!headSha) {
         return null
       }
-      const build = await resolveMicrovmBuild(record, ctx.project.path, ctx.project.id, timeoutMs)
+      const build = await resolveMicrovmBuild(record, {
+        cwd: ctx.project.path,
+        projectId: ctx.project.id,
+        timeoutMs,
+        command: ctx.command,
+      })
       const run = opts.verifyTaskFn ?? verifyTask
       return await run({
         driver: build.driver,
@@ -2852,6 +2880,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
                 driver,
                 record,
                 projectId,
+                command,
               )
               return { snapshotName, runbook, verification: readTaskVerification(cwd, record.id) }
             }
@@ -3184,7 +3213,8 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // The microvm build (driver/snapshot/image/runbook/secrets) is
       // re-resolved fresh at EVERY turn — never called for a non-'microvm'
       // record (see runTaskTurn's own gate).
-      resolveMicrovmFn: (record) => resolveMicrovmBuild(record, cwd, projectId, timeoutMs),
+      resolveMicrovmFn: (record) =>
+        resolveMicrovmBuild(record, { cwd, projectId, timeoutMs, command }),
       ...(opts.runMicrovmTurnFn ? { runMicrovmTurnFn: opts.runMicrovmTurnFn } : {}),
       onTask: (record) => {
         emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
