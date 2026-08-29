@@ -1151,6 +1151,10 @@ export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<s
     1,
     Math.ceil(opts.timeoutMs / 1000) + MICROVM_REVIEW_DURATION_BUFFER_SECONDS,
   )
+  // No `workdir` here: the SDK refuses one that does not already exist in
+  // the image, and `/work` is only created below by `copyFromHost` (same
+  // reasoning as `runMicrovmTurn`'s own boot user) — `cwd` on the exec call
+  // below does the `cd` instead.
   const handle = await opts.driver.create({
     name,
     ...(opts.snapshotName ? { fromSnapshot: opts.snapshotName } : { image: opts.image }),
@@ -1159,7 +1163,6 @@ export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<s
     maxDurationSeconds,
     network,
     ...(opts.secrets ? { secrets: opts.secrets } : {}),
-    workdir: MICROVM_REVIEW_DEFAULTS.workDir,
   })
   try {
     await ensureGuestUser(handle, MICROVM_REVIEW_DEFAULTS.user)

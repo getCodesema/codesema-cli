@@ -2552,6 +2552,25 @@ describe('runMicrovmReview', () => {
     })
   })
 
+  test('never sets a boot workdir on the sandbox spec: the SDK refuses one that does not already exist in the image', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: null,
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    expect(fake.specs[0]?.workdir).toBeUndefined()
+  })
+
   test('a snapshot name restores from the snapshot instead of booting the image cold', async () => {
     const repo = makeRepo()
     const fake = fakeMicrovmDriver()
