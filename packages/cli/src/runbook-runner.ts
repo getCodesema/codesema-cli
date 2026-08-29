@@ -37,6 +37,7 @@ import {
 } from './runbook-setup.js'
 import type { SyncCredentials } from './sync.js'
 import { DEFAULT_CHECKS_IMAGE } from './task-checks.js'
+import { commandBin } from './task-isolation.js'
 
 export const RUNBOOK_SCAN_MAX_ATTEMPTS = 5
 
@@ -435,6 +436,7 @@ export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<Runbo
         projectId: opts.projectId,
         worktree: opts.worktree,
         runbook,
+        agentId: commandBin(opts.command) || 'claude',
         timeoutMs: opts.timeoutMs,
         ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
       })
