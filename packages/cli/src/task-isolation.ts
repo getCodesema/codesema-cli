@@ -312,7 +312,7 @@ export function microvmSecretsFromEnv(env: NodeJS.ProcessEnv): SandboxSecret[] {
 }
 
 /** First PATH token of a command line (`/usr/bin/opencode run` → `opencode`). */
-function commandBin(command: string): string {
+export function commandBin(command: string): string {
   return (command.trim().split(/\s+/)[0] ?? '').split('/').pop() ?? ''
 }
 
@@ -707,15 +707,40 @@ export function readBaseImageInputs(
 /** Shell-quoted safely by construction: JSON exec form, never a bare RUN line. */
 const runLine = (command: string): string => `RUN ["sh","-lc",${JSON.stringify(command)}]`
 
+export type InstallCommandOptions = {
+  /**
+   * 'native' (default): curl+tar+bash native installer first, then npm, then
+   * bun — right for a container image build, whose build-time proxy is not
+   * bound by the runtime cage's egress allowlist. 'npm': npm only, no native
+   * installer branch — for a microVM cold boot, whose allowlist only ever
+   * opens `registry.npmjs.org` (AGENT_INSTALL_DOMAINS in microvm-bootstrap.ts),
+   * never the native installer's claude.ai/storage domains.
+   */
+  prefer?: 'native' | 'npm'
+}
+
 /**
  * Agent CLI install, branched INSIDE the image (same shape as GIT_INSTALL_COMMAND):
  * curl+tar+bash → native installer, else npm (same RUN as cache clean), else bun,
  * else a sentence a human can act on. `baseRef` is kept on the signature so
  * callers that used to pick bun vs npm still compile; the image decides.
  */
-export function installCommandFor(agent: string, baseRef?: string): string {
+export function installCommandFor(
+  agent: string,
+  baseRef?: string,
+  options?: InstallCommandOptions,
+): string {
   void baseRef
   const pkg = agent === 'opencode' ? 'opencode-ai' : '@anthropic-ai/claude-code'
+  if (options?.prefer === 'npm') {
+    return [
+      'if command -v npm >/dev/null 2>&1; then',
+      `  npm install -g ${pkg} && npm cache clean --force; exit $?;`,
+      'fi',
+      `echo "codesema: this microVM image has no npm, so ${agent} cannot be installed" >&2`,
+      'exit 1',
+    ].join('\n')
+  }
   const nativePipe =
     agent === 'opencode'
       ? 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path || true'
