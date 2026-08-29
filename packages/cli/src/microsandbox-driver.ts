@@ -195,6 +195,27 @@ function errMessage(err: unknown): string {
 }
 
 /**
+ * `create()` occasionally fails with a raw sqlite error from microsandbox's
+ * own runtime store ("error returned from database: (code: 787) FOREIGN KEY
+ * constraint failed", "(code: 522) disk I/O error") when a boot lands close
+ * behind another sandbox's own create/destroy against the same store
+ * (spike-observed on 0.6.15, sequential — never concurrent — calls from this
+ * driver). Never a config problem: retried a few times with a short backoff,
+ * distinct from every other `create()` rejection (bad workdir, missing
+ * network policy, …), which fails once, as before.
+ */
+function isTransientSandboxStoreError(err: unknown): boolean {
+  return errMessage(err).includes('error returned from database')
+}
+
+/** Total create() attempts: the first try plus each of these backoffs. */
+const SANDBOX_CREATE_RETRY_DELAYS_MS = [300, 900]
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
  * Removes every `codesema-*` sandbox whose task id is no longer claimed.
  * Never throws: every failure becomes a notice.
  */
@@ -691,6 +712,26 @@ async function removeOrphanedSandbox(mod: MicrosandboxSdk, name: string): Promis
   }
 }
 
+/** See `isTransientSandboxStoreError`'s doc: retries only that one family of error, cleaning up between attempts like a single `create()` already did. */
+async function createWithRetry(
+  builder: { create(): Promise<SdkSandboxInstance> },
+  mod: MicrosandboxSdk,
+  name: string,
+): Promise<SdkSandboxInstance> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await builder.create()
+    } catch (err) {
+      await removeOrphanedSandbox(mod, name)
+      const retryDelayMs = SANDBOX_CREATE_RETRY_DELAYS_MS[attempt]
+      if (retryDelayMs === undefined || !isTransientSandboxStoreError(err)) {
+        throw err
+      }
+      await delay(retryDelayMs)
+    }
+  }
+}
+
 async function createMicrosandboxSandbox(
   spec: SandboxSpec,
   opts: MicrosandboxDriverOptions,
@@ -745,13 +786,7 @@ async function createMicrosandboxSandbox(
       return mount.readonly ? named.readonly() : named
     })
   }
-  let sandbox: SdkSandboxInstance
-  try {
-    sandbox = await builder.create()
-  } catch (err) {
-    await removeOrphanedSandbox(mod, spec.name)
-    throw err
-  }
+  const sandbox = await createWithRetry(builder, mod, spec.name)
   return wrapSdkSandbox(sandbox)
 }
 

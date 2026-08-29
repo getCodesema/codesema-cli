@@ -1148,6 +1148,76 @@ describe('createMicrosandboxDriver.create', () => {
     const driver = createMicrosandboxDriver({ sdk })
     await expect(driver.create(baseSpec())).rejects.toThrow(/original create failure/)
   })
+
+  // Spike-observed on 0.6.15: a create() lands close behind another sandbox's
+  // own create/destroy against the same runtime store and fails with a raw
+  // sqlite error, never a config problem. These three pin the retry.
+  describe('a raw sandbox-store database error is retried, never a config rejection', () => {
+    test('succeeds once the transient database error clears on a later attempt', async () => {
+      let calls = 0
+      const removedNames: string[] = []
+      const { sdk } = makeFakeSdk({
+        onCreate: (config) => {
+          calls++
+          if (calls < 3) {
+            throw new Error(
+              'insert run: Query Error: error returned from database: (code: 787) FOREIGN KEY constraint failed',
+            )
+          }
+          return {
+            name: config.name,
+            execStreamWith: async () => makeExecHandle([]),
+            fs: () => ({}) as never,
+            metrics: async () => ({
+              memoryHostResidentBytes: null,
+              memoryBytes: null,
+              cpuPercent: null,
+            }),
+            stopWithTimeout: async () => {},
+          }
+        },
+        onSandboxRemove: (name) => {
+          removedNames.push(name)
+        },
+      })
+      const driver = createMicrosandboxDriver({ sdk })
+      const handle = await driver.create(baseSpec({ name: 'codesema-dev-t1' }))
+      expect(handle.name).toBe('codesema-dev-t1')
+      expect(calls).toBe(3)
+      // Every failed attempt cleans up whatever the SDK may have provisioned
+      // under that name before the next retry reuses it.
+      expect(removedNames).toEqual(['codesema-dev-t1', 'codesema-dev-t1'])
+    })
+
+    test('gives up and rejects with the original error once every retry is exhausted', async () => {
+      let calls = 0
+      const { sdk } = makeFakeSdk({
+        onCreate: () => {
+          calls++
+          throw new Error(
+            'review failed: database error: Query Error: error returned from database: (code: 522) disk I/O error',
+          )
+        },
+      })
+      const driver = createMicrosandboxDriver({ sdk })
+      await expect(driver.create(baseSpec())).rejects.toThrow(/disk I\/O error/)
+      // First attempt + one retry per configured backoff, never more.
+      expect(calls).toBe(3)
+    })
+
+    test('a config rejection (never a database error) is never retried', async () => {
+      let calls = 0
+      const { sdk } = makeFakeSdk({
+        onCreate: () => {
+          calls++
+          throw new Error('invalid config: workdir does not exist in guest: /work')
+        },
+      })
+      const driver = createMicrosandboxDriver({ sdk })
+      await expect(driver.create(baseSpec())).rejects.toThrow(/workdir does not exist/)
+      expect(calls).toBe(1)
+    })
+  })
 })
 
 // --- createMicrosandboxDriver: exec/shell --------------------------------------
