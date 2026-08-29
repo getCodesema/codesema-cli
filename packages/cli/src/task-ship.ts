@@ -314,7 +314,10 @@ function createGitopsSession(opts: ShipTaskOptions, driver: SandboxDriver): Gito
           rootDisk: { kind: 'managed', sizeMib: GITOPS_ROOT_DISK_MIB },
           maxDurationSeconds: GITOPS_MAX_DURATION_SECONDS,
           network: { allowedDomains: gitopsAllowedDomains(forgeHost) },
-          workdir: '/work',
+          // No `workdir` here: the SDK refuses one that does not already exist
+          // in the image, and `/work` is only created below by
+          // `copyFromHost` (same reasoning as `task-review.ts`'s sandbox
+          // create), `cwd` on every `shell`/`exec` call does the `cd` instead.
           ...(opts.forgeToken
             ? {
                 secrets: gitopsSecretDeclarations(
