@@ -4,9 +4,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { loadGlobalConfig, saveGlobalConfig } from './config.js'
-import type { ArmTicket, ArmTicketRequest, TaskRecord } from './contract.js'
+import {
+  RUNBOOK_VERSION,
+  type ArmTicket,
+  type ArmTicketRequest,
+  type RunbookConfig,
+  type RunbookScan,
+  type RunbookValidation,
+  type TaskRecord,
+} from './contract.js'
 import type { HubResult } from './hub-client.js'
+import type { SandboxDriver } from './microsandbox-driver.js'
 import type { Project } from './projects.js'
+import { DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS, type RunbookScanRunnerOptions } from './runbook-runner.js'
 import { startRunnerDaemon } from './runner-daemon.js'
 import type { RunnerSecretsPayload } from './runner-secrets.js'
 import type { TaskActionResult } from './task-runner.js'
@@ -972,6 +982,328 @@ describe('startRunnerDaemon', () => {
       })
       await handle.stop()
       expect(lines.some((l) => l.includes('tick failed'))).toBe(false)
+    })
+  })
+
+  describe('runbook scan tick', () => {
+    function connect(): void {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        syncUrl: 'https://hub.example',
+        syncWorkspaceId: 'ws1',
+        syncSecret: 'sec1',
+      })
+    }
+
+    test('isolation is not "microvm": never calls runOneRunbookScanFn', async () => {
+      connect()
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      let called = false
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: () => {},
+        runOneRunbookScanFn: async () => {
+          called = true
+          return { claimed: false }
+        },
+      })
+      await handle.stop()
+      expect(called).toBe(false)
+    })
+
+    test('isolation "microvm" but no agent configured: logs once, never calls runOneRunbookScanFn', async () => {
+      connect()
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      let called = false
+      const lines: string[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadConfigFn: () => ({ isolation: 'microvm' }),
+        runOneRunbookScanFn: async () => {
+          called = true
+          return { claimed: false }
+        },
+      })
+      await handle.stop()
+      expect(called).toBe(false)
+      expect(lines.filter((l) => l.includes('no agent command is configured')).length).toBe(1)
+    })
+
+    test('isolation "microvm" with an agent: calls runOneRunbookScanFn with the configured command, secrets from the environment and a resolver', async () => {
+      connect()
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = 'tok-secret'
+      const seen: {
+        command: string | null
+        timeoutMs: number | null
+        secrets: RunbookScanRunnerOptions['secrets'] | null
+        resolveWorktree: RunbookScanRunnerOptions['resolveWorktree'] | null
+      } = { command: null, timeoutMs: null, secrets: null, resolveWorktree: null }
+      try {
+        const handle = startRunnerDaemon({
+          manager,
+          cwd,
+          fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+          logFn: () => {},
+          loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
+          driver: {} as SandboxDriver,
+          runOneRunbookScanFn: async (opts) => {
+            seen.command = opts.command
+            seen.timeoutMs = opts.timeoutMs
+            seen.secrets = opts.secrets
+            seen.resolveWorktree = opts.resolveWorktree
+            return { claimed: false }
+          },
+        })
+        await handle.stop()
+      } finally {
+        if (previous === undefined) {
+          delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+        } else {
+          process.env.CLAUDE_CODE_OAUTH_TOKEN = previous
+        }
+      }
+      expect(seen.command).toBe('claude -p')
+      expect(seen.timeoutMs).toBe(DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS)
+      expect(seen.secrets).toEqual([
+        { env: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'tok-secret', allowedHosts: expect.any(Array) },
+      ])
+      expect(seen.resolveWorktree).not.toBeNull()
+    })
+
+    test('a claimed scan is logged with its outcome status', async () => {
+      connect()
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      const lines: string[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
+        driver: {} as SandboxDriver,
+        runOneRunbookScanFn: async () => ({
+          claimed: true,
+          scanId: 'scan1',
+          outcome: {
+            status: 'completed',
+            runbook: {
+              version: RUNBOOK_VERSION,
+              image: 'node:26',
+              install: [],
+              services: { host_up: [], compose_file: null },
+              healthchecks: [],
+              tests: ['bun test'],
+              egress: [],
+              depends_on_files: [],
+            } satisfies RunbookConfig,
+            validation: {
+              runbook_sha: '0123456789abcdef',
+              validated_sha: 'a'.repeat(40),
+              validated_at: '2026-01-01T00:00:00.000Z',
+              status: 'valid',
+            } satisfies RunbookValidation,
+            snapshotName: null,
+            checks: [],
+            attempts: 1,
+          },
+        }),
+      })
+      await handle.stop()
+      expect(lines.some((l) => l.includes('runbook scan scan1: completed'))).toBe(true)
+    })
+
+    test('runOneRunbookScanFn throwing is logged, not thrown, and the rest of the tick still runs', async () => {
+      connect()
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const createCalls: { projectId: string; input: unknown }[] = []
+      const manager = fakeManager({
+        cwd,
+        createCalls,
+        createResult: { ok: true, record: fakeRecord({ id: 'newtask' }) },
+      })
+      const lines: string[] = []
+      const fetchImpl: typeof fetch = (async (url: string | URL | Request) => {
+        const href = String(url)
+        if (href.includes('/tickets?')) {
+          return new Response(JSON.stringify({ tickets: [validTicket] }), { status: 200 })
+        }
+        if (href.endsWith('/claim')) {
+          return new Response(
+            JSON.stringify({ ticket: validTicket, lease_expires_at: '2026-01-01T00:05:00.000Z' }),
+            { status: 200 },
+          )
+        }
+        return new Response(JSON.stringify({ requests: [] }), { status: 200 })
+      }) as unknown as typeof fetch
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl,
+        logFn: (line) => lines.push(line),
+        loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
+        driver: {} as SandboxDriver,
+        runOneRunbookScanFn: async () => {
+          throw new Error('vm exploded')
+        },
+      })
+      await handle.stop()
+      expect(lines.some((l) => l.includes('runbook scan tick failed: vm exploded'))).toBe(true)
+      // the ticket claim after it in the tick still ran.
+      expect(createCalls.length).toBe(1)
+    })
+
+    test('no driver override: a driver factory that throws is caught and logged once, not thrown', async () => {
+      connect()
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      let called = false
+      const lines: string[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
+        createDriverFn: () => {
+          throw new Error('no /dev/kvm')
+        },
+        runOneRunbookScanFn: async () => {
+          called = true
+          return { claimed: false }
+        },
+      })
+      await handle.stop()
+      expect(called).toBe(false)
+      expect(lines.some((l) => l.includes('microVM driver unavailable: no /dev/kvm'))).toBe(true)
+    })
+
+    test('the driver factory throwing is only logged once across ticks (logOnce)', async () => {
+      connect()
+      initRepo(cwd, 'https://github.com/o/r.git')
+      const manager = fakeManager({ cwd })
+      let factoryCalls = 0
+      const lines: string[] = []
+      const handle = startRunnerDaemon({
+        manager,
+        cwd,
+        intervalMs: 1,
+        sleepFn: fastSleep,
+        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+        logFn: (line) => lines.push(line),
+        loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
+        createDriverFn: () => {
+          factoryCalls += 1
+          throw new Error('no /dev/kvm')
+        },
+        runOneRunbookScanFn: async () => ({ claimed: false }),
+      })
+      await settle(20)
+      await handle.stop()
+      expect(factoryCalls).toBeGreaterThan(1)
+      expect(lines.filter((l) => l.includes('microVM driver unavailable')).length).toBe(1)
+    })
+
+    describe('resolveWorktree (the resolver handed to runOneRunbookScanFn)', () => {
+      function fakeScan(overrides: Partial<RunbookScan> = {}): RunbookScan {
+        return {
+          id: '11111111-1111-1111-1111-111111111111',
+          repo_id: '22222222-2222-2222-2222-222222222222',
+          repo_full_name: 'o/r',
+          head_sha: null,
+          status: 'queued',
+          requested_at: '2026-01-01T00:00:00.000Z',
+          ...overrides,
+        }
+      }
+
+      async function captureResolver(
+        originUrl: string,
+      ): Promise<RunbookScanRunnerOptions['resolveWorktree']> {
+        connect()
+        initRepo(cwd, originUrl)
+        const manager = fakeManager({ cwd })
+        let resolver: RunbookScanRunnerOptions['resolveWorktree'] | null = null
+        const handle = startRunnerDaemon({
+          manager,
+          cwd,
+          fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+          logFn: () => {},
+          loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
+          driver: {} as SandboxDriver,
+          runOneRunbookScanFn: async (opts) => {
+            resolver = opts.resolveWorktree
+            return { claimed: false }
+          },
+        })
+        await handle.stop()
+        if (!resolver) {
+          throw new Error('resolver never captured')
+        }
+        return resolver
+      }
+
+      test('an https origin resolves a scan naming the same owner/repo', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const resolved = await resolver(fakeScan({ repo_full_name: 'o/r' }))
+        expect(resolved).not.toBeNull()
+        expect(resolved?.worktree).toBe(cwd)
+        expect(resolved?.projectId).toBe('22222222-2222-2222-2222-222222222222')
+        expect(resolved?.headSha).toMatch(/^[0-9a-f]{40}$/)
+      })
+
+      test('matching is case-insensitive', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const resolved = await resolver(fakeScan({ repo_full_name: 'O/R' }))
+        expect(resolved).not.toBeNull()
+      })
+
+      test('an ssh origin resolves the same way as its https equivalent', async () => {
+        const resolver = await captureResolver('git@github.com:o/r.git')
+        const resolved = await resolver(fakeScan({ repo_full_name: 'o/r' }))
+        expect(resolved).not.toBeNull()
+      })
+
+      test('a scan naming a different repository resolves to null', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const resolved = await resolver(fakeScan({ repo_full_name: 'someone/else' }))
+        expect(resolved).toBeNull()
+      })
+
+      test('a scan whose head_sha matches the local HEAD resolves normally', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd }).toString().trim()
+        const resolved = await resolver(fakeScan({ repo_full_name: 'o/r', head_sha: headSha }))
+        expect(resolved).not.toBeNull()
+        expect(resolved?.headSha).toBe(headSha)
+      })
+
+      test('head_sha matching is case-insensitive', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd }).toString().trim()
+        const resolved = await resolver(
+          fakeScan({ repo_full_name: 'o/r', head_sha: headSha.toUpperCase() }),
+        )
+        expect(resolved).not.toBeNull()
+      })
+
+      test('a scan whose head_sha does not match the local HEAD resolves to null (skips this tick instead of validating the wrong commit)', async () => {
+        const resolver = await captureResolver('https://github.com/o/r.git')
+        const resolved = await resolver(
+          fakeScan({ repo_full_name: 'o/r', head_sha: 'f'.repeat(40) }),
+        )
+        expect(resolved).toBeNull()
+      })
     })
   })
 })

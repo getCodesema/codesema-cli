@@ -562,6 +562,7 @@ const en = {
   'workspace.planQueueAt': 'waits at position {n}',
   'workspace.planIsolationContainer': 'container',
   'workspace.planIsolationPolicy': 'host, hardened',
+  'workspace.planIsolationMicrovm': 'microVM',
   'workspace.planBaseLabel': 'Branch to start from',
   'workspace.planBranchLabel': 'Branch to work on',
   'workspace.planRetarget': 'Apply',
@@ -634,13 +635,16 @@ const en = {
     'No agent is configured for this repo — set the "agent" key in .codesema/config.json first.',
   'workspace.checksSetupBusy': 'A setup run is already in progress for this project.',
 
-  // --- isolation badge (container cage vs policy hardening) ---
+  // --- isolation badge (container cage vs microVM cage vs policy hardening) ---
   'workspace.isolationContainer': 'container',
   'workspace.isolationPolicy': 'policy',
+  'workspace.isolationMicrovm': 'microVM',
   'workspace.isolationContainerHint':
     'Caged: this agent runs inside its own container, with only this worktree mounted and network access limited to the allowed domains. Commits are made outside the box.',
   'workspace.isolationPolicyHint':
     'Not caged: this agent runs directly on your machine, contained by permission rules only — nothing isolates it from the rest of your files.',
+  'workspace.isolationMicrovmHint':
+    "Caged in a microVM: this agent's turn runs inside a disposable virtual machine with its own kernel, network access limited to the runbook's allowlist.",
   'workspace.isolationUpgradeTitle': 'Agents here run without a container',
   'workspace.isolationUpgradeBody':
     'New conversations fall back to policy isolation ({reason}). With a container runtime installed (Podman or Docker), each task runs in its own box and the agent gets a full shell safely.',
@@ -1422,6 +1426,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.planQueueAt': 'attend en position {n}',
   'workspace.planIsolationContainer': 'container',
   'workspace.planIsolationPolicy': 'hôte, durci',
+  'workspace.planIsolationMicrovm': 'microVM',
   'workspace.planBaseLabel': 'Branche de départ',
   'workspace.planBranchLabel': 'Branche de travail',
   'workspace.planRetarget': 'Appliquer',
@@ -1496,13 +1501,16 @@ const fr: Record<MessageKey, string> = {
     'Aucun agent configuré pour ce repo — renseigne la clé "agent" dans .codesema/config.json.',
   'workspace.checksSetupBusy': 'Une configuration est déjà en cours pour ce projet.',
 
-  // --- isolation badge (cage container vs durcissement policy) ---
+  // --- isolation badge (cage container vs cage microVM vs durcissement policy) ---
   'workspace.isolationContainer': 'container',
   'workspace.isolationPolicy': 'policy',
+  'workspace.isolationMicrovm': 'microVM',
   'workspace.isolationContainerHint':
     "En cage : cet agent tourne dans son propre container, seul ce worktree y est monté et le réseau est limité aux domaines autorisés. Les commits sont faits à l'extérieur de la boîte.",
   'workspace.isolationPolicyHint':
     "Hors cage : cet agent tourne directement sur votre machine, retenu par des règles de permission seulement — rien ne l'isole du reste de vos fichiers.",
+  'workspace.isolationMicrovmHint':
+    "En cage dans une microVM : le tour de cet agent tourne dans une machine virtuelle jetable avec son propre noyau, l'accès réseau limité à la liste blanche du runbook.",
   'workspace.isolationUpgradeTitle': 'Les agents tournent ici sans container',
   'workspace.isolationUpgradeBody':
     "Les nouvelles conversations retombent sur l'isolation policy ({reason}). Avec un runtime de containers installé (Podman ou Docker), chaque tâche tourne dans sa propre boîte et l'agent y retrouve un shell complet en sécurité.",

@@ -72,7 +72,9 @@ export type CodesemaConfig = {
    * per-task container when a container runtime is available and the agent
    * image builds, and falls back to the host policy hardening otherwise;
    * 'container' requires the cage (task creation 409s without it); 'policy'
-   * always runs on the host.
+   * always runs on the host; 'microvm' requires a disposable Microsandbox VM
+   * (task creation 409s without one) and is never chosen by 'auto' — it must
+   * be set explicitly.
    */
   isolation?: IsolationMode | undefined
   /** Domains the caged agent may reach through the egress proxy (CONNECT only). */
@@ -331,10 +333,18 @@ export function resolveMaxTaskTurns(config: CodesemaConfig): number {
   return config.maxTaskTurns ?? 30
 }
 
-/** Configured isolation policy for workspace tasks (see CodesemaConfig.isolation). */
-export type IsolationMode = 'auto' | 'container' | 'policy'
+/**
+ * Configured isolation policy for workspace tasks (see CodesemaConfig.isolation).
+ * 'microvm' is NEVER chosen by 'auto': it requires the explicit opt-in
+ * `isolation: "microvm"`, unlike 'container' which 'auto' does pick when a
+ * runtime is available. A microVM is a heavier, less common dependency
+ * (/dev/kvm, the Microsandbox SDK) than a container runtime, and it is beta
+ * software (spike of 2026-08-28) — 'auto' upgrading a project into it without
+ * being asked would be a surprise, not a convenience.
+ */
+export type IsolationMode = 'auto' | 'container' | 'policy' | 'microvm'
 
-const ISOLATION_MODES: ReadonlySet<string> = new Set(['auto', 'container', 'policy'])
+const ISOLATION_MODES: ReadonlySet<string> = new Set(['auto', 'container', 'policy', 'microvm'])
 
 export function isIsolationMode(value: unknown): value is IsolationMode {
   return typeof value === 'string' && ISOLATION_MODES.has(value)

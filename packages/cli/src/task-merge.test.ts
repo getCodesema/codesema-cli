@@ -969,6 +969,70 @@ describe('mergeTask under mergePolicy: auto', () => {
     expect(forge.calls).toHaveLength(1)
   })
 
+  test('the merged report to the hub carries changed_files, computed from the ancestry target to the merge commit', async () => {
+    const repo = makeRepoWithOrigin('git@github.com:o/r.git')
+    const baseSha = git(repo, ['rev-parse', 'HEAD'])
+    writeFileSync(join(repo, 'b.txt'), 'b\n')
+    execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-m', 'add b'], { cwd: repo, stdio: 'ignore' })
+    const mergeSha = git(repo, ['rev-parse', 'HEAD'])
+
+    const answers: ShipCliOutcome[] = [
+      { kind: 'ok', stdout: 'Merged pull request https://github.com/o/r/pull/7' },
+      { kind: 'ok', stdout: JSON.stringify([{ number: 7, mergeCommit: { oid: mergeSha } }]) },
+    ]
+    const calls: { cli: string; args: string[] }[] = []
+    const reported: { type: string; changed_files?: string[] }[] = []
+    const outcome = await mergeTask({
+      runnerAutoMerge: true,
+      cwd: repo,
+      task: greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' } }),
+      settings: auto(),
+      inputs: greenInputs({ ancestry: { kind: 'up_to_date', target: baseSha } }),
+      execForge: (cli, args) => {
+        calls.push({ cli, args })
+        return Promise.resolve(answers[calls.length - 1] as ShipCliOutcome)
+      },
+      reportHub: async (_cwd, _record, transition) => {
+        reported.push(transition as { type: string; changed_files?: string[] })
+      },
+    })
+    expect(outcome.kind).toBe('merged')
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.type).toBe('merged')
+    expect(reported[0]?.changed_files).toEqual(['b.txt'])
+  })
+
+  test('a git diff failure never blocks the merged report, only the changed_files field', async () => {
+    const repo = makeRepoWithOrigin('git@github.com:o/r.git')
+    const answers: ShipCliOutcome[] = [
+      { kind: 'ok', stdout: 'Merged pull request https://github.com/o/r/pull/7' },
+      { kind: 'ok', stdout: JSON.stringify([{ number: 7, mergeCommit: { oid: 'a1b2c3d4e5f6' } }]) },
+    ]
+    const calls: { cli: string; args: string[] }[] = []
+    const reported: { type: string; changed_files?: string[] }[] = []
+    const outcome = await mergeTask({
+      runnerAutoMerge: true,
+      cwd: repo,
+      task: greenTask({ hub_ticket: { id: 'tkt-1', title: 'x' } }),
+      settings: auto(),
+      // Branch condition still holds (up_to_date), but the target names no
+      // real ref in this repo, so the diff itself cannot run.
+      inputs: greenInputs({ ancestry: { kind: 'up_to_date', target: 'not-a-real-ref' } }),
+      execForge: (cli, args) => {
+        calls.push({ cli, args })
+        return Promise.resolve(answers[calls.length - 1] as ShipCliOutcome)
+      },
+      reportHub: async (_cwd, _record, transition) => {
+        reported.push(transition as { type: string; changed_files?: string[] })
+      },
+    })
+    expect(outcome.kind).toBe('merged')
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.type).toBe('merged')
+    expect(reported[0] && 'changed_files' in reported[0]).toBe(false)
+  })
+
   test('a missing condition emits NO merge command at all', async () => {
     for (const inputs of [
       { review: makeReview('request_changes', [], metVerdicts()) },

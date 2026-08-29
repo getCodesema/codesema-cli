@@ -7,7 +7,7 @@
 // import FINDING_REPRO_RULE with no import cycle between them.
 
 import type { Finding } from './contract.js'
-import { runAdHocCheck, type ExecFn } from './task-checks.js'
+import { runAdHocCheck, type ExecFn, type StepExecutor } from './task-checks.js'
 
 /**
  * D24: the rule a reviewer's prompt states verbatim, shared by
@@ -40,6 +40,8 @@ export type FindingReproContext = {
   /** The task's worktree: the same sandbox `resolveMechanicalCriteria`'s ad hoc `command` runs in (task-criteria-gate.ts). */
   worktree: string
   execFn?: ExecFn
+  /** Where the repro command runs: the docker/podman executor by default, `microvmStepExecutor` for a 'microvm' task's review (task-review.ts). */
+  executor?: StepExecutor
 }
 
 export type FindingReproReport = {
@@ -95,6 +97,7 @@ export async function verifyFindingRepros(
       command: finding.repro.command,
       timeoutSeconds: FINDING_REPRO_TIMEOUT_SECONDS,
       ...(ctx.execFn ? { execFn: ctx.execFn } : {}),
+      ...(ctx.executor ? { executor: ctx.executor } : {}),
     })
     report.verified++
     // exit_code null covers both a timeout and a synthetic engine failure

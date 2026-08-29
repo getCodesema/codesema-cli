@@ -9,7 +9,7 @@ import {
   isBehaviorAsserting,
   verifyFindingRepros,
 } from './finding-repro.js'
-import type { ExecFn, ExecResult } from './task-checks.js'
+import type { ExecFn, ExecResult, StepExecutor, StepExecutorInput } from './task-checks.js'
 
 let worktree: string
 
@@ -183,6 +183,36 @@ describe('verifyFindingRepros', () => {
     expect(result.findings.at(-1)?.severity).toBe('minor')
     const lastCommand = `echo finding-${FINDING_REPRO_MAX_EXECUTIONS_PER_TURN}`
     expect(calls.some((c) => c.args.at(-1) === lastCommand)).toBe(false)
+  })
+
+  // task-review.ts wires a `microvmStepExecutor` in here for a 'microvm'
+  // task's review: an injected `executor` must be what actually runs the
+  // repro, docker/podman detection skipped entirely (task-checks.ts's own
+  // `runAdHocCheck` doc comment).
+  test('an injected executor runs the repro instead of docker/podman detection', async () => {
+    const finding = majorFinding({ repro: { command: 'exit 1', expected: 'the bug fires' } })
+    const executorCalls: StepExecutorInput[] = []
+    const executor: StepExecutor = (input) => {
+      executorCalls.push(input)
+      return Promise.resolve({
+        code: 1,
+        stdout: '',
+        stderr: 'boom',
+        timedOut: false,
+        failure: null,
+      })
+    }
+    const { exec, calls } = dockerRig(() => ok())
+
+    const result = await verifyFindingRepros([finding], { worktree, execFn: exec, executor })
+
+    expect(result.findings[0]).toBe(finding)
+    expect(result.report).toEqual({ demoted: 0, verified: 1 })
+    expect(executorCalls).toHaveLength(1)
+    expect(executorCalls[0]?.command).toBe('exit 1')
+    // Docker/podman detection never ran: the injected executor bypasses it
+    // entirely, so the docker exec rig saw nothing at all.
+    expect(calls).toHaveLength(0)
   })
 
   test('a finding outside the behavior-asserting set never consumes the execution cap', async () => {

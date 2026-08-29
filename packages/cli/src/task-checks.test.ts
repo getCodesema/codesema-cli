@@ -5,6 +5,13 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { containerGitStateDir } from './container-git.js'
 import { TASK_CHECK_TAIL_MAX, type TaskChecks } from './contract.js'
+import type {
+  SandboxDriver,
+  SandboxExecOptions,
+  SandboxExecResult,
+  SandboxHandle,
+  SandboxSpec,
+} from './microsandbox-driver.js'
 import {
   AD_HOC_CHECK_DEFAULT_TIMEOUT_SECONDS,
   bootstrapWorktreeInstall,
@@ -17,7 +24,9 @@ import {
   detectContainerRuntime,
   detectFromDeclarations,
   detectInstall,
+  dockerStepExecutor,
   lockfileFingerprint,
+  microvmStepExecutor,
   pkgCacheVolume,
   planFromConfig,
   resolveChecksPlan,
@@ -85,6 +94,93 @@ function dockerRig(byCommand: (command: string, call: Call) => ExecResult) {
     const command = call.args.at(-1) ?? ''
     return byCommand(command, call)
   })
+}
+
+// --- fake SandboxDriver (lot C1's FakeSandboxDriver is still a stub; this is
+// a self-contained minimal fake, per this lot's brief) -----------------------
+
+type MicrovmCall =
+  | { method: 'ensureVolume'; name: string; kind: 'disk' | 'directory' }
+  | { method: 'create'; spec: SandboxSpec }
+  | { method: 'copyFromHost'; hostPath: string; guestPath: string }
+  | { method: 'copyToHost'; guestPath: string; hostPath: string }
+  | { method: 'writeFile'; guestPath: string; content: string }
+  | { method: 'shell'; script: string; timeoutMs: number; env?: Readonly<Record<string, string>> }
+  | { method: 'destroy'; name: string }
+
+function callsOf<M extends MicrovmCall['method']>(
+  calls: MicrovmCall[],
+  method: M,
+): Extract<MicrovmCall, { method: M }>[] {
+  return calls.filter((c): c is Extract<MicrovmCall, { method: M }> => c.method === method)
+}
+
+/** Records every call; `shell` answers from a script, everything else always succeeds unless told to fail. */
+function fakeMicrovmDriver(opts: {
+  shell?: (script: string) => SandboxExecResult
+  failOnCreate?: boolean
+  failOnCopy?: boolean
+  failOnCopyToHost?: boolean
+}): { driver: SandboxDriver; calls: MicrovmCall[] } {
+  const calls: MicrovmCall[] = []
+  const driver: SandboxDriver = {
+    kind: 'fake',
+    probe: () => Promise.resolve({ available: true, reason: null, version: 'fake' }),
+    create: (spec: SandboxSpec) => {
+      calls.push({ method: 'create', spec })
+      if (opts.failOnCreate) {
+        return Promise.reject(new Error('boot failed'))
+      }
+      const handle: SandboxHandle = {
+        name: spec.name,
+        exec: () => Promise.reject(new Error('unused in this rig')),
+        shell: (script: string, execOpts: SandboxExecOptions) => {
+          calls.push({
+            method: 'shell',
+            script,
+            timeoutMs: execOpts.timeoutMs,
+            ...(execOpts.env ? { env: execOpts.env } : {}),
+          })
+          return Promise.resolve(
+            opts.shell?.(script) ?? { code: 0, stdout: '', stderr: '', timedOut: false },
+          )
+        },
+        copyFromHost: (hostPath: string, guestPath: string) => {
+          calls.push({ method: 'copyFromHost', hostPath, guestPath })
+          return opts.failOnCopy ? Promise.reject(new Error('copy failed')) : Promise.resolve()
+        },
+        copyToHost: (guestPath: string, hostPath: string) => {
+          calls.push({ method: 'copyToHost', guestPath, hostPath })
+          return opts.failOnCopyToHost
+            ? Promise.reject(new Error('copy back failed'))
+            : Promise.resolve()
+        },
+        writeFile: (guestPath: string, content: string) => {
+          calls.push({ method: 'writeFile', guestPath, content })
+          return Promise.resolve()
+        },
+        readFile: () => Promise.resolve(''),
+        metrics: () =>
+          Promise.resolve({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
+        stop: () => Promise.resolve(),
+      }
+      return Promise.resolve(handle)
+    },
+    snapshot: () => Promise.reject(new Error('unused in this rig')),
+    listSandboxes: () => Promise.resolve([]),
+    listSnapshots: () => Promise.resolve([]),
+    destroy: (name: string) => {
+      calls.push({ method: 'destroy', name })
+      return Promise.resolve()
+    },
+    removeSnapshot: () => Promise.resolve(),
+    ensureVolume: (name: string, volOpts: { kind: 'disk' | 'directory'; sizeMib?: number }) => {
+      calls.push({ method: 'ensureVolume', name, kind: volOpts.kind })
+      return Promise.resolve()
+    },
+    removeVolume: () => Promise.resolve(),
+  }
+  return { driver, calls }
 }
 
 const packageJson = (scripts: Record<string, string>) => ({ scripts })
@@ -1079,5 +1175,724 @@ describe('buildChecksChapter', () => {
       ],
     }
     expect(buildChecksChapter(checks)).toBe(buildChecksChapter(checks, { purpose: 'review' }))
+  })
+})
+
+// --- StepExecutor seam (lot C3) ---------------------------------------------
+
+describe('dockerStepExecutor', () => {
+  test('is the default: runStep with no executor produces the exact same docker invocation as before', async () => {
+    const { calls, exec } = fakeExec((call) =>
+      call.args[0] === '--version' ? ok({ stdout: 'Docker version 27' }) : ok({ stdout: 'ok' }),
+    )
+    const executor = dockerStepExecutor({ exec, runtime: 'docker', gitMounts: [] })
+    const result = await executor({
+      command: 'echo hi',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+    expect(result).toEqual({ code: 0, stdout: 'ok', stderr: '', timedOut: false, failure: null })
+    const run = calls.find((c) => c.args[0] === 'run')
+    expect(run?.file).toBe('docker')
+    expect(run?.args[run.args.indexOf('--network') + 1]).toBe('none')
+    expect(run?.args.slice(-3)).toEqual(['sh', '-lc', 'echo hi'])
+  })
+
+  test('kills the container by name on timeout, same as the inline runStep used to', async () => {
+    const { calls, exec } = fakeExec((call) => {
+      if (call.args[0] === '--version') {
+        return ok({ stdout: 'Docker version 27' })
+      }
+      if (call.args[0] === 'kill') {
+        return ok()
+      }
+      return ok({ code: null, timedOut: true })
+    })
+    const executor = dockerStepExecutor({ exec, runtime: 'docker', gitMounts: [] })
+    const result = await executor({
+      command: 'sleep 999',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 1000,
+    })
+    expect(result.timedOut).toBe(true)
+    const run = calls.find((c) => c.args.at(-1) === 'sleep 999')
+    const name = run?.args[run.args.indexOf('--name') + 1] ?? ''
+    expect(name).toMatch(/^codesema-checks-[0-9a-f]{12}$/)
+    expect(calls.find((c) => c.args[0] === 'kill')?.args).toEqual(['kill', name])
+  })
+
+  // M5: StepExecutorInput.env, forwarded to the container's process.
+  test('input.env becomes -e KEY=value docker args', async () => {
+    const { calls, exec } = fakeExec((call) =>
+      call.args[0] === '--version' ? ok({ stdout: 'Docker version 27' }) : ok({ stdout: 'ok' }),
+    )
+    const executor = dockerStepExecutor({ exec, runtime: 'docker', gitMounts: [] })
+    await executor({
+      command: 'echo hi',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+      env: { FOO: 'bar', BAZ: 'qux' },
+    })
+    const run = calls.find((c) => c.args.at(-1) === 'echo hi')
+    const args = run?.args ?? []
+    const envPairs = args.flatMap((arg, i) => (arg === '-e' ? [[arg, args[i + 1]]] : []))
+    expect(envPairs).toContainEqual(['-e', 'FOO=bar'])
+    expect(envPairs).toContainEqual(['-e', 'BAZ=qux'])
+  })
+})
+
+describe('microvmStepExecutor', () => {
+  test('a check step gets a deny-all network policy even when allowedDomains is configured', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({
+      driver,
+      projectId: 'proj1',
+      snapshotName: null,
+      allowedDomains: ['registry.npmjs.org'],
+    })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.network).toEqual({ allowedDomains: [] })
+  })
+
+  test('an install step (network: true) opens egress to the configured domains', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({
+      driver,
+      projectId: 'proj1',
+      snapshotName: null,
+      allowedDomains: ['registry.npmjs.org'],
+    })
+    await executor({
+      command: 'npm ci',
+      network: true,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.network).toEqual({ allowedDomains: ['registry.npmjs.org'] })
+  })
+
+  test('restores from the snapshot instead of booting the image when one is set', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: 'snap-abc' })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.fromSnapshot).toBe('snap-abc')
+    expect(create?.spec.image).toBeUndefined()
+  })
+
+  test('no snapshot boots the given image cold', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.image).toBe('oven/bun:1')
+    expect(create?.spec.fromSnapshot).toBeUndefined()
+  })
+
+  test('a cacheName mounts a directory-backed volume with ensureExists, no separate ensureVolume call', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'npm ci',
+      network: true,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+      cacheName: 'codesema-pkgcache-proj1',
+    })
+    // No separate ensureVolume call left to race with create(): the mount's
+    // ensureExists makes the driver create-or-reuse atomically inside create().
+    expect(callsOf(calls, 'ensureVolume')).toHaveLength(0)
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.volumes).toEqual([
+      { guest: '/cache', name: 'codesema-pkgcache-proj1', ensureExists: true },
+    ])
+  })
+
+  test('no cacheName: no volume is ensured, no volumes on the spec', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(callsOf(calls, 'ensureVolume')).toHaveLength(0)
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.volumes).toBeUndefined()
+  })
+
+  test('the worktree is copied to /work and the command runs under a shell there', async () => {
+    const { driver, calls } = fakeMicrovmDriver({
+      shell: () => ({ code: 0, stdout: 'ok', stderr: '', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [copy] = callsOf(calls, 'copyFromHost')
+    expect(copy).toEqual({ method: 'copyFromHost', hostPath: worktree, guestPath: '/work' })
+    const [shell] = callsOf(calls, 'shell')
+    expect(shell?.script).toBe('cd /work && bun test')
+    expect(shell?.timeoutMs).toBe(5000)
+    expect(result).toEqual({ code: 0, stdout: 'ok', stderr: '', timedOut: false, failure: null })
+  })
+
+  test('a nonzero exit code is passed through unchanged', async () => {
+    const { driver } = fakeMicrovmDriver({
+      shell: () => ({ code: 3, stdout: '', stderr: 'boom', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'false',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+    expect(result).toEqual({ code: 3, stdout: '', stderr: 'boom', timedOut: false, failure: null })
+  })
+
+  test('a timeout is reported as timedOut with a null code, never as a failure', async () => {
+    const { driver } = fakeMicrovmDriver({
+      shell: () => ({ code: null, stdout: 'partial', stderr: '', timedOut: true }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'sleep 999',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 1000,
+    })
+    expect(result.timedOut).toBe(true)
+    expect(result.code).toBeNull()
+    expect(result.failure).toBeNull()
+    expect(result.stdout).toBe('partial')
+  })
+
+  test('the tail is whatever the sandbox returned: stdout/stderr pass through untouched', async () => {
+    const { driver } = fakeMicrovmDriver({
+      shell: () => ({ code: 0, stdout: 'out-tail', stderr: 'err-tail', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(result.stdout).toBe('out-tail')
+    expect(result.stderr).toBe('err-tail')
+  })
+
+  test('destroy runs in finally after a successful step, keyed by the created sandbox name', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    const [destroy] = callsOf(calls, 'destroy')
+    expect(destroy?.name).toBe(create?.spec.name)
+  })
+
+  test('a driver failure during create never throws: synthetic failure result, nothing to destroy', async () => {
+    const { driver, calls } = fakeMicrovmDriver({ failOnCreate: true })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(result).toEqual({
+      code: null,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      failure: 'boot failed',
+    })
+    expect(callsOf(calls, 'destroy')).toHaveLength(0)
+  })
+
+  test('a driver failure during copyFromHost still destroys the sandbox that was created', async () => {
+    const { driver, calls } = fakeMicrovmDriver({ failOnCopy: true })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(result.failure).toBe('copy failed')
+    expect(callsOf(calls, 'destroy')).toHaveLength(1)
+  })
+
+  test('the sandbox name is prefixed codesema-checks- and carries the project id', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'projABCD', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.name).toMatch(/^codesema-checks-projABCD-[0-9a-f]{8}$/)
+  })
+
+  test('two steps in a row get two distinct sandbox names (no reuse across calls)', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'a',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+    await executor({
+      command: 'b',
+      network: false,
+      worktree,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+    const creates = callsOf(calls, 'create')
+    expect(creates).toHaveLength(2)
+    expect(creates[0]?.spec.name).not.toBe(creates[1]?.spec.name)
+  })
+
+  test('maxDurationSeconds is the step timeout plus a 60s margin', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.maxDurationSeconds).toBe(65)
+  })
+
+  test('cpus and memoryMib are fixed at 4 vCPU / 4096 MiB', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [create] = callsOf(calls, 'create')
+    expect(create?.spec.cpus).toBe(4)
+    expect(create?.spec.memoryMib).toBe(4096)
+  })
+
+  // F8: with no live bind mount (unlike the docker executor), a step's
+  // result only survives past its own ephemeral sandbox if it is copied
+  // back onto the host worktree before that sandbox is destroyed.
+  test('copies /work back to the host worktree before the sandbox is destroyed', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    const [copyBack] = callsOf(calls, 'copyToHost')
+    expect(copyBack).toEqual({ method: 'copyToHost', guestPath: '/work', hostPath: worktree })
+    const copyBackIndex = calls.findIndex((c) => c.method === 'copyToHost')
+    const destroyIndex = calls.findIndex((c) => c.method === 'destroy')
+    expect(copyBackIndex).toBeGreaterThanOrEqual(0)
+    expect(copyBackIndex).toBeLessThan(destroyIndex)
+  })
+
+  test('a driver failure during copyToHost still destroys the sandbox and reports a synthetic failure', async () => {
+    const { driver, calls } = fakeMicrovmDriver({ failOnCopyToHost: true })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(result.failure).toBe('copy back failed')
+    expect(callsOf(calls, 'destroy')).toHaveLength(1)
+  })
+
+  // F9: a task worktree is normally a LINKED git worktree whose `.git` is a
+  // one-line file pointing at a HOST path (container-git.ts) -- copied
+  // verbatim it resolves nowhere inside the guest.
+  test('a linked worktree gets its shared git dir copied in and /work/.git rewritten to point at it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codesema-checks-git-'))
+    cleanupDirs.push(root)
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    const run = (args: string[]): void => {
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        cwd: repo,
+        stdio: 'ignore',
+      })
+    }
+    run(['init', '-b', 'main'])
+    writeFileSync(join(repo, 'base.txt'), 'a\n')
+    run(['add', '-A'])
+    run(['commit', '-m', 'init'])
+    const linked = join(root, 'wt')
+    run(['worktree', 'add', linked, '-b', 'task'])
+    cleanupDirs.push(containerGitStateDir(linked))
+
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'git status',
+      network: false,
+      worktree: linked,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+
+    const gitCopy = callsOf(calls, 'copyFromHost').find((c) => c.guestPath === '/gitcommon')
+    expect(gitCopy?.hostPath).toBe(join(repo, '.git'))
+    const [pointer] = callsOf(calls, 'writeFile')
+    expect(pointer?.guestPath).toBe('/work/.git')
+    expect(pointer?.content).toContain('gitdir: /gitcommon/worktrees/')
+
+    // The synthetic pointer must be gone before the copy-back, or it would
+    // overwrite the worktree's REAL `.git` file with a path that only
+    // resolves inside this guest.
+    const commandIndex = calls.findIndex(
+      (c) => c.method === 'shell' && c.script === 'cd /work && git status',
+    )
+    const cleanupIndex = calls.findIndex(
+      (c) => c.method === 'shell' && c.script === 'rm -f /work/.git',
+    )
+    const copyBackIndex = calls.findIndex((c) => c.method === 'copyToHost')
+    expect(commandIndex).toBeGreaterThanOrEqual(0)
+    expect(cleanupIndex).toBeGreaterThan(commandIndex)
+    expect(copyBackIndex).toBeGreaterThan(cleanupIndex)
+  })
+
+  test('a plain (non-linked) worktree gets no /gitcommon copy and no .git rewrite', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+    })
+    expect(callsOf(calls, 'copyFromHost')).toHaveLength(1)
+    expect(callsOf(calls, 'writeFile')).toHaveLength(0)
+    expect(callsOf(calls, 'shell').some((c) => c.script === 'rm -f /work/.git')).toBe(false)
+  })
+
+  test('a cleanup failure on the synthetic .git pointer is never swallowed into a silent copy-back', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codesema-checks-git-'))
+    cleanupDirs.push(root)
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    const run = (args: string[]): void => {
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        cwd: repo,
+        stdio: 'ignore',
+      })
+    }
+    run(['init', '-b', 'main'])
+    writeFileSync(join(repo, 'base.txt'), 'a\n')
+    run(['add', '-A'])
+    run(['commit', '-m', 'init'])
+    const linked = join(root, 'wt')
+    run(['worktree', 'add', linked, '-b', 'task'])
+    cleanupDirs.push(containerGitStateDir(linked))
+
+    const { driver, calls } = fakeMicrovmDriver({
+      shell: (script) => {
+        if (script === 'rm -f /work/.git') {
+          throw new Error('cleanup failed')
+        }
+        return { code: 0, stdout: '', stderr: '', timedOut: false }
+      },
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await executor({
+      command: 'git status',
+      network: false,
+      worktree: linked,
+      image: 'node:26',
+      timeoutMs: 5000,
+    })
+    expect(result.failure).toBe('cleanup failed')
+    expect(callsOf(calls, 'copyToHost')).toHaveLength(0)
+    expect(callsOf(calls, 'destroy')).toHaveLength(1)
+  })
+
+  // M5: StepExecutorInput.env, forwarded to the sandbox's process.
+  test('input.env is forwarded to the sandbox shell call', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await executor({
+      command: 'bun test',
+      network: false,
+      worktree,
+      image: 'oven/bun:1',
+      timeoutMs: 5000,
+      env: { FOO: 'bar' },
+    })
+    const [shell] = callsOf(calls, 'shell')
+    expect(shell?.env).toEqual({ FOO: 'bar' })
+  })
+})
+
+describe('runChecks routed through a microvm executor', () => {
+  test('never probes docker/podman; every step goes through the executor with the right per-step network', async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { exec: dockerExec, calls: dockerCalls } = fakeExec(() => ok())
+    const { driver, calls: vmCalls } = fakeMicrovmDriver({
+      shell: () => ({ code: 0, stdout: 'ok', stderr: '', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({
+      driver,
+      projectId: 'proj1',
+      snapshotName: null,
+      allowedDomains: ['registry.npmjs.org'],
+    })
+    const result = await runChecks({
+      worktree,
+      headSha: 'abc',
+      execFn: dockerExec,
+      executor,
+      projectId: 'proj1',
+    })
+    // No docker/podman client was ever invoked: the microvm executor is self-sufficient.
+    expect(dockerCalls).toEqual([])
+    expect(result.status).toBe('passed')
+    expect(result.checks.map((c) => c.command)).toEqual([BUN_INSTALL_COMMAND, 'bun test'])
+
+    const creates = callsOf(vmCalls, 'create')
+    expect(creates).toHaveLength(2)
+    // Install: network open to the runbook's domains, cache mounted.
+    expect(creates[0]?.spec.network).toEqual({ allowedDomains: ['registry.npmjs.org'] })
+    expect(creates[0]?.spec.volumes).toEqual([
+      { guest: '/cache', name: pkgCacheVolume('proj1'), ensureExists: true },
+    ])
+    // Check: no egress at all, no cache volume.
+    expect(creates[1]?.spec.network).toEqual({ allowedDomains: [] })
+    expect(creates[1]?.spec.volumes).toBeUndefined()
+
+    expect(callsOf(vmCalls, 'destroy')).toHaveLength(2)
+  })
+
+  test('a failing install (via the executor) still skips the remaining checks', async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { driver } = fakeMicrovmDriver({
+      shell: (script) =>
+        script.includes('bun install')
+          ? { code: 1, stdout: '', stderr: 'lockfile mismatch', timedOut: false }
+          : { code: 0, stdout: '', stderr: '', timedOut: false },
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await runChecks({
+      worktree,
+      headSha: 'abc',
+      executor,
+      projectId: 'proj1',
+      execFn: fakeExec(() => ok()).exec,
+    })
+    expect(result.status).toBe('failed')
+    expect(result.checks.map((c) => c.status)).toEqual(['failed', 'skipped'])
+  })
+
+  test('a timed-out check reports timeout without ever calling docker', async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { driver } = fakeMicrovmDriver({
+      shell: (script) =>
+        script.includes('bun test')
+          ? { code: null, stdout: '', stderr: '', timedOut: true }
+          : { code: 0, stdout: '', stderr: '', timedOut: false },
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await runChecks({
+      worktree,
+      headSha: 'abc',
+      executor,
+      execFn: fakeExec(() => ok()).exec,
+    })
+    expect(result.checks.map((c) => c.status)).toEqual(['passed', 'timeout'])
+  })
+
+  // F8 regression: each step boots its OWN fresh sandbox copied from the
+  // host worktree (no live bind mount here) -- so the install step's result
+  // MUST be copied back to the host before the next step's sandbox is
+  // created, or that next step boots blind to what the install produced.
+  test("the install step's result reaches the host before the next step's sandbox is created", async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { driver, calls } = fakeMicrovmDriver({
+      shell: () => ({ code: 0, stdout: 'ok', stderr: '', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    await runChecks({
+      worktree,
+      headSha: 'abc',
+      executor,
+      projectId: 'proj1',
+      execFn: fakeExec(() => ok()).exec,
+    })
+    // Two steps (install, bun test), each with its own sandbox.
+    expect(callsOf(calls, 'create')).toHaveLength(2)
+    expect(callsOf(calls, 'copyToHost')).toHaveLength(2)
+    const methods = calls.map((c) => c.method)
+    const firstCopyBack = methods.indexOf('copyToHost')
+    const secondCreate = methods.indexOf('create', methods.indexOf('create') + 1)
+    expect(firstCopyBack).toBeGreaterThanOrEqual(0)
+    expect(firstCopyBack).toBeLessThan(secondCreate)
+  })
+})
+
+describe('runAdHocCheck with a microvm executor', () => {
+  test('routes through the executor instead of docker, no runtime probe at all', async () => {
+    const { exec: dockerExec, calls: dockerCalls } = fakeExec(() => ok())
+    const { driver, calls: vmCalls } = fakeMicrovmDriver({
+      shell: () => ({ code: 0, stdout: 'hi', stderr: '', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await runAdHocCheck({
+      worktree,
+      command: 'echo hi',
+      execFn: dockerExec,
+      executor,
+    })
+    expect(dockerCalls).toEqual([])
+    expect(result).toEqual({
+      command: 'echo hi',
+      status: 'passed',
+      exit_code: 0,
+      duration_ms: expect.any(Number),
+      tail: 'hi',
+    })
+    expect(callsOf(vmCalls, 'destroy')).toHaveLength(1)
+  })
+
+  test('a driver failure becomes a synthetic failed result, never throws', async () => {
+    const { driver } = fakeMicrovmDriver({ failOnCreate: true })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await runAdHocCheck({ worktree, command: 'echo hi', executor })
+    // Same shape a hard docker-level failure has always had: the failure
+    // message becomes the engine-level `hardError`, not the check's tail.
+    expect(result.status).toBe('failed')
+    expect(result.exit_code).toBeNull()
+    expect(result.tail).toBe('')
+  })
+})
+
+describe('bootstrapWorktreeInstall with a microvm executor', () => {
+  test('a project snapshot short-circuits the install: no sandbox is ever created', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: 'snap-1' })
+    const result = await bootstrapWorktreeInstall({ worktree, projectId: 'proj1', executor })
+    expect(result).toEqual({
+      status: 'skipped',
+      command: 'npm ci',
+      fingerprint: lockfileFingerprint(worktree),
+      detail: 'installed in the project snapshot',
+    })
+    expect(calls).toEqual([])
+  })
+
+  test('a snapshot short-circuit happens even for a fresh worktree with no previousFingerprint', async () => {
+    writeFileSync(join(worktree, 'bun.lock'), '')
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: 'snap-1' })
+    const result = await bootstrapWorktreeInstall({ worktree, projectId: 'proj1', executor })
+    expect(result.status).toBe('skipped')
+    expect(calls).toEqual([])
+  })
+
+  test('no snapshot: the install actually runs inside a fresh microVM, cache mounted, network open', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const { driver, calls } = fakeMicrovmDriver({
+      shell: () => ({ code: 0, stdout: 'added 3 packages', stderr: '', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await bootstrapWorktreeInstall({ worktree, projectId: 'proj1', executor })
+    expect(result.status).toBe('passed')
+    expect(result.command).toBe('npm ci')
+    const creates = callsOf(calls, 'create')
+    expect(creates).toHaveLength(1)
+    expect(creates[0]?.spec.network).toEqual({ allowedDomains: [] })
+    expect(creates[0]?.spec.volumes).toEqual([
+      { guest: '/cache', name: pkgCacheVolume('proj1'), ensureExists: true },
+    ])
+  })
+
+  test('an install failure inside the microVM is reported failed, sandbox still destroyed', async () => {
+    writeFileSync(join(worktree, 'package-lock.json'), '{"lockfileVersion":2}')
+    const { driver, calls } = fakeMicrovmDriver({
+      shell: () => ({ code: 1, stdout: '', stderr: 'ENETUNREACH', timedOut: false }),
+    })
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: null })
+    const result = await bootstrapWorktreeInstall({ worktree, projectId: 'proj1', executor })
+    expect(result.status).toBe('failed')
+    expect(result.detail).toContain('ENETUNREACH')
+    expect(callsOf(calls, 'destroy')).toHaveLength(1)
+  })
+
+  test('an unconfigured worktree short-circuits before touching the executor at all', async () => {
+    const { driver, calls } = fakeMicrovmDriver({})
+    const executor = microvmStepExecutor({ driver, projectId: 'proj1', snapshotName: 'snap-1' })
+    const result = await bootstrapWorktreeInstall({ worktree, projectId: 'proj1', executor })
+    expect(result.status).toBe('unconfigured')
+    expect(calls).toEqual([])
   })
 })

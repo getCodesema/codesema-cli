@@ -11,6 +11,9 @@ import {
   sanitizeArmClaimResult,
   sanitizeArmTicket,
   sanitizeArmTicketRequest,
+  sanitizeRunbookConfig,
+  sanitizeRunbookScan,
+  sanitizeRunbookValidation,
   sanitizeRunnerListEntry,
   sanitizeSealedSecretBlob,
   type ArmClaimResult,
@@ -19,7 +22,11 @@ import {
   type ArmTicket,
   type ArmTicketRequest,
   type ArmTransition,
+  type RunbookConfig,
+  type RunbookScan,
+  type RunbookValidation,
   type RunnerListEntry,
+  type TaskVerification,
 } from './contract.js'
 import { tryGit } from './git.js'
 import { runnerIdentityHeader } from './runner-identity.js'
@@ -469,6 +476,133 @@ export async function claimPendingSecret(
     parse: (body) => {
       const blob = sanitizeSealedSecretBlob(field(body, 'secret'))
       return blob ? { ciphertext: blob.ciphertext } : null
+    },
+    fetchImpl,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Runbook scans and mechanical verifications (plan microVM 2026-08-28).
+// ---------------------------------------------------------------------------
+
+export async function verification(
+  creds: SyncCredentials,
+  ticketId: string,
+  input: TaskVerification & { idempotency_key: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<{ id: string; created: boolean }>> {
+  return request(creds, {
+    method: 'POST',
+    path: `/api/cli/tickets/${encodeURIComponent(ticketId)}/verification`,
+    body: input,
+    parse: (body) => {
+      const id = field(body, 'id')
+      const created = field(body, 'created')
+      return typeof id === 'string' && typeof created === 'boolean' ? { id, created } : null
+    },
+    fetchImpl,
+  })
+}
+
+export async function listRunbookScans(
+  creds: SyncCredentials,
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<RunbookScan[]>> {
+  return request(creds, {
+    method: 'GET',
+    path: '/api/cli/runbook-scans',
+    collectionRoute: true,
+    parse: (body) => {
+      const scans = field(body, 'scans')
+      if (!Array.isArray(scans)) {
+        return null
+      }
+      return scans
+        .map((item) => sanitizeRunbookScan(item))
+        .filter((s): s is RunbookScan => s !== null)
+    },
+    fetchImpl,
+  })
+}
+
+export async function claimRunbookScan(
+  creds: SyncCredentials,
+  scanId: string,
+  opts: { leaseSeconds?: number } = {},
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<{ scan: RunbookScan; lease_expires_at: string }>> {
+  return request(creds, {
+    method: 'POST',
+    path: `/api/cli/runbook-scans/${encodeURIComponent(scanId)}/claim`,
+    body: opts.leaseSeconds !== undefined ? { lease_seconds: opts.leaseSeconds } : {},
+    parse: (body) => {
+      const scan = sanitizeRunbookScan(field(body, 'scan'))
+      const lease = field(body, 'lease_expires_at')
+      return scan && typeof lease === 'string' ? { scan, lease_expires_at: lease } : null
+    },
+    fetchImpl,
+  })
+}
+
+export async function reportRunbookScanResult(
+  creds: SyncCredentials,
+  scanId: string,
+  input: { runbook: RunbookConfig; validation: RunbookValidation; log_tail?: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<{ runbook_id: string; already_recorded: boolean }>> {
+  return request(creds, {
+    method: 'POST',
+    path: `/api/cli/runbook-scans/${encodeURIComponent(scanId)}/result`,
+    body: input,
+    parse: (body) => {
+      const runbookId = field(body, 'runbook_id')
+      const already = field(body, 'already_recorded')
+      return typeof runbookId === 'string' && typeof already === 'boolean'
+        ? { runbook_id: runbookId, already_recorded: already }
+        : null
+    },
+    fetchImpl,
+  })
+}
+
+export async function failRunbookScan(
+  creds: SyncCredentials,
+  scanId: string,
+  input: { error: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<Record<string, never>>> {
+  return request(creds, {
+    method: 'POST',
+    path: `/api/cli/runbook-scans/${encodeURIComponent(scanId)}/fail`,
+    body: input,
+    parse: ack,
+    fetchImpl,
+  })
+}
+
+export async function currentRunbook(
+  creds: SyncCredentials,
+  repoId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<HubResult<{ runbook: RunbookConfig | null; validation: RunbookValidation | null }>> {
+  return request(creds, {
+    method: 'GET',
+    path: `/api/cli/repos/${encodeURIComponent(repoId)}/runbook`,
+    parse: (body) => {
+      if (!body || typeof body !== 'object') {
+        return null
+      }
+      const rawRunbook = field(body, 'runbook')
+      const rawValidation = field(body, 'validation')
+      const runbook = rawRunbook === null ? null : sanitizeRunbookConfig(rawRunbook)
+      const validation = rawValidation === null ? null : sanitizeRunbookValidation(rawValidation)
+      if (
+        (rawRunbook !== null && runbook === null) ||
+        (rawValidation !== null && validation === null)
+      ) {
+        return null
+      }
+      return { runbook, validation }
     },
     fetchImpl,
   })

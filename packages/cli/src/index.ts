@@ -9,7 +9,7 @@ import { setLanguage, t } from './i18n.js'
 import { reviewFlagsPassed, runMenu } from './menu.js'
 import { prep } from './prep.js'
 import { review, REVIEW_GATE_VALUES, type ReviewGate } from './review.js'
-import { runnerCommand } from './runner-commands.js'
+import { runbookCommand, runnerCommand } from './runner-commands.js'
 import { show } from './show.js'
 import { linkCommand, syncCommand } from './sync.js'
 import { isInteractive } from './tui.js'
@@ -70,6 +70,7 @@ export const COMMAND_NAMES = [
   'sync',
   'link',
   'runner',
+  'runbook',
 ] as const
 
 export type CommandName = (typeof COMMAND_NAMES)[number]
@@ -235,6 +236,14 @@ async function runCommand(
         gitName: values['git-name'],
         gitEmail: values['git-email'],
         timeoutSeconds: parseIntFlag('timeout', values.timeout, 1, 86400),
+      })
+      break
+    case 'runbook':
+      await runbookCommand({
+        action: arg,
+        cwd: process.cwd(),
+        timeoutSeconds: parseIntFlag('timeout', values.timeout, 1, 86400),
+        agent: values.agent,
       })
       break
   }

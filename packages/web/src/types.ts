@@ -550,7 +550,7 @@ export type TaskReason = {
 }
 
 /** How a task's agent turns are contained (mirrors the contract). */
-export type TaskIsolation = 'container' | 'policy'
+export type TaskIsolation = 'container' | 'policy' | 'microvm'
 
 /** One known agent CLI, as GET /api/config `agents` lists them. */
 export type AgentOption = {
@@ -608,7 +608,7 @@ export type TaskIssueSnapshot = {
 }
 
 /** What the workspace config ASKED for (mirrors the CLI's IsolationMode). */
-export type IsolationMode = 'auto' | 'container' | 'policy'
+export type IsolationMode = 'auto' | 'container' | 'policy' | 'microvm'
 
 /** Flat, bounded payload: summaries only, never a full file body. */
 export type TaskEventData = Record<string, string | number | boolean | null>

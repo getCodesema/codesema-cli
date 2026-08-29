@@ -33,6 +33,33 @@ the environment of the processes it spawns.
   argv would be readable in `ps` on the whole host. `CLAUDE_CODE_OAUTH_TOKEN`
   also decides how the cage bootstraps its credentials — when it is set, nothing
   is copied out of `~/.claude`.
+- **A microVM task agent never sees a credential at all, only a placeholder.**
+  `microvmSecretsFromEnv` (`task-isolation.ts`) turns the same names
+  `CAGE_FORWARDED_ENV` would forward as env into `SandboxSecret`s declared on
+  the `SandboxBuilder`, each scoped to the hosts it may reach
+  (`api.anthropic.com`/`platform.claude.com` for Claude, the opencode/model
+  gateway hosts for its provider keys). The guest's `env` shows only
+  `$MSB_<name>`; the microVM runtime's network proxy substitutes the real
+  value ONLY on the way out, to an `allowedHosts` domain — never inside the
+  guest, never in argv, never in a plain env var (spike of 2026-08-28,
+  criterion 6). `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_SMALL_FAST_MODEL`
+  are the one exception: configuration the agent CLI reads directly, not a
+  credential, so `microvmNonSecretEnv` forwards those three as plain sandbox
+  env instead. `isolation: "microvm"` is never chosen by `auto` — only an
+  explicit opt-in runs a task in a microVM (config.ts, `IsolationMode`).
+- **A microVM task copies the worktree in and back out; it never mounts it.**
+  `runMicrovmTurn` (`microvm-turn.ts`) has no bind-mount to work with
+  (`SandboxHandle` only offers `copyFromHost`/`copyToHost`), so it copies the
+  worktree into the sandbox before the turn and copies `/work` back onto the
+  host worktree after — success or failure, always, before the sandbox is
+  destroyed. A linked worktree's `.git` is a one-line file pointing at a HOST
+  path, which means nothing inside the guest, so the shared git directory is
+  copied in too and the guest's `.git` is rewritten to point at that copy
+  instead (same visibility the container flow gets from a read-only bind
+  mount, reached here by copy). That synthetic pointer, and any
+  `node_modules` tree, are removed inside the guest before the copy back —
+  copying the pointer over the host's real `.git` would corrupt the worktree,
+  since the commit itself always happens on the host, never inside the guest.
 - **Git subprocesses lose the repo-location variables.** `subprocessEnv`
   (`git.ts`) strips the 8 variables git sets on the hooks it invokes —
   `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,

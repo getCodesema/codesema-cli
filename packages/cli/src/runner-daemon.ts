@@ -11,8 +11,14 @@
 // or abandon.
 
 import { execFileSync } from 'node:child_process'
-import { runnerEnvPath } from './config.js'
-import { isActiveTaskStatus, type ArmOrder, type ArmTicketRequest } from './contract.js'
+import { loadConfig, runnerEnvPath } from './config.js'
+import {
+  isActiveTaskStatus,
+  type ArmOrder,
+  type ArmTicketRequest,
+  type RunbookScan,
+} from './contract.js'
+import { tryGit } from './git.js'
 import {
   claimPendingSecret,
   claimTicket,
@@ -21,6 +27,8 @@ import {
   listTicketRequests,
   listTickets,
 } from './hub-client.js'
+import { createMicrosandboxDriver, type SandboxDriver } from './microsandbox-driver.js'
+import { DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS, runOneRunbookScan } from './runbook-runner.js'
 import { loadRunnerIdentity } from './runner-identity.js'
 import {
   applyGitIdentity,
@@ -32,6 +40,7 @@ import { unseal } from './sealed-box.js'
 import { loadSyncCredentials, type SyncCredentials } from './sync.js'
 import { createHubTicketTask } from './task-hub-ticket.js'
 import { flushHubOutbox, heartbeatHubTicket } from './task-hub.js'
+import { microvmSecretsFromEnv } from './task-isolation.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskManager } from './task-server.js'
 import { draftAndSubmitTicketRequest } from './ticket-draft.js'
@@ -39,6 +48,8 @@ import { draftAndSubmitTicketRequest } from './ticket-draft.js'
 const DEFAULT_INTERVAL_MS = 25_000
 const MAX_BACKOFF_MS = 5 * 60_000
 const HEARTBEAT_INTERVAL_MS = 45_000
+/** Per-attempt step budget for a daemon-driven runbook scan; the CLI's own `runbook scan` picks its own via `--timeout`. */
+const RUNBOOK_SCAN_TICK_TIMEOUT_MS = DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -64,6 +75,10 @@ type DaemonContext = {
   sanitizeSecretsFn: typeof sanitizeRunnerSecretsPayload
   applySecretsFn: typeof applySecretsToEnvFile
   applyGitIdentityFn: (identity: RunnerGitIdentity) => void
+  loadConfigFn: typeof loadConfig
+  /** Lazy: never constructs a real Microsandbox driver when isolation is not 'microvm'. */
+  getDriver: () => SandboxDriver
+  runOneRunbookScanFn: typeof runOneRunbookScan
 }
 
 /** Whether this half-tick saw a network failure or a 5xx: the ONLY conditions that back off the next tick. */
@@ -200,6 +215,108 @@ async function claimNextTicket(
 }
 
 /**
+ * `git@host:owner/repo.git` and `https://host/owner/repo.git` both reduce to
+ * `owner/repo`, lowercased: the same shape a `RunbookScan.repo_full_name`
+ * carries, so a scan can be matched to this daemon's one project without a
+ * second hub round trip.
+ */
+function repoFullNameFromRemoteUrl(remoteUrl: string): string | null {
+  const cleaned = remoteUrl.trim().replace(/\.git$/i, '')
+  const sshMatch = /^[\w.-]+@[^:]+:(.+)$/.exec(cleaned)
+  if (sshMatch?.[1]) {
+    return sshMatch[1].toLowerCase()
+  }
+  try {
+    const url = new URL(cleaned)
+    const path = url.pathname.replace(/^\/+/, '')
+    return path ? path.toLowerCase() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * This daemon manages exactly one project (`ctx.cwd`, the same one
+ * `claimNextTicket` scopes tickets to): a queued scan resolves here only when
+ * its `repo_full_name` names THIS repo's origin remote AND, when the hub
+ * asked for a specific commit (`scan.head_sha` non-null), the local HEAD
+ * still matches it. A mismatch (the daemon's checkout momentarily behind or
+ * ahead of the commit the hub queued the scan for) resolves to null so this
+ * tick simply skips the scan rather than validating the wrong commit while
+ * reporting `validated_sha` as if it were the one requested; a later tick
+ * picks it up once HEAD catches up.
+ */
+async function resolveDaemonRunbookWorktree(
+  ctx: DaemonContext,
+  remoteUrl: string,
+  scan: RunbookScan,
+): Promise<{ worktree: string; projectId: string; headSha: string } | null> {
+  const repoFullName = repoFullNameFromRemoteUrl(remoteUrl)
+  if (!repoFullName || scan.repo_full_name.toLowerCase() !== repoFullName) {
+    return null
+  }
+  const headSha = tryGit(['rev-parse', 'HEAD'], ctx.cwd)
+  if (!headSha) {
+    return null
+  }
+  if (scan.head_sha && scan.head_sha.toLowerCase() !== headSha.toLowerCase()) {
+    return null
+  }
+  return { worktree: ctx.cwd, projectId: scan.repo_id, headSha }
+}
+
+/**
+ * Runbook scans are opt-in (`isolation: "microvm"`, T1.4-style: never chosen
+ * by 'auto') and need an agent command this repo trusts to propose one; both
+ * missing degrade to a silent no-op — the rest of the tick is unaffected
+ * either way. At most one scan per tick, best-effort: a hub or VM failure here
+ * is logged and swallowed, never turned into a 'retryable' backoff for the
+ * ticket-claiming half of the tick.
+ */
+async function runRunbookScanTick(
+  ctx: DaemonContext,
+  remoteUrl: string,
+  creds: SyncCredentials,
+): Promise<void> {
+  const config = ctx.loadConfigFn(ctx.cwd)
+  if (config.isolation !== 'microvm') {
+    return
+  }
+  const command = config.agent
+  if (!command) {
+    ctx.logOnce(
+      'runbook-scan-no-agent',
+      'isolation is "microvm" but no agent command is configured; not scanning for a runbook',
+    )
+    return
+  }
+  let driver: SandboxDriver
+  try {
+    driver = ctx.getDriver()
+  } catch (err) {
+    ctx.logOnce('runbook-scan-no-driver', `microVM driver unavailable: ${errorMessage(err)}`)
+    return
+  }
+  try {
+    const outcome = await ctx.runOneRunbookScanFn({
+      creds,
+      driver,
+      command,
+      timeoutMs: RUNBOOK_SCAN_TICK_TIMEOUT_MS,
+      secrets: microvmSecretsFromEnv(process.env),
+      resolveWorktree: (scan) => resolveDaemonRunbookWorktree(ctx, remoteUrl, scan),
+      onProgress: (line) => ctx.log(`runbook scan: ${line}`),
+      fetchImpl: ctx.fetchImpl,
+    })
+    if (outcome.claimed) {
+      ctx.log(`runbook scan ${outcome.scanId}: ${outcome.outcome.status}`)
+    }
+  } catch (err) {
+    ctx.log(`runbook scan tick failed: ${errorMessage(err)}`)
+  }
+}
+
+/**
  * Claims and applies whatever secret the hub is holding for this machine's
  * runner identity, as steady-state rotation, distinct from the one-time
  * provisioning at `codesema runner connect`. Every failure mode short of a
@@ -282,6 +399,7 @@ async function tick(ctx: DaemonContext): Promise<TickOutcome> {
   }
 
   const requestsOutcome = await draftQueuedRequests(ctx, remoteUrl, creds)
+  await runRunbookScanTick(ctx, remoteUrl, creds)
   const ticketOutcome = await claimNextTicket(ctx, remoteUrl, creds)
   return requestsOutcome === 'retryable' || ticketOutcome === 'retryable' ? 'retryable' : 'ok'
 }
@@ -393,6 +511,14 @@ export type StartRunnerDaemonOptions = {
   applyGitIdentityFn?: (identity: RunnerGitIdentity) => void
   /** Test seam. */
   applySecretsFn?: typeof applySecretsToEnvFile
+  /** Test seam. */
+  loadConfigFn?: typeof loadConfig
+  /** Test seam: a fake microVM driver, never the real Microsandbox one in a test. */
+  driver?: SandboxDriver
+  /** Test seam: replaces `createMicrosandboxDriver`, e.g. to script it throwing (no SDK, no /dev/kvm). Ignored when `driver` is set. */
+  createDriverFn?: typeof createMicrosandboxDriver
+  /** Test seam. */
+  runOneRunbookScanFn?: typeof runOneRunbookScan
 }
 
 export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonHandle {
@@ -413,6 +539,16 @@ export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonH
         execFileSync('git', [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
       )
     })
+  const loadConfigFn = opts.loadConfigFn ?? loadConfig
+  const runOneRunbookScanFn = opts.runOneRunbookScanFn ?? runOneRunbookScan
+  const createDriverFn = opts.createDriverFn ?? createMicrosandboxDriver
+  // Lazy and memoized: constructing the real driver touches the Microsandbox
+  // SDK, which most daemons (isolation !== 'microvm') never need to load.
+  let cachedDriver: SandboxDriver | null = null
+  const getDriver = (): SandboxDriver => {
+    cachedDriver ??= opts.driver ?? createDriverFn()
+    return cachedDriver
+  }
   const controller = new AbortController()
   const loggedOnce = new Set<string>()
 
@@ -435,6 +571,9 @@ export function startRunnerDaemon(opts: StartRunnerDaemonOptions): RunnerDaemonH
     sanitizeSecretsFn,
     applySecretsFn,
     applyGitIdentityFn,
+    loadConfigFn,
+    getDriver,
+    runOneRunbookScanFn,
   }
 
   let backoffMs = intervalMs

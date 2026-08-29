@@ -1,0 +1,151 @@
+{
+  "type": "object",
+  "required": [
+    "runbook",
+    "validation"
+  ],
+  "properties": {
+    "runbook": {
+      "type": "object",
+      "required": [
+        "version",
+        "image",
+        "install",
+        "services",
+        "healthchecks",
+        "tests",
+        "egress",
+        "depends_on_files"
+      ],
+      "properties": {
+        "version": {
+          "const": 1,
+          "type": "number"
+        },
+        "image": {
+          "minLength": 1,
+          "maxLength": 200,
+          "type": "string"
+        },
+        "install": {
+          "maxItems": 32,
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "maxLength": 500,
+            "type": "string"
+          }
+        },
+        "services": {
+          "type": "object",
+          "required": [
+            "host_up",
+            "compose_file"
+          ],
+          "properties": {
+            "host_up": {
+              "maxItems": 32,
+              "type": "array",
+              "items": {
+                "minLength": 1,
+                "maxLength": 500,
+                "type": "string"
+              }
+            },
+            "compose_file": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "healthchecks": {
+          "maxItems": 32,
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "maxLength": 500,
+            "type": "string"
+          }
+        },
+        "tests": {
+          "minItems": 1,
+          "maxItems": 32,
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "maxLength": 500,
+            "type": "string"
+          }
+        },
+        "egress": {
+          "maxItems": 32,
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "maxLength": 253,
+            "type": "string"
+          }
+        },
+        "depends_on_files": {
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "maxLength": 500,
+            "type": "string"
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": [
+        "runbook_sha",
+        "validated_sha",
+        "validated_at",
+        "status"
+      ],
+      "properties": {
+        "runbook_sha": {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
+        "validated_sha": {
+          "pattern": "^[0-9a-f]{7,64}$",
+          "type": "string"
+        },
+        "validated_at": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "valid",
+              "type": "string"
+            },
+            {
+              "const": "stale",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "log_tail": {
+      "maxLength": 4000,
+      "type": "string"
+    }
+  }
+}

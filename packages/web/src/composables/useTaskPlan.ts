@@ -148,7 +148,8 @@ export function parseTaskPlan(raw: unknown): TaskPlan | null {
     // 'policy' is the honest default here for the same reason it is on
     // TaskRecord: a plan must never claim a stronger containment than the one
     // it can prove.
-    isolation: p.isolation === 'container' ? 'container' : 'policy',
+    isolation:
+      p.isolation === 'container' ? 'container' : p.isolation === 'microvm' ? 'microvm' : 'policy',
     isolation_reason: str(p.isolation_reason, PLAN_REASON_MAX),
     agent: str(p.agent, PLAN_PATH_MAX),
     queue_position:
@@ -197,7 +198,9 @@ export function planIsolationLine(plan: TaskPlan): string {
   const label =
     plan.isolation === 'container'
       ? t('workspace.planIsolationContainer')
-      : t('workspace.planIsolationPolicy')
+      : plan.isolation === 'microvm'
+        ? t('workspace.planIsolationMicrovm')
+        : t('workspace.planIsolationPolicy')
   return plan.isolation_reason ? `${label} — ${plan.isolation_reason}` : label
 }
 

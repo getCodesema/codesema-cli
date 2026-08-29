@@ -42,7 +42,7 @@ import {
   type TaskReason,
   type TaskRecord,
 } from './contract.js'
-import { detectForgeHint, isAncestor, refExists } from './git.js'
+import { detectForgeHint, isAncestor, refExists, tryGit } from './git.js'
 import { CRITERIA_REASON_IDS_MAX } from './task-criteria-gate.js'
 import { reportHubTransition } from './task-hub.js'
 import {
@@ -692,18 +692,49 @@ async function fetchMergedProof(
 }
 
 /**
+ * Files the merge touched, best-effort: a plain two-tree diff between
+ * `target` (the branch's base, resolved BEFORE the forge call by
+ * `branchAncestry` and untouched locally since, no fetch runs in between) and
+ * the landed `mergeSha`. A tree diff rather than a range on ancestry on
+ * purpose: it reads the same regardless of merge strategy (merge commit,
+ * squash, rebase), where `target...mergeSha` would not for a squash. `null`
+ * on any git failure (an `unresolved` target that named no real ref,
+ * `mergeSha` from a remote this clone never fetched, a timeout): the hub
+ * report this feeds is never blocked on it, see `reportMergedWithProof`.
+ */
+function mergedChangedFiles(cwd: string, target: string, mergeSha: string): string[] | null {
+  const out = tryGit(['diff', '--name-only', target, mergeSha], cwd, {
+    timeoutMs: MERGE_GIT_TIMEOUT_MS,
+  })
+  if (out === null) {
+    return null
+  }
+  const files = out.split('\n').filter((line) => line.trim().length > 0)
+  return files.length > 0 ? files : null
+}
+
+/**
  * Reports `merged` to the hub WITH its proof, or says out loud why it will
  * not: a landed merge whose commit the forge did not answer with is journaled
  * as `merged_sha_unknown` and never posted: `merged` without `merge_sha` is
  * exactly the phantom-state shape the contract refuses, and the hub's own
  * forge webhook (which carries the sha) reconciles the ticket instead.
+ *
+ * `changed_files` rides along best-effort (D-contrat: the hub uses it to mark
+ * a repo's runbook stale when a `depends_on_files` path changed). Computed
+ * from `target`, the merge's own base as `branchAncestry` resolved it — never
+ * required, and a git failure here never withholds the `merged` report
+ * itself, only the one field that depended on it.
  */
-function reportMergedWithProof(
-  opts: MergeTaskOptions,
-  cli: 'gh' | 'glab',
-  sha: string | null,
-  events: AppendTaskEventInput[],
-): void {
+function reportMergedWithProof(params: {
+  opts: MergeTaskOptions
+  cli: 'gh' | 'glab'
+  sha: string | null
+  /** The merge's own base, as `branchAncestry` resolved it — see `mergedChangedFiles`. */
+  target: string
+  events: AppendTaskEventInput[]
+}): void {
+  const { opts, cli, sha, target, events } = params
   if (!opts.task.hub_ticket) {
     return
   }
@@ -720,10 +751,13 @@ function reportMergedWithProof(
     })
     return
   }
-  void reportHubTransition(opts.cwd, opts.task, {
+  const changedFiles = mergedChangedFiles(opts.cwd, target, sha)
+  const reportHub = opts.reportHub ?? reportHubTransition
+  void reportHub(opts.cwd, opts.task, {
     type: 'merged',
     branch: opts.task.branch,
     merge_sha: sha,
+    ...(changedFiles ? { changed_files: changedFiles } : {}),
   })
 }
 
@@ -768,6 +802,12 @@ export type MergeTaskOptions = {
   inputs?: MergeInputs
   /** Test seam: the default runs a real gh / glab. */
   execForge?: ShipForgeExecFn
+  /**
+   * Test seam for the `merged` report only (`reportMergedWithProof`): the
+   * default is the real `reportHubTransition`, which needs sync credentials
+   * and a network call this module has no other way to observe from a test.
+   */
+  reportHub?: typeof reportHubTransition
   /** Merge keys present in the config but unusable — journaled, never absorbed. */
   degradedKeys?: readonly string[]
 }
@@ -980,7 +1020,13 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
             ...(priorProof.sha ? { sha: priorProof.sha } : {}),
           },
         })
-        reportMergedWithProof(opts, candidate.cli, priorProof.sha, events)
+        reportMergedWithProof({
+          opts,
+          cli: candidate.cli,
+          sha: priorProof.sha,
+          target: inputs.ancestry.target,
+          events,
+        })
         return { kind: 'merged', cli: candidate.cli, url: null, readiness, events }
       }
       // Keep trying (a dual-remote setup may have the other CLI working) but
@@ -1009,7 +1055,13 @@ export async function mergeTask(opts: MergeTaskOptions): Promise<MergeOutcome> {
         ...(proof.sha ? { sha: proof.sha } : {}),
       },
     })
-    reportMergedWithProof(opts, candidate.cli, proof.sha, events)
+    reportMergedWithProof({
+      opts,
+      cli: candidate.cli,
+      sha: proof.sha,
+      target: inputs.ancestry.target,
+      events,
+    })
     return { kind: 'merged', cli: candidate.cli, url, readiness, events }
   }
 
