@@ -378,6 +378,15 @@ describe('runMicrovmTurn: non-root user and the su wrapper', () => {
     await promise
   })
 
+  test('never sets a boot user on the sandbox spec: the guest user does not exist until useradd runs, so a boot user makes the SDK fail BootStart', async () => {
+    const { opts, rig } = baseOptions()
+    const promise = runMicrovmTurn(opts)
+    await flush()
+    expect(rig.getSpec()?.user).toBeUndefined()
+    rig.resolveTurn({ stdout: 'ok' })
+    await promise
+  })
+
   test('chowns the copied worktree to the guest user before the turn runs', async () => {
     const { opts, rig } = baseOptions()
     const promise = runMicrovmTurn(opts)
@@ -418,7 +427,6 @@ describe('runMicrovmTurn: non-root user and the su wrapper', () => {
     const { opts, rig } = baseOptions({ user: 'runner' })
     const promise = runMicrovmTurn(opts)
     await flush()
-    expect(rig.getSpec()?.user).toBe('runner')
     expect(rig.shellCalls[0]?.script).toContain('useradd -m -s /bin/bash runner')
     expect(rig.turnShellCall()?.script).toContain('su runner -c ')
     rig.resolveTurn({ stdout: 'ok' })
@@ -429,7 +437,10 @@ describe('runMicrovmTurn: non-root user and the su wrapper', () => {
     const { opts, rig } = baseOptions()
     const promise = runMicrovmTurn(opts)
     await flush()
-    expect(rig.getSpec()?.user).toBe(MICROVM_TURN_DEFAULTS.user)
+    expect(rig.shellCalls[0]?.script).toContain(
+      `useradd -m -s /bin/bash ${MICROVM_TURN_DEFAULTS.user}`,
+    )
+    expect(rig.turnShellCall()?.script).toContain(`su ${MICROVM_TURN_DEFAULTS.user} -c `)
     rig.resolveTurn({ stdout: 'ok' })
     await promise
   })
@@ -754,7 +765,6 @@ describe('runMicrovmTurn: guest user validation (M10)', () => {
     const { opts, rig } = baseOptions({ user: 'runner-2_x' })
     const promise = runMicrovmTurn(opts)
     await flush()
-    expect(rig.getSpec()?.user).toBe('runner-2_x')
     expect(rig.shellCalls[0]?.script).toContain('useradd -m -s /bin/bash runner-2_x')
     rig.resolveTurn({ stdout: 'ok' })
     await promise

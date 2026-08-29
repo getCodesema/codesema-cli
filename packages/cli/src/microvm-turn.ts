@@ -343,6 +343,10 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
   const env = opts.env ?? process.env
   const specEnv: Record<string, string> = { ...microvmNonSecretEnv(env), HOME: CAGE_HOME_DIR }
 
+  // No `user` here: it sets the VM's own boot user (PID 1), and the guest
+  // user does not exist yet at `create()` time - `useradd` below is what
+  // creates it, every turn, after boot; an as-yet-nonexistent boot user
+  // fails BootStart before agentd's relay comes up (SDK 0.6.15).
   const spec: SandboxSpec = {
     name,
     cpus: MICROVM_TURN_DEFAULTS.cpus,
@@ -351,7 +355,6 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
     network: { allowedDomains },
     secrets: opts.secrets,
     env: specEnv,
-    user,
     ...(opts.snapshotName ? { fromSnapshot: opts.snapshotName } : { image: opts.image }),
   }
 
