@@ -40,6 +40,7 @@ import { unseal } from './sealed-box.js'
 import { loadSyncCredentials, type SyncCredentials } from './sync.js'
 import { createHubTicketTask } from './task-hub-ticket.js'
 import { flushHubOutbox, heartbeatHubTicket } from './task-hub.js'
+import { microvmSecretsFromEnv } from './task-isolation.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { TaskManager } from './task-server.js'
 import { draftAndSubmitTicketRequest } from './ticket-draft.js'
@@ -302,6 +303,7 @@ async function runRunbookScanTick(
       driver,
       command,
       timeoutMs: RUNBOOK_SCAN_TICK_TIMEOUT_MS,
+      secrets: microvmSecretsFromEnv(process.env),
       resolveWorktree: (scan) => resolveDaemonRunbookWorktree(ctx, remoteUrl, scan),
       onProgress: (line) => ctx.log(`runbook scan: ${line}`),
       fetchImpl: ctx.fetchImpl,

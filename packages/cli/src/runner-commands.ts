@@ -56,6 +56,7 @@ import {
 } from './runner-service.js'
 import { formatFingerprint, runnerKeyFingerprint, seal, unseal } from './sealed-box.js'
 import { loadSyncCredentials } from './sync.js'
+import { microvmSecretsFromEnv } from './task-isolation.js'
 import { draftAndPublishTicket } from './ticket-draft.js'
 import { confirm, isInteractive, select, textInput, type SelectOption } from './tui.js'
 import { ACCENT, AMBER, dim, GREEN, paint, RED, renderFieldRows, type FieldRow } from './ui.js'
@@ -1074,6 +1075,7 @@ async function runbookScanCommand(opts: RunbookCommandOptions): Promise<void> {
     driver,
     command,
     timeoutMs,
+    secrets: microvmSecretsFromEnv(process.env),
     onProgress: (line) => console.log(`  ${dim(line)}`),
   })
   printRunbookScanOutcome(outcome)

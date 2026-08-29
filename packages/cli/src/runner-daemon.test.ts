@@ -1036,32 +1036,47 @@ describe('startRunnerDaemon', () => {
       expect(lines.filter((l) => l.includes('no agent command is configured')).length).toBe(1)
     })
 
-    test('isolation "microvm" with an agent: calls runOneRunbookScanFn with the configured command and a resolver', async () => {
+    test('isolation "microvm" with an agent: calls runOneRunbookScanFn with the configured command, secrets from the environment and a resolver', async () => {
       connect()
       initRepo(cwd, 'https://github.com/o/r.git')
       const manager = fakeManager({ cwd })
+      const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = 'tok-secret'
       const seen: {
         command: string | null
         timeoutMs: number | null
+        secrets: RunbookScanRunnerOptions['secrets'] | null
         resolveWorktree: RunbookScanRunnerOptions['resolveWorktree'] | null
-      } = { command: null, timeoutMs: null, resolveWorktree: null }
-      const handle = startRunnerDaemon({
-        manager,
-        cwd,
-        fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
-        logFn: () => {},
-        loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
-        driver: {} as SandboxDriver,
-        runOneRunbookScanFn: async (opts) => {
-          seen.command = opts.command
-          seen.timeoutMs = opts.timeoutMs
-          seen.resolveWorktree = opts.resolveWorktree
-          return { claimed: false }
-        },
-      })
-      await handle.stop()
+      } = { command: null, timeoutMs: null, secrets: null, resolveWorktree: null }
+      try {
+        const handle = startRunnerDaemon({
+          manager,
+          cwd,
+          fetchImpl: fetchStub(200, { requests: [], tickets: [] }, []),
+          logFn: () => {},
+          loadConfigFn: () => ({ isolation: 'microvm', agent: 'claude -p' }),
+          driver: {} as SandboxDriver,
+          runOneRunbookScanFn: async (opts) => {
+            seen.command = opts.command
+            seen.timeoutMs = opts.timeoutMs
+            seen.secrets = opts.secrets
+            seen.resolveWorktree = opts.resolveWorktree
+            return { claimed: false }
+          },
+        })
+        await handle.stop()
+      } finally {
+        if (previous === undefined) {
+          delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+        } else {
+          process.env.CLAUDE_CODE_OAUTH_TOKEN = previous
+        }
+      }
       expect(seen.command).toBe('claude -p')
       expect(seen.timeoutMs).toBe(DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS)
+      expect(seen.secrets).toEqual([
+        { env: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'tok-secret', allowedHosts: expect.any(Array) },
+      ])
       expect(seen.resolveWorktree).not.toBeNull()
     })
 

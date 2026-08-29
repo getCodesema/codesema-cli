@@ -5,6 +5,7 @@ import type {
   SandboxExecOptions,
   SandboxExecResult,
   SandboxHandle,
+  SandboxSecret,
   SandboxSpec,
 } from './microsandbox-driver.js'
 import type { ProjectSnapshot } from './microvm-snapshot.js'
@@ -537,6 +538,51 @@ describe('runRunbookScan — the sandbox is always destroyed', () => {
     const { driver } = fakeDriver({ destroyShouldThrow: true })
     const outcome = await runRunbookScan(baseOptions({ driver }))
     expect(outcome.status).toBe('completed')
+  })
+})
+
+describe('runRunbookScan — proposal secrets (real runMicrovmTurn, no runProposalFn seam)', () => {
+  test('opts.secrets reach the proposal sandbox spec; the install/test sandbox never gets them', async () => {
+    const { driver, specs } = fakeDriver({
+      respond: scriptedRespond({
+        'bun install': okResult('installed'),
+        'bun test': okResult('1 pass'),
+      }),
+    })
+    const secrets: SandboxSecret[] = [
+      { env: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'tok-secret', allowedHosts: ['api.anthropic.com'] },
+    ]
+    // `delete`, not an override to `undefined`: dropping the property falls
+    // through to the real default proposal, which drives an actual
+    // runMicrovmTurn call against the fake driver — every other test in this
+    // file stubs this away with a scripted string, which is exactly why the
+    // "Not logged in" regression this guards against went unnoticed until a
+    // real VM rejeu hit it.
+    const options = baseOptions({ driver, secrets })
+    delete options.runProposalFn
+    const outcome = await runRunbookScan(options)
+    expect(outcome.status).toBe('completed')
+    const proposalSpec = specs.find((spec) => spec.name.includes('runbook-scan-'))
+    expect(proposalSpec?.secrets).toEqual(secrets)
+    const otherSpecs = specs.filter((spec) => spec !== proposalSpec)
+    expect(otherSpecs.length).toBeGreaterThan(0)
+    for (const spec of otherSpecs) {
+      expect(spec.secrets).toBeUndefined()
+    }
+  })
+
+  test('no secrets configured: the proposal sandbox spec declares an empty list, not undefined', async () => {
+    const { driver, specs } = fakeDriver({
+      respond: scriptedRespond({
+        'bun install': okResult('installed'),
+        'bun test': okResult('1 pass'),
+      }),
+    })
+    const options = baseOptions({ driver })
+    delete options.runProposalFn
+    await runRunbookScan(options)
+    const proposalSpec = specs.find((spec) => spec.name.includes('runbook-scan-'))
+    expect(proposalSpec?.secrets).toEqual([])
   })
 })
 

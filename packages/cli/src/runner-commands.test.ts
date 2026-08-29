@@ -1369,6 +1369,34 @@ describe('runbookCommand', () => {
     expect(seen.timeoutMs).toBe(42_000)
   })
 
+  test('scan forwards CLAUDE_CODE_OAUTH_TOKEN from the environment as a sandbox secret, never as plain env', async () => {
+    initRepo(cwd)
+    const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'tok-secret'
+    try {
+      let seenSecrets: readonly { env: string; value: string; allowedHosts: readonly string[] }[] =
+        []
+      await runbookCommand({
+        action: 'scan',
+        cwd,
+        agent: 'claude -p',
+        runRunbookScanFn: async (opts) => {
+          seenSecrets = opts.secrets ?? []
+          return completedOutcome()
+        },
+      })
+      expect(seenSecrets).toEqual([
+        { env: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'tok-secret', allowedHosts: expect.any(Array) },
+      ])
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      } else {
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = previous
+      }
+    }
+  })
+
   test('the projectId is stable across two scans of the same worktree', async () => {
     initRepo(cwd)
     const seen: string[] = []

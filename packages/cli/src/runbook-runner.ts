@@ -25,6 +25,7 @@ import {
   type SandboxDriver,
   type SandboxExecResult,
   type SandboxHandle,
+  type SandboxSecret,
   type SandboxSpec,
 } from './microsandbox-driver.js'
 import { buildProjectSnapshot, type ProjectSnapshot } from './microvm-snapshot.js'
@@ -158,6 +159,8 @@ export type RunRunbookScanOptions = {
   timeoutMs: number
   /** Egress opened for the proposal agent itself (never for install: the runbook's own egress is used there). */
   allowedDomains?: readonly string[]
+  /** Provider credentials for the proposal agent (CLAUDE_CODE_OAUTH_TOKEN, etc.); never passed as env. */
+  secrets?: readonly SandboxSecret[]
   onProgress?: (line: string) => void
   signal?: AbortSignal
   /** Image the proposal VM boots from and the prompt names as the default; DEFAULT_CHECKS_IMAGE ('node:26') absent. */
@@ -176,6 +179,7 @@ export type RunRunbookScanOptions = {
     projectId: string
     worktree: string
     runbook: RunbookConfig
+    agentId: string
     timeoutMs: number
     onProgress?: (line: string) => void
   }) => Promise<ProjectSnapshot>
@@ -368,7 +372,7 @@ export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<Runbo
         snapshotName: null,
         image: defaultImage,
         runbook: null,
-        secrets: [],
+        secrets: opts.secrets ?? [],
         ...(opts.allowedDomains ? { allowedDomains: opts.allowedDomains } : {}),
         ...(opts.signal ? { signal: opts.signal } : {}),
       }))
@@ -477,6 +481,8 @@ export type RunbookScanRunnerOptions = {
   driver: SandboxDriver
   command: string
   timeoutMs: number
+  /** Provider credentials for the proposal agent (CLAUDE_CODE_OAUTH_TOKEN, etc.); never passed as env. */
+  secrets?: readonly SandboxSecret[]
   /** Resolves the local checkout for a hub repository id; null when the runner does not have it. */
   resolveWorktree: (
     scan: RunbookScan,
@@ -580,6 +586,7 @@ export async function runOneRunbookScan(
       command: opts.command,
       timeoutMs: opts.timeoutMs,
       signal: controller.signal,
+      ...(opts.secrets ? { secrets: opts.secrets } : {}),
       ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
     })
   } finally {
