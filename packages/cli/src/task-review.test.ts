@@ -25,6 +25,7 @@ import type {
   SandboxHandle,
   SandboxSpec,
 } from './microsandbox-driver.js'
+import { AGENT_INSTALL_DOMAINS } from './microvm-bootstrap.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview } from './record.js'
 import {
@@ -228,7 +229,13 @@ function verificationOf(over: Partial<TaskVerification> = {}): TaskVerification 
  * file only.
  */
 function fakeMicrovmDriver(
-  opts: { exec?: SandboxExecResult; chmodExitCode?: number; destroyError?: Error } = {},
+  opts: {
+    exec?: SandboxExecResult
+    chmodExitCode?: number
+    destroyError?: Error
+    /** Makes the guest PATH probe (`command -v <agentId>`) answer "missing" for this one agent id. */
+    probeMissingFor?: string
+  } = {},
 ): {
   driver: SandboxDriver
   calls: { method: string; args: unknown[] }[]
@@ -258,6 +265,19 @@ function fakeMicrovmDriver(
           stderr: chmodExitCode === 0 ? '' : 'permission denied',
           timedOut: false,
         }
+      }
+      // The guest PATH probe (microvm-bootstrap.ts's `ensureAgentInstalled`):
+      // always answers "already installed" so a test's `opts.exec` override
+      // (a bad agent turn, a timeout) never gets misread as a missing agent —
+      // except for `probeMissingFor`, which the bootstrap tests use instead.
+      if (script.startsWith('command -v ')) {
+        const missing = opts.probeMissingFor && script === `command -v ${opts.probeMissingFor}`
+        return missing
+          ? { code: 1, stdout: '', stderr: 'not found', timedOut: false }
+          : { code: 0, stdout: '', stderr: '', timedOut: false }
+      }
+      if (script.includes('npm install -g')) {
+        return { code: 0, stdout: '', stderr: '', timedOut: false }
       }
       return execResult
     },
@@ -2525,7 +2545,11 @@ describe('runMicrovmReview', () => {
     expect(fake.specs[0]?.name).toMatch(/^codesema-review-task-abc-[0-9a-f]{8}$/)
     expect(fake.specs[0]?.image).toBe('node:26')
     expect(fake.specs[0]?.fromSnapshot).toBeUndefined()
-    expect(fake.specs[0]?.network).toEqual({ allowedDomains: DEFAULT_ISOLATION_ALLOWED_DOMAINS })
+    // Cold boot (no snapshot): the reviewer install domain joins the default
+    // allowlist so `ensureAgentInstalled` can npm-install a missing agent.
+    expect(fake.specs[0]?.network).toEqual({
+      allowedDomains: [...DEFAULT_ISOLATION_ALLOWED_DOMAINS, ...AGENT_INSTALL_DOMAINS],
+    })
   })
 
   test('a snapshot name restores from the snapshot instead of booting the image cold', async () => {
@@ -2548,6 +2572,25 @@ describe('runMicrovmReview', () => {
     expect(fake.specs[0]?.image).toBeUndefined()
   })
 
+  test('a snapshot restore does not open the agent install domain', async () => {
+    const repo = makeRepo()
+    const fake = fakeMicrovmDriver()
+
+    await runMicrovmReview({
+      driver: fake.driver,
+      worktree: repo,
+      projectId: 'proj-1',
+      snapshotName: 'codesema-project-proj-1',
+      image: 'node:26',
+      command: 'claude -p',
+      prompt: 'p',
+      timeoutMs: 5000,
+      taskId: 'task-abc',
+    })
+
+    expect(fake.specs[0]?.network).toEqual({ allowedDomains: DEFAULT_ISOLATION_ALLOWED_DOMAINS })
+  })
+
   test('a custom allowedDomains list wins over the default', async () => {
     const repo = makeRepo()
     const fake = fakeMicrovmDriver()
@@ -2564,7 +2607,9 @@ describe('runMicrovmReview', () => {
       allowedDomains: ['forge.example.com'],
     })
 
-    expect(fake.specs[0]?.network).toEqual({ allowedDomains: ['forge.example.com'] })
+    expect(fake.specs[0]?.network).toEqual({
+      allowedDomains: ['forge.example.com', ...AGENT_INSTALL_DOMAINS],
+    })
   })
 
   test('secrets, when supplied, are declared on the sandbox spec', async () => {
@@ -2643,12 +2688,23 @@ describe('runMicrovmReview', () => {
       taskId: 'task-abc',
     })
 
+    // Bootstrap (useradd, agent-PATH probe) runs before the worktree is even
+    // copied in: create, shell(useradd), shell(probe), copyFromHost,
+    // shell(chmod), shell(agent), destroy.
     const methods = fake.calls.map((c) => c.method)
-    expect(methods).toEqual(['create', 'copyFromHost', 'shell', 'shell', 'destroy'])
-    const copyCall = fake.calls[1]
+    expect(methods).toEqual([
+      'create',
+      'shell',
+      'shell',
+      'copyFromHost',
+      'shell',
+      'shell',
+      'destroy',
+    ])
+    const copyCall = fake.calls[3]
     expect(copyCall?.args[0]).toBe(repo)
     expect(copyCall?.args[1]).toBe('/work')
-    const chmodCall = fake.calls[2]
+    const chmodCall = fake.calls[4]
     expect(String(chmodCall?.args[0])).toBe('chmod -R a-w /work')
   })
 
@@ -2668,7 +2724,8 @@ describe('runMicrovmReview', () => {
       taskId: 'task-abc',
     })
 
-    const agentCall = fake.calls[3]
+    // create, shell(useradd), shell(probe), copyFromHost, shell(chmod), shell(agent)
+    const agentCall = fake.calls[5]
     expect(agentCall?.method).toBe('shell')
     expect(agentCall?.args[0]).toBe(
       'claude -p --dangerously-skip-permissions --output-format stream-json --include-partial-messages --verbose',
@@ -2697,7 +2754,14 @@ describe('runMicrovmReview', () => {
       }),
     ).rejects.toThrow(/read-only/)
 
-    expect(fake.calls.map((c) => c.method)).toEqual(['create', 'copyFromHost', 'shell', 'destroy'])
+    expect(fake.calls.map((c) => c.method)).toEqual([
+      'create',
+      'shell',
+      'shell',
+      'copyFromHost',
+      'shell',
+      'destroy',
+    ])
   })
 
   test('the sandbox is destroyed even when the agent command times out', async () => {
@@ -2823,6 +2887,52 @@ describe('runMicrovmReview', () => {
       }),
     ).rejects.toThrow(/read-only/)
   })
+
+  describe('agent bootstrap', () => {
+    test('a cold boot npm-installs the agent derived from the command when the guest PATH probe finds it missing', async () => {
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver({ probeMissingFor: 'opencode' })
+
+      await runMicrovmReview({
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'opencode run --model x',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      })
+
+      const install = fake.calls.find(
+        (c) => c.method === 'shell' && String(c.args[0]).includes('npm install -g'),
+      )
+      expect(String(install?.args[0])).toContain('opencode-ai')
+      expect((install?.args[1] as { user?: string } | undefined)?.user).toBe('root')
+    })
+
+    test('a snapshot boot never installs, and rejects with a readable error when the agent is missing', async () => {
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver({ probeMissingFor: 'claude' })
+
+      await expect(
+        runMicrovmReview({
+          driver: fake.driver,
+          worktree: repo,
+          projectId: 'proj-1',
+          snapshotName: 'codesema-project-proj-1',
+          image: 'node:26',
+          command: 'claude -p',
+          prompt: 'p',
+          timeoutMs: 5000,
+          taskId: 'task-abc',
+        }),
+      ).rejects.toThrow(/not installed in this microVM/)
+
+      expect(fake.calls.some((c) => String(c.args[0]).includes('npm install -g'))).toBe(false)
+    })
+  })
 })
 
 // --- createTaskReviewer: microvm wiring (lot C8) ---------------------------
@@ -2869,6 +2979,8 @@ describe('createTaskReviewer: microvm wiring', () => {
     expect(fake.specs[0]?.name).toMatch(new RegExp(`^codesema-review-${record.id}-[0-9a-f]{8}$`))
     expect(fake.calls.map((c) => c.method)).toEqual([
       'create',
+      'shell',
+      'shell',
       'copyFromHost',
       'shell',
       'shell',

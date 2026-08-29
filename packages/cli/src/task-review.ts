@@ -32,6 +32,11 @@ import {
   type SandboxNetworkPolicy,
   type SandboxSecret,
 } from './microsandbox-driver.js'
+import {
+  AGENT_INSTALL_DOMAINS,
+  ensureAgentInstalled,
+  ensureGuestUser,
+} from './microvm-bootstrap.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview, readJson, resolveArchivePath } from './record.js'
 import {
@@ -59,6 +64,7 @@ import {
 } from './task-criteria-gate.js'
 import { reportHubTransition, type ArmTransitionDraft } from './task-hub.js'
 import {
+  commandBin,
   containerTaskCommandFor,
   DEFAULT_BASE_IMAGE,
   DEFAULT_ISOLATION_ALLOWED_DOMAINS,
@@ -1128,8 +1134,18 @@ const MICROVM_REVIEW_DURATION_BUFFER_SECONDS = 60
 export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<string> {
   const suffix = randomUUID().slice(0, 8)
   const name = sandboxName('review', opts.taskId ? `${opts.taskId}-${suffix}` : suffix)
+  // A snapshot restore already has the agent installed (microvm-snapshot.ts
+  // bakes it in); a cold boot does not, so this review installs it itself —
+  // which needs registry.npmjs.org on top of whatever else it may reach.
+  const cold = opts.snapshotName === null
+  const agentId = commandBin(opts.command) || 'claude'
   const network: SandboxNetworkPolicy = {
-    allowedDomains: opts.allowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS,
+    allowedDomains: Array.from(
+      new Set([
+        ...(opts.allowedDomains ?? DEFAULT_ISOLATION_ALLOWED_DOMAINS),
+        ...(cold ? AGENT_INSTALL_DOMAINS : []),
+      ]),
+    ),
   }
   const maxDurationSeconds = Math.max(
     1,
@@ -1146,6 +1162,8 @@ export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<s
     workdir: MICROVM_REVIEW_DEFAULTS.workDir,
   })
   try {
+    await ensureGuestUser(handle, MICROVM_REVIEW_DEFAULTS.user)
+    await ensureAgentInstalled(handle, agentId, { install: cold })
     await handle.copyFromHost(opts.worktree, MICROVM_REVIEW_DEFAULTS.workDir)
     // A fresh copy, never the dev VM's own worktree: turned read-only right
     // after the copy so nothing the reviewer runs can write it back.
