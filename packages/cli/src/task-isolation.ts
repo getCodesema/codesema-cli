@@ -2228,6 +2228,15 @@ export type IsolationProbe = {
   reason: string
   configured: IsolationMode
   runtime: string | null
+  /**
+   * Machine-wide microVM capability, independent of `configured`/`mode`
+   * above: set whenever `probeIsolation` actually asked the sandbox driver
+   * (`configured === 'auto'`, the boot probe, or `'microvm'` directly).
+   * `undefined`/`null` means it was genuinely never asked (`'container'` or
+   * `'policy'`) — `overlayIsolationProbe` must then refuse a microvm project
+   * rather than assume either answer.
+   */
+  microvm?: { available: boolean; reason: string } | null
 }
 
 export type ProbeIsolationOptions = {
@@ -2243,25 +2252,49 @@ export type ProbeIsolationOptions = {
   ignoreAgent?: boolean
   execFn?: IsolationExecFn
   /**
-   * `configured === 'microvm'` only: the driver to probe. Defaults to a
-   * lazily-imported `createMicrosandboxDriver()` — plain callers never pay
-   * for loading the SDK module unless a project actually asks for microvm.
+   * The microVM driver to probe, used whenever `configured` is `'microvm'`
+   * or `'auto'` (the auto/boot probe checks microvm capability alongside
+   * docker/podman — see `probeIsolation`). Defaults to a lazily-imported
+   * `createMicrosandboxDriver()` — plain callers with `configured ===
+   * 'container'` or `'policy'` never pay for loading the SDK module.
    */
   driver?: SandboxDriver
 }
 
-/** `probeIsolation`'s default microVM driver: imported lazily so the SDK only loads when a project opts into microvm. */
+/** `probeIsolation`'s default microVM driver: imported lazily so the SDK only loads when it is actually probed. */
 async function defaultMicrovmDriver(): Promise<SandboxDriver> {
   const mod = await import('./microsandbox-driver.js')
   return mod.createMicrosandboxDriver()
 }
 
+/** The `IsolationProbe.microvm` fragment: never a silent "unknown", available or not. */
+async function probeMicrovmCapability(
+  opts: Pick<ProbeIsolationOptions, 'driver'>,
+): Promise<{ available: boolean; reason: string }> {
+  const driver = opts.driver ?? (await defaultMicrovmDriver())
+  const sandboxProbe = await driver.probe()
+  return sandboxProbe.available
+    ? {
+        available: true,
+        reason: sandboxProbe.version
+          ? `microsandbox ${sandboxProbe.version} is available`
+          : 'microsandbox is available',
+      }
+    : { available: false, reason: sandboxProbe.reason ?? t('isolation.reasonNoMicrovm') }
+}
+
 /**
- * Boot probe: is a container runtime (or, for `configured === 'microvm'`, a
- * microVM driver) there, does it answer, and can the cage run the configured
- * agent at all? Deliberately cheap (no image build): a build failure later
- * fails that task loudly, it does not silently downgrade the whole
- * workspace.
+ * Boot probe: is a container runtime there, does it answer, can the cage run
+ * the configured agent at all, and (for `configured === 'auto'`, the boot
+ * probe, or `'microvm'` directly) is a microVM driver there too? `'auto'`
+ * checks BOTH runtimes because it is the machine CAPABILITY probe every
+ * project's `overlayIsolationProbe` reads from — a project configured for
+ * microvm must never be refused merely because the shared boot probe only
+ * ever asked about docker/podman (Decouverte 6). `configured === 'container'`
+ * stays docker/podman-only: an explicit, narrower ask that pays nothing for
+ * a driver it did not request. Deliberately cheap otherwise (no image
+ * build): a build failure later fails that task loudly, it does not
+ * silently downgrade the whole workspace.
  */
 export async function probeIsolation(opts: ProbeIsolationOptions): Promise<IsolationProbe> {
   const configured = opts.configured
@@ -2279,41 +2312,73 @@ export async function probeIsolation(opts: ProbeIsolationOptions): Promise<Isola
     return deny(t('isolation.reasonAgent', { command: opts.command }))
   }
   if (configured === 'microvm') {
-    const driver = opts.driver ?? (await defaultMicrovmDriver())
-    const sandboxProbe = await driver.probe()
-    if (!sandboxProbe.available) {
-      return deny(sandboxProbe.reason ?? t('isolation.reasonNoMicrovm'))
-    }
-    return {
-      available: true,
-      mode: 'microvm',
-      reason: sandboxProbe.version
-        ? `microsandbox ${sandboxProbe.version} is available`
-        : 'microsandbox is available',
-      configured,
-      runtime: null,
-    }
+    const microvm = await probeMicrovmCapability(opts)
+    return microvm.available
+      ? {
+          available: true,
+          mode: 'microvm',
+          reason: microvm.reason,
+          configured,
+          runtime: null,
+          microvm,
+        }
+      : { ...deny(microvm.reason), microvm }
   }
   const runtime = await isolationRuntime(opts.execFn)
+  let container: IsolationProbe
   if (!runtime) {
-    return deny(t('isolation.reasonNoRuntime'))
+    container = deny(t('isolation.reasonNoRuntime'))
+  } else {
+    const exec = opts.execFn ?? defaultExec
+    // `docker --version` answers with no daemon at all: only `info` proves the
+    // engine is actually reachable.
+    const info = await exec(runtime, ['info'], { timeoutMs: 30_000 })
+    container =
+      info.code !== 0
+        ? { ...deny(t('isolation.reasonUnreachable', { runtime })), runtime }
+        : {
+            available: true,
+            mode: 'container',
+            reason: t('isolation.reasonReady', { runtime }),
+            configured,
+            runtime,
+          }
   }
-  const exec = opts.execFn ?? defaultExec
-  // `docker --version` answers with no daemon at all: only `info` proves the
-  // engine is actually reachable.
-  const info = await exec(runtime, ['info'], { timeoutMs: 30_000 })
-  if (info.code !== 0) {
+  if (configured === 'auto') {
+    container = { ...container, microvm: await probeMicrovmCapability(opts) }
+  }
+  return container
+}
+
+/**
+ * `configured === 'microvm'` half of `overlayIsolationProbe`, split out to
+ * keep that function's complexity down. No I/O (this function is pure): a
+ * microVM probe needs the driver, which only `probeIsolation` touches.
+ * `machine.microvm` is set whenever the machine probe actually asked the
+ * driver — the boot probe (`configured: 'auto'`) does this alongside
+ * docker/podman, so a microvm project no longer needs the machine probe to
+ * have been taken with `configured: 'microvm'` specifically (Decouverte 6).
+ * Its available/reason are reused as-is; `runtime` stays null, matching
+ * every other microvm-mode probe (a microvm task never touches docker).
+ * When nothing machine-wide was ever asked, the project is refused until it
+ * is actually probed.
+ */
+function overlayMicrovmProbe(machine: IsolationProbe, configured: IsolationMode): IsolationProbe {
+  if (!machine.microvm) {
     return {
-      ...deny(t('isolation.reasonUnreachable', { runtime })),
-      runtime,
+      available: false,
+      mode: 'policy',
+      reason: t('isolation.reasonMicrovmNotProbed'),
+      configured,
+      runtime: machine.runtime,
     }
   }
   return {
-    available: true,
-    mode: 'container',
-    reason: t('isolation.reasonReady', { runtime }),
+    available: machine.microvm.available,
+    mode: machine.microvm.available ? 'microvm' : 'policy',
+    reason: machine.microvm.reason,
     configured,
-    runtime,
+    runtime: null,
   }
 }
 
@@ -2362,24 +2427,7 @@ export function overlayIsolationProbe(
     }
   }
   if (configured === 'microvm') {
-    // No I/O here on purpose (this function is pure): a microVM probe needs
-    // the driver, which only `probeIsolation` touches. When the machine probe
-    // WAS itself taken with `configured: 'microvm'` (a workspace whose
-    // default is microvm, or a caller that probed this exact project
-    // directly), its available/mode/reason are reused as-is — same trick as
-    // `machine.runtime` below for container. Otherwise there is nothing
-    // machine-wide to reuse (the shared boot probe never tried a driver at
-    // all) and the project is refused until it is actually probed.
-    if (machine.configured === 'microvm') {
-      return { ...machine, configured }
-    }
-    return {
-      available: false,
-      mode: 'policy',
-      reason: t('isolation.reasonMicrovmNotProbed'),
-      configured,
-      runtime: machine.runtime,
-    }
+    return overlayMicrovmProbe(machine, configured)
   }
   if (!machine.runtime) {
     return {

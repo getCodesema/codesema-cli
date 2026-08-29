@@ -599,6 +599,8 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   // --- task isolation (container cage) ---
   'workspace.isolationContainer':
     '🛡 container isolation ON ({runtime}): each task runs in its own container — full agent tools inside, egress limited to {domains}',
+  'workspace.isolationMicrovm':
+    '🛡 microvm isolation ON (microsandbox): each task runs in its own microVM — full agent tools inside, egress limited to {domains}',
   'workspace.isolationPolicy':
     '⚠ container isolation OFF: {reason} — tasks run on this machine with the policy hardening (edit tools in the worktree, user settings only, strict MCP config)',
   'isolation.noRuntime':
@@ -1230,6 +1232,8 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   // --- task isolation (container cage) ---
   'workspace.isolationContainer':
     "🛡 isolation container ACTIVE ({runtime}) : chaque tâche tourne dans son propre container — outils de l'agent complets à l'intérieur, sortie réseau limitée à {domains}",
+  'workspace.isolationMicrovm':
+    "🛡 isolation microvm ACTIVE (microsandbox) : chaque tâche tourne dans sa propre microVM — outils de l'agent complets à l'intérieur, sortie réseau limitée à {domains}",
   'workspace.isolationPolicy':
     '⚠ isolation container INACTIVE : {reason} — les tâches tournent sur cette machine avec le durcissement policy (outils d’édition dans le worktree, réglages utilisateur seuls, config MCP stricte)',
   'isolation.noRuntime':

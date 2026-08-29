@@ -334,17 +334,20 @@ export function workspaceBootFallbacks(flags: ProjectConfigFlags): {
 }
 
 /**
- * One line, every boot: either the cage is on (and what it lets out), or it is
- * off and WHY. The fallback to the host policy hardening is a downgrade of the
- * promise made to the user — it is never allowed to happen quietly.
+ * One line, every boot: either the cage is on (and what it lets out, and
+ * whether that cage is a container or a microVM), or it is off and WHY. The
+ * fallback to the host policy hardening is a downgrade of the promise made to
+ * the user — it is never allowed to happen quietly.
  */
 export function logIsolation(probe: IsolationProbe, domains: readonly string[]): void {
   console.log(
     probe.available
-      ? t('workspace.isolationContainer', {
-          runtime: probe.runtime ?? '',
-          domains: domains.join(', '),
-        })
+      ? probe.mode === 'microvm'
+        ? t('workspace.isolationMicrovm', { domains: domains.join(', ') })
+        : t('workspace.isolationContainer', {
+            runtime: probe.runtime ?? '',
+            domains: domains.join(', '),
+          })
       : t('workspace.isolationPolicy', { reason: probe.reason }),
   )
 }

@@ -2318,6 +2318,96 @@ describe('probeIsolation (microvm, lot C2)', () => {
   })
 })
 
+// Decouverte 6: the boot probe (`configured: 'auto'`) is the shared MACHINE
+// capability probe every project overlays against. Before this fix it only
+// ever checked docker/podman, so a project configured for microvm was
+// refused forever, even on a machine microsandbox is fine on.
+describe('probeIsolation (auto also probes microvm capability, Decouverte 6)', () => {
+  test('auto carries the microvm capability alongside the container one', async () => {
+    const { exec } = fakeExec()
+    const driver = fakeSandboxDriver(() =>
+      Promise.resolve({ available: true, reason: null, version: '0.6.15' }),
+    )
+    const probe = await probeIsolation({
+      configured: 'auto',
+      command: 'claude -p',
+      execFn: exec,
+      driver,
+    })
+    expect(probe).toMatchObject({ available: true, mode: 'container', runtime: 'docker' })
+    expect(probe.microvm).toMatchObject({ available: true })
+    expect(probe.microvm?.reason).toContain('0.6.15')
+  })
+
+  test('auto: no container runtime does not hide a working microvm driver', async () => {
+    const { exec } = fakeExec(() => ok({ code: 127, failure: 'ENOENT' }))
+    const driver = fakeSandboxDriver(() =>
+      Promise.resolve({ available: true, reason: null, version: '0.6.15' }),
+    )
+    const probe = await probeIsolation({
+      configured: 'auto',
+      command: 'claude -p',
+      execFn: exec,
+      driver,
+    })
+    expect(probe.available).toBe(false)
+    expect(probe.mode).toBe('policy')
+    expect(probe.microvm).toEqual({ available: true, reason: 'microsandbox 0.6.15 is available' })
+  })
+
+  test('auto: a broken microvm driver does not take container isolation down with it', async () => {
+    const { exec } = fakeExec()
+    const driver = fakeSandboxDriver(() =>
+      Promise.resolve({ available: false, reason: 'no /dev/kvm access', version: null }),
+    )
+    const probe = await probeIsolation({
+      configured: 'auto',
+      command: 'claude -p',
+      execFn: exec,
+      driver,
+    })
+    expect(probe).toMatchObject({ available: true, mode: 'container', runtime: 'docker' })
+    expect(probe.microvm).toEqual({ available: false, reason: 'no /dev/kvm access' })
+  })
+
+  test('a non-cageable agent skips the microvm driver too, exactly like it skips docker', async () => {
+    const { calls, exec } = fakeExec()
+    let probed = false
+    const driver = fakeSandboxDriver(() => {
+      probed = true
+      return Promise.resolve({ available: true, reason: null, version: '0.6.15' })
+    })
+    const probe = await probeIsolation({
+      configured: 'auto',
+      command: 'codex exec -',
+      execFn: exec,
+      driver,
+    })
+    expect(probe.available).toBe(false)
+    expect(probe.reason).toContain('codex')
+    expect(calls).toHaveLength(0)
+    expect(probed).toBe(false)
+  })
+
+  test('configured container (explicit, never the boot) stays docker/podman-only: no microvm field, no driver call', async () => {
+    const { exec } = fakeExec()
+    let probed = false
+    const driver = fakeSandboxDriver(() => {
+      probed = true
+      return Promise.resolve({ available: true, reason: null, version: '0.6.15' })
+    })
+    const probe = await probeIsolation({
+      configured: 'container',
+      command: 'claude -p',
+      execFn: exec,
+      driver,
+    })
+    expect(probe).toMatchObject({ available: true, mode: 'container', runtime: 'docker' })
+    expect(probe.microvm).toBeUndefined()
+    expect(probed).toBe(false)
+  })
+})
+
 describe('overlayIsolationProbe (microvm, lot C2)', () => {
   test('a machine probed for microvm and available is reused as-is', () => {
     const machine: IsolationProbe = {
@@ -2326,6 +2416,7 @@ describe('overlayIsolationProbe (microvm, lot C2)', () => {
       reason: 'microsandbox 0.6.15 is available',
       configured: 'microvm',
       runtime: null,
+      microvm: { available: true, reason: 'microsandbox 0.6.15 is available' },
     }
     const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
     expect(overlaid).toMatchObject({ available: true, mode: 'microvm', configured: 'microvm' })
@@ -2339,6 +2430,7 @@ describe('overlayIsolationProbe (microvm, lot C2)', () => {
       reason: 'no /dev/kvm access',
       configured: 'microvm',
       runtime: null,
+      microvm: { available: false, reason: 'no /dev/kvm access' },
     }
     const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
     expect(overlaid.available).toBe(false)
@@ -2346,12 +2438,12 @@ describe('overlayIsolationProbe (microvm, lot C2)', () => {
     expect(resolveTaskIsolation(overlaid)).toBeNull()
   })
 
-  test('a machine probed for container tells a microvm project nothing about a driver it never asked for', () => {
+  test('a machine probed with configured: "container" (never auto) tells a microvm project nothing about a driver it never asked for', () => {
     const machine: IsolationProbe = {
       available: true,
       mode: 'container',
       reason: 'docker is available',
-      configured: 'auto',
+      configured: 'container',
       runtime: 'docker',
     }
     const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
@@ -2359,6 +2451,57 @@ describe('overlayIsolationProbe (microvm, lot C2)', () => {
     expect(overlaid.mode).toBe('policy')
     expect(overlaid.reason).toMatch(/not probed/)
     expect(resolveTaskIsolation(overlaid)).toBeNull()
+  })
+
+  // Decouverte 6: the shared BOOT probe is always taken with `configured:
+  // 'auto'` (workspace.ts), never 'microvm' — so a microvm project can only
+  // ever be admitted through `machine.microvm`, never through
+  // `machine.configured === 'microvm'`. These three pin the fix.
+  test('Decouverte 6 fix: an auto (boot) probe with microvm available activates a microvm project', () => {
+    const machine: IsolationProbe = {
+      available: true,
+      mode: 'container',
+      reason: 'docker is available',
+      configured: 'auto',
+      runtime: 'docker',
+      microvm: { available: true, reason: 'microsandbox 0.6.15 is available' },
+    }
+    const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
+    expect(overlaid).toMatchObject({ available: true, mode: 'microvm', configured: 'microvm' })
+    expect(overlaid.reason).toContain('0.6.15')
+    expect(resolveTaskIsolation(overlaid)?.isolation).toBe('microvm')
+  })
+
+  test('Decouverte 6 fix: an auto (boot) probe with microvm unavailable refuses the project explicitly, never a silent policy run', () => {
+    const machine: IsolationProbe = {
+      available: true,
+      mode: 'container',
+      reason: 'docker is available',
+      configured: 'auto',
+      runtime: 'docker',
+      microvm: { available: false, reason: 'no /dev/kvm access' },
+    }
+    const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
+    expect(overlaid.available).toBe(false)
+    expect(overlaid.mode).toBe('policy')
+    expect(overlaid.reason).toBe('no /dev/kvm access')
+    // null = 409 refused at creation (task-plan.ts), not a task quietly
+    // created with isolation: 'policy'.
+    expect(resolveTaskIsolation(overlaid)).toBeNull()
+  })
+
+  test('Decouverte 6 fix: docker absent does not hide microvm availability from a microvm project', () => {
+    const machine: IsolationProbe = {
+      available: false,
+      mode: 'policy',
+      reason: 'no container runtime found (install docker or podman)',
+      configured: 'auto',
+      runtime: null,
+      microvm: { available: true, reason: 'microsandbox 0.6.15 is available' },
+    }
+    const overlaid = overlayIsolationProbe(machine, { configured: 'microvm', command: 'claude -p' })
+    expect(overlaid).toMatchObject({ available: true, mode: 'microvm', configured: 'microvm' })
+    expect(resolveTaskIsolation(overlaid)?.isolation).toBe('microvm')
   })
 
   test('a non-cageable agent is refused before the machine is even consulted', () => {
