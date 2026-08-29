@@ -677,6 +677,20 @@ function wrapSdkSandbox(sandbox: SdkSandboxInstance): SandboxHandle {
   }
 }
 
+/**
+ * Best effort: the SDK can provision a sandbox under this name before
+ * rejecting `create()` (spike-confirmed, review sandboxes left `stopped`).
+ * Cleans it up without masking the original `create()` error, which the
+ * caller always sees regardless of whether this succeeds.
+ */
+async function removeOrphanedSandbox(mod: MicrosandboxSdk, name: string): Promise<void> {
+  try {
+    await mod.Sandbox.remove(name)
+  } catch {
+    // nothing to clean up, or the SDK never provisioned anything
+  }
+}
+
 async function createMicrosandboxSandbox(
   spec: SandboxSpec,
   opts: MicrosandboxDriverOptions,
@@ -731,7 +745,13 @@ async function createMicrosandboxSandbox(
       return mount.readonly ? named.readonly() : named
     })
   }
-  const sandbox = await builder.create()
+  let sandbox: SdkSandboxInstance
+  try {
+    sandbox = await builder.create()
+  } catch (err) {
+    await removeOrphanedSandbox(mod, spec.name)
+    throw err
+  }
   return wrapSdkSandbox(sandbox)
 }
 

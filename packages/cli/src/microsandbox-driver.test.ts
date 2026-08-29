@@ -1118,6 +1118,36 @@ describe('createMicrosandboxDriver.create', () => {
     expect(captured?.memoryMib).toBe(8192)
     expect(captured?.maxDurationSeconds).toBe(900)
   })
+
+  test('a create() rejection removes the sandbox the SDK may have provisioned under that name, then still rejects with the original error', async () => {
+    const removedNames: string[] = []
+    const { sdk } = makeFakeSdk({
+      onCreate: () => {
+        throw new Error('invalid config: workdir does not exist in guest: /work')
+      },
+      onSandboxRemove: (name) => {
+        removedNames.push(name)
+      },
+    })
+    const driver = createMicrosandboxDriver({ sdk })
+    await expect(driver.create(baseSpec({ name: 'codesema-review-t1' }))).rejects.toThrow(
+      /workdir does not exist in guest/,
+    )
+    expect(removedNames).toEqual(['codesema-review-t1'])
+  })
+
+  test('a create() rejection still rejects with the original error even when the best-effort remove also fails', async () => {
+    const { sdk } = makeFakeSdk({
+      onCreate: () => {
+        throw new Error('original create failure')
+      },
+      onSandboxRemove: () => {
+        throw new Error('remove also failed')
+      },
+    })
+    const driver = createMicrosandboxDriver({ sdk })
+    await expect(driver.create(baseSpec())).rejects.toThrow(/original create failure/)
+  })
 })
 
 // --- createMicrosandboxDriver: exec/shell --------------------------------------
