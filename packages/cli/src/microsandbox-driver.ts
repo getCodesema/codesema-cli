@@ -748,7 +748,11 @@ async function snapshotMicrosandbox(
 
 async function listMicrosandboxes(opts: MicrosandboxDriverOptions): Promise<string[]> {
   const mod = await loadSdk(opts)
-  const page = await mod.Sandbox.listWith((b) => b.limit(1000))
+  // The SDK rejects any limit above 100 ("sandbox list limit must be between
+  // 1 and 100", verified against microsandbox 0.6.15): every real boot with a
+  // microVM driver threw here before this cap, which made the orphan sweep's
+  // listSandboxes() fail on every single run.
+  const page = await mod.Sandbox.listWith((b) => b.limit(100))
   return page.sandboxes.map((s) => s.name).filter((name) => name.startsWith(SANDBOX_NAME_PREFIX))
 }
 

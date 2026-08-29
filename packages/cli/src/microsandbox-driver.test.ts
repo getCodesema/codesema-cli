@@ -539,7 +539,7 @@ type FakeSdkHooks = {
   ) => ReturnType<typeof makeExecHandle>
   onGet?: (name: string) => unknown
   onSandboxRemove?: (name: string) => void
-  onListWith?: () => { sandboxes: { name: string }[] }
+  onListWith?: (limit: number) => { sandboxes: { name: string }[] }
   onVolumeCreate?: (name: string, kind: 'disk' | 'directory', sizeMib: number | undefined) => void
   onVolumeRemove?: (name: string) => void
   onSnapshotList?: () => { name: string | null; sizeBytes: bigint | null }[]
@@ -772,8 +772,7 @@ function makeFakeSdk(hooks: FakeSdkHooks = {}) {
             return { limit: () => {} }
           },
         })
-        void limit
-        return hooks.onListWith ? hooks.onListWith() : { sandboxes: [] }
+        return hooks.onListWith ? hooks.onListWith(limit) : { sandboxes: [] }
       },
       remove: async (name: string) => {
         hooks.onSandboxRemove?.(name)
@@ -1572,6 +1571,19 @@ describe('createMicrosandboxDriver snapshot and listing', () => {
     })
     const names = await createMicrosandboxDriver({ sdk }).listSandboxes()
     expect(names).toEqual([sandboxName('dev', 'a'), sandboxName('checks', 'b')])
+  })
+
+  test('listSandboxes asks the SDK for at most 100 (its own hard cap; 0.6.15 rejects a request above it)', async () => {
+    let seenLimit = 0
+    const { sdk } = makeFakeSdk({
+      onListWith: (limit) => {
+        seenLimit = limit
+        return { sandboxes: [] }
+      },
+    })
+    await createMicrosandboxDriver({ sdk }).listSandboxes()
+    expect(seenLimit).toBeGreaterThanOrEqual(1)
+    expect(seenLimit).toBeLessThanOrEqual(100)
   })
 
   test('listSnapshots drops digest-only (unnamed) entries and converts bigint sizes', async () => {
