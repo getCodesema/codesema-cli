@@ -712,17 +712,87 @@ async function removeOrphanedSandbox(mod: MicrosandboxSdk, name: string): Promis
   }
 }
 
-/** See `isTransientSandboxStoreError`'s doc: retries only that one family of error, cleaning up between attempts like a single `create()` already did. */
+/**
+ * A fresh builder every time it's called: the SDK's builder is single-use
+ * (spike-observed on 0.6.15 — `create()` consumes it, success or failure, and
+ * a second `.create()` on the same instance rejects with "SandboxBuilder
+ * already consumed"), so a retry needs a whole new one, not the one that
+ * already failed.
+ */
+function applySecrets(
+  builder: SdkSandboxBuilder,
+  secrets: readonly SandboxSecret[],
+): SdkSandboxBuilder {
+  let b = builder
+  for (const secret of secrets) {
+    b = b.secret((s) => {
+      let sb = s.env(secret.env).value(secret.value)
+      for (const host of secret.allowedHosts) {
+        sb = sb.allowHost(host)
+      }
+      return sb
+    })
+  }
+  return b
+}
+
+function applyVolumes(
+  builder: SdkSandboxBuilder,
+  volumes: readonly SandboxVolumeMount[],
+): SdkSandboxBuilder {
+  let b = builder
+  for (const mount of volumes) {
+    b = b.volume(mount.guest, (m) => {
+      const named = m.named(mount.name)
+      return mount.readonly ? named.readonly() : named
+    })
+  }
+  return b
+}
+
+function buildSandbox(spec: SandboxSpec, mod: MicrosandboxSdk): SdkSandboxBuilder {
+  const hasImage = spec.image !== undefined
+  let builder = mod.Sandbox.builder(spec.name)
+  builder = hasImage
+    ? builder.image(spec.image as string)
+    : builder.fromSnapshot(spec.fromSnapshot as string)
+  builder = builder
+    .cpus(spec.cpus)
+    .memory(mod.MiB(spec.memoryMib))
+    .maxDuration(spec.maxDurationSeconds)
+    .replace()
+  const rootDisk = spec.rootDisk
+  if (rootDisk) {
+    builder =
+      rootDisk.kind === 'managed'
+        ? builder.rootDisk(rootDisk.sizeMib)
+        : builder.rootDisk((d) => d.flat().size(rootDisk.sizeMib))
+  }
+  builder = builder.network((n) => n.policy(buildNetworkPolicy(mod, spec.network)))
+  builder = applySecrets(builder, spec.secrets ?? [])
+  if (spec.env) {
+    builder = builder.envs({ ...spec.env })
+  }
+  if (spec.workdir) {
+    builder = builder.workdir(spec.workdir)
+  }
+  if (spec.user) {
+    builder = builder.user(spec.user)
+  }
+  builder = applyVolumes(builder, spec.volumes ?? [])
+  return builder
+}
+
+/** See `isTransientSandboxStoreError`'s doc: retries only that one family of error, rebuilding the (single-use) builder and cleaning up between attempts like a single `create()` already did. */
 async function createWithRetry(
-  builder: { create(): Promise<SdkSandboxInstance> },
+  spec: SandboxSpec,
   mod: MicrosandboxSdk,
-  name: string,
 ): Promise<SdkSandboxInstance> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await builder.create()
+      return await buildSandbox(spec, mod).create()
     } catch (err) {
-      await removeOrphanedSandbox(mod, name)
+      await removeOrphanedSandbox(mod, spec.name)
       const retryDelayMs = SANDBOX_CREATE_RETRY_DELAYS_MS[attempt]
       if (retryDelayMs === undefined || !isTransientSandboxStoreError(err)) {
         throw err
@@ -745,48 +815,7 @@ async function createMicrosandboxSandbox(
     throw new Error('SandboxSpec requires exactly one of image or fromSnapshot')
   }
   const mod = await loadSdk(opts)
-  let builder = mod.Sandbox.builder(spec.name)
-  builder = hasImage
-    ? builder.image(spec.image as string)
-    : builder.fromSnapshot(spec.fromSnapshot as string)
-  builder = builder
-    .cpus(spec.cpus)
-    .memory(mod.MiB(spec.memoryMib))
-    .maxDuration(spec.maxDurationSeconds)
-    .replace()
-  const rootDisk = spec.rootDisk
-  if (rootDisk) {
-    builder =
-      rootDisk.kind === 'managed'
-        ? builder.rootDisk(rootDisk.sizeMib)
-        : builder.rootDisk((d) => d.flat().size(rootDisk.sizeMib))
-  }
-  builder = builder.network((n) => n.policy(buildNetworkPolicy(mod, spec.network)))
-  for (const secret of spec.secrets ?? []) {
-    builder = builder.secret((s) => {
-      let sb = s.env(secret.env).value(secret.value)
-      for (const host of secret.allowedHosts) {
-        sb = sb.allowHost(host)
-      }
-      return sb
-    })
-  }
-  if (spec.env) {
-    builder = builder.envs({ ...spec.env })
-  }
-  if (spec.workdir) {
-    builder = builder.workdir(spec.workdir)
-  }
-  if (spec.user) {
-    builder = builder.user(spec.user)
-  }
-  for (const mount of spec.volumes ?? []) {
-    builder = builder.volume(mount.guest, (m) => {
-      const named = m.named(mount.name)
-      return mount.readonly ? named.readonly() : named
-    })
-  }
-  const sandbox = await createWithRetry(builder, mod, spec.name)
+  const sandbox = await createWithRetry(spec, mod)
   return wrapSdkSandbox(sandbox)
 }
 

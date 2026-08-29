@@ -595,6 +595,10 @@ function makeFakeSdk(hooks: FakeSdkHooks = {}) {
       env: {},
       volumes: [],
     }
+    // Real-SDK fidelity (0.6.15): a builder is single-use — a second
+    // `create()` on the same instance, success or failure, rejects. A retry
+    // must call `Sandbox.builder(name)` again for a fresh one.
+    let consumed = false
     const b = {
       image: (ref: string) => {
         config.image = ref
@@ -720,6 +724,10 @@ function makeFakeSdk(hooks: FakeSdkHooks = {}) {
         return b
       },
       create: async () => {
+        if (consumed) {
+          throw new Error('SandboxBuilder already consumed')
+        }
+        consumed = true
         builderCalls.push('create')
         if (hooks.onCreate) {
           return hooks.onCreate(config)
