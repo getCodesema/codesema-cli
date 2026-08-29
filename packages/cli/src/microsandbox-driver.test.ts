@@ -846,7 +846,7 @@ describe('createMicrosandboxDriver.probe', () => {
     const { sdk } = makeFakeSdk()
     const driver = createMicrosandboxDriver({ sdk })
     const probe = await driver.probe()
-    expect(probe.version).toBe('0.6.15')
+    expect(probe.version).toBe('0.6.16')
   })
 })
 
