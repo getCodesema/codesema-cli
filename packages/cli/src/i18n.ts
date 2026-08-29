@@ -62,6 +62,10 @@ Usage:
                                       Install a systemd --user unit that runs \`codesema runner serve\`
                                       for this repo, enabled and started now
   codesema runner uninstall-service   Stop and remove that systemd --user unit
+  codesema runbook scan [--timeout <seconds>]
+                                      Validate (or let an agent propose, then validate) this repo's
+                                      .codesema/runbook.json in a disposable microVM; writes it and
+                                      snapshots the project on success
 
 Options:
   --branch <name>     Local branch to review (default: interactive picker, else current branch)
@@ -681,6 +685,10 @@ Usage :
                                       Installe une unité systemd --user qui lance
                                       \`codesema runner serve\` pour ce dépôt, activée et démarrée
   codesema runner uninstall-service   Arrête et supprime cette unité systemd --user
+  codesema runbook scan [--timeout <secondes>]
+                                      Valide (ou fait proposer par un agent, puis valide) le
+                                      .codesema/runbook.json de ce dépôt dans une microVM jetable ;
+                                      l'écrit et prend un instantané du projet en cas de succès
 
 Options :
   --branch <nom>      Branche locale à passer en revue (défaut : sélecteur interactif, sinon branche courante)
