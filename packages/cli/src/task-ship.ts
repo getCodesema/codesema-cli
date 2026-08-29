@@ -339,6 +339,16 @@ function createGitopsSession(opts: ShipTaskOptions, driver: SandboxDriver): Gito
           )
         }
         await handle.copyFromHost(opts.cwd, '/work')
+        // `copyFromHost` preserves the host's uid/gid, which never matches the
+        // sandbox's own user — Git refuses to touch a repo it does not itself
+        // own (CVE-2022-24765) unless the path is marked safe first. Global,
+        // not local: this sandbox exists for exactly one push and is
+        // destroyed right after, so there is no other repo to scope it away
+        // from.
+        await handle.shell(`git config --global --add safe.directory /work`, {
+          cwd: '/work',
+          timeoutMs: 10_000,
+        })
         await handle.shell(gitopsStripHostCredentialConfigScript(), {
           cwd: '/work',
           timeoutMs: 10_000,

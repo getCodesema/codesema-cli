@@ -1253,6 +1253,19 @@ describe('shipTask with a gitops sandbox driver (lot C9)', () => {
     expect(globalHelperIndex).toBeGreaterThan(stripIndex)
   })
 
+  test('the copied worktree is marked a safe.directory before any other git command runs in it (CVE-2022-24765: copyFromHost keeps the host uid/gid, which never matches the sandbox user)', async () => {
+    const cwd = makeRepoWithOrigin('https://github.com/o/r.git')
+    const driver = new FakeGitopsDriver()
+    await shipTask({ cwd, task: makeTask(), driver, forgeToken: 't', forgeHost: 'github.com' })
+    const scripts = driver.shellCalls.map((c) => c.script)
+    const safeDirectoryIndex = scripts.findIndex((s) =>
+      s.includes('git config --global --add safe.directory /work'),
+    )
+    const stripIndex = scripts.findIndex((s) => s.includes('unset-all credential.helper'))
+    expect(safeDirectoryIndex).toBeGreaterThanOrEqual(0)
+    expect(stripIndex).toBeGreaterThan(safeDirectoryIndex)
+  })
+
   test('an ambiguous (self-hosted) forge host declares both GH_TOKEN and GITLAB_TOKEN, matching the two-CLI probe forgeCandidates runs on the same hint', async () => {
     const cwd = makeRepoWithOrigin('https://git.company.com/o/r.git')
     const driver = new FakeGitopsDriver()
