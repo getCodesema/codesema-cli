@@ -17,7 +17,7 @@ import {
   type RunbookScanOutcome,
   type RunRunbookScanOptions,
 } from './runbook-runner.js'
-import type { RunbookProposalInput } from './runbook-setup.js'
+import { sanitizeRunbookProposal, type RunbookProposalInput } from './runbook-setup.js'
 
 // ---------------------------------------------------------------------------
 // Fakes: a scripted SandboxDriver/SandboxHandle. NEVER touches a real VM.
@@ -229,6 +229,50 @@ describe('runRunbookScan — happy path', () => {
     expect(specs).toHaveLength(1)
     expect(specs[0]?.network).toEqual({ allowedDomains: ['registry.npmjs.org', 'github.com'] })
     expect(specs[0]?.image).toBe('node:26')
+  })
+})
+
+describe('runRunbookScan — real sanitizeRunbookProposal (regression)', () => {
+  // `sanitizeRunbookProposal` extracts JSON from raw agent TEXT itself
+  // (runbook-setup.ts); passing it an already-parsed value makes it reject
+  // every proposal with "agent output must be text" no matter what the agent
+  // said. Every other test in this file mocks `sanitizeProposalFn` outright,
+  // so only a test wired to the real function catches that mismatch.
+  test('a valid JSON runbook in the raw agent text is accepted, not rejected as non-text', async () => {
+    const { driver, calls } = fakeDriver({
+      respond: scriptedRespond({
+        'bun install': okResult('installed'),
+        'bun test': okResult('1 pass'),
+      }),
+    })
+    const outcome = await runRunbookScan(
+      baseOptions({
+        driver,
+        sanitizeProposalFn: sanitizeRunbookProposal,
+        runProposalFn: async () => JSON.stringify(sampleRunbook()),
+      }),
+    )
+    expect(outcome.status).toBe('completed')
+    expect(calls.map((c) => c.command)).toContain('bun install')
+    expect(calls.map((c) => c.command)).toContain('bun test')
+  })
+
+  test('agent text with prose around the JSON block is still accepted', async () => {
+    const { driver } = fakeDriver({
+      respond: scriptedRespond({
+        'bun install': okResult('installed'),
+        'bun test': okResult('1 pass'),
+      }),
+    })
+    const outcome = await runRunbookScan(
+      baseOptions({
+        driver,
+        sanitizeProposalFn: sanitizeRunbookProposal,
+        runProposalFn: async () =>
+          `Here is the runbook:\n\`\`\`json\n${JSON.stringify(sampleRunbook())}\n\`\`\`\nDone.`,
+      }),
+    )
+    expect(outcome.status).toBe('completed')
   })
 })
 

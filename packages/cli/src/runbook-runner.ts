@@ -5,7 +5,7 @@
  * Calque of `createChecksSetupRunner` (checks-setup.ts). Lot C5 implements it.
  */
 import { randomBytes } from 'node:crypto'
-import { collectSetupFiles, extractProposalJson, type SetupFile } from './checks-setup.js'
+import { collectSetupFiles, type SetupFile } from './checks-setup.js'
 import {
   TASK_CHECK_TAIL_MAX,
   type RunbookConfig,
@@ -390,7 +390,10 @@ export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<Runbo
       continue
     }
 
-    const proposal = sanitizeProposal(extractProposalJson(rawText))
+    // `sanitizeRunbookProposal` extracts the JSON itself (runbook-setup.ts): it
+    // takes the raw agent text, not an already-parsed value, or it rejects
+    // every proposal with "agent output must be text" regardless of content.
+    const proposal = sanitizeProposal(rawText)
     if (!proposal.ok) {
       lastTail = tailOf(`proposal rejected: ${proposal.reason}`)
       previousFailure = lastTail
