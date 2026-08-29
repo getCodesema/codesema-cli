@@ -46,7 +46,7 @@ import { addProject, listProjects, projectsPath, scratchProject, type Project } 
 import { archiveRecord } from './record.js'
 import { readChecksConfig } from './repo-config.js'
 import { createSession, startServer } from './serve.js'
-import type { RunChecksOptions } from './task-checks.js'
+import type { MicrovmStepExecutorOptions, RunChecksOptions, StepExecutor } from './task-checks.js'
 import {
   AUTO_FIX_EXHAUSTED_NAME,
   AUTO_FIX_JOURNAL_DAMAGED_NAME,
@@ -11173,6 +11173,8 @@ describe('microvm wiring (lot C7)', () => {
     configured: 'microvm' as const,
     runtime: null,
   }
+  const noopStepExecutor: StepExecutor = () =>
+    Promise.resolve({ code: 0, stdout: '', stderr: '', timedOut: false, failure: null })
 
   function baseRunbook(overrides: Partial<RunbookConfig> = {}): RunbookConfig {
     return {
@@ -12028,6 +12030,179 @@ describe('microvm wiring (lot C7)', () => {
       await until(() => readTaskChecks(project.path, cworktreeRecord.id)?.status !== undefined)
       void worktree
       expect(verifyCalled).toBe(false)
+    })
+
+    test('D8: verifyAfterCommit reads the validated runbook from the PROJECT ROOT, never the task worktree, and hands it to verifyTask', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      const rootRunbook = baseRunbook({ egress: ['from-project-root.example.com'] })
+      const verification: TaskVerification = {
+        head_sha: 'irrelevant-here',
+        runbook_sha: '0123456789abcdef',
+        started_at: '2026-01-01T00:00:00.000Z',
+        finished_at: '2026-01-01T00:05:00.000Z',
+        status: 'passed',
+        checks: [
+          { command: 'npm test', status: 'passed', exit_code: 0, duration_ms: 10, tail: '' },
+        ],
+        integrity_ok: true,
+        changed_dependency_files: [],
+        error: null,
+      }
+      const verifyCalls: VerifyTaskOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        // A runbook only exists at the PROJECT root; a lookup rooted at the
+        // task's own worktree (the pre-fix behaviour) answers null, exactly
+        // like a real task worktree — `.codesema/runbook.json` is gitignored
+        // and never checked out there.
+        readRunbookConfigFn: (cwd) => (cwd === project.path ? rootRunbook : null),
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: (opts) => {
+          verifyCalls.push(opts)
+          return Promise.resolve(verification)
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+      expect(verifyCalls).toHaveLength(1)
+      expect(verifyCalls[0]?.runbook).toEqual(rootRunbook)
+      void worktree
+    })
+  })
+
+  describe('D8: the validated runbook is read from the PROJECT root, never the task worktree', () => {
+    // Every helper below writes the runbook `readRunbookConfigFn` sees ONLY
+    // for the project root (`cwd === project.path`), and null for anything
+    // else — including `record.worktree`, a SEPARATE git worktree
+    // (`seedMicrovmTask`/`seedCommittedTask` both use `makeRepo()`). This is
+    // exactly the real shape of the bug: a task worktree never carries a
+    // copy of `.codesema/runbook.json` (gitignored, only ever written at the
+    // project root by `codesema runbook scan`), so any lookup rooted at
+    // `record.worktree` must answer null.
+
+    test('(a) resolveMicrovmFn (dev turn) resolves the runbook and a ready snapshot from the project root', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: (cwd) => (cwd === project.path ? runbook : null),
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({
+            kind: 'ready',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot),
+        createRunnerFn: rig.createRunnerFn,
+      })
+      manager.checks(project.id, record.id)
+
+      const microvm = await rig.runnerOptions().resolveMicrovmFn?.(record)
+      expect(microvm?.runbook).toEqual(runbook)
+      expect(microvm?.snapshotName).toBe('codesema-p-hash')
+    })
+
+    test('(b) the checks executor receives allowedDomains = runbook.egress, runbook read from the project root', async () => {
+      const project = register(makeRepo())
+      const { record } = seedCommittedTask(project.path)
+      record.isolation = 'microvm'
+      saveTask(project.path, record)
+      const runbook = baseRunbook({ egress: ['registry.npmjs.org', 'from-root.example.com'] })
+      const seenExecutorOptions: MicrovmStepExecutorOptions[] = []
+      const rig = fakeRunner()
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: (cwd) => (cwd === project.path ? runbook : null),
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'ready', name: 'codesema-p-hash', hash: 'h' } as ProjectSnapshot),
+        microvmStepExecutorFn: (options) => {
+          seenExecutorOptions.push(options)
+          return noopStepExecutor
+        },
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async () => {},
+        createRunnerFn: rig.createRunnerFn,
+      })
+
+      expect(manager.checks(project.id, record.id)).toEqual({ ok: true })
+      await until(() => seenExecutorOptions.length > 0)
+      expect(seenExecutorOptions[0]?.allowedDomains).toEqual([
+        'registry.npmjs.org',
+        'from-root.example.com',
+      ])
+      expect(seenExecutorOptions[0]?.snapshotName).toBe('codesema-p-hash')
+    })
+
+    test('(c) resolveReviewContext resolves the runbook and a ready snapshot from the project root', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const seenOptions: CreateTaskReviewerOptions[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        isolation: microvmConfigured,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: (cwd) => (cwd === project.path ? runbook : null),
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({
+            kind: 'ready',
+            name: 'codesema-p-hash',
+            hash: 'hash',
+          } as ProjectSnapshot),
+        createReviewerFn: (options) => {
+          seenOptions.push(options)
+          return async () => {}
+        },
+        ...fakeRunner(),
+      })
+
+      manager.checks(project.id, record.id)
+
+      const ctx = await seenOptions[0]?.resolveReviewContext?.(record)
+      expect(ctx?.runbook).toEqual(runbook)
+      expect(ctx?.snapshotName).toBe('codesema-p-hash')
+    })
+
+    test('a project with NO runbook at its root still resolves everything to null/empty, exactly as before', async () => {
+      const project = register(makeRepo())
+      const { record } = seedMicrovmTask(project.path)
+      const rig = fakeRunner()
+      let snapshotCalled = false
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => null,
+        resolveProjectSnapshotFn: () => {
+          snapshotCalled = true
+          return Promise.resolve({ kind: 'cold', reason: 'unused' } as ProjectSnapshot)
+        },
+        createRunnerFn: rig.createRunnerFn,
+      })
+      manager.checks(project.id, record.id)
+
+      const microvm = await rig.runnerOptions().resolveMicrovmFn?.(record)
+      expect(microvm?.runbook).toBeNull()
+      expect(microvm?.snapshotName).toBeNull()
+      expect(snapshotCalled).toBe(false)
     })
   })
 })

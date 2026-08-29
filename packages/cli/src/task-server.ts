@@ -651,6 +651,8 @@ export type CreateTaskManagerOptions = {
   buildProjectSnapshotFn?: typeof buildProjectSnapshot
   /** Test seam: the default replays `runbook.tests` in a fresh sandbox (lot C7). */
   verifyTaskFn?: typeof verifyTask
+  /** Test seam: the default builds task-checks.ts's own microvm executor (lot C7). */
+  microvmStepExecutorFn?: typeof microvmStepExecutor
   headShaFn?: typeof resolveHeadSha
   /** T1.9 review round 1: the default reads the global registry WITH its completeness flag. Test seam. */
   listProjectsDetailedFn?: typeof listProjectsDetailed
@@ -1515,14 +1517,29 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     commandBin(commandForTask(record, command)) || 'claude'
 
   /**
+   * The task's validated runbook — ALWAYS read from the project root, never
+   * from the task's own worktree. A task worktree is a git worktree checked
+   * out from the branch's tracked files, and `.codesema/runbook.json` is
+   * intentionally gitignored: it is only ever committed at the project root,
+   * by `codesema runbook scan`, so a task worktree never carries a copy of
+   * it and a lookup rooted there always answers `null`. `readRunbookConfigFn`
+   * is the repo's own `.codesema/runbook.json`; a project with none gets
+   * `runbook: null` (cold boot, no install, no egress) rather than a hub
+   * round trip — the hub fallback (`hubClient.currentRunbook`) needs a
+   * hub-side repo id this manager has no resolver for yet (see api_notes of
+   * lot C7's report).
+   */
+  const resolveTaskRunbook = (cwd: string): RunbookConfig | null => {
+    const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
+    return readRunbook(cwd)
+  }
+
+  /**
    * The driver, snapshot, image, runbook and secrets a 'microvm' task's turn,
-   * checks or verification runs with — resolved fresh from the record's OWN
-   * worktree, since the runbook and the snapshot travel with the branch, not
-   * with the project. `readRunbookConfigFn` is the repo's own
-   * `.codesema/runbook.json`; a repository with none gets `runbook: null`
-   * (cold boot, no install, no egress) rather than a hub round trip — the
-   * hub fallback (`hubClient.currentRunbook`) needs a hub-side repo id this
-   * manager has no resolver for yet (see api_notes of lot C7's report).
+   * checks or verification runs with. The runbook comes from the PROJECT
+   * root (`resolveTaskRunbook` above); the snapshot's fingerprint still
+   * hashes the record's OWN worktree lockfiles and compose file, since those
+   * travel with the branch, not with the project.
    */
   const resolveMicrovmBuild = async (
     record: TaskRecord,
@@ -1530,8 +1547,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   ): Promise<RunTaskTurnMicrovmOptions> => {
     const { cwd, projectId, timeoutMs, command } = params
     const driver = opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver()
-    const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
-    const runbook = readRunbook(record.worktree)
+    const runbook = resolveTaskRunbook(cwd)
     const agentId = microvmAgentId(record, command)
     let snapshotName: string | null = null
     if (runbook) {
@@ -1567,20 +1583,24 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   /**
-   * The task's own validated runbook and a READY-ONLY snapshot name — never
-   * BUILDS a missing snapshot (that stays the dev turn's job, via
-   * `resolveMicrovmBuild` above). Shared by `resolveMicrovmChecksExecutor`
+   * The task's own validated runbook (read from the project root, never the
+   * task's worktree — see `resolveTaskRunbook`) and a READY-ONLY snapshot
+   * name — never BUILDS a missing snapshot (that stays the dev turn's job,
+   * via `resolveMicrovmBuild` above). Shared by `resolveMicrovmChecksExecutor`
    * and `reviewMicrovm`'s per-task `resolveReviewContext` below: both read
-   * exactly this pair, and neither owns the build step.
+   * exactly this pair, and neither owns the build step. Takes an options
+   * object (not positional params) to stay under the project's max-params
+   * lint once `cwd` joined `driver`/`record`/`projectId`/`command`.
    */
-  const resolveMicrovmRunbookSnapshot = async (
-    driver: SandboxDriver,
-    record: TaskRecord,
-    projectId: string,
-    command: string,
-  ): Promise<{ runbook: RunbookConfig | null; snapshotName: string | null }> => {
-    const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
-    const runbook = readRunbook(record.worktree)
+  const resolveMicrovmRunbookSnapshot = async (params: {
+    driver: SandboxDriver
+    record: TaskRecord
+    projectId: string
+    cwd: string
+    command: string
+  }): Promise<{ runbook: RunbookConfig | null; snapshotName: string | null }> => {
+    const { driver, record, projectId, cwd, command } = params
+    const runbook = resolveTaskRunbook(cwd)
     if (!runbook) {
       return { runbook: null, snapshotName: null }
     }
@@ -1604,17 +1624,20 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    */
   const resolveMicrovmChecksExecutor = async (
     record: TaskRecord,
+    cwd: string,
     projectId: string,
     command: string,
   ): Promise<ReturnType<typeof microvmStepExecutor>> => {
     const driver = opts.sandboxDriverFn ? opts.sandboxDriverFn() : createMicrosandboxDriver()
-    const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot(
+    const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot({
       driver,
       record,
       projectId,
+      cwd,
       command,
-    )
-    return microvmStepExecutor({
+    })
+    const buildExecutor = opts.microvmStepExecutorFn ?? microvmStepExecutor
+    return buildExecutor({
       driver,
       projectId,
       snapshotName,
@@ -2617,7 +2640,9 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
             headSha,
             onUpdate: (snapshot) => broadcast(snapshot),
             ...(record.isolation === 'microvm'
-              ? { executor: await resolveMicrovmChecksExecutor(record, projectId, ctx.command) }
+              ? {
+                  executor: await resolveMicrovmChecksExecutor(record, cwd, projectId, ctx.command),
+                }
               : {}),
           })
         } catch (err) {
@@ -2739,8 +2764,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       if (commits.at(-1)?.data.turn !== record.turns.length) {
         return null
       }
-      const readRunbook = opts.readRunbookConfigFn ?? readRunbookConfig
-      const runbook = readRunbook(record.worktree)
+      const runbook = resolveTaskRunbook(ctx.project.path)
       if (!runbook) {
         return null
       }
@@ -2857,15 +2881,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     const { maxAutoFixRounds } = runtime
     /**
      * `driver`, `secrets` and `projectId` are built once per project, never
-     * per task — `context()` itself is sync and cached forever. The snapshot,
-     * runbook and mechanical verification are per-task-TURN facts this sync
-     * call site has no way to hand over directly, so `resolveReviewContext`
-     * resolves them fresh from the TASK's own worktree (its runbook travels
-     * with the branch, not with the project) each time a review actually
-     * starts — see `createTaskReviewer`'s own call site (task-review.ts) for
-     * the "once per review, never mid-review" contract. Gated on the
-     * project's CONFIGURED mode so a project that never opted into microvm
-     * never pays for constructing the driver.
+     * per task — `context()` itself is sync and cached forever. The snapshot
+     * and mechanical verification are per-task-TURN facts this sync call
+     * site has no way to hand over directly, so `resolveReviewContext`
+     * resolves them fresh (the runbook itself always comes from the PROJECT
+     * root, see `resolveTaskRunbook`) each time a review actually starts —
+     * see `createTaskReviewer`'s own call site (task-review.ts) for the
+     * "once per review, never mid-review" contract. Gated on the project's
+     * CONFIGURED mode so a project that never opted into microvm never pays
+     * for constructing the driver.
      */
     const reviewMicrovm =
       isolationMode === 'microvm'
@@ -2876,12 +2900,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
             const resolveReviewContext = async (
               record: TaskRecord,
             ): Promise<ReviewMicrovmContext> => {
-              const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot(
+              const { runbook, snapshotName } = await resolveMicrovmRunbookSnapshot({
                 driver,
                 record,
                 projectId,
+                cwd,
                 command,
-              )
+              })
               return { snapshotName, runbook, verification: readTaskVerification(cwd, record.id) }
             }
             return {
