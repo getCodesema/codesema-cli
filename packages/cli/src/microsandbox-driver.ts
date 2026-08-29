@@ -915,8 +915,7 @@ export type MicrosandboxDriverOptions = {
   onNotice?: (notice: string) => void
 }
 
-/** The real driver, backed by the `microsandbox` SDK (0.6.15, lazily imported). */
-export function createMicrosandboxDriver(opts: MicrosandboxDriverOptions = {}): SandboxDriver {
+function buildMicrosandboxDriver(opts: MicrosandboxDriverOptions): SandboxDriver {
   return {
     kind: 'microsandbox',
     probe: () => probeMicrosandbox(opts),
@@ -929,6 +928,37 @@ export function createMicrosandboxDriver(opts: MicrosandboxDriverOptions = {}): 
     ensureVolume: (name, volOpts) => ensureMicrosandboxVolume(name, volOpts, opts),
     removeVolume: (name) => removeMicrosandboxVolume(name, opts),
   }
+}
+
+/**
+ * Shared across the whole process (hypothesis, lot E2E rejeu 2026-08-29): every
+ * real call site (`task-server.ts`'s per-request `resolveMicrovmBuild` /
+ * `resolveMicrovmChecksExecutor` / `reviewMicrovm` / `ship` / the boot sweeps,
+ * `runner-commands.ts`) built its OWN driver — a fresh `opts` object each
+ * time, never reused. The isolated spike scripts that never reproduced the
+ * store's raw sqlite errors (FK/disk I/O on `create()`) all shared one driver
+ * across every call in the same process; the real server never did. `opts`
+ * itself is mutated in place (never replaced) so a later real caller's own
+ * `onNotice` still reaches this one shared driver.
+ */
+let sharedRealOpts: MicrosandboxDriverOptions | null = null
+let sharedRealDriver: SandboxDriver | null = null
+
+/** The real driver, backed by the `microsandbox` SDK (0.6.15, lazily imported). */
+export function createMicrosandboxDriver(opts: MicrosandboxDriverOptions = {}): SandboxDriver {
+  if (opts.sdk) {
+    // A test's own injected SDK: never shared, never touches the real cache.
+    return buildMicrosandboxDriver(opts)
+  }
+  if (!sharedRealDriver || !sharedRealOpts) {
+    sharedRealOpts = { ...opts }
+    sharedRealDriver = buildMicrosandboxDriver(sharedRealOpts)
+  } else if (opts.onNotice) {
+    sharedRealOpts.onNotice = opts.onNotice
+  } else {
+    delete sharedRealOpts.onNotice
+  }
+  return sharedRealDriver
 }
 
 export type FakeSandboxCall = {

@@ -850,6 +850,32 @@ describe('createMicrosandboxDriver.probe', () => {
   })
 })
 
+// Every real call site (task-server.ts's per-request resolveMicrovmBuild /
+// resolveMicrovmChecksExecutor / reviewMicrovm / ship / the boot sweeps,
+// runner-commands.ts) builds its own `createMicrosandboxDriver()` with no
+// `sdk` override — the real path. A single process ending up with several
+// independent driver instances there (never reproduced by any isolated,
+// single-driver script) is the working hypothesis for the store's raw sqlite
+// errors on `create()`: this pins the real path down to ONE shared instance,
+// while every test's own injected `sdk` keeps its own, unshared driver.
+describe('createMicrosandboxDriver: the real (no sdk override) path is a process-wide singleton', () => {
+  test('two calls with no sdk override return the exact same driver instance', () => {
+    const a = createMicrosandboxDriver()
+    const b = createMicrosandboxDriver()
+    expect(b).toBe(a)
+  })
+
+  test('a call with an injected sdk (every test) never shares that instance nor pollutes the real singleton', () => {
+    const real = createMicrosandboxDriver()
+    const { sdk } = makeFakeSdk()
+    const faked1 = createMicrosandboxDriver({ sdk })
+    const faked2 = createMicrosandboxDriver({ sdk })
+    expect(faked1).not.toBe(real)
+    expect(faked2).not.toBe(faked1)
+    expect(createMicrosandboxDriver()).toBe(real)
+  })
+})
+
 // --- createMicrosandboxDriver: create ------------------------------------------
 
 describe('createMicrosandboxDriver.create', () => {
