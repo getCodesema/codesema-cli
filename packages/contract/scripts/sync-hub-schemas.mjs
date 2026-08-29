@@ -44,6 +44,9 @@ const SCHEMA_NAMES = [
   'runner-register',
   'runner-secret',
   'runner-secret-claim',
+  'runbook-scan-result',
+  'runbook-scan-fail',
+  'verification',
 ]
 
 const here = path.dirname(fileURLToPath(import.meta.url))

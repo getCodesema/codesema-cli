@@ -1,13 +1,16 @@
 import { describe, expect, test } from 'bun:test'
+import verificationBodySchema from '../fixtures/hub-schemas/verification.schema.json'
 import {
   acceptanceCriterionId,
   ARM_TICKET_STATUSES,
   isActiveTaskStatus,
   isTaskId,
   isTaskStatus,
+  isTaskVerificationStatus,
   sanitizeTaskChecks,
   sanitizeTaskEvent,
   sanitizeTaskRecord,
+  sanitizeTaskVerification,
   TASK_AGENT_MAX,
   TASK_CHECK_COMMAND_MAX,
   TASK_CHECK_TAIL_MAX,
@@ -31,7 +34,9 @@ import {
   type TaskIssueSnapshot,
   type TaskRecord,
   type TaskStatus,
+  type TaskVerification,
 } from './index.js'
+import { validate, type Schema } from './schema-validator.test-helper.js'
 
 /** A syntactically valid, correctly-tagged canonical body hash — no need for a real one in tests. */
 const FAKE_BODY_HASH = `${TICKET_BODY_HASH_TAG}:${'a'.repeat(64)}`
@@ -1438,5 +1443,277 @@ describe('sanitizeTaskChecks', () => {
     for (const junk of ['gitlab', '', 42, null, {}]) {
       expect(sanitizeTaskChecks({ ...validChecks, source: junk })).not.toHaveProperty('source')
     }
+  })
+})
+
+describe('TaskIsolation microvm (0.11)', () => {
+  const base = {
+    id: 'a1b2c3d4e5f6',
+    title: 'x',
+    status: 'idle',
+    base: 'main',
+    branch: 'codesema/task-x',
+  }
+
+  test("'microvm' is kept as a promised containment", () => {
+    expect(sanitizeTaskRecord({ ...base, isolation: 'microvm' })?.isolation).toBe('microvm')
+  })
+
+  test('an unknown isolation still degrades to policy (never a stronger claim)', () => {
+    expect(sanitizeTaskRecord({ ...base, isolation: 'firecracker' })?.isolation).toBe('policy')
+    expect(sanitizeTaskRecord({ ...base })?.isolation).toBe('policy')
+  })
+
+  test('runbook_sha and runbook_integrity are optional, whitelisted, and absent on an older record', () => {
+    const older = sanitizeTaskRecord({ ...base }) as Record<string, unknown>
+    expect('runbook_sha' in older).toBe(false)
+    expect('runbook_integrity' in older).toBe(false)
+    const verified = sanitizeTaskRecord({
+      ...base,
+      runbook_sha: '0123456789abcdef',
+      runbook_integrity: true,
+    })
+    expect(verified?.runbook_sha).toBe('0123456789abcdef')
+    expect(verified?.runbook_integrity).toBe(true)
+    const broken = sanitizeTaskRecord({
+      ...base,
+      runbook_sha: 'nope',
+      runbook_integrity: 'yes',
+    }) as Record<string, unknown>
+    expect('runbook_sha' in broken).toBe(false)
+    expect('runbook_integrity' in broken).toBe(false)
+    expect(sanitizeTaskRecord({ ...base, runbook_integrity: false })?.runbook_integrity).toBe(false)
+  })
+})
+
+describe('sanitizeTaskVerification', () => {
+  const valid: TaskVerification = {
+    head_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+    runbook_sha: '0123456789abcdef',
+    started_at: '2026-08-28T10:00:00.000Z',
+    finished_at: '2026-08-28T10:03:00.000Z',
+    status: 'failed',
+    checks: [
+      {
+        command: 'bun run typecheck',
+        status: 'passed',
+        exit_code: 0,
+        duration_ms: 12_000,
+        tail: 'ok\n',
+      },
+      {
+        command: 'bun test',
+        status: 'failed',
+        exit_code: 1,
+        duration_ms: 30_000,
+        tail: '1 test failed\n',
+      },
+    ],
+    integrity_ok: true,
+    changed_dependency_files: [],
+    error: null,
+  }
+
+  test('a valid verification round-trips unchanged', () => {
+    expect(sanitizeTaskVerification(structuredClone(valid))).toEqual(valid)
+  })
+
+  test('non-object input: null', () => {
+    expect(sanitizeTaskVerification(null)).toBeNull()
+    expect(sanitizeTaskVerification('junk')).toBeNull()
+    expect(sanitizeTaskVerification([])).toBeNull()
+  })
+
+  test('unknown status or unusable runbook sha: null (a verdict is never tied to nothing)', () => {
+    expect(sanitizeTaskVerification({ ...valid, status: 'green' })).toBeNull()
+    expect(sanitizeTaskVerification({ ...valid, runbook_sha: 'x' })).toBeNull()
+    expect(sanitizeTaskVerification({ ...valid, runbook_sha: undefined })).toBeNull()
+    for (const status of ['passed', 'failed', 'refused', 'error'] as const) {
+      expect(sanitizeTaskVerification({ ...valid, status })?.status).toBe(status)
+      expect(isTaskVerificationStatus(status)).toBe(true)
+    }
+    expect(isTaskVerificationStatus('running')).toBe(false)
+  })
+
+  test('a refused verification lists what changed and can never claim integrity', () => {
+    const refused = sanitizeTaskVerification({
+      ...valid,
+      status: 'refused',
+      checks: [],
+      integrity_ok: true,
+      changed_dependency_files: ['bun.lock', 'bun.lock', '', 7, 'package.json'],
+    })
+    expect(refused?.integrity_ok).toBe(false)
+    expect(refused?.changed_dependency_files).toEqual(['bun.lock', 'package.json'])
+    expect(refused?.checks).toEqual([])
+  })
+
+  test('integrity is a measurement: a missing or non-boolean field reads as not intact', () => {
+    expect(sanitizeTaskVerification({ ...valid, integrity_ok: undefined })?.integrity_ok).toBe(
+      false,
+    )
+    expect(sanitizeTaskVerification({ ...valid, integrity_ok: 'true' })?.integrity_ok).toBe(false)
+  })
+
+  test('checks follow the TaskCheckResult rules (unknown status skipped, tail cut from the front, list bounded)', () => {
+    const out = sanitizeTaskVerification({
+      ...valid,
+      checks: [
+        { command: 'bun test', status: 'green', exit_code: 0, duration_ms: 1, tail: '' },
+        {
+          command: 'bun test',
+          status: 'passed',
+          exit_code: 0,
+          duration_ms: 1,
+          tail: 'x'.repeat(TASK_CHECK_TAIL_MAX + 10),
+        },
+      ],
+    })
+    expect(out?.checks).toHaveLength(1)
+    expect(out?.checks[0]?.tail).toHaveLength(TASK_CHECK_TAIL_MAX)
+    const many = Array.from({ length: TASK_CHECKS_LIST_MAX + 3 }, () => valid.checks[0])
+    expect(sanitizeTaskVerification({ ...valid, checks: many })?.checks).toHaveLength(
+      TASK_CHECKS_LIST_MAX,
+    )
+  })
+
+  test('error is bounded and null when blank; runbook sha is lowercased', () => {
+    const out = sanitizeTaskVerification({
+      ...valid,
+      status: 'error',
+      runbook_sha: '0123456789ABCDEF',
+      error: 'e'.repeat(TASK_CHECKS_ERROR_MAX + 5),
+    })
+    expect(out?.runbook_sha).toBe('0123456789abcdef')
+    expect(out?.error).toHaveLength(TASK_CHECKS_ERROR_MAX)
+    expect(sanitizeTaskVerification({ ...valid, error: '   ' })?.error).toBeNull()
+  })
+})
+
+// --- Cross tests: sanitizeTaskVerification output validates against the hub's
+// published verification.schema.json, the body of
+// POST /api/cli/tickets/:id/verification (TaskVerification plus
+// idempotency_key). Same local validator as arm.test.ts's own cross tests
+// (schema-validator.test-helper.ts): proves the SCHEMA against the
+// SANITIZER, not a library's leniency.
+
+const verificationSchemaErrors = (value: unknown): string[] =>
+  validate(value, verificationBodySchema as Schema, verificationBodySchema as Schema)
+
+const validVerificationRaw = {
+  head_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+  runbook_sha: '0123456789abcdef',
+  started_at: '2026-08-14T10:00:00.000Z',
+  finished_at: '2026-08-14T10:03:00.000Z',
+  status: 'failed',
+  checks: [
+    {
+      command: 'bun run typecheck',
+      status: 'passed',
+      exit_code: 0,
+      duration_ms: 12_000,
+      tail: 'ok\n',
+    },
+    {
+      command: 'bun test',
+      status: 'failed',
+      exit_code: 1,
+      duration_ms: 30_000,
+      tail: '1 test failed\n',
+    },
+  ],
+  integrity_ok: true,
+  changed_dependency_files: [],
+  error: 'the runner timed out',
+}
+
+describe('cross test: sanitizeTaskVerification output validates against verification.schema.json', () => {
+  test('the full verification (checks non-empty, error and finished_at set) validates', () => {
+    const sanitized = sanitizeTaskVerification(
+      structuredClone(validVerificationRaw),
+    ) as TaskVerification
+    expect(verificationSchemaErrors({ ...sanitized, idempotency_key: 'idem-key-1' })).toEqual([])
+  })
+
+  test('a refused verification with finished_at and error both null validates', () => {
+    const sanitized = sanitizeTaskVerification({
+      ...validVerificationRaw,
+      status: 'refused',
+      checks: [],
+      integrity_ok: false,
+      changed_dependency_files: ['bun.lock'],
+      finished_at: null,
+      error: null,
+    }) as TaskVerification
+    expect(sanitized.finished_at).toBeNull()
+    expect(sanitized.error).toBeNull()
+    expect(verificationSchemaErrors({ ...sanitized, idempotency_key: 'idem-key-1' })).toEqual([])
+  })
+})
+
+describe('reverse cross test: verification.schema.json is not looser than sanitizeTaskVerification accepts', () => {
+  const BASE = {
+    idempotency_key: 'idem-key-1',
+    head_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+    runbook_sha: '0123456789abcdef',
+    started_at: '2026-08-14T10:00:00.000Z',
+    finished_at: null,
+    status: 'passed',
+    checks: [] as unknown[],
+    integrity_ok: true,
+    changed_dependency_files: [] as string[],
+    error: null,
+  }
+
+  test('an unknown status is schema-invalid: sanitizeTaskVerification never emits one', () => {
+    expect(verificationSchemaErrors({ ...BASE, status: 'green' })).not.toEqual([])
+  })
+
+  test('an empty head_sha is schema-invalid', () => {
+    expect(verificationSchemaErrors({ ...BASE, head_sha: '' })).not.toEqual([])
+  })
+
+  test('a non-array checks is schema-invalid', () => {
+    expect(verificationSchemaErrors({ ...BASE, checks: 'not-an-array' })).not.toEqual([])
+  })
+})
+
+describe('anti-drift lock: verification.schema.json properties match TaskVerification plus idempotency_key', () => {
+  test('the schema property set is exactly the sanitizer output keys plus idempotency_key', () => {
+    const sanitized = sanitizeTaskVerification(
+      structuredClone(validVerificationRaw),
+    ) as TaskVerification
+    const schemaKeys = Object.keys(
+      (verificationBodySchema as unknown as { properties: Record<string, unknown> }).properties,
+    ).toSorted()
+    const sanitizerKeys = [...Object.keys(sanitized), 'idempotency_key'].toSorted()
+    expect(schemaKeys).toEqual(sanitizerKeys)
+  })
+})
+
+// The hub schema bounds head_sha (minLength 1) and started_at/finished_at
+// (maxLength 40), but sanitizeTaskVerification does not itself enforce
+// either: unlike sanitizeArmTicket's `id` (arm.ts), it never gates on an
+// empty head_sha, and unlike runbook.ts's own isoOrNow it never caps a
+// timestamp's length. A record shaped exactly like this can leave the CLI
+// and be refused by the hub as a 422 (same bug class as arm.test.ts's
+// documented run_id incident). Not fixed here: tasks.ts is out of scope for
+// this task.
+describe('sanitizeTaskVerification guards the fields the hub schema bounds', () => {
+  test('a missing or empty head_sha refuses the whole record, never an empty string the hub would 422', () => {
+    expect(sanitizeTaskVerification({ ...validVerificationRaw, head_sha: undefined })).toBeNull()
+    expect(sanitizeTaskVerification({ ...validVerificationRaw, head_sha: '' })).toBeNull()
+  })
+
+  test('an over-length started_at or finished_at is cut to the hub bound (maxLength 40)', () => {
+    const overLong = 'x'.repeat(41)
+    const sanitized = sanitizeTaskVerification({
+      ...validVerificationRaw,
+      started_at: overLong,
+      finished_at: overLong,
+    }) as TaskVerification
+    expect(sanitized.started_at).toBe(overLong.slice(0, 40))
+    expect(sanitized.finished_at).toBe(overLong.slice(0, 40))
+    expect(verificationSchemaErrors({ ...sanitized, idempotency_key: 'idem-key-1' })).toEqual([])
   })
 })

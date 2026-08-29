@@ -2728,4 +2728,25 @@ describe('logIsolation', () => {
     expect(output).toContain('no container runtime found')
     expect(output).toContain('policy')
   })
+
+  // Decouverte 6: a project overlaid to 'microvm' must announce microvm, not
+  // the container message with an empty runtime placeholder.
+  test('cage on, microvm: the line names microvm, not container, and what it lets out', () => {
+    const output = captured(() =>
+      logIsolation(
+        {
+          available: true,
+          mode: 'microvm',
+          reason: 'microsandbox 0.6.15 is available',
+          configured: 'microvm',
+          runtime: null,
+          microvm: { available: true, reason: 'microsandbox 0.6.15 is available' },
+        },
+        ['api.anthropic.com'],
+      ),
+    )
+    expect(output).toContain('microvm')
+    expect(output).toContain('api.anthropic.com')
+    expect(output).not.toContain('container isolation')
+  })
 })

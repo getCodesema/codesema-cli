@@ -122,6 +122,7 @@ describe('parseTaskPlan — whitelist and truncate, never throw', () => {
     expect(parseTaskPlan({ ...PLAN, isolation: 'sandboxed' })?.isolation).toBe('policy')
     expect(parseTaskPlan({ ...PLAN, isolation: undefined })?.isolation).toBe('policy')
     expect(parseTaskPlan({ ...PLAN, isolation: 'container' })?.isolation).toBe('container')
+    expect(parseTaskPlan({ ...PLAN, isolation: 'microvm' })?.isolation).toBe('microvm')
   })
 
   test('a branch the server did not certify is never read as certain', () => {
@@ -193,6 +194,15 @@ describe('the lines the panel renders', () => {
     expect(host).toContain('no runtime')
     // The two are never the same sentence: a degraded plan reads differently.
     expect(host).not.toBe(caged)
+    const vm = planIsolationLine({
+      ...PLAN,
+      isolation: 'microvm',
+      isolation_reason: 'microVM runtime available',
+    })
+    expect(vm).toContain(t('workspace.planIsolationMicrovm'))
+    expect(vm).toContain('microVM runtime available')
+    expect(vm).not.toBe(caged)
+    expect(vm).not.toBe(host)
   })
 
   test('a plan with no ticket says so rather than showing a blank', () => {
@@ -233,6 +243,7 @@ describe('T2.6 plan labels are actually translated', () => {
     'workspace.planQueueAt',
     'workspace.planIsolationContainer',
     'workspace.planIsolationPolicy',
+    'workspace.planIsolationMicrovm',
     'workspace.planBaseLabel',
     'workspace.planBranchLabel',
     'workspace.planRetarget',
@@ -252,6 +263,7 @@ describe('T2.6 plan labels are actually translated', () => {
     'workspace.planAgent',
     'workspace.planIssue',
     'workspace.planIsolationContainer',
+    'workspace.planIsolationMicrovm',
   ])
 
   test('each key exists in both catalogs and differs from its English source', () => {

@@ -110,6 +110,11 @@ export type ArmTransitionType = 'mr_opened' | 'review_result' | 'merged' | 'fail
  * claim that a commit landed, so it REQUIRES `merge_sha`. The discriminated
  * union makes a proof-less claim unrepresentable at compile time, and
  * `sanitizeArmTransition` refuses one at runtime.
+ *
+ * `changed_files`, on `merged` only, is best-effort staleness signal, not
+ * proof: the hub uses it to mark a repo's runbook stale when a path under
+ * `depends_on_files` changed. Unlike `merge_sha`, its absence never refuses
+ * the transition.
  */
 export type ArmTransition = {
   idempotency_key: string
@@ -130,7 +135,7 @@ export type ArmTransition = {
 } & (
   | { type: 'mr_opened'; mr_url: string; merge_sha?: string }
   | { type: 'review_result'; mr_url?: string; merge_sha?: string }
-  | { type: 'merged'; merge_sha: string; mr_url?: string }
+  | { type: 'merged'; merge_sha: string; mr_url?: string; changed_files?: string[] }
   | { type: 'failed'; mr_url?: string; merge_sha?: string }
 )
 
@@ -196,6 +201,10 @@ export const ARM_ERROR_MESSAGE_MAX = 2_000
 export const ARM_RUN_ID_MAX = 64
 export const ARM_EVENT_TYPE_MAX = 100
 export const ARM_LABEL_MAX = 500
+/** `changed_files` list length bound on a `merged` transition: the hub's own `maxItems`. */
+export const ARM_CHANGED_FILES_MAX = 500
+/** Bound of one `changed_files` entry: the hub's own `items.maxLength`. */
+export const ARM_CHANGED_FILE_PATH_MAX = 500
 
 export const ARM_TICKET_STATUSES: ReadonlySet<ArmTicketStatus> = new Set([
   'proposed',
@@ -376,6 +385,33 @@ export function sanitizeArmTicket(raw: unknown): ArmTicket | null {
 }
 
 /**
+ * `changed_files` on a `merged` transition: best-effort, whitelisted like
+ * every other list field this module sanitizes. Non-string entries are
+ * dropped, each path goes through `str` (trim, bound, trim again), duplicates
+ * collapse, and the list itself is capped at `ARM_CHANGED_FILES_MAX`. An
+ * empty result is `undefined`, never `[]`: this field's absence and "the
+ * merge touched nothing" are different facts, and a caller that could not
+ * compute the diff must say so by omitting the key, not by fabricating an
+ * empty answer.
+ */
+function sanitizeChangedFiles(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+  const paths = new Set<string>()
+  for (const entry of raw) {
+    if (paths.size >= ARM_CHANGED_FILES_MAX) {
+      break
+    }
+    const path = str(entry, ARM_CHANGED_FILE_PATH_MAX)
+    if (path) {
+      paths.add(path)
+    }
+  }
+  return paths.size > 0 ? [...paths] : undefined
+}
+
+/**
  * Revalidates an `ArmTransition` before it is sent to, or read back from,
  * the hub's report endpoint. Two fields gate every record: `type`
  * (same never-fabricate rule as `ArmTicket.status`) and `idempotency_key`,
@@ -426,7 +462,14 @@ export function sanitizeArmTransition(raw: unknown): ArmTransition | null {
     if (!mergeSha) {
       return null
     }
-    return { ...base, type, merge_sha: mergeSha, ...(mrUrl ? { mr_url: mrUrl } : {}) }
+    const changedFiles = sanitizeChangedFiles(r.changed_files)
+    return {
+      ...base,
+      type,
+      merge_sha: mergeSha,
+      ...(mrUrl ? { mr_url: mrUrl } : {}),
+      ...(changedFiles ? { changed_files: changedFiles } : {}),
+    }
   }
   return {
     ...base,
@@ -685,6 +728,11 @@ export const armTransitionSchema = {
     merge_sha: { type: 'string', pattern: ARM_SHA_PATTERN },
     error_message: { type: 'string', maxLength: ARM_ERROR_MESSAGE_MAX, pattern: NON_BLANK },
     cost_ticks: { type: 'integer', minimum: 0, maximum: 9_007_199_254_740_991 },
+    changed_files: {
+      type: 'array',
+      maxItems: ARM_CHANGED_FILES_MAX,
+      items: { type: 'string', maxLength: ARM_CHANGED_FILE_PATH_MAX, pattern: NON_BLANK },
+    },
   },
   allOf: [
     {

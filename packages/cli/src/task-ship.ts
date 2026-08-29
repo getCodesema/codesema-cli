@@ -27,8 +27,16 @@
 import { execFile } from 'node:child_process'
 import { type ReasonCode, type RecapRecord, type SecretMatch, type TaskRecord } from './contract.js'
 import type { ForgeDegradation } from './degraded-mode.js'
-import { detectForgeHint, subprocessEnv } from './git.js'
+import { detectForgeHint, forgeHintOfUrl, subprocessEnv, type ForgeHint } from './git.js'
 import { t, type MessageKey } from './i18n.js'
+import {
+  sandboxName,
+  type SandboxDriver,
+  type SandboxExecResult,
+  type SandboxHandle,
+  type SandboxSecret,
+  type SandboxSpec,
+} from './microsandbox-driver.js'
 import { scanRecapSecrets } from './task-recap-publish.js'
 import { generateRecap, renderRecapMarkdown, writeTaskRecap } from './task-recap.js'
 
@@ -45,6 +53,153 @@ export const SHIP_EXEC_TIMEOUT_MS = 60_000
 export const MR_BODY_SUMMARY_MAX = 4000
 /** Bound for CLI error messages surfaced in journal events. */
 const SHIP_ERROR_MAX = 500
+
+/**
+ * Image the gitops sandbox (lot C9) boots for a 'microvm' task's push and MR
+ * creation: no public image bundles git + gh + glab together, so this is
+ * plain alpine with the three packages installed at sandbox start via `apk`.
+ * That install is the one deliberate exception to "the sandbox reaches only
+ * the forge": it needs `dl-cdn.alpinelinux.org` for the length of the
+ * `apk add`, so that domain rides in the sandbox's (otherwise forge-only)
+ * network policy for its whole lifetime — the policy is fixed at `create`
+ * and cannot be narrowed mid-session (spike 2026-08-28, Critère 4).
+ */
+export const GITOPS_IMAGE = 'alpine:3.20'
+const GITOPS_ALPINE_CDN_DOMAIN = 'dl-cdn.alpinelinux.org'
+const GITOPS_INSTALL_TIMEOUT_MS = 120_000
+const GITOPS_MAX_DURATION_SECONDS = 300
+const GITOPS_ROOT_DISK_MIB = 2048
+const GITOPS_CREDENTIAL_HELPER_PATH = '/usr/local/bin/codesema-git-credential'
+
+/** gh reads `GH_TOKEN`, glab reads `GITLAB_TOKEN` — both natively, no flag needed. */
+function gitopsSecretEnv(forge: ForgeHint): 'GH_TOKEN' | 'GITLAB_TOKEN' {
+  return forge === 'gitlab' ? 'GITLAB_TOKEN' : 'GH_TOKEN'
+}
+
+/**
+ * The forge token(s) to declare as sandbox secrets. `forgeCandidates`
+ * (below, reusing git.ts's `forgeHintOfUrl` like this does) tries BOTH `gh`
+ * and `glab` when the hint is 'unknown' — a self-hosted host whose name says
+ * neither 'github' nor 'gitlab' — so declaring only one native token env
+ * would leave whichever CLI runs second reading nothing.
+ */
+function gitopsSecretDeclarations(
+  forge: ForgeHint,
+  forgeToken: string,
+  allowedHosts: readonly string[],
+): SandboxSecret[] {
+  const envs: readonly ('GH_TOKEN' | 'GITLAB_TOKEN')[] =
+    forge === 'unknown' ? ['GH_TOKEN', 'GITLAB_TOKEN'] : [gitopsSecretEnv(forge)]
+  return envs.map((env) => ({ env, value: forgeToken, allowedHosts }))
+}
+
+/** `forgeHost` plus its API host, when github.com's push host and API host differ. */
+function gitopsAllowedHosts(forgeHost: string): string[] {
+  return forgeHost === 'github.com' ? [forgeHost, 'api.github.com'] : [forgeHost]
+}
+
+/**
+ * The sandbox's `push`/MR-create-only network policy: the forge host(s) plus
+ * the alpine CDN the one-time package install needs (see `GITOPS_IMAGE`).
+ */
+function gitopsAllowedDomains(forgeHost: string): string[] {
+  return [...gitopsAllowedHosts(forgeHost), GITOPS_ALPINE_CDN_DOMAIN]
+}
+
+/**
+ * `git` itself never reads an env var for HTTPS auth, so a credential helper
+ * script is what puts the token in play: git invokes it with `get` on stdin
+ * and reads `username=`/`password=` back from stdout. The password is the
+ * env var's PLACEHOLDER value (the guest never sees the real token, spike
+ * 2026-08-28 Critère 6) — it is substituted for the real one only when the
+ * outbound HTTPS request lands on an `allowedHosts` domain, which is exactly
+ * why the push URL must be https (see `toHttpsRemoteUrl`).
+ */
+function gitCredentialScript(forge: ForgeHint, secretEnv: string): string {
+  const username = forge === 'gitlab' ? 'oauth2' : 'x-access-token'
+  return `#!/bin/sh\nif [ "$1" = "get" ]; then\n  echo "username=${username}"\n  echo "password=$${secretEnv}"\nfi\n`
+}
+
+/**
+ * `copyFromHost` copies the whole repo, `.git` included: any LOCAL (not just
+ * `--global`) `credential.helper` or `http.<url>.extraheader` already sitting
+ * in the host's `.git/config` — a per-repo helper, a bearer header a CI
+ * checkout leaves behind — lands in the guest verbatim and OUTRANKS the
+ * `--global credential.helper` set right after (local scope always wins).
+ * Run once, right after the copy, before that placeholder helper is
+ * installed. Best-effort on purpose: the ordinary case is that neither key
+ * is present, so every line tolerates a no-op failure.
+ */
+function gitopsStripHostCredentialConfigScript(): string {
+  return [
+    'git config --local --unset-all credential.helper || true',
+    "for key in $(git config --local --name-only --get-regexp '^http\\..*\\.extraheader$' 2>/dev/null); do",
+    '  git config --local --unset-all "$key"',
+    'done',
+    'true',
+  ].join('\n')
+}
+
+/** POSIX single-quoting for a value interpolated into a shell command run in the sandbox. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+/**
+ * ssh/scp-style remote -> https. The proxy substitution that stands in for
+ * the real forge token only fires on an HTTPS request to an `allowedHosts`
+ * domain (spike 2026-08-28 Critère 6): a push that keeps an `ssh://` or
+ * `git@host:path` origin would authenticate with nothing. Null when the URL
+ * cannot be read as either shape — the caller reports that as an error
+ * rather than guessing a host.
+ */
+export function toHttpsRemoteUrl(url: string): string | null {
+  const trimmed = url.trim()
+  if (/^https:\/\//i.test(trimmed)) {
+    return stripEmbeddedCredentials(trimmed)
+  }
+  const ssh = /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i.exec(trimmed)
+  if (ssh?.[1] !== undefined && ssh[2] !== undefined) {
+    return `https://${ssh[1]}/${ssh[2]}`
+  }
+  const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed)
+  if (scp?.[1] !== undefined && scp[2] !== undefined) {
+    return `https://${scp[1]}/${scp[2].replace(/^\/+/, '')}`
+  }
+  return null
+}
+
+/**
+ * Drops a `user[:token]@` prefix embedded in an https origin (a GitLab
+ * CI-job-token remote, a PAT pasted into origin for automation). That value
+ * is not the sandbox's declared placeholder secret — letting it ride into the
+ * push command would put the real token in plain text on the wire into the
+ * guest. The credential helper supplies auth from here on, so the userinfo
+ * is dropped rather than trusted.
+ */
+function stripEmbeddedCredentials(httpsUrl: string): string {
+  return httpsUrl.replace(/^(https:\/\/)[^/]*@/i, '$1')
+}
+
+/** `SandboxExecResult` -> `ShipCliOutcome`, so the sandbox path reuses every host-side outcome rule verbatim. */
+function sandboxOutcome(result: SandboxExecResult): ShipCliOutcome {
+  if (result.timedOut) {
+    return { kind: 'error', message: 'gitops sandbox command timed out' }
+  }
+  if (result.code === 0) {
+    return { kind: 'ok', stdout: result.stdout }
+  }
+  const message = (
+    result.stderr.trim() ||
+    result.stdout.trim() ||
+    `exit code ${result.code}`
+  ).slice(0, SHIP_ERROR_MAX)
+  return {
+    kind: 'error',
+    message,
+    ...(typeof result.code === 'number' ? { status: result.code } : {}),
+  }
+}
 
 /**
  * Same three-way split as forge-mrs's runForgeCli — 'missing' (binary not
@@ -123,6 +278,163 @@ export function execCli(cmd: string, args: string[], cwd: string): Promise<ShipC
 
 const defaultExecGit: ShipGitExecFn = (args, cwd) => execCli('git', args, cwd)
 const defaultExecForge: ShipForgeExecFn = (cli, args, cwd) => execCli(cli, args, cwd)
+
+type GitopsSession = {
+  execGit: ShipGitExecFn
+  execForge: ShipForgeExecFn
+  /** No-op when no sandbox was ever created (e.g. the ship never got past the no-remote gate). */
+  destroy: () => Promise<void>
+}
+
+/**
+ * The 'microvm' path (lot C9): a `codesema-gitops-<taskId>` sandbox that
+ * carries the forge token as a placeholder secret and reaches only the forge
+ * (plus the alpine CDN for its one-time package install). `execGit`'s
+ * `remote get-url origin` probe (D9's pre-push gate) still runs on the HOST —
+ * it is a local, secret-free read, and running it needs the origin URL
+ * before the sandbox's network policy can even be built. Only the `push`
+ * itself, and every forge CLI call, cross into the sandbox.
+ *
+ * The sandbox is created lazily, on the first call that actually needs it,
+ * and reused by every later call in the same ship — one `apk add` and one
+ * worktree copy per ship, not one per forge candidate tried.
+ */
+function createGitopsSession(opts: ShipTaskOptions, driver: SandboxDriver): GitopsSession {
+  const name = sandboxName('gitops', opts.task.id)
+  let handlePromise: Promise<SandboxHandle> | null = null
+
+  const ensureHandle = (forgeHost: string, forge: ForgeHint): Promise<SandboxHandle> => {
+    if (!handlePromise) {
+      handlePromise = (async () => {
+        const spec: SandboxSpec = {
+          name,
+          image: GITOPS_IMAGE,
+          cpus: 1,
+          memoryMib: 512,
+          rootDisk: { kind: 'managed', sizeMib: GITOPS_ROOT_DISK_MIB },
+          maxDurationSeconds: GITOPS_MAX_DURATION_SECONDS,
+          network: { allowedDomains: gitopsAllowedDomains(forgeHost) },
+          // No `workdir` here: the SDK refuses one that does not already exist
+          // in the image, and `/work` is only created below by
+          // `copyFromHost` (same reasoning as `task-review.ts`'s sandbox
+          // create), `cwd` on every `shell`/`exec` call does the `cd` instead.
+          ...(opts.forgeToken
+            ? {
+                secrets: gitopsSecretDeclarations(
+                  forge,
+                  opts.forgeToken,
+                  gitopsAllowedHosts(forgeHost),
+                ),
+              }
+            : {}),
+        }
+        const handle = await driver.create(spec)
+        const install = await handle.shell('apk add --no-cache git github-cli glab', {
+          cwd: '/',
+          timeoutMs: GITOPS_INSTALL_TIMEOUT_MS,
+        })
+        if (install.code !== 0 || install.timedOut) {
+          throw new Error(
+            `gitops sandbox package install failed: ${`${install.stdout}\n${install.stderr}`.trim().slice(-2000)}`,
+          )
+        }
+        await handle.copyFromHost(opts.cwd, '/work')
+        // `copyFromHost` preserves the host's uid/gid, which never matches the
+        // sandbox's own user — Git refuses to touch a repo it does not itself
+        // own (CVE-2022-24765) unless the path is marked safe first. Global,
+        // not local: this sandbox exists for exactly one push and is
+        // destroyed right after, so there is no other repo to scope it away
+        // from.
+        await handle.shell(`git config --global --add safe.directory /work`, {
+          cwd: '/work',
+          timeoutMs: 10_000,
+        })
+        await handle.shell(gitopsStripHostCredentialConfigScript(), {
+          cwd: '/work',
+          timeoutMs: 10_000,
+        })
+        await handle.writeFile(
+          GITOPS_CREDENTIAL_HELPER_PATH,
+          gitCredentialScript(forge, gitopsSecretEnv(forge)),
+        )
+        await handle.shell(`chmod +x ${shellQuote(GITOPS_CREDENTIAL_HELPER_PATH)}`, {
+          cwd: '/work',
+          timeoutMs: 10_000,
+        })
+        await handle.shell(
+          `git config --global credential.helper ${shellQuote(`!${GITOPS_CREDENTIAL_HELPER_PATH}`)}`,
+          {
+            cwd: '/work',
+            timeoutMs: 10_000,
+          },
+        )
+        return handle
+      })()
+    }
+    return handlePromise
+  }
+
+  const execGit: ShipGitExecFn = async (args, cwd) => {
+    if (args[0] !== 'push') {
+      // The pre-push origin probe (and anything else that is not the push
+      // itself) is a local, secret-free read: no reason to pay for a sandbox.
+      return defaultExecGit(args, cwd)
+    }
+    try {
+      const remote = await defaultExecGit(['remote', 'get-url', 'origin'], cwd)
+      if (remote.kind !== 'ok') {
+        return remote
+      }
+      const httpsUrl = toHttpsRemoteUrl(remote.stdout.trim())
+      if (httpsUrl === null) {
+        return {
+          kind: 'error',
+          message: `origin remote could not be read as an https URL for the gitops sandbox: ${remote.stdout.trim()}`,
+        }
+      }
+      let forgeHost: string
+      try {
+        forgeHost = opts.forgeHost ?? new URL(httpsUrl).hostname
+      } catch (err) {
+        return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+      }
+      const handle = await ensureHandle(forgeHost, forgeHintOfUrl(forgeHost))
+      const result = await handle.shell(
+        `git push -u ${shellQuote(httpsUrl)} ${shellQuote(opts.task.branch)}`,
+        { cwd: '/work', timeoutMs: SHIP_EXEC_TIMEOUT_MS },
+      )
+      return sandboxOutcome(result)
+    } catch (err) {
+      return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  const execForge: ShipForgeExecFn = async (cli, args) => {
+    try {
+      // By the time a forge candidate is tried, the push above has already
+      // resolved and cached the sandbox — this call reuses it.
+      if (!handlePromise) {
+        return {
+          kind: 'error',
+          message: 'gitops sandbox was never created (no push ran before the forge call)',
+        }
+      }
+      const handle = await handlePromise
+      const result = await handle.exec(cli, args, { cwd: '/work', timeoutMs: SHIP_EXEC_TIMEOUT_MS })
+      return sandboxOutcome(result)
+    } catch (err) {
+      return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  const destroy = async (): Promise<void> => {
+    if (handlePromise) {
+      await driver.destroy(name)
+    }
+  }
+
+  return { execGit, execForge, destroy }
+}
 
 /**
  * First https URL in the CLI output: both `gh pr create` and `glab mr create`
@@ -213,6 +525,12 @@ export function buildMrDescription(source: MrRecapSource): string {
 }
 
 export type ShipTaskOptions = {
+  /** Set for a 'microvm' task: push and MR run in a dedicated sandbox, the forge token as a secret (lot C9). */
+  driver?: SandboxDriver | undefined
+  /** Forge token handed to the sandbox as a placeholder secret; never put in argv or env. */
+  forgeToken?: string | null | undefined
+  /** Forge API host the secret is allowed to reach (e.g. gitlab.com). */
+  forgeHost?: string | undefined
   /** MAIN repo root: the push and the forge CLI both run here, never in the worktree. */
   cwd: string
   task: TaskRecord
@@ -697,8 +1015,36 @@ function attachMrUrl(
  * with an explanatory note when no forge CLI could open the MR (not installed,
  * no matching remote, tool error).
  */
+/**
+ * Entry point. When `opts.driver` is set (a 'microvm' task, lot C9) and
+ * neither exec seam was overridden, the push and every forge call are routed
+ * through a dedicated gitops sandbox instead of running on the host — see
+ * `createGitopsSession`. The sandbox is torn down in `finally` regardless of
+ * how the ship ends, and it is a no-op when none was ever created (the ship
+ * never got past the pre-push no-remote gate, or the push itself failed
+ * before any forge candidate was tried).
+ *
+ * `opts.execGit`/`opts.execForge` — the test seams — always win over the
+ * driver: a caller that supplies its own exec functions is explicitly
+ * choosing not to run in a sandbox.
+ */
 export async function shipTask(opts: ShipTaskOptions): Promise<ShipOutcome> {
-  const execGit = opts.execGit ?? defaultExecGit
+  if (opts.driver && opts.execGit === undefined && opts.execForge === undefined) {
+    const session = createGitopsSession(opts, opts.driver)
+    try {
+      return await shipTaskCore(opts, session.execGit, session.execForge)
+    } finally {
+      await session.destroy()
+    }
+  }
+  return shipTaskCore(opts, opts.execGit ?? defaultExecGit, opts.execForge ?? defaultExecForge)
+}
+
+async function shipTaskCore(
+  opts: ShipTaskOptions,
+  execGit: ShipGitExecFn,
+  execForge: ShipForgeExecFn,
+): Promise<ShipOutcome> {
   // D9 (degraded-mode.ts): no remote, no ship — REFUSED, and named. Without
   // this gate the push still failed, but with git's own words and no
   // `reason_code` at all: the one degradation D9 is most about ("a repo with
@@ -733,11 +1079,7 @@ export async function shipTask(opts: ShipTaskOptions): Promise<ShipOutcome> {
       : { pushed: false, error }
   }
   const prepared = prepareRecap(opts)
-  const outcome = await createMr(
-    opts,
-    opts.execForge ?? defaultExecForge,
-    buildMrDescription(prepared.source),
-  )
+  const outcome = await createMr(opts, execForge, buildMrDescription(prepared.source))
   if (!outcome.pushed) {
     return outcome
   }

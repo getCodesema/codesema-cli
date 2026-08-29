@@ -58,7 +58,9 @@ From the page you can also:
 
 **Checks run in a sandbox.** Alongside the review, typecheck, tests and lint run in an ephemeral `docker` or `podman` container mounted on the task's worktree, with `--network none` and cpu/memory caps. The plan comes from your `checks` key, otherwise from what the repository already declares (lefthook hooks, CI workflow jobs, filtered through a command allowlist), otherwise from the lockfile and the `typecheck`/`test`/`lint` scripts of `package.json`. Checks never block a task: they are a second opinion next to the review.
 
-**Tasks can be caged.** With a container runtime available, a task runs inside a container built from your `.devcontainer` (or `node:26`): the worktree is the only writable host mount, the git directory is mounted read-only, and the only network exit is a proxy restricted to the agent's own API domains (`isolationAllowedDomains`). Commits stay on the host, so your git credentials never enter the container. `isolation` picks the mode: `auto` (default, falls back to host hardening and says why), `container` (mandatory) or `policy` (always on the host). `claude` and `opencode` are cageable today.
+**Tasks can be caged.** With a container runtime available, a task runs inside a container built from your `.devcontainer` (or `node:26`): the worktree is the only writable host mount, the git directory is mounted read-only, and the only network exit is a proxy restricted to the agent's own API domains (`isolationAllowedDomains`). Commits stay on the host, so your git credentials never enter the container. `isolation` picks the mode: `auto` (default, falls back to host hardening and says why), `container` (mandatory), `policy` (always on the host) or `microvm` (mandatory, a disposable Microsandbox VM instead of a container). `claude` and `opencode` are cageable today.
+
+**Or run in a disposable microVM.** Set `isolation: "microvm"` and a task's whole turn runs inside a fresh [Microsandbox](https://microsandbox.dev) VM instead of a container — stronger isolation than a container's namespaces, at the cost of a heavier, beta dependency. Requires Linux with `/dev/kvm` readable and writable by your user (`msb doctor` checks this) and a filesystem with reflink support (btrfs, xfs) — without it every VM copies its whole root disk on boot instead of a near-instant clone. The agent runs as a non-root guest user with no view of the host beyond a copy of the task's worktree (copied in before the turn, copied back after — there is no live mount), and the same domain allowlist as the container cage, substituted by the VM's own network proxy: the agent's provider credentials reach the guest only as `$MSB_<name>` placeholders, never as a value it could read or leak. Unlike `container`, `auto` never picks `microvm` on its own — it is beta software with a heavier host requirement, so it only ever runs when you set it explicitly.
 
 **Statuses.** A task moves through `queued`, `running`, `waiting_for_you` (the agent ended its turn on a question), `reviewing`, then `review_ok` or `review_ko`, then `shipped` once the branch is pushed and the merge request opened via `gh`/`glab`. `interrupted` covers a turn cut short by Ctrl-C, a crash or the Stop button: the worktree and the agent session are kept, and a Resume button restarts that exact turn. Nothing restarts by itself at the next boot.
 
@@ -122,31 +124,31 @@ Settings live in two files, and CLI flags win over both:
 
 Some keys are global only: they govern the machine (its load, its disk) or give a consent (merging, spending turns), so a cloned repository cannot set them on your behalf. A repository file that does is ignored, and says so at startup.
 
-| Key                                                        | Default                             | Scope           |
-| ---------------------------------------------------------- | ----------------------------------- | --------------- |
-| `agent`, `agentId`, `model`, `effort`                      | from the wizard                     | both            |
-| `language`                                                 | asked once (`en`, `fr`)             | both            |
-| `target`                                                   | auto-detected                       | both            |
-| `port`                                                     | `4400`                              | both            |
-| `timeout`                                                  | `900` seconds                       | both            |
-| `reviewMode`                                               | `simple` (or `dual`)                | both            |
-| `maxAutoFixRounds`                                         | `2`                                 | both            |
-| `isolation`                                                | `auto` (`container`, `policy`)      | both            |
-| `isolationAllowedDomains`                                  | the agent's own API domains         | both            |
-| `forgeCycleLabels`                                         | `false`                             | both            |
-| `checks`                                                   | inferred from the repository        | repository file |
-| `watchdogInactivitySeconds`                                | `1800`                              | both            |
-| `watchdogToolBudgetSeconds`                                | `7200`                              | both            |
-| `watchdogHeartbeatSeconds`                                 | `30`                                | both            |
-| `maxConcurrentAgents`                                      | `4`                                 | global only     |
-| `taskRetentionCount`                                       | `20` finished tasks per project     | global only     |
-| `maxTaskTurns`                                             | `30`                                | global only     |
-| `mergePolicy`                                              | `human` (or `auto`)                 | global only     |
-| `mergeStrategy`                                            | unset (`merge`, `squash`, `rebase`) | global only     |
-| `deleteBranchAfterMerge`                                   | `false`                             | global only     |
-| `allowMergeWithoutChecks`                                  | `false`                             | global only     |
-| `runnerAutoMerge`                                          | `true`                              | global only     |
-| `syncUrl`, `syncWorkspaceId`, `syncSecret`, `syncAutoPush` | unset                               | global only     |
+| Key                                                        | Default                                   | Scope           |
+| ---------------------------------------------------------- | ----------------------------------------- | --------------- |
+| `agent`, `agentId`, `model`, `effort`                      | from the wizard                           | both            |
+| `language`                                                 | asked once (`en`, `fr`)                   | both            |
+| `target`                                                   | auto-detected                             | both            |
+| `port`                                                     | `4400`                                    | both            |
+| `timeout`                                                  | `900` seconds                             | both            |
+| `reviewMode`                                               | `simple` (or `dual`)                      | both            |
+| `maxAutoFixRounds`                                         | `2`                                       | both            |
+| `isolation`                                                | `auto` (`container`, `policy`, `microvm`) | both            |
+| `isolationAllowedDomains`                                  | the agent's own API domains               | both            |
+| `forgeCycleLabels`                                         | `false`                                   | both            |
+| `checks`                                                   | inferred from the repository              | repository file |
+| `watchdogInactivitySeconds`                                | `1800`                                    | both            |
+| `watchdogToolBudgetSeconds`                                | `7200`                                    | both            |
+| `watchdogHeartbeatSeconds`                                 | `30`                                      | both            |
+| `maxConcurrentAgents`                                      | `4`                                       | global only     |
+| `taskRetentionCount`                                       | `20` finished tasks per project           | global only     |
+| `maxTaskTurns`                                             | `30`                                      | global only     |
+| `mergePolicy`                                              | `human` (or `auto`)                       | global only     |
+| `mergeStrategy`                                            | unset (`merge`, `squash`, `rebase`)       | global only     |
+| `deleteBranchAfterMerge`                                   | `false`                                   | global only     |
+| `allowMergeWithoutChecks`                                  | `false`                                   | global only     |
+| `runnerAutoMerge`                                          | `true`                                    | global only     |
+| `syncUrl`, `syncWorkspaceId`, `syncSecret`, `syncAutoPush` | unset                                     | global only     |
 
 `maxParallelTasks` is the former name of `maxConcurrentAgents`. It is still honoured, with a warning at startup.
 

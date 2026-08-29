@@ -12,24 +12,30 @@ import type { TaskIsolation, TaskRecord, WorkspaceInfo } from '../types'
 
 /** Effective isolation of a record; absent (older records) = 'policy'. */
 export function taskIsolation(record: Pick<TaskRecord, 'isolation'>): TaskIsolation {
-  return record.isolation === 'container' ? 'container' : 'policy'
+  if (record.isolation === 'container' || record.isolation === 'microvm') {
+    return record.isolation
+  }
+  return 'policy'
 }
 
-/** Chip glyph: the shield is the cage, the diamond is the policy hardening. */
+/** Chip glyph: the shield is the cage, the box is the microVM, the diamond is the policy hardening. */
 export const ISOLATION_GLYPH: Record<TaskIsolation, string> = {
   container: '🛡',
+  microvm: '▣',
   policy: '◇',
 }
 
 /** Chip text — technical words, identical in every locale. */
 export const ISOLATION_LABEL_KEY: Record<TaskIsolation, MessageKey> = {
   container: 'workspace.isolationContainer',
+  microvm: 'workspace.isolationMicrovm',
   policy: 'workspace.isolationPolicy',
 }
 
 /** Tooltip: what this isolation actually guarantees, in one sentence. */
 export const ISOLATION_HINT_KEY: Record<TaskIsolation, MessageKey> = {
   container: 'workspace.isolationContainerHint',
+  microvm: 'workspace.isolationMicrovmHint',
   policy: 'workspace.isolationPolicyHint',
 }
 
@@ -62,7 +68,12 @@ export function showIsolationDot(
   record: Pick<TaskRecord, 'isolation'>,
   workspace: WorkspaceInfo | null,
 ): boolean {
-  return taskIsolation(record) === 'container' || (workspace?.isolation_available ?? false)
+  const isolation = taskIsolation(record)
+  return (
+    isolation === 'container' ||
+    isolation === 'microvm' ||
+    (workspace?.isolation_available ?? false)
+  )
 }
 
 /** localStorage key of the dismissed upgrade banner (one workspace, one choice). */
@@ -85,7 +96,11 @@ export function shouldOfferIsolationUpgrade(
   if (workspace === null || dismissed) {
     return false
   }
-  if (workspace.isolation_available || workspace.isolation_default === 'container') {
+  if (
+    workspace.isolation_available ||
+    workspace.isolation_default === 'container' ||
+    workspace.isolation_default === 'microvm'
+  ) {
     return false
   }
   return workspace.isolation_configured !== 'policy'

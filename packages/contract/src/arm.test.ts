@@ -8,6 +8,8 @@ import transitionsBodySchema from '../fixtures/hub-schemas/transitions.schema.js
 import {
   ARM_BODY_MAX,
   ARM_BRANCH_MAX,
+  ARM_CHANGED_FILE_PATH_MAX,
+  ARM_CHANGED_FILES_MAX,
   ARM_ERROR_MESSAGE_MAX,
   ARM_EVENT_TYPE_MAX,
   ARM_ID_MAX,
@@ -42,6 +44,7 @@ import {
   type ArmTicketRequest,
   type ArmTransition,
 } from './arm.js'
+import { validate, type Schema } from './schema-validator.test-helper.js'
 import { TASK_STATUS_VALUES } from './tasks.js'
 
 // --- Fixtures ----------------------------------------------------------------
@@ -144,6 +147,8 @@ test('published bounds are locked to their literal values', () => {
   expect(ARM_PROMPT_MAX).toBe(20_000)
   expect(ARM_STATUS_MAX).toBe(100)
   expect(ARM_BRANCH_MAX).toBe(200)
+  expect(ARM_CHANGED_FILES_MAX).toBe(500)
+  expect(ARM_CHANGED_FILE_PATH_MAX).toBe(500)
   expect(ARM_MR_IID_MAX).toBe(64)
   expect(ARM_MR_URL_MAX).toBe(2_000)
   expect(ARM_ISSUE_IID_MAX).toBe(64)
@@ -377,6 +382,10 @@ describe('sanitizeArmTicket', () => {
 
 // --- sanitizeArmTransition -------------------------------------------------------
 
+/** `changed_files` only exists on the `merged` variant: narrows the union for those tests. */
+type MergedTransition = Extract<ArmTransition, { type: 'merged' }>
+const asMerged = (t: ArmTransition | null): MergedTransition | null => t as MergedTransition | null
+
 describe('sanitizeArmTransition', () => {
   test('a minimal transition (required fields only) round-trips unchanged', () => {
     expect(sanitizeArmTransition(structuredClone(minimalTransition))).toEqual(minimalTransition)
@@ -512,6 +521,86 @@ describe('sanitizeArmTransition', () => {
     expect(r?.idempotency_key).toBe(r?.idempotency_key.trim())
     expect(r?.error_message).toBe(r?.error_message?.trim())
     expect(transitionSchemaErrors(r)).toEqual([])
+  })
+
+  test('changed_files: absent on a merged transition stays absent', () => {
+    const r = sanitizeArmTransition({ ...minimalTransition, type: 'merged', merge_sha: 'a1b2c3d' })
+    expect(r && 'changed_files' in r).toBe(false)
+  })
+
+  test('changed_files: a valid list is kept, deduplicated', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 'src/b.ts', 'src/a.ts'],
+    })
+    expect(asMerged(r)?.changed_files).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+
+  test('changed_files: non-string entries are ignored', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 42, null, {}, ['nested'], 'src/b.ts'],
+    })
+    expect(asMerged(r)?.changed_files).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+
+  test('changed_files: a non-array value is omitted, never coerced', () => {
+    for (const changed_files of ['src/a.ts', 42, {}, null]) {
+      const r = sanitizeArmTransition({
+        ...minimalTransition,
+        type: 'merged',
+        merge_sha: 'a1b2c3d',
+        changed_files,
+      })
+      expect(r && 'changed_files' in r).toBe(false)
+    }
+  })
+
+  test('changed_files: an all-blank or empty list is omitted, never sent as []', () => {
+    for (const changed_files of [[], ['', '   ']]) {
+      const r = sanitizeArmTransition({
+        ...minimalTransition,
+        type: 'merged',
+        merge_sha: 'a1b2c3d',
+        changed_files,
+      })
+      expect(r && 'changed_files' in r).toBe(false)
+    }
+  })
+
+  test('changed_files: each path is truncated at ARM_CHANGED_FILE_PATH_MAX', () => {
+    const longPath = 'x'.repeat(ARM_CHANGED_FILE_PATH_MAX + 50)
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: [longPath],
+    })
+    expect(asMerged(r)?.changed_files?.[0]?.length).toBe(ARM_CHANGED_FILE_PATH_MAX)
+  })
+
+  test('changed_files: the list is capped at ARM_CHANGED_FILES_MAX entries', () => {
+    const many = Array.from({ length: ARM_CHANGED_FILES_MAX + 50 }, (_, i) => `src/file-${i}.ts`)
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: many,
+    })
+    expect(asMerged(r)?.changed_files?.length).toBe(ARM_CHANGED_FILES_MAX)
+  })
+
+  test('changed_files on a type other than merged is dropped, same as merge_sha would be', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'mr_opened',
+      changed_files: ['src/a.ts'],
+    })
+    expect(r && 'changed_files' in r).toBe(false)
   })
 })
 
@@ -768,133 +857,9 @@ describe('armTicketSchema / armTransitionSchema', () => {
 // the schema is not looser than what the sanitizer actually accepts. Deliberately
 // local and tiny, like recap.test.ts's and index.test.ts's own validators: this
 // proves the SCHEMA against the SANITIZER, not a library's leniency, and is the
-// one automatic lock against a field added to one but not the other.
-
-type Schema = Record<string, unknown>
-
-function deref(schema: Schema, root: Schema): Schema {
-  const ref = schema.$ref
-  if (typeof ref !== 'string') {
-    return schema
-  }
-  const defs = (root.$defs ?? {}) as Record<string, Schema>
-  const key = ref.replace('#/$defs/', '')
-  const target = Object.hasOwn(defs, key) ? (defs[key] ?? {}) : {}
-  const { $ref: _drop, ...siblings } = schema
-  return { ...target, ...siblings }
-}
-
-function typeMatches(node: unknown, type: string): boolean {
-  switch (type) {
-    case 'null':
-      return node === null
-    case 'string':
-      return typeof node === 'string'
-    case 'boolean':
-      return typeof node === 'boolean'
-    case 'integer':
-      return typeof node === 'number' && Number.isInteger(node)
-    case 'array':
-      return Array.isArray(node)
-    case 'object':
-      return !!node && typeof node === 'object' && !Array.isArray(node)
-    default:
-      return false
-  }
-}
-
-function validateString(node: string, s: Schema, path: string): string[] {
-  const errors: string[] = []
-  const length = [...node].length
-  if (typeof s.maxLength === 'number' && length > s.maxLength) {
-    errors.push(`${path}: maxLength`)
-  }
-  if (typeof s.minLength === 'number' && length < s.minLength) {
-    errors.push(`${path}: minLength`)
-  }
-  if (typeof s.pattern === 'string' && !new RegExp(s.pattern, 'u').test(node)) {
-    errors.push(`${path}: pattern`)
-  }
-  return errors
-}
-
-function validateNumber(node: number, s: Schema, path: string): string[] {
-  const errors: string[] = []
-  if (typeof s.minimum === 'number' && node < s.minimum) {
-    errors.push(`${path}: minimum`)
-  }
-  if (typeof s.maximum === 'number' && node > s.maximum) {
-    errors.push(`${path}: maximum`)
-  }
-  return errors
-}
-
-function validateObject(node: object, s: Schema, root: Schema, path: string): string[] {
-  const errors: string[] = []
-  const record = node as Record<string, unknown>
-  const properties = (s.properties ?? {}) as Record<string, Schema>
-  for (const key of (s.required ?? []) as string[]) {
-    if (!Object.hasOwn(record, key)) {
-      errors.push(`${path}.${key}: required`)
-    }
-  }
-  for (const [key, value] of Object.entries(record)) {
-    const child = Object.hasOwn(properties, key) ? properties[key] : undefined
-    if (!child) {
-      if (s.additionalProperties === false) {
-        errors.push(`${path}.${key}: additionalProperties`)
-      }
-      continue
-    }
-    errors.push(...validate(value, child, root, `${path}.${key}`))
-  }
-  return errors
-}
-
-function validate(node: unknown, schema: Schema, root: Schema, path = '$'): string[] {
-  const s = deref(schema, root)
-  const types =
-    typeof s.type === 'string' ? [s.type] : Array.isArray(s.type) ? (s.type as string[]) : []
-  const hasAssertion = 'const' in s || 'enum' in s || types.length > 0 || Array.isArray(s.anyOf)
-  if (!hasAssertion) {
-    // A schema node that asserts NOTHING accepts every value that reaches it.
-    // Fail loudly here instead of quietly proving nothing.
-    throw new Error(`arm schema validator: '${path}' asserts nothing`)
-  }
-  const errors: string[] = []
-  if ('const' in s && node !== s.const) {
-    errors.push(`${path}: const`)
-  }
-  if (Array.isArray(s.enum) && !s.enum.includes(node)) {
-    errors.push(`${path}: enum`)
-  }
-  if (Array.isArray(s.anyOf)) {
-    const branches = s.anyOf as Schema[]
-    if (!branches.some((branch) => validate(node, branch, root, path).length === 0)) {
-      errors.push(`${path}: anyOf`)
-    }
-  }
-  if (types.length === 0) {
-    return errors
-  }
-  if (!types.some((type) => typeMatches(node, type))) {
-    errors.push(`${path}: type`)
-    return errors
-  }
-  if (typeof node === 'string') {
-    errors.push(...validateString(node, s, path))
-  } else if (typeof node === 'number') {
-    errors.push(...validateNumber(node, s, path))
-  } else if (Array.isArray(node)) {
-    const items = s.items as Schema | undefined
-    if (items) {
-      node.forEach((item, i) => errors.push(...validate(item, items, root, `${path}[${i}]`)))
-    }
-  } else if (node && typeof node === 'object') {
-    errors.push(...validateObject(node, s, root, path))
-  }
-  return errors
-}
+// one automatic lock against a field added to one but not the other. The
+// validator itself lives in schema-validator.test-helper.ts, shared with
+// tasks.test.ts and runbook.test.ts.
 
 const ticketSchemaErrors = (value: unknown): string[] =>
   validate(value, armTicketSchema as unknown as Schema, armTicketSchema as unknown as Schema)
@@ -1048,6 +1013,16 @@ describe('cross test: sanitizeArmTransition output validates against armTransiti
         ),
       ).toEqual([])
     }
+  })
+
+  test('a merged transition with changed_files validates', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 'src/b.ts'],
+    })
+    expect(transitionSchemaErrors(r)).toEqual([])
   })
 })
 
@@ -1256,6 +1231,20 @@ describe('cross-repo: sanitizeArmTransition output validates against the hub sch
         ),
       ).toBe(true)
     }
+  })
+
+  // The actual motivation for this whole exchange: changed_files is the hub's
+  // own field (transitions.schema.json), not one this package invented, so
+  // the hub's independently-maintained copy is what proves the shape it
+  // sanitizes actually matches.
+  test('a merged transition with changed_files validates against the hub schema', () => {
+    const r = sanitizeArmTransition({
+      ...minimalTransition,
+      type: 'merged',
+      merge_sha: 'a1b2c3d',
+      changed_files: ['src/a.ts', 'src/b.ts'],
+    })
+    expect(validateTransitionBody(r)).toBe(true)
   })
 })
 

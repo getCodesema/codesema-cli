@@ -2,26 +2,40 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import type { ArmTicket, ArmTicketRequest, RunnerListEntry } from './contract.js'
+import type {
+  ArmTicket,
+  ArmTicketRequest,
+  RunbookConfig,
+  RunbookScan,
+  RunbookValidation,
+  RunnerListEntry,
+  TaskVerification,
+} from './contract.js'
 import {
   claimPendingSecret,
+  claimRunbookScan,
   claimTicket,
   claimTicketRequest,
   createTicket,
+  currentRunbook,
   depositRunnerSecret,
+  failRunbookScan,
   failTicketRequest,
   getTicket,
   heartbeat,
   hubErrorMessage,
   listInFlightTickets,
+  listRunbookScans,
   listRunners,
   listTicketRequests,
   listTickets,
   parseHubToken,
   pushEvents,
   registerRunnerKey,
+  reportRunbookScanResult,
   submitTicketRequestTickets,
   transition,
+  verification,
 } from './hub-client.js'
 import { loadOrCreateRunnerIdentity } from './runner-identity.js'
 import type { SyncCredentials } from './sync.js'
@@ -71,6 +85,45 @@ const validRequest: ArmTicketRequest = {
   status: 'queued',
   source_issue: null,
   created_at: '2026-01-01T00:00:00.000Z',
+}
+
+const validRunbook: RunbookConfig = {
+  version: 1,
+  image: 'node:26',
+  install: ['npm install'],
+  services: { host_up: [], compose_file: null },
+  healthchecks: [],
+  tests: ['npm test'],
+  egress: ['registry.npmjs.org'],
+  depends_on_files: ['package.json'],
+}
+
+const validRunbookValidation: RunbookValidation = {
+  runbook_sha: '0123456789abcdef',
+  validated_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+  validated_at: '2026-01-01T00:00:00.000Z',
+  status: 'valid',
+}
+
+const validRunbookScan: RunbookScan = {
+  id: '11111111-1111-1111-1111-111111111111',
+  repo_id: '22222222-2222-2222-2222-222222222222',
+  repo_full_name: 'o/r',
+  head_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+  status: 'queued',
+  requested_at: '2026-01-01T00:00:00.000Z',
+}
+
+const validVerification: TaskVerification = {
+  head_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+  runbook_sha: '0123456789abcdef',
+  started_at: '2026-01-01T00:00:00.000Z',
+  finished_at: '2026-01-01T00:05:00.000Z',
+  status: 'passed',
+  checks: [],
+  integrity_ok: true,
+  changed_dependency_files: [],
+  error: null,
 }
 
 /** A sha256 hex digest (fingerprint) and a base64-encoded 32-byte key (public_key): the exact shapes `sanitizeRunnerListEntry` requires, not placeholders. */
@@ -545,5 +598,258 @@ describe('runner identity header propagation', () => {
     )
     const headers = calls[0]?.init.headers as Record<string, string> | undefined
     expect(headers?.['x-codesema-runner']).toBe(identity.fingerprint)
+  })
+})
+
+describe('verification', () => {
+  test('posts to the ticket-scoped route and parses id + created', async () => {
+    const calls: Call[] = []
+    const result = await verification(
+      creds,
+      't1',
+      { ...validVerification, idempotency_key: 't1:verify:1' },
+      fetchStub(200, { id: 'v1', created: true }, calls),
+    )
+    expect(result).toEqual({ ok: true, data: { id: 'v1', created: true } })
+    expect(calls[0]?.url).toBe('https://hub.example/api/cli/tickets/t1/verification')
+    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>
+    expect(body.status).toBe('passed')
+    expect(body.idempotency_key).toBe('t1:verify:1')
+  })
+
+  test('encodes the ticket id in the path', async () => {
+    const calls: Call[] = []
+    await verification(
+      creds,
+      't 1/weird',
+      { ...validVerification, idempotency_key: 'k' },
+      fetchStub(200, { id: 'v1', created: false }, calls),
+    )
+    expect(calls[0]?.url).toBe('https://hub.example/api/cli/tickets/t%201%2Fweird/verification')
+  })
+
+  test('a malformed response body is refused', async () => {
+    const result = await verification(
+      creds,
+      't1',
+      { ...validVerification, idempotency_key: 'k' },
+      fetchStub(200, { id: 'v1' }, []),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  test('a 5xx carries its status and message', async () => {
+    const result = await verification(
+      creds,
+      't1',
+      { ...validVerification, idempotency_key: 'k' },
+      fetchStub(500, { error: 'db down' }, []),
+    )
+    expect(result).toEqual({ ok: false, error: { kind: 'http', status: 500, error: 'db down' } })
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await verification(
+      creds,
+      't1',
+      { ...validVerification, idempotency_key: 'k' },
+      fetchOffline(),
+    )
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
+  })
+})
+
+describe('listRunbookScans', () => {
+  test('parses a valid collection response', async () => {
+    const calls: Call[] = []
+    const result = await listRunbookScans(
+      creds,
+      fetchStub(200, { scans: [validRunbookScan] }, calls),
+    )
+    expect(result).toEqual({ ok: true, data: [validRunbookScan] })
+    expect(calls[0]?.url).toBe('https://hub.example/api/cli/runbook-scans')
+    expect(calls[0]?.init.method).toBe('GET')
+  })
+
+  test('a malformed item is dropped, not refusing the whole list', async () => {
+    const result = await listRunbookScans(
+      creds,
+      fetchStub(200, { scans: [validRunbookScan, { nope: true }] }, []),
+    )
+    expect(result).toEqual({ ok: true, data: [validRunbookScan] })
+  })
+
+  test('a 404 on this collection route degrades to unavailable, not a hard error', async () => {
+    const result = await listRunbookScans(creds, fetchStub(404, { error: 'not found' }, []))
+    expect(result).toEqual({ ok: false, error: { kind: 'unavailable' } })
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await listRunbookScans(creds, fetchOffline())
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
+  })
+})
+
+describe('claimRunbookScan', () => {
+  test('parses the claimed scan and its lease', async () => {
+    const result = await claimRunbookScan(
+      creds,
+      validRunbookScan.id,
+      {},
+      fetchStub(200, { scan: validRunbookScan, lease_expires_at: '2026-01-01T00:05:00.000Z' }, []),
+    )
+    expect(result).toEqual({
+      ok: true,
+      data: { scan: validRunbookScan, lease_expires_at: '2026-01-01T00:05:00.000Z' },
+    })
+  })
+
+  test('sends lease_seconds only when given', async () => {
+    const calls: Call[] = []
+    await claimRunbookScan(
+      creds,
+      validRunbookScan.id,
+      { leaseSeconds: 120 },
+      fetchStub(
+        200,
+        { scan: validRunbookScan, lease_expires_at: '2026-01-01T00:05:00.000Z' },
+        calls,
+      ),
+    )
+    const body = JSON.parse(String(calls[0]?.init.body)) as { lease_seconds: number }
+    expect(body.lease_seconds).toBe(120)
+  })
+
+  test('a by-id 404 is a normal http error, not unavailable', async () => {
+    const result = await claimRunbookScan(
+      creds,
+      'missing',
+      {},
+      fetchStub(404, { error: 'gone' }, []),
+    )
+    expect(result).toEqual({ ok: false, error: { kind: 'http', status: 404, error: 'gone' } })
+  })
+
+  test('a malformed response body is refused', async () => {
+    const result = await claimRunbookScan(
+      creds,
+      validRunbookScan.id,
+      {},
+      fetchStub(200, { scan: validRunbookScan }, []),
+    )
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe('reportRunbookScanResult', () => {
+  test('sends the runbook and validation, parses the ack', async () => {
+    const calls: Call[] = []
+    const result = await reportRunbookScanResult(
+      creds,
+      validRunbookScan.id,
+      { runbook: validRunbook, validation: validRunbookValidation, log_tail: 'all green' },
+      fetchStub(200, { runbook_id: 'rb1', already_recorded: false }, calls),
+    )
+    expect(result).toEqual({ ok: true, data: { runbook_id: 'rb1', already_recorded: false } })
+    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>
+    expect(body.runbook).toEqual(validRunbook)
+    expect(body.validation).toEqual(validRunbookValidation)
+    expect(body.log_tail).toBe('all green')
+  })
+
+  test('a malformed response body is refused', async () => {
+    const result = await reportRunbookScanResult(
+      creds,
+      validRunbookScan.id,
+      { runbook: validRunbook, validation: validRunbookValidation },
+      fetchStub(200, { runbook_id: 'rb1' }, []),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await reportRunbookScanResult(
+      creds,
+      validRunbookScan.id,
+      { runbook: validRunbook, validation: validRunbookValidation },
+      fetchOffline(),
+    )
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
+  })
+})
+
+describe('failRunbookScan', () => {
+  test('sends the error and acknowledges', async () => {
+    const calls: Call[] = []
+    const result = await failRunbookScan(
+      creds,
+      validRunbookScan.id,
+      { error: 'no /dev/kvm' },
+      fetchStub(200, {}, calls),
+    )
+    expect(result).toEqual({ ok: true, data: {} })
+    const body = JSON.parse(String(calls[0]?.init.body)) as { error: string }
+    expect(body).toEqual({ error: 'no /dev/kvm' })
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await failRunbookScan(creds, validRunbookScan.id, { error: 'x' }, fetchOffline())
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
+  })
+})
+
+describe('currentRunbook', () => {
+  test('parses both the runbook and its validation', async () => {
+    const result = await currentRunbook(
+      creds,
+      'repo1',
+      fetchStub(200, { runbook: validRunbook, validation: validRunbookValidation }, []),
+    )
+    expect(result).toEqual({
+      ok: true,
+      data: { runbook: validRunbook, validation: validRunbookValidation },
+    })
+  })
+
+  test('a repository with no runbook yet parses as both null', async () => {
+    const result = await currentRunbook(
+      creds,
+      'repo1',
+      fetchStub(200, { runbook: null, validation: null }, []),
+    )
+    expect(result).toEqual({ ok: true, data: { runbook: null, validation: null } })
+  })
+
+  test('a malformed runbook refuses the whole response', async () => {
+    const result = await currentRunbook(
+      creds,
+      'repo1',
+      fetchStub(200, { runbook: { nope: true }, validation: null }, []),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  test('a malformed validation refuses the whole response, even with a valid runbook', async () => {
+    const result = await currentRunbook(
+      creds,
+      'repo1',
+      fetchStub(200, { runbook: validRunbook, validation: { nope: true } }, []),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  test('encodes the repo id in the path', async () => {
+    const calls: Call[] = []
+    await currentRunbook(
+      creds,
+      'repo 1/weird',
+      fetchStub(200, { runbook: null, validation: null }, calls),
+    )
+    expect(calls[0]?.url).toBe('https://hub.example/api/cli/repos/repo%201%2Fweird/runbook')
+  })
+
+  test('a network failure is reported as such', async () => {
+    const result = await currentRunbook(creds, 'repo1', fetchOffline())
+    expect(result).toEqual({ ok: false, error: { kind: 'network' } })
   })
 })

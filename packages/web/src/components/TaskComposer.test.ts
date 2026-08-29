@@ -59,7 +59,7 @@ async function renderComposer(
   overrides: {
     agents?: AgentOption[]
     currentAgent?: string
-    isolation?: 'container' | 'policy' | null
+    isolation?: 'container' | 'policy' | 'microvm' | null
     draft?: DraftTarget | null
     projectKind?: 'repo' | 'scratch'
     plan?: TaskPlan | null
@@ -178,6 +178,11 @@ describe('TaskComposer agent picker', () => {
   test('hides the first-image hint when isolation is policy', async () => {
     const html = await renderComposer({ isolation: 'policy' })
     expect(html).not.toContain(t('workspace.agentBuildHint'))
+  })
+
+  test('shows the first-image hint when isolation is microvm too', async () => {
+    const html = await renderComposer({ isolation: 'microvm' })
+    expect(html).toContain(t('workspace.agentBuildHint'))
   })
 
   test('hides the picker when no agents are given', async () => {

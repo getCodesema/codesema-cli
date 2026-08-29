@@ -62,6 +62,10 @@ Usage:
                                       Install a systemd --user unit that runs \`codesema runner serve\`
                                       for this repo, enabled and started now
   codesema runner uninstall-service   Stop and remove that systemd --user unit
+  codesema runbook scan [--timeout <seconds>]
+                                      Validate (or let an agent propose, then validate) this repo's
+                                      .codesema/runbook.json in a disposable microVM; writes it and
+                                      snapshots the project on success
 
 Options:
   --branch <name>     Local branch to review (default: interactive picker, else current branch)
@@ -595,6 +599,8 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   // --- task isolation (container cage) ---
   'workspace.isolationContainer':
     '🛡 container isolation ON ({runtime}): each task runs in its own container — full agent tools inside, egress limited to {domains}',
+  'workspace.isolationMicrovm':
+    '🛡 microvm isolation ON (microsandbox): each task runs in its own microVM — full agent tools inside, egress limited to {domains}',
   'workspace.isolationPolicy':
     '⚠ container isolation OFF: {reason} — tasks run on this machine with the policy hardening (edit tools in the worktree, user settings only, strict MCP config)',
   'isolation.noRuntime':
@@ -613,6 +619,9 @@ terminal, offers to upgrade when a newer version exists. Set CODESEMA_NO_UPDATE_
   'isolation.reasonNoRuntime': 'no container runtime found (install docker or podman)',
   'isolation.reasonUnreachable': '{runtime} is installed but its engine does not answer',
   'isolation.reasonReady': '{runtime} is available',
+  'isolation.reasonNoMicrovm':
+    'no microVM runtime found (microsandbox unavailable, run `msb doctor`)',
+  'isolation.reasonMicrovmNotProbed': 'microvm isolation was not probed for this project',
 }
 
 export type MessageKey = keyof typeof en
@@ -678,6 +687,10 @@ Usage :
                                       Installe une unité systemd --user qui lance
                                       \`codesema runner serve\` pour ce dépôt, activée et démarrée
   codesema runner uninstall-service   Arrête et supprime cette unité systemd --user
+  codesema runbook scan [--timeout <secondes>]
+                                      Valide (ou fait proposer par un agent, puis valide) le
+                                      .codesema/runbook.json de ce dépôt dans une microVM jetable ;
+                                      l'écrit et prend un instantané du projet en cas de succès
 
 Options :
   --branch <nom>      Branche locale à passer en revue (défaut : sélecteur interactif, sinon branche courante)
@@ -1219,6 +1232,8 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   // --- task isolation (container cage) ---
   'workspace.isolationContainer':
     "🛡 isolation container ACTIVE ({runtime}) : chaque tâche tourne dans son propre container — outils de l'agent complets à l'intérieur, sortie réseau limitée à {domains}",
+  'workspace.isolationMicrovm':
+    "🛡 isolation microvm ACTIVE (microsandbox) : chaque tâche tourne dans sa propre microVM — outils de l'agent complets à l'intérieur, sortie réseau limitée à {domains}",
   'workspace.isolationPolicy':
     '⚠ isolation container INACTIVE : {reason} — les tâches tournent sur cette machine avec le durcissement policy (outils d’édition dans le worktree, réglages utilisateur seuls, config MCP stricte)',
   'isolation.noRuntime':
@@ -1238,6 +1253,9 @@ CODESEMA_NO_UPDATE_CHECK=1 pour désactiver.
   'isolation.reasonNoRuntime': 'aucun runtime de container trouvé (installez docker ou podman)',
   'isolation.reasonUnreachable': '{runtime} est installé mais son moteur ne répond pas',
   'isolation.reasonReady': '{runtime} est disponible',
+  'isolation.reasonNoMicrovm':
+    'aucun runtime microVM trouvé (microsandbox indisponible, lancez `msb doctor`)',
+  'isolation.reasonMicrovmNotProbed': "l'isolation microvm n'a pas été sondée pour ce projet",
 }
 
 /**

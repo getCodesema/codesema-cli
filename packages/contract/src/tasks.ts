@@ -259,11 +259,13 @@ export type TaskEventType =
  *   the agent gets full Bash inside it.
  * - 'policy': the turn runs on the HOST, contained by CLI flags only (edit
  *   tools opened, user settings only, strict MCP config).
+ * - 'microvm': the turn runs in a disposable microVM (own kernel, egress
+ *   allowlist enforced by the VM proxy, secrets substituted outside the guest).
  *
  * Fixed AT CREATION and immutable: a record must never promise an isolation
  * its turns did not actually run under.
  */
-export type TaskIsolation = 'container' | 'policy'
+export type TaskIsolation = 'container' | 'policy' | 'microvm'
 
 /** The two forges T2.1's client speaks. */
 export type IssueForge = 'github' | 'gitlab'
@@ -494,6 +496,18 @@ export type TaskRecord = {
    * (no node_modules) — the runner reinstalls rather than trusting the hash.
    */
   install_lock_hash?: string
+  /**
+   * sha (16 hex) of the runbook the last mechanical verification ran against.
+   * OPTIONAL: absent until a verification ran, and absent on every record
+   * written before verifications existed. Never invented on read-back.
+   */
+  runbook_sha?: string
+  /**
+   * Whether the worktree still matched the validated runbook on every file of
+   * `depends_on_files` at the last verification. OPTIONAL, same doctrine as
+   * `runbook_sha`: absent means "never verified", not "intact".
+   */
+  runbook_integrity?: boolean
   /**
    * Why the task is where it is, when where it is is a degradation: the code
    * plus, in `detail`, the producer's own readable message verbatim. OPTIONAL,
@@ -726,7 +740,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'post_merge_checks',
 ])
 
-const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy'])
+const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy', 'microvm'])
 const CYCLE_STEPS: ReadonlySet<CycleStep> = new Set(['ship', 'merge'])
 const ISSUE_FORGES: ReadonlySet<IssueForge> = new Set(['github', 'gitlab'])
 
@@ -886,7 +900,8 @@ const nullableStr = (v: unknown, max: number): string | null => {
   return s ? s : null
 }
 
-const isoOrNow = (v: unknown): string => (typeof v === 'string' && v ? v : new Date().toISOString())
+const isoOrNow = (v: unknown): string =>
+  typeof v === 'string' && v ? v.slice(0, TASK_TIMESTAMP_MAX) : new Date().toISOString()
 
 const nonNegativeInt = (v: unknown): number =>
   Number.isInteger(v) && (v as number) >= 0 ? (v as number) : 0
@@ -1161,6 +1176,12 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     ...(typeof r.install_lock_hash === 'string' && /^[0-9a-f]{16}$/.test(r.install_lock_hash)
       ? { install_lock_hash: r.install_lock_hash }
       : {}),
+    // Optional, same doctrine: a verification that never ran leaves no trace,
+    // and a malformed sha or a non-boolean integrity drops the key.
+    ...(typeof r.runbook_sha === 'string' && /^[0-9a-f]{16}$/.test(r.runbook_sha)
+      ? { runbook_sha: r.runbook_sha }
+      : {}),
+    ...(typeof r.runbook_integrity === 'boolean' ? { runbook_integrity: r.runbook_integrity } : {}),
     // Optional and whitelisted, exactly like `source` on TaskChecks: a record
     // without a reason keeps none, and one whose code is unknown (older or
     // newer vocabulary, tampered file) drops the key entirely rather than
@@ -1383,6 +1404,113 @@ export function sanitizeTaskChecks(raw: unknown): TaskChecks | null {
     ...(TASK_CHECKS_SOURCES.has(r.source as TaskChecksSource)
       ? { source: r.source as TaskChecksSource }
       : {}),
+  }
+}
+
+/**
+ * Outcome of the MECHANICAL verification of a task: the runner replays the
+ * validated runbook's tests in a fresh VM restored from the project snapshot,
+ * with the ticket's worktree attached, and reports what it saw. The agent's
+ * own claim that "the tests pass" never enters this record.
+ *
+ * 'refused' means the verification did not run at all because a file of
+ * `depends_on_files` differs from the validated runbook (integrity), so the
+ * runbook must be re-scanned before any verdict can be trusted.
+ */
+export type TaskVerificationStatus = 'passed' | 'failed' | 'refused' | 'error'
+
+export type TaskVerification = {
+  /** Worktree HEAD the verification ran against. */
+  head_sha: string
+  /** sha (16 hex) of the runbook whose tests were replayed. */
+  runbook_sha: string
+  started_at: string
+  finished_at: string | null
+  status: TaskVerificationStatus
+  /** One entry per `runbook.tests` command that ran, in order; empty when refused or errored before running. */
+  checks: TaskCheckResult[]
+  /** True when every `depends_on_files` entry matched the validated runbook. */
+  integrity_ok: boolean
+  /** The `depends_on_files` entries that differed; empty when `integrity_ok`. */
+  changed_dependency_files: string[]
+  /** Readable failure when status is 'error' (VM could not boot, snapshot missing). */
+  error: string | null
+}
+
+export const TASK_VERIFICATION_FILES_MAX = 64
+
+const TASK_VERIFICATION_STATUSES: ReadonlySet<TaskVerificationStatus> = new Set([
+  'passed',
+  'failed',
+  'refused',
+  'error',
+])
+
+export function isTaskVerificationStatus(value: unknown): value is TaskVerificationStatus {
+  return TASK_VERIFICATION_STATUSES.has(value as TaskVerificationStatus)
+}
+
+/**
+ * Revalidates a TaskVerification (on-disk or on the wire). Null when the
+ * record names nothing verifiable: unknown status, or no runbook sha to tie
+ * the verdict to.
+ */
+export function sanitizeTaskVerification(raw: unknown): TaskVerification | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  if (!isTaskVerificationStatus(r.status)) {
+    return null
+  }
+  const runbookSha = typeof r.runbook_sha === 'string' ? r.runbook_sha.trim().toLowerCase() : ''
+  if (!/^[0-9a-f]{16}$/.test(runbookSha)) {
+    return null
+  }
+  const checks: TaskCheckResult[] = []
+  if (Array.isArray(r.checks)) {
+    for (const item of r.checks) {
+      if (checks.length >= TASK_CHECKS_LIST_MAX) {
+        break
+      }
+      const check = sanitizeTaskCheckResult(item)
+      if (check) {
+        checks.push(check)
+      }
+    }
+  }
+  const changed: string[] = []
+  if (Array.isArray(r.changed_dependency_files)) {
+    for (const item of r.changed_dependency_files) {
+      if (changed.length >= TASK_VERIFICATION_FILES_MAX) {
+        break
+      }
+      const file = str(item, TASK_PATH_MAX)
+      if (file && !changed.includes(file)) {
+        changed.push(file)
+      }
+    }
+  }
+  // Integrity is a measurement, never a default: a record that does not say
+  // is read as "not intact" so a missing field can never green-light a verdict.
+  const integrityOk = r.integrity_ok === true && changed.length === 0
+  const headSha = str(r.head_sha, TASK_CHECKS_SHA_MAX)
+  if (!headSha) {
+    return null
+  }
+  return {
+    head_sha: headSha,
+    runbook_sha: runbookSha,
+    started_at: isoOrNow(r.started_at),
+    finished_at:
+      typeof r.finished_at === 'string' && r.finished_at
+        ? r.finished_at.slice(0, TASK_TIMESTAMP_MAX)
+        : null,
+    status: r.status,
+    checks,
+    integrity_ok: integrityOk,
+    changed_dependency_files: changed,
+    error: nullableStr(r.error, TASK_CHECKS_ERROR_MAX),
   }
 }
 

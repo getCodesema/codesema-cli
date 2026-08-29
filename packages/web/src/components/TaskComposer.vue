@@ -77,7 +77,9 @@ watch(
 const orderedAgents = computed(() => pickerAgents(props.agents ?? [], props.currentAgent))
 
 const showPicker = computed(() => orderedAgents.value.length > 0)
-const showBuildHint = computed(() => showPicker.value && props.isolation === 'container')
+const showBuildHint = computed(
+  () => showPicker.value && (props.isolation === 'container' || props.isolation === 'microvm'),
+)
 
 function optionDisabled(opt: AgentOption): boolean {
   return !opt.detected && opt.id !== selectedId.value

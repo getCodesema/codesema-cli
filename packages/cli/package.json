@@ -1,6 +1,6 @@
 {
   "name": "codesema",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Local merge request review, step by step. Your AI agent reviews, codesema displays.",
   "license": "MIT",
   "author": "Hasan TASKIN",
@@ -42,5 +42,8 @@
     "@codesema/contract": "workspace:*",
     "tsdown": "^0.22.5",
     "typescript": "^6.0.3"
+  },
+  "optionalDependencies": {
+    "microsandbox": "0.6.16"
   }
 }

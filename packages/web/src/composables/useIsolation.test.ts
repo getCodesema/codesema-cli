@@ -30,6 +30,7 @@ describe('taskIsolation', () => {
     expect(taskIsolation(record())).toBe('policy')
     expect(taskIsolation(record('policy'))).toBe('policy')
     expect(taskIsolation(record('container'))).toBe('container')
+    expect(taskIsolation(record('microvm'))).toBe('microvm')
   })
 
   test('an unknown value from an unknown server still reads as policy', () => {
@@ -54,12 +55,29 @@ describe('isolationBadge', () => {
     expect(isolationBadge(record())).toEqual(isolationBadge(record('policy')))
     expect(t(isolationBadge(record()).labelKey)).toBe('policy')
   })
+
+  test('microVM tasks get their own glyph, word and guarantee tooltip', () => {
+    const badge = isolationBadge(record('microvm'))
+    expect(badge).toEqual({
+      isolation: 'microvm',
+      glyph: '▣',
+      labelKey: 'workspace.isolationMicrovm',
+      hintKey: 'workspace.isolationMicrovmHint',
+    })
+    expect(t(badge.labelKey)).toBe('microVM')
+    expect(t(badge.hintKey)).toContain('microVM')
+  })
 })
 
 describe('showIsolationDot', () => {
   test('a caged task always shows its dot, even with no workspace info', () => {
     expect(showIsolationDot(record('container'), null)).toBe(true)
     expect(showIsolationDot(record('container'), workspace())).toBe(true)
+  })
+
+  test('a microVM task always shows its dot too, even with no workspace info', () => {
+    expect(showIsolationDot(record('microvm'), null)).toBe(true)
+    expect(showIsolationDot(record('microvm'), workspace())).toBe(true)
   })
 
   test('a policy task shows its dot only where the cage exists (it tells cards apart)', () => {
@@ -76,6 +94,11 @@ describe('shouldOfferIsolationUpgrade', () => {
 
   test('stays quiet when the cage is already the default', () => {
     const caged = workspace({ isolation_available: true, isolation_default: 'container' })
+    expect(shouldOfferIsolationUpgrade(caged, false)).toBe(false)
+  })
+
+  test('stays quiet when the default is already the microVM cage', () => {
+    const caged = workspace({ isolation_default: 'microvm' })
     expect(shouldOfferIsolationUpgrade(caged, false)).toBe(false)
   })
 

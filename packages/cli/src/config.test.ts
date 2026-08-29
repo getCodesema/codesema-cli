@@ -227,8 +227,8 @@ describe('isolation configuration', () => {
     rmSync(repoDir, { recursive: true, force: true })
   })
 
-  test('the three modes survive a round-trip, in either scope', () => {
-    for (const isolation of ['auto', 'container', 'policy'] as const) {
+  test('the four modes survive a round-trip, in either scope', () => {
+    for (const isolation of ['auto', 'container', 'policy', 'microvm'] as const) {
       saveRepoConfig(repoDir, { isolation })
       expect(loadRepoConfig(repoDir).isolation).toBe(isolation)
     }
