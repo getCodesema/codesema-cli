@@ -6,6 +6,7 @@ import {
   AUTO_FIX_ROUND_NAME,
   autoFixRoundsUsed,
   decideFixLoop,
+  JUDGMENT_ONLY_MAX_ROUNDS,
   type FixLoopInput,
 } from './task-fix-loop.js'
 import { taskReason } from './tasks-store.js'
@@ -291,6 +292,61 @@ describe('decideFixLoop', () => {
     )
     expect(decision).toMatchObject({ kind: 'stand', code: 'criteria_unmet' })
   })
+
+  // --- D26: the judgment-only ceiling ---------------------------------------
+
+  const judgmentInput = (over: Partial<FixLoopInput> = {}): FixLoopInput =>
+    input({
+      reason: taskReason('criteria_unmet', '1 of 3 not satisfied'),
+      judgmentOnly: true,
+      ...over,
+    })
+
+  test('a judgment-only block never gets more than JUDGMENT_ONLY_MAX_ROUNDS, whatever max allows', () => {
+    for (const configuredMax of [JUDGMENT_ONLY_MAX_ROUNDS, JUDGMENT_ONLY_MAX_ROUNDS + 5, 100]) {
+      expect(decideFixLoop(judgmentInput({ roundsUsed: 0, max: configuredMax })).kind).toBe('retry')
+      expect(
+        decideFixLoop(judgmentInput({ roundsUsed: JUDGMENT_ONLY_MAX_ROUNDS, max: configuredMax }))
+          .kind,
+      ).toBe('ship')
+    }
+  })
+
+  test('reaching the ceiling SHIPS, it does not hand the task to a human', () => {
+    const decision = decideFixLoop(judgmentInput({ roundsUsed: JUDGMENT_ONLY_MAX_ROUNDS }))
+    if (decision.kind !== 'ship') {
+      throw new Error(`expected a ship, got ${decision.kind}`)
+    }
+    expect(decision.text).toContain('open judgment calls')
+  })
+
+  test('a configured max BELOW the ceiling is respected, never rounded up', () => {
+    expect(decideFixLoop(judgmentInput({ roundsUsed: 0, max: 1 })).kind).toBe('retry')
+    expect(decideFixLoop(judgmentInput({ roundsUsed: 1, max: 1 })).kind).toBe('ship')
+  })
+
+  test('judgmentOnly is only read for a criteria_unmet exit — a review_blocked never ships early', () => {
+    const decision = decideFixLoop(
+      input({
+        roundsUsed: JUDGMENT_ONLY_MAX_ROUNDS,
+        max: 10,
+        judgmentOnly: true,
+        reason: taskReason('review_blocked', 'one major finding'),
+      }),
+    )
+    expect(decision.kind).toBe('retry')
+  })
+
+  test('judgmentOnly defaults to false: the ordinary budget applies with no flag at all', () => {
+    const decision = decideFixLoop(
+      input({
+        roundsUsed: JUDGMENT_ONLY_MAX_ROUNDS,
+        max: 10,
+        reason: taskReason('criteria_unmet', '1 of 3 not satisfied'),
+      }),
+    )
+    expect(decision.kind).toBe('retry')
+  })
 })
 
 // --- applyFixLoopDecision -------------------------------------------------
@@ -352,6 +408,22 @@ describe('applyFixLoopDecision', () => {
     const before = JSON.stringify(task)
     applyFixLoopDecision(task, decideFixLoop(input({ status: 'review_ok' })))
     expect(JSON.stringify(task)).toBe(before)
+  })
+
+  test('a ship decision (D26) lands on review_ok with the reason cleared', () => {
+    const task = record({ reason: taskReason('criteria_unmet', '1 of 3 not satisfied') })
+    applyFixLoopDecision(
+      task,
+      decideFixLoop(
+        input({
+          roundsUsed: JUDGMENT_ONLY_MAX_ROUNDS,
+          reason: taskReason('criteria_unmet', '1 of 3 not satisfied'),
+          judgmentOnly: true,
+        }),
+      ),
+    )
+    expect(task.status).toBe('review_ok')
+    expect(task.reason).toBeUndefined()
   })
 })
 

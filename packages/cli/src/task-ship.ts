@@ -25,7 +25,14 @@
 // recap about work that was not shipped.
 
 import { execFile } from 'node:child_process'
-import { type ReasonCode, type RecapRecord, type SecretMatch, type TaskRecord } from './contract.js'
+import {
+  type AcceptanceCriterion,
+  type CriterionVerdict,
+  type ReasonCode,
+  type RecapRecord,
+  type SecretMatch,
+  type TaskRecord,
+} from './contract.js'
 import type { ForgeDegradation } from './degraded-mode.js'
 import { detectForgeHint, forgeHintOfUrl, subprocessEnv, type ForgeHint } from './git.js'
 import { t, type MessageKey } from './i18n.js'
@@ -39,6 +46,8 @@ import {
 } from './microsandbox-driver.js'
 import { scanRecapSecrets } from './task-recap-publish.js'
 import { generateRecap, renderRecapMarkdown, writeTaskRecap } from './task-recap.js'
+import { readTaskReview } from './task-review.js'
+import { taskCriteria } from './task-runner.js'
 
 /** Pushes and MR creations talk to the network: much looser than forge-mrs's 8s list timeout. */
 export const SHIP_EXEC_TIMEOUT_MS = 60_000
@@ -844,20 +853,41 @@ type PreparedRecap = {
 /** Either the recap that landed on disk, or the readable reason none did. */
 type PersistedRecap = { recap: RecapRecord } | { reason: string }
 
+/**
+ * T3.2 is done: per-criterion verdicts are readable off the task's own
+ * archived review (`readTaskReview`, task-review.ts), so they ride into the
+ * recap generator exactly like `contribution` does — a MEASUREMENT, never a
+ * figure this function invents. Empty when the task carries no criteria or no
+ * archive: `generateRecap`'s `buildCriteria` already reads that as "no
+ * criteria judged", and the recap's "Acceptance criteria" / "To decide"
+ * sections stay omitted, per `renderRecapMarkdown`, never rendered empty.
+ *
+ * Its own function, not inlined into `generateAndPersist`, so the two
+ * branches this needs (has criteria? did the archive answer?) do not push
+ * that function's own complexity past the lint's bound for a concern that is
+ * really about ONE optional input, not about the recap pipeline as a whole.
+ */
+function criteriaForRecap(
+  opts: ShipTaskOptions,
+): { criteriaVerdicts: CriterionVerdict[]; acceptanceCriteria: AcceptanceCriterion[] } | object {
+  const criteria = taskCriteria(opts.task)
+  if (criteria.length === 0) {
+    return {}
+  }
+  const criteriaVerdicts = readTaskReview(opts.cwd, opts.task.id)?.review.criteria
+  return criteriaVerdicts ? { criteriaVerdicts, acceptanceCriteria: criteria } : {}
+}
+
 function generateAndPersist(opts: ShipTaskOptions): PersistedRecap {
   const generate = opts.generateRecapFn ?? generateRecap
   const write = opts.writeTaskRecapFn ?? writeTaskRecap
   try {
     const contribution = lastTurnContribution(opts.task)
-    // `criteriaVerdicts` is deliberately NOT passed: T3.2 is the ticket that
-    // makes per-criterion verdicts readable off a review, and inventing a
-    // source for them here would put a figure in the recap that nothing
-    // measured. Until then the recap's "Acceptance criteria" section is
-    // absent — omitted, per renderRecapMarkdown, not rendered empty.
     const result = generate({
       cwd: opts.cwd,
       task: opts.task,
       ...(contribution ? { modelOutput: contribution } : {}),
+      ...criteriaForRecap(opts),
     })
     if (result.recap === null) {
       // The generator refuses only when the record has no usable branch: there

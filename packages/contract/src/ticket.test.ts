@@ -5,6 +5,7 @@ import {
   acceptanceCriterionId,
   canonicalTicketBody,
   CRITERION_VERDICT_EVIDENCE_MAX,
+  CRITERION_VERDICT_QUESTION_MAX,
   EARS_RESPONSE,
   EARS_TRIGGER,
   extractAcceptanceCriteria,
@@ -2668,6 +2669,52 @@ describe('sanitizeCriterionVerdict / sanitizeCriterionVerdicts (DP12)', () => {
     // surrogate (U+D83D) as the last unit — exactly what this pins against.
     expect(/[\uD800-\uDBFF]$/.test(verdict?.evidence ?? '')).toBe(false)
     expect(verdict?.evidence?.endsWith('\ud83d')).toBe(false)
+  })
+
+  // --- question (D26) --------------------------------------------------------
+
+  test('question is optional: a verdict with none keeps none', () => {
+    expect(sanitizeCriterionVerdict({ criterion_id: CID, status: 'unclear' })).toEqual({
+      criterion_id: CID,
+      status: 'unclear',
+    })
+  })
+
+  test('a well-formed unclear verdict with a question round-trips unchanged', () => {
+    const verdict: CriterionVerdict = {
+      criterion_id: CID,
+      status: 'unclear',
+      question: 'does this need to work offline too?',
+    }
+    expect(sanitizeCriterionVerdict(structuredClone(verdict))).toEqual(verdict)
+  })
+
+  test('question is bounded by its own exported constant, independent of evidence', () => {
+    const long = 'x'.repeat(CRITERION_VERDICT_QUESTION_MAX + 500)
+    const verdict = sanitizeCriterionVerdict({
+      criterion_id: CID,
+      status: 'unclear',
+      question: long,
+    })
+    expect(verdict?.question).toHaveLength(CRITERION_VERDICT_QUESTION_MAX)
+  })
+
+  test('a blank question is omitted, never stored as whitespace', () => {
+    expect(
+      sanitizeCriterionVerdict({ criterion_id: CID, status: 'unclear', question: '   ' }),
+    ).toEqual({
+      criterion_id: CID,
+      status: 'unclear',
+    })
+  })
+
+  test('a lone CR in question is normalized to LF, same recipe as evidence', () => {
+    const verdict = sanitizeCriterionVerdict({
+      criterion_id: CID,
+      status: 'unclear',
+      question: 'first\rsecond',
+    })
+    expect(verdict?.question).toBe('first\nsecond')
   })
 })
 

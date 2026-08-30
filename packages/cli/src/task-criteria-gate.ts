@@ -62,6 +62,16 @@ export const CRITERIA_REASON_IDS_MAX = 6
  * trust: `resolveCriteria` below cannot see those fields even if they are
  * emitted. Saying it in the prompt only stops the model from spending its
  * output on something that goes nowhere.
+ *
+ * D26 hardened this chapter after an incident: a purely stylistic criterion
+ * ("same style as the existing helpers") sat "unclear" for twelve automatic
+ * fix rounds because the reviewer never settled it AND let that same
+ * hesitation leak into its own top-level `verdict`, which kept the task on
+ * `review_ko` for a reason the criteria gate alone would have waived. Two
+ * rules below are new for exactly that reason: a judgment call must be
+ * DECIDED whenever the diff gives enough to decide (comparing against the
+ * codebase's own existing patterns counts), "unclear" is reserved for a real
+ * information gap, and one is never used to excuse the other.
  */
 export function buildCriteriaChapter(criteria: readonly AcceptanceCriterion[]): string {
   return [
@@ -70,12 +80,15 @@ export function buildCriteriaChapter(criteria: readonly AcceptanceCriterion[]): 
     ...criteria.map((criterion) => `- [${criterion.id}] ${criterion.text}`),
     '',
     'Add ONE more top-level field to the JSON you output, after "files_reviewed":',
-    '"criteria": [{ "criterion_id": "one of the ids above, verbatim", "status": "met" | "unmet" | "unclear", "evidence": "<path>:<line> — short quote of that line" }]',
+    '"criteria": [{ "criterion_id": "one of the ids above, verbatim", "status": "met" | "unmet" | "unclear", "evidence": "<path>:<line> — short quote of that line", "question": "the one precise thing you could not tell from the diff" }]',
     '',
     'Rules for this chapter:',
     '- Exactly one entry per criterion listed above. Never invent an id and never merge two criteria into one entry: an id absent from the list above is discarded, and a criterion you leave out is judged "unclear" anyway.',
     '- "evidence" MUST START with a path from the diff and a new-file line number visible in one of that file\'s @@ hunks, written exactly as "path:line", and only then your quote. An evidence that does not start with such an anchor is removed and the criterion falls back to "unclear".',
     '- "met" means the diff ITSELF shows the criterion satisfied, at that anchor. A criterion you believe is satisfied but cannot anchor in the diff is "unclear", never "met". A commit message is never evidence.',
+    '- DECIDE. A criterion with no judgment call left to make — including a subjective or stylistic one ("same style as the existing helpers", "readable", "consistent naming") — gets "met" or "unmet", not "unclear": compare the diff against the equivalent code already in the repository and rule on what you see. "unclear" is for a genuine gap in what the diff can show — a runtime behavior, a business decision, information that lives outside this diff entirely — never a way to avoid choosing.',
+    '- When, and only when, "status" is "unclear", "question" is REQUIRED: the ONE precise thing you could not settle, addressed to the human who will read it on the merge request — not a restatement of the criterion, not "unsure if this is correct". A criterion you can decide never carries a "question".',
+    '- This chapter never feeds "verdict". A criterion you mark "unclear" is a fact about THAT CRITERION alone: it must never make you write "request_changes" or "comment" for the review as a whole — "verdict" is your judgment of the CODE, findings included, and nothing here.',
     '- Do NOT output a completion percentage, a score, a ratio or an overall criteria verdict. They are not read: the gate is computed from the per-criterion statuses alone.',
   ].join('\n')
 }
@@ -668,4 +681,54 @@ export function mergeCriterionVerdicts(
     }
   }
   return [...merged.values()]
+}
+
+// --- D26: what an archived criteria gate is blocked on -----------------------
+//
+// A criterion the gate settled `unclear` is not a failure (D18 already ships
+// it, waived) — it is a decision nobody but a human can finish making.
+// `criteriaBlockKind` is the SHARED reading of that fact, for the two callers
+// that must treat "genuinely unmet" and "an open judgment call" differently:
+// the automatic fix loop's tighter round cap (task-fix-loop.ts, wired from
+// task-server.ts) and the merge gate's own judgment condition (task-merge.ts).
+// It reads the ARCHIVED verdicts alone, never a live `CriteriaOutcome`,
+// because both callers run after the review that produced them — the merge
+// gate possibly at a later boot. The merge request's own "To decide" section
+// is built separately, in `renderRecapMarkdown` (task-recap.ts), off the
+// SAME per-criterion `text`+`question` the recap already denormalizes.
+
+/**
+ * What an archived criteria gate is blocked on, from the verdicts alone —
+ * `'satisfied'` when the task carries no criterion at all, so a caller with
+ * its own "no criteria" handling (task-merge.ts's `criteria_missing`) never
+ * has to special-case an empty list here too.
+ *
+ *  - `'unmet'` — at least one criterion is `'unmet'`, OR the archive never
+ *    judged it at all (silence is never a pass, same reading `resolveCriteria`
+ *    already applies). Real work is what clears this, and it always was.
+ *  - `'judgment_open'` — nothing is unmet or unjudged, but at least one
+ *    criterion is a settled `'unclear'`: a human's call, not an agent's.
+ *  - `'satisfied'` — every criterion is `'met'`.
+ */
+export type CriteriaBlockKind = 'satisfied' | 'unmet' | 'judgment_open'
+
+export function criteriaBlockKind(
+  criteria: readonly AcceptanceCriterion[],
+  verdicts: readonly CriterionVerdict[] | undefined,
+): CriteriaBlockKind {
+  if (criteria.length === 0) {
+    return 'satisfied'
+  }
+  const byId = new Map((verdicts ?? []).map((verdict) => [verdict.criterion_id, verdict.status]))
+  let sawOpen = false
+  for (const criterion of criteria) {
+    const status = byId.get(criterion.id)
+    if (status === undefined || status === 'unmet') {
+      return 'unmet'
+    }
+    if (status === 'unclear') {
+      sawOpen = true
+    }
+  }
+  return sawOpen ? 'judgment_open' : 'satisfied'
 }

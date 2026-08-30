@@ -5,6 +5,7 @@
 // spellings of the same fact. ticket.ts imports nothing, so this cannot cycle.
 import {
   CRITERION_VERDICT_EVIDENCE_MAX,
+  CRITERION_VERDICT_QUESTION_MAX,
   NON_BLANK,
   sanitizeCriterionVerdicts,
   TICKET_CRITERIA_MAX,
@@ -1029,6 +1030,20 @@ export type CriteriaGroundingReport = {
  * behind it. So the output degrades — every `met` becomes `unclear` — and the
  * report says why. It still never throws.
  */
+/**
+ * D26: `criterion_id` + `status`, plus `question` carried over UNCHANGED when
+ * the source verdict had one — its own function so the ternary it takes
+ * (present or not) is not one more branch inside `groundCriterionVerdicts`,
+ * which already has plenty that ARE about grounding.
+ */
+function withCarriedQuestion(
+  criterionId: string,
+  status: CriterionStatus,
+  question: string | undefined,
+): CriterionVerdict {
+  return { criterion_id: criterionId, status, ...(question ? { question } : {}) }
+}
+
 export function groundCriterionVerdicts(
   verdicts: readonly CriterionVerdict[],
   diff: string,
@@ -1059,7 +1074,11 @@ export function groundCriterionVerdicts(
     if (status !== verdict.status) {
       report.demoted.push(verdict)
     }
-    out.push({ criterion_id: verdict.criterion_id, status })
+    // `question` (D26) has nothing to do with evidence grounding — it is
+    // carried through UNCHANGED on every path, including this one: a sincere
+    // "I could not anchor this" is exactly the case whose question matters
+    // most, and it must not be the one path that silently drops it.
+    out.push(withCarriedQuestion(verdict.criterion_id, status, verdict.question))
   }
   return { verdicts: out, report }
 }
@@ -1155,6 +1174,16 @@ export const reviewRecordSchema = {
         evidence: {
           type: 'string',
           maxLength: CRITERION_VERDICT_EVIDENCE_MAX,
+          pattern: NON_BLANK,
+        },
+        // D26: the reviewer's own question when `status` is 'unclear' for
+        // want of information the diff cannot supply. Same NON_BLANK
+        // discipline as `evidence` — `sanitizeCriterionVerdict` trims before
+        // checking for emptiness and omits the key rather than storing a
+        // blank one.
+        question: {
+          type: 'string',
+          maxLength: CRITERION_VERDICT_QUESTION_MAX,
           pattern: NON_BLANK,
         },
       },

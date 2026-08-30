@@ -563,10 +563,58 @@ function renderCriteria(criteria: readonly RecapCriterionVerdict[]): string {
   return criteria
     .map((c) => {
       const label = neutralizeModelLine(c.text ?? c.criterion_id)
-      const line = `- [${c.status}] ${label}`
-      return c.evidence ? `${line}\n  evidence: ${neutralizeModelLine(c.evidence)}` : line
+      let line = `- [${c.status}] ${label}`
+      if (c.evidence) {
+        line += `\n  evidence: ${neutralizeModelLine(c.evidence)}`
+      }
+      // D26: the reviewer's own question, model-authored prose exactly like
+      // `evidence` — neutralized the same way, never rendered plain.
+      if (c.question) {
+        line += `\n  question: ${neutralizeModelLine(c.question)}`
+      }
+      return line
     })
     .join('\n')
+}
+
+/**
+ * D26: the merge request's own "To decide" section — one bullet per criterion
+ * the reviewer settled `'unclear'`, its question named beside it. Separate
+ * from `## Acceptance criteria` above (which already lists every criterion,
+ * `'unclear'` ones included) because this section exists to be ACTED on: a
+ * human deciding whether to merge reads it without having to pick the open
+ * questions back out of the full list. `null` when nothing is open, so the
+ * caller omits the section rather than rendering one with nothing in it
+ * (invariant n° 1/n° 2, same doctrine as every other section here).
+ *
+ * `text`/`question` are model-authored prose exactly like `evidence` above,
+ * and go through the SAME neutralization (`neutralizeModelLine`) before this
+ * function ever sees them assembled into a bullet.
+ */
+function renderToDecide(criteria: readonly RecapCriterionVerdict[]): string | null {
+  const open = criteria.filter((c) => c.status === 'unclear')
+  if (open.length === 0) {
+    return null
+  }
+  const bullets = open.map((c) => {
+    // `[id] text` is the SAME convention `buildCriteriaChapter` and
+    // `unmetCriteriaFixChapter` (task-criteria-gate.ts) already use — a human
+    // reading several open criteria needs the id to refer to one precisely,
+    // the way the prompt itself does. `criterion_id` is machine-generated
+    // (`ac-[0-9a-f]{12}`), never model text, so it needs no neutralization.
+    const label = neutralizeModelLine(c.text ?? '(criterion text unavailable)')
+    const question = c.question
+      ? neutralizeModelLine(c.question)
+      : 'no question was recorded for it'
+    return `- [${c.criterion_id}] ${label} — ${question}`
+  })
+  return [
+    '## To decide',
+    '',
+    'The reviewer could not settle these from the diff alone — merging this branch is the decision.',
+    '',
+    bullets.join('\n'),
+  ].join('\n')
 }
 
 function renderCost(recap: RecapRecord): string | null {
@@ -578,6 +626,26 @@ function renderCost(recap: RecapRecord): string | null {
     parts.push(`${recap.cost_ticks} ticks (${recap.cost_basis})`)
   }
   return parts.length > 0 ? parts.join(' · ') : null
+}
+
+/**
+ * The two sections `recap.criteria` can produce — "Acceptance criteria" (every
+ * verdict) and "To decide" (D26, the open ones only) — as a single ARRAY
+ * rather than two `if`s inline in `renderRecapMarkdown`: that function already
+ * decides whether to render eight-odd other sections, and a ninth/tenth
+ * branch for what is really one data source is what pushed its own
+ * complexity over the lint's bound.
+ */
+function criteriaSections(recap: RecapRecord): string[] {
+  const sections: string[] = []
+  if (recap.criteria && recap.criteria.length > 0) {
+    sections.push(`## Acceptance criteria\n\n${renderCriteria(recap.criteria)}`)
+  }
+  const toDecide = renderToDecide(recap.criteria ?? [])
+  if (toDecide) {
+    sections.push(toDecide)
+  }
+  return sections
 }
 
 /**
@@ -632,9 +700,7 @@ export function renderRecapMarkdown(recap: RecapRecord): string {
   sections.push(
     `## Tests\n\n${recap.tests.length > 0 ? renderTests(recap.tests) : '_No checks recorded._'}`,
   )
-  if (recap.criteria && recap.criteria.length > 0) {
-    sections.push(`## Acceptance criteria\n\n${renderCriteria(recap.criteria)}`)
-  }
+  sections.push(...criteriaSections(recap))
   const cost = renderCost(recap)
   if (cost) {
     sections.push(`## Cost\n\n${cost}`)

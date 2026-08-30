@@ -403,6 +403,36 @@ describe('sanitizeRecap', () => {
     expect(out?.criteria).toEqual([{ criterion_id: CID_A, status: 'met', evidence: 'first pass' }])
   })
 
+  // D26: `question` flows through `sanitizeCriterionVerdict` (ticket.ts),
+  // which `sanitizeRecapCriterion` delegates to before adding `text` — no
+  // change needed in THIS module's own code, only proof it actually happens.
+  test('criteria[]: question (D26) survives alongside the denormalized text', () => {
+    const out = sanitizeRecap({
+      branch: 'main',
+      summary: '',
+      changes: [],
+      decisions: [],
+      files: [],
+      tests: [],
+      criteria: [
+        {
+          criterion_id: CID_A,
+          status: 'unclear',
+          question: 'does this match the sibling helper?',
+          text: 'WHEN the helper is added THE SYSTEM SHALL match the existing style',
+        },
+      ],
+    })
+    expect(out?.criteria).toEqual([
+      {
+        criterion_id: CID_A,
+        status: 'unclear',
+        question: 'does this match the sibling helper?',
+        text: 'WHEN the helper is added THE SYSTEM SHALL match the existing style',
+      },
+    ])
+  })
+
   test('tests[]: a synthetic entry round-trips its flag; a real one never gains it', () => {
     const out = sanitizeRecap({
       branch: 'main',
@@ -928,6 +958,15 @@ describe('reverse cross test: the schema is not looser than what sanitizeRecap a
   test('an empty criteria[].evidence is schema-invalid — the sanitizer never emits an empty evidence key', () => {
     expect(
       schemaErrors({ ...BASE, criteria: [{ criterion_id: CID_A, status: 'met', evidence: '' }] }),
+    ).not.toEqual([])
+  })
+
+  test('an empty criteria[].question is schema-invalid (D26) — the sanitizer never emits an empty question key', () => {
+    expect(
+      schemaErrors({
+        ...BASE,
+        criteria: [{ criterion_id: CID_A, status: 'unclear', question: '' }],
+      }),
     ).not.toEqual([])
   })
 

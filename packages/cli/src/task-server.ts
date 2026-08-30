@@ -87,6 +87,7 @@ import {
 } from './runbook-setup.js'
 import { loadSyncCredentials } from './sync.js'
 import { microvmStepExecutor, runChecks } from './task-checks.js'
+import { criteriaBlockKind } from './task-criteria-gate.js'
 import {
   applyFixLoopDecision,
   AUTO_FIX_EXHAUSTED_NAME,
@@ -94,6 +95,7 @@ import {
   AUTO_FIX_NOT_QUEUED_NAME,
   AUTO_FIX_NOT_STARTED_NAME,
   AUTO_FIX_ROUND_NAME,
+  AUTO_FIX_SHIP_NAME,
   autoFixRoundsUsed,
   decideFixLoop,
   type FixLoopDecision,
@@ -147,6 +149,7 @@ import {
   applyChecksGate,
   buildAutoFixTurnPrompt,
   createTaskReviewer,
+  readReviewRef,
   readTaskReview,
   terminalChecksResult,
   type CreateTaskReviewerOptions,
@@ -156,6 +159,7 @@ import {
   commandForTask,
   createTaskRunner,
   pendingResumeTurn,
+  taskCriteria,
   type RunTaskTurnMicrovmOptions,
   type TaskActionResult,
   type TaskRunner,
@@ -3064,12 +3068,23 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // as the fault lasted, i.e. remove the bound entirely.
         const journal = readTaskJournal(cwd, record.id)
         state.journalDropped = journal.dropped
+        // D26: `readReviewRef` reads off the in-memory `record.review_ref`
+        // `reviewTurn` just set on THIS object, same as `buildAutoFixTurnPrompt`
+        // above — never a fresh `loadTask`, which would still answer with
+        // whatever task.json on disk said before the persist a few lines below
+        // actually writes it.
+        const judgmentOnly =
+          record.reason?.code === 'criteria_unmet' &&
+          reviewArchived &&
+          criteriaBlockKind(taskCriteria(record), readReviewRef(record)?.review.criteria) ===
+            'judgment_open'
         state.loop = decideFixLoop({
           status: record.status,
           reason: record.reason,
           roundsUsed: journal.unreadable ? null : autoFixRoundsUsed(journal.events),
           max: maxAutoFixRounds,
           fixable: state.fixPrompt !== null,
+          judgmentOnly,
         })
         applyFixLoopDecision(record, state.loop)
         // D20: posed in the SAME write as the verdict that decides it, right
@@ -3229,6 +3244,13 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           data: { text: loop.text, name: AUTO_FIX_NOT_STARTED_NAME },
           reason_code: loop.code,
         })
+      } else if (loop.kind === 'ship') {
+        // D26: `applyGates` already turned this into `review_ok` (folded into
+        // the write above), which is what let the auto-ship block just above
+        // fire on its own ordinary condition — this is only the journal's own
+        // half, so a human reading the timeline sees WHY the machine stopped
+        // retrying instead of assuming a review that simply approved.
+        io.emit({ type: 'message', data: { text: loop.text, name: AUTO_FIX_SHIP_NAME } })
       }
     }
     /** Rank last broadcast per waiting id, so only real changes go on the wire. */

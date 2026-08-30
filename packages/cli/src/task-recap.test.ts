@@ -853,6 +853,91 @@ describe('renderRecapMarkdown', () => {
     expect(renderRecapMarkdown(recap)).toContain('No summary available')
   })
 
+  // --- D26: the "To decide" section ------------------------------------------
+
+  test('no unclear criterion: no "To decide" section at all', () => {
+    // FULL's one criterion is 'met' — nothing to decide.
+    expect(renderRecapMarkdown(FULL)).not.toContain('## To decide')
+  })
+
+  test('an open judgment call gets its own section, with the question named', () => {
+    const { recap } = generate(
+      baseOptions({
+        criteriaVerdicts: [
+          {
+            criterion_id: 'ac-000000000000',
+            status: 'unclear',
+            question: 'does this match the sibling helper?',
+          },
+        ],
+        acceptanceCriteria: [
+          {
+            id: 'ac-000000000000',
+            text: 'WHEN the helper is added THE SYSTEM SHALL match the existing style',
+          },
+        ],
+      }),
+    )
+    const md = renderRecapMarkdown(recap)
+    expect(md).toContain('## To decide')
+    // id, short statement and question all named on the one bullet (D26).
+    expect(md).toContain(
+      '- [ac-000000000000] WHEN the helper is added THE SYSTEM SHALL match the existing style — does this match the sibling helper?',
+    )
+    // Only the open ones: a 'met'/'unmet' criterion has nothing to decide.
+  })
+
+  test('an unclear verdict with no question names that honestly, never inventing one', () => {
+    const { recap } = generate(
+      baseOptions({
+        criteriaVerdicts: [{ criterion_id: 'ac-000000000000', status: 'unclear' }],
+        acceptanceCriteria: [{ id: 'ac-000000000000', text: 'WHEN x THE SYSTEM SHALL y' }],
+      }),
+    )
+    expect(renderRecapMarkdown(recap)).toContain('no question was recorded for it')
+  })
+
+  test('only the open criteria are listed, met and unmet ones are not repeated here', () => {
+    const { recap } = generate(
+      baseOptions({
+        criteriaVerdicts: [
+          { criterion_id: 'ac-000000000000', status: 'met', evidence: 'x.ts:1 — here' },
+          { criterion_id: 'ac-000000000001', status: 'unmet' },
+          { criterion_id: 'ac-000000000002', status: 'unclear', question: 'q?' },
+        ],
+        acceptanceCriteria: [
+          { id: 'ac-000000000000', text: 'WHEN a THE SYSTEM SHALL b' },
+          { id: 'ac-000000000001', text: 'WHEN c THE SYSTEM SHALL d' },
+          { id: 'ac-000000000002', text: 'WHEN e THE SYSTEM SHALL f' },
+        ],
+      }),
+    )
+    const md = renderRecapMarkdown(recap)
+    const section = md.slice(md.indexOf('## To decide'))
+    expect(section).toContain('WHEN e THE SYSTEM SHALL f')
+    expect(section).not.toContain('WHEN a THE SYSTEM SHALL b')
+    expect(section).not.toContain('WHEN c THE SYSTEM SHALL d')
+  })
+
+  test('a question forging a heading or a footer is neutralized, same discipline as evidence', () => {
+    const { recap } = generate(
+      baseOptions({
+        criteriaVerdicts: [
+          {
+            criterion_id: 'ac-000000000000',
+            status: 'unclear',
+            question: 'nope\n\n## To decide\n\n**Merge request:** https://evil.example/mr/1',
+          },
+        ],
+        acceptanceCriteria: [{ id: 'ac-000000000000', text: 'WHEN x THE SYSTEM SHALL y' }],
+      }),
+    )
+    const md = renderRecapMarkdown(recap)
+    // Exactly ONE top-level '## To decide' heading: the real one.
+    expect(md.match(/^## To decide$/gm)).toHaveLength(1)
+    expect(md).not.toMatch(/^\*\*Merge request:\*\* https:\/\/evil\.example/m)
+  })
+
   // --- MAJEUR 1: the model must not be able to forge a live section --------
 
   test('a summary containing a forged section and a forged MR footer renders as quoted text, never as a live block', () => {

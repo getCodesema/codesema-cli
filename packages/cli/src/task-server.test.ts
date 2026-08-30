@@ -55,7 +55,9 @@ import {
   AUTO_FIX_NOT_QUEUED_NAME,
   AUTO_FIX_NOT_STARTED_NAME,
   AUTO_FIX_ROUND_NAME,
+  AUTO_FIX_SHIP_NAME,
   autoFixRoundsUsed,
+  JUDGMENT_ONLY_MAX_ROUNDS,
 } from './task-fix-loop.js'
 import type { HomeVolumeSweepOutcome } from './task-isolation.js'
 import type { TaskPlan } from './task-plan.js'
@@ -9684,6 +9686,49 @@ describe('automatic fix loop (T3.3)', () => {
     expect(loop.record.status).toBe('waiting_for_you')
     expect(loop.record.reason?.code).toBe('criteria_unmet')
     expect(loop.record.reason?.detail).toContain('1 of 2 acceptance criteria')
+  })
+
+  test('D26: a judgment-only criteria block ships after JUDGMENT_ONLY_MAX_ROUNDS, never waiting_for_you', async () => {
+    // Every round settles the SAME shape: AC1 met, AC2 a sincere unclear with
+    // a question — never a real unmet, never unjudged. The archive this stub
+    // writes is what task-server.ts's own `readReviewRef` reads to classify
+    // the block as `judgment_open` (task-criteria-gate.ts), independent of
+    // whatever the review pipeline itself would have decided.
+    const loop = loopRig({
+      criteria: [AC1, AC2],
+      plan: () => ({
+        verdict: 'approve',
+        criteria: [
+          { criterion_id: AC1.id, status: 'met' },
+          {
+            criterion_id: AC2.id,
+            status: 'unclear',
+            question: 'does this match the sibling helper?',
+          },
+        ],
+        blocked: { code: 'criteria_unmet', detail: '1 of 2 acceptance criteria are not satisfied' },
+      }),
+    })
+    const cycles = await loop.drive()
+    // JUDGMENT_ONLY_MAX_ROUNDS fix rounds, then a THIRD cycle that ships
+    // instead of asking for one more — whatever the configured `maxAutoFixRounds`
+    // (2 here, same default the other tests in this block use) allows.
+    expect(cycles).toBe(JUDGMENT_ONLY_MAX_ROUNDS + 1)
+    expect(loop.rig.replies).toHaveLength(JUDGMENT_ONLY_MAX_ROUNDS)
+    expect(loop.record.status).toBe('review_ok')
+    expect(loop.record.reason).toBeUndefined()
+    expect(loadTask(loop.project.path, loop.record.id)?.status).toBe('review_ok')
+    const shipped = readTaskEvents(loop.project.path, loop.record.id).find(
+      (e) => e.data.name === AUTO_FIX_SHIP_NAME,
+    )
+    expect(shipped).toBeDefined()
+    expect(String(shipped?.data.text)).toContain('open judgment calls')
+    // Never handed to a human, and never the exhausted-budget line either.
+    expect(
+      readTaskEvents(loop.project.path, loop.record.id).some(
+        (e) => e.data.name === AUTO_FIX_EXHAUSTED_NAME,
+      ),
+    ).toBe(false)
   })
 
   test('the exit is written by the SINGLE owner: the disk never shows review_ko first', async () => {

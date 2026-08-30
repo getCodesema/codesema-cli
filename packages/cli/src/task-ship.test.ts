@@ -1,9 +1,14 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
-import type { RecapRecord, TaskRecord } from './contract.js'
+import {
+  acceptanceCriterionId,
+  type RecapRecord,
+  type ReviewRecord,
+  type TaskRecord,
+} from './contract.js'
 import type {
   SandboxDriver,
   SandboxExecOptions,
@@ -29,6 +34,7 @@ import {
   type ShipGitExecFn,
   type ShipTaskOptions,
 } from './task-ship.js'
+import { saveTask } from './tasks-store.js'
 
 // --- rig ------------------------------------------------------------------
 
@@ -700,6 +706,61 @@ describe('shipTask writes the task recap', () => {
     expect(outcome.pushed && outcome.note).toContain('an AWS access key id')
     // Nothing is lost: the recap is on disk, with the secret, for a human.
     expect(readFileSync(recapPath(cwd, task), 'utf8')).toContain('AKIAIOSFODNN7EXAMPLE')
+  })
+
+  // D26: the recap generator wires the task's own archived review criteria
+  // through (T3.2's per-criterion verdicts are readable now), so the merge
+  // request the ship opens carries the "To decide" section without either the
+  // ship or the recap having to invent one.
+  test('an open judgment call surfaces in the MR description (D26)', async () => {
+    const cwd = makeDir()
+    const criterionText = 'WHEN the helper is added THE SYSTEM SHALL match the existing style'
+    const criterion = { id: acceptanceCriterionId(criterionText), text: criterionText }
+    const reviewPath = join(cwd, 'review.json')
+    const task = makeTask({ criteria: [criterion], review_ref: reviewPath })
+    saveTask(cwd, task)
+    const review: ReviewRecord = {
+      version: 1,
+      meta: {
+        title: task.title,
+        branch: task.branch,
+        target: 'main',
+        merge_base: 'abc123',
+        repo_root: cwd,
+        created_at: new Date().toISOString(),
+      },
+      commits: [],
+      diff: '',
+      review: {
+        verdict: 'approve',
+        summary: 'looks fine',
+        findings: [],
+        narrative: null,
+        criteria: [
+          {
+            criterion_id: criterion.id,
+            status: 'unclear',
+            question: 'Is this the same pattern as the other adapters in this module?',
+          },
+        ],
+      },
+    }
+    writeFileSync(reviewPath, JSON.stringify(review))
+    const git = gitExec({ kind: 'ok', stdout: '' })
+    const forge = forgeExec({ gh: { kind: 'ok', stdout: 'https://github.com/o/r/pull/9' } })
+    await shipTask({ cwd, task, execGit: git.fn, execForge: forge.fn })
+    const written = readTaskRecap(cwd, task.id)
+    expect(written?.criteria).toEqual([
+      {
+        criterion_id: criterion.id,
+        status: 'unclear',
+        question: 'Is this the same pattern as the other adapters in this module?',
+        text: criterionText,
+      },
+    ])
+    const body = forge.calls[0]?.args[forge.calls[0].args.indexOf('--body') + 1] ?? ''
+    expect(body).toContain('## To decide')
+    expect(body).toContain('Is this the same pattern as the other adapters in this module?')
   })
 
   // MAJEUR 1, ship side. Every secret fixture on this surface planted the

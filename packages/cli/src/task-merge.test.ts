@@ -463,6 +463,54 @@ describe('condition 3: criteria satisfied, and present (DP2)', () => {
     expect(entry.detail).toContain('1 of 2')
   })
 
+  test('a settled unclear no longer satisfies the merge condition (D26)', () => {
+    // D18 (task-review.ts) still SHIPS this task — a sincere unclear is not a
+    // failure. But the AUTOMATIC merge is a different gate: nobody judged it
+    // but the model, and D26 refuses until a human does, by merging the
+    // branch itself.
+    const criteria = sampleCriteria()
+    const entry = criteriaOf(greenTask(), {
+      review: makeReview(
+        'approve',
+        [],
+        [
+          { criterion_id: criteria[0]!.id, status: 'met' },
+          {
+            criterion_id: criteria[1]!.id,
+            status: 'unclear',
+            question: 'does this match the sibling helper?',
+          },
+        ],
+      ),
+    })
+    expect(entry.satisfied).toBe(false)
+    expect(entry.code).toBe('criteria_judgment_open')
+    expect(entry.detail).toContain(criteria[1]!.id)
+    expect(entry.detail).toContain('1 of 2')
+    expect(entry.detail).toContain('To decide')
+    // Plain language, no jargon (product rule): never the raw status word.
+    expect(entry.detail).not.toContain('unclear')
+  })
+
+  test('an unmet criterion still outranks an open judgment call on the SAME task', () => {
+    // The two D26 conditions are checked in order: real work first. A task
+    // with both an unmet criterion and an open judgment call is refused for
+    // the unmet one — fixing it is always possible, deciding a judgment call
+    // by merging is not what an agent should be nudged toward.
+    const criteria = sampleCriteria()
+    const entry = criteriaOf(greenTask(), {
+      review: makeReview(
+        'approve',
+        [],
+        [
+          { criterion_id: criteria[0]!.id, status: 'unmet' },
+          { criterion_id: criteria[1]!.id, status: 'unclear' },
+        ],
+      ),
+    })
+    expect(entry.code).toBe('criteria_unmet')
+  })
+
   test('a criterion the archive never judged counts as unclear, never as met', () => {
     const criteria = sampleCriteria()
     const entry = criteriaOf(greenTask(), {
