@@ -93,6 +93,32 @@ export const AUTO_FIX_NOT_STARTED_NAME = 'auto_fix_not_started'
 export const AUTO_FIX_JOURNAL_DAMAGED_NAME = 'auto_fix_journal_damaged'
 
 /**
+ * `data.name` of the line the loop writes when it stops retrying a
+ * judgment-only block and ships the task instead (D26). A DIFFERENT line from
+ * `auto_fix_exhausted`: that one hands the task to a human, this one does not
+ * hand it anywhere — the task follows its ordinary ship path, exactly as a
+ * gate D18 waived outright would have.
+ */
+export const AUTO_FIX_SHIP_NAME = 'auto_fix_ship_with_open_questions'
+
+/**
+ * D26: the tighter ceiling on CONSECUTIVE rounds when the review's only
+ * blocker is a criteria gate that itself blocks on nothing but open judgment
+ * calls (`criteriaBlockKind` — task-criteria-gate.ts — reading `'judgment_open'`,
+ * never `'unmet'`). A backstop, not the primary mechanism: the primary one is
+ * `criteriaWaived` in task-review.ts, which ships such a gate on the SAME
+ * review that produced it, before the loop is ever consulted. This ceiling
+ * only fires when that waiver could not (a demoted verdict, a dropped
+ * anchor, an unindexable diff — see `criteriaGateWaivable`) YET the shape of
+ * what blocks is still purely a judgment call, never a real `unmet`. Fixed at
+ * two, independent of the configured `max`: the incident this decision
+ * answers spent twelve rounds rewording a criterion that could never be
+ * anchored in a diff, and no configured budget should be spent re-asking a
+ * question code cannot answer.
+ */
+export const JUDGMENT_ONLY_MAX_ROUNDS = 2
+
+/**
  * The two D2 codes the loop can hand back with. `checks_failed` is
  * deliberately NOT one of them: what a red check needs is a human reading the
  * output, not another agent turn, and T3.1 owns that path.
@@ -127,6 +153,14 @@ export type FixLoopDecision =
    * stopped) and `text` the loop's own half of it, for the journal line.
    */
   | { kind: 'exit'; code: FixLoopBlocker; detail: string; text: string }
+  /**
+   * D26: the judgment-only ceiling was reached. NOT a hand-back — the task
+   * follows its ordinary ship path instead of `waiting_for_you`, same as a
+   * gate D18 waived on the review that produced it. `text` is the journal
+   * line's readable half; nothing here mutates `record.reason` (the caller
+   * clears it, exactly like an ordinary review_ok).
+   */
+  | { kind: 'ship'; text: string }
 
 export type FixLoopInput = {
   /** Status the record carries AFTER the reviewer and the checks gate settled it. */
@@ -153,6 +187,17 @@ export type FixLoopInput = {
    * PREVIOUS turn's archive, which is a lie the loop must not tell.
    */
   fixable: boolean
+  /**
+   * D26: whether THIS `criteria_unmet` blocks on nothing but open judgment
+   * calls — `criteriaBlockKind` (task-criteria-gate.ts) read `'judgment_open'`
+   * on the archive the reviewer just wrote, never `'unmet'`. Ignored for a
+   * `review_blocked` exit (a real finding is never a judgment call) and
+   * defaulted to `false`: a caller that cannot compute it gets the ORDINARY
+   * budget, never the tighter one — the safe default, since understating the
+   * ceiling only costs a round, while overstating it would ship a task whose
+   * criteria the model never actually settled.
+   */
+  judgmentOnly?: boolean
 }
 
 /**
@@ -226,6 +271,33 @@ function addDetail(existing: string | undefined, added: string): string {
 }
 
 /**
+ * D26's tightened budget: `JUDGMENT_ONLY_MAX_ROUNDS` when this block is a pure
+ * judgment call, the configured `max` otherwise. Its own function so
+ * `decideFixLoop`'s own complexity does not carry a branch that is really
+ * about WHICH ceiling applies, not about the loop's four refusals.
+ */
+function effectiveMax(judgmentOnly: boolean, configuredMax: number): number {
+  return judgmentOnly ? Math.min(configuredMax, JUDGMENT_ONLY_MAX_ROUNDS) : configuredMax
+}
+
+/** The decision at a spent budget: `ship` for a judgment-only block (D26), `exit` for a real one. */
+function atCapDecision(
+  blocker: FixLoopBlocker,
+  judgmentOnly: boolean,
+  max: number,
+  existing: string | undefined,
+): FixLoopDecision {
+  if (judgmentOnly) {
+    return {
+      kind: 'ship',
+      text: `no criterion is unmet — only open judgment calls remain after ${max} automatic round(s) — shipping with them left for a human to decide`,
+    }
+  }
+  const text = `the automatic fix loop stopped after ${max} round(s) without clearing what blocks this task`
+  return { kind: 'exit', code: blocker, detail: addDetail(existing, text), text }
+}
+
+/**
  * What happens after a review that has just settled. Pure: it reads a status,
  * a reason, a count and a bound, and returns a decision. Nothing here writes.
  *
@@ -273,16 +345,21 @@ export function decideFixLoop(input: FixLoopInput): FixLoopDecision {
       'no automatic fix round was started: this turn produced no reviewed findings and no unsatisfied criterion to work from',
     )
   }
-  if (input.roundsUsed >= input.max) {
-    const text = `the automatic fix loop stopped after ${input.max} round(s) without clearing what blocks this task`
-    return { kind: 'exit', code: blocker, detail: addDetail(existing, text), text }
+  // D26: a judgment-only block never gets more than JUDGMENT_ONLY_MAX_ROUNDS,
+  // whatever the configured budget allows — and reaching it SHIPS rather than
+  // handing the task to a human, since nothing here is a real `unmet` for a
+  // person to fix either.
+  const judgmentOnly = blocker === 'criteria_unmet' && input.judgmentOnly === true
+  const max = effectiveMax(judgmentOnly, input.max)
+  if (input.roundsUsed >= max) {
+    return atCapDecision(blocker, judgmentOnly, max, existing)
   }
   const round = input.roundsUsed + 1
   return {
     kind: 'retry',
     round,
-    max: input.max,
-    text: `starting automatic fix round ${round} of ${input.max} on what the review blocked`,
+    max,
+    text: `starting automatic fix round ${round} of ${max} on what the review blocked`,
   }
 }
 
@@ -303,11 +380,21 @@ export function decideFixLoop(input: FixLoopInput): FixLoopDecision {
  *    the `review_ko` the reviewer settled it on, which is what leaves a human
  *    free to assume the KO and ship it, exactly as before this ticket. Only
  *    the reason's sentence grows, so the board says why no round happened.
+ *  - `ship` (D26) — the judgment-only ceiling was reached. The task goes to
+ *    `review_ok`, its reason CLEARED exactly like an ordinary pass (`settle`'s
+ *    own rule in task-review.ts): the open judgment calls are not this
+ *    field's business, they live on the archived review's per-criterion
+ *    verdicts and surface in the merge request's own "To decide" section.
  */
 export function applyFixLoopDecision(record: TaskRecord, decision: FixLoopDecision): void {
   if (decision.kind === 'exit') {
     record.status = 'waiting_for_you'
     record.reason = taskReason(decision.code, decision.detail)
+    return
+  }
+  if (decision.kind === 'ship') {
+    record.status = 'review_ok'
+    delete record.reason
     return
   }
   if (decision.kind === 'stand') {

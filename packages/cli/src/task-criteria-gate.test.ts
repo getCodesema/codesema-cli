@@ -16,6 +16,7 @@ import {
   buildCriteriaChapter,
   combineCriteriaOutcomes,
   CRITERIA_REASON_IDS_MAX,
+  criteriaBlockKind,
   criteriaUnmetDetail,
   mergeCriterionVerdicts,
   partitionCriteriaByProof,
@@ -103,6 +104,17 @@ describe('buildCriteriaChapter', () => {
     expect(chapter).toContain('overall criteria verdict')
     // …and it names the anchor the evidence must open with.
     expect(chapter).toContain('"path:line"')
+  })
+
+  test('D26: requires a question on every unclear, and forbids it feeding the top-level verdict', () => {
+    const chapter = buildCriteriaChapter(TASK_CRITERIA)
+    expect(chapter).toContain('"question"')
+    expect(chapter).toMatch(/REQUIRED/)
+    expect(chapter).toContain('never feeds "verdict"')
+    // The escape hatch the incident exploited: a hesitant "unclear" on a
+    // judgment call must be named as never a valid default.
+    expect(chapter).toMatch(/DECIDE/)
+    expect(chapter).toContain('never a way to avoid choosing')
   })
 })
 
@@ -978,5 +990,47 @@ describe('combineCriteriaOutcomes', () => {
     const outcome = combineCriteriaOutcomes([MC_COMMAND], [], judgedOutcome)
     expect(outcome.verdicts).toEqual([{ criterion_id: MC_COMMAND.id, status: 'unclear' }])
     expect(outcome.satisfied).toBe(false)
+  })
+})
+
+// --- criteriaBlockKind (D26) -------------------------------------------------
+
+describe('criteriaBlockKind', () => {
+  test('no criteria at all reads as satisfied — the caller owns criteria_missing', () => {
+    expect(criteriaBlockKind([], undefined)).toBe('satisfied')
+  })
+
+  test('every criterion met is satisfied', () => {
+    expect(
+      criteriaBlockKind(TASK_CRITERIA, [
+        { criterion_id: C1.id, status: 'met' },
+        { criterion_id: C2.id, status: 'met' },
+        { criterion_id: C3.id, status: 'met' },
+      ]),
+    ).toBe('satisfied')
+  })
+
+  test('one unmet is unmet, whatever else is unclear', () => {
+    expect(
+      criteriaBlockKind(TASK_CRITERIA, [
+        { criterion_id: C1.id, status: 'unmet' },
+        { criterion_id: C2.id, status: 'unclear' },
+        { criterion_id: C3.id, status: 'met' },
+      ]),
+    ).toBe('unmet')
+  })
+
+  test('a criterion the archive never judged is unmet, not judgment_open — silence is never a doubt', () => {
+    expect(criteriaBlockKind(TASK_CRITERIA, [{ criterion_id: C1.id, status: 'met' }])).toBe('unmet')
+  })
+
+  test('nothing unmet, at least one unclear: judgment_open', () => {
+    expect(
+      criteriaBlockKind(TASK_CRITERIA, [
+        { criterion_id: C1.id, status: 'met' },
+        { criterion_id: C2.id, status: 'met' },
+        { criterion_id: C3.id, status: 'unclear' },
+      ]),
+    ).toBe('judgment_open')
   })
 })

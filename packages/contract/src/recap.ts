@@ -14,6 +14,7 @@
 import { TASK_PATH_MAX, type CostBasis, type TaskCheckStatus } from './tasks.js'
 import {
   CRITERION_VERDICT_EVIDENCE_MAX,
+  CRITERION_VERDICT_QUESTION_MAX,
   cutCodePoints,
   NON_BLANK,
   sanitizeCriterionVerdict,
@@ -519,6 +520,13 @@ export const recapRecordSchema = {
         evidence: {
           type: 'string',
           maxLength: CRITERION_VERDICT_EVIDENCE_MAX,
+          pattern: NON_BLANK,
+        },
+        // D26, same $def as `reviewRecordSchema`'s own criterionVerdict: the
+        // reviewer's question when the verdict is 'unclear'.
+        question: {
+          type: 'string',
+          maxLength: CRITERION_VERDICT_QUESTION_MAX,
           pattern: NON_BLANK,
         },
         // `text` is bounded through line() (round 4, majeur 1): NON_BLANK_MONO_LINE.

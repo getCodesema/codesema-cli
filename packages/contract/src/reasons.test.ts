@@ -36,11 +36,14 @@ const D2_CODES = [
  */
 const T3_6_CODES = ['checks_unavailable', 'criteria_missing'] as const
 
+/** What D26 added: an open judgment call blocks the automatic merge alone. */
+const D26_CODES = ['criteria_judgment_open'] as const
+
 /**
  * The whole table as it stands today, in DECLARATION order — which is not
- * `[...D2_CODES, ...T3_6_CODES]`: the table groups the terminal codes first,
- * so T3.6's two land in the middle, after `branch_diverged`. Spelled out so
- * the snapshot below really is a snapshot.
+ * `[...D2_CODES, ...T3_6_CODES, ...D26_CODES]`: the table groups the terminal
+ * codes first, so T3.6's two and D26's one land in the middle, after
+ * `branch_diverged`. Spelled out so the snapshot below really is a snapshot.
  */
 const EXPECTED_CODES = [
   'checks_failed',
@@ -50,6 +53,7 @@ const EXPECTED_CODES = [
   'branch_diverged',
   'checks_unavailable',
   'criteria_missing',
+  'criteria_judgment_open',
   'merge_strategy_unconfigured',
   'agent_error',
   'inactivity_timeout',
@@ -77,6 +81,9 @@ const EXPECTED_TERMINAL: Record<(typeof EXPECTED_CODES)[number], boolean> = {
   // Waiting configures no merge strategy either: the way out is one setting,
   // then a retried merge.
   merge_strategy_unconfigured: true,
+  // D26: waiting settles no judgment call — only a human, merging by hand,
+  // does.
+  criteria_judgment_open: true,
 }
 
 describe('REASON_CODES', () => {
@@ -112,20 +119,28 @@ describe('REASON_CODES', () => {
     }
   })
 
-  test('today the table is D2 plus T3.6 plus the merge-strategy gate: thirteen codes', () => {
+  test('today the table is D2 plus T3.6 plus the merge-strategy gate plus D26: fourteen codes', () => {
     // The snapshot of the CURRENT roster. Only a deliberate extension touches
     // this line — never a rename, which the two lock tests above catch first.
     expect(REASON_CODES.map((entry) => entry.code)).toEqual([...EXPECTED_CODES])
-    expect(REASON_CODES).toHaveLength(13)
+    expect(REASON_CODES).toHaveLength(14)
+  })
+
+  test('locks the code D26 added by NAME too, on the same terms', () => {
+    const names = REASON_CODES.map((entry) => entry.code)
+    for (const code of D26_CODES) {
+      expect(names).toContain(code)
+    }
   })
 
   test('each code is classified the way this contract documents it', () => {
     for (const entry of REASON_CODES) {
       expect(entry.terminal).toBe(EXPECTED_TERMINAL[entry.code])
     }
-    // Eight terminal (D2's five plus `checks_unavailable`, `criteria_missing`
-    // and `merge_strategy_unconfigured`); the retryable half is untouched at five.
-    expect(REASON_CODES.filter((entry) => entry.terminal)).toHaveLength(8)
+    // Nine terminal (D2's five plus `checks_unavailable`, `criteria_missing`,
+    // `merge_strategy_unconfigured` and D26's `criteria_judgment_open`); the
+    // retryable half is untouched at five.
+    expect(REASON_CODES.filter((entry) => entry.terminal)).toHaveLength(9)
     expect(REASON_CODES.filter((entry) => !entry.terminal)).toHaveLength(5)
   })
 })

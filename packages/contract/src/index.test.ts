@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   CRITERION_VERDICT_EVIDENCE_MAX,
+  CRITERION_VERDICT_QUESTION_MAX,
   detectDiffSecrets,
   groundCriterionVerdicts,
   groundReview,
@@ -858,6 +859,42 @@ describe('groundCriterionVerdicts', () => {
       groundCriterionVerdicts([met('src/auth.ts:11 x')], null as unknown as string),
     ).not.toThrow()
   })
+
+  // D26: `question` has nothing to do with grounding — it must survive every
+  // path, including the ones that demote or strip `evidence`.
+  test('question survives on the grounded (unchanged) path', () => {
+    const verdict = met('src/auth.ts:11 — added here')
+    const withQuestion = { ...verdict, question: 'does this cover anonymous users?' }
+    const { verdicts } = groundCriterionVerdicts([withQuestion], GROUND_DIFF)
+    expect(verdicts).toEqual([withQuestion])
+  })
+
+  test('question survives even when the verdict is demoted to unclear', () => {
+    const claimed: CriterionVerdict = {
+      criterion_id: AC_A,
+      status: 'met',
+      evidence: 'src/ghost.ts:3 — invented',
+      question: 'is this the same pattern as the sibling module?',
+    }
+    const { verdicts } = groundCriterionVerdicts([claimed], GROUND_DIFF)
+    expect(verdicts).toEqual([
+      {
+        criterion_id: AC_A,
+        status: 'unclear',
+        question: 'is this the same pattern as the sibling module?',
+      },
+    ])
+  })
+
+  test('question survives on a bare unclear with no evidence at all', () => {
+    const unclear: CriterionVerdict = {
+      criterion_id: AC_A,
+      status: 'unclear',
+      question: 'what should happen on an empty list?',
+    }
+    const { verdicts } = groundCriterionVerdicts([unclear], GROUND_DIFF)
+    expect(verdicts).toEqual([unclear])
+  })
 })
 
 // --- T3.2 round 2, majeur 1(a): what we agree to READ as an anchor ----------
@@ -1328,7 +1365,7 @@ describe('cross test: sanitizeRecord output validates against reviewRecordSchema
         files_reviewed: ['src/auth.ts', { path: 'docs/removed.md', status: 'clean' }],
         criteria: [
           { criterion_id: AC_A, status: 'met', evidence: 'src/auth.ts:11 — added here' },
-          { criterion_id: AC_B, status: 'unmet' },
+          { criterion_id: AC_B, status: 'unclear', question: 'does this cover offline mode too?' },
         ],
       },
     })
@@ -1413,6 +1450,36 @@ describe('reverse cross test: reviewRecordSchema is not looser than sanitizeRevi
         ]),
       ),
     ).toEqual([])
+  })
+
+  test('a question past the published bound is schema-invalid (D26) — the sanitizer TRUNCATES to it', () => {
+    const tooLong = 'x'.repeat(CRITERION_VERDICT_QUESTION_MAX + 1)
+    expect(
+      schemaErrors(withCriteria([{ criterion_id: AC_A, status: 'unclear', question: tooLong }])),
+    ).not.toEqual([])
+    expect(
+      schemaErrors(
+        withCriteria([
+          {
+            criterion_id: AC_A,
+            status: 'unclear',
+            question: 'x'.repeat(CRITERION_VERDICT_QUESTION_MAX),
+          },
+        ]),
+      ),
+    ).toEqual([])
+  })
+
+  test('an empty or whitespace-only question is schema-invalid (D26) — the sanitizer OMITS the key', () => {
+    for (const question of ['', '   ', '\n\t ']) {
+      expect(
+        schemaErrors(withCriteria([{ criterion_id: AC_A, status: 'unclear', question }])),
+      ).not.toEqual([])
+      expect(
+        sanitizeReview({ criteria: [{ criterion_id: AC_A, status: 'unclear', question }] })
+          .criteria,
+      ).toEqual([{ criterion_id: AC_A, status: 'unclear' }])
+    }
   })
 
   test('an empty or whitespace-only evidence is schema-invalid — the sanitizer OMITS the key', () => {

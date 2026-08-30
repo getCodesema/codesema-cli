@@ -110,6 +110,18 @@ export type CriterionVerdict = {
   status: CriterionStatus
   /** The reviewer's own quoted grounding for the status. OPTIONAL: a verdict can stand without one. */
   evidence?: string
+  /**
+   * D26: the ONE precise question the reviewer could not answer from the diff
+   * alone, when `status` is `'unclear'` — what is missing, not a restatement
+   * of the criterion. OPTIONAL, and its absence is not an error: an `unclear`
+   * predating D26, or one a caller built by hand, simply carries none, which
+   * downstream (the MR's "To decide" section) reads as "no question was
+   * recorded" rather than inventing one. Meaningless beside `met`/`unmet` — a
+   * verdict that settled the criterion has nothing left to ask — but never
+   * stripped from one either: this type states what a verdict MAY carry, not
+   * what a settled one SHOULD.
+   */
+  question?: string
 }
 
 /**
@@ -145,6 +157,14 @@ export const TICKET_CRITERIA_MIN = 3
  * against, which runs longer than the criterion's own one-line wording.
  */
 export const CRITERION_VERDICT_EVIDENCE_MAX = 1_000
+
+/**
+ * Bound of `CriterionVerdict.question` (D26). A human-facing question read on
+ * a merge-request card, not prose: shorter than a criterion's own text
+ * (`TICKET_CRITERION_TEXT_MAX`) because a question that needs more room is
+ * naming more than one missing fact.
+ */
+export const CRITERION_VERDICT_QUESTION_MAX = 300
 
 /**
  * JSON Schema `pattern` for a string that is neither empty NOR whitespace-only:
@@ -409,10 +429,21 @@ export function sanitizeCriterionVerdict(raw: unknown): CriterionVerdict | null 
           CRITERION_VERDICT_EVIDENCE_MAX,
         ).trim()
       : ''
+  // Same recipe as `evidence`, bounded independently (D26): a question is
+  // read on its own, never alongside the criterion's own text in the same
+  // budget.
+  const question =
+    typeof r.question === 'string'
+      ? cutCodePoints(
+          r.question.replace(/\r\n?/g, '\n').trim(),
+          CRITERION_VERDICT_QUESTION_MAX,
+        ).trim()
+      : ''
   return {
     criterion_id: r.criterion_id,
     status,
     ...(evidence ? { evidence } : {}),
+    ...(question ? { question } : {}),
   }
 }
 

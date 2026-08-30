@@ -159,8 +159,15 @@ export function actionableFindingIds(record: ReviewRecord): number[] {
   return record.review.findings.flatMap((finding, index) => (isFixable(finding) ? [index] : []))
 }
 
-/** The archived review a task's `review_ref` points at, or null on every miss. */
-function readReviewRef(task: TaskRecord): ReviewRecord | null {
+/**
+ * The archived review a task's `review_ref` points at, or null on every miss.
+ * Exported for D26's fix-loop cap (task-server.ts), which needs the SAME
+ * read `buildAutoFixTurnPrompt` already makes — off the in-memory record's own
+ * `review_ref`, never a fresh `loadTask` — because it runs from inside the
+ * very `applyGates` closure that mutates that record before its next persist
+ * writes `review_ref` to disk.
+ */
+export function readReviewRef(task: TaskRecord): ReviewRecord | null {
   if (!task.review_ref) {
     return null
   }
@@ -1018,15 +1025,24 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         },
       })
       const verdict = taskReviewVerdict(outcome.record)
-      // D18: an unclear-only gate is LIFTED by a review the reviewer settled
-      // as OK. The waiver never applies over a blocking finding (the branch
-      // below still turns those into a KO) and never touches `satisfied`
-      // itself; it is journaled on the gate line and in a message naming the
-      // criteria it lifted.
+      // D18/D26: an unclear-only gate is LIFTED whenever nothing else blocks —
+      // no unresolved critical/major finding — REGARDLESS of the reviewer's
+      // own raw verdict label. D26 dropped the `verdict === 'review_ok'`
+      // conjunct D18 shipped with: an incident showed a criterion's own
+      // sincere doubt leaking into the model's top-level `verdict`
+      // ('request_changes' with no finding behind it), which kept a task
+      // `review_ko` for the exact same fact the criteria gate had already
+      // settled as a waivable "unclear" — twelve automatic fix rounds spent
+      // rewording a judgment call nothing could ground in the diff. The
+      // criteria chapter's prompt (task-criteria-gate.ts) now also tells the
+      // reviewer never to let this leak the other way; this is the
+      // deterministic backstop, on the same invariant n° 4 already applied to
+      // every OTHER field the model cannot be trusted whole on. The waiver
+      // never touches `satisfied` itself; it is journaled on the gate line
+      // and in a message naming the criteria it lifted.
       const criteriaWaived =
         gate !== null &&
         !gate.satisfied &&
-        verdict === 'review_ok' &&
         !hasBlockingFindings(outcome.record) &&
         criteriaGateWaivable(gate)
       if (gate) {
@@ -1080,7 +1096,15 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         })
         return
       }
-      settle(record, io, verdict, { cwd: opts.cwd, reviewOutcome: outcome.record })
+      // D26: the waiver OUTRANKS the reviewer's own verdict label. Once the
+      // gate is lifted, nothing about the CODE still blocks (no unresolved
+      // critical/major finding — checked above), so a raw 'request_changes'
+      // or 'comment' the model wrote over its own doubt about a criterion
+      // must not re-block a task the gate already cleared.
+      settle(record, io, criteriaWaived ? 'review_ok' : verdict, {
+        cwd: opts.cwd,
+        reviewOutcome: outcome.record,
+      })
     } catch (err) {
       if (io.signal.aborted) {
         // The rejection IS the abort (a killed agent, an interrupted prep):

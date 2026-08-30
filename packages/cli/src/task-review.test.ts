@@ -1813,6 +1813,63 @@ describe('createTaskReviewer: the hard gate (T3.2)', () => {
     })
   })
 
+  test('the waiver outranks the raw verdict label: request_changes with no finding still ships (D26)', async () => {
+    // The exact incident shape: the model's OWN doubt about a criterion leaked
+    // into its top-level verdict, with nothing findings-wise behind it. D18's
+    // waiver used to require verdict === 'review_ok' and would never even be
+    // considered here; D26 drops that requirement.
+    const { record, rig } = await runGate(
+      [
+        { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+        { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+        {
+          criterion_id: GC3.id,
+          status: 'unclear',
+          question: 'is this the same pattern as the sibling helper?',
+        },
+      ],
+      'request_changes',
+    )
+    expect(record.status).toBe('review_ok')
+    expect(record.reason).toBeUndefined()
+    expect(rig.events.find((event) => event.type === 'criteria')?.data.name).toBe('gate_waived')
+  })
+
+  test('a request_changes carrying an actual blocking finding still blocks (D26 non-regression)', async () => {
+    // The waiver's own condition — no blocking finding — is unaffected: a
+    // genuine major/critical finding still wins whatever the criteria gate
+    // would otherwise waive.
+    const repo = makeRepo()
+    const record = await makeTaskWithCriteria(repo, 'gated task')
+    commitChange(record.worktree, 'feature.txt')
+    const rig = fakeIo(record)
+    const base = fakeReview('request_changes', [
+      { file: 'src/a.ts', line: 1, severity: 'major', kind: 'design', title: 'x', message: 'y' },
+    ])
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: {
+        ...base,
+        diff: GATE_DIFF,
+        review: {
+          ...base.review,
+          criteria: [
+            { criterion_id: GC1.id, status: 'met', evidence: ANCHOR },
+            { criterion_id: GC2.id, status: 'met', evidence: ANCHOR },
+            {
+              criterion_id: GC3.id,
+              status: 'unclear',
+              question: 'what should happen on empty input?',
+            },
+          ],
+        },
+      },
+      reportLines: [],
+    })
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+    expect(record.status).toBe('review_ko')
+  })
+
   test('an evidence the diff cannot carry is journaled as such, not as a doubt', async () => {
     const { record, rig } = await runGate([
       { criterion_id: GC1.id, status: 'met', evidence: 'src/ghost.ts:9 — not in this diff' },

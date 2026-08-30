@@ -118,6 +118,19 @@ export const REASON_CODES = [
     terminal: true,
   },
   {
+    // D26: at least one acceptance criterion is a judgment call the reviewer
+    // could settle only as 'unclear' with a genuine question attached — never
+    // `criteria_unmet`, which stays reserved for a criterion the diff itself
+    // falsifies or the reviewer never judged at all. A ship carrying only
+    // this kind of open criterion still SHIPS (T3.2/D18's waiver): what this
+    // code blocks is the AUTOMATIC merge alone, because a human never signed
+    // off on the call. Terminal: waiting settles nothing here — a human
+    // reading the merge request's "To decide" section and merging the branch
+    // themselves is the decision, and there is no other way to reach it.
+    code: 'criteria_judgment_open',
+    terminal: true,
+  },
+  {
     // The automatic merge was refused BEFORE any forge CLI ran because no
     // mergeStrategy is configured (recovery doctrine: a consent nobody gave
     // is not defaulted, and a blind non-interactive `gh pr merge` on a

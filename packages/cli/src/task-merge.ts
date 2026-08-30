@@ -344,6 +344,22 @@ function criteriaUnmetSentence(
  * snapshot frozen at admission. Reading `record.criteria` alone would refuse
  * to merge a ticket-bound task whose every criterion the gate marked `met`.
  */
+/**
+ * The sentence a `criteria_judgment_open` is ADDED to (D26). Plain language,
+ * on purpose — this refusal is read by whoever configured automatic merging,
+ * not only by whoever wrote the ticket, so it never says "unclear",
+ * "verdict" or "gate": a human decides here, and the sentence says that in
+ * those words.
+ */
+function criteriaJudgmentOpenSentence(open: readonly { id: string }[], total: number): string {
+  const named = open
+    .slice(0, CRITERIA_REASON_IDS_MAX)
+    .map((entry) => entry.id)
+    .join(', ')
+  const more = open.length > CRITERIA_REASON_IDS_MAX ? ', …' : ''
+  return `${open.length} of ${total} acceptance criteria still need a human decision (${named}${more}): the reviewer could not settle them from the diff alone, and the merge request's "To decide" section names the open question(s) — read them, then ${MERGE_BY_HAND}`
+}
+
 function criteriaCondition(
   record: TaskRecord,
   review: ReviewRecord | null,
@@ -367,26 +383,42 @@ function criteriaCondition(
   const archived = new Map(
     (review?.review.criteria ?? []).map((verdict) => [verdict.criterion_id, verdict.status]),
   )
-  // D18: an archived 'unclear' does not block on its own (the review that
-  // reached this condition already settled OK, and an unclear is an evidence
-  // gap, not a failure). An 'unmet', or a criterion the archive never judged
-  // at all, still refuses the merge.
-  const blocking = criteria
-    .map((criterion) => ({ id: criterion.id, status: archived.get(criterion.id) ?? 'unjudged' }))
+  const statuses = criteria.map((criterion) => ({
+    id: criterion.id,
+    status: archived.get(criterion.id) ?? 'unjudged',
+  }))
+  // Real work is what clears this one: an 'unmet', or a criterion the
+  // archive never judged at all (silence is never a pass).
+  const blocking = statuses
     .filter((entry) => entry.status === 'unmet' || entry.status === 'unjudged')
     .map((entry) => ({
       id: entry.id,
       status: entry.status === 'unjudged' ? ('unclear' as const) : entry.status,
     }))
-  if (blocking.length === 0) {
-    return { id: 'criteria', satisfied: true, detail: null }
+  if (blocking.length > 0) {
+    return {
+      id: 'criteria',
+      satisfied: false,
+      detail: criteriaUnmetSentence(blocking, criteria.length),
+      code: 'criteria_unmet',
+    }
   }
-  return {
-    id: 'criteria',
-    satisfied: false,
-    detail: criteriaUnmetSentence(blocking, criteria.length),
-    code: 'criteria_unmet',
+  // D26 (reversing part of D18 for THIS gate only): a settled 'unclear' still
+  // ships the task (D18's waiver, task-review.ts) — but it never authored
+  // itself, and the AUTOMATIC merge is not the human who was supposed to. The
+  // condition refuses until a person reads the merge request's own "To
+  // decide" section and merges the branch by hand — which IS the decision,
+  // same doctrine as every other `MERGE_BY_HAND` exit this module names.
+  const open = statuses.filter((entry) => entry.status === 'unclear')
+  if (open.length > 0) {
+    return {
+      id: 'criteria',
+      satisfied: false,
+      detail: criteriaJudgmentOpenSentence(open, criteria.length),
+      code: 'criteria_judgment_open',
+    }
   }
+  return { id: 'criteria', satisfied: true, detail: null }
 }
 
 // --- condition 4: the branch is up to date with its target -----------------
