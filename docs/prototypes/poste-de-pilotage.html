@@ -1,0 +1,1650 @@
+<title>Poste de pilotage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+/>
+<style>
+  :root {
+    --bg: #0f1412;
+    --panel: #161c19;
+    --panel-2: #1c2420;
+    --inset: #0b0f0d;
+    --line: #26302b;
+    --line-2: #33403a;
+    --dot: #223029;
+    --text: #e6ece8;
+    --text-2: #b3bfb8;
+    --muted: #85928b;
+    --green: #58c48c;
+    --green-soft: rgba(88, 196, 140, 0.14);
+    --amber: #d9a24a;
+    --amber-soft: rgba(217, 162, 74, 0.16);
+    --red: #e0705e;
+    --red-soft: rgba(224, 112, 94, 0.16);
+    --water: #6fb7d6;
+    --focus: #7eb0ff;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 18px 40px -22px rgba(0, 0, 0, 0.9);
+    --sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme='dark']) {
+      --bg: #eef2ef;
+      --panel: #ffffff;
+      --panel-2: #f4f7f5;
+      --inset: #e4e9e6;
+      --line: #d6ded9;
+      --line-2: #c2cdc6;
+      --dot: #cfd8d2;
+      --text: #16201a;
+      --text-2: #3e4b44;
+      --muted: #6e7b74;
+      --green: #1f8a56;
+      --green-soft: rgba(31, 138, 86, 0.12);
+      --amber: #b0741a;
+      --amber-soft: rgba(176, 116, 26, 0.14);
+      --red: #b83a2c;
+      --red-soft: rgba(184, 58, 44, 0.12);
+      --water: #2c7ea3;
+      --focus: #2f6fdb;
+      --shadow: 0 1px 2px rgba(20, 30, 24, 0.08), 0 14px 30px -20px rgba(20, 30, 24, 0.35);
+      color-scheme: light;
+    }
+  }
+  :root[data-theme='light'] {
+    --bg: #eef2ef;
+    --panel: #ffffff;
+    --panel-2: #f4f7f5;
+    --inset: #e4e9e6;
+    --line: #d6ded9;
+    --line-2: #c2cdc6;
+    --dot: #cfd8d2;
+    --text: #16201a;
+    --text-2: #3e4b44;
+    --muted: #6e7b74;
+    --green: #1f8a56;
+    --green-soft: rgba(31, 138, 86, 0.12);
+    --amber: #b0741a;
+    --amber-soft: rgba(176, 116, 26, 0.14);
+    --red: #b83a2c;
+    --red-soft: rgba(184, 58, 44, 0.12);
+    --water: #2c7ea3;
+    --focus: #2f6fdb;
+    --shadow: 0 1px 2px rgba(20, 30, 24, 0.08), 0 14px 30px -20px rgba(20, 30, 24, 0.35);
+    color-scheme: light;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 var(--sans);
+    height: 100vh;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button,
+  input {
+    font: inherit;
+    color: inherit;
+  }
+  button {
+    cursor: pointer;
+    border: 1px solid var(--line-2);
+    background: var(--panel-2);
+    border-radius: 8px;
+    padding: 5px 10px;
+  }
+  button:hover {
+    border-color: var(--muted);
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  .mono {
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  h3,
+  h4 {
+    margin: 0;
+  }
+  ul {
+    margin: 0;
+    padding-left: 16px;
+  }
+  li {
+    margin: 2px 0;
+  }
+
+  .top {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .brand {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .brand small {
+    color: var(--muted);
+    font-weight: 400;
+    margin-left: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .counts {
+    display: flex;
+    gap: 14px;
+    color: var(--text-2);
+  }
+  .counts b {
+    font-weight: 600;
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line-2);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .seg button {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 5px 12px;
+  }
+  .seg button.on {
+    background: var(--green-soft);
+    color: var(--green);
+  }
+  .spacer {
+    flex: 1;
+  }
+  .hint {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  kbd {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    border: 1px solid var(--line-2);
+    border-radius: 4px;
+    padding: 0 5px;
+    background: var(--panel-2);
+  }
+
+  #plan {
+    position: relative;
+    height: calc(100vh - 52px);
+  }
+  #canvas {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    cursor: grab;
+    background-image: radial-gradient(var(--dot) 1px, transparent 1.2px);
+    background-size: 24px 24px;
+  }
+  #canvas.dragging {
+    cursor: grabbing;
+  }
+  #world {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+  }
+  #plan.grid #canvas {
+    overflow: hidden;
+    cursor: default;
+    background-image: none;
+    padding: 16px;
+  }
+  #plan.grid #world {
+    position: static;
+    transform: none !important;
+    display: grid;
+    grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+    grid-auto-rows: minmax(0, 1fr);
+    gap: 16px;
+    height: 100%;
+  }
+  #plan.grid[data-cols='1'] #canvas {
+    overflow: auto;
+  }
+  #plan.grid[data-cols='1'] #world {
+    height: auto;
+    grid-auto-rows: minmax(560px, auto);
+  }
+  #plan.grid[data-cols='1'] .card {
+    height: 560px;
+  }
+  #plan.grid[data-cols='3'] .c-body,
+  #plan.grid[data-cols='4'] .c-body {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  #plan.grid[data-cols='3'] .shot,
+  #plan.grid[data-cols='4'] .shot {
+    height: 130px;
+  }
+  #plan.grid[data-cols='3'] .recap p,
+  #plan.grid[data-cols='4'] .recap p {
+    -webkit-line-clamp: 4;
+  }
+  #plan.grid[data-cols='3'] .proofs,
+  #plan.grid[data-cols='4'] .proofs {
+    grid-template-columns: 1fr;
+  }
+  #plan.grid[data-cols='4'] .proof.video {
+    display: none;
+  }
+  #plan.grid[data-cols='4'] .c-state {
+    display: none;
+  }
+  #plan.grid[data-cols='4'] .quick button:nth-child(n + 3) {
+    display: none;
+  }
+  #plan.grid .card {
+    position: static;
+    width: auto;
+    height: auto;
+    min-height: 0;
+    overflow: auto;
+  }
+  #plan.grid .c-body {
+    grid-template-columns: 220px 1fr;
+  }
+  #plan.grid .shot {
+    height: 160px;
+  }
+  #plan.grid .grid6 div {
+    height: 26px;
+  }
+  #plan.grid .phone {
+    width: 80px;
+    height: 118px;
+    padding: 8px 6px;
+  }
+  #plan.grid .phone .face {
+    width: 24px;
+    height: 24px;
+    margin-top: 6px;
+  }
+  #plan.grid .recap h4:nth-of-type(n + 2),
+  #plan.grid .recap ul {
+    display: none;
+  }
+  #plan.grid .recap p {
+    display: -webkit-box;
+    -webkit-line-clamp: 5;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  #plan.grid .proofs {
+    padding: 8px 14px;
+    gap: 8px;
+  }
+  #plan.grid .steps,
+  #plan.grid .crit li:nth-child(n + 3) {
+    display: none;
+  }
+  #plan.grid .c-foot {
+    padding: 8px 14px 10px;
+  }
+
+  .card {
+    position: absolute;
+    width: 640px;
+    height: 700px;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .card.s-waiting,
+  .card.s-failed {
+    border-color: color-mix(in srgb, var(--st) 55%, var(--line));
+  }
+  .card.s-waiting {
+    --st: var(--amber);
+  }
+  .card.s-running {
+    --st: var(--amber);
+  }
+  .card.s-failed {
+    --st: var(--red);
+  }
+  .card.s-ready {
+    --st: var(--green);
+  }
+
+  .c-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--st);
+    flex: none;
+  }
+  .s-running .dot {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .s-waiting .dot {
+    box-shadow: 0 0 0 4px var(--amber-soft);
+  }
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .c-title {
+    flex: 1;
+    min-width: 0;
+  }
+  .c-proj {
+    color: var(--muted);
+  }
+  .c-title h3 {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .c-state {
+    color: var(--st);
+    font-family: var(--mono);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .c-open {
+    padding: 4px 8px;
+  }
+
+  .c-body {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 12px;
+    padding: 12px 14px 0;
+    min-height: 0;
+  }
+  .shot {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--inset);
+    display: flex;
+    flex-direction: column;
+  }
+  .chrome {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .chrome i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--line-2);
+  }
+  .chrome span {
+    margin-left: 6px;
+    color: var(--muted);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .page {
+    flex: 1;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .shot-tag {
+    padding: 5px 8px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    background: var(--panel-2);
+  }
+  .bar {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--line-2);
+  }
+  .bar.w1 {
+    width: 40%;
+  }
+  .bar.w2 {
+    width: 70%;
+  }
+  .bar.w3 {
+    width: 55%;
+  }
+  .grid6 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .grid6 div {
+    height: 44px;
+    border-radius: 6px;
+    background: var(--line);
+  }
+  .pager {
+    display: flex;
+    gap: 4px;
+    justify-content: center;
+    margin-top: auto;
+  }
+  .pager span {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    background: var(--line);
+    font-size: 10px;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+  }
+  .pager span.on {
+    background: var(--green);
+    color: #0b0f0d;
+  }
+  .rows div {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 10.5px;
+    color: var(--text-2);
+  }
+  .rows div b {
+    color: var(--text);
+  }
+  .phone {
+    margin: 0 auto;
+    width: 120px;
+    height: 190px;
+    border: 2px solid var(--line-2);
+    border-radius: 16px;
+    padding: 14px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+  }
+  .phone .face {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px dashed var(--green);
+    margin-top: 20px;
+  }
+  .phone .cta {
+    margin-top: auto;
+    width: 100%;
+    height: 22px;
+    border-radius: 6px;
+    background: var(--green);
+  }
+  .hero {
+    padding: 14px 6px;
+    text-align: center;
+  }
+  .hero .h {
+    height: 12px;
+    width: 80%;
+    margin: 0 auto 8px;
+    border-radius: 4px;
+    background: var(--text-2);
+  }
+  .form {
+    display: grid;
+    gap: 6px;
+  }
+  .form div {
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid var(--line-2);
+  }
+  .form .ok {
+    border-color: var(--green);
+    background: var(--green-soft);
+  }
+
+  .recap {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 13px;
+  }
+  .recap h4 {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 4px;
+  }
+  .recap h4 + * {
+    margin-bottom: 10px;
+  }
+  .recap p {
+    margin: 0;
+    color: var(--text-2);
+  }
+  .recap li {
+    color: var(--text-2);
+  }
+
+  .proofs {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  .proof {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: var(--panel-2);
+    font-size: 12px;
+    min-width: 0;
+  }
+  .proof h4 {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--line-2);
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+  .chip::before {
+    content: '●';
+    margin-right: 5px;
+    font-size: 8px;
+    vertical-align: 1px;
+  }
+  .chip.ok {
+    color: var(--green);
+    border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  }
+  .chip.ko {
+    color: var(--red);
+    border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  }
+  .chip.run {
+    color: var(--amber);
+    border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  }
+  .chip.run::before {
+    animation: pulse 1.2s infinite;
+  }
+  .crit {
+    list-style: none;
+    padding: 0;
+  }
+  .crit li {
+    padding-left: 14px;
+    position: relative;
+    color: var(--text-2);
+  }
+  .crit li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 7px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+  .crit .met::before {
+    background: var(--green);
+  }
+  .crit .unmet::before {
+    background: var(--red);
+  }
+  .crit .open::before {
+    background: var(--line-2);
+  }
+  .play {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-color: var(--line-2);
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  .play b {
+    font-size: 9px;
+  }
+  .steps {
+    margin: 6px 0 0;
+    padding-left: 14px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .c-foot {
+    margin-top: auto;
+    border-top: 1px solid var(--line);
+    padding: 10px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .banner {
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: color-mix(in srgb, var(--st) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--st) 40%, transparent);
+    font-size: 13px;
+  }
+  .banner .q {
+    margin-bottom: 6px;
+  }
+  .quick {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .quick button {
+    background: var(--panel);
+    font-size: 12.5px;
+  }
+  .quick button.primary {
+    background: var(--st);
+    color: #0b0f0d;
+    border-color: transparent;
+    font-weight: 600;
+  }
+  .feed {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12.5px;
+  }
+  .feed .me {
+    align-self: flex-end;
+    background: var(--green-soft);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 10px 10px 2px 10px;
+  }
+  .feed .ag {
+    color: var(--text-2);
+  }
+  .ask {
+    display: flex;
+    gap: 6px;
+  }
+  .ask input {
+    flex: 1;
+    background: var(--inset);
+    border: 1px solid var(--line-2);
+    border-radius: 8px;
+    padding: 7px 10px;
+  }
+  .ask input::placeholder {
+    color: var(--muted);
+  }
+
+  #stage {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(3px);
+    display: grid;
+    grid-template-rows: 44px 1fr 56px;
+  }
+  .stage-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 18px;
+    color: var(--text-2);
+  }
+  #stage-slot {
+    padding: 0 24px;
+    display: grid;
+    place-items: stretch;
+    min-height: 0;
+  }
+  #stage-slot .card {
+    position: static;
+    width: min(1180px, 100%);
+    height: 100%;
+    margin: 0 auto;
+  }
+  #stage-slot .recap,
+  #stage-slot .card {
+    overflow: auto;
+  }
+  #stage-slot .c-body {
+    grid-template-columns: 420px 1fr;
+  }
+  #stage-rail {
+    display: flex;
+    gap: 8px;
+    padding: 10px 24px;
+    justify-content: center;
+  }
+  #stage-rail button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  #stage-rail .dot {
+    width: 8px;
+    height: 8px;
+  }
+
+  .card .shot,
+  .card .recap,
+  .card .proof,
+  .bub.zoomable {
+    cursor: zoom-in;
+    transition: outline-color 0.15s;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+  .card .shot:hover,
+  .card .recap:hover,
+  .card .proof:hover,
+  .bub.zoomable:hover {
+    outline-color: var(--line-2);
+  }
+  .card .c-head {
+    cursor: pointer;
+  }
+  #lens {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter: blur(4px);
+    display: grid;
+    grid-template-rows: 44px 1fr;
+  }
+  .lens-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 18px;
+    color: var(--text-2);
+  }
+  .lens-body {
+    display: grid;
+    place-items: center;
+    padding: 0 24px 24px;
+    min-height: 0;
+  }
+  .lens-box {
+    width: min(1100px, 100%);
+    max-height: 100%;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 20px 24px;
+    font-size: 15px;
+  }
+  .lens-box .shot {
+    cursor: default;
+    outline: 0;
+  }
+  .lens-box .page {
+    min-height: 62vh;
+    padding: 24px;
+    gap: 16px;
+  }
+  .lens-box .grid6 div {
+    height: 110px;
+  }
+  .lens-box .phone {
+    width: 260px;
+    height: 480px;
+  }
+  .lens-box .recap {
+    font-size: 16px;
+    line-height: 1.6;
+    overflow: visible;
+    cursor: default;
+    outline: 0;
+  }
+  .lens-box .proof {
+    font-size: 15px;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: default;
+    outline: 0;
+  }
+  .lens-box .chip {
+    font-size: 13px;
+    padding: 3px 10px;
+  }
+  .lens-box .steps {
+    font-size: 14px;
+  }
+  .lens-box .bub {
+    max-width: none;
+    border: 0;
+    padding: 0;
+    font-size: 16px;
+    cursor: default;
+  }
+  .lens-box .mono {
+    font-size: 13px;
+  }
+  @media (max-width: 760px) {
+    .lens-body {
+      padding: 0 10px 10px;
+    }
+    .lens-box {
+      padding: 14px;
+    }
+    .lens-box .page {
+      min-height: 50vh;
+    }
+  }
+
+  #mobile {
+    display: none;
+    height: 100vh;
+    flex-direction: column;
+    background: var(--bg);
+  }
+  .m-head {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .m-head h2 {
+    font-size: 16px;
+    margin: 0;
+    flex: 1;
+  }
+  .m-head button.back {
+    border: 0;
+    background: transparent;
+    padding: 4px 6px;
+    font-size: 18px;
+  }
+  .m-list {
+    overflow: auto;
+  }
+  .m-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    border-radius: 0;
+    width: 100%;
+    text-align: left;
+  }
+  .m-row .dot {
+    width: 10px;
+    height: 10px;
+  }
+  .m-row .t {
+    flex: 1;
+    min-width: 0;
+  }
+  .m-row .t b {
+    display: block;
+    font-weight: 600;
+  }
+  .m-row .t span {
+    display: block;
+    color: var(--muted);
+    font-size: 12.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .m-row time {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  #m-thread {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  .m-msgs {
+    flex: 1;
+    overflow: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sys {
+    align-self: center;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .bub {
+    max-width: 92%;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px 12px 12px 2px;
+    padding: 9px 12px;
+    font-size: 13.5px;
+  }
+  .bub.me {
+    align-self: flex-end;
+    background: var(--green-soft);
+    border-color: transparent;
+    border-radius: 12px 12px 2px 12px;
+  }
+  .bub h4 {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .bub .shot {
+    margin-top: 4px;
+  }
+  .bub .page {
+    min-height: 150px;
+  }
+  .bub.q {
+    border-color: color-mix(in srgb, var(--amber) 50%, transparent);
+    background: var(--amber-soft);
+  }
+  .bub.q .quick {
+    margin-top: 8px;
+  }
+  .bub.q .quick button {
+    background: var(--panel);
+  }
+  .m-ask {
+    display: flex;
+    gap: 6px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .m-ask input {
+    flex: 1;
+    background: var(--inset);
+    border: 1px solid var(--line-2);
+    border-radius: 20px;
+    padding: 9px 14px;
+  }
+  .m-ask button {
+    border-radius: 20px;
+    background: var(--green);
+    color: #0b0f0d;
+    border-color: transparent;
+    font-weight: 600;
+  }
+
+  @media (max-width: 760px) {
+    .top,
+    #plan,
+    #stage {
+      display: none !important;
+    }
+    #mobile {
+      display: flex;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+</style>
+
+<header class="top">
+  <div class="brand">Poste de pilotage <small>prototype · données factices</small></div>
+  <div class="counts" id="counts"></div>
+  <div class="spacer"></div>
+  <div class="seg" id="mode">
+    <button data-m="plan">Plan</button><button class="on" data-m="grid">Grille</button>
+  </div>
+  <div class="seg" id="cols" title="Colonnes">
+    <button data-c="1">1</button><button class="on" data-c="2">2</button
+    ><button data-c="3">3</button><button data-c="4">4</button>
+  </div>
+  <button id="fit">Tout voir</button>
+  <button id="zin">+</button><button id="zout">−</button>
+  <span class="hint"
+    >clic sur un bloc = en grand · <kbd>Échap</kbd> referme · <kbd>Espace</kbd> la plus ancienne qui
+    t'attend</span
+  >
+</header>
+
+<main id="plan" class="plan grid" data-cols="2" style="--cols: 2">
+  <div id="canvas"><div id="world"></div></div>
+</main>
+
+<div id="stage" hidden>
+  <div class="stage-bar">
+    <button id="unfocus">← Tout voir</button><span id="stage-title"></span
+    ><span class="spacer"></span
+    ><span class="hint">Une fiche en grand. Les autres sont en bas.</span>
+  </div>
+  <div id="stage-slot"></div>
+  <div id="stage-rail"></div>
+</div>
+
+<div id="lens" hidden>
+  <div class="lens-bar">
+    <button id="lens-close">✕ Fermer</button><span id="lens-title"></span
+    ><span class="spacer"></span
+    ><span class="hint"><kbd>Échap</kbd> pour refermer · clic à côté aussi</span>
+  </div>
+  <div class="lens-body"><div class="lens-box" id="lens-box"></div></div>
+</div>
+
+<section id="mobile">
+  <div id="m-list"></div>
+  <div id="m-thread" hidden></div>
+</section>
+
+<script>
+  const agents = [
+    {
+      id: 'shop',
+      project: 'boutique-web',
+      ticket: 'ticket-142',
+      title: 'Pagination du catalogue',
+      status: 'waiting',
+      wait: 12,
+      since: 'il y a 12 min',
+      turn: 3,
+      summary:
+        "La pagination serveur est en place sur /catalogue. Le bouton « Charger plus » a été remplacé par des pages numérotées, avec conservation des filtres dans l'URL.",
+      changes: [
+        'Endpoint GET /api/products?page= avec total et taille de page',
+        'Composant Pagination réutilisable, accessible au clavier',
+        "Filtres persistés dans les paramètres d'URL",
+      ],
+      decisions: ['Taille de page fixée côté API (24) plutôt que côté client'],
+      tests: [
+        ['lint', 'ok'],
+        ['unit · 128', 'ok'],
+        ['e2e · 14', 'ok'],
+      ],
+      criteria: [
+        ["WHEN l'utilisateur change de page THEN les filtres sont conservés", 'met'],
+        ['WHEN la page dépasse le total THEN retour à la dernière page', 'met'],
+        ["Le numéro de page est dans l'URL", 'met'],
+      ],
+      url: 'localhost:4173/catalogue?page=2&cat=chaussures',
+      screen: 'catalogue',
+      video: {
+        dur: '0:41',
+        steps: [
+          'Ouvre /catalogue',
+          'Filtre « chaussures »',
+          'Va page 2',
+          'Recharge : filtre conservé',
+        ],
+      },
+      question:
+        "La page 2 renvoie 24 produits mais la maquette en montre 20. Je garde 24, aligné sur l'API, ou je force 20 ?",
+      options: ['Garde 24', 'Force 20'],
+      last: "Une question t'attend : 24 ou 20 produits par page ?",
+    },
+    {
+      id: 'bill',
+      project: 'api-facturation',
+      ticket: 'ticket-88',
+      title: 'Export PDF des factures',
+      status: 'running',
+      wait: 0,
+      since: 'tour 2 · 6 min',
+      turn: 2,
+      summary:
+        'Tour 1 livré : génération PDF depuis le modèle HTML. Tour 2 en cours : envoi par email et archivage S3.',
+      changes: [
+        'Service PdfRenderer basé sur le modèle existant',
+        'Route POST /invoices/:id/pdf',
+        'Tests de rendu sur 3 factures de référence',
+      ],
+      decisions: ['Rendu côté serveur, pas de dépendance navigateur'],
+      tests: [
+        ['lint', 'ok'],
+        ['unit · 61', 'run'],
+        ['e2e', 'wait'],
+      ],
+      criteria: [
+        ['WHEN une facture est validée THEN un PDF est disponible', 'met'],
+        ['WHEN le PDF est généré THEN il est envoyé au client', 'open'],
+      ],
+      url: 'localhost:8080/invoices/2026-0417',
+      screen: 'invoice',
+      video: {
+        dur: '0:18',
+        steps: ['Ouvre la facture 2026-0417', 'Clique « Exporter »', 'PDF téléchargé, 2 pages'],
+      },
+      question: null,
+      last: 'Tour 2 en cours : envoi par email et archivage.',
+    },
+    {
+      id: 'mob',
+      project: 'app-mobile',
+      ticket: 'ticket-31',
+      title: 'Connexion biométrique',
+      status: 'failed',
+      wait: 38,
+      since: 'il y a 38 min',
+      turn: 4,
+      summary:
+        "L'écran de connexion propose Face ID et Touch ID. Le repli par mot de passe fonctionne. Deux tests de bout en bout échouent sur iOS 17 : le prompt système n'apparaît pas dans le simulateur.",
+      changes: [
+        'Écran LoginBiometric avec repli mot de passe',
+        'Stockage du jeton dans le trousseau',
+        'Gestion du refus et du verrouillage',
+      ],
+      decisions: ['Pas de biométrie sur Android < 10, repli direct'],
+      tests: [
+        ['lint', 'ok'],
+        ['unit · 44', 'ok'],
+        ['e2e iOS 17 · 2', 'ko'],
+        ['e2e iOS 18', 'ok'],
+      ],
+      criteria: [
+        ["WHEN la biométrie réussit THEN l'utilisateur est connecté", 'met'],
+        ['WHEN la biométrie échoue 3 fois THEN repli mot de passe', 'met'],
+        ['Fonctionne sur iOS 17 et 18', 'unmet'],
+      ],
+      url: 'simulateur iPhone 15 · iOS 18',
+      screen: 'phone',
+      video: {
+        dur: '0:52',
+        steps: [
+          "Lance l'app",
+          'Touche « Se connecter »',
+          'Prompt Face ID accepté',
+          'Accueil affiché',
+        ],
+      },
+      question:
+        'Je ne peux pas livrer : 2 tests échouent sur iOS 17. Je continue à corriger, ou je livre en excluant iOS 17 du critère ?',
+      options: ['Corrige', 'Exclure iOS 17', 'Montre les logs'],
+      last: 'Bloqué : 2 tests échouent sur iOS 17.',
+    },
+    {
+      id: 'site',
+      project: 'site-vitrine',
+      ticket: 'ticket-7',
+      title: 'Formulaire de contact anti-spam',
+      status: 'ready',
+      wait: 55,
+      since: 'prêt depuis 55 min',
+      turn: 2,
+      summary:
+        'Formulaire de contact avec champ leurre et limitation à 3 envois par heure. Les 4 conditions de fusion sont remplies.',
+      changes: [
+        'Champ invisible rejeté côté serveur',
+        'Limite par adresse IP, fenêtre glissante',
+        'Message de confirmation accessible',
+      ],
+      decisions: ['Pas de captcha : trop pénalisant, le leurre suffit'],
+      tests: [
+        ['lint', 'ok'],
+        ['unit · 19', 'ok'],
+        ['e2e · 6', 'ok'],
+        ['relecture', 'ok'],
+      ],
+      criteria: [
+        ["WHEN un robot remplit le leurre THEN l'envoi est refusé", 'met'],
+        ['WHEN 4 envois en 1 h THEN le 4e est refusé', 'met'],
+        ['Un humain reçoit une confirmation', 'met'],
+      ],
+      url: 'localhost:3000/contact',
+      screen: 'landing',
+      video: {
+        dur: '0:27',
+        steps: [
+          'Ouvre /contact',
+          'Remplit et envoie',
+          'Confirmation affichée',
+          'Message reçu en boîte de test',
+        ],
+      },
+      question:
+        'Prêt à fusionner. Relecture favorable, vérifications vertes, critères prouvés, branche à jour.',
+      options: ['Fusionner', "Relire d'abord"],
+      last: 'Prêt à fusionner, les 4 conditions sont remplies.',
+    },
+  ]
+
+  const stateLabel = {
+    waiting: 'a besoin de toi',
+    running: 'travaille',
+    failed: 'bloqué',
+    ready: 'prêt à fusionner',
+  }
+  const chipClass = { ok: 'ok', ko: 'ko', run: 'run', wait: '' }
+  const chipText = { ok: 'passé', ko: 'échoué', run: 'en cours', wait: 'en attente' }
+
+  function esc(s) {
+    return s.replace(
+      /[&<>"]/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c],
+    )
+  }
+
+  function pageHTML(kind) {
+    if (kind === 'catalogue')
+      return `<div class="bar w1"></div><div class="grid6"><div></div><div></div><div></div><div></div><div></div><div></div></div><div class="pager"><span>‹</span><span>1</span><span class="on">2</span><span>3</span><span>›</span></div>`
+    if (kind === 'invoice')
+      return `<div class="bar w2"></div><div class="rows"><div><span>Facture 2026-0417</span><b>1 240,00 €</b></div><div><span>Facture 2026-0416</span><b>380,00 €</b></div><div><span>Facture 2026-0415</span><b>2 100,00 €</b></div></div><div class="pager"><span class="on">PDF</span></div>`
+    if (kind === 'phone')
+      return `<div class="phone"><div class="face"></div><div class="bar w3"></div><div class="cta"></div></div>`
+    return `<div class="hero"><div class="h"></div><div class="bar w2" style="margin:0 auto"></div></div><div class="form"><div></div><div></div><div class="ok"></div></div>`
+  }
+
+  function shotHTML(a) {
+    return `<div class="shot"><div class="chrome"><i></i><i></i><i></i><span class="mono">${esc(a.url)}</span></div><div class="page">${pageHTML(a.screen)}</div><div class="shot-tag mono">capture réelle · fin du tour ${a.turn}</div></div>`
+  }
+
+  function testsHTML(a) {
+    return `<div class="chips">${a.tests.map(([n, s]) => `<span class="chip ${chipClass[s]}">${esc(n)} · ${chipText[s]}</span>`).join('')}</div>`
+  }
+  function critHTML(a) {
+    return `<ul class="crit">${a.criteria.map(([t, s]) => `<li class="${s}">${esc(t)}</li>`).join('')}</ul>`
+  }
+  function videoHTML(a) {
+    return `<button class="play"><b>▶</b> parcours enregistré · ${a.video.dur}</button><ol class="steps">${a.video.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>`
+  }
+  function bannerHTML(a) {
+    if (!a.question) return ''
+    return `<div class="banner"><div class="q">${esc(a.question)}</div><div class="quick">${a.options.map((o, i) => `<button class="${i === 0 ? 'primary' : ''}" data-reply="${esc(o)}">${esc(o)}</button>`).join('')}<button data-reply="">Autre…</button></div></div>`
+  }
+
+  function cardHTML(a) {
+    return `<article class="card s-${a.status}" data-id="${a.id}">
+    <header class="c-head"><span class="dot"></span><div class="c-title"><div class="c-proj mono">${a.project} · codesema/${a.ticket}</div><h3>${esc(a.title)}</h3></div><span class="c-state">${stateLabel[a.status]} · ${a.since}</span><button class="c-open" data-focus="${a.id}" title="Agrandir">⤢</button></header>
+    <div class="c-body">${shotHTML(a)}<div class="recap"><h4>Ce qui a été fait</h4><p>${esc(a.summary)}</p><h4>Changements</h4><ul>${a.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul><h4>Décisions prises</h4><ul>${a.decisions.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></div></div>
+    <div class="proofs"><div class="proof tests"><h4>Vérifications</h4>${testsHTML(a)}</div><div class="proof crit-box"><h4>Critères</h4>${critHTML(a)}</div><div class="proof video"><h4>Vidéo</h4>${videoHTML(a)}</div></div>
+    <footer class="c-foot">${bannerHTML(a)}<div class="feed"></div><form class="ask" data-id="${a.id}"><input placeholder="Dire à l'agent…" aria-label="Message à l'agent"><button>Envoyer</button></form></footer>
+  </article>`
+  }
+
+  const world = document.getElementById('world')
+  const canvas = document.getElementById('canvas')
+  const CW = 640,
+    CH = 700,
+    GAP = 48
+  world.innerHTML = agents.map(cardHTML).join('')
+  agents.forEach((a, i) => {
+    const el = world.querySelector(`[data-id="${a.id}"]`)
+    el.style.left = (i % 2) * (CW + GAP) + 'px'
+    el.style.top = Math.floor(i / 2) * (CH + GAP) + 'px'
+  })
+
+  const view = { x: 0, y: 0, s: 1 }
+  function apply() {
+    world.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.s})`
+  }
+  function fit() {
+    const W = 2 * CW + GAP,
+      H = Math.ceil(agents.length / 2) * (CH + GAP) - GAP
+    const r = canvas.getBoundingClientRect()
+    view.s = Math.min((r.width - 64) / W, (r.height - 64) / H, 1.1)
+    view.x = (r.width - W * view.s) / 2
+    view.y = (r.height - H * view.s) / 2
+    apply()
+  }
+  function zoomAt(cx, cy, f) {
+    const r = canvas.getBoundingClientRect()
+    const px = cx - r.left,
+      py = cy - r.top
+    const ns = Math.min(2.5, Math.max(0.15, view.s * f))
+    view.x = px - (px - view.x) * (ns / view.s)
+    view.y = py - (py - view.y) * (ns / view.s)
+    view.s = ns
+    apply()
+  }
+  canvas.addEventListener(
+    'wheel',
+    (e) => {
+      if (document.getElementById('plan').classList.contains('grid')) return
+      e.preventDefault()
+      zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015))
+    },
+    { passive: false },
+  )
+  let drag = null
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.card')) return
+    drag = { x: e.clientX - view.x, y: e.clientY - view.y }
+    canvas.classList.add('dragging')
+    canvas.setPointerCapture(e.pointerId)
+  })
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag) return
+    view.x = e.clientX - drag.x
+    view.y = e.clientY - drag.y
+    apply()
+  })
+  canvas.addEventListener('pointerup', () => {
+    drag = null
+    canvas.classList.remove('dragging')
+  })
+  document.getElementById('fit').onclick = fit
+  document.getElementById('zin').onclick = () => {
+    const r = canvas.getBoundingClientRect()
+    zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.25)
+  }
+  document.getElementById('zout').onclick = () => {
+    const r = canvas.getBoundingClientRect()
+    zoomAt(r.left + r.width / 2, r.top + r.height / 2, 0.8)
+  }
+  const plan = document.getElementById('plan')
+  const prefs = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('pilotage-prefs') || '{}')
+    } catch {
+      return {}
+    }
+  })()
+  function savePrefs() {
+    try {
+      localStorage.setItem('pilotage-prefs', JSON.stringify(prefs))
+    } catch {}
+  }
+  function setMode(m) {
+    prefs.mode = m
+    savePrefs()
+    document
+      .querySelectorAll('#mode button')
+      .forEach((x) => x.classList.toggle('on', x.dataset.m === m))
+    plan.classList.toggle('grid', m === 'grid')
+    document.getElementById('cols').style.visibility = m === 'grid' ? 'visible' : 'hidden'
+    if (m === 'plan') fit()
+  }
+  function setCols(c) {
+    c = Math.min(4, Math.max(1, Number(c) || 2))
+    prefs.cols = c
+    savePrefs()
+    document
+      .querySelectorAll('#cols button')
+      .forEach((x) => x.classList.toggle('on', Number(x.dataset.c) === c))
+    plan.dataset.cols = c
+    plan.style.setProperty('--cols', c)
+  }
+  document.getElementById('mode').addEventListener('click', (e) => {
+    const b = e.target.closest('button')
+    if (b) setMode(b.dataset.m)
+  })
+  document.getElementById('cols').addEventListener('click', (e) => {
+    const b = e.target.closest('button')
+    if (b) setCols(b.dataset.c)
+  })
+  setCols(prefs.cols || 2)
+  setMode(prefs.mode === 'plan' ? 'plan' : 'grid')
+  window.addEventListener('resize', () => {
+    if (!document.getElementById('plan').classList.contains('grid')) fit()
+  })
+
+  const stage = document.getElementById('stage'),
+    slot = document.getElementById('stage-slot'),
+    rail = document.getElementById('stage-rail')
+  let focused = null,
+    placeholder = document.createComment('slot')
+  function focusCard(id) {
+    if (focused) unfocus(false)
+    const el = world.querySelector(`[data-id="${id}"]`)
+    el.replaceWith(placeholder)
+    slot.append(el)
+    focused = el
+    const a = agents.find((x) => x.id === id)
+    document.getElementById('stage-title').textContent = `${a.project} · ${a.title}`
+    rail.innerHTML = agents
+      .filter((x) => x.id !== id)
+      .map(
+        (x) =>
+          `<button data-focus="${x.id}"><span class="dot" style="background:var(--${x.status === 'ready' ? 'green' : x.status === 'failed' ? 'red' : 'amber'})"></span>${x.project} · ${stateLabel[x.status]}</button>`,
+      )
+      .join('')
+    stage.hidden = false
+  }
+  function unfocus(hide = true) {
+    if (!focused) return
+    placeholder.replaceWith(focused)
+    focused = null
+    if (hide) stage.hidden = true
+  }
+  document.getElementById('unfocus').onclick = () => unfocus()
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-focus]')
+    if (b) focusCard(b.dataset.focus)
+  })
+  const lens = document.getElementById('lens'),
+    lensBox = document.getElementById('lens-box')
+  const moduleName = (el) =>
+    el.matches('.shot')
+      ? "Capture de l'app"
+      : el.matches('.recap')
+        ? 'Récap'
+        : el.matches('.bub')
+          ? el.querySelector('h4')?.textContent || 'Message'
+          : el.querySelector('h4')?.textContent || 'Preuve'
+  function openLens(el) {
+    const card = el.closest('.card')
+    const a = agents.find(
+      (x) => x.id === (card ? card.dataset.id : mThread.querySelector('form')?.dataset.id),
+    )
+    document.getElementById('lens-title').textContent =
+      `${a ? a.project + ' · ' : ''}${moduleName(el)}`
+    lensBox.replaceChildren(el.cloneNode(true))
+    lens.hidden = false
+    document.getElementById('lens-close').focus()
+  }
+  function closeLens() {
+    lens.hidden = true
+    lensBox.replaceChildren()
+  }
+  document.getElementById('lens-close').onclick = closeLens
+  lens.addEventListener('click', (e) => {
+    if (!e.target.closest('.lens-box') && !e.target.closest('.lens-bar')) closeLens()
+  })
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('button, input, a, form') || !lens.hidden) return
+    const m = e.target.closest('.card .shot, .card .recap, .card .proof, .bub.zoomable')
+    if (m) return openLens(m)
+    const head = e.target.closest('.card .c-head')
+    if (head && !focused) focusCard(head.closest('.card').dataset.id)
+  })
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !lens.hidden) {
+      e.preventDefault()
+      return closeLens()
+    }
+    if (e.target.matches('input')) return
+    if (e.key === 'Escape') unfocus()
+    if (e.key === ' ') {
+      e.preventDefault()
+      const w = agents
+        .filter((a) => a.status === 'waiting' || a.status === 'failed')
+        .sort((a, b) => b.wait - a.wait)[0]
+      if (w) focusCard(w.id)
+    }
+  })
+
+  function counts() {
+    const n = (s) => agents.filter((a) => a.status === s).length
+    document.getElementById('counts').innerHTML =
+      `<span><b style="color:var(--amber)">${n('waiting') + n('failed')}</b> attendent une décision</span><span><b>${n('running')}</b> travaille</span><span><b style="color:var(--green)">${n('ready')}</b> prêt à fusionner</span>`
+  }
+  counts()
+
+  function reply(id, text, feedEl) {
+    const a = agents.find((x) => x.id === id)
+    if (feedEl) {
+      feedEl.insertAdjacentHTML('beforeend', `<div class="me">${esc(text)}</div>`)
+    }
+    setTimeout(() => {
+      if (feedEl)
+        feedEl.insertAdjacentHTML(
+          'beforeend',
+          `<div class="ag">Reçu. Je reprends le tour ${a.turn + 1} avec : « ${esc(text)} ».</div>`,
+        )
+      a.status = 'running'
+      a.question = null
+      a.since = `tour ${a.turn + 1} · à l'instant`
+      a.last = `Tour ${a.turn + 1} en cours : « ${text} ».`
+      document.querySelectorAll(`.card[data-id="${id}"]`).forEach((el) => {
+        el.className = 'card s-running'
+        el.querySelector('.c-state').textContent = `${stateLabel.running} · ${a.since}`
+        const b = el.querySelector('.banner')
+        if (b) b.remove()
+      })
+      counts()
+      renderList()
+    }, 700)
+  }
+  document.addEventListener('submit', (e) => {
+    const f = e.target.closest('form.ask')
+    if (!f) return
+    e.preventDefault()
+    const i = f.querySelector('input')
+    if (!i.value.trim()) return
+    reply(f.dataset.id, i.value.trim(), f.closest('.c-foot').querySelector('.feed'))
+    i.value = ''
+  })
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-reply]')
+    if (!b) return
+    const card = b.closest('.card')
+    if (card) {
+      const foot = card.querySelector('.c-foot')
+      if (b.dataset.reply === '') {
+        foot.querySelector('input').focus()
+        return
+      }
+      reply(card.dataset.id, b.dataset.reply, foot.querySelector('.feed'))
+    }
+  })
+
+  const mList = document.getElementById('m-list'),
+    mThread = document.getElementById('m-thread')
+  function renderList() {
+    const order = { waiting: 0, failed: 0, ready: 1, running: 2 }
+    const sorted = [...agents].sort((a, b) => order[a.status] - order[b.status] || b.wait - a.wait)
+    mList.innerHTML = `<div class="m-head"><h2>Agents</h2><span class="hint">${agents.filter((a) => a.question).length} attendent</span></div><div class="m-list">${sorted.map((a) => `<button class="m-row" data-open="${a.id}"><span class="dot" style="background:var(--${a.status === 'ready' ? 'green' : a.status === 'failed' ? 'red' : 'amber'})"></span><span class="t"><b>${a.project} · ${esc(a.title)}</b><span>${esc(a.last)}</span></span><time>${a.since.replace('il y a ', '')}</time></button>`).join('')}</div>`
+  }
+  function renderThread(a) {
+    mThread.innerHTML = `<div class="m-head"><button class="back" data-back>‹</button><h2>${a.project}<br><span class="hint">${esc(a.title)} · codesema/${a.ticket}</span></h2></div>
+  <div class="m-msgs">
+    <div class="sys">tour ${a.turn} · ${a.since}</div>
+    <div class="bub zoomable"><h4>Ce qui a été fait</h4>${esc(a.summary)}</div>
+    <div class="bub zoomable"><h4>Vérifications</h4>${testsHTML(a)}</div>
+    <div class="bub zoomable"><h4>Capture de l'app</h4>${shotHTML(a)}</div>
+    <div class="bub zoomable"><h4>Vidéo</h4>${videoHTML(a)}</div>
+    <div class="bub zoomable"><h4>Critères</h4>${critHTML(a)}</div>
+    ${a.question ? `<div class="bub q">${esc(a.question)}<div class="quick">${a.options.map((o) => `<button data-mreply="${esc(o)}">${esc(o)}</button>`).join('')}</div></div>` : ''}
+    <div class="feed m-feed"></div>
+  </div>
+  <form class="m-ask" data-id="${a.id}"><input placeholder="Répondre à l'agent…" aria-label="Message"><button>↑</button></form>`
+    mThread.hidden = false
+    mList.hidden = true
+  }
+  renderList()
+  document.addEventListener('click', (e) => {
+    const o = e.target.closest('[data-open]')
+    if (o) return renderThread(agents.find((a) => a.id === o.dataset.open))
+    if (e.target.closest('[data-back]')) {
+      mThread.hidden = true
+      mList.hidden = false
+      renderList()
+      return
+    }
+    const r = e.target.closest('[data-mreply]')
+    if (r) mobileReply(r.closest('#m-thread').querySelector('form').dataset.id, r.dataset.mreply)
+  })
+  function mobileReply(id, text) {
+    const msgs = mThread.querySelector('.m-msgs')
+    msgs.insertAdjacentHTML('beforeend', `<div class="bub me">${esc(text)}</div>`)
+    const q = mThread.querySelector('.bub.q')
+    if (q) q.remove()
+    setTimeout(() => {
+      const a = agents.find((x) => x.id === id)
+      msgs.insertAdjacentHTML('beforeend', `<div class="sys">reçu · tour ${a.turn + 1} lancé</div>`)
+      msgs.scrollTop = msgs.scrollHeight
+    }, 700)
+    msgs.scrollTop = msgs.scrollHeight
+    reply(id, text, null)
+  }
+  document.addEventListener('submit', (e) => {
+    const f = e.target.closest('form.m-ask')
+    if (!f) return
+    e.preventDefault()
+    const i = f.querySelector('input')
+    if (!i.value.trim()) return
+    mobileReply(f.dataset.id, i.value.trim())
+    i.value = ''
+  })
+
+  fit()
+</script>
