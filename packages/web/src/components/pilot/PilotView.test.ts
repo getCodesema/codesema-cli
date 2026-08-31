@@ -18,7 +18,7 @@ import { describe, expect, test } from 'bun:test'
 import { createSSRApp, h } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
-import { t } from '../../i18n'
+import { catalogs, t } from '../../i18n'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -59,10 +59,11 @@ describe('PilotView: pre-mount SSR render (empty store)', () => {
     expect(html).not.toContain('ac-root')
   })
 
-  test('the agents counter renders at zero; the needsYou badge stays hidden at zero', async () => {
+  test('the conversation count renders at zero; the needsYou and working badges stay hidden at zero', async () => {
     const html = await render()
-    expect(html).toContain(t('workspace.agentsCount', { n: 0 }))
+    expect(html).toContain(t('pilot.header.conversations', { n: 0 }))
     expect(html).not.toContain(t('workspace.needsYouBadge', { n: 0 }))
+    expect(html).not.toContain(t('pilot.header.working', { n: 0 }))
     expect(html).not.toContain('pv-count--attention')
   })
 
@@ -104,7 +105,7 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(SOURCE).toContain('v-for="state in orderedStates"')
   })
 
-  test('every card gets the four events wired: open-full, open-lens, send, pick', () => {
+  test('every card gets the seven events wired: open-full, open-lens, send, pick, ship, stop, resume', () => {
     const cardBlock = SOURCE.slice(
       SOURCE.indexOf('<AgentCard'),
       SOURCE.indexOf('/>', SOURCE.indexOf('<AgentCard')),
@@ -113,11 +114,22 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(cardBlock).toContain('@open-lens="onOpenLens(state.record.id, $event)"')
     expect(cardBlock).toContain('sendReply(state.projectId, state.record.id, text)')
     expect(cardBlock).toContain('sendReply(state.projectId, state.record.id, option)')
+    expect(cardBlock).toContain('@ship="doShip(state.projectId, state.record.id)"')
+    expect(cardBlock).toContain('@stop="doStop(state.projectId, state.record.id)"')
+    expect(cardBlock).toContain('@resume="doResume(state.projectId, state.record.id)"')
   })
 
-  test('recap/evidence are hydrated once per task, guarded by a requested set', () => {
+  test('ship/stop/resume each call the matching useTasks action, tracked as sending', () => {
+    expect(SOURCE).toContain('tasks.ship(projectId, taskId)')
+    expect(SOURCE).toContain('tasks.interrupt(projectId, taskId)')
+    expect(SOURCE).toContain('tasks.resume(projectId, taskId)')
+    expect(SOURCE).toContain('withSending(taskId,')
+  })
+
+  test('recap/evidence/checks are hydrated once per task, guarded by a requested set', () => {
     expect(SOURCE).toContain('tasks.hydrateRecap(')
     expect(SOURCE).toContain('tasks.hydrateEvidence(')
+    expect(SOURCE).toContain('tasks.hydrateChecks(')
     expect(SOURCE).toContain('state.recap === undefined')
     expect(SOURCE).toContain('state.evidence === undefined')
     expect(SOURCE).toContain('requestedHydration')
@@ -186,6 +198,39 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
   test('switching to the classic shell persists the choice and emits switch-shell', () => {
     expect(SOURCE).toContain("shell.value = 'classic'")
     expect(SOURCE).toContain("emit('switch-shell')")
+  })
+})
+
+// The header counter used to show "0 agents" over 3 visible cards
+// (workspace.agentsCount only counts running/reviewing tasks): a real SSR
+// render can only ever see the empty pre-mount store (see file header), so
+// the "3 conversations" case is pinned on the source expression plus the new
+// keys' own pluralization, the same way every other populated-store fact in
+// this file is proven.
+describe('PilotView: header counter reads the whole grid, not just the working agents', () => {
+  test('the conversation count binds orderedStates.length, not counts.agents', () => {
+    const countsBlock = SOURCE.slice(
+      SOURCE.indexOf('<div class="pv-counts">'),
+      SOURCE.indexOf('<div class="pv-spacer"'),
+    )
+    expect(countsBlock).toContain("t('pilot.header.conversations', { n: orderedStates.length })")
+    expect(countsBlock).toContain("t('pilot.header.working', { n: counts.agents })")
+    expect(countsBlock).toContain('v-if="counts.agents > 0"')
+  })
+
+  test('at n=3 the conversations key pluralizes correctly in both catalogs', () => {
+    expect(t('pilot.header.conversations', { n: 3 })).toBe('3 conversations')
+    expect(catalogs.fr?.['pilot.header.conversations']).toContain(
+      '{n} conversation | {n} conversations',
+    )
+  })
+
+  test('at n=3 the working key pluralizes, and conjugates, correctly in both catalogs', () => {
+    expect(t('pilot.header.working', { n: 3 })).toBe('3 agents working')
+    expect(t('pilot.header.working', { n: 1 })).toBe('1 agent working')
+    expect(catalogs.fr?.['pilot.header.working']).toBe(
+      '{n} agent travaille | {n} agents travaillent',
+    )
   })
 })
 

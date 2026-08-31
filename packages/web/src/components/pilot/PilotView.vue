@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { usePilotPrefs } from '../../composables/usePilotPrefs'
 import { extractQuickReplies } from '../../composables/useQuickReplies'
 import { agentCounts, lastQuestion } from '../../composables/useTaskBoard'
-import { useTasks, type TaskState } from '../../composables/useTasks'
+import { useTasks, type ApiResult, type TaskState } from '../../composables/useTasks'
 import { t, type MessageKey } from '../../i18n'
 import AgentCard from './AgentCard.vue'
 import ChecksBlock from './ChecksBlock.vue'
@@ -46,7 +46,7 @@ const counts = computed(() => agentCounts(tasks.states.value))
 
 const COLS_OPTIONS: readonly PilotCols[] = [1, 2, 3, 4]
 
-// ── Hydration: recap/evidence, fetched once per task ────────────────────
+// ── Hydration: recap/evidence/checks, fetched once per task ─────────────
 // A reconnect never replays what happened while the stream was down, so
 // every task asks again on a fresh `connections` tick, even one already
 // answered once.
@@ -62,6 +62,14 @@ function hydrateIfNeeded(state: TaskState): void {
   if (state.evidence === undefined && !requestedHydration.has(`${base}:evidence`)) {
     requestedHydration.add(`${base}:evidence`)
     void tasks.hydrateEvidence(state.projectId, state.record.id)
+  }
+  // `checks` has no "never hydrated" sentinel of its own (it defaults to
+  // `null`, same value a hydrated-but-empty task carries), unlike
+  // recap/evidence: the guard Set alone decides whether this task's checks
+  // were already asked for.
+  if (!requestedHydration.has(`${base}:checks`)) {
+    requestedHydration.add(`${base}:checks`)
+    void tasks.hydrateChecks(state.projectId, state.record.id)
   }
 }
 
@@ -82,17 +90,33 @@ watch(tasks.connections, () => {
   }
 })
 
-// ── Replies: useTasks carries no send state of its own, tracked here ────
+// ── Replies and actions: useTasks carries no send state of its own ──────
 
 const sendingTaskIds = reactive(new Set<string>())
 
-async function sendReply(projectId: string, taskId: string, message: string): Promise<void> {
+async function withSending(taskId: string, action: () => Promise<ApiResult>): Promise<void> {
   sendingTaskIds.add(taskId)
   try {
-    await tasks.reply(projectId, taskId, message)
+    await action()
   } finally {
     sendingTaskIds.delete(taskId)
   }
+}
+
+function sendReply(projectId: string, taskId: string, message: string): Promise<void> {
+  return withSending(taskId, () => tasks.reply(projectId, taskId, message))
+}
+
+function doShip(projectId: string, taskId: string): Promise<void> {
+  return withSending(taskId, () => tasks.ship(projectId, taskId))
+}
+
+function doStop(projectId: string, taskId: string): Promise<void> {
+  return withSending(taskId, () => tasks.interrupt(projectId, taskId))
+}
+
+function doResume(projectId: string, taskId: string): Promise<void> {
+  return withSending(taskId, () => tasks.resume(projectId, taskId))
 }
 
 function findState(taskId: string): TaskState | null {
@@ -201,10 +225,15 @@ function onMobilePick(option: string): void {
         <span class="pv-brand-sub">{{ t('pilot.mobile.title') }}</span>
       </div>
       <div class="pv-counts">
+        <span class="pv-count">
+          {{ t('pilot.header.conversations', { n: orderedStates.length }) }}
+        </span>
         <span v-if="counts.needsYou > 0" class="pv-count pv-count--attention">
           {{ t('workspace.needsYouBadge', { n: counts.needsYou }) }}
         </span>
-        <span class="pv-count">{{ t('workspace.agentsCount', { n: counts.agents }) }}</span>
+        <span v-if="counts.agents > 0" class="pv-count">
+          {{ t('pilot.header.working', { n: counts.agents }) }}
+        </span>
       </div>
       <div class="pv-spacer" />
       <div class="pv-cols" role="group" :aria-label="t('pilot.cols.aria')">
@@ -236,6 +265,9 @@ function onMobilePick(option: string): void {
         @open-lens="onOpenLens(state.record.id, $event)"
         @send="(text) => sendReply(state.projectId, state.record.id, text)"
         @pick="(option) => sendReply(state.projectId, state.record.id, option)"
+        @ship="doShip(state.projectId, state.record.id)"
+        @stop="doStop(state.projectId, state.record.id)"
+        @resume="doResume(state.projectId, state.record.id)"
       />
     </div>
 

@@ -43,8 +43,8 @@ const en = {
   'live.findings': 'Findings so far',
   'live.steps': 'Steps taking shape',
   'live.moreFiles': '+ {n} more files',
-  'live.reading': 'The agent is reading the diff — the review fills in here as it is written.',
-  'live.streaming': 'The agent is still writing —',
+  'live.reading': 'The agent is reading the diff: the review fills in here as it is written.',
+  'live.streaming': 'The agent is still writing ·',
   'live.laneReviewer': 'Reviewer',
   'live.laneProsecutor': 'Prosecutor',
   'live.laneWarmingUp': 'Warming up…',
@@ -157,7 +157,7 @@ const en = {
     'New tasks use this agent and model unless you pick another one when launching a conversation. For OpenCode, a model like openrouter/… also opens that provider in the cage.',
   'settings.agentError': 'Could not update the default agent.',
   'settings.modelLabel': 'Model',
-  'settings.modelPlaceholder': 'optional — CLI default',
+  'settings.modelPlaceholder': 'optional · CLI default',
   'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
   'settings.effortLabel': 'Reasoning effort',
   'settings.effortDefault': 'CLI default',
@@ -242,7 +242,7 @@ const en = {
 
   // --- workspace (T7) ---
   'workspace.title': 'Workspace',
-  'workspace.connectionLost': 'Connection lost — reconnecting…',
+  'workspace.connectionLost': 'Connection lost, reconnecting…',
   'workspace.composerPlaceholder': 'Describe a task for the agent…',
   'workspace.autoShip': 'Auto-ship',
   'workspace.autoShipHint': 'Ship without asking once the review passes.',
@@ -280,11 +280,11 @@ const en = {
   'workspace.back': '← Back to tasks',
   'workspace.interrupt': 'Stop',
   'workspace.resume': 'Resume',
-  'workspace.resumeHint': 'Restarts the interrupted turn — same instruction, same conversation.',
+  'workspace.resumeHint': 'Restarts the interrupted turn: same instruction, same conversation.',
   'workspace.resumeNothing':
     'Stopped after the agent had answered: nothing to restart. Send a message to continue.',
   'workspace.ship': 'Confirm and ship',
-  'workspace.shipSoon': 'Shipping lands in an upcoming version — the review verdict is saved.',
+  'workspace.shipSoon': 'Shipping lands in an upcoming version: the review verdict is saved.',
   'workspace.replyPlaceholder': 'Answer the agent…',
   'workspace.replyQueuePlaceholder': 'Prepare your next instruction…',
   'workspace.replySend': 'Send',
@@ -308,7 +308,7 @@ const en = {
   'workspace.fixFindingsPrefill':
     'Fix the findings raised by the review, without changing anything else.',
   'workspace.filesTitle': 'Changes',
-  'workspace.noBranchYet': 'No branch yet — the worktree is created when the task starts.',
+  'workspace.noBranchYet': 'No branch yet: the worktree is created when the task starts.',
   'workspace.details': 'Details',
   'workspace.evTurnStarted': 'Turn started',
   'workspace.evToolUse': 'Tool',
@@ -334,7 +334,7 @@ const en = {
   // see RESOURCE_NAME_LABEL_KEY in useTaskBoard.ts.
   'workspace.evResourceHomeReleased': 'HOME volume released',
   'workspace.evResourceHomeNotReleased': 'HOME volume could not be released',
-  'workspace.evResourceNoRuntime': 'No container runtime — HOME volume could not be released',
+  'workspace.evResourceNoRuntime': 'No container runtime: HOME volume could not be released',
   'workspace.evQueue': 'Waiting',
   'workspace.evQueueMachine': 'Waiting for a machine slot',
   'workspace.evQueueProject': 'Waiting: another task of this project is already active',
@@ -354,7 +354,7 @@ const en = {
   'workspace.evIssueCosmetic':
     'Cosmetic edit on the forge: what this contract reads of the ticket has not changed',
   'workspace.evIssueEdited':
-    'Ticket edited on the forge — sections: {sections}; criteria added: {added}; removed: {removed}',
+    'Ticket edited on the forge · sections: {sections}; criteria added: {added}; removed: {removed}',
   'workspace.evIssueNotTicket': 'The ticket no longer passes the ticket contract',
   'workspace.evIssueSnapshotUnreadable':
     'The frozen ticket could not be read back: edits to this ticket are no longer detected',
@@ -430,12 +430,12 @@ const en = {
   'workspace.addProjectError': 'Could not add the project.',
   'workspace.removeProject': 'Remove from workspace',
   'workspace.removeProjectConfirm': 'Confirm removal',
-  'workspace.removeProjectHint': 'Unregisters the project only — nothing on disk is touched.',
+  'workspace.removeProjectHint': 'Unregisters the project only: nothing on disk is touched.',
   'workspace.removeProjectError': 'Could not remove the project.',
   'workspace.conversations': 'Conversations',
   'workspace.refreshMrs': 'Refresh merge requests',
   'workspace.treeEmpty': 'No conversation yet.',
-  'workspace.noProject': 'No project yet — add one in the projects panel to get started.',
+  'workspace.noProject': 'No project yet: add one in the projects panel to get started.',
 
   // --- control desk layout (A3-C1) ---
   'workspace.cardWaiting': '{n} conversation waiting for you | {n} conversations waiting for you',
@@ -454,9 +454,9 @@ const en = {
   'workspace.queuePositionHint':
     'Waiting for its turn: {n} conversation ahead in this project | Waiting for its turn: {n} conversations ahead in this project',
   'workspace.queuePositionHintIdle':
-    "In this project's line, at #{n} — but nothing is running on it right now",
+    "In this project's line, at #{n}, but nothing is running on it right now",
   'workspace.queuePositionHintMachine':
-    'At #{n} — waiting for a machine-wide slot to free up, not for another conversation of this project',
+    'At #{n}: waiting for a machine-wide slot to free up, not for another conversation of this project',
   'workspace.pausedFor': 'paused for {t}',
   'workspace.shipAction': 'Ship',
   'workspace.diffAction': 'Diff',
@@ -488,25 +488,25 @@ const en = {
     'The first task with this agent builds a container image (~1.4 GB); later tasks reuse it.',
   'workspace.agoTime': '{t} ago',
   'workspace.quickReplyOther': 'Something else…',
-  'workspace.phaseQueued': 'queued — waiting for a slot',
-  'workspace.phaseQueuedMachine': 'queued — waiting for a machine-wide slot',
+  'workspace.phaseQueued': 'queued · waiting for a slot',
+  'workspace.phaseQueuedMachine': 'queued · waiting for a machine-wide slot',
   'workspace.phaseRunning': 'working',
-  'workspace.phaseWaiting': 'paused — waiting for your answer',
+  'workspace.phaseWaiting': 'paused · waiting for your answer',
   'workspace.phaseReviewing': 'review in progress',
-  'workspace.phaseReviewOk': 'review OK — ready to ship',
-  'workspace.phaseReviewKo': 'review blocked — findings to fix',
-  'workspace.phaseChecksFailed': 'review blocked — checks failed',
-  'workspace.phaseCriteriaUnmet': 'review blocked — acceptance criteria not met',
+  'workspace.phaseReviewOk': 'review OK · ready to ship',
+  'workspace.phaseReviewKo': 'review blocked · findings to fix',
+  'workspace.phaseChecksFailed': 'review blocked · checks failed',
+  'workspace.phaseCriteriaUnmet': 'review blocked · acceptance criteria not met',
   'workspace.phaseFixLoopStopped':
-    'automatic fixes stopped — findings still to fix; your reply starts a fresh fix budget',
+    'automatic fixes stopped: findings still to fix; your reply starts a fresh fix budget',
   'workspace.phaseFixLoopStoppedCriteria':
-    'automatic fixes stopped — acceptance criteria still not met; your reply starts a fresh fix budget',
-  'workspace.phaseChecksUnavailable': 'merge held — the checks could not be run',
-  'workspace.phaseCriteriaMissing': 'merge held — no validated acceptance criteria',
-  'workspace.phaseMergeConflict': 'merge held — the branch conflicts with its target',
-  'workspace.phaseForgeUnreachable': 'merge held — the forge did not perform the merge',
-  'workspace.phaseBranchDiverged': 'merge held — the branch is not up to date with its target',
-  'workspace.phaseMergeChecksFailed': 'merge held — the repository checks failed',
+    'automatic fixes stopped: acceptance criteria still not met; your reply starts a fresh fix budget',
+  'workspace.phaseChecksUnavailable': 'merge held · the checks could not be run',
+  'workspace.phaseCriteriaMissing': 'merge held · no validated acceptance criteria',
+  'workspace.phaseMergeConflict': 'merge held · the branch conflicts with its target',
+  'workspace.phaseForgeUnreachable': 'merge held · the forge did not perform the merge',
+  'workspace.phaseBranchDiverged': 'merge held · the branch is not up to date with its target',
+  'workspace.phaseMergeChecksFailed': 'merge held · the repository checks failed',
   'workspace.phaseShipped': 'shipped',
   'workspace.phaseFailed': 'failed',
   'workspace.phaseInterrupted': 'interrupted',
@@ -536,7 +536,7 @@ const en = {
   'workspace.cleanupBranchHint':
     'Removes the task branch and its worktree from disk. The conversation history stays.',
   'workspace.cleanupWorktreeHint':
-    'Removes the worktree checkout only — the branch itself is yours and stays.',
+    'Removes the worktree checkout only: the branch itself is yours and stays.',
   'workspace.draftWorkonHint': 'The conversation will work directly on {branch}',
   'workspace.draftTargetHint': 'Merge target: {target}',
 
@@ -557,7 +557,7 @@ const en = {
   'workspace.planBranchUncertain': '{branch}-… (the exact name is picked at launch)',
   'workspace.planBranchDerived': 'Derived from the first line of your prompt.',
   'workspace.planWorktreeValue': '{root}/<task id>',
-  'workspace.planBaseUnknown': 'undetermined — {reason}',
+  'workspace.planBaseUnknown': 'undetermined: {reason}',
   'workspace.planQueueNow': 'starts right away',
   'workspace.planQueueAt': 'waits at position {n}',
   'workspace.planIsolationContainer': 'container',
@@ -572,10 +572,10 @@ const en = {
 
   // --- sandboxed checks (Checks tab / journal / queue badge) ---
   'workspace.evChecks': 'Checks',
-  'workspace.checksEvPassed': 'Checks — {n} passed',
-  'workspace.checksEvFailed': 'Checks — {n} failed',
-  'workspace.checksEvError': 'Checks — error',
-  'workspace.checksEvUnconfigured': 'Checks — not configured',
+  'workspace.checksEvPassed': 'Checks · {n} passed',
+  'workspace.checksEvFailed': 'Checks · {n} failed',
+  'workspace.checksEvError': 'Checks · error',
+  'workspace.checksEvUnconfigured': 'Checks · not configured',
   'workspace.checksStatusRunning': 'Checks running…',
   'workspace.checksStatusPassed': 'Checks passed',
   'workspace.checksStatusFailed': 'Checks failed',
@@ -587,7 +587,7 @@ const en = {
   'workspace.checksAutoHint': 'Checks run automatically after each agent commit.',
   'workspace.checksRerun': 'Re-run',
   'workspace.checksRunNow': 'Run checks',
-  'workspace.checksNoCommitHint': 'Checks need a commit — they run after each agent turn.',
+  'workspace.checksNoCommitHint': 'Checks need a commit: they run after each agent turn.',
   'workspace.checksHeadVerified': 'verified head {sha}',
   'workspace.checksExitCode': 'exit {n}',
   'workspace.checksTail': 'Output',
@@ -617,7 +617,7 @@ const en = {
   'workspace.checksSetupNoInstall': 'no install step',
   'workspace.checksSetupCommands': 'Commands',
   'workspace.checksSetupNetwork': 'Network',
-  'workspace.checksSetupNetworkInstall': 'install step only — the checks stay offline',
+  'workspace.checksSetupNetworkInstall': 'install step only: the checks stay offline',
   'workspace.checksSetupNetworkNone': 'none',
   'workspace.checksSetupTimeout': 'Timeout',
   'workspace.checksSetupTimeoutValue': '{n}s per check',
@@ -632,7 +632,7 @@ const en = {
   'workspace.checksSetupAppliedHint':
     'Written to .codesema/config.json. The checks run with it after the next commit.',
   'workspace.checksSetupNoAgent':
-    'No agent is configured for this repo — set the "agent" key in .codesema/config.json first.',
+    'No agent is configured for this repo: set the "agent" key in .codesema/config.json first.',
   'workspace.checksSetupBusy': 'A setup run is already in progress for this project.',
 
   // --- isolation badge (container cage vs microVM cage vs policy hardening) ---
@@ -642,7 +642,7 @@ const en = {
   'workspace.isolationContainerHint':
     'Caged: this agent runs inside its own container, with only this worktree mounted and network access limited to the allowed domains. Commits are made outside the box.',
   'workspace.isolationPolicyHint':
-    'Not caged: this agent runs directly on your machine, contained by permission rules only — nothing isolates it from the rest of your files.',
+    'Not caged: this agent runs directly on your machine, contained by permission rules only; nothing isolates it from the rest of your files.',
   'workspace.isolationMicrovmHint':
     "Caged in a microVM: this agent's turn runs inside a disposable virtual machine with its own kernel, network access limited to the runbook's allowlist.",
   'workspace.isolationUpgradeTitle': 'Agents here run without a container',
@@ -892,6 +892,8 @@ const en = {
   'time.monthNov': 'Nov',
   'time.monthDec': 'Dec',
 
+  'pilot.header.conversations': '{n} conversation | {n} conversations',
+  'pilot.header.working': '{n} agent working | {n} agents working',
   'pilot.toggle.classic': 'Switch to classic view',
   'pilot.toggle.grid': 'Switch to grid view',
   'pilot.cols.aria': 'Choose the number of columns',
@@ -1076,7 +1078,7 @@ const fr: Record<MessageKey, string> = {
     "Les nouvelles tâches utilisent cet agent et ce modèle, sauf si tu en choisis un autre au lancement d'une conversation. Pour OpenCode, un modèle du type openrouter/… ouvre aussi ce provider dans la cage.",
   'settings.agentError': "Impossible de mettre à jour l'agent par défaut.",
   'settings.modelLabel': 'Modèle',
-  'settings.modelPlaceholder': 'optionnel — défaut du CLI',
+  'settings.modelPlaceholder': 'optionnel · défaut du CLI',
   'settings.modelPlaceholderOpencode': 'openrouter/provider/model',
   'settings.effortLabel': 'Effort de raisonnement',
   'settings.effortDefault': 'défaut du CLI',
@@ -1161,7 +1163,7 @@ const fr: Record<MessageKey, string> = {
 
   // --- workspace (T7) ---
   'workspace.title': 'Workspace',
-  'workspace.connectionLost': 'Connexion perdue — reconnexion…',
+  'workspace.connectionLost': 'Connexion perdue, reconnexion…',
   'workspace.composerPlaceholder': "Décris une tâche pour l'agent…",
   'workspace.autoShip': 'Auto-ship',
   'workspace.autoShipHint': 'Publier sans redemander dès que la review passe.',
@@ -1194,12 +1196,12 @@ const fr: Record<MessageKey, string> = {
   'workspace.back': '← Retour aux tâches',
   'workspace.interrupt': 'Arrêter',
   'workspace.resume': 'Reprendre',
-  'workspace.resumeHint': 'Relance le tour interrompu — même consigne, même conversation.',
+  'workspace.resumeHint': 'Relance le tour interrompu : même consigne, même conversation.',
   'workspace.resumeNothing':
     "Arrêtée après la réponse de l'agent : rien à relancer. Envoie un message pour continuer.",
   'workspace.ship': 'Confirmer et publier',
   'workspace.shipSoon':
-    'La publication arrive dans une prochaine version — le verdict de review est enregistré.',
+    'La publication arrive dans une prochaine version : le verdict de review est enregistré.',
   'workspace.replyPlaceholder': "Réponds à l'agent…",
   'workspace.replyQueuePlaceholder': 'Prépare ta prochaine consigne…',
   'workspace.replySend': 'Envoyer',
@@ -1223,7 +1225,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.fixFindingsPrefill':
     'Corrige les findings relevés par la review, sans rien changer d’autre.',
   'workspace.filesTitle': 'Changements',
-  'workspace.noBranchYet': 'Pas encore de branche — le worktree est créé au lancement de la tâche.',
+  'workspace.noBranchYet': 'Pas encore de branche : le worktree est créé au lancement de la tâche.',
   'workspace.details': 'Détails',
   'workspace.evTurnStarted': 'Tour démarré',
   'workspace.evToolUse': 'Outil',
@@ -1243,7 +1245,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.evResource': 'Ressource',
   'workspace.evResourceHomeReleased': 'Volume HOME libéré',
   'workspace.evResourceHomeNotReleased': 'Volume HOME non libéré',
-  'workspace.evResourceNoRuntime': 'Aucun runtime de conteneur — volume HOME non libéré',
+  'workspace.evResourceNoRuntime': 'Aucun runtime de conteneur : volume HOME non libéré',
   'workspace.evQueue': 'En attente',
   'workspace.evQueueMachine': "En attente d'un slot machine",
   'workspace.evQueueProject': 'En attente : une autre tâche de ce projet est déjà active',
@@ -1259,7 +1261,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.evIssueCosmetic':
     "Édition cosmétique sur la forge : ce que ce contrat lit du ticket n'a pas changé",
   'workspace.evIssueEdited':
-    'Ticket modifié sur la forge — sections : {sections} ; critères ajoutés : {added} ; retirés : {removed}',
+    'Ticket modifié sur la forge · sections : {sections} ; critères ajoutés : {added} ; retirés : {removed}',
   'workspace.evIssueNotTicket': 'Le ticket ne passe plus le contrat de ticket',
   'workspace.evIssueSnapshotUnreadable':
     'Le ticket figé est illisible : les éditions de ce ticket ne sont plus détectées',
@@ -1331,12 +1333,12 @@ const fr: Record<MessageKey, string> = {
   'workspace.removeProject': 'Retirer du workspace',
   'workspace.removeProjectConfirm': 'Confirmer le retrait',
   'workspace.removeProjectHint':
-    'Désenregistre le projet seulement — rien n’est touché sur le disque.',
+    'Désenregistre le projet seulement : rien n’est touché sur le disque.',
   'workspace.removeProjectError': 'Impossible de retirer le projet.',
   'workspace.conversations': 'Conversations',
   'workspace.refreshMrs': 'Rafraîchir les merge requests',
   'workspace.treeEmpty': 'Aucune conversation pour le moment.',
-  'workspace.noProject': 'Aucun projet — ajoutes-en un dans le panneau projets pour commencer.',
+  'workspace.noProject': 'Aucun projet : ajoutes-en un dans le panneau projets pour commencer.',
 
   // --- control desk layout (A3-C1) ---
   'workspace.cardWaiting':
@@ -1356,9 +1358,9 @@ const fr: Record<MessageKey, string> = {
   'workspace.queuePositionHint':
     'En attente de son tour : {n} conversation devant elle dans ce projet | En attente de son tour : {n} conversations devant elle dans ce projet',
   'workspace.queuePositionHintIdle':
-    'Dans la file de ce projet, en #{n} — mais rien ne tourne dessus en ce moment',
+    'Dans la file de ce projet, en #{n}, mais rien ne tourne dessus en ce moment',
   'workspace.queuePositionHintMachine':
-    "En #{n} — en attente d'un slot machine libre, pas d'une autre conversation de ce projet",
+    "En #{n} : en attente d'un slot machine libre, pas d'une autre conversation de ce projet",
   'workspace.pausedFor': 'en pause depuis {t}',
   'workspace.shipAction': 'Shipper',
   'workspace.diffAction': 'Diff',
@@ -1382,25 +1384,25 @@ const fr: Record<MessageKey, string> = {
     'La première tâche avec cet agent construit une image de container (~1,4 Go) ; les suivantes la réutilisent.',
   'workspace.agoTime': 'il y a {t}',
   'workspace.quickReplyOther': 'Autre chose…',
-  'workspace.phaseQueued': 'en file — attend un créneau',
-  'workspace.phaseQueuedMachine': 'en file — attend un slot machine',
+  'workspace.phaseQueued': 'en file · attend un créneau',
+  'workspace.phaseQueuedMachine': 'en file · attend un slot machine',
   'workspace.phaseRunning': 'en cours',
-  'workspace.phaseWaiting': 'en pause — attend votre réponse',
+  'workspace.phaseWaiting': 'en pause · attend votre réponse',
   'workspace.phaseReviewing': 'review en cours',
-  'workspace.phaseReviewOk': 'review OK — prêt à shipper',
-  'workspace.phaseReviewKo': 'review bloquée — findings à corriger',
-  'workspace.phaseChecksFailed': 'review bloquée — checks en échec',
-  'workspace.phaseCriteriaUnmet': "review bloquée — critères d'acceptation non satisfaits",
+  'workspace.phaseReviewOk': 'review OK · prêt à shipper',
+  'workspace.phaseReviewKo': 'review bloquée · findings à corriger',
+  'workspace.phaseChecksFailed': 'review bloquée · checks en échec',
+  'workspace.phaseCriteriaUnmet': "review bloquée · critères d'acceptation non satisfaits",
   'workspace.phaseFixLoopStopped':
-    'corrections automatiques arrêtées — findings encore à corriger ; votre réponse repart avec un budget de correction complet',
+    'corrections automatiques arrêtées : findings encore à corriger ; votre réponse repart avec un budget de correction complet',
   'workspace.phaseFixLoopStoppedCriteria':
-    "corrections automatiques arrêtées — critères d'acceptation encore non satisfaits ; votre réponse repart avec un budget de correction complet",
-  'workspace.phaseChecksUnavailable': "fusion suspendue — les checks n'ont pas pu être exécutés",
-  'workspace.phaseCriteriaMissing': "fusion suspendue — aucun critère d'acceptation validé",
-  'workspace.phaseMergeConflict': 'fusion suspendue — la branche est en conflit avec sa cible',
-  'workspace.phaseForgeUnreachable': "fusion suspendue — la forge n'a pas effectué la fusion",
-  'workspace.phaseBranchDiverged': "fusion suspendue — la branche n'est pas à jour avec sa cible",
-  'workspace.phaseMergeChecksFailed': 'fusion suspendue — les checks du dépôt ont échoué',
+    "corrections automatiques arrêtées · critères d'acceptation encore non satisfaits ; votre réponse repart avec un budget de correction complet",
+  'workspace.phaseChecksUnavailable': "fusion suspendue · les checks n'ont pas pu être exécutés",
+  'workspace.phaseCriteriaMissing': "fusion suspendue · aucun critère d'acceptation validé",
+  'workspace.phaseMergeConflict': 'fusion suspendue · la branche est en conflit avec sa cible',
+  'workspace.phaseForgeUnreachable': "fusion suspendue · la forge n'a pas effectué la fusion",
+  'workspace.phaseBranchDiverged': "fusion suspendue · la branche n'est pas à jour avec sa cible",
+  'workspace.phaseMergeChecksFailed': 'fusion suspendue · les checks du dépôt ont échoué',
   'workspace.phaseShipped': 'shippée',
   'workspace.phaseFailed': 'échouée',
   'workspace.phaseInterrupted': 'interrompue',
@@ -1426,7 +1428,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.cleanupBranchHint':
     'Supprime la branche de la tâche et son worktree du disque. L’historique de la conversation reste.',
   'workspace.cleanupWorktreeHint':
-    'Supprime seulement le worktree — la branche t’appartient et reste.',
+    'Supprime seulement le worktree : la branche t’appartient et reste.',
   'workspace.draftWorkonHint': 'La conversation travaillera directement sur {branch}',
   'workspace.draftTargetHint': 'Cible de merge : {target}',
 
@@ -1447,7 +1449,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.planBranchUncertain': '{branch}-… (le nom exact est choisi au lancement)',
   'workspace.planBranchDerived': 'Dérivée de la première ligne de ton prompt.',
   'workspace.planWorktreeValue': '{root}/<id de tâche>',
-  'workspace.planBaseUnknown': 'indéterminée — {reason}',
+  'workspace.planBaseUnknown': 'indéterminée : {reason}',
   'workspace.planQueueNow': 'démarre tout de suite',
   'workspace.planQueueAt': 'attend en position {n}',
   'workspace.planIsolationContainer': 'container',
@@ -1462,10 +1464,10 @@ const fr: Record<MessageKey, string> = {
 
   // --- sandboxed checks (Checks tab / journal / queue badge) ---
   'workspace.evChecks': 'Checks',
-  'workspace.checksEvPassed': 'Checks — {n} réussi | Checks — {n} réussis',
-  'workspace.checksEvFailed': 'Checks — {n} échoué | Checks — {n} échoués',
-  'workspace.checksEvError': 'Checks — erreur',
-  'workspace.checksEvUnconfigured': 'Checks — non configurés',
+  'workspace.checksEvPassed': 'Checks · {n} réussi | Checks · {n} réussis',
+  'workspace.checksEvFailed': 'Checks · {n} échoué | Checks · {n} échoués',
+  'workspace.checksEvError': 'Checks · erreur',
+  'workspace.checksEvUnconfigured': 'Checks · non configurés',
   'workspace.checksStatusRunning': 'Checks en cours…',
   'workspace.checksStatusPassed': 'Checks réussis',
   'workspace.checksStatusFailed': 'Checks échoués',
@@ -1478,7 +1480,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.checksRerun': 'Relancer',
   'workspace.checksRunNow': 'Lancer les checks',
   'workspace.checksNoCommitHint':
-    "Les checks demandent un commit — ils tournent après chaque tour de l'agent.",
+    "Les checks demandent un commit : ils tournent après chaque tour de l'agent.",
   'workspace.checksHeadVerified': 'head vérifié {sha}',
   'workspace.checksExitCode': 'exit {n}',
   'workspace.checksTail': 'Sortie',
@@ -1509,7 +1511,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.checksSetupCommands': 'Commandes',
   'workspace.checksSetupNetwork': 'Réseau',
   'workspace.checksSetupNetworkInstall':
-    "étape d'install seulement — les checks restent hors ligne",
+    "étape d'install seulement : les checks restent hors ligne",
   'workspace.checksSetupNetworkNone': 'aucun',
   'workspace.checksSetupTimeout': 'Timeout',
   'workspace.checksSetupTimeoutValue': '{n}s par check',
@@ -1524,7 +1526,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.checksSetupAppliedHint':
     'Écrite dans .codesema/config.json. Les checks tourneront avec elle au prochain commit.',
   'workspace.checksSetupNoAgent':
-    'Aucun agent configuré pour ce repo — renseigne la clé "agent" dans .codesema/config.json.',
+    'Aucun agent configuré pour ce repo : renseigne la clé "agent" dans .codesema/config.json.',
   'workspace.checksSetupBusy': 'Une configuration est déjà en cours pour ce projet.',
 
   // --- isolation badge (cage container vs cage microVM vs durcissement policy) ---
@@ -1534,7 +1536,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.isolationContainerHint':
     "En cage : cet agent tourne dans son propre container, seul ce worktree y est monté et le réseau est limité aux domaines autorisés. Les commits sont faits à l'extérieur de la boîte.",
   'workspace.isolationPolicyHint':
-    "Hors cage : cet agent tourne directement sur votre machine, retenu par des règles de permission seulement — rien ne l'isole du reste de vos fichiers.",
+    "Hors cage : cet agent tourne directement sur votre machine, retenu par des règles de permission seulement ; rien ne l'isole du reste de vos fichiers.",
   'workspace.isolationMicrovmHint':
     "En cage dans une microVM : le tour de cet agent tourne dans une machine virtuelle jetable avec son propre noyau, l'accès réseau limité à la liste blanche du runbook.",
   'workspace.isolationUpgradeTitle': 'Les agents tournent ici sans container',
@@ -1777,6 +1779,8 @@ const fr: Record<MessageKey, string> = {
   'time.monthNov': 'nov.',
   'time.monthDec': 'déc.',
 
+  'pilot.header.conversations': '{n} conversation | {n} conversations',
+  'pilot.header.working': '{n} agent travaille | {n} agents travaillent',
   'pilot.toggle.classic': "Passer à l'ancienne interface",
   'pilot.toggle.grid': 'Passer à la grille',
   'pilot.cols.aria': 'Choix du nombre de colonnes',

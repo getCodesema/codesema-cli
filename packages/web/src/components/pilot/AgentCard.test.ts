@@ -210,6 +210,97 @@ describe('AgentCard: the question banner only shows while waiting for a human an
   })
 })
 
+describe("AgentCard: the action row mirrors TaskConversation's header conditions, minus Cleanup", () => {
+  test('review_ok shows Ship, and only Ship', async () => {
+    const html = await render({ state: state({ record: record({ status: 'review_ok' }) }) })
+    expect(html).toContain('ac-action--ship')
+    expect(html).toContain(t('workspace.ship'))
+    expect(html).not.toContain('ac-action--stop')
+    expect(html).not.toContain('ac-action--resume')
+  })
+
+  test('running shows Stop, and only Stop', async () => {
+    const html = await render({ state: state({ record: record({ status: 'running' }) }) })
+    expect(html).toContain('ac-action--stop')
+    expect(html).toContain(t('workspace.interrupt'))
+    expect(html).not.toContain('ac-action--ship')
+    expect(html).not.toContain('ac-action--resume')
+  })
+
+  test('queued and waiting_for_you also show Stop', async () => {
+    for (const status of ['queued', 'waiting_for_you'] as const) {
+      const html = await render({ state: state({ record: record({ status }) }) })
+      expect(html).toContain('ac-action--stop')
+    }
+  })
+
+  // A turn frees its slot to the reviewer before handing over: an interrupt
+  // during 'reviewing' always 409s on the server, so the button that could
+  // not stop anything is never offered (same reasoning as TaskConversation's
+  // own canInterrupt).
+  test('reviewing shows no Stop button, and no action row at all', async () => {
+    const html = await render({ state: state({ record: record({ status: 'reviewing' }) }) })
+    expect(html).not.toContain('ac-action--stop')
+    expect(html).not.toContain('ac-actions')
+  })
+
+  test('an interrupted task with a restartable turn shows Resume', async () => {
+    const html = await render({
+      state: state({
+        record: record({
+          status: 'interrupted',
+          turns: [
+            {
+              prompt: 'do it',
+              response: null,
+              question: null,
+              started_at: '2026-08-14T10:00:00.000Z',
+              ended_at: null,
+            },
+          ],
+        }),
+      }),
+    })
+    expect(html).toContain('ac-action--resume')
+    expect(html).toContain(t('workspace.resume'))
+  })
+
+  test('an interrupted task whose last turn already answered shows no Resume', async () => {
+    const html = await render({
+      state: state({
+        record: record({
+          status: 'interrupted',
+          turns: [
+            {
+              prompt: 'do it',
+              response: 'done',
+              question: null,
+              started_at: '2026-08-14T10:00:00.000Z',
+              ended_at: '2026-08-14T10:00:05.000Z',
+            },
+          ],
+        }),
+      }),
+    })
+    expect(html).not.toContain('ac-action--resume')
+  })
+
+  test('a shipped task shows no action row at all', async () => {
+    const html = await render({ state: state({ record: record({ status: 'shipped' }) }) })
+    expect(html).not.toContain('ac-actions')
+  })
+
+  test('the action buttons disable while sending', async () => {
+    const html = await render({
+      state: state({ record: record({ status: 'review_ok' }) }),
+      sending: true,
+    })
+    const match = html.match(/<button[^>]*class="ac-action ac-action--ship"[^>]*>/)
+    expect(match).not.toBeNull()
+    expect(match?.[0]).toContain('disabled')
+  })
+})
+
 describe('AgentCard: the composer always renders', () => {
   test('the reply placeholder is the shared existing string, no new key', async () => {
     const html = await render({ state: state() })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { extractQuickReplies } from '../../composables/useQuickReplies'
-import { lastQuestion } from '../../composables/useTaskBoard'
+import { lastQuestion, resumeStateOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
 import { t } from '../../i18n'
@@ -24,11 +24,24 @@ const emit = defineEmits<{
   'open-lens': [block: LensBlock]
   send: [text: string]
   pick: [option: string]
+  ship: []
+  stop: []
+  resume: []
 }>()
 
 const record = computed(() => props.state.record)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
 const age = computed(() => formatRelativeAge(record.value.updated_at))
+
+// Same three offers as TaskConversation's header, minus Cleanup (destructive
+// two-step, stays in the classic interface only). 'reviewing' is deliberately
+// absent from canStop: the runner frees the task's slot before handing over
+// to the review, so an interrupt there always 409s.
+const canShip = computed(() => record.value.status === 'review_ok')
+const canStop = computed(() =>
+  ['queued', 'running', 'waiting_for_you'].includes(record.value.status),
+)
+const resumeState = computed(() => resumeStateOf(record.value))
 
 const questionActive = computed(() => record.value.status === 'waiting_for_you')
 const question = computed(() => (questionActive.value ? lastQuestion(props.state.events) : null))
@@ -134,6 +147,35 @@ function onSend(text: string): void {
     </div>
 
     <footer class="ac-foot">
+      <div v-if="canShip || canStop || resumeState === 'ready'" class="ac-actions">
+        <button
+          v-if="resumeState === 'ready'"
+          type="button"
+          class="ac-action ac-action--resume"
+          :disabled="sending"
+          @click="emit('resume')"
+        >
+          {{ t('workspace.resume') }}
+        </button>
+        <button
+          v-if="canStop"
+          type="button"
+          class="ac-action ac-action--stop"
+          :disabled="sending"
+          @click="emit('stop')"
+        >
+          {{ t('workspace.interrupt') }}
+        </button>
+        <button
+          v-if="canShip"
+          type="button"
+          class="ac-action ac-action--ship"
+          :disabled="sending"
+          @click="emit('ship')"
+        >
+          {{ t('workspace.ship') }}
+        </button>
+      </div>
       <QuestionBlock
         :question="question"
         :options="quickReplyOptions"
@@ -280,5 +322,58 @@ function onSend(text: string): void {
   gap: 8px;
   padding: 10px 14px 12px;
   border-top: 1px solid var(--cs-line);
+}
+
+.ac-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ac-action {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--cs-line-2);
+  background: transparent;
+  cursor: pointer;
+  transition: border-color var(--cs-duration-fast) var(--cs-ease-out);
+}
+
+.ac-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ac-action--stop {
+  color: var(--cs-red-text);
+  border-color: var(--cs-red-line);
+}
+
+.ac-action--stop:hover:not(:disabled) {
+  border-color: var(--cs-red);
+}
+
+.ac-action--ship {
+  color: var(--cs-on-green);
+  background: var(--cs-green);
+  border-color: var(--cs-green);
+}
+
+.ac-action--ship:hover:not(:disabled) {
+  background: var(--cs-green-hover);
+  border-color: var(--cs-green-hover);
+}
+
+.ac-action--resume {
+  color: var(--cs-amber-text);
+  border-color: var(--cs-amber-line);
+  background: var(--cs-amber-soft);
+}
+
+.ac-action--resume:hover:not(:disabled) {
+  border-color: var(--cs-amber);
 }
 </style>
