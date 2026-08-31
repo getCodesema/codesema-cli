@@ -38,7 +38,7 @@ const props = defineProps<{
 /** Null when the forge answers, and null when nothing is known about it. */
 const forgeReasonKey = computed(() => forgeUnavailableKey(props.workspace ?? null))
 
-const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
+const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shell': [] }>()
 </script>
 
 <template>
@@ -63,6 +63,9 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
         <span aria-hidden="true">⚠</span>
         {{ t('workspace.forgeUnavailable') }} — {{ t(forgeReasonKey) }}
       </span>
+      <button class="wh-pilot-toggle" type="button" @click="emit('switch-shell')">
+        {{ t('pilot.toggle.grid') }}
+      </button>
       <button class="wh-settings" type="button" @click="emit('settings')">
         {{ settingsOpen ? t('workspace.back') : t('nav.settings') }}
       </button>
@@ -141,6 +144,22 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
 }
 
 .wh-settings:hover {
+  border-color: var(--cs-line-2);
+}
+
+.wh-pilot-toggle {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--cs-line);
+  background: var(--cs-surface);
+  color: var(--cs-text-2);
+  cursor: pointer;
+}
+
+.wh-pilot-toggle:hover {
   border-color: var(--cs-line-2);
 }
 

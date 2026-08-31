@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import PilotView from './components/pilot/PilotView.vue'
 import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
 import WorkspaceView from './components/WorkspaceView.vue'
+import { usePilotPrefs } from './composables/usePilotPrefs'
 import { useReviewSession } from './composables/useReviewSession'
 
 // The tasks token doubles as the mode detector: the server only injects it
@@ -16,6 +18,12 @@ const tasksToken =
     ? (window as { __CODESEMA_TASKS_TOKEN__?: string }).__CODESEMA_TASKS_TOKEN__
     : undefined
 const workspaceMode = typeof tasksToken === 'string' && tasksToken.length > 0
+
+// This instance is the switch's own source of truth: PilotView and
+// WorkspaceView each read their own usePilotPrefs() (two independent refs,
+// no shared reactivity), so the toggle travels as an event up to App rather
+// than through the composable.
+const { shell } = usePilotPrefs()
 
 const view = ref<'review' | 'settings'>('review')
 
@@ -32,7 +40,10 @@ onUnmounted(stop)
 </script>
 
 <template>
-  <WorkspaceView v-if="workspaceMode && tasksToken" :token="tasksToken" />
+  <template v-if="workspaceMode && tasksToken">
+    <PilotView v-if="shell === 'pilot'" :token="tasksToken" @switch-shell="shell = 'classic'" />
+    <WorkspaceView v-else :token="tasksToken" @switch-shell="shell = 'pilot'" />
+  </template>
   <div v-else class="app-layout">
     <div class="app-main">
       <nav class="app-nav">
