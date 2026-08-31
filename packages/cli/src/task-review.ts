@@ -34,6 +34,7 @@ import {
 } from './microsandbox-driver.js'
 import {
   AGENT_INSTALL_DOMAINS,
+  ensureAgentCredentials,
   ensureAgentInstalled,
   ensureGuestUser,
 } from './microvm-bootstrap.js'
@@ -1138,6 +1139,9 @@ export type RunMicrovmReviewOptions = {
   secrets?: readonly SandboxSecret[]
   onText?: (text: string) => void
   signal?: AbortSignal
+  env?: NodeJS.ProcessEnv
+  /** Test seam: overrides ensureAgentCredentials' host credentials file. */
+  credentialsPath?: string
 }
 
 const MICROVM_REVIEW_DEFAULTS = {
@@ -1191,6 +1195,10 @@ export async function runMicrovmReview(opts: RunMicrovmReviewOptions): Promise<s
   try {
     await ensureGuestUser(handle, MICROVM_REVIEW_DEFAULTS.user)
     await ensureAgentInstalled(handle, agentId, { install: cold })
+    await ensureAgentCredentials(handle, MICROVM_REVIEW_DEFAULTS.user, agentId, {
+      env: opts.env ?? process.env,
+      ...(opts.credentialsPath ? { credentialsPath: opts.credentialsPath } : {}),
+    })
     await handle.copyFromHost(opts.worktree, MICROVM_REVIEW_DEFAULTS.workDir)
     // A fresh copy, never the dev VM's own worktree: turned read-only right
     // after the copy so nothing the reviewer runs can write it back.

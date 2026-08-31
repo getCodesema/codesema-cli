@@ -2586,6 +2586,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     const stdout = await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2614,6 +2615,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2633,6 +2635,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2653,6 +2656,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2672,6 +2676,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2693,6 +2698,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2721,6 +2727,7 @@ describe('runMicrovmReview', () => {
     const fake2 = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake1.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2731,6 +2738,7 @@ describe('runMicrovmReview', () => {
       timeoutMs: 5000,
     })
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake2.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2753,6 +2761,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2789,6 +2798,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2818,6 +2828,7 @@ describe('runMicrovmReview', () => {
 
     await expect(
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2847,6 +2858,7 @@ describe('runMicrovmReview', () => {
     })
 
     const stdout = await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2871,6 +2883,7 @@ describe('runMicrovmReview', () => {
 
     await Promise.all([
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2882,6 +2895,7 @@ describe('runMicrovmReview', () => {
         taskId: 'task-shared',
       }),
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2909,6 +2923,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2928,6 +2943,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver({ destroyError: new Error('sandbox already gone') })
 
     const stdout = await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2951,6 +2967,7 @@ describe('runMicrovmReview', () => {
 
     await expect(
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2970,6 +2987,7 @@ describe('runMicrovmReview', () => {
       const fake = fakeMicrovmDriver({ probeMissingFor: 'opencode' })
 
       await runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2994,6 +3012,7 @@ describe('runMicrovmReview', () => {
 
       await expect(
         runMicrovmReview({
+          env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
           driver: fake.driver,
           worktree: repo,
           projectId: 'proj-1',
@@ -3007,6 +3026,100 @@ describe('runMicrovmReview', () => {
       ).rejects.toThrow(/not installed in this microVM/)
 
       expect(fake.calls.some((c) => String(c.args[0]).includes('npm install -g'))).toBe(false)
+    })
+  })
+
+  describe('agent credentials', () => {
+    function makeCredentialsFile(content = '{"token":"secret-token-value"}'): string {
+      const dir = mkdtempSync(join(tmpdir(), 'codesema-review-creds-'))
+      cleanups.push(dir)
+      writeFileSync(join(dir, 'credentials.json'), content)
+      return join(dir, 'credentials.json')
+    }
+
+    test('no oauth token, credentials file present: written into the review VM, chmod 600, chowned, never in a shell command', async () => {
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver()
+      const credentialsPath = makeCredentialsFile('{"token":"secret-token-value"}')
+
+      await runMicrovmReview({
+        env: {},
+        credentialsPath,
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      })
+
+      const write = fake.calls.find((c) => c.method === 'writeFile')
+      expect(write?.args).toEqual([
+        '/home/agent/.claude/.credentials.json',
+        '{"token":"secret-token-value"}',
+      ])
+      const chmodChown = fake.calls.find(
+        (c) => c.method === 'shell' && String(c.args[0]).includes('chmod 600'),
+      )
+      expect(chmodChown?.args[0]).toBe(
+        'chmod 600 /home/agent/.claude/.credentials.json && chown -R agent:agent /home/agent/.claude',
+      )
+      expect((chmodChown?.args[1] as { user?: string } | undefined)?.user).toBe('root')
+      for (const call of fake.calls) {
+        if (call.method === 'shell') {
+          expect(String(call.args[0])).not.toContain('secret-token-value')
+        }
+      }
+    })
+
+    test('CLAUDE_CODE_OAUTH_TOKEN present: nothing is copied into the review VM', async () => {
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver()
+      const credentialsPath = makeCredentialsFile()
+
+      await runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
+        credentialsPath,
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      })
+
+      expect(fake.calls.some((c) => c.method === 'writeFile')).toBe(false)
+    })
+
+    test('no credentials file on the host: no write, no error', async () => {
+      const missingDir = mkdtempSync(join(tmpdir(), 'codesema-review-creds-'))
+      cleanups.push(missingDir)
+      const missingPath = join(missingDir, 'nope.json')
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver()
+
+      const stdout = await runMicrovmReview({
+        env: {},
+        credentialsPath: missingPath,
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      })
+
+      expect(stdout).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
+      expect(fake.calls.some((c) => c.method === 'writeFile')).toBe(false)
     })
   })
 })
@@ -3050,7 +3163,21 @@ describe('createTaskReviewer: microvm wiring', () => {
 
     // Calling it drives the fake driver exactly as `runMicrovmReview` alone
     // does — the wiring built by `createTaskReviewer`, exercised end to end.
-    const raw = await runAgentInVm?.('hand-built prompt')
+    // This call site (task-review.ts's own runAgentInVm closure) has no env
+    // seam, so it falls through to the real process.env: pinned here so
+    // ensureAgentCredentials never touches this machine's real credentials.
+    const previousToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'tok-secret'
+    let raw: string | undefined
+    try {
+      raw = await runAgentInVm?.('hand-built prompt')
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      } else {
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = previousToken
+      }
+    }
     expect(raw).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
     expect(fake.specs[0]?.name).toMatch(new RegExp(`^codesema-review-${record.id}-[0-9a-f]{8}$`))
     expect(fake.calls.map((c) => c.method)).toEqual([

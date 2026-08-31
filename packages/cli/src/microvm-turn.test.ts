@@ -339,6 +339,79 @@ describe('runMicrovmTurn: sandbox spec', () => {
     })
   })
 
+  describe('agent credentials', () => {
+    function makeCredentialsFile(content = '{"token":"secret-token-value"}'): string {
+      const dir = makeDir('codesema-microvm-creds-')
+      const path = join(dir, 'credentials.json')
+      writeFileSync(path, content)
+      return path
+    }
+
+    test('no oauth token, credentials file present: written through writeFile with the right permissions, never in a shell command', async () => {
+      const credentialsPath = makeCredentialsFile('{"token":"secret-token-value"}')
+      const { opts, rig } = baseOptions({ env: {}, credentialsPath })
+      const promise = runMicrovmTurn(opts)
+      await flush()
+
+      expect(rig.writeFileCalls).toHaveLength(1)
+      expect(rig.writeFileCalls[0]?.[0]).toBe('/home/agent/.claude/.credentials.json')
+      expect(rig.writeFileCalls[0]?.[1]).toBe('{"token":"secret-token-value"}')
+
+      const chmodChown = rig.shellCalls.find((c) => c.script.includes('chmod 600'))
+      expect(chmodChown?.script).toBe(
+        'chmod 600 /home/agent/.claude/.credentials.json && chown -R agent:agent /home/agent/.claude',
+      )
+      expect(chmodChown?.opts.user).toBe('root')
+      expect(rig.shellCalls.some((c) => c.script.includes('mkdir -p /home/agent/.claude'))).toBe(
+        true,
+      )
+
+      for (const call of rig.shellCalls) {
+        expect(call.script).not.toContain('secret-token-value')
+      }
+
+      rig.resolveTurn({ stdout: 'ok' })
+      await promise
+    })
+
+    test('CLAUDE_CODE_OAUTH_TOKEN present: nothing is copied', async () => {
+      const credentialsPath = makeCredentialsFile()
+      const { opts, rig } = baseOptions({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
+        credentialsPath,
+      })
+      const promise = runMicrovmTurn(opts)
+      await flush()
+      expect(rig.writeFileCalls).toHaveLength(0)
+      rig.resolveTurn({ stdout: 'ok' })
+      await promise
+    })
+
+    test('no credentials file on the host: no write, no error, the turn still runs', async () => {
+      const missingPath = join(makeDir('codesema-microvm-creds-'), 'nope.json')
+      const { opts, rig } = baseOptions({ env: {}, credentialsPath: missingPath })
+      const promise = runMicrovmTurn(opts)
+      await flush()
+      expect(rig.writeFileCalls).toHaveLength(0)
+      rig.resolveTurn({ stdout: 'ok' })
+      await expect(promise).resolves.toBe('ok')
+    })
+
+    test('a non-claude agent never gets its credentials copied', async () => {
+      const credentialsPath = makeCredentialsFile()
+      const { opts, rig } = baseOptions({
+        command: 'opencode run --model x',
+        env: {},
+        credentialsPath,
+      })
+      const promise = runMicrovmTurn(opts)
+      await flush()
+      expect(rig.writeFileCalls).toHaveLength(0)
+      rig.resolveTurn({ stdout: 'ok' })
+      await promise
+    })
+  })
+
   test('a validated runbook joins its egress to the allowlist for the whole turn', async () => {
     const runbook: RunbookConfig = {
       version: 1,

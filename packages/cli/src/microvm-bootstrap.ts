@@ -6,9 +6,17 @@
  * three used to duplicate (or, for the review, simply omit) the same two
  * steps: create the non-root guest user, make sure the agent binary is on
  * its PATH.
+ *
+ * `ensureAgentCredentials` below is the microVM counterpart of container
+ * mode's `bootstrapAgentHome` (task-isolation.ts): a container-mode cage
+ * always gets the host's `~/.claude/.credentials.json` copied in when no
+ * `CLAUDE_CODE_OAUTH_TOKEN` is forwarded, and now every microVM entry point
+ * does too: `runMicrovmTurn` (dev turn, and the scan proposal that calls it)
+ * and `runMicrovmReview` both call it right after `ensureAgentInstalled`.
  */
+import { readFileSync } from 'node:fs'
 import type { SandboxHandle } from './microsandbox-driver.js'
-import { installCommandFor } from './task-isolation.js'
+import { agentCredentialsPath, CAGE_HOME_DIR, installCommandFor } from './task-isolation.js'
 
 /**
  * The only domain a microVM ever needs to install the agent CLI: npm only,
@@ -91,4 +99,52 @@ export async function ensureAgentInstalled(
     const tail = `${result.stdout}\n${result.stderr}`.trim().slice(-2000)
     throw new Error(`could not install ${agentId} in the microVM: ${tail}`)
   }
+}
+
+export type EnsureAgentCredentialsOptions = {
+  env?: NodeJS.ProcessEnv
+  /** Host credentials file; defaults to agentCredentialsPath(agentId, env). Test seam, same doctrine as BootstrapAgentHomeOptions.credentialsPath. */
+  credentialsPath?: string
+}
+
+/**
+ * Seeds the guest's Claude credentials, the microVM counterpart of
+ * `bootstrapAgentHome` (task-isolation.ts). A no-op for every agent but
+ * `claude` (opencode's own auth.json is a separate concern), and whenever
+ * `CLAUDE_CODE_OAUTH_TOKEN` is set (forwarded per run instead) or the host
+ * credentials file is unreadable, the VM then simply boots unauthenticated,
+ * same fallback doctrine as the container flow, never a throw.
+ *
+ * The content travels through the driver's own guest file writer, never
+ * through an argv or an interpolated shell command: `ps` on the host, or a
+ * command logged anywhere along the way, must never carry the secret.
+ */
+export async function ensureAgentCredentials(
+  handle: SandboxHandle,
+  user: string,
+  agentId: string,
+  opts: EnsureAgentCredentialsOptions = {},
+): Promise<void> {
+  if (agentId !== 'claude') {
+    return
+  }
+  const env = opts.env ?? process.env
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) {
+    return
+  }
+  assertValidGuestUser(user)
+  let content: string
+  try {
+    content = readFileSync(opts.credentialsPath ?? agentCredentialsPath(agentId, env), 'utf8')
+  } catch {
+    return
+  }
+  const destDir = `${CAGE_HOME_DIR}/.claude`
+  const destFile = `${destDir}/.credentials.json`
+  await handle.shell(`mkdir -p ${destDir}`, { timeoutMs: BOOTSTRAP_TIMEOUT_MS, user: 'root' })
+  await handle.writeFile(destFile, content)
+  await handle.shell(`chmod 600 ${destFile} && chown -R ${user}:${user} ${destDir}`, {
+    timeoutMs: BOOTSTRAP_TIMEOUT_MS,
+    user: 'root',
+  })
 }
