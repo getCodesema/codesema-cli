@@ -5,6 +5,7 @@ import { extractQuickReplies } from '../../composables/useQuickReplies'
 import { agentCounts, lastQuestion } from '../../composables/useTaskBoard'
 import { useTasks, type ApiResult, type TaskState } from '../../composables/useTasks'
 import { t, type MessageKey } from '../../i18n'
+import type { TaskStatus } from '../../types'
 import AgentCard from './AgentCard.vue'
 import ChecksBlock from './ChecksBlock.vue'
 import CriteriaBlock from './CriteriaBlock.vue'
@@ -46,12 +47,28 @@ const counts = computed(() => agentCounts(tasks.states.value))
 
 const COLS_OPTIONS: readonly PilotCols[] = [1, 2, 3, 4]
 
-// ── Hydration: recap/evidence/checks, fetched once per task ─────────────
-// A reconnect never replays what happened while the stream was down, so
-// every task asks again on a fresh `connections` tick, even one already
-// answered once.
+// ── Hydration: recap/evidence/checks, fetched once per visible task ─────
+// Full event history is heavier and only ever read in two places, so unlike
+// recap/evidence/checks it is NOT fetched for every card: eagerly for the
+// attention cards whose question is shown inline, unopened (mirrors
+// WorkspaceView's own `hydratedForQuestion`), and otherwise on demand the
+// moment a card is actually opened (open-full, mobile select), mirroring
+// WorkspaceView's `openConversation`. A reconnect never replays what
+// happened while the stream was down, so every task's recap/evidence/checks
+// ask again on a fresh `connections` tick, and whichever task is currently
+// open re-asks for its events too.
 
 const requestedHydration = new Set<string>()
+
+function hydrateEventsIfNeeded(state: TaskState): void {
+  const key = `${state.projectId}:${state.record.id}:events`
+  if (!requestedHydration.has(key)) {
+    requestedHydration.add(key)
+    void tasks.hydrate(state.projectId, state.record.id)
+  }
+}
+
+const EVENTS_EAGER_STATUSES: ReadonlySet<TaskStatus> = new Set(['waiting_for_you', 'review_ko'])
 
 function hydrateIfNeeded(state: TaskState): void {
   const base = `${state.projectId}:${state.record.id}`
@@ -71,6 +88,9 @@ function hydrateIfNeeded(state: TaskState): void {
     requestedHydration.add(`${base}:checks`)
     void tasks.hydrateChecks(state.projectId, state.record.id)
   }
+  if (EVENTS_EAGER_STATUSES.has(state.record.status)) {
+    hydrateEventsIfNeeded(state)
+  }
 }
 
 watch(
@@ -87,6 +107,16 @@ watch(tasks.connections, () => {
   requestedHydration.clear()
   for (const state of tasks.states.value) {
     hydrateIfNeeded(state)
+  }
+  // The currently open task (full view or mobile thread) is not necessarily
+  // in the eager attention subset above (it may be a terminated task the
+  // reader opened deliberately): re-fetch its events too, matching how
+  // WorkspaceView's own reconnect handling re-hydrates the open conversation.
+  if (expandedState.value !== null) {
+    hydrateEventsIfNeeded(expandedState.value)
+  }
+  if (selectedState.value !== null) {
+    hydrateEventsIfNeeded(selectedState.value)
   }
 })
 
@@ -186,6 +216,11 @@ const expandedState = computed<TaskState | null>(() =>
   expandedId.value === null ? null : findState(expandedId.value),
 )
 
+function onOpenFull(state: TaskState): void {
+  expandedId.value = state.record.id
+  hydrateEventsIfNeeded(state)
+}
+
 function onExpandedSend(text: string): void {
   if (expandedState.value === null) {
     return
@@ -204,6 +239,14 @@ const mobilePaneKind = computed(() => mobilePane(selectedId.value))
 const selectedState = computed<TaskState | null>(() =>
   selectedId.value === null ? null : findState(selectedId.value),
 )
+
+function onMobileOpen(taskId: string): void {
+  selectedId.value = taskId
+  const target = findState(taskId)
+  if (target !== null) {
+    hydrateEventsIfNeeded(target)
+  }
+}
 
 function onMobileSend(text: string): void {
   if (selectedState.value === null) {
@@ -261,7 +304,7 @@ function onMobilePick(option: string): void {
         :key="`${state.projectId}:${state.record.id}`"
         :state="state"
         :sending="sendingTaskIds.has(state.record.id)"
-        @open-full="expandedId = state.record.id"
+        @open-full="onOpenFull(state)"
         @open-lens="onOpenLens(state.record.id, $event)"
         @send="(text) => sendReply(state.projectId, state.record.id, text)"
         @pick="(option) => sendReply(state.projectId, state.record.id, option)"
@@ -321,7 +364,7 @@ function onMobilePick(option: string): void {
         @send="onMobileSend"
         @pick="onMobilePick"
       />
-      <MobileList v-else :states="orderedStates" @open="selectedId = $event" />
+      <MobileList v-else :states="orderedStates" @open="onMobileOpen" />
     </div>
   </div>
 </template>

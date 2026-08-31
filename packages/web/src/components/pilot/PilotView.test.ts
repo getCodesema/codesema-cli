@@ -110,7 +110,7 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
       SOURCE.indexOf('<AgentCard'),
       SOURCE.indexOf('/>', SOURCE.indexOf('<AgentCard')),
     )
-    expect(cardBlock).toContain('@open-full="expandedId = state.record.id"')
+    expect(cardBlock).toContain('@open-full="onOpenFull(state)"')
     expect(cardBlock).toContain('@open-lens="onOpenLens(state.record.id, $event)"')
     expect(cardBlock).toContain('sendReply(state.projectId, state.record.id, text)')
     expect(cardBlock).toContain('sendReply(state.projectId, state.record.id, option)')
@@ -178,7 +178,8 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
 
   test('mobile: open sets the selection, back clears it, mobilePane picks the pane', () => {
     expect(SOURCE).toContain('mobilePane(selectedId.value)')
-    expect(SOURCE).toContain('@open="selectedId = $event"')
+    expect(SOURCE).toContain('@open="onMobileOpen"')
+    expect(SOURCE).toContain('selectedId.value = taskId')
     expect(SOURCE).toContain('@back="selectedId = null"')
   })
 
@@ -198,6 +199,65 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
   test('switching to the classic shell persists the choice and emits switch-shell', () => {
     expect(SOURCE).toContain("shell.value = 'classic'")
     expect(SOURCE).toContain("emit('switch-shell')")
+  })
+})
+
+// Review fix: opening a card in full (or on mobile) used to show an empty
+// thread for any task whose events had never streamed in live, since
+// recap/evidence/checks were the only things PilotView ever hydrated. Full
+// event history is fetched (a) eagerly for the attention cards that show
+// their question inline, unopened, mirroring WorkspaceView's own
+// `hydratedForQuestion`, and (b) on demand the moment a card is opened
+// (open-full, mobile select), mirroring WorkspaceView's `openConversation`.
+// Verified on the source: see the file-header limitation on rendering a
+// populated store under SSR.
+describe('PilotView: full event history is hydrated, not left to the live stream alone', () => {
+  test('the attention statuses (waiting_for_you, review_ko) are hydrated eagerly, like WorkspaceView', () => {
+    expect(SOURCE).toContain(
+      "const EVENTS_EAGER_STATUSES: ReadonlySet<TaskStatus> = new Set(['waiting_for_you', 'review_ko'])",
+    )
+    const hydrateIfNeededBlock = SOURCE.slice(
+      SOURCE.indexOf('function hydrateIfNeeded'),
+      SOURCE.indexOf('\n}\n', SOURCE.indexOf('function hydrateIfNeeded')),
+    )
+    expect(hydrateIfNeededBlock).toContain('EVENTS_EAGER_STATUSES.has(state.record.status)')
+    expect(hydrateIfNeededBlock).toContain('hydrateEventsIfNeeded(state)')
+  })
+
+  test('any card is hydrated on demand through tasks.hydrate, guarded by the same requested set', () => {
+    const hydrateEventsBlock = SOURCE.slice(
+      SOURCE.indexOf('function hydrateEventsIfNeeded'),
+      SOURCE.indexOf('\n}\n', SOURCE.indexOf('function hydrateEventsIfNeeded')),
+    )
+    expect(hydrateEventsBlock).toContain('`${state.projectId}:${state.record.id}:events`')
+    expect(hydrateEventsBlock).toContain('requestedHydration')
+    expect(hydrateEventsBlock).toContain('tasks.hydrate(state.projectId, state.record.id)')
+  })
+
+  test('open-full and the mobile open both trigger the on-demand hydration', () => {
+    const openFullBlock = SOURCE.slice(
+      SOURCE.indexOf('function onOpenFull'),
+      SOURCE.indexOf('\n}\n', SOURCE.indexOf('function onOpenFull')),
+    )
+    expect(openFullBlock).toContain('expandedId.value = state.record.id')
+    expect(openFullBlock).toContain('hydrateEventsIfNeeded(state)')
+
+    const mobileOpenBlock = SOURCE.slice(
+      SOURCE.indexOf('function onMobileOpen'),
+      SOURCE.indexOf('\n}\n', SOURCE.indexOf('function onMobileOpen')),
+    )
+    expect(mobileOpenBlock).toContain('selectedId.value = taskId')
+    expect(mobileOpenBlock).toContain('hydrateEventsIfNeeded(target)')
+  })
+
+  test('a reconnect also re-asks for events on whichever task is currently open', () => {
+    const watchBlock = SOURCE.slice(
+      SOURCE.indexOf('watch(tasks.connections'),
+      SOURCE.indexOf('\n})', SOURCE.indexOf('watch(tasks.connections')),
+    )
+    expect(watchBlock).toContain('if (expandedState.value !== null)')
+    expect(watchBlock).toContain('if (selectedState.value !== null)')
+    expect(watchBlock.match(/hydrateEventsIfNeeded\(/g)).toHaveLength(2)
   })
 })
 
