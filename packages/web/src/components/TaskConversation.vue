@@ -67,6 +67,7 @@ import type {
   TaskEvent,
   TaskStatus as TaskStatus2,
 } from '../types'
+import QuickReplies from './composer/QuickReplies.vue'
 import PreviewPanel from './PreviewPanel.vue'
 import TaskEventUser from './task-events/TaskEventUser.vue'
 
@@ -1016,21 +1017,12 @@ const wait = computed(() =>
           </div>
 
           <!-- Quick replies: the question enumerated its options — one click. -->
-          <div v-if="quickReplies.length > 0" class="cv-quick">
-            <button
-              v-for="option in quickReplies"
-              :key="option"
-              class="cv-quick-opt"
-              type="button"
-              :disabled="replyBusy"
-              @click="sendQuickReply(option)"
-            >
-              → {{ option }}
-            </button>
-            <button class="cv-quick-other" type="button" @click="focusReply">
-              {{ t('workspace.quickReplyOther') }}
-            </button>
-          </div>
+          <QuickReplies
+            :options="quickReplies"
+            :disabled="replyBusy"
+            @pick="sendQuickReply"
+            @other="focusReply"
+          />
         </div>
       </div>
 
@@ -1780,53 +1772,6 @@ const wait = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-/* ── Quick replies ────────────────────────────────────────────────────── */
-.cv-quick {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 2px;
-}
-
-/* Amber: answering IS the pending human action. */
-.cv-quick-opt {
-  font-size: 12.5px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 8px 14px;
-  border: 1px solid var(--cs-amber-line);
-  border-radius: 8px;
-  background: var(--cs-amber-soft);
-  color: var(--cs-amber-text);
-  cursor: pointer;
-  overflow-wrap: anywhere;
-  text-align: left;
-}
-
-.cv-quick-opt:hover:not(:disabled) {
-  border-color: var(--cs-amber);
-}
-
-.cv-quick-opt:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.cv-quick-other {
-  font-size: 12.5px;
-  font-family: inherit;
-  padding: 8px 14px;
-  border: 1px solid var(--cs-line-3);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--cs-muted);
-  cursor: pointer;
-}
-
-.cv-quick-other:hover {
-  color: var(--cs-text);
 }
 
 /* ── Composer ─────────────────────────────────────────────────────────── */

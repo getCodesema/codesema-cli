@@ -16,6 +16,7 @@ import {
 // All agent input passes through here: whitelist and truncate, never throw.
 
 export * from './arm.js'
+export * from './evidence.js'
 export * from './reasons.js'
 export * from './recap.js'
 export * from './runbook.js'

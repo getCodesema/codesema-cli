@@ -159,14 +159,14 @@ describe('reference pills: ticket and checks, both optional, independent', () =>
   test('shipped never shows a checks pill, even with a failed run recorded', async () => {
     const state = taskState({ status: 'shipped' }, { checks: checks({ status: 'failed' }) })
     const html = await render(state)
-    expect(html).not.toContain('cvr-pill--red')
+    expect(html).not.toContain('cc-pill--red')
     expect(html).not.toContain(t('conversations.checksFailed'))
   })
 
   test('a failed run: a red pill with the x glyph', async () => {
     const state = taskState({ status: 'running' }, { checks: checks({ status: 'failed' }) })
     const html = await render(state)
-    expect(html).toContain('cvr-pill--red')
+    expect(html).toContain('cc-pill--red')
     expect(html).toContain(t('conversations.checksFailed'))
   })
 
@@ -183,15 +183,15 @@ describe('reference pills: ticket and checks, both optional, independent', () =>
   test('checks running: an amber dot, never the spinning glyph class', async () => {
     const state = taskState({ status: 'running' }, { checks: checks({ status: 'running' }) })
     const html = await render(state)
-    expect(html).toContain('cvr-pill--amber')
-    expect(html).toContain('cvr-dot--pill')
-    expect(html).not.toContain('cvr-activity-glyph--spin cvr-dot--pill')
+    expect(html).toContain('cc-pill--amber')
+    expect(html).toContain('cc-dot')
+    expect(html).not.toContain('cvr-activity-glyph--spin cc-dot')
   })
 
   test('a passed run: a green pill with the check glyph', async () => {
     const state = taskState({ status: 'running' }, { checks: checks({ status: 'passed' }) })
     const html = await render(state)
-    expect(html).toContain('cvr-pill--green')
+    expect(html).toContain('cc-pill--green')
     expect(html).toContain(t('conversations.checksPassed'))
   })
 

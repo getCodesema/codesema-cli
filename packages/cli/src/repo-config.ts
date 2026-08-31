@@ -95,6 +95,53 @@ export function readChecksConfig(repoRoot: string): ChecksConfig | null {
   }
 }
 
+export type ProofConfig = {
+  journey: string
+  url: string
+  timeoutSeconds: number | null
+  keep: number | null
+}
+
+const PROOF_STRING_MAX = 500
+const PROOF_KEEP_MAX = 20
+
+/**
+ * Reads the repo's `proof` key. Same raw re-read pattern as readChecksConfig
+ * (config.ts's parseConfig whitelists its own fields). journey and url are
+ * mandatory: without a journey nothing is replayable, so a missing/invalid
+ * one degrades the whole record to null instead of a partial config.
+ */
+export function readProofConfig(repoRoot: string): ProofConfig | null {
+  const path = repoConfigPath(repoRoot)
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+  const proof = (raw as { proof?: unknown } | null)?.proof
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
+    return null
+  }
+  const p = proof as Record<string, unknown>
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim().slice(0, PROOF_STRING_MAX) : undefined
+  const journey = str(p.journey)
+  const url = str(p.url)
+  if (journey === undefined || url === undefined) {
+    return null
+  }
+  const timeoutSeconds =
+    Number.isInteger(p.timeoutSeconds) && (p.timeoutSeconds as number) > 0
+      ? (p.timeoutSeconds as number)
+      : null
+  const keep =
+    Number.isInteger(p.keep) && (p.keep as number) > 0
+      ? Math.min(p.keep as number, PROOF_KEEP_MAX)
+      : null
+  return { journey, url, timeoutSeconds, keep }
+}
+
 /**
  * Writes ONLY the `checks` key of .codesema/config.json, keeping every other
  * key (agent, port, language...) byte-for-byte in place — this is a

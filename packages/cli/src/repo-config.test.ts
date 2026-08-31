@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { saveGlobalConfig, saveRepoConfig } from './config.js'
 import {
   readChecksConfig,
+  readProofConfig,
   readRulesContent,
   readSyncAutoPush,
   rulesFilePath,
@@ -204,5 +205,91 @@ describe('writeChecksConfig', () => {
     expect(readFileSync(configFile(), 'utf8')).toBe('{ not json')
     writeRepoConfig('["an", "array"]')
     expect(() => writeChecksConfig(repoDir, checks)).toThrow(/not a JSON object/)
+  })
+})
+
+describe('readProofConfig', () => {
+  let repoDir: string
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-proofcfg-'))
+  })
+
+  afterEach(() => {
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  const writeRepoConfig = (content: string) => {
+    mkdirSync(join(repoDir, '.codesema'), { recursive: true })
+    writeFileSync(join(repoDir, '.codesema', 'config.json'), content)
+  }
+
+  test('missing file, invalid json or absent proof key: null', () => {
+    expect(readProofConfig(repoDir)).toBeNull()
+    writeRepoConfig('{ not json')
+    expect(readProofConfig(repoDir)).toBeNull()
+    writeRepoConfig(JSON.stringify({ agent: 'claude -p' }))
+    expect(readProofConfig(repoDir)).toBeNull()
+    writeRepoConfig(JSON.stringify({ proof: 'yes' }))
+    expect(readProofConfig(repoDir)).toBeNull()
+    writeRepoConfig(JSON.stringify({ proof: ['npm test'] }))
+    expect(readProofConfig(repoDir)).toBeNull()
+  })
+
+  test('journey missing: the whole record is null', () => {
+    writeRepoConfig(JSON.stringify({ proof: { url: 'http://localhost:3000' } }))
+    expect(readProofConfig(repoDir)).toBeNull()
+  })
+
+  test('url missing: the whole record is null', () => {
+    writeRepoConfig(JSON.stringify({ proof: { journey: 'checkout' } }))
+    expect(readProofConfig(repoDir)).toBeNull()
+  })
+
+  test('out-of-range timeoutSeconds and keep fall back to null, not the record', () => {
+    writeRepoConfig(
+      JSON.stringify({
+        proof: {
+          journey: 'checkout',
+          url: 'http://localhost:3000',
+          timeoutSeconds: -5,
+          keep: 0,
+        },
+      }),
+    )
+    expect(readProofConfig(repoDir)).toEqual({
+      journey: 'checkout',
+      url: 'http://localhost:3000',
+      timeoutSeconds: null,
+      keep: null,
+    })
+  })
+
+  test('a full proof block is read back field by field', () => {
+    writeRepoConfig(
+      JSON.stringify({
+        proof: {
+          journey: 'checkout',
+          url: 'http://localhost:3000',
+          timeoutSeconds: 120,
+          keep: 5,
+        },
+      }),
+    )
+    expect(readProofConfig(repoDir)).toEqual({
+      journey: 'checkout',
+      url: 'http://localhost:3000',
+      timeoutSeconds: 120,
+      keep: 5,
+    })
+  })
+
+  test('keep is capped at 20', () => {
+    writeRepoConfig(
+      JSON.stringify({
+        proof: { journey: 'checkout', url: 'http://localhost:3000', keep: 999 },
+      }),
+    )
+    expect(readProofConfig(repoDir)?.keep).toBe(20)
   })
 })

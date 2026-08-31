@@ -12,7 +12,6 @@
 // upstream (ConversationsLogic.ts, §7-8) so this component only renders what
 // it is handed.
 import {
-  AlertTriangle,
   Check,
   CircleAlert,
   Clock,
@@ -28,12 +27,12 @@ import { queueSectionOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
 import { t } from '../../i18n'
+import ChecksChip from './ChecksChip.vue'
 import {
   formatConversationTimestamp,
   resolveActivityLine,
   resolveChecksPill,
   type ActivityGlyph,
-  type ReferencePillGlyph,
 } from './ConversationsLogic'
 
 const props = defineProps<{
@@ -67,12 +66,6 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
   clock: Clock,
   x: X,
 }
-
-const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
-  x: X,
-  'alert-triangle': AlertTriangle,
-  check: Check,
-}
 </script>
 
 <template>
@@ -99,16 +92,7 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
         <Ticket class="cvr-pill-icon" aria-hidden="true" />
         <span class="cvr-pill-text">#{{ ticket.iid }}</span>
       </span>
-      <span v-if="checksPill" class="cvr-pill" :class="`cvr-pill--${checksPill.tone}`">
-        <span v-if="checksPill.glyph === 'dot'" class="cvr-dot cvr-dot--pill" aria-hidden="true" />
-        <component
-          :is="CHECKS_ICONS[checksPill.glyph]"
-          v-else
-          class="cvr-pill-icon"
-          aria-hidden="true"
-        />
-        <span class="cvr-pill-text">{{ checksPill.text }}</span>
-      </span>
+      <ChecksChip v-if="checksPill" :pill="checksPill" />
     </div>
   </div>
 </template>
@@ -268,28 +252,5 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
   flex: none;
   width: 10px;
   height: 10px;
-}
-
-.cvr-dot--pill {
-  width: 6px;
-  height: 6px;
-}
-
-.cvr-pill--red {
-  color: var(--cs-red-text);
-  border-color: var(--cs-red-line);
-  background: var(--cs-red-soft);
-}
-
-.cvr-pill--amber {
-  color: var(--cs-amber-text);
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
-}
-
-.cvr-pill--green {
-  color: var(--cs-green-text);
-  border-color: var(--cs-green-ring);
-  background: var(--cs-green-soft);
 }
 </style>
