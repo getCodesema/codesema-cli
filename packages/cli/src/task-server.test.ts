@@ -40,7 +40,7 @@ import {
 import type { ForgeCli, ForgeCliOutcome, ForgeIssuesExecFn } from './forge-issues.js'
 import { t as translate } from './i18n.js'
 import { createLoadCap } from './load-cap.js'
-import type { SandboxDriver, SandboxSweepOutcome } from './microsandbox-driver.js'
+import type { SandboxDriver, SandboxHandle, SandboxSweepOutcome } from './microsandbox-driver.js'
 import type { ProjectSnapshot } from './microvm-snapshot.js'
 import type { RunMicrovmTurnOptions } from './microvm-turn.js'
 import { addProject, listProjects, projectsPath, scratchProject, type Project } from './projects.js'
@@ -49,6 +49,7 @@ import { readChecksConfig } from './repo-config.js'
 import { runbookSha as computeRunbookSha } from './runbook-setup.js'
 import { createSession, startServer } from './serve.js'
 import type { MicrovmStepExecutorOptions, RunChecksOptions, StepExecutor } from './task-checks.js'
+import { evidenceDir, readTaskEvidence } from './task-evidence.js'
 import {
   AUTO_FIX_EXHAUSTED_NAME,
   AUTO_FIX_JOURNAL_DAMAGED_NAME,
@@ -74,7 +75,7 @@ import {
   resetQueueDegradedReports,
 } from './task-queue.js'
 import { RECAP_MARKER_PREFIX } from './task-recap-publish.js'
-import { writeTaskRecap } from './task-recap.js'
+import { readTaskRecap, writeTaskRecap } from './task-recap.js'
 import type { TaskRetentionOutcome } from './task-retention.js'
 import { readTaskReview, type CreateTaskReviewerOptions } from './task-review.js'
 import {
@@ -2357,6 +2358,78 @@ describe('manager.ship', () => {
     })
     expect(loadTask(cwd, record.id)?.status).toBe('review_ok')
     expect(loadTask(cwd, record.id)?.cycle_step).toBeUndefined()
+  })
+
+  describe('task_recap frame', () => {
+    function minimalRecap(branch: string) {
+      return {
+        version: 1 as const,
+        summary: 'Rewired the worktree cleanup.',
+        changes: ['worktree: prune before delete'],
+        decisions: [],
+        files: ['src/task-worktree.ts'],
+        tests: [{ command: 'bun test', status: 'passed' as const }],
+        branch,
+      }
+    }
+
+    test('a recap present on disk after a successful push emits task_recap', async () => {
+      const project = register(makeRepo())
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      const stub = shipStub({
+        pushed: true,
+        mrUrl: 'https://github.com/o/r/pull/9',
+        note: null,
+      })
+      const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+      const written = writeTaskRecap(cwd, record.id, minimalRecap(record.branch))
+      const envelopes: TaskEnvelope[] = []
+      manager.subscribe((envelope) => envelopes.push(envelope))
+
+      expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+
+      const recapEnvelope = envelopes.find((e) => e.event.name === 'task_recap')
+      expect(recapEnvelope?.event.data).toEqual(written)
+    })
+
+    test('no recap on disk after a successful push: no task_recap frame', async () => {
+      const project = register(makeRepo())
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      const stub = shipStub({ pushed: true, mrUrl: 'https://github.com/o/r/pull/9', note: null })
+      const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+      const envelopes: TaskEnvelope[] = []
+      manager.subscribe((envelope) => envelopes.push(envelope))
+
+      expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+
+      expect(envelopes.some((e) => e.event.name === 'task_recap')).toBe(false)
+    })
+
+    test('a recap withheld from the MR description for carrying a secret never rides the SSE frame either', async () => {
+      const project = register(makeRepo())
+      const cwd = project.path
+      const record = seedShippable(cwd)
+      const stub = shipStub({
+        pushed: true,
+        mrUrl: 'https://github.com/o/r/pull/9',
+        note: 'recap withheld: looked like a secret',
+        recapState: 'recap_blocked_secrets',
+      })
+      const manager = createTaskManager({ ...managerOpts, shipTaskFn: stub.fn, ...fakeRunner() })
+      writeTaskRecap(cwd, record.id, minimalRecap(record.branch))
+      const envelopes: TaskEnvelope[] = []
+      manager.subscribe((envelope) => envelopes.push(envelope))
+
+      expect(await manager.ship(project.id, record.id)).toEqual({ ok: true })
+
+      // The recap DOES exist on disk (generateAndPersist runs before the
+      // secret scan) — proving the frame's silence comes from `recapState`,
+      // not from an absent file.
+      expect(readTaskRecap(cwd, record.id)).not.toBeNull()
+      expect(envelopes.some((e) => e.event.name === 'task_recap')).toBe(false)
+    })
   })
 })
 
@@ -12368,6 +12441,278 @@ describe('microvm wiring (lot C7)', () => {
       expect(verifyCalls).toHaveLength(1)
       expect(verifyCalls[0]?.validatedSha).toBe('abc1234abc1234ab')
       void worktree
+    })
+
+    describe('proof capture wiring', () => {
+      function fakeSandboxHandle(): SandboxHandle {
+        return {
+          name: 'fake-proof-handle',
+          exec: () => Promise.resolve({ code: 0, stdout: '', stderr: '', timedOut: false }),
+          shell: () => Promise.resolve({ code: 0, stdout: '', stderr: '', timedOut: false }),
+          copyFromHost: () => Promise.resolve(),
+          copyToHost: () => Promise.resolve(),
+          writeFile: () => Promise.resolve(),
+          readFile: () => Promise.resolve(''),
+          metrics: () =>
+            Promise.resolve({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
+          stop: () => Promise.resolve(),
+        }
+      }
+
+      function writeProofConfig(cwd: string): void {
+        mkdirSync(join(cwd, '.codesema'), { recursive: true })
+        writeFileSync(
+          join(cwd, '.codesema', 'config.json'),
+          JSON.stringify({
+            proof: {
+              journey: 'proof/checkout.spec.ts',
+              url: 'http://localhost:3000',
+              timeoutSeconds: 30,
+              keep: 3,
+            },
+          }),
+        )
+      }
+
+      test('proof configured and the spec is present: ingest runs, evidence.json and a task_evidence frame land', async () => {
+        const project = register(makeRepo())
+        const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+        writeProofConfig(project.path)
+        mkdirSync(join(worktree, 'proof'), { recursive: true })
+        writeFileSync(join(worktree, 'proof', 'checkout.spec.ts'), 'test()\n')
+
+        const runbook = baseRunbook()
+        const validation = validRunbookValidation(runbook)
+        const verification: TaskVerification = {
+          head_sha: 'proofsha1',
+          runbook_sha: computeRunbookSha(runbook),
+          started_at: '2026-01-01T00:00:00.000Z',
+          finished_at: '2026-01-01T00:05:00.000Z',
+          status: 'passed',
+          checks: [
+            { command: 'npm test', status: 'passed', exit_code: 0, duration_ms: 5, tail: '' },
+          ],
+          integrity_ok: true,
+          changed_dependency_files: [],
+          error: null,
+        }
+        const verifyCalls: VerifyTaskOptions[] = []
+        const incomingDir = join(evidenceDir(project.path, record.id), '.incoming')
+        const envelopes: TaskEnvelope[] = []
+        const manager = createTaskManager({
+          ...managerOpts,
+          sandboxDriverFn: () => fakeDriver,
+          readRunbookConfigFn: () => runbook,
+          readRunbookValidationFn: () => validation,
+          resolveProjectSnapshotFn: () =>
+            Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+          verifyTaskFn: async (opts) => {
+            verifyCalls.push(opts)
+            mkdirSync(incomingDir, { recursive: true })
+            writeFileSync(join(incomingDir, 'shot.png'), 'fake-png')
+            await opts.captureProof?.(fakeSandboxHandle())
+            return verification
+          },
+          captureProofFn: () => Promise.resolve({ status: 'passed', reason: null }),
+          runChecksFn: () => Promise.resolve(finishedChecks()),
+          reviewTurnFn: async (r, io) => {
+            r.status = 'review_ok'
+            io.persist()
+          },
+          runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+            writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+            const raw = claudeStream('all done')
+            options.onText?.(raw)
+            return Promise.resolve(raw)
+          },
+        })
+        manager.subscribe((envelope) => envelopes.push(envelope))
+
+        expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+        await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+        expect(verifyCalls).toHaveLength(1)
+        expect(typeof verifyCalls[0]?.captureProof).toBe('function')
+
+        const evidence = readTaskEvidence(project.path, record.id)
+        expect(evidence?.status).toBe('passed')
+        expect(evidence?.reason).toBeNull()
+        expect(evidence?.head_sha).toBe('proofsha1')
+        expect(evidence?.items).toHaveLength(1)
+        expect(evidence?.items[0]?.kind).toBe('screenshot')
+
+        expect(
+          envelopes.some(
+            (e) => e.event.name === 'task_evidence' && e.event.data.status === 'passed',
+          ),
+        ).toBe(true)
+      })
+
+      test('proof configured but the spec is missing from the worktree: a skipped evidence record is written and a frame emitted', async () => {
+        const project = register(makeRepo())
+        const { record } = seedInterruptedMicrovmTask(project.path)
+        writeProofConfig(project.path)
+
+        const runbook = baseRunbook()
+        const validation = validRunbookValidation(runbook)
+        const verification: TaskVerification = {
+          head_sha: 'proofsha2',
+          runbook_sha: computeRunbookSha(runbook),
+          started_at: '2026-01-01T00:00:00.000Z',
+          finished_at: '2026-01-01T00:05:00.000Z',
+          status: 'passed',
+          checks: [],
+          integrity_ok: true,
+          changed_dependency_files: [],
+          error: null,
+        }
+        const verifyCalls: VerifyTaskOptions[] = []
+        const envelopes: TaskEnvelope[] = []
+        const manager = createTaskManager({
+          ...managerOpts,
+          sandboxDriverFn: () => fakeDriver,
+          readRunbookConfigFn: () => runbook,
+          readRunbookValidationFn: () => validation,
+          resolveProjectSnapshotFn: () =>
+            Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+          verifyTaskFn: (opts) => {
+            verifyCalls.push(opts)
+            return Promise.resolve(verification)
+          },
+          runChecksFn: () => Promise.resolve(finishedChecks()),
+          reviewTurnFn: async (r, io) => {
+            r.status = 'review_ok'
+            io.persist()
+          },
+          runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+            writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+            const raw = claudeStream('all done')
+            options.onText?.(raw)
+            return Promise.resolve(raw)
+          },
+        })
+        manager.subscribe((envelope) => envelopes.push(envelope))
+
+        expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+        await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+        expect(verifyCalls[0]?.captureProof).toBeUndefined()
+
+        const evidence = readTaskEvidence(project.path, record.id)
+        expect(evidence?.status).toBe('skipped')
+        expect(evidence?.reason).toContain('proof/checkout.spec.ts')
+        expect(evidence?.items).toEqual([])
+
+        expect(
+          envelopes.some(
+            (e) => e.event.name === 'task_evidence' && e.event.data.status === 'skipped',
+          ),
+        ).toBe(true)
+      })
+
+      test('proof not configured: no evidence record, no frame', async () => {
+        const project = register(makeRepo())
+        const { record } = seedInterruptedMicrovmTask(project.path)
+
+        const runbook = baseRunbook()
+        const validation = validRunbookValidation(runbook)
+        const verification: TaskVerification = {
+          head_sha: 'proofsha3',
+          runbook_sha: computeRunbookSha(runbook),
+          started_at: '2026-01-01T00:00:00.000Z',
+          finished_at: '2026-01-01T00:05:00.000Z',
+          status: 'passed',
+          checks: [],
+          integrity_ok: true,
+          changed_dependency_files: [],
+          error: null,
+        }
+        const envelopes: TaskEnvelope[] = []
+        const manager = createTaskManager({
+          ...managerOpts,
+          sandboxDriverFn: () => fakeDriver,
+          readRunbookConfigFn: () => runbook,
+          readRunbookValidationFn: () => validation,
+          resolveProjectSnapshotFn: () =>
+            Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+          verifyTaskFn: () => Promise.resolve(verification),
+          runChecksFn: () => Promise.resolve(finishedChecks()),
+          reviewTurnFn: async (r, io) => {
+            r.status = 'review_ok'
+            io.persist()
+          },
+          runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+            writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+            const raw = claudeStream('all done')
+            options.onText?.(raw)
+            return Promise.resolve(raw)
+          },
+        })
+        manager.subscribe((envelope) => envelopes.push(envelope))
+
+        expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+        await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+        expect(readTaskEvidence(project.path, record.id)).toBeNull()
+        expect(envelopes.some((e) => e.event.name === 'task_evidence')).toBe(false)
+      })
+
+      test('an ingest error is swallowed: the turn still settles, no frame goes out', async () => {
+        const project = register(makeRepo())
+        const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+        writeProofConfig(project.path)
+        mkdirSync(join(worktree, 'proof'), { recursive: true })
+        writeFileSync(join(worktree, 'proof', 'checkout.spec.ts'), 'test()\n')
+        // A plain FILE sits where ingestEvidenceFiles needs to mkdir a
+        // directory: its `mkdirSync(targetDir, { recursive: true })` throws.
+        mkdirSync(taskDir(project.path, record.id), { recursive: true })
+        writeFileSync(join(taskDir(project.path, record.id), 'evidence'), 'not a directory')
+
+        const runbook = baseRunbook()
+        const validation = validRunbookValidation(runbook)
+        const verification: TaskVerification = {
+          head_sha: 'proofsha4',
+          runbook_sha: computeRunbookSha(runbook),
+          started_at: '2026-01-01T00:00:00.000Z',
+          finished_at: '2026-01-01T00:05:00.000Z',
+          status: 'passed',
+          checks: [],
+          integrity_ok: true,
+          changed_dependency_files: [],
+          error: null,
+        }
+        const envelopes: TaskEnvelope[] = []
+        const manager = createTaskManager({
+          ...managerOpts,
+          sandboxDriverFn: () => fakeDriver,
+          readRunbookConfigFn: () => runbook,
+          readRunbookValidationFn: () => validation,
+          resolveProjectSnapshotFn: () =>
+            Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+          verifyTaskFn: async (opts) => {
+            await opts.captureProof?.(fakeSandboxHandle())
+            return verification
+          },
+          captureProofFn: () => Promise.resolve({ status: 'passed', reason: null }),
+          runChecksFn: () => Promise.resolve(finishedChecks()),
+          reviewTurnFn: async (r, io) => {
+            r.status = 'review_ok'
+            io.persist()
+          },
+          runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+            writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+            const raw = claudeStream('all done')
+            options.onText?.(raw)
+            return Promise.resolve(raw)
+          },
+        })
+        manager.subscribe((envelope) => envelopes.push(envelope))
+
+        expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+        await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+        expect(envelopes.some((e) => e.event.name === 'task_evidence')).toBe(false)
+      })
     })
   })
 

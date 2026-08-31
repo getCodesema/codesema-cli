@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import {
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -12,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { sanitizeRecord, type ReviewRecord } from './contract.js'
+import { sanitizeRecord, type RecapRecord, type ReviewRecord } from './contract.js'
 import type { ForgeMrsResult } from './forge-mrs.js'
 import type {
   MrReviewMode,
@@ -36,6 +37,8 @@ import {
   type LiveSession,
   type SessionEvent,
 } from './serve.js'
+import { evidenceDir, writeTaskEvidence } from './task-evidence.js'
+import { writeTaskRecap } from './task-recap.js'
 
 describe('isLoopbackHost', () => {
   test('accepts loopback hosts, with and without a port', () => {
@@ -1124,6 +1127,154 @@ describe('project-scoped repo routes (?project=)', () => {
     } finally {
       mrReviewStatusValue = { available: true, phase: 'idle' }
     }
+  })
+})
+
+describe('task recap and evidence routes (?project=)', () => {
+  let configDir: string
+  let repoDir: string
+  let projectId: string
+  let projectPath: string
+  let port: number
+  let stop: () => Promise<void>
+  const previousConfigDir = process.env.CODESEMA_CONFIG_DIR
+
+  const TASK_ID = 'abcdef123456'
+  const OTHER_TASK_ID = '0123456789ab'
+
+  function minimalRecap(): RecapRecord {
+    return {
+      version: 1,
+      summary: 'did the thing',
+      changes: [],
+      decisions: [],
+      files: [],
+      tests: [],
+      branch: 'codesema/task-x',
+    }
+  }
+
+  beforeAll(async () => {
+    configDir = mkdtempSync(join(tmpdir(), 'codesema-evidence-config-'))
+    process.env.CODESEMA_CONFIG_DIR = configDir
+    repoDir = mkdtempSync(join(tmpdir(), 'codesema-evidence-repo-'))
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir, stdio: 'ignore' })
+    const added = addProject(repoDir)
+    if (!added.ok) {
+      throw new Error('failed to register test repo')
+    }
+    projectId = added.project.id
+    projectPath = added.project.path
+
+    writeTaskRecap(projectPath, TASK_ID, minimalRecap())
+    writeTaskEvidence(projectPath, TASK_ID, {
+      version: 1,
+      status: 'passed',
+      reason: null,
+      head_sha: null,
+      items: [],
+    })
+
+    const dir = evidenceDir(projectPath, TASK_ID)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'shot.png'), 'a-small-png')
+    writeFileSync(join(dir, 'clip.webm'), 'a-small-webm')
+    writeFileSync(join(dir, 'huge.png'), Buffer.alloc(64 * 1024 * 1024 + 1))
+
+    const started = await startServer(createSession(), { cwd: repoDir, port: 4990 })
+    port = started.port
+    stop = started.stop
+  })
+
+  afterAll(async () => {
+    await stop()
+    if (previousConfigDir === undefined) {
+      delete process.env.CODESEMA_CONFIG_DIR
+    } else {
+      process.env.CODESEMA_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(configDir, { recursive: true, force: true })
+    rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  test('200s the recap of a task that has one', async () => {
+    const res = await rawRequest(port, `/api/tasks/${TASK_ID}/recap?project=${projectId}`)
+    expect(res.status).toBe(200)
+    expect(res.contentType).toBe('application/json; charset=utf-8')
+    expect(JSON.parse(res.body)).toMatchObject({ summary: 'did the thing' })
+  })
+
+  test('404s a task with no recap', async () => {
+    const res = await rawRequest(port, `/api/tasks/${OTHER_TASK_ID}/recap?project=${projectId}`)
+    expect(res.status).toBe(404)
+  })
+
+  test('404s an invalid task id on recap', async () => {
+    const res = await rawRequest(port, `/api/tasks/not-a-task-id/recap?project=${projectId}`)
+    expect(res.status).toBe(404)
+  })
+
+  test('200s the evidence record of a task that has one', async () => {
+    const res = await rawRequest(port, `/api/tasks/${TASK_ID}/evidence?project=${projectId}`)
+    expect(res.status).toBe(200)
+    expect(res.contentType).toBe('application/json; charset=utf-8')
+    expect(JSON.parse(res.body)).toMatchObject({ status: 'passed', items: [] })
+  })
+
+  test('404s a task with no evidence record', async () => {
+    const res = await rawRequest(port, `/api/tasks/${OTHER_TASK_ID}/evidence?project=${projectId}`)
+    expect(res.status).toBe(404)
+  })
+
+  test('404s an invalid task id on evidence', async () => {
+    const res = await rawRequest(port, `/api/tasks/not-a-task-id/evidence?project=${projectId}`)
+    expect(res.status).toBe(404)
+  })
+
+  test('serves a png evidence file with the right content type', async () => {
+    const res = await rawRequest(
+      port,
+      `/api/tasks/${TASK_ID}/evidence/shot.png?project=${projectId}`,
+    )
+    expect(res.status).toBe(200)
+    expect(res.contentType).toBe('image/png')
+    expect(res.nosniff).toBe('nosniff')
+  })
+
+  test('serves a webm evidence file with the right content type', async () => {
+    const res = await rawRequest(
+      port,
+      `/api/tasks/${TASK_ID}/evidence/clip.webm?project=${projectId}`,
+    )
+    expect(res.status).toBe(200)
+    expect(res.contentType).toBe('video/webm')
+    expect(res.nosniff).toBe('nosniff')
+  })
+
+  test('413s an evidence file over the size limit', async () => {
+    const res = await rawRequest(
+      port,
+      `/api/tasks/${TASK_ID}/evidence/huge.png?project=${projectId}`,
+    )
+    expect(res.status).toBe(413)
+  })
+
+  test('404s an absent evidence file', async () => {
+    const res = await rawRequest(
+      port,
+      `/api/tasks/${TASK_ID}/evidence/nope.png?project=${projectId}`,
+    )
+    expect(res.status).toBe(404)
+  })
+
+  test('404s a traversing evidence file name', async () => {
+    const encoded = await rawRequest(
+      port,
+      `/api/tasks/${TASK_ID}/evidence/..%2Fpackage.json?project=${projectId}`,
+    )
+    expect(encoded.status).toBe(404)
+    const nested = await rawRequest(port, `/api/tasks/${TASK_ID}/evidence/a/b?project=${projectId}`)
+    expect(nested.status).toBe(404)
   })
 })
 

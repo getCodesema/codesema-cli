@@ -11,6 +11,7 @@
 // across N projects ride one EventSource.
 
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { knownAgent, type AgentRunOptions, type WatchdogBudgets } from './agent.js'
 import {
   createChecksSetupRunner,
@@ -36,7 +37,9 @@ import {
   TASK_TURN_TEXT_MAX,
   type AcceptanceCriterion,
   type ArmTicket,
+  type EvidenceRecord,
   type ReasonCode,
+  type RecapRecord,
   type ReviewRecord,
   type RunbookConfig,
   type TaskChecks,
@@ -69,6 +72,7 @@ import {
   createMicrosandboxDriver,
   sweepOrphanedSandboxes as sweepOrphanedSandboxesImpl,
   type SandboxDriver,
+  type SandboxHandle,
   type SandboxSweepOutcome,
 } from './microsandbox-driver.js'
 import { buildProjectSnapshot, resolveProjectSnapshot } from './microvm-snapshot.js'
@@ -79,7 +83,7 @@ import {
   scratchProject,
   type Project,
 } from './projects.js'
-import { readChecksConfig } from './repo-config.js'
+import { readChecksConfig, readProofConfig } from './repo-config.js'
 import {
   runbookSha as computeRunbookSha,
   readRunbookConfig,
@@ -88,6 +92,12 @@ import {
 import { loadSyncCredentials } from './sync.js'
 import { microvmStepExecutor, runChecks } from './task-checks.js'
 import { criteriaBlockKind } from './task-criteria-gate.js'
+import {
+  evidenceDir,
+  ingestEvidenceFiles,
+  readTaskEvidence,
+  writeTaskEvidence,
+} from './task-evidence.js'
 import {
   applyFixLoopDecision,
   AUTO_FIX_EXHAUSTED_NAME,
@@ -138,8 +148,10 @@ import {
 import { effectiveMergePolicyIsAuto, mergeTask, type MergeOutcome } from './task-merge.js'
 import { resolveTaskPlan, type TaskPlanDeps, type TaskPreviewResult } from './task-plan.js'
 import { replayChecksOnDefaultBranch } from './task-post-merge-checks.js'
+import { captureProof, type ProofCaptureResult } from './task-proof.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import { publishTaskRecap } from './task-recap-publish.js'
+import { readTaskRecap } from './task-recap.js'
 import {
   applyTaskRetention,
   DEFAULT_TASK_RETENTION,
@@ -246,6 +258,8 @@ export type TaskEnvelope =
   // PROJECT-scoped, hence no task_id: the checks setup agent proposes a
   // configuration for the whole repo, not for one conversation.
   | { project_id: string; event: { name: 'checks_proposal'; data: ChecksSetupState } }
+  | { project_id: string; task_id: string; event: { name: 'task_evidence'; data: EvidenceRecord } }
+  | { project_id: string; task_id: string; event: { name: 'task_recap'; data: RecapRecord } }
 
 /**
  * T2.4: the raw issue reference as it arrives from the wire — everything
@@ -657,6 +671,8 @@ export type CreateTaskManagerOptions = {
   buildProjectSnapshotFn?: typeof buildProjectSnapshot
   /** Test seam: the default replays `runbook.tests` in a fresh sandbox (lot C7). */
   verifyTaskFn?: typeof verifyTask
+  /** Test seam: the default replays the configured `proof.journey` and screenshots the fallback. */
+  captureProofFn?: typeof captureProof
   /** Test seam: the default builds task-checks.ts's own microvm executor (lot C7). */
   microvmStepExecutorFn?: typeof microvmStepExecutor
   headShaFn?: typeof resolveHeadSha
@@ -2139,6 +2155,19 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       record.updated_at = new Date().toISOString()
       saveTask(cwd, record)
       emit({ project_id: projectId, task_id: record.id, event: { name: 'task', data: record } })
+      // `recap.json` is written to disk whether or not it rides in the MR
+      // description (generateAndPersist runs before the secret scan) —
+      // `outcome.recapState` is what actually says "withheld", so silence on
+      // it is required here too: emitting on `recap` alone would leak a
+      // secret-blocked recap over SSE that the description itself refused.
+      const recap = readTaskRecap(cwd, id)
+      if (recap && !outcome.recapState) {
+        emit({
+          project_id: projectId,
+          task_id: record.id,
+          event: { name: 'task_recap', data: recap },
+        })
+      }
       // T3.7, AFTER the write and the frame: this transition never reaches
       // `onTask` (ship persists and broadcasts on its own), so it is mirrored
       // here or nowhere. Not awaited — the ship's own answer must not wait on
@@ -2739,63 +2768,100 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
   }
 
   /**
+   * The guest path `verifyTask` copies the worktree into before any command
+   * runs (task-verification.ts's own unexported `VERIFY_WORK_DIR`) — kept in
+   * sync by hand since a proof replay runs on the same handle, in the same
+   * worktree, after the same copy.
+   */
+  const PROOF_VERIFY_GUEST_WORK_DIR = '/work'
+
+  /**
+   * What a turn's proof capture attempt came to, for `onTurnDone` to fold
+   * into evidence.json without re-deriving `verifyAfterCommit`'s own checks:
+   * `'not_attempted'` covers both "proof isn't configured" and "verification
+   * itself never reached the capture seam" (no commit, no runbook, stale
+   * runbook, isolation not `'microvm'`) — in every one of those cases nothing
+   * was captured, so nothing is recorded and no frame goes out.
+   */
+  type ProofCaptureOutcome =
+    | { kind: 'not_attempted' }
+    | { kind: 'spec_missing'; journey: string }
+    | {
+        kind: 'attempted'
+        result: ProofCaptureResult
+        hostIncomingDir: string
+        keep: number | null
+      }
+
+  /**
    * The mechanical verification (lot C7): a `'microvm'` task whose worktree
    * carries a validated runbook gets `runbook.tests` replayed in a FRESH VM
    * restored from the project snapshot, right after the same commit checks
-   * would verify. Null when there is nothing to verify — no commit from
-   * THIS turn, no runbook, no local validation record, or the task is not
-   * `'microvm'` — never a signal of failure by itself. A runbook whose sha
-   * no longer matches its own local validation record (edited by hand, or
-   * simply re-scanned since) is REFUSED outright rather than silently
-   * verified against expectations it no longer meets.
+   * would verify. `verification` is null when there is nothing to verify —
+   * no commit from THIS turn, no runbook, no local validation record, or the
+   * task is not `'microvm'` — never a signal of failure by itself. A runbook
+   * whose sha no longer matches its own local validation record (edited by
+   * hand, or simply re-scanned since) is REFUSED outright rather than
+   * silently verified against expectations it no longer meets.
    *
    * `validatedSha`: read from `.codesema/runbook.validation.json` at the
    * PROJECT root — written by the scan (runbook-runner.ts) right alongside
    * `.codesema/runbook.json` itself. Never derived from git history: that
    * file is gitignored and never committed, so no commit ever touches it.
+   *
+   * `proof`: when the project's `proof` config names a journey spec present
+   * in the worktree, a `captureProof` closure rides along on `verifyTask`'s
+   * own seam — it only fires once the healthchecks are green (verifyTask's
+   * own contract), so `'attempted'` here means the app was proven alive
+   * first. `hostIncomingDir` is FORCED under `evidenceDir` (never a scratch
+   * dir elsewhere): `ingestEvidenceFiles`' merge relies on a same-filesystem
+   * `renameSync`.
    */
   const verifyAfterCommit = async (
     ctx: ProjectContext,
     record: TaskRecord,
     timeoutMs: number,
-  ): Promise<TaskVerification | null> => {
+  ): Promise<{ verification: TaskVerification | null; proof: ProofCaptureOutcome }> => {
     if (record.isolation !== 'microvm') {
-      return null
+      return { verification: null, proof: { kind: 'not_attempted' } }
     }
     try {
       const commits = readTaskEvents(ctx.project.path, record.id).filter(
         (event) => event.type === 'commit',
       )
       if (commits.at(-1)?.data.turn !== record.turns.length) {
-        return null
+        return { verification: null, proof: { kind: 'not_attempted' } }
       }
       const runbook = resolveTaskRunbook(ctx.project.path)
       if (!runbook) {
-        return null
+        return { verification: null, proof: { kind: 'not_attempted' } }
       }
       const readValidation = opts.readRunbookValidationFn ?? readRunbookValidation
       const validation = readValidation(ctx.project.path)
       if (!validation) {
-        return null
+        return { verification: null, proof: { kind: 'not_attempted' } }
       }
       const getHeadSha = opts.headShaFn ?? resolveHeadSha
       const headSha = getHeadSha(record.worktree)
       if (!headSha) {
-        return null
+        return { verification: null, proof: { kind: 'not_attempted' } }
       }
       const runbookSha = computeRunbookSha(runbook)
       if (validation.runbook_sha !== runbookSha) {
         const startedAt = new Date().toISOString()
         return {
-          head_sha: headSha,
-          runbook_sha: runbookSha,
-          started_at: startedAt,
-          finished_at: new Date().toISOString(),
-          status: 'refused',
-          checks: [],
-          integrity_ok: false,
-          changed_dependency_files: [],
-          error: 'runbook changed since its validation, rerun codesema runbook scan',
+          verification: {
+            head_sha: headSha,
+            runbook_sha: runbookSha,
+            started_at: startedAt,
+            finished_at: new Date().toISOString(),
+            status: 'refused',
+            checks: [],
+            integrity_ok: false,
+            changed_dependency_files: [],
+            error: 'runbook changed since its validation, rerun codesema runbook scan',
+          },
+          proof: { kind: 'not_attempted' },
         }
       }
       const build = await resolveMicrovmBuild(record, {
@@ -2804,8 +2870,31 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         timeoutMs,
         command: ctx.command,
       })
+      const proofConfig = readProofConfig(ctx.project.path)
+      let proofOutcome: ProofCaptureOutcome = { kind: 'not_attempted' }
+      let captureProofOption: ((handle: SandboxHandle) => Promise<void>) | undefined
+      if (proofConfig) {
+        if (!existsSync(join(record.worktree, proofConfig.journey))) {
+          proofOutcome = { kind: 'spec_missing', journey: proofConfig.journey }
+        } else {
+          const hostIncomingDir = join(evidenceDir(ctx.project.path, record.id), '.incoming')
+          const guestProofDir = `${PROOF_VERIFY_GUEST_WORK_DIR}/.codesema-proof`
+          const proofTimeoutMs = (proofConfig.timeoutSeconds ?? 120) * 1000
+          captureProofOption = async (handle) => {
+            const result = await (opts.captureProofFn ?? captureProof)(handle, {
+              journey: proofConfig.journey,
+              url: proofConfig.url,
+              timeoutMs: proofTimeoutMs,
+              guestWorkDir: PROOF_VERIFY_GUEST_WORK_DIR,
+              guestProofDir,
+              hostIncomingDir,
+            })
+            proofOutcome = { kind: 'attempted', result, hostIncomingDir, keep: proofConfig.keep }
+          }
+        }
+      }
       const run = opts.verifyTaskFn ?? verifyTask
-      return await run({
+      const verification = await run({
         driver: build.driver,
         worktree: record.worktree,
         projectId: ctx.project.id,
@@ -2816,9 +2905,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         validatedSha: validation.validated_sha,
         snapshotName: build.snapshotName,
         timeoutMs,
+        ...(captureProofOption ? { captureProof: captureProofOption } : {}),
       })
+      return { verification, proof: proofOutcome }
     } catch {
-      return null
+      return { verification: null, proof: { kind: 'not_attempted' } }
     }
   }
 
@@ -2988,7 +3079,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // the review — a `'microvm'` task with a validated runbook gets
       // `runbook.tests` replayed in a fresh VM. Null (no runbook, no commit
       // from this turn, or not a 'microvm' task) means nothing to fold in.
-      const verification = await verifyAfterCommit(ctx, record, timeoutMs)
+      const { verification, proof } = await verifyAfterCommit(ctx, record, timeoutMs)
       if (verification) {
         const cleanVerification = writeTaskVerification(cwd, record.id, verification)
         const verificationBlocking =
@@ -3020,6 +3111,38 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
               idempotency_key: `${record.id}:verification:${record.turns.length}`,
             }).catch(() => {})
           }
+        }
+      }
+      // Folds a turn's proof capture attempt into evidence.json, right
+      // beside the verification block above: 'not_attempted' covers both
+      // "proof isn't configured" and "verification never reached the
+      // capture seam", so nothing is written and no frame goes out.
+      if (proof.kind !== 'not_attempted') {
+        try {
+          const evidence =
+            proof.kind === 'attempted'
+              ? ingestEvidenceFiles(cwd, record.id, proof.hostIncomingDir, {
+                  turn: record.turns.length,
+                  status: proof.result.status,
+                  reason: proof.result.reason,
+                  head_sha: verification?.head_sha ?? null,
+                  keep: proof.keep,
+                })
+              : writeTaskEvidence(cwd, record.id, {
+                  version: 1,
+                  status: 'skipped',
+                  reason: `proof journey spec not found in the worktree: ${proof.journey}`,
+                  head_sha: verification?.head_sha ?? null,
+                  items: readTaskEvidence(cwd, record.id)?.items ?? [],
+                })
+          emit({
+            project_id: projectId,
+            task_id: record.id,
+            event: { name: 'task_evidence', data: evidence },
+          })
+        } catch {
+          // Best-effort, same doctrine as the mechanical verification above:
+          // a failed ingest or write must never fail the turn.
         }
       }
       // T3.3: whether THIS review got as far as archiving a verdict. A review
