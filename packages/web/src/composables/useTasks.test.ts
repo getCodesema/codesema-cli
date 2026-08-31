@@ -1,8 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { ref } from 'vue'
-import type { ForgeMr, GitWorktree, TaskPlan, TaskRecord } from '../types'
+import type {
+  EvidenceRecord,
+  ForgeMr,
+  GitWorktree,
+  RecapRecord,
+  TaskPlan,
+  TaskRecord,
+} from '../types'
 import {
   applyTaskMetaFrame,
+  evidenceFileUrl,
   taskKey,
   taskStreamHandlers,
   upsertRecord,
@@ -207,6 +215,192 @@ describe('taskStreamHandlers (the stream wiring itself)', () => {
       frame({ project_id: 'p1', task_id: 'x', event: { name: 'task_checks', data: null } }),
     )
     expect(state.checks).toBeNull()
+  })
+
+  test('a task_recap frame stores the recap on the task state', () => {
+    const { store, handlers } = seeded()
+    const state = store.get(taskKey('p1', 'x'))!
+    const recap: RecapRecord = {
+      version: 1,
+      summary: 'did the thing',
+      changes: [],
+      decisions: [],
+      files: [],
+      tests: [],
+      branch: 'codesema/task-x',
+    }
+    handlers.task_recap?.(
+      frame({ project_id: 'p1', task_id: 'x', event: { name: 'task_recap', data: recap } }),
+    )
+    expect(state.recap).toEqual(recap)
+  })
+
+  test('a task_evidence frame stores the evidence on the task state', () => {
+    const { store, handlers } = seeded()
+    const state = store.get(taskKey('p1', 'x'))!
+    const evidence: EvidenceRecord = {
+      version: 1,
+      status: 'passed',
+      reason: null,
+      head_sha: 'abc123',
+      items: [],
+    }
+    handlers.task_evidence?.(
+      frame({ project_id: 'p1', task_id: 'x', event: { name: 'task_evidence', data: evidence } }),
+    )
+    expect(state.evidence).toEqual(evidence)
+  })
+})
+
+// Per-task on-demand fetch of the recap/evidence records: same posture as
+// hydrateChecksStore (404 vs network failure vs a real payload), but for the
+// two fields that additionally distinguish "never asked" (absent) from
+// "asked, and there is none" (null) — see TaskState's own doc comments.
+describe('hydrateRecap / hydrateEvidence (per-task on-demand fetch)', () => {
+  type Route = { status: number; body: unknown } | 'reject'
+
+  function seedTaskState(tasks: ReturnType<typeof useTasks>, projectId: string, id: string): void {
+    tasks.store.set(taskKey(projectId, id), {
+      projectId,
+      record: record({ id }),
+      events: [],
+      liveText: '',
+      liveMessages: [],
+      liveTokens: 0,
+      liveLoadCap: null,
+      checks: null,
+    })
+  }
+
+  function installRoutedFetch(routes: Record<string, Route>): { restore: () => void } {
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) => {
+      const path = url.split('?')[0] ?? url
+      const route = routes[path]
+      if (route === undefined) {
+        return Promise.reject(new Error(`unrouted fetch in test: ${url}`))
+      }
+      if (route === 'reject') {
+        return Promise.reject(new Error('network down'))
+      }
+      const { status, body } = route
+      return Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    return {
+      restore: () => {
+        globalThis.fetch = original
+      },
+    }
+  }
+
+  const RECAP: RecapRecord = {
+    version: 1,
+    summary: 'did the thing',
+    changes: [],
+    decisions: [],
+    files: [],
+    tests: [],
+    branch: 'codesema/task-x',
+  }
+
+  const EVIDENCE: EvidenceRecord = {
+    version: 1,
+    status: 'passed',
+    reason: null,
+    head_sha: 'abc123',
+    items: [],
+  }
+
+  test('hydrateRecap on 200 stores the record as-is', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({ '/api/tasks/x/recap': { status: 200, body: RECAP } })
+    try {
+      await tasks.hydrateRecap('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.recap).toEqual(RECAP)
+    } finally {
+      restore()
+    }
+  })
+
+  test('hydrateRecap on 404 sets recap to null, distinct from never asked', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({
+      '/api/tasks/x/recap': { status: 404, body: { error: 'not found' } },
+    })
+    try {
+      expect(tasks.store.get(taskKey('p1', 'x'))?.recap).toBeUndefined()
+      await tasks.hydrateRecap('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.recap).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  test('hydrateRecap on a network failure leaves recap unset', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({ '/api/tasks/x/recap': 'reject' })
+    try {
+      await tasks.hydrateRecap('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.recap).toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+
+  test('hydrateEvidence on 200 stores the record as-is', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({
+      '/api/tasks/x/evidence': { status: 200, body: EVIDENCE },
+    })
+    try {
+      await tasks.hydrateEvidence('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.evidence).toEqual(EVIDENCE)
+    } finally {
+      restore()
+    }
+  })
+
+  test('hydrateEvidence on 404 sets evidence to null, distinct from never asked', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({
+      '/api/tasks/x/evidence': { status: 404, body: { error: 'not found' } },
+    })
+    try {
+      expect(tasks.store.get(taskKey('p1', 'x'))?.evidence).toBeUndefined()
+      await tasks.hydrateEvidence('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.evidence).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  test('hydrateEvidence on a network failure leaves evidence unset', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({ '/api/tasks/x/evidence': 'reject' })
+    try {
+      await tasks.hydrateEvidence('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.evidence).toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('evidenceFileUrl', () => {
+  test('builds the per-task evidence file route, encoding the path', () => {
+    expect(evidenceFileUrl('task-1', 'screenshots/turn-3 final.png')).toBe(
+      '/api/tasks/task-1/evidence/screenshots%2Fturn-3%20final.png',
+    )
   })
 })
 

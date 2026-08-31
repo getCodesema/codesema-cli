@@ -45,6 +45,8 @@ export type VerifyTaskOptions = {
   healthcheckDeadlineMs?: number
   /** Delay between healthcheck retries; default 1s. */
   healthcheckRetryDelayMs?: number
+  /** Best-effort browser proof capture, run after healthchecks pass and before `runbook.tests`; never affects the verdict. */
+  captureProof?: (handle: SandboxHandle) => Promise<void>
 }
 
 const VERIFY_WORK_DIR = '/work'
@@ -207,6 +209,10 @@ export async function verifyTask(opts: VerifyTaskOptions): Promise<TaskVerificat
           `healthcheck never passed: ${command} (${lastTail})`,
         )
       }
+    }
+
+    if (opts.captureProof) {
+      await opts.captureProof(handle).catch(() => undefined)
     }
 
     const checks: TaskCheckResult[] = []

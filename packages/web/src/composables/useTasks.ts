@@ -13,6 +13,7 @@
 import { computed, reactive, ref, type Ref } from 'vue'
 import type {
   DiscoverResponse,
+  EvidenceRecord,
   ForgeMr,
   ForgeMrsResult,
   ForgeMrStateFilter,
@@ -22,6 +23,7 @@ import type {
   Project,
   ProjectCandidate,
   ProjectsResponse,
+  RecapRecord,
   TaskChecks,
   TaskEnvelope,
   TaskEvent,
@@ -78,6 +80,15 @@ export type TaskState = {
    * GET /api/tasks/:id/checks on demand, updated by 'task_checks' frames.
    * Null until either happened — which is NOT proof no checks ever ran. */
   checks: TaskChecks | null
+  /** Task recap (volatile mirror of recap.json): hydrated by GET
+   * /api/tasks/:id/recap on demand, updated by 'task_recap' frames. Absent
+   * (key not set) means never loaded; null means loaded and there is none. */
+  recap?: RecapRecord | null
+  /** Run evidence (volatile mirror of evidence.json): hydrated by GET
+   * /api/tasks/:id/evidence on demand, updated by 'task_evidence' frames.
+   * Absent (key not set) means never loaded; null means loaded and there is
+   * none. */
+  evidence?: EvidenceRecord | null
 }
 
 export type ApiResult = { ok: true } | { ok: false; status: number; error: string }
@@ -297,6 +308,20 @@ export function taskStreamHandlers(
         current.checks = envelope.event.data
       }
     },
+    task_recap: (e) => {
+      const envelope = parseFrame<'task_recap'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        current.recap = envelope.event.data
+      }
+    },
+    task_evidence: (e) => {
+      const envelope = parseFrame<'task_evidence'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        current.evidence = envelope.event.data
+      }
+    },
     // Agent-assisted setup: the run's progress and its final proposal. The
     // frame is project-scoped (no task_id) and its payload is parsed
     // defensively — a bare proposal object reads as "ready" just like a state
@@ -416,6 +441,70 @@ async function hydrateChecksStore(store: TaskStore, projectId: string, id: strin
   } catch {
     // Local server stopped: keep the last known state, the stream will retry.
   }
+}
+
+/**
+ * Loads the persisted recap of one task. 404 = no recap yet: the state's
+ * `recap` becomes `null`, distinguishing "loaded, none" from "never asked".
+ * Any other failure (transport, or a non-404 error status) leaves the state
+ * untouched, the same posture as `hydrateChecksStore`.
+ */
+async function hydrateRecapStore(store: TaskStore, projectId: string, id: string): Promise<void> {
+  try {
+    const res = await fetch(
+      `/api/tasks/${encodeURIComponent(id)}/recap?project=${encodeURIComponent(projectId)}`,
+    )
+    const current = store.get(taskKey(projectId, id))
+    if (!current) {
+      return
+    }
+    if (res.status === 404) {
+      current.recap = null
+      return
+    }
+    if (!res.ok) {
+      return
+    }
+    current.recap = (await res.json()) as RecapRecord
+  } catch {
+    // Local server stopped: keep the last known state, the stream will retry.
+  }
+}
+
+/**
+ * Loads the persisted run evidence of one task. Same posture as
+ * `hydrateRecapStore`: 404 sets `evidence` to `null`, any other failure
+ * leaves the state untouched.
+ */
+async function hydrateEvidenceStore(
+  store: TaskStore,
+  projectId: string,
+  id: string,
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `/api/tasks/${encodeURIComponent(id)}/evidence?project=${encodeURIComponent(projectId)}`,
+    )
+    const current = store.get(taskKey(projectId, id))
+    if (!current) {
+      return
+    }
+    if (res.status === 404) {
+      current.evidence = null
+      return
+    }
+    if (!res.ok) {
+      return
+    }
+    current.evidence = (await res.json()) as EvidenceRecord
+  } catch {
+    // Local server stopped: keep the last known state, the stream will retry.
+  }
+}
+
+/** URL of one evidence file (a screenshot or a video) captured for a task. */
+export function evidenceFileUrl(taskId: string, path: string): string {
+  return `/api/tasks/${encodeURIComponent(taskId)}/evidence/${encodeURIComponent(path)}`
 }
 
 /** Loads the full journal of one task (the stream only carries live events). */
@@ -937,6 +1026,8 @@ export function useTasks(token: string) {
     // Manual re-run of the sandboxed checks (409 while running or commit-less).
     runChecks: (projectId: string, id: string) =>
       postAction(token, actionPath(projectId, id, 'checks')),
+    hydrateRecap: (projectId: string, id: string) => hydrateRecapStore(store, projectId, id),
+    hydrateEvidence: (projectId: string, id: string) => hydrateEvidenceStore(store, projectId, id),
     // ── Agent-assisted checks setup, per project ──────────────────────────
     checksSetup,
     loadChecksSetup: (projectId: string) => loadChecksSetupStore(checksSetup, projectId),

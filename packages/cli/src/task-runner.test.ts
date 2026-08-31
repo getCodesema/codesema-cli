@@ -34,6 +34,7 @@ import { createLoadCap, type LoadCap } from './load-cap.js'
 import type { SandboxDriver } from './microsandbox-driver.js'
 import type { RunMicrovmTurnOptions } from './microvm-turn.js'
 import { projectIdFor } from './projects.js'
+import type { ProofConfig } from './repo-config.js'
 import { CAGE_FORWARDED_ENV, type RunContainerTurnOptions } from './task-isolation.js'
 import {
   activeTask,
@@ -174,6 +175,38 @@ describe('buildTaskPrompt / parseTaskQuestion', () => {
     expect(parseTaskQuestion('I asked myself QUESTION: what now?\nThen I fixed it.')).toBeNull()
     expect(parseTaskQuestion('all done, tests pass')).toBeNull()
     expect(parseTaskQuestion('QUESTION:')).toBeNull()
+  })
+})
+
+function sampleProof(): ProofConfig {
+  return {
+    journey: 'tests/e2e/main-flow.spec.ts',
+    url: 'http://localhost:3000',
+    timeoutSeconds: 30,
+    keep: 5,
+  }
+}
+
+describe('buildTaskPrompt with a proof config', () => {
+  test('microvm isolation with a proof config adds the journey bullet', () => {
+    const task = { title: 'Add rate limiting', isolation: 'microvm' } as TaskRecord
+    const prompt = buildTaskPrompt(task, { proof: sampleProof() })
+    expect(prompt).toContain('tests/e2e/main-flow.spec.ts')
+    expect(prompt).toContain('CODESEMA_BASE_URL')
+    expect(prompt).toContain('Playwright')
+  })
+
+  test('non-microvm isolation never adds the bullet, even with a proof config', () => {
+    const containerTask = { title: 'Add rate limiting', isolation: 'container' } as TaskRecord
+    expect(buildTaskPrompt(containerTask, { proof: sampleProof() })).not.toContain('Playwright')
+    const policyTask = { title: 'Add rate limiting', isolation: 'policy' } as TaskRecord
+    expect(buildTaskPrompt(policyTask, { proof: sampleProof() })).not.toContain('Playwright')
+  })
+
+  test('microvm isolation without a proof config adds nothing', () => {
+    const task = { title: 'Add rate limiting', isolation: 'microvm' } as TaskRecord
+    expect(buildTaskPrompt(task)).not.toContain('Playwright')
+    expect(buildTaskPrompt(task, { proof: null })).not.toContain('Playwright')
   })
 })
 

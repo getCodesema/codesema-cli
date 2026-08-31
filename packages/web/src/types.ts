@@ -947,6 +947,8 @@ export type TaskEnvelope =
   // Agent-assisted checks setup: PROJECT-scoped, no task_id — the proposal
   // belongs to the repo, not to a conversation.
   | { project_id: string; event: { name: 'checks_proposal'; data: unknown } }
+  | { project_id: string; task_id: string; event: { name: 'task_recap'; data: RecapRecord } }
+  | { project_id: string; task_id: string; event: { name: 'task_evidence'; data: EvidenceRecord } }
 
 // Mirrors packages/cli/src/projects.ts (global project registry) and the
 // /api/projects endpoints.
@@ -1087,4 +1089,29 @@ export type RecapRecord = {
   branch: string
   /** The merge/pull request URL opened at ship time. Absent before the task has shipped — never a placeholder. */
   mr_url?: string
+}
+
+// Mirrors packages/contract/src/evidence.ts: the normalized run evidence
+// (screenshots/videos captured while proving a task's outcome). Same
+// doctrine as RecapRecord above: sanitized on the server.
+
+export type EvidenceKind = 'screenshot' | 'video'
+
+export type EvidenceItem = {
+  kind: EvidenceKind
+  path: string
+  bytes: number
+  turn: number
+  created_at: string
+}
+
+export type EvidenceStatus = 'passed' | 'failed' | 'skipped'
+
+/** The normalized evidence of one task (.codesema/tasks/<id>/evidence.json). */
+export type EvidenceRecord = {
+  version: 1
+  status: EvidenceStatus
+  reason: string | null
+  head_sha: string | null
+  items: EvidenceItem[]
 }

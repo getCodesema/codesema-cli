@@ -65,7 +65,7 @@ import {
 import type { SandboxDriver, SandboxSecret } from './microsandbox-driver.js'
 import { runMicrovmTurn, type RunMicrovmTurnOptions } from './microvm-turn.js'
 import { projectIdFor } from './projects.js'
-import type { ChecksConfig } from './repo-config.js'
+import { readProofConfig, type ChecksConfig, type ProofConfig } from './repo-config.js'
 import { RUNNER_FALLBACK_GIT_IDENTITY } from './runner-secrets.js'
 import {
   bootstrapWorktreeInstall,
@@ -249,8 +249,15 @@ function criteriaDraftInstruction(): string {
  * `askBranchName` adds the one-line BRANCH protocol, asked on the FIRST turn
  * of a forked task only (see parseTaskBranchProposal): once the branch has the
  * agent's name, re-asking would only invite a rename mid-conversation.
+ *
+ * `proof` adds the Playwright journey bullet, only when the task's isolation
+ * is 'microvm': the standing rules never ask a caged or policy-isolated turn
+ * for a browser test it has no way to run.
  */
-export function buildTaskPrompt(task: TaskRecord, opts: { askBranchName?: boolean } = {}): string {
+export function buildTaskPrompt(
+  task: TaskRecord,
+  opts: { askBranchName?: boolean; proof?: ProofConfig | null } = {},
+): string {
   const lines = [
     'You are an autonomous coding agent working on a task in a dedicated git worktree of this repository (your current directory).',
     '',
@@ -270,6 +277,11 @@ export function buildTaskPrompt(task: TaskRecord, opts: { askBranchName?: boolea
       : []),
     '- Follow the existing code style and conventions of the repository.',
     '- If the repo has cheap checks (typecheck, unit tests, lint), run them and fix what YOUR changes broke before finishing.',
+    ...(task.isolation === 'microvm' && opts.proof
+      ? [
+          `- This repository keeps a Playwright end-to-end journey at ${opts.proof.journey}, covering the main user flow this task touches: create it if it does not exist yet, and update it if this task changes the interface it exercises. It reads the base URL from the CODESEMA_BASE_URL environment variable, the Playwright config enables video 'on', and the test ends with a full-page screenshot. Commit the file with the rest of your changes, and make sure the test passes locally before you finish this turn.`,
+        ]
+      : []),
     `- Language: ${taskLanguageRule()}. This covers your summary and any 'QUESTION: <text>' line; code identifiers, file paths and commit messages stay as they are.`,
     "- If you cannot proceed without a human decision, end your reply with a single final line of the exact form 'QUESTION: <your question>' (nothing after that line). Ask only when truly blocked.",
     '- Otherwise end your reply with a short plain-text summary of what you did and how you verified it (no code fences).',
@@ -1442,16 +1454,23 @@ function attachedRepositoriesNote(record: TaskRecord): string {
  * First turn: standing instructions + the task prompt. Later turns: claude
  * resumes its session so the reply alone is enough; other providers get a
  * one-shot run with the transcript replayed.
+ *
+ * `repoRoot` is the main repo, not the task's own worktree: the proof config
+ * lives in that repo's .codesema/config.json (repo-config.ts), the same file
+ * every other project-config read in this file re-reads from, never from the
+ * per-task checkout. Re-read on every call rather than cached on the record,
+ * so a config edited mid-task takes effect on the very next turn.
  */
-function composeTurnPrompt(record: TaskRecord, command: string): string {
+function composeTurnPrompt(record: TaskRecord, command: string, repoRoot: string): string {
   const message = record.turns.at(-1)?.prompt ?? ''
   const repositories = attachedRepositoriesNote(record)
   const withRepositories = (text: string): string =>
     repositories ? `${repositories}\n\n${text}` : text
+  const proof = record.isolation === 'microvm' ? readProofConfig(repoRoot) : null
   if (record.turns.length <= 1) {
     // A work-on conversation is not asked to name anything: it works on the
     // user's own pre-existing branch, which is never renamed.
-    const standing = buildTaskPrompt(record, { askBranchName: !record.work_on })
+    const standing = buildTaskPrompt(record, { askBranchName: !record.work_on, proof })
     const draft = taskCriteria(record).length === 0 ? `\n\n${criteriaDraftInstruction()}` : ''
     return withRepositories(`${standing}${draft}\n\n${message}`)
   }
@@ -1459,7 +1478,13 @@ function composeTurnPrompt(record: TaskRecord, command: string): string {
     return withRepositories(message)
   }
   return withRepositories(
-    [buildTaskPrompt(record), '', transcript(record), '', `New instruction: ${message}`].join('\n'),
+    [
+      buildTaskPrompt(record, { proof }),
+      '',
+      transcript(record),
+      '',
+      `New instruction: ${message}`,
+    ].join('\n'),
   )
 }
 
@@ -2529,7 +2554,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       return runTaskTurn({
         cwd: record.worktree,
         task: record,
-        prompt: composeTurnPrompt(record, taskCommand),
+        prompt: composeTurnPrompt(record, taskCommand, opts.cwd),
         command: opts.command,
         timeoutMs: opts.timeoutMs,
         ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
