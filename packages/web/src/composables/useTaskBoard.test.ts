@@ -602,7 +602,7 @@ describe('eventSummary', () => {
           },
         }),
       ),
-    ).toBe('No container runtime — HOME volume could not be released')
+    ).toBe('No container runtime: HOME volume could not be released')
   })
 
   test('resource: an unrecognized (or absent) name falls back to the localized type label, never to data.message', () => {
@@ -720,7 +720,7 @@ describe('eventSummary', () => {
         }),
       )
       expect(summary).toBe(
-        'Ticket edited on the forge — sections: goal, out of scope; criteria added: AC-4, AC-5; removed: AC-1',
+        'Ticket edited on the forge · sections: goal, out of scope; criteria added: AC-4, AC-5; removed: AC-1',
       )
       // Belt and braces on the swap specifically: the added ids come BEFORE
       // the removed one, and neither list leaks into the other's slot.
@@ -737,7 +737,7 @@ describe('eventSummary', () => {
             data: { name: 'edited', sections: 'context', criteria_added: '', criteria_removed: '' },
           }),
         ),
-      ).toBe('Ticket edited on the forge — sections: context; criteria added: none; removed: none')
+      ).toBe('Ticket edited on the forge · sections: context; criteria added: none; removed: none')
       // A snapshot with no per-section breakdown: the body hash PROVED
       // something moved, so "none" here would state the opposite of the truth.
       const unknown = eventSummary(
