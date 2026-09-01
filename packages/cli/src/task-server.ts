@@ -151,7 +151,7 @@ import { replayChecksOnDefaultBranch } from './task-post-merge-checks.js'
 import { captureProof, type ProofCaptureResult } from './task-proof.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import { publishTaskRecap } from './task-recap-publish.js'
-import { generateRecap, lastTurnResponse, readTaskRecap, writeTaskRecap } from './task-recap.js'
+import { generateRecap, readTaskRecap, recapOptionsFor, writeTaskRecap } from './task-recap.js'
 import {
   applyTaskRetention,
   DEFAULT_TASK_RETENTION,
@@ -3296,17 +3296,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // for `summary`. Best-effort: never blocks or fails the turn's settle.
       if (record.status === 'review_ok') {
         try {
-          const criteria = taskCriteria(record)
-          const criteriaVerdicts = readTaskReview(cwd, record.id)?.review.criteria
-          const modelOutput = lastTurnResponse(record)
-          const result = generateRecap({
-            cwd,
-            task: record,
-            ...(modelOutput ? { modelOutput } : {}),
-            ...(criteria.length > 0 && criteriaVerdicts
-              ? { criteriaVerdicts, acceptanceCriteria: criteria }
-              : {}),
-          })
+          const result = generateRecap(recapOptionsFor(cwd, record))
           if (result.recap) {
             const cleanRecap = writeTaskRecap(cwd, record.id, result.recap)
             emit({

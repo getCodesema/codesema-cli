@@ -8,6 +8,7 @@ import {
   type AcceptanceCriterion,
   type CriterionVerdict,
   type RecapRecord,
+  type ReviewRecord,
   type TaskChecks,
   type TaskEvent,
   type TaskRecord,
@@ -16,6 +17,7 @@ import {
   generateRecap,
   lastTurnResponse,
   readTaskRecap,
+  recapOptionsFor,
   renderRecapMarkdown,
   writeTaskRecap,
   type DiffFilesFn,
@@ -621,6 +623,95 @@ describe('lastTurnResponse', () => {
     expect(recap.summary).toBe('Rewired the worktree cleanup.')
     expect(recap.changes).toEqual([])
     expect(recap.decisions).toEqual([])
+  })
+})
+
+// --- recapOptionsFor: the shared entries for a recap built outside the ship -
+
+function fakeReviewRecord(criteria: CriterionVerdict[]): ReviewRecord {
+  return {
+    version: 1,
+    meta: {
+      title: 'x',
+      branch: 'codesema/task-x',
+      target: 'main',
+      merge_base: 'deadbeef',
+      repo_root: '/unused',
+      created_at: '2026-01-01T00:00:00.000Z',
+    },
+    commits: [],
+    diff: '',
+    review: {
+      verdict: 'approve',
+      summary: 'ok',
+      findings: [],
+      criteria,
+    },
+  } as unknown as ReviewRecord
+}
+
+describe('recapOptionsFor', () => {
+  test('sources criteria from taskCriteria + the injected review reader, and modelOutput from the last turn', () => {
+    const cwd = tmpCwd()
+    const criterion: AcceptanceCriterion = {
+      id: acceptanceCriterionId('WHEN a ticket is launched THE SYSTEM SHALL lint its body'),
+      text: 'WHEN a ticket is launched THE SYSTEM SHALL lint its body',
+    }
+    const task = createTask(cwd, {
+      title: 'x',
+      prompt: 'x',
+      autoShip: false,
+      base: '',
+      branch: 'codesema/task-x',
+      worktree: '',
+      isolation: 'policy',
+    })
+    task.criteria = [criterion]
+    task.turns = [fakeTurn({ response: 'done' })]
+    const verdicts: CriterionVerdict[] = [
+      { criterion_id: criterion.id, status: 'met', evidence: 'ok' },
+    ]
+    const readTaskReviewFn = () => fakeReviewRecord(verdicts)
+
+    const opts = recapOptionsFor(cwd, task, readTaskReviewFn)
+
+    expect(opts.acceptanceCriteria).toEqual([criterion])
+    expect(opts.criteriaVerdicts).toEqual(verdicts)
+    expect(opts.modelOutput).toEqual({ summary: 'done' })
+  })
+
+  test('a task with no criteria at all: neither field is set (DP12)', () => {
+    const cwd = tmpCwd()
+    const task = createTask(cwd, {
+      title: 'x',
+      prompt: 'x',
+      autoShip: false,
+      base: '',
+      branch: 'codesema/task-y',
+      worktree: '',
+      isolation: 'policy',
+    })
+    const opts = recapOptionsFor(cwd, task, () => null)
+    expect(opts.acceptanceCriteria).toBeUndefined()
+    expect(opts.criteriaVerdicts).toBeUndefined()
+    expect(opts.modelOutput).toBeUndefined()
+  })
+
+  test('by default (no readTaskReviewFn override) it reads the real review archive', () => {
+    const cwd = tmpCwd()
+    const task = createTask(cwd, {
+      title: 'x',
+      prompt: 'x',
+      autoShip: false,
+      base: '',
+      branch: 'codesema/task-z',
+      worktree: '',
+      isolation: 'policy',
+    })
+    const opts = recapOptionsFor(cwd, task)
+    expect(opts.criteriaVerdicts).toBeUndefined()
+    expect(opts.cwd).toBe(cwd)
+    expect(opts.task).toBe(task)
   })
 })
 

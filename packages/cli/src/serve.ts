@@ -20,6 +20,7 @@ import {
   sanitizeRecord,
   TASK_AGENT_MAX,
   type ArmTicket,
+  type RecapRecord,
   type ReviewRecord,
 } from './contract.js'
 import type { JudgeDecision } from './dual.js'
@@ -61,9 +62,10 @@ import { startRunnerDaemon, type RunnerDaemonHandle } from './runner-daemon.js'
 import { loadSyncCredentials } from './sync.js'
 import { applyTaskCriteria } from './task-criteria.js'
 import { EVIDENCE_MAX_BYTES, evidenceDir, readTaskEvidence } from './task-evidence.js'
-import { readTaskRecap } from './task-recap.js'
+import { generateRecap, readTaskRecap, recapOptionsFor } from './task-recap.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { CreateTaskManagerInput, TaskEnvelope, TaskManager } from './task-server.js'
+import { loadTask } from './tasks-store.js'
 import {
   AGENT_DEFS,
   composeCommand,
@@ -1507,6 +1509,26 @@ async function serveTaskEvidenceFile(
   res.end(content)
 }
 
+/**
+ * Read-time fallback for a task whose turn ended before the end-of-turn
+ * recap write existed (task-server.ts's `onTurnDone`): every entry the
+ * generator needs is already on disk, so this computes the SAME recap that
+ * write would have produced, using the SAME entries (`recapOptionsFor`,
+ * task-recap.ts). Pure read: never calls `writeTaskRecap`, so a GET never
+ * creates the file `onTurnDone` and the ship are the only writers of: the
+ * disk stays the single source of truth for what actually happened at
+ * turn-end or ship time. `'review_ok'`/`'shipped'` only: any other status
+ * means either the review never landed clean or nothing to summarize yet,
+ * and the route answers 404 exactly as it did before this fallback existed.
+ */
+function computeFallbackRecap(cwd: string, id: string): RecapRecord | null {
+  const task = loadTask(cwd, id)
+  if (!task || (task.status !== 'review_ok' && task.status !== 'shipped')) {
+    return null
+  }
+  return generateRecap(recapOptionsFor(cwd, task)).recap
+}
+
 const TASK_ACTION_RE =
   /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume|criteria|attach)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
@@ -1867,7 +1889,10 @@ function createRequestHandler(handlerOpts: {
         }
         const project = getProject(projectId)
         const recap =
-          project && isTaskId(taskRecapGet[1]) ? readTaskRecap(project.path, taskRecapGet[1]) : null
+          project && isTaskId(taskRecapGet[1])
+            ? (readTaskRecap(project.path, taskRecapGet[1]) ??
+              computeFallbackRecap(project.path, taskRecapGet[1]))
+            : null
         if (!recap) {
           return sendText(res, 404, 'not found')
         }

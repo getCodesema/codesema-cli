@@ -38,7 +38,8 @@ import {
   type SessionEvent,
 } from './serve.js'
 import { evidenceDir, writeTaskEvidence } from './task-evidence.js'
-import { writeTaskRecap } from './task-recap.js'
+import { readTaskRecap, writeTaskRecap } from './task-recap.js'
+import { createTask, saveTask } from './tasks-store.js'
 
 describe('isLoopbackHost', () => {
   test('accepts loopback hosts, with and without a port', () => {
@@ -1211,6 +1212,71 @@ describe('task recap and evidence routes (?project=)', () => {
 
   test('404s an invalid task id on recap', async () => {
     const res = await rawRequest(port, `/api/tasks/not-a-task-id/recap?project=${projectId}`)
+    expect(res.status).toBe(404)
+  })
+
+  function seedTaskRecord(branch: string): ReturnType<typeof createTask> {
+    const record = createTask(projectPath, {
+      title: branch,
+      prompt: 'do it',
+      autoShip: false,
+      base: 'main',
+      branch,
+      worktree: join(projectPath, '.codesema', 'worktrees', branch),
+      isolation: 'policy',
+    })
+    return record
+  }
+
+  test('computes a fallback recap for a review_ok task with no recap.json, without writing it to disk', async () => {
+    const record = seedTaskRecord('codesema/task-fallback')
+    record.status = 'review_ok'
+    record.turns = [
+      {
+        prompt: 'do it',
+        response: 'Rewired the worktree cleanup.',
+        question: null,
+        started_at: '2026-01-01T00:00:00.000Z',
+        ended_at: '2026-01-01T00:01:00.000Z',
+      },
+    ]
+    saveTask(projectPath, record)
+
+    const res = await rawRequest(port, `/api/tasks/${record.id}/recap?project=${projectId}`)
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.summary).toBe('Rewired the worktree cleanup.')
+    expect(body.mr_url).toBeUndefined()
+    expect(body.branch).toBe('codesema/task-fallback')
+
+    expect(readTaskRecap(projectPath, record.id)).toBeNull()
+  })
+
+  test('recap.json on disk wins over the fallback computation', async () => {
+    const record = seedTaskRecord('codesema/task-has-recap')
+    record.status = 'review_ok'
+    saveTask(projectPath, record)
+    writeTaskRecap(projectPath, record.id, {
+      version: 1,
+      summary: 'the persisted one',
+      changes: [],
+      decisions: [],
+      files: [],
+      tests: [],
+      branch: record.branch,
+    })
+
+    const res = await rawRequest(port, `/api/tasks/${record.id}/recap?project=${projectId}`)
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ summary: 'the persisted one' })
+  })
+
+  test('a failed task with no recap.json still 404s: no fallback for a status the generator was never meant to cover', async () => {
+    const record = seedTaskRecord('codesema/task-failed')
+    record.status = 'failed'
+    saveTask(projectPath, record)
+
+    const res = await rawRequest(port, `/api/tasks/${record.id}/recap?project=${projectId}`)
     expect(res.status).toBe(404)
   })
 
