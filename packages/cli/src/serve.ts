@@ -1511,6 +1511,7 @@ const TASK_ACTION_RE =
   /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume|criteria|attach)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
+const TASK_VERIFICATION_RE = /^\/api\/tasks\/([^/]+)\/verification$/
 const TASK_REVIEW_RE = /^\/api\/tasks\/([^/]+)\/review$/
 const TASK_RECAP_RE = /^\/api\/tasks\/([^/]+)\/recap$/
 const TASK_EVIDENCE_RE = /^\/api\/tasks\/([^/]+)\/evidence$/
@@ -1816,6 +1817,26 @@ function createRequestHandler(handlerOpts: {
           return sendText(res, 404, 'not found')
         }
         return sendJson(res, 200, checks)
+      }
+      const taskVerificationGet = TASK_VERIFICATION_RE.exec(pathname)
+      if (taskVerificationGet?.[1]) {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        // 404 covers unknown project, unknown/malformed task id AND a task
+        // whose mechanical verification never ran: the file simply is not
+        // there yet, same doctrine as the checks route above.
+        const verification = isTaskId(taskVerificationGet[1])
+          ? tasks.manager.getVerification(projectId, taskVerificationGet[1])
+          : null
+        if (!verification) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, verification)
       }
       const taskReviewGet = TASK_REVIEW_RE.exec(pathname)
       if (taskReviewGet?.[1]) {

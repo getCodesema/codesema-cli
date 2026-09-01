@@ -9,7 +9,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import { t } from '../../i18n'
-import type { EvidenceRecord } from '../../types'
+import type { EvidenceRecord, TaskVerification } from '../../types'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -23,7 +23,11 @@ Bun.plugin({
   },
 })
 
-type Props = { taskId: string; evidence?: EvidenceRecord | null }
+type Props = {
+  taskId: string
+  evidence?: EvidenceRecord | null
+  verification?: TaskVerification | null
+}
 
 async function render(props: Props): Promise<string> {
   const EvidenceBlock = (await import('./EvidenceBlock.vue')).default
@@ -38,6 +42,21 @@ function record(overrides: Partial<EvidenceRecord> = {}): EvidenceRecord {
     reason: null,
     head_sha: 'abc1234',
     items: [],
+    ...overrides,
+  }
+}
+
+function verificationRecord(overrides: Partial<TaskVerification> = {}): TaskVerification {
+  return {
+    head_sha: 'abc1234def',
+    runbook_sha: '0123456789abcdef',
+    started_at: '2026-08-14T10:00:00.000Z',
+    finished_at: '2026-08-14T10:01:00.000Z',
+    status: 'passed',
+    checks: [],
+    integrity_ok: true,
+    changed_dependency_files: [],
+    error: null,
     ...overrides,
   }
 }
@@ -139,6 +158,88 @@ describe('EvidenceBlock: items render as media, URL-encoded, labeled by turn', (
     expect(html).toContain('crashed after the second screenshot')
     expect(html).toContain('<img')
     expect(html).not.toContain(t('pilot.evidence.none'))
+  })
+})
+
+describe('EvidenceBlock: the verification section is absent unless there is a real record', () => {
+  test('undefined verification renders no verification section at all', async () => {
+    const html = await render({ taskId: 'task-1' })
+    expect(html).not.toContain(t('pilot.verification.title'))
+  })
+
+  test('null verification renders no verification section at all', async () => {
+    const html = await render({ taskId: 'task-1', verification: null })
+    expect(html).not.toContain(t('pilot.verification.title'))
+  })
+
+  test('a passed verification shows the title, the passed phrase and the verified head sha', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      verification: verificationRecord({ status: 'passed', head_sha: 'abc1234def' }),
+    })
+    expect(html).toContain(t('pilot.verification.title'))
+    expect(html).toContain(t('pilot.verification.passed'))
+    expect(html).toContain(t('workspace.checksHeadVerified', { sha: 'abc1234' }))
+  })
+
+  test('a failed verification shows the failed phrase', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      verification: verificationRecord({ status: 'failed' }),
+    })
+    expect(html).toContain(t('pilot.verification.failed'))
+  })
+
+  test('a refused verification names the changed dependency files, never invents a reason', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      verification: verificationRecord({
+        status: 'refused',
+        integrity_ok: false,
+        changed_dependency_files: ['package-lock.json', 'src/schema.ts'],
+      }),
+    })
+    expect(html).toContain(t('pilot.verification.refused'))
+    expect(html).toContain('package-lock.json')
+    expect(html).toContain('src/schema.ts')
+  })
+
+  test('an errored verification (install/service/healthcheck failed before tests ran) shows the raw error text', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      verification: verificationRecord({
+        status: 'error',
+        error: 'install step failed: npm ci (exit 1)',
+      }),
+    })
+    expect(html).toContain(t('pilot.verification.error'))
+    expect(html).toContain('install step failed: npm ci (exit 1)')
+  })
+
+  test('the tests phase renders one real row per replayed runbook command', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      verification: verificationRecord({
+        status: 'failed',
+        checks: [
+          { command: 'bun test', status: 'passed', exit_code: 0, duration_ms: 100, tail: '' },
+          { command: 'bun run e2e', status: 'failed', exit_code: 1, duration_ms: 200, tail: '' },
+        ],
+      }),
+    })
+    expect(html).toContain(t('pilot.recap.tests'))
+    expect(html).toContain('bun test')
+    expect(html).toContain('bun run e2e')
+    expect(html).toContain(t('workspace.checkPassed'))
+    expect(html).toContain(t('workspace.checkFailed'))
+  })
+
+  test('an empty tests list renders no tests subsection', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      verification: verificationRecord({ status: 'error', checks: [] }),
+    })
+    expect(html).not.toContain(t('pilot.recap.tests'))
   })
 })
 

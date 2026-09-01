@@ -25,7 +25,12 @@ defineProps<{
           :title="verdict.status"
           aria-hidden="true"
         />
-        <span class="crb-text">{{ verdict.text ?? verdict.criterion_id }}</span>
+        <span class="crb-body">
+          <span class="crb-text">{{ verdict.text ?? verdict.criterion_id }}</span>
+          <span v-if="verdict.evidence" class="crb-evidence"
+            >{{ t('pilot.criteria.evidence') }}: {{ verdict.evidence }}</span
+          >
+        </span>
       </li>
     </ul>
   </section>
@@ -65,7 +70,7 @@ defineProps<{
 
 .crb-row {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 8px;
   font-size: 12.5px;
   color: var(--cs-text);
@@ -77,7 +82,19 @@ defineProps<{
   height: 7px;
   border-radius: 50%;
   background: var(--cs-muted);
-  transform: translateY(-1px);
+  margin-top: 4px;
+}
+
+.crb-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.crb-evidence {
+  font-size: 11.5px;
+  color: var(--cs-muted);
 }
 
 .crb-dot--met {

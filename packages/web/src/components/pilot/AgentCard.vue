@@ -112,7 +112,11 @@ function onSend(text: string): void {
         @click="openLens('evidence')"
         @keydown="onZoneKeydown($event, 'evidence')"
       >
-        <EvidenceBlock :task-id="record.id" :evidence="state.evidence ?? null" />
+        <EvidenceBlock
+          :task-id="record.id"
+          :evidence="state.evidence ?? null"
+          :verification="state.verification ?? null"
+        />
       </div>
       <div
         class="ac-zone"

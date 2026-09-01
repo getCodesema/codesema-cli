@@ -822,6 +822,35 @@ export type TaskChecks = {
   source?: TaskChecksSource | string
 }
 
+// Mirrors packages/contract/src/tasks.ts: the outcome of the MECHANICAL
+// verification of a task (a fresh VM replays the validated runbook's tests
+// with the ticket's worktree attached; the agent's own claim never enters
+// this record).
+
+export type TaskVerificationStatus = 'passed' | 'failed' | 'refused' | 'error'
+
+/** The persisted verification.json of one task (.codesema/tasks/<id>/verification.json). */
+export type TaskVerification = {
+  /** Worktree HEAD the verification ran against. */
+  head_sha: string
+  /** sha (16 hex) of the runbook whose tests were replayed. */
+  runbook_sha: string
+  started_at: string
+  finished_at: string | null
+  status: TaskVerificationStatus
+  /** One entry per `runbook.tests` command that ran, in order; empty when
+   * refused or errored before running. Same shape as the contract's
+   * TaskCheckResult: TaskCheck is that type's own mirror name here. */
+  checks: TaskCheck[]
+  /** True when every `depends_on_files` entry matched the validated runbook. */
+  integrity_ok: boolean
+  /** The `depends_on_files` entries that differed; empty when `integrity_ok`. */
+  changed_dependency_files: string[]
+  /** Readable failure when status is 'error': the VM could not boot, or an
+   * install/service/healthcheck step failed before the tests ever ran. */
+  error: string | null
+}
+
 // Mirrors the ticket contract (packages/contract/src/ticket.ts, decision D6):
 // a ticket is a title — the task's — plus a body of five sections whose
 // acceptance criteria are a structured list.
@@ -949,6 +978,11 @@ export type TaskEnvelope =
   | { project_id: string; event: { name: 'checks_proposal'; data: unknown } }
   | { project_id: string; task_id: string; event: { name: 'task_recap'; data: RecapRecord } }
   | { project_id: string; task_id: string; event: { name: 'task_evidence'; data: EvidenceRecord } }
+  | {
+      project_id: string
+      task_id: string
+      event: { name: 'task_verification'; data: TaskVerification }
+    }
 
 // Mirrors packages/cli/src/projects.ts (global project registry) and the
 // /api/projects endpoints.

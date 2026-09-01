@@ -47,16 +47,17 @@ const counts = computed(() => agentCounts(tasks.states.value))
 
 const COLS_OPTIONS: readonly PilotCols[] = [1, 2, 3, 4]
 
-// ── Hydration: recap/evidence/checks, fetched once per visible task ─────
+// ── Hydration: recap/evidence/verification/checks, fetched once per visible
+// task ─────────────────────────────────────────────────────────────────
 // Full event history is heavier and only ever read in two places, so unlike
-// recap/evidence/checks it is NOT fetched for every card: eagerly for the
-// attention cards whose question is shown inline, unopened (mirrors
-// WorkspaceView's own `hydratedForQuestion`), and otherwise on demand the
-// moment a card is actually opened (open-full, mobile select), mirroring
-// WorkspaceView's `openConversation`. A reconnect never replays what
-// happened while the stream was down, so every task's recap/evidence/checks
-// ask again on a fresh `connections` tick, and whichever task is currently
-// open re-asks for its events too.
+// recap/evidence/verification/checks it is NOT fetched for every card:
+// eagerly for the attention cards whose question is shown inline, unopened
+// (mirrors WorkspaceView's own `hydratedForQuestion`), and otherwise on
+// demand the moment a card is actually opened (open-full, mobile select),
+// mirroring WorkspaceView's `openConversation`. A reconnect never replays
+// what happened while the stream was down, so every task's
+// recap/evidence/verification/checks ask again on a fresh `connections`
+// tick, and whichever task is currently open re-asks for its events too.
 
 const requestedHydration = new Set<string>()
 
@@ -79,6 +80,10 @@ function hydrateIfNeeded(state: TaskState): void {
   if (state.evidence === undefined && !requestedHydration.has(`${base}:evidence`)) {
     requestedHydration.add(`${base}:evidence`)
     void tasks.hydrateEvidence(state.projectId, state.record.id)
+  }
+  if (state.verification === undefined && !requestedHydration.has(`${base}:verification`)) {
+    requestedHydration.add(`${base}:verification`)
+    void tasks.hydrateVerification(state.projectId, state.record.id)
   }
   // `checks` has no "never hydrated" sentinel of its own (it defaults to
   // `null`, same value a hydrated-but-empty task carries), unlike
@@ -323,6 +328,7 @@ function onMobilePick(option: string): void {
         v-if="lensBlock === 'evidence'"
         :task-id="lensTaskState.record.id"
         :evidence="lensTaskState.evidence ?? null"
+        :verification="lensTaskState.verification ?? null"
       />
       <RecapBlock v-else-if="lensBlock === 'recap'" :recap="lensTaskState.recap ?? null" />
       <ChecksBlock v-else-if="lensBlock === 'checks'" :checks="lensTaskState.checks" />

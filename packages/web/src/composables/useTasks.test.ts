@@ -7,6 +7,7 @@ import type {
   RecapRecord,
   TaskPlan,
   TaskRecord,
+  TaskVerification,
 } from '../types'
 import {
   applyTaskMetaFrame,
@@ -250,13 +251,37 @@ describe('taskStreamHandlers (the stream wiring itself)', () => {
     )
     expect(state.evidence).toEqual(evidence)
   })
+
+  test('a task_verification frame stores the verification on the task state', () => {
+    const { store, handlers } = seeded()
+    const state = store.get(taskKey('p1', 'x'))!
+    const verification: TaskVerification = {
+      head_sha: 'abc123',
+      runbook_sha: '0123456789abcdef',
+      started_at: '2026-08-14T10:00:00.000Z',
+      finished_at: '2026-08-14T10:01:00.000Z',
+      status: 'passed',
+      checks: [],
+      integrity_ok: true,
+      changed_dependency_files: [],
+      error: null,
+    }
+    handlers.task_verification?.(
+      frame({
+        project_id: 'p1',
+        task_id: 'x',
+        event: { name: 'task_verification', data: verification },
+      }),
+    )
+    expect(state.verification).toEqual(verification)
+  })
 })
 
-// Per-task on-demand fetch of the recap/evidence records: same posture as
-// hydrateChecksStore (404 vs network failure vs a real payload), but for the
-// two fields that additionally distinguish "never asked" (absent) from
-// "asked, and there is none" (null) — see TaskState's own doc comments.
-describe('hydrateRecap / hydrateEvidence (per-task on-demand fetch)', () => {
+// Per-task on-demand fetch of the recap/evidence/verification records: same
+// posture as hydrateChecksStore (404 vs network failure vs a real payload),
+// but for the fields that additionally distinguish "never asked" (absent)
+// from "asked, and there is none" (null): see TaskState's own doc comments.
+describe('hydrateRecap / hydrateEvidence / hydrateVerification (per-task on-demand fetch)', () => {
   type Route = { status: number; body: unknown } | 'reject'
 
   function seedTaskState(tasks: ReturnType<typeof useTasks>, projectId: string, id: string): void {
@@ -390,6 +415,59 @@ describe('hydrateRecap / hydrateEvidence (per-task on-demand fetch)', () => {
     try {
       await tasks.hydrateEvidence('p1', 'x')
       expect(tasks.store.get(taskKey('p1', 'x'))?.evidence).toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+
+  const VERIFICATION: TaskVerification = {
+    head_sha: 'abc123',
+    runbook_sha: '0123456789abcdef',
+    started_at: '2026-08-14T10:00:00.000Z',
+    finished_at: '2026-08-14T10:01:00.000Z',
+    status: 'passed',
+    checks: [],
+    integrity_ok: true,
+    changed_dependency_files: [],
+    error: null,
+  }
+
+  test('hydrateVerification on 200 stores the record as-is', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({
+      '/api/tasks/x/verification': { status: 200, body: VERIFICATION },
+    })
+    try {
+      await tasks.hydrateVerification('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.verification).toEqual(VERIFICATION)
+    } finally {
+      restore()
+    }
+  })
+
+  test('hydrateVerification on 404 sets verification to null, distinct from never asked', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({
+      '/api/tasks/x/verification': { status: 404, body: { error: 'not found' } },
+    })
+    try {
+      expect(tasks.store.get(taskKey('p1', 'x'))?.verification).toBeUndefined()
+      await tasks.hydrateVerification('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.verification).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  test('hydrateVerification on a network failure leaves verification unset', async () => {
+    const tasks = useTasks('tok-123')
+    seedTaskState(tasks, 'p1', 'x')
+    const { restore } = installRoutedFetch({ '/api/tasks/x/verification': 'reject' })
+    try {
+      await tasks.hydrateVerification('p1', 'x')
+      expect(tasks.store.get(taskKey('p1', 'x'))?.verification).toBeUndefined()
     } finally {
       restore()
     }

@@ -14,6 +14,7 @@ import {
 } from './contract.js'
 import {
   generateRecap,
+  lastTurnResponse,
   readTaskRecap,
   renderRecapMarkdown,
   writeTaskRecap,
@@ -568,6 +569,58 @@ describe('generateRecap: the model contributes only summary/changes/decisions (i
     expect(recap.files).toHaveLength(5)
     // The prose is not rewritten either — it simply has no power over files[].
     expect(recap.summary).toBe('3 fichiers modifiés dans cette tâche.')
+  })
+})
+
+// --- lastTurnResponse: the prose source for a recap generated before any ship
+
+function fakeTurn(over: Partial<TaskRecord['turns'][number]> = {}): TaskRecord['turns'][number] {
+  return {
+    prompt: 'do it',
+    response: null,
+    question: null,
+    started_at: '2026-01-01T00:00:00.000Z',
+    ended_at: '2026-01-01T00:01:00.000Z',
+    ...over,
+  }
+}
+
+describe('lastTurnResponse', () => {
+  test('the last turn carrying a response, not necessarily the last turn overall', () => {
+    const task = fakeTask({
+      turns: [
+        fakeTurn({ response: 'first turn done' }),
+        fakeTurn({ response: null, question: 'need more context' }),
+      ],
+    })
+    expect(lastTurnResponse(task)).toEqual({ summary: 'first turn done' })
+  })
+
+  test('no turn has a response yet: null, not an empty string', () => {
+    const task = fakeTask({ turns: [fakeTurn({ response: null })] })
+    expect(lastTurnResponse(task)).toBeNull()
+  })
+
+  test('no turns at all: null', () => {
+    const task = fakeTask({ turns: [] })
+    expect(lastTurnResponse(task)).toBeNull()
+  })
+
+  test('a hand-edited task.json without turns degrades to null instead of throwing', () => {
+    const task = fakeTask({ turns: undefined as unknown as TaskRecord['turns'] })
+    expect(() => lastTurnResponse(task)).not.toThrow()
+    expect(lastTurnResponse(task)).toBeNull()
+  })
+
+  test('the result feeds generateRecap as modelOutput.summary, changes/decisions stay empty', () => {
+    const task = fakeTask({ turns: [fakeTurn({ response: 'Rewired the worktree cleanup.' })] })
+    const contribution = lastTurnResponse(task)
+    const { recap } = generate(
+      baseOptions({ task, ...(contribution ? { modelOutput: contribution } : {}) }),
+    )
+    expect(recap.summary).toBe('Rewired the worktree cleanup.')
+    expect(recap.changes).toEqual([])
+    expect(recap.decisions).toEqual([])
   })
 })
 

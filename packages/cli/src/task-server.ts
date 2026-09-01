@@ -151,7 +151,7 @@ import { replayChecksOnDefaultBranch } from './task-post-merge-checks.js'
 import { captureProof, type ProofCaptureResult } from './task-proof.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import { publishTaskRecap } from './task-recap-publish.js'
-import { readTaskRecap } from './task-recap.js'
+import { generateRecap, lastTurnResponse, readTaskRecap, writeTaskRecap } from './task-recap.js'
 import {
   applyTaskRetention,
   DEFAULT_TASK_RETENTION,
@@ -260,6 +260,11 @@ export type TaskEnvelope =
   | { project_id: string; event: { name: 'checks_proposal'; data: ChecksSetupState } }
   | { project_id: string; task_id: string; event: { name: 'task_evidence'; data: EvidenceRecord } }
   | { project_id: string; task_id: string; event: { name: 'task_recap'; data: RecapRecord } }
+  | {
+      project_id: string
+      task_id: string
+      event: { name: 'task_verification'; data: TaskVerification }
+    }
 
 /**
  * T2.4: the raw issue reference as it arrives from the wire — everything
@@ -3082,6 +3087,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       const { verification, proof } = await verifyAfterCommit(ctx, record, timeoutMs)
       if (verification) {
         const cleanVerification = writeTaskVerification(cwd, record.id, verification)
+        emit({
+          project_id: projectId,
+          task_id: record.id,
+          event: { name: 'task_verification', data: cleanVerification },
+        })
         const verificationBlocking =
           cleanVerification.status === 'refused' || cleanVerification.status === 'failed'
         const verificationEvent = appendTaskEvent(cwd, record.id, {
@@ -3273,6 +3283,43 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // fold the gates in: idempotent if the wrapped persist already did.
       applyGates()
       io.persist()
+      // Product decision: the recap no longer waits for the ship. Generated
+      // here, right after the settle, with the SAME `generateRecap` the ship
+      // still calls (task-ship.ts): `mr_url` is read off the LAST 'shipped'
+      // journal event (buildMrUrl), which does not exist yet on a task that
+      // has never shipped, so it comes back honestly absent rather than a
+      // value this hook would have to invent. The ship's own regeneration
+      // (with mr_url once pushed) overwrites this record and re-emits under
+      // its own `recapState` guard, unchanged by this addition. No extra
+      // model call: `changes[]`/`decisions[]` stay empty here, same
+      // `lastTurnResponse` read task-ship.ts's `lastTurnContribution` does
+      // for `summary`. Best-effort: never blocks or fails the turn's settle.
+      if (record.status === 'review_ok') {
+        try {
+          const criteria = taskCriteria(record)
+          const criteriaVerdicts = readTaskReview(cwd, record.id)?.review.criteria
+          const modelOutput = lastTurnResponse(record)
+          const result = generateRecap({
+            cwd,
+            task: record,
+            ...(modelOutput ? { modelOutput } : {}),
+            ...(criteria.length > 0 && criteriaVerdicts
+              ? { criteriaVerdicts, acceptanceCriteria: criteria }
+              : {}),
+          })
+          if (result.recap) {
+            const cleanRecap = writeTaskRecap(cwd, record.id, result.recap)
+            emit({
+              project_id: projectId,
+              task_id: record.id,
+              event: { name: 'task_recap', data: cleanRecap },
+            })
+          }
+        } catch {
+          // ignored: best-effort, same doctrine as the verification/evidence
+          // blocks above
+        }
+      }
       if (record.auto_ship && record.status === 'review_ok') {
         await ship(ctx, record.id)
         // T3.6, AWAITED and not fired off: the spec promises that a missing

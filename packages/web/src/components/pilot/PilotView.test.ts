@@ -126,12 +126,14 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(SOURCE).toContain('withSending(taskId,')
   })
 
-  test('recap/evidence/checks are hydrated once per task, guarded by a requested set', () => {
+  test('recap/evidence/verification/checks are hydrated once per task, guarded by a requested set', () => {
     expect(SOURCE).toContain('tasks.hydrateRecap(')
     expect(SOURCE).toContain('tasks.hydrateEvidence(')
+    expect(SOURCE).toContain('tasks.hydrateVerification(')
     expect(SOURCE).toContain('tasks.hydrateChecks(')
     expect(SOURCE).toContain('state.recap === undefined')
     expect(SOURCE).toContain('state.evidence === undefined')
+    expect(SOURCE).toContain('state.verification === undefined')
     expect(SOURCE).toContain('requestedHydration')
   })
 

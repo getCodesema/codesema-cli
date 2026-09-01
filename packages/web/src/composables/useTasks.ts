@@ -29,6 +29,7 @@ import type {
   TaskEvent,
   TaskPlan,
   TaskRecord,
+  TaskVerification,
   WorkspaceInfo,
 } from '../types'
 import {
@@ -89,6 +90,11 @@ export type TaskState = {
    * Absent (key not set) means never loaded; null means loaded and there is
    * none. */
   evidence?: EvidenceRecord | null
+  /** Mechanical verification (volatile mirror of verification.json): hydrated
+   * by GET /api/tasks/:id/verification on demand, updated by
+   * 'task_verification' frames. Absent (key not set) means never loaded; null
+   * means loaded and there is none. */
+  verification?: TaskVerification | null
 }
 
 export type ApiResult = { ok: true } | { ok: false; status: number; error: string }
@@ -322,6 +328,13 @@ export function taskStreamHandlers(
         current.evidence = envelope.event.data
       }
     },
+    task_verification: (e) => {
+      const envelope = parseFrame<'task_verification'>(e)
+      const current = store.get(taskKey(envelope.project_id, envelope.task_id))
+      if (current) {
+        current.verification = envelope.event.data
+      }
+    },
     // Agent-assisted setup: the run's progress and its final proposal. The
     // frame is project-scoped (no task_id) and its payload is parsed
     // defensively — a bare proposal object reads as "ready" just like a state
@@ -497,6 +510,37 @@ async function hydrateEvidenceStore(
       return
     }
     current.evidence = (await res.json()) as EvidenceRecord
+  } catch {
+    // Local server stopped: keep the last known state, the stream will retry.
+  }
+}
+
+/**
+ * Loads the persisted mechanical verification of one task. Same posture as
+ * `hydrateRecapStore`: 404 sets `verification` to `null`, any other failure
+ * leaves the state untouched.
+ */
+async function hydrateVerificationStore(
+  store: TaskStore,
+  projectId: string,
+  id: string,
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `/api/tasks/${encodeURIComponent(id)}/verification?project=${encodeURIComponent(projectId)}`,
+    )
+    const current = store.get(taskKey(projectId, id))
+    if (!current) {
+      return
+    }
+    if (res.status === 404) {
+      current.verification = null
+      return
+    }
+    if (!res.ok) {
+      return
+    }
+    current.verification = (await res.json()) as TaskVerification
   } catch {
     // Local server stopped: keep the last known state, the stream will retry.
   }
@@ -1028,6 +1072,8 @@ export function useTasks(token: string) {
       postAction(token, actionPath(projectId, id, 'checks')),
     hydrateRecap: (projectId: string, id: string) => hydrateRecapStore(store, projectId, id),
     hydrateEvidence: (projectId: string, id: string) => hydrateEvidenceStore(store, projectId, id),
+    hydrateVerification: (projectId: string, id: string) =>
+      hydrateVerificationStore(store, projectId, id),
     // ── Agent-assisted checks setup, per project ──────────────────────────
     checksSetup,
     loadChecksSetup: (projectId: string) => loadChecksSetupStore(checksSetup, projectId),

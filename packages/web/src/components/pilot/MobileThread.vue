@@ -123,7 +123,11 @@ function focusComposer() {
           />
         </div>
         <div class="mbt-event">
-          <EvidenceBlock :task-id="record.id" :evidence="state.evidence ?? null" />
+          <EvidenceBlock
+            :task-id="record.id"
+            :evidence="state.evidence ?? null"
+            :verification="state.verification ?? null"
+          />
         </div>
         <div class="mbt-event">
           <RecapBlock :recap="state.recap ?? null" />

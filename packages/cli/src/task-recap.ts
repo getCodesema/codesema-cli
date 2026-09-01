@@ -271,6 +271,23 @@ function buildModelFields(opts: GenerateRecapOptions): {
 }
 
 /**
+ * The agent's own last turn response, as `modelOutput.summary`: the same
+ * read task-ship.ts's `lastTurnContribution` does for the ship path,
+ * duplicated here rather than shared across that module boundary. The
+ * caller this ticket adds (task-server.ts's end-of-turn recap) has no other
+ * prose source and does not spend an extra model turn getting one: a
+ * deterministic recap without `changes[]`/`decisions[]` is what it produces
+ * instead. `Array.isArray`, not a bare `.findLast`: a hand-edited or
+ * truncated task.json can carry a record without `turns`, and this must
+ * degrade, not throw.
+ */
+export function lastTurnResponse(task: TaskRecord): RecapModelContribution | null {
+  const turns = Array.isArray(task.turns) ? task.turns : []
+  const summary = turns.findLast((turn) => turn?.response)?.response
+  return summary ? { summary } : null
+}
+
+/**
  * Builds a `RecapRecord` for one task. Every factual field is read from its
  * ONE source (see module doc); the model contributes only prose. NEVER
  * throws.

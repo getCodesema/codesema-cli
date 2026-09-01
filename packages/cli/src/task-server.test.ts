@@ -4587,7 +4587,8 @@ describe('task routes with a stub manager', () => {
       },
       getChecks: (projectId, id) =>
         known(projectId) && id === record.id ? readTaskChecks(project.path, id) : null,
-      getVerification: () => null,
+      getVerification: (projectId, id) =>
+        known(projectId) && id === record.id ? readTaskVerification(project.path, id) : null,
       getReview: (projectId, id, ref) =>
         known(projectId) ? readTaskReview(project.path, id, ref) : null,
       checksSetup: (projectId) => {
@@ -5265,6 +5266,52 @@ describe('task routes with a stub manager', () => {
         event: { name: 'task_checks', data: { status: 'running' } },
       })
       req.destroy()
+    } finally {
+      await started.stop()
+    }
+  })
+
+  test('verification route: 404 before any run, 400 with no project, 404 unknown project/id, then the file', async () => {
+    const project = register(makeRepo())
+    const { manager, record } = stubManager(project)
+    const started = await startServer(createSession(), {
+      cwd: project.path,
+      port: 5174,
+      taskManager: manager,
+    })
+    const path = `/api/tasks/${record.id}/verification?project=${project.id}`
+    try {
+      // Never run: 404, same doctrine as the checks route above.
+      expect((await rawRequest(started.port, path)).status).toBe(404)
+      expect((await rawRequest(started.port, `/api/tasks/${record.id}/verification`)).status).toBe(
+        400,
+      )
+      expect(
+        (await rawRequest(started.port, `/api/tasks/${record.id}/verification?project=ffffffff`))
+          .status,
+      ).toBe(404)
+      expect(
+        (await rawRequest(started.port, `/api/tasks/not-an-id/verification?project=${project.id}`))
+          .status,
+      ).toBe(404)
+
+      writeTaskVerification(project.path, record.id, {
+        head_sha: 'abc',
+        runbook_sha: '0123456789abcdef',
+        started_at: '2026-08-14T10:00:00.000Z',
+        finished_at: '2026-08-14T10:05:00.000Z',
+        status: 'passed',
+        checks: [{ command: 'npm test', status: 'passed', exit_code: 0, duration_ms: 5, tail: '' }],
+        integrity_ok: true,
+        changed_dependency_files: [],
+        error: null,
+      })
+      const got = await rawRequest(started.port, path)
+      expect(got.status).toBe(200)
+      expect(JSON.parse(got.body)).toMatchObject({
+        status: 'passed',
+        checks: [{ command: 'npm test', status: 'passed' }],
+      })
     } finally {
       await started.stop()
     }
@@ -10649,6 +10696,11 @@ describe('cycle labels and the recap, wired onto a real run', () => {
             tests: [{ command: 'bun test', status: 'passed' }],
             branch: options.task.branch,
           })
+        } else {
+          // The end-of-turn recap (onTurnDone) already wrote one before this
+          // stub ever runs: erased here to keep simulating a ship whose own
+          // recap never made it onto disk.
+          rmSync(join(taskDir(options.cwd, options.task.id), 'recap.json'), { force: true })
         }
         return Promise.resolve({
           pushed: true,
@@ -11282,6 +11334,146 @@ describe('cycle labels and the recap, wired onto a real run', () => {
     const at = (op: string) => forge.writes.indexOf(op)
     expect(at('labels codesema:merged')).toBeGreaterThanOrEqual(0)
     expect(at('labels codesema:merged')).toBeLessThan(at('close'))
+  })
+})
+
+describe('end-of-turn recap (onTurnDone)', () => {
+  const jsonl = (events: unknown[]) => `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+  const claudeStream = (response: string) =>
+    jsonl([
+      { type: 'system', subtype: 'init', session_id: 'sess-recap' },
+      { type: 'result', result: response },
+    ])
+
+  test('a green review generates and persists a recap right after the turn, mr_url absent, and emits task_recap', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      ...managerOpts,
+      runAgentFn: (options: AgentRunOptions) => {
+        writeFileSync(join(options.cwd, 'feature.txt'), 'done\n')
+        const raw = claudeStream('Rewired the worktree cleanup.')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+    })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    const created = await manager.create(project.id, {
+      autoShip: false,
+      title: 'no ship yet',
+      prompt: 'do it',
+    })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() => loadTask(project.path, created.record.id)?.status === 'review_ok')
+
+    const recap = readTaskRecap(project.path, created.record.id)
+    expect(recap?.summary).toBe('Rewired the worktree cleanup.')
+    expect(recap?.mr_url).toBeUndefined()
+    expect(recap?.branch).toBe(loadTask(project.path, created.record.id)?.branch)
+
+    const recapEnvelope = envelopes.find((e) => e.event.name === 'task_recap')
+    expect(recapEnvelope?.event.data).toEqual(recap)
+  })
+
+  test('a failed turn (review_ko) generates no recap at all', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      ...managerOpts,
+      runAgentFn: (options: AgentRunOptions) => {
+        const raw = claudeStream('did something wrong')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ko'
+        io.persist()
+        return Promise.resolve()
+      },
+    })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    const created = await manager.create(project.id, {
+      autoShip: false,
+      title: 'stays ko',
+      prompt: 'do it',
+    })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() => loadTask(project.path, created.record.id)?.status === 'review_ko')
+
+    expect(readTaskRecap(project.path, created.record.id)).toBeNull()
+    expect(envelopes.some((e) => e.event.name === 'task_recap')).toBe(false)
+  })
+
+  test('the ship regenerates and re-emits the recap afterwards, now carrying mr_url', async () => {
+    const project = register(makeRepo())
+    const manager = createTaskManager({
+      ...managerOpts,
+      runAgentFn: (options: AgentRunOptions) => {
+        writeFileSync(join(options.cwd, 'feature.txt'), 'done\n')
+        const raw = claudeStream('Rewired the worktree cleanup.')
+        options.onText?.(raw)
+        return Promise.resolve(raw)
+      },
+      reviewTurnFn: (record, io) => {
+        record.status = 'review_ok'
+        io.persist()
+        return Promise.resolve()
+      },
+      shipTaskFn: (options: ShipTaskOptions) => {
+        // What the real ship's own generateAndPersist (task-ship.ts) leaves
+        // behind: a regenerated recap, this time with mr_url. shipTaskFn is
+        // stubbed here (no real push), so that regeneration is simulated
+        // rather than exercised: task-ship.ts owns and already tests it.
+        writeTaskRecap(options.cwd, options.task.id, {
+          version: 1,
+          summary: 'Rewired the worktree cleanup.',
+          changes: [],
+          decisions: [],
+          files: ['feature.txt'],
+          tests: [],
+          branch: options.task.branch,
+          mr_url: 'https://github.com/acme/repo/pull/9',
+        })
+        return Promise.resolve({
+          pushed: true,
+          mrUrl: 'https://github.com/acme/repo/pull/9',
+          note: null,
+        })
+      },
+    })
+    const envelopes: TaskEnvelope[] = []
+    manager.subscribe((envelope) => envelopes.push(envelope))
+
+    const created = await manager.create(project.id, {
+      autoShip: false,
+      title: 'ships later',
+      prompt: 'do it',
+    })
+    if (!created.ok) {
+      throw new Error(`create refused: ${created.error}`)
+    }
+    await until(() => loadTask(project.path, created.record.id)?.status === 'review_ok')
+    const beforeShip = readTaskRecap(project.path, created.record.id)
+    expect(beforeShip?.mr_url).toBeUndefined()
+
+    expect(await manager.ship(project.id, created.record.id)).toEqual({ ok: true })
+
+    const afterShip = readTaskRecap(project.path, created.record.id)
+    expect(afterShip?.mr_url).toBe('https://github.com/acme/repo/pull/9')
+    const recapEnvelopes = envelopes.filter((e) => e.event.name === 'task_recap')
+    expect(recapEnvelopes.length).toBeGreaterThanOrEqual(2)
+    expect(recapEnvelopes.at(-1)?.event.data).toEqual(afterShip)
   })
 })
 
@@ -12048,6 +12240,8 @@ describe('microvm wiring (lot C7)', () => {
             e.event.data.data.status === 'passed',
         ),
       ).toBe(true)
+      const verificationEnvelope = envelopes.find((e) => e.event.name === 'task_verification')
+      expect(verificationEnvelope?.event.data).toEqual(verification)
     })
 
     test('a refused verification (runbook integrity drifted) sends the task back with checks_failed', async () => {

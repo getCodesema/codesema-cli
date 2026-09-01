@@ -88,6 +88,30 @@ describe('CriteriaBlock: one pastille per verdict, colored by status', () => {
   })
 })
 
+describe('CriteriaBlock: a verdict carrying evidence shows it as a discreet line', () => {
+  test('evidence renders under the criterion, prefixed by the evidence label', async () => {
+    const html = await render({
+      criteria: [
+        {
+          criterion_id: 'ac-000000000005',
+          status: 'met',
+          text: 'the retry button appears',
+          evidence: 'diff adds a retry button in TaskConversation.vue line 412',
+        },
+      ],
+    })
+    expect(html).toContain(`${t('pilot.criteria.evidence')}:`)
+    expect(html).toContain('diff adds a retry button in TaskConversation.vue line 412')
+  })
+
+  test('no evidence line renders when the verdict carries none', async () => {
+    const html = await render({
+      criteria: [{ criterion_id: 'ac-000000000006', status: 'unmet', text: 'the API returns 404' }],
+    })
+    expect(html).not.toContain(t('pilot.criteria.evidence'))
+  })
+})
+
 describe('CriteriaBlock: no hex color literal in its scoped style', () => {
   test('every color comes from a --cs- token', () => {
     const source = readFileSync(
