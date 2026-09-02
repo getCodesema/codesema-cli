@@ -46,10 +46,10 @@ describe('PilotView: pre-mount SSR render (empty store)', () => {
     expect(html).toContain('class="ws-root pv-root"')
   })
 
-  test('the column count defaults to 2 (no localStorage in this environment)', async () => {
+  test('no column selector renders (fixed lanes replaced it)', async () => {
     const html = await render()
-    expect(html).toContain('data-cols="2"')
-    expect(html).toContain('--cols:2')
+    expect(html).not.toContain('pv-cols')
+    expect(html).not.toContain(t('pilot.cols.aria'))
   })
 
   test('an empty store renders the dignified empty state, not a blank grid', async () => {
@@ -65,14 +65,6 @@ describe('PilotView: pre-mount SSR render (empty store)', () => {
     expect(html).not.toContain(t('workspace.needsYouBadge', { n: 0 }))
     expect(html).not.toContain(t('pilot.header.working', { n: 0 }))
     expect(html).not.toContain('pv-count--attention')
-  })
-
-  test('the column selector renders four options, 2 marked current', async () => {
-    const html = await render()
-    for (const n of [1, 2, 3, 4]) {
-      expect(html).toContain(`aria-pressed="${n === 2 ? 'true' : 'false'}"`)
-    }
-    expect(html).toContain(t('pilot.cols.aria'))
   })
 
   test('the classic-shell toggle button is present', async () => {
@@ -91,6 +83,16 @@ describe('PilotView: pre-mount SSR render (empty store)', () => {
     expect(html).toContain('mbl-root')
     expect(html).not.toContain('mbt-root')
   })
+
+  test('the hidden-lanes bar is absent when nothing is closed or beyond the top 4', async () => {
+    const html = await render()
+    expect(html).not.toContain('pv-hidden-bar')
+  })
+
+  test('no lane wrapper renders with an empty store', async () => {
+    const html = await render()
+    expect(html).not.toContain('pv-lane-bar')
+  })
 })
 
 describe('PilotView: data model wiring (pinned on the source, see file header)', () => {
@@ -102,7 +104,7 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
 
   test('cards are ordered with orderCards, never a raw store iteration', () => {
     expect(SOURCE).toContain('orderCards(tasks.states.value)')
-    expect(SOURCE).toContain('v-for="state in orderedStates"')
+    expect(SOURCE).toContain('v-for="state in visibleLaneStates"')
   })
 
   test('every card gets the seven events wired: open-full, open-lens, send, pick, ship, stop, resume', () => {
@@ -192,10 +194,24 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(SOURCE).toContain('.pv-mobile {')
   })
 
-  test('the grid columns read the persisted preference through var(--cols)', () => {
-    expect(SOURCE).toContain('grid-template-columns: repeat(var(--cols), minmax(0, 1fr))')
-    expect(SOURCE).toContain(':data-cols="cols"')
-    expect(SOURCE).toContain("'--cols': cols")
+  test('the grid is fixed lanes (max 4, closable) built from PilotLogic, never a raw column count', () => {
+    expect(SOURCE).toContain('visibleLanes(tasks.states.value, closed.value)')
+    expect(SOURCE).toContain('hiddenStates(tasks.states.value, closed.value)')
+    expect(SOURCE).toContain('laneTemplate(')
+    expect(SOURCE).toContain("'grid-template-columns': laneGridTemplate")
+    expect(SOURCE).not.toContain('COLS_OPTIONS')
+    expect(SOURCE).not.toContain('data-cols')
+  })
+
+  test('a lane bar click, its expand button, and its close button all read PilotLogic', () => {
+    expect(SOURCE).toContain('toggleExpanded(expandedLaneId.value, id)')
+    expect(SOURCE).toContain('closed.value = [...closed.value, id]')
+    expect(SOURCE).toContain('closed.value.filter((closedId) => closedId !== id)')
+  })
+
+  test('closed lane ids are pruned against the live task list on every states change', () => {
+    expect(SOURCE).toContain('pruneClosed(')
+    expect(SOURCE).toContain('states.map((state) => state.record.id)')
   })
 
   test('switching to the classic shell persists the choice and emits switch-shell', () => {

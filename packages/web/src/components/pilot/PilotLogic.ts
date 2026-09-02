@@ -8,20 +8,6 @@ import { compareByActivity } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
 
-export type PilotCols = 1 | 2 | 3 | 4
-
-/**
- * Tolerant coercion of a persisted column count: a wrong TYPE falls back to
- * the default (2), same doctrine as `pickWidth` in useRailPrefs.ts: a
- * right-typed value is clamped into [1, 4] rather than rejected.
- */
-export function clampCols(raw: unknown): PilotCols {
-  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
-    return 2
-  }
-  return Math.min(4, Math.max(1, Math.round(raw))) as PilotCols
-}
-
 // ── Evidence lens (which card's block is currently expanded) ──────────────
 
 export type LensBlock = 'evidence' | 'recap' | 'checks' | 'criteria' | 'question'
@@ -70,4 +56,33 @@ export function orderCards(states: readonly TaskState[]): TaskState[] {
 
 export function mobilePane(selectedId: string | null): 'list' | 'thread' {
   return selectedId === null ? 'list' : 'thread'
+}
+
+// ── Fixed lanes (max 4 in parallel, closable, one widened at a time) ──────
+
+export const LANE_MAX = 4
+
+export function visibleLanes(states: readonly TaskState[], closed: readonly string[]): TaskState[] {
+  const closedIds = new Set(closed)
+  return orderCards(states)
+    .filter((state) => !closedIds.has(state.record.id))
+    .slice(0, LANE_MAX)
+}
+
+export function hiddenStates(states: readonly TaskState[], closed: readonly string[]): TaskState[] {
+  const visibleIds = new Set(visibleLanes(states, closed).map((state) => state.record.id))
+  return orderCards(states).filter((state) => !visibleIds.has(state.record.id))
+}
+
+export function laneTemplate(visibleIds: readonly string[], expandedId: string | null): string {
+  return visibleIds.map((id) => `minmax(0, ${id === expandedId ? '2fr' : '1fr'})`).join(' ')
+}
+
+export function toggleExpanded(current: string | null, id: string): string | null {
+  return current === id ? null : id
+}
+
+export function pruneClosed(closed: readonly string[], existingIds: readonly string[]): string[] {
+  const existing = new Set(existingIds)
+  return closed.filter((id) => existing.has(id))
 }

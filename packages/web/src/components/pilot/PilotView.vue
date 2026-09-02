@@ -4,6 +4,7 @@ import { usePilotPrefs } from '../../composables/usePilotPrefs'
 import { extractQuickReplies } from '../../composables/useQuickReplies'
 import { agentCounts, lastQuestion } from '../../composables/useTaskBoard'
 import { useTasks, type ApiResult, type TaskState } from '../../composables/useTasks'
+import { EXECUTION_STATUS } from '../../execution-status'
 import { t, type MessageKey } from '../../i18n'
 import type { TaskStatus } from '../../types'
 import AgentCard from './AgentCard.vue'
@@ -15,12 +16,16 @@ import MobileList from './MobileList.vue'
 import MobileThread from './MobileThread.vue'
 import {
   closeLens,
+  hiddenStates,
+  laneTemplate,
   mobilePane,
   openLens,
   orderCards,
+  pruneClosed,
+  toggleExpanded,
+  visibleLanes,
   type LensBlock,
   type LensState,
-  type PilotCols,
 } from './PilotLogic'
 import QuestionBlock from './QuestionBlock.vue'
 import RecapBlock from './RecapBlock.vue'
@@ -32,7 +37,7 @@ const props = defineProps<{
 const emit = defineEmits<{ 'switch-shell': [] }>()
 
 const tasks = useTasks(props.token)
-const { cols, shell } = usePilotPrefs()
+const { closed, shell } = usePilotPrefs()
 
 onMounted(() => tasks.start())
 onUnmounted(tasks.stop)
@@ -45,7 +50,46 @@ function onSwitchShell(): void {
 const orderedStates = computed(() => orderCards(tasks.states.value))
 const counts = computed(() => agentCounts(tasks.states.value))
 
-const COLS_OPTIONS: readonly PilotCols[] = [1, 2, 3, 4]
+watch(
+  tasks.states,
+  (states) => {
+    closed.value = pruneClosed(
+      closed.value,
+      states.map((state) => state.record.id),
+    )
+  },
+  { immediate: true },
+)
+
+const expandedLaneId = ref<string | null>(null)
+
+const visibleLaneStates = computed(() => visibleLanes(tasks.states.value, closed.value))
+const hiddenLaneStates = computed(() => hiddenStates(tasks.states.value, closed.value))
+const laneGridTemplate = computed(() =>
+  laneTemplate(
+    visibleLaneStates.value.map((state) => state.record.id),
+    expandedLaneId.value,
+  ),
+)
+
+function laneToggleKey(id: string): MessageKey {
+  return expandedLaneId.value === id ? 'pilot.lane.collapse' : 'pilot.lane.expand'
+}
+
+function onToggleLane(id: string): void {
+  expandedLaneId.value = toggleExpanded(expandedLaneId.value, id)
+}
+
+function onCloseLane(id: string): void {
+  closed.value = [...closed.value, id]
+  if (expandedLaneId.value === id) {
+    expandedLaneId.value = null
+  }
+}
+
+function onReopenLane(id: string): void {
+  closed.value = closed.value.filter((closedId) => closedId !== id)
+}
 
 // ── Hydration: recap/evidence/verification/checks, fetched once per visible
 // task ─────────────────────────────────────────────────────────────────
@@ -284,39 +328,71 @@ function onMobilePick(option: string): void {
         </span>
       </div>
       <div class="pv-spacer" />
-      <div class="pv-cols" role="group" :aria-label="t('pilot.cols.aria')">
-        <button
-          v-for="n in COLS_OPTIONS"
-          :key="n"
-          type="button"
-          class="pv-cols-btn"
-          :class="{ 'pv-cols-btn--on': cols === n }"
-          :aria-pressed="cols === n"
-          @click="cols = n"
-        >
-          {{ n }}
-        </button>
-      </div>
       <button type="button" class="pv-switch" @click="onSwitchShell">
         {{ t('pilot.toggle.classic') }}
       </button>
     </header>
 
-    <div class="pv-grid" :data-cols="cols" :style="{ '--cols': cols }">
+    <div class="pv-grid" :style="{ 'grid-template-columns': laneGridTemplate }">
       <p v-if="orderedStates.length === 0" class="pv-empty">{{ t('pilot.grid.empty') }}</p>
-      <AgentCard
-        v-for="state in orderedStates"
+      <div
+        v-for="state in visibleLaneStates"
         :key="`${state.projectId}:${state.record.id}`"
-        :state="state"
-        :sending="sendingTaskIds.has(state.record.id)"
-        @open-full="onOpenFull(state)"
-        @open-lens="onOpenLens(state.record.id, $event)"
-        @send="(text) => sendReply(state.projectId, state.record.id, text)"
-        @pick="(option) => sendReply(state.projectId, state.record.id, option)"
-        @ship="doShip(state.projectId, state.record.id)"
-        @stop="doStop(state.projectId, state.record.id)"
-        @resume="doResume(state.projectId, state.record.id)"
-      />
+        class="pv-lane"
+      >
+        <div class="pv-lane-bar" @click="onToggleLane(state.record.id)">
+          <span class="pv-lane-title">{{ state.record.title }}</span>
+          <button
+            type="button"
+            class="pv-lane-expand"
+            :aria-pressed="expandedLaneId === state.record.id"
+            :aria-label="t(laneToggleKey(state.record.id))"
+            @click.stop="onToggleLane(state.record.id)"
+          >
+            {{ expandedLaneId === state.record.id ? '⤡' : '⤢' }}
+          </button>
+          <button
+            type="button"
+            class="pv-lane-close"
+            :aria-label="t('pilot.lane.close')"
+            @click.stop="onCloseLane(state.record.id)"
+          >
+            ✕
+          </button>
+        </div>
+        <AgentCard
+          :state="state"
+          :sending="sendingTaskIds.has(state.record.id)"
+          @open-full="onOpenFull(state)"
+          @open-lens="onOpenLens(state.record.id, $event)"
+          @send="(text) => sendReply(state.projectId, state.record.id, text)"
+          @pick="(option) => sendReply(state.projectId, state.record.id, option)"
+          @ship="doShip(state.projectId, state.record.id)"
+          @stop="doStop(state.projectId, state.record.id)"
+          @resume="doResume(state.projectId, state.record.id)"
+        />
+      </div>
+    </div>
+
+    <div v-if="hiddenLaneStates.length > 0" class="pv-hidden-bar">
+      <span class="pv-hidden-label">{{
+        t('pilot.lane.hidden', { n: hiddenLaneStates.length })
+      }}</span>
+      <button
+        v-for="state in hiddenLaneStates"
+        :key="`hidden:${state.projectId}:${state.record.id}`"
+        type="button"
+        class="pv-hidden-chip"
+        :aria-label="t('pilot.lane.reopen')"
+        @click="onReopenLane(state.record.id)"
+      >
+        <span
+          class="pv-hidden-dot"
+          :style="{ background: EXECUTION_STATUS[state.record.status].color }"
+          aria-hidden="true"
+        />
+        <span class="pv-hidden-title">{{ state.record.title }}</span>
+      </button>
     </div>
 
     <Lens
@@ -435,34 +511,6 @@ function onMobilePick(option: string): void {
   flex: 1;
 }
 
-.pv-cols {
-  display: inline-flex;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.pv-cols-btn {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 5px 12px;
-  font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--cs-text-2);
-  cursor: pointer;
-}
-
-.pv-cols-btn:hover {
-  color: var(--cs-text);
-}
-
-.pv-cols-btn--on {
-  background: var(--cs-green-soft);
-  color: var(--cs-green-text);
-}
-
 .pv-switch {
   font-size: 12.5px;
   font-weight: 600;
@@ -484,14 +532,9 @@ function onMobilePick(option: string): void {
   min-height: 0;
   overflow: auto;
   display: grid;
-  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
   grid-auto-rows: minmax(320px, 1fr);
   gap: 16px;
   padding: 16px;
-}
-
-.pv-grid[data-cols='1'] {
-  grid-auto-rows: minmax(560px, auto);
 }
 
 .pv-empty {
@@ -501,6 +544,119 @@ function onMobilePick(option: string): void {
   text-align: center;
   font-size: 13px;
   color: var(--cs-muted);
+}
+
+.pv-lane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 6px;
+}
+
+.pv-lane > .ac-root {
+  flex: 1;
+  min-height: 0;
+}
+
+.pv-lane-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--cs-line);
+  border-radius: 8px;
+  background: var(--cs-surface);
+  cursor: pointer;
+}
+
+.pv-lane-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cs-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pv-lane-expand,
+.pv-lane-close {
+  flex: none;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 3px 7px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--cs-muted);
+  cursor: pointer;
+}
+
+.pv-lane-expand:hover,
+.pv-lane-close:hover {
+  color: var(--cs-text);
+  background: var(--cs-hover);
+}
+
+.pv-lane-expand[aria-pressed='true'] {
+  color: var(--cs-green-text);
+  background: var(--cs-green-soft);
+}
+
+.pv-hidden-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--cs-line);
+  background: var(--cs-panel);
+  overflow-x: auto;
+}
+
+.pv-hidden-label {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--cs-muted);
+  white-space: nowrap;
+}
+
+.pv-hidden-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--cs-text-2);
+  background: var(--cs-surface);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pv-hidden-chip:hover {
+  border-color: var(--cs-line-3);
+  color: var(--cs-text);
+}
+
+.pv-hidden-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.pv-hidden-title {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pv-expanded-thread {
@@ -519,7 +675,8 @@ function onMobilePick(option: string): void {
 
 @media (max-width: 760px) {
   .pv-top,
-  .pv-grid {
+  .pv-grid,
+  .pv-hidden-bar {
     display: none;
   }
 

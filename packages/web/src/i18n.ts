@@ -942,6 +942,11 @@ const en = {
   'pilot.mobile.back': '← Back',
   'pilot.mobile.title': 'Pilot',
   'pilot.grid.empty': 'No conversation here yet. Launch one to see it take shape in the grid.',
+  'pilot.lane.expand': 'Expand',
+  'pilot.lane.collapse': 'Collapse',
+  'pilot.lane.close': 'Hide this conversation',
+  'pilot.lane.hidden': '{n} conversation hidden | {n} conversations hidden',
+  'pilot.lane.reopen': 'Show again',
 }
 
 export type MessageKey = keyof typeof en
@@ -1853,6 +1858,11 @@ const fr: Record<MessageKey, string> = {
   'pilot.mobile.title': 'Pilote',
   'pilot.grid.empty':
     'Aucune conversation pour le moment. Lance-en une pour la voir prendre forme dans la grille.',
+  'pilot.lane.expand': 'Élargir',
+  'pilot.lane.collapse': 'Réduire',
+  'pilot.lane.close': 'Masquer cette conversation',
+  'pilot.lane.hidden': '{n} masquée | {n} masquées',
+  'pilot.lane.reopen': 'Réafficher',
 }
 
 /**

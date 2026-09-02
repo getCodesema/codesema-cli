@@ -2,12 +2,17 @@ import { describe, expect, test } from 'bun:test'
 import type { TaskState } from '../../composables/useTasks'
 import type { TaskRecord, TaskStatus } from '../../types'
 import {
-  clampCols,
   closeLens,
+  hiddenStates,
+  LANE_MAX,
+  laneTemplate,
   mobilePane,
   onEscape,
   openLens,
   orderCards,
+  pruneClosed,
+  toggleExpanded,
+  visibleLanes,
   type LensState,
 } from './PilotLogic'
 
@@ -44,34 +49,133 @@ function state(partial: Partial<TaskRecord> & { id: string }): TaskState {
   }
 }
 
-describe('clampCols', () => {
-  test('a value already inside [1, 4] passes through unchanged', () => {
-    expect(clampCols(1)).toBe(1)
-    expect(clampCols(3)).toBe(3)
-    expect(clampCols(4)).toBe(4)
+describe('visibleLanes', () => {
+  test('truncates to LANE_MAX (4), keeping orderCards order', () => {
+    const states = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) =>
+      state({
+        id,
+        status: 'shipped',
+        updated_at: `2026-08-20T${10 + 'abcdef'.indexOf(id)}:00:00.000Z`,
+      }),
+    )
+    const visible = visibleLanes(states, [])
+    expect(visible).toHaveLength(LANE_MAX)
+    expect(visible.map((s) => s.record.id)).toEqual(
+      orderCards(states)
+        .slice(0, LANE_MAX)
+        .map((s) => s.record.id),
+    )
   })
 
-  test('below the minimum is raised to 1', () => {
-    expect(clampCols(0)).toBe(1)
-    expect(clampCols(-5)).toBe(1)
+  test('a closed id is excluded even when it would otherwise be in the top 4', () => {
+    const states = ['a', 'b', 'c'].map((id) => state({ id, status: 'running' }))
+    expect(visibleLanes(states, ['a']).map((s) => s.record.id)).toEqual(['b', 'c'])
   })
 
-  test('above the maximum is lowered to 4', () => {
-    expect(clampCols(5)).toBe(4)
-    expect(clampCols(99)).toBe(4)
+  test('closing a card from the top 4 frees a slot for the one just beyond it', () => {
+    const states = ['a', 'b', 'c', 'd', 'e'].map((id) =>
+      state({
+        id,
+        status: 'shipped',
+        updated_at: `2026-08-20T${10 + 'abcde'.indexOf(id)}:00:00.000Z`,
+      }),
+    )
+    expect(visibleLanes(states, ['e']).map((s) => s.record.id)).toEqual(['d', 'c', 'b', 'a'])
   })
 
-  test('a non-integer number is rounded before clamping', () => {
-    expect(clampCols(2.4)).toBe(2)
-    expect(clampCols(2.6)).toBe(3)
+  test('fewer than 4 cards all stay visible', () => {
+    const states = ['a', 'b'].map((id) => state({ id, status: 'running' }))
+    expect(visibleLanes(states, []).map((s) => s.record.id)).toHaveLength(2)
   })
 
-  test('the wrong type falls back to the default (2), not a clamp', () => {
-    expect(clampCols('3')).toBe(2)
-    expect(clampCols(null)).toBe(2)
-    expect(clampCols(undefined)).toBe(2)
-    expect(clampCols({})).toBe(2)
-    expect(clampCols(Number.NaN)).toBe(2)
+  test('an empty list stays empty', () => {
+    expect(visibleLanes([], [])).toEqual([])
+  })
+})
+
+describe('hiddenStates', () => {
+  test('empty when everything fits within the visible lanes', () => {
+    const states = ['a', 'b', 'c'].map((id) => state({ id, status: 'running' }))
+    expect(hiddenStates(states, [])).toEqual([])
+  })
+
+  test('a card beyond the top 4 is hidden even though it is not closed', () => {
+    const states = ['a', 'b', 'c', 'd', 'e'].map((id) =>
+      state({
+        id,
+        status: 'shipped',
+        updated_at: `2026-08-20T${10 + 'abcde'.indexOf(id)}:00:00.000Z`,
+      }),
+    )
+    expect(hiddenStates(states, []).map((s) => s.record.id)).toEqual(['a'])
+  })
+
+  test('a closed card among the first 4 is hidden too', () => {
+    const states = ['a', 'b', 'c'].map((id) => state({ id, status: 'running' }))
+    expect(hiddenStates(states, ['b']).map((s) => s.record.id)).toEqual(['b'])
+  })
+
+  test('closed and beyond-4 cards are both reported, in orderCards order', () => {
+    const states = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) =>
+      state({
+        id,
+        status: 'shipped',
+        updated_at: `2026-08-20T${10 + 'abcdef'.indexOf(id)}:00:00.000Z`,
+      }),
+    )
+    expect(hiddenStates(states, ['b']).map((s) => s.record.id)).toEqual(['b', 'a'])
+  })
+})
+
+describe('laneTemplate', () => {
+  test('every visible lane gets an equal 1fr track when none is expanded', () => {
+    expect(laneTemplate(['a', 'b', 'c', 'd'], null)).toBe(
+      'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)',
+    )
+  })
+
+  test('the expanded lane gets a 2fr track, the rest stay at 1fr', () => {
+    expect(laneTemplate(['a', 'b', 'c'], 'b')).toBe('minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr)')
+  })
+
+  test('an expanded id that is not among the visible lanes has no effect', () => {
+    expect(laneTemplate(['a', 'b'], 'z')).toBe('minmax(0, 1fr) minmax(0, 1fr)')
+  })
+
+  test('no visible lanes produces an empty template', () => {
+    expect(laneTemplate([], 'a')).toBe('')
+  })
+})
+
+describe('toggleExpanded', () => {
+  test('expanding a lane from none sets it', () => {
+    expect(toggleExpanded(null, 'a')).toBe('a')
+  })
+
+  test('clicking the already-expanded lane collapses it back to none', () => {
+    expect(toggleExpanded('a', 'a')).toBeNull()
+  })
+
+  test('clicking a different lane replaces the expanded one', () => {
+    expect(toggleExpanded('a', 'b')).toBe('b')
+  })
+})
+
+describe('pruneClosed', () => {
+  test('an id that no longer exists is dropped', () => {
+    expect(pruneClosed(['a', 'b'], ['a'])).toEqual(['a'])
+  })
+
+  test('ids that still exist are kept, in their original order', () => {
+    expect(pruneClosed(['a', 'b'], ['b', 'a'])).toEqual(['a', 'b'])
+  })
+
+  test('an empty closed list stays empty', () => {
+    expect(pruneClosed([], ['a'])).toEqual([])
+  })
+
+  test('nothing existing anymore empties the list', () => {
+    expect(pruneClosed(['a', 'b'], [])).toEqual([])
   })
 })
 
