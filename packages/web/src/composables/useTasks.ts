@@ -547,8 +547,8 @@ async function hydrateVerificationStore(
 }
 
 /** URL of one evidence file (a screenshot or a video) captured for a task. */
-export function evidenceFileUrl(taskId: string, path: string): string {
-  return `/api/tasks/${encodeURIComponent(taskId)}/evidence/${encodeURIComponent(path)}`
+export function evidenceFileUrl(projectId: string, taskId: string, path: string): string {
+  return `/api/tasks/${encodeURIComponent(taskId)}/evidence/${encodeURIComponent(path)}?project=${encodeURIComponent(projectId)}`
 }
 
 /** Loads the full journal of one task (the stream only carries live events). */

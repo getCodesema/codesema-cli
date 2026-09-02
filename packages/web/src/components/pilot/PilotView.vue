@@ -326,6 +326,7 @@ function onMobilePick(option: string): void {
     >
       <EvidenceBlock
         v-if="lensBlock === 'evidence'"
+        :project-id="lensTaskState.projectId"
         :task-id="lensTaskState.record.id"
         :evidence="lensTaskState.evidence ?? null"
         :verification="lensTaskState.verification ?? null"

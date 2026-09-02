@@ -12,6 +12,7 @@ import type {
 } from '../../types'
 
 const props = defineProps<{
+  projectId: string
   taskId: string
   evidence?: EvidenceRecord | null
   verification?: TaskVerification | null
@@ -83,7 +84,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
         <img
           v-if="item.kind === 'screenshot'"
           class="evb-media"
-          :src="evidenceFileUrl(taskId, item.path)"
+          :src="evidenceFileUrl(projectId, taskId, item.path)"
           :alt="t('pilot.evidence.screenshotAlt')"
         />
         <video
@@ -91,7 +92,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
           class="evb-media"
           controls
           preload="metadata"
-          :src="evidenceFileUrl(taskId, item.path)"
+          :src="evidenceFileUrl(projectId, taskId, item.path)"
         />
         <figcaption class="evb-caption">
           <span v-if="item.kind === 'video'">{{ t('pilot.evidence.videoLabel') }} · </span

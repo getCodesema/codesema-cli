@@ -24,6 +24,7 @@ Bun.plugin({
 })
 
 type Props = {
+  projectId: string
   taskId: string
   evidence?: EvidenceRecord | null
   verification?: TaskVerification | null
@@ -67,22 +68,26 @@ function verificationRecord(overrides: Partial<TaskVerification> = {}): TaskVeri
 
 describe('EvidenceBlock: absence is stated honestly, never a placeholder', () => {
   test('undefined evidence renders the "none" phrase', async () => {
-    const html = await render({ taskId: 'task-1' })
+    const html = await render({ projectId: 'proj-a', taskId: 'task-1' })
     expect(html).toContain(t('pilot.evidence.none'))
   })
 
   test('null evidence renders the "none" phrase', async () => {
-    const html = await render({ taskId: 'task-1', evidence: null })
+    const html = await render({ projectId: 'proj-a', taskId: 'task-1', evidence: null })
     expect(html).toContain(t('pilot.evidence.none'))
   })
 
   test('an evidence record with an empty items list renders the "none" phrase', async () => {
-    const html = await render({ taskId: 'task-1', evidence: record({ items: [] }) })
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({ items: [] }),
+    })
     expect(html).toContain(t('pilot.evidence.none'))
   })
 
   test('the title always renders, even absent', async () => {
-    const html = await render({ taskId: 'task-1', evidence: null })
+    const html = await render({ projectId: 'proj-a', taskId: 'task-1', evidence: null })
     expect(html).toContain(t('pilot.evidence.title'))
   })
 })
@@ -90,6 +95,7 @@ describe('EvidenceBlock: absence is stated honestly, never a placeholder', () =>
 describe('EvidenceBlock: the running-phase line replaces "none" while capturing', () => {
   test('proof phase with no items and no verification shows the running glyph and the phase phrase, not the "none" phrase', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       activity: { phase: 'proof', since: '2026-08-14T10:00:00.000Z' },
     })
@@ -99,6 +105,7 @@ describe('EvidenceBlock: the running-phase line replaces "none" while capturing'
 
   test('verification phase with no items and no verification also shows the running line', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       activity: { phase: 'verification', since: '2026-08-14T10:00:00.000Z' },
     })
@@ -108,6 +115,7 @@ describe('EvidenceBlock: the running-phase line replaces "none" while capturing'
 
   test('a non-capture phase (recap) leaves the plain "none" phrase in place', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       activity: { phase: 'recap', since: '2026-08-14T10:00:00.000Z' },
     })
@@ -117,6 +125,7 @@ describe('EvidenceBlock: the running-phase line replaces "none" while capturing'
 
   test('items already captured render normally even during a capture-phase activity', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       evidence: record({
         items: [{ kind: 'screenshot', path: 'a.png', bytes: 1, turn: 1, created_at: 'now' }],
@@ -130,6 +139,7 @@ describe('EvidenceBlock: the running-phase line replaces "none" while capturing'
 
   test('a verification record already present takes priority over the running line', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       verification: verificationRecord({ status: 'passed' }),
       activity: { phase: 'proof', since: '2026-08-14T10:00:00.000Z' },
@@ -142,6 +152,7 @@ describe('EvidenceBlock: the running-phase line replaces "none" while capturing'
 describe('EvidenceBlock: a failed run surfaces its reason, even with nothing captured', () => {
   test('status "failed" shows the failed banner and the reason text', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       evidence: record({ status: 'failed', reason: 'the click never landed', items: [] }),
     })
@@ -154,6 +165,7 @@ describe('EvidenceBlock: a failed run surfaces its reason, even with nothing cap
 
   test('a passed run never shows the failed banner', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       evidence: record({ status: 'passed', items: [] }),
     })
@@ -162,6 +174,7 @@ describe('EvidenceBlock: a failed run surfaces its reason, even with nothing cap
 
   test('a null reason on a failed run shows the banner with no reason text appended', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       evidence: record({ status: 'failed', reason: null }),
     })
@@ -172,6 +185,7 @@ describe('EvidenceBlock: a failed run surfaces its reason, even with nothing cap
 describe('EvidenceBlock: items render as media, URL-encoded, labeled by turn', () => {
   test('a screenshot renders an <img> with the encoded file URL and alt text', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task 1',
       evidence: record({
         items: [
@@ -180,13 +194,14 @@ describe('EvidenceBlock: items render as media, URL-encoded, labeled by turn', (
       }),
     })
     expect(html).toContain('<img')
-    expect(html).toContain('src="/api/tasks/task%201/evidence/shots%2Fturn%202.png"')
+    expect(html).toContain('src="/api/tasks/task%201/evidence/shots%2Fturn%202.png?project=proj-a"')
     expect(html).toContain(t('pilot.evidence.screenshotAlt'))
     expect(html).toContain(t('pilot.evidence.turn', { n: 2 }))
   })
 
   test('a video renders a <video controls preload="metadata"> with the same URL scheme, plus the video label', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       evidence: record({
         items: [{ kind: 'video', path: 'clip.mp4', bytes: 999, turn: 5, created_at: 'now' }],
@@ -195,7 +210,7 @@ describe('EvidenceBlock: items render as media, URL-encoded, labeled by turn', (
     expect(html).toContain('<video')
     expect(html).toContain('controls')
     expect(html).toContain('preload="metadata"')
-    expect(html).toContain('src="/api/tasks/task-1/evidence/clip.mp4"')
+    expect(html).toContain('src="/api/tasks/task-1/evidence/clip.mp4?project=proj-a"')
     expect(html).toContain(t('pilot.evidence.videoLabel'))
     expect(html).toContain(t('pilot.evidence.turn', { n: 5 }))
     expect(html).not.toContain('<img')
@@ -203,6 +218,7 @@ describe('EvidenceBlock: items render as media, URL-encoded, labeled by turn', (
 
   test('a failed run with captured items shows both the banner and the items', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       evidence: record({
         status: 'failed',
@@ -219,17 +235,18 @@ describe('EvidenceBlock: items render as media, URL-encoded, labeled by turn', (
 
 describe('EvidenceBlock: the verification section is absent unless there is a real record', () => {
   test('undefined verification renders no verification section at all', async () => {
-    const html = await render({ taskId: 'task-1' })
+    const html = await render({ projectId: 'proj-a', taskId: 'task-1' })
     expect(html).not.toContain(t('pilot.verification.title'))
   })
 
   test('null verification renders no verification section at all', async () => {
-    const html = await render({ taskId: 'task-1', verification: null })
+    const html = await render({ projectId: 'proj-a', taskId: 'task-1', verification: null })
     expect(html).not.toContain(t('pilot.verification.title'))
   })
 
   test('a passed verification shows the title, the passed phrase and the verified head sha', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       verification: verificationRecord({ status: 'passed', head_sha: 'abc1234def' }),
     })
@@ -240,6 +257,7 @@ describe('EvidenceBlock: the verification section is absent unless there is a re
 
   test('a failed verification shows the failed phrase', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       verification: verificationRecord({ status: 'failed' }),
     })
@@ -248,6 +266,7 @@ describe('EvidenceBlock: the verification section is absent unless there is a re
 
   test('a refused verification names the changed dependency files, never invents a reason', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       verification: verificationRecord({
         status: 'refused',
@@ -262,6 +281,7 @@ describe('EvidenceBlock: the verification section is absent unless there is a re
 
   test('an errored verification (install/service/healthcheck failed before tests ran) shows the raw error text', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       verification: verificationRecord({
         status: 'error',
@@ -274,6 +294,7 @@ describe('EvidenceBlock: the verification section is absent unless there is a re
 
   test('the tests phase renders one real row per replayed runbook command', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       verification: verificationRecord({
         status: 'failed',
@@ -292,6 +313,7 @@ describe('EvidenceBlock: the verification section is absent unless there is a re
 
   test('an empty tests list renders no tests subsection', async () => {
     const html = await render({
+      projectId: 'proj-a',
       taskId: 'task-1',
       verification: verificationRecord({ status: 'error', checks: [] }),
     })

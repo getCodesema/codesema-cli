@@ -476,8 +476,8 @@ describe('hydrateRecap / hydrateEvidence / hydrateVerification (per-task on-dema
 
 describe('evidenceFileUrl', () => {
   test('builds the per-task evidence file route, encoding the path', () => {
-    expect(evidenceFileUrl('task-1', 'screenshots/turn-3 final.png')).toBe(
-      '/api/tasks/task-1/evidence/screenshots%2Fturn-3%20final.png',
+    expect(evidenceFileUrl('proj a', 'task-1', 'screenshots/turn-3 final.png')).toBe(
+      '/api/tasks/task-1/evidence/screenshots%2Fturn-3%20final.png?project=proj%20a',
     )
   })
 })

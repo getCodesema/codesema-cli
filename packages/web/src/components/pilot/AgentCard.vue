@@ -112,6 +112,7 @@ function onSend(text: string): void {
         @keydown="onZoneKeydown($event, 'evidence')"
       >
         <EvidenceBlock
+          :project-id="state.projectId"
           :task-id="record.id"
           :evidence="state.evidence ?? null"
           :verification="state.verification ?? null"
