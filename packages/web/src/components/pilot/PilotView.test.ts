@@ -172,12 +172,24 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     }
   })
 
-  test('open-full is a stand-in (MobileThread, large) reusing Lens, not a duplicate overlay', () => {
-    expect(SOURCE).toContain('<MobileThread')
+  test('open-full, the expanded lane and the mobile pane all render the same PilotThread', () => {
+    expect(SOURCE.match(/<PilotThread\b/g)).toHaveLength(3)
     expect(SOURCE).toContain('class="pv-expanded-thread"')
-    // Only one other <Lens overlay besides the block lens: this stand-in
-    // reuses the same component rather than a second modal implementation.
+    expect(SOURCE).toContain('class="pv-lane-thread"')
+    expect(SOURCE).toContain('v-if="expandedLaneId === state.record.id"')
+    expect(SOURCE).toContain('show-back')
+    expect(SOURCE).not.toContain('MobileThread')
+    // Only one other <Lens overlay besides the block lens: open-full reuses
+    // the same shell rather than a second modal implementation.
     expect(SOURCE.match(/<Lens\b/g)).toHaveLength(2)
+  })
+
+  test('widening a lane hydrates its events, same as open-full', () => {
+    const toggleBlock = SOURCE.slice(
+      SOURCE.indexOf('function onToggleLane'),
+      SOURCE.indexOf('function onCloseLane'),
+    )
+    expect(toggleBlock).toContain('hydrateEventsIfNeeded(target)')
   })
 
   test('mobile: open sets the selection, back clears it, mobilePane picks the pane', () => {

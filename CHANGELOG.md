@@ -16,6 +16,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **A widened lane, the full view and the mobile pane now share one chat-shaped thread** (`PilotThread`): the journal reads as a conversation, with the criteria, checks, evidence and recap blocks anchored where the run produced them instead of stacked at the end.
 - **Task events hydrate both the card and the expanded view**, instead of only one of the two.
 - **Checks hydrate the same way, and task cards gained their own actions.**
 

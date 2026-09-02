@@ -13,7 +13,6 @@ import CriteriaBlock from './CriteriaBlock.vue'
 import EvidenceBlock from './EvidenceBlock.vue'
 import Lens from './Lens.vue'
 import MobileList from './MobileList.vue'
-import MobileThread from './MobileThread.vue'
 import {
   closeLens,
   hiddenStates,
@@ -27,6 +26,7 @@ import {
   type LensBlock,
   type LensState,
 } from './PilotLogic'
+import PilotThread from './PilotThread.vue'
 import QuestionBlock from './QuestionBlock.vue'
 import RecapBlock from './RecapBlock.vue'
 
@@ -78,6 +78,10 @@ function laneToggleKey(id: string): MessageKey {
 
 function onToggleLane(id: string): void {
   expandedLaneId.value = toggleExpanded(expandedLaneId.value, id)
+  const target = findState(id)
+  if (expandedLaneId.value === id && target !== null) {
+    hydrateEventsIfNeeded(target)
+  }
 }
 
 function onCloseLane(id: string): void {
@@ -256,8 +260,7 @@ function onLensOther(): void {
   lensState.value = closeLens()
 }
 
-// ── Open full: V1 stand-in, MobileThread large inside the same lens shell.
-// The real destination (TaskConversation) is wired in a later lot. ───────
+// ── Open full: the same thread as an expanded lane, inside the lens shell ─
 
 const expandedId = ref<string | null>(null)
 
@@ -360,7 +363,19 @@ function onMobilePick(option: string): void {
             ✕
           </button>
         </div>
+        <PilotThread
+          v-if="expandedLaneId === state.record.id"
+          class="pv-lane-thread"
+          :state="state"
+          :sending="sendingTaskIds.has(state.record.id)"
+          @send="(text) => sendReply(state.projectId, state.record.id, text)"
+          @pick="(option) => sendReply(state.projectId, state.record.id, option)"
+          @ship="doShip(state.projectId, state.record.id)"
+          @stop="doStop(state.projectId, state.record.id)"
+          @resume="doResume(state.projectId, state.record.id)"
+        />
         <AgentCard
+          v-else
           :state="state"
           :sending="sendingTaskIds.has(state.record.id)"
           @open-full="onOpenFull(state)"
@@ -428,24 +443,31 @@ function onMobilePick(option: string): void {
       :title="expandedState.record.title"
       @close="expandedId = null"
     >
-      <MobileThread
+      <PilotThread
         class="pv-expanded-thread"
         :state="expandedState"
         :sending="sendingTaskIds.has(expandedState.record.id)"
-        @back="expandedId = null"
         @send="onExpandedSend"
         @pick="onExpandedPick"
+        @ship="doShip(expandedState.projectId, expandedState.record.id)"
+        @stop="doStop(expandedState.projectId, expandedState.record.id)"
+        @resume="doResume(expandedState.projectId, expandedState.record.id)"
       />
     </Lens>
 
     <div class="pv-mobile">
-      <MobileThread
+      <PilotThread
         v-if="mobilePaneKind === 'thread' && selectedState !== null"
+        class="pv-mobile-thread"
+        show-back
         :state="selectedState"
         :sending="sendingTaskIds.has(selectedState.record.id)"
         @back="selectedId = null"
         @send="onMobileSend"
         @pick="onMobilePick"
+        @ship="doShip(selectedState.projectId, selectedState.record.id)"
+        @stop="doStop(selectedState.projectId, selectedState.record.id)"
+        @resume="doResume(selectedState.projectId, selectedState.record.id)"
       />
       <MobileList v-else :states="orderedStates" @open="onMobileOpen" />
     </div>
@@ -554,7 +576,8 @@ function onMobilePick(option: string): void {
   gap: 6px;
 }
 
-.pv-lane > .ac-root {
+.pv-lane > .ac-root,
+.pv-lane > .pv-lane-thread {
   flex: 1;
   min-height: 0;
 }
@@ -660,17 +683,21 @@ function onMobilePick(option: string): void {
 }
 
 .pv-expanded-thread {
-  width: min(760px, 92vw);
-  height: min(720px, 86vh);
-  overflow: hidden;
-  border: 1px solid var(--cs-line);
-  border-radius: 12px;
+  width: min(860px, 92vw);
+  height: min(760px, 86vh);
 }
 
 .pv-mobile {
   display: none;
   flex: 1;
   min-height: 0;
+}
+
+.pv-mobile-thread {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 @media (max-width: 760px) {
