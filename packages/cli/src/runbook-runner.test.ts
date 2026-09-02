@@ -15,10 +15,12 @@ import {
   RUNBOOK_SCAN_MAX_ATTEMPTS,
   runOneRunbookScan,
   runRunbookScan,
+  runRunbookValidate,
   type RunbookScanOutcome,
   type RunRunbookScanOptions,
+  type RunRunbookValidateOptions,
 } from './runbook-runner.js'
-import { sanitizeRunbookProposal, type RunbookProposalInput } from './runbook-setup.js'
+import { runbookSha, sanitizeRunbookProposal, type RunbookProposalInput } from './runbook-setup.js'
 
 // ---------------------------------------------------------------------------
 // Fakes: a scripted SandboxDriver/SandboxHandle. NEVER touches a real VM.
@@ -253,6 +255,102 @@ describe('runRunbookScan — happy path', () => {
     // task worktree), with exactly the RunbookValidation the outcome itself
     // reports.
     expect(writeCalls).toEqual([{ worktree: '/repo', validation: outcome.validation }])
+  })
+})
+
+describe('runRunbookValidate', () => {
+  function baseValidateOptions(
+    overrides: Partial<RunRunbookValidateOptions> = {},
+  ): RunRunbookValidateOptions {
+    const { driver } = fakeDriver()
+    return {
+      worktree: '/repo',
+      projectId: 'proj1',
+      headSha: 'a'.repeat(40),
+      driver,
+      timeoutMs: 5_000,
+      agentId: 'claude',
+      readRunbookConfigFn: () => sampleRunbook(),
+      writeRunbookValidationFn: () => {},
+      buildProjectSnapshotFn: async () =>
+        ({ kind: 'ready', name: 'snap1', hash: 'h1' }) as ProjectSnapshot,
+      sleepFn: async () => {},
+      ...overrides,
+    }
+  }
+
+  test('no runbook.json on disk: failed immediately, attempts 0, the driver is never called', async () => {
+    let createCalled = false
+    const { driver } = fakeDriver()
+    const guardedDriver: SandboxDriver = {
+      ...driver,
+      create: async (spec) => {
+        createCalled = true
+        return driver.create(spec)
+      },
+    }
+    const outcome = await runRunbookValidate(
+      baseValidateOptions({ driver: guardedDriver, readRunbookConfigFn: () => null }),
+    )
+    expect(outcome.status).toBe('failed')
+    if (outcome.status !== 'failed') {
+      throw new Error('unreachable')
+    }
+    expect(outcome.attempts).toBe(0)
+    expect(outcome.error).toContain('runbook scan')
+    expect(createCalled).toBe(false)
+  })
+
+  test('a green execution validates the runbook as read from disk: runbook_sha matches runbookSha(runbook)', async () => {
+    const { driver, calls } = fakeDriver({
+      respond: scriptedRespond({
+        'bun install': okResult('installed'),
+        'bun test': okResult('1 pass'),
+      }),
+    })
+    const runbook = sampleRunbook()
+    const writeValidationCalls: { worktree: string; validation: unknown }[] = []
+    const outcome = await runRunbookValidate(
+      baseValidateOptions({
+        driver,
+        readRunbookConfigFn: () => runbook,
+        writeRunbookValidationFn: (worktree, validation) => {
+          writeValidationCalls.push({ worktree, validation })
+        },
+      }),
+    )
+    expect(outcome.status).toBe('completed')
+    if (outcome.status !== 'completed') {
+      throw new Error('unreachable')
+    }
+    expect(outcome.attempts).toBe(1)
+    expect(outcome.runbook).toEqual(runbook)
+    expect(outcome.validation.runbook_sha).toBe(runbookSha(runbook))
+    expect(outcome.validation.validated_sha).toBe('a'.repeat(40))
+    expect(writeValidationCalls).toEqual([{ worktree: '/repo', validation: outcome.validation }])
+    expect(calls.map((c) => c.command)).toContain('bun install')
+    expect(calls.map((c) => c.command)).toContain('bun test')
+  })
+
+  test('a failing execution reports failed with the tail, and never writes a validation', async () => {
+    const { driver } = fakeDriver({
+      respond: scriptedRespond({ 'bun install': failResult(1, '', 'boom') }),
+    })
+    let validationWritten = false
+    const outcome = await runRunbookValidate(
+      baseValidateOptions({
+        driver,
+        writeRunbookValidationFn: () => {
+          validationWritten = true
+        },
+      }),
+    )
+    expect(outcome.status).toBe('failed')
+    if (outcome.status === 'failed') {
+      expect(outcome.attempts).toBe(1)
+      expect(outcome.lastTail).toContain('boom')
+    }
+    expect(validationWritten).toBe(false)
   })
 })
 

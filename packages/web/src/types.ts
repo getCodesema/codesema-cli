@@ -643,6 +643,19 @@ export type TaskAttachment = {
   base: string
 }
 
+/** The closed set of `TaskActivity.phase` values. Mirrors packages/contract/src/tasks.ts. */
+export const TASK_ACTIVITY_PHASES = ['checks', 'verification', 'proof', 'review', 'recap'] as const
+
+export type TaskActivityPhase = (typeof TASK_ACTIVITY_PHASES)[number]
+
+/** What a task's agent is doing right now, and since when (ISO-8601). Purely
+ * informational, unlike `TaskStatus` or `checks_status`. Mirrors
+ * packages/contract/src/tasks.ts. */
+export type TaskActivity = {
+  phase: TaskActivityPhase
+  since: string
+}
+
 export type TaskRecord = {
   version: 1
   id: string
@@ -694,6 +707,12 @@ export type TaskRecord = {
    * status. Mirror of packages/contract/src/tasks.ts.
    */
   checks_status?: Exclude<TaskChecksStatus, 'running'>
+  /**
+   * What the task's agent is doing right now, when it is running, and since
+   * when. Absent on records written before this field existed, and on a task
+   * between phases (or not running). Mirror of packages/contract/src/tasks.ts.
+   */
+  activity?: TaskActivity
   /** Last liveness beat of the task's agent (ISO-8601), written by the semantic
    * watchdog. Tells a LONG task from a DEAD one: `updated_at` only moves when
    * something happens. Only meaningful while `running` (a starting turn clears

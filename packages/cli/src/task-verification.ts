@@ -22,6 +22,7 @@ import {
   type SandboxHandle,
   type SandboxSpec,
 } from './microsandbox-driver.js'
+import { SERVICE_LAUNCH_TIMEOUT_MS, serviceLaunchScript } from './runbook-services.js'
 import { taskDir } from './tasks-store.js'
 
 export type VerifyTaskOptions = {
@@ -162,11 +163,11 @@ export async function verifyTask(opts: VerifyTaskOptions): Promise<TaskVerificat
       }
     }
 
-    for (const command of opts.runbook.services.host_up) {
-      const result = await handle.shell(command, {
-        timeoutMs: opts.timeoutMs,
+    for (let i = 0; i < opts.runbook.services.host_up.length; i += 1) {
+      const command = opts.runbook.services.host_up[i] ?? ''
+      const result = await handle.shell(serviceLaunchScript(command, i), {
+        timeoutMs: SERVICE_LAUNCH_TIMEOUT_MS,
         cwd: VERIFY_WORK_DIR,
-        ...(opts.signal ? { signal: opts.signal } : {}),
       })
       if (result.timedOut || result.code !== 0) {
         return errorVerdict(

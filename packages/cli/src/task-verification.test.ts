@@ -375,7 +375,7 @@ describe('verifyTask', () => {
     const repo = makeRepo()
     const sha = commitSha(repo)
     const { driver, calls } = fakeDriver((command) =>
-      command === 'docker compose up -d' ? ok({ code: 1 }) : ok(),
+      command.includes('nohup') ? ok({ code: 1 }) : ok(),
     )
     const result = await verifyTask({
       driver,
@@ -395,6 +395,54 @@ describe('verifyTask', () => {
     expect(result.status).toBe('error')
     expect(result.error).toContain('docker compose up -d')
     expect(calls.filter((c) => c.method === 'shell')).toHaveLength(1)
+  })
+
+  test('a service is launched in the background with nohup, one shell call per service', async () => {
+    const repo = makeRepo()
+    const sha = commitSha(repo)
+    const { driver, calls } = fakeDriver(() => ok())
+    const result = await verifyTask({
+      driver,
+      worktree: repo,
+      projectId: 'p1',
+      taskId: 't1',
+      headSha: 'headsha1',
+      runbook: baseRunbook({
+        services: { host_up: ['npm start'], compose_file: null },
+      }),
+      runbookSha: '0123456789abcdef',
+      validatedSha: sha,
+      snapshotName: 'codesema-p1-hash',
+      timeoutMs: 5000,
+    })
+    expect(result.status).toBe('passed')
+    const shellCommands = calls.filter((c) => c.method === 'shell').map((c) => c.args[0])
+    expect(shellCommands[0]).toContain('nohup')
+    expect(shellCommands[0]).toContain('/tmp/codesema-service-0.log')
+  })
+
+  test('a single quote in the service command is escaped in the background script', async () => {
+    const repo = makeRepo()
+    const sha = commitSha(repo)
+    const { driver, calls } = fakeDriver(() => ok())
+    await verifyTask({
+      driver,
+      worktree: repo,
+      projectId: 'p1',
+      taskId: 't1',
+      headSha: 'headsha1',
+      runbook: baseRunbook({
+        services: { host_up: ["echo it's up"], compose_file: null },
+      }),
+      runbookSha: '0123456789abcdef',
+      validatedSha: sha,
+      snapshotName: 'codesema-p1-hash',
+      timeoutMs: 5000,
+    })
+    const shellCommands = calls.filter((c) => c.method === 'shell').map((c) => c.args[0])
+    expect(shellCommands[0]).toBe(
+      "nohup sh -c 'echo it'\\''s up' > /tmp/codesema-service-0.log 2>&1 &",
+    )
   })
 
   test('the sandbox is created with the exact sandboxName for the task, never a generic one', async () => {

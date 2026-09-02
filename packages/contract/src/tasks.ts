@@ -395,6 +395,26 @@ export function isActiveTaskStatus(status: TaskStatus): boolean {
  */
 export type CycleStep = 'ship' | 'merge'
 
+/**
+ * The closed set of `TaskActivity.phase` values: what a running task's agent
+ * is doing right now, one level more granular than `TaskStatus` alone can
+ * say. Published as an array (not just a type) so a consumer outside this
+ * module can validate a phase without hand-copying it.
+ */
+export const TASK_ACTIVITY_PHASES = ['checks', 'verification', 'proof', 'review', 'recap'] as const
+
+export type TaskActivityPhase = (typeof TASK_ACTIVITY_PHASES)[number]
+
+/**
+ * What a task's agent is doing right now, and since when (ISO-8601). Purely
+ * informational: nothing downstream branches on it the way `TaskStatus` or
+ * `checks_status` do, it only narrates the current status for a reader.
+ */
+export type TaskActivity = {
+  phase: TaskActivityPhase
+  since: string
+}
+
 export type TaskRecord = {
   version: 1
   /** 12 lowercase hex chars, doubles as the on-disk directory name. */
@@ -529,6 +549,13 @@ export type TaskRecord = {
    * rather than treated as a verdict.
    */
   checks_status?: Exclude<TaskChecksStatus, 'running'>
+  /**
+   * What this task's agent is doing right now, when it is running, and since
+   * when. OPTIONAL, and absence is the honest default: a record written
+   * before this field existed, and a task between phases (or not running),
+   * report nothing rather than a stale or guessed phase.
+   */
+  activity?: TaskActivity
   /**
    * Last liveness beat of this task's agent (ISO-8601), written by the
    * semantic watchdog's heartbeat. It is what lets a reader tell a task that
@@ -1085,6 +1112,28 @@ function sanitizeHubTicket(raw: unknown): { id: string; title: string; url?: str
   }
 }
 
+const TASK_ACTIVITY_PHASE_SET: ReadonlySet<TaskActivityPhase> = new Set(TASK_ACTIVITY_PHASES)
+
+/**
+ * Whitelist, never throw: an unknown phase, or a `since` that is not a
+ * non-blank string within the same bound as every other stored timestamp,
+ * drops the WHOLE field, same doctrine as `sanitizeHubTicket` above, a
+ * phase with no honest timestamp is worse than reporting no activity at all.
+ */
+function sanitizeTaskActivity(raw: unknown): TaskActivity | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
+  const r = raw as Record<string, unknown>
+  if (!TASK_ACTIVITY_PHASE_SET.has(r.phase as TaskActivityPhase)) {
+    return undefined
+  }
+  if (typeof r.since !== 'string' || !r.since || r.since.length > TASK_TIMESTAMP_MAX) {
+    return undefined
+  }
+  return { phase: r.phase as TaskActivityPhase, since: r.since }
+}
+
 /**
  * Revalidates a TaskRecord read back from disk. Returns null when the input
  * has no usable identity (missing or malformed id); every other field is
@@ -1130,6 +1179,7 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
   const criteria = sanitizeAcceptanceCriteria(r.criteria)
   // Legacy on-disk tasks.json may still carry `brain_ticket`; `hub_ticket` wins when both are present.
   const hubTicket = sanitizeHubTicket(r.hub_ticket !== undefined ? r.hub_ticket : r.brain_ticket)
+  const activity = sanitizeTaskActivity(r.activity)
   return {
     version: 1,
     id,
@@ -1194,6 +1244,10 @@ export function sanitizeTaskRecord(raw: unknown): TaskRecord | null {
     TASK_RECORD_CHECKS_STATUSES.has(r.checks_status as Exclude<TaskChecksStatus, 'running'>)
       ? { checks_status: r.checks_status as Exclude<TaskChecksStatus, 'running'> }
       : {}),
+    // Optional and whitelisted, same doctrine as `checks_status`: a record
+    // written before this field existed keeps none, and an unknown phase or
+    // an unusable `since` drops the whole field rather than inventing one.
+    ...(activity ? { activity } : {}),
     // Same doctrine: optional, whitelisted to a plain bounded string, dropped
     // entirely when it is not one. A missing beat means "we know nothing",
     // never "the agent is dead".

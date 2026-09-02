@@ -1483,4 +1483,112 @@ describe('runbookCommand', () => {
       }),
     ).resolves.toBeUndefined()
   })
+
+  test('usage lists both scan and validate', async () => {
+    const lines = await captureLog(() => runbookCommand({ cwd }))
+    expect(lines.some((l) => l.includes('runbook scan|validate'))).toBe(true)
+  })
+
+  test('validate outside a git repository throws', async () => {
+    await expect(
+      runbookCommand({
+        action: 'validate',
+        cwd,
+        agent: 'claude -p',
+        runRunbookValidateFn: async () => completedOutcome(),
+      }),
+    ).rejects.toThrow(/not a git repository/)
+  })
+
+  test('validate routes to runRunbookValidateFn with the resolved head sha, a stable projectId, timeoutMs and an agentId', async () => {
+    initRepo(cwd)
+    const seen: {
+      headSha: string
+      projectId: string
+      timeoutMs: number
+      agentId: string
+    } = { headSha: '', projectId: '', timeoutMs: 0, agentId: '' }
+    await runbookCommand({
+      action: 'validate',
+      cwd,
+      agent: 'claude -p',
+      timeoutSeconds: 42,
+      runRunbookValidateFn: async (opts) => {
+        seen.headSha = opts.headSha
+        seen.projectId = opts.projectId
+        seen.timeoutMs = opts.timeoutMs
+        seen.agentId = opts.agentId
+        return completedOutcome()
+      },
+    })
+    expect(seen.headSha).toMatch(/^[0-9a-f]{40}$/)
+    expect(seen.projectId).toMatch(/^[0-9a-f]{16}$/)
+    expect(seen.timeoutMs).toBe(42_000)
+    expect(seen.agentId).toBe('claude')
+  })
+
+  test('validate and scan resolve to the same projectId for the same worktree', async () => {
+    initRepo(cwd)
+    const seen: string[] = []
+    await runbookCommand({
+      action: 'scan',
+      cwd,
+      agent: 'claude -p',
+      runRunbookScanFn: async (opts) => {
+        seen.push(opts.projectId)
+        return completedOutcome()
+      },
+    })
+    await runbookCommand({
+      action: 'validate',
+      cwd,
+      agent: 'claude -p',
+      runRunbookValidateFn: async (opts) => {
+        seen.push(opts.projectId)
+        return completedOutcome()
+      },
+    })
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toBe(seen[1])
+  })
+
+  test('a completed validate prints the runbook summary', async () => {
+    initRepo(cwd)
+    const lines = await captureLog(() =>
+      runbookCommand({
+        action: 'validate',
+        cwd,
+        agent: 'claude -p',
+        runRunbookValidateFn: async () => completedOutcome(),
+      }),
+    )
+    const joined = lines.join('\n')
+    expect(joined).toContain('Runbook validated')
+    expect(joined).toContain(RUNBOOK_FILE)
+  })
+
+  test('a failed validate prints the error and sets a non-zero exit code', async () => {
+    initRepo(cwd)
+    const previousExitCode = process.exitCode
+    process.exitCode = undefined
+    try {
+      const lines = await captureLog(() =>
+        runbookCommand({
+          action: 'validate',
+          cwd,
+          agent: 'claude -p',
+          runRunbookValidateFn: async () => ({
+            status: 'failed',
+            error: 'no runbook found',
+            attempts: 0,
+            lastTail: null,
+          }),
+        }),
+      )
+      expect(lines.join('\n')).toContain('no runbook found')
+      expect(process.exitCode as unknown).toBe(1)
+    } finally {
+      process.exitCode = previousExitCode ?? 0
+    }
+  })
 })

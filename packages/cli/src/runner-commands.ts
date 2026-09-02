@@ -38,6 +38,7 @@ import { createMicrosandboxDriver, type SandboxDriver } from './microsandbox-dri
 import {
   DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS,
   runRunbookScan,
+  runRunbookValidate,
   type RunbookScanOutcome,
 } from './runbook-runner.js'
 import { RUNBOOK_FILE } from './runbook-setup.js'
@@ -56,7 +57,7 @@ import {
 } from './runner-service.js'
 import { formatFingerprint, runnerKeyFingerprint, seal, unseal } from './sealed-box.js'
 import { loadSyncCredentials } from './sync.js'
-import { microvmSecretsFromEnv } from './task-isolation.js'
+import { commandBin, microvmSecretsFromEnv } from './task-isolation.js'
 import { draftAndPublishTicket } from './ticket-draft.js'
 import { confirm, isInteractive, select, textInput, type SelectOption } from './tui.js'
 import { ACCENT, AMBER, dim, GREEN, paint, RED, renderFieldRows, type FieldRow } from './ui.js'
@@ -1003,6 +1004,8 @@ export type RunbookCommandOptions = {
   driver?: SandboxDriver | undefined
   /** Test seam. */
   runRunbookScanFn?: typeof runRunbookScan | undefined
+  /** Test seam. */
+  runRunbookValidateFn?: typeof runRunbookValidate | undefined
 }
 
 /** sha256 (16 hex) of the worktree's absolute path: a stable local id when there is no hub project to name one. */
@@ -1081,13 +1084,42 @@ async function runbookScanCommand(opts: RunbookCommandOptions): Promise<void> {
   printRunbookScanOutcome(outcome)
 }
 
+async function runbookValidateCommand(opts: RunbookCommandOptions): Promise<void> {
+  const worktree = opts.cwd
+  const headSha = tryGit(['rev-parse', 'HEAD'], worktree)
+  if (!headSha) {
+    throw new Error('not a git repository (or no commits yet)')
+  }
+  const command = await resolveRunbookScanCommand(worktree, opts.agent)
+  const driver = opts.driver ?? createMicrosandboxDriver()
+  const run = opts.runRunbookValidateFn ?? runRunbookValidate
+  const timeoutMs =
+    (opts.timeoutSeconds ?? Math.round(DEFAULT_RUNBOOK_SCAN_TIMEOUT_MS / 1000)) * 1000
+
+  console.log('')
+  console.log(`  ${dim('validating the runbook…')}`)
+  const outcome = await run({
+    worktree,
+    projectId: localProjectId(worktree),
+    headSha,
+    driver,
+    agentId: commandBin(command) || 'claude',
+    timeoutMs,
+    onProgress: (line) => console.log(`  ${dim(line)}`),
+  })
+  printRunbookScanOutcome(outcome)
+}
+
 export async function runbookCommand(opts: RunbookCommandOptions): Promise<void> {
   switch (opts.action) {
     case 'scan':
       await runbookScanCommand(opts)
       return
+    case 'validate':
+      await runbookValidateCommand(opts)
+      return
     case undefined:
-      console.log('usage: codesema runbook scan [--timeout <seconds>]')
+      console.log('usage: codesema runbook scan|validate [--timeout <seconds>]')
       return
     default:
       throw new Error(`unknown runbook action: ${opts.action}`)
