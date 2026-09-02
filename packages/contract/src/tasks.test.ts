@@ -788,6 +788,37 @@ describe('sanitizeTaskRecord', () => {
     expect(r?.turns[0]?.ended_at).toBeNull()
   })
 
+  test('turns: proof_intent round-trips when valid, is absent when not supplied', () => {
+    const withIntent = sanitizeTaskRecord({
+      ...validRecord,
+      turns: [
+        {
+          ...validRecord.turns[0],
+          proof_intent: {
+            kind: 'journey',
+            reason: 'exercises the checkout flow',
+            journey: 'checkout',
+          },
+        },
+      ],
+    })
+    expect(withIntent?.turns[0]?.proof_intent).toEqual({
+      kind: 'journey',
+      reason: 'exercises the checkout flow',
+      journey: 'checkout',
+    })
+    const withoutIntent = sanitizeTaskRecord(structuredClone(validRecord))
+    expect(withoutIntent?.turns[0] && 'proof_intent' in withoutIntent.turns[0]).toBe(false)
+  })
+
+  test('turns: an unreadable proof_intent drops the key rather than storing junk', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      turns: [{ ...validRecord.turns[0], proof_intent: { kind: 'bogus', reason: 'r' } }],
+    })
+    expect(r?.turns[0] && 'proof_intent' in r.turns[0]).toBe(false)
+  })
+
   test('turns are capped', () => {
     const turns = Array.from({ length: TASK_TURNS_MAX + 10 }, () => ({ prompt: 'go' }))
     expect(sanitizeTaskRecord({ ...validRecord, turns })?.turns.length).toBe(TASK_TURNS_MAX)
@@ -1245,6 +1276,7 @@ describe('sanitizeTaskEvent', () => {
       'issue',
       'criteria',
       'post_merge_checks',
+      'proof',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

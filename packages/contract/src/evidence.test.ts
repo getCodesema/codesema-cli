@@ -237,6 +237,44 @@ describe('sanitizeEvidence', () => {
     }
   })
 
+  test('intent and review: absent when not supplied', () => {
+    const out = sanitizeEvidence({ version: 1, status: 'passed', items: [] })
+    expect(out?.intent).toBeUndefined()
+    expect(out?.review).toBeUndefined()
+  })
+
+  test('intent and review: round-trip when valid', () => {
+    const out = sanitizeEvidence({
+      version: 1,
+      status: 'passed',
+      items: [],
+      intent: { kind: 'screenshot', reason: 'proves the flow rendered', pages: ['/checkout'] },
+      review: { expected: 'screenshot', coherent: true, reason: 'matches the declared intent' },
+    })
+    expect(out?.intent).toEqual({
+      kind: 'screenshot',
+      reason: 'proves the flow rendered',
+      pages: ['/checkout'],
+    })
+    expect(out?.review).toEqual({
+      expected: 'screenshot',
+      coherent: true,
+      reason: 'matches the declared intent',
+    })
+  })
+
+  test('intent and review: an unreadable value drops the key rather than storing junk', () => {
+    const out = sanitizeEvidence({
+      version: 1,
+      status: 'passed',
+      items: [],
+      intent: { kind: 'bogus', reason: 'r' },
+      review: { expected: 'none', coherent: 'yes', reason: '' },
+    })
+    expect(out?.intent).toBeUndefined()
+    expect(out?.review).toBeUndefined()
+  })
+
   test('hostile entry never throws: wrong types everywhere, null and undefined', () => {
     const hostile = {
       version: '1',

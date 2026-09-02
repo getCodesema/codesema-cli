@@ -402,6 +402,22 @@ export const TICKS_PER_USD = 10_000_000_000
  */
 export type CostBasis = 'harness' | 'lower_bound'
 
+// Mirrors packages/contract/src/proof-intent.ts
+export type ProofIntentKind = 'none' | 'screenshot' | 'journey'
+
+export type ProofIntent = {
+  kind: ProofIntentKind
+  reason: string
+  pages?: string[]
+  journey?: string
+}
+
+export type ProofReview = {
+  expected: ProofIntentKind
+  coherent: boolean
+  reason: string
+}
+
 export type TaskTurn = {
   prompt: string
   response: string | null
@@ -422,6 +438,7 @@ export type TaskTurn = {
    * — a provenance with no number behind it describes nothing.
    */
   cost_basis?: CostBasis
+  proof_intent?: ProofIntent
 }
 
 export type TaskEventType =
@@ -500,6 +517,7 @@ export type TaskEventType =
    * last line, same rebase courtesy as `criteria`.
    */
   | 'merge'
+  | 'proof'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
@@ -1167,4 +1185,6 @@ export type EvidenceRecord = {
   reason: string | null
   head_sha: string | null
   items: EvidenceItem[]
+  intent?: ProofIntent
+  review?: ProofReview
 }

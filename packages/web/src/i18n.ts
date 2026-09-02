@@ -402,6 +402,10 @@ const en = {
   'workspace.evCriteriaGateBlocked':
     'Acceptance criteria not satisfied: this task is not ready to merge',
   'workspace.evCriteriaGatePassed': 'Every acceptance criterion is satisfied, evidence in the diff',
+  'workspace.evProof': 'Proof',
+  'workspace.evProofDeclared': 'Proof intent declared',
+  'workspace.evProofUndeclared': 'No proof intent declared',
+  'workspace.evProofUnparsed': 'The proof intent was unreadable',
 
   // --- merge gate (T3.6, D12) ---
   'workspace.evMerge': 'Merge',
@@ -1314,6 +1318,10 @@ const fr: Record<MessageKey, string> = {
     "Critères d'acceptation non satisfaits : cette tâche n'est pas prête à merger",
   'workspace.evCriteriaGatePassed':
     "Tous les critères d'acceptation sont satisfaits, preuve à l'appui dans le diff",
+  'workspace.evProof': 'Preuve',
+  'workspace.evProofDeclared': 'Intention de preuve déclarée',
+  'workspace.evProofUndeclared': 'Aucune intention de preuve déclarée',
+  'workspace.evProofUnparsed': "L'intention de preuve n'était pas lisible",
 
   // --- merge gate (T3.6, D12) ---
   'workspace.evMerge': 'Fusion',

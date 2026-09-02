@@ -711,6 +711,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   prep: 'workspace.evPrep',
   criteria: 'workspace.evCriteria',
   merge: 'workspace.evMerge',
+  proof: 'workspace.evProof',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -759,6 +760,7 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   // lookup below — never red, since nothing failed: the work is committed,
   // the merge request is open, and what is missing is a decision or a fix.
   merge: 'idle',
+  proof: 'idle',
 }
 
 /**
@@ -945,6 +947,7 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   // unreachable — the translated 'workspace.evCriteria' label would be dead
   // code no journal line ever showed (§6 quater).
   criteria: [],
+  proof: [],
   // Unreachable, exactly like `resource` above, and NOT what protects this
   // type: `eventSummary` branches on `event.type === 'merge'` BEFORE it ever
   // indexes this table, so the entry — empty or not — is dead weight the
@@ -1119,6 +1122,18 @@ function criteriaEventText(data: TaskEventData): string {
   return key ? t(key) : t(EVENT_LABEL_KEY.criteria)
 }
 
+const PROOF_NAME_KEY: Record<string, MessageKey> = {
+  declared: 'workspace.evProofDeclared',
+  undeclared: 'workspace.evProofUndeclared',
+  unparsed: 'workspace.evProofUnparsed',
+}
+
+function proofEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? PROOF_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.proof)
+}
+
 /**
  * `data.name` of a 'shipped' event → its own translated line (T3.5, round 2
  * majeur 2). Posed ONLY when the ship landed short of the recap it was meant
@@ -1250,6 +1265,9 @@ export function eventSummary(event: TaskEvent): string {
   }
   if (event.type === 'criteria') {
     return clip(criteriaEventText(event.data))
+  }
+  if (event.type === 'proof') {
+    return clip(proofEventText(event.data))
   }
   if (event.type === 'shipped') {
     return clip(shippedEventText(event.data, label))

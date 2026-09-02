@@ -4,6 +4,12 @@
 // restating it is what keeps the three consumers from drifting into two
 // spellings of the same fact. ticket.ts imports nothing, so this cannot cycle.
 import {
+  PROOF_INTENT_KINDS,
+  PROOF_INTENT_REASON_MAX,
+  sanitizeProofReview,
+  type ProofReview,
+} from './proof-intent.js'
+import {
   CRITERION_VERDICT_EVIDENCE_MAX,
   CRITERION_VERDICT_QUESTION_MAX,
   NON_BLANK,
@@ -17,6 +23,7 @@ import {
 
 export * from './arm.js'
 export * from './evidence.js'
+export * from './proof-intent.js'
 export * from './reasons.js'
 export * from './recap.js'
 export * from './runbook.js'
@@ -135,6 +142,7 @@ export type SanitizedReview = {
    * deterministic; nothing here is a verdict the model produced.
    */
   criteria?: CriterionVerdict[]
+  proof_review?: ProofReview
 }
 
 export type DualStats = {
@@ -454,6 +462,7 @@ export function sanitizeReview(raw: unknown): SanitizedReview {
   // Nothing survives means the key is OMITTED, not emptied: see the field's
   // own doc on `SanitizedReview`.
   const criteria = sanitizeCriterionVerdicts(r.criteria)
+  const proofReview = sanitizeProofReview(r.proof_review)
   return {
     verdict,
     summary,
@@ -463,6 +472,7 @@ export function sanitizeReview(raw: unknown): SanitizedReview {
       ? { files_reviewed: reviewedFilesFrom(reviewedPaths, findings) }
       : {}),
     ...(criteria.length > 0 ? { criteria } : {}),
+    ...(proofReview !== null ? { proof_review: proofReview } : {}),
   }
 }
 
@@ -1153,6 +1163,17 @@ export const reviewRecordSchema = {
           uniqueItems: true,
           items: { $ref: '#/$defs/criterionVerdict' },
         },
+        proof_review: { $ref: '#/$defs/proofReview' },
+      },
+    },
+    proofReview: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['expected', 'coherent', 'reason'],
+      properties: {
+        expected: { enum: [...PROOF_INTENT_KINDS] },
+        coherent: { type: 'boolean' },
+        reason: { type: 'string', maxLength: PROOF_INTENT_REASON_MAX },
       },
     },
     criterionVerdict: {

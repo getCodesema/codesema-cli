@@ -60,4 +60,5 @@ export const TASK_EVENT_COMPONENTS: Record<TaskEventType, Component> = {
   // T3.6: a plain line like 'criteria' — the tone is what tells a satisfied
   // condition from a refused merge, never a distinct component.
   merge: TaskEventLine,
+  proof: TaskEventLine,
 }

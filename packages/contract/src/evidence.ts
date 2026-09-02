@@ -1,3 +1,9 @@
+import {
+  sanitizeProofIntent,
+  sanitizeProofReview,
+  type ProofIntent,
+  type ProofReview,
+} from './proof-intent.js'
 import { cutCodePoints } from './ticket.js'
 
 export type EvidenceKind = 'screenshot' | 'video'
@@ -18,6 +24,8 @@ export type EvidenceRecord = {
   reason: string | null
   head_sha: string | null
   items: EvidenceItem[]
+  intent?: ProofIntent
+  review?: ProofReview
 }
 
 export const EVIDENCE_ITEMS_MAX = 40
@@ -92,11 +100,15 @@ export function sanitizeEvidence(raw: unknown): EvidenceRecord | null {
   }
   const reason = typeof r.reason === 'string' ? cutCodePoints(r.reason, EVIDENCE_REASON_MAX) : null
   const headSha = typeof r.head_sha === 'string' && r.head_sha.length > 0 ? r.head_sha : null
+  const intent = sanitizeProofIntent(r.intent)
+  const review = sanitizeProofReview(r.review)
   return {
     version: 1,
     status: r.status as EvidenceStatus,
     reason,
     head_sha: headSha,
     items: sanitizeEvidenceItems(r.items),
+    ...(intent !== null ? { intent } : {}),
+    ...(review !== null ? { review } : {}),
   }
 }

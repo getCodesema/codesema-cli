@@ -8,6 +8,7 @@
 // counterpart is the locally spelled TASK_HUB_TICKET_STATUSES below, locked
 // to arm.ts's own set by a cross-module test.
 import type { ArmTicketStatus } from './arm.js'
+import { sanitizeProofIntent, type ProofIntent } from './proof-intent.js'
 import {
   sanitizeReasonCode,
   sanitizeTaskReason,
@@ -116,6 +117,7 @@ export type TaskTurn = {
    * describes nothing.
    */
   cost_basis?: CostBasis
+  proof_intent?: ProofIntent
 }
 
 export type TaskEventType =
@@ -250,6 +252,7 @@ export type TaskEventType =
    * fire-and-forget, after the merge step itself is already settled.
    */
   | 'post_merge_checks'
+  | 'proof'
 
 /**
  * How a task's agent turns are contained.
@@ -765,6 +768,7 @@ const TASK_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
   'criteria',
   'merge',
   'post_merge_checks',
+  'proof',
 ])
 
 const TASK_ISOLATIONS: ReadonlySet<TaskIsolation> = new Set(['container', 'policy', 'microvm'])
@@ -1051,6 +1055,7 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
     return null
   }
   const cost = costPair(t.cost_ticks, t.cost_basis)
+  const proofIntent = sanitizeProofIntent(t.proof_intent)
   return {
     prompt,
     response:
@@ -1067,6 +1072,7 @@ function sanitizeTaskTurn(raw: unknown): TaskTurn | null {
     // are one fact and travel as one (see costPair) — never one without the
     // other, in either direction.
     ...cost,
+    ...(proofIntent !== null ? { proof_intent: proofIntent } : {}),
   }
 }
 
