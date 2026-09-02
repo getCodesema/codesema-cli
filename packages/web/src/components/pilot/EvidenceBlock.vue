@@ -6,6 +6,7 @@ import { evidenceFileUrl } from '../../composables/useTasks'
 import { t, type MessageKey } from '../../i18n'
 import type {
   EvidenceRecord,
+  ProofIntentKind,
   TaskActivity,
   TaskVerification,
   TaskVerificationStatus,
@@ -22,6 +23,25 @@ const props = defineProps<{
 const items = computed(() => props.evidence?.items ?? [])
 const isEmpty = computed(() => props.evidence == null || items.value.length === 0)
 const failed = computed(() => props.evidence?.status === 'failed')
+
+const intent = computed(() => props.evidence?.intent ?? null)
+const review = computed(() => props.evidence?.review ?? null)
+
+const PROOF_KIND_KEY: Record<ProofIntentKind, MessageKey> = {
+  none: 'pilot.proof.kind.none',
+  screenshot: 'pilot.proof.kind.screenshot',
+  journey: 'pilot.proof.kind.journey',
+}
+
+const intentReason = computed(() => {
+  if (!intent.value) {
+    return ''
+  }
+  if (props.evidence?.status === 'skipped' && props.evidence?.reason === 'no_target') {
+    return t('pilot.proof.noTarget')
+  }
+  return intent.value.reason
+})
 
 const RUNNING_GLYPH = '●'
 
@@ -70,6 +90,16 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 <template>
   <section class="evb-root">
     <h3 class="evb-title">{{ t('pilot.evidence.title') }}</h3>
+    <p v-if="intent" class="evb-intent">
+      {{ t('pilot.proof.declared') }} {{ t(PROOF_KIND_KEY[intent.kind])
+      }}<template v-if="intentReason"> · {{ intentReason }}</template>
+    </p>
+    <p v-if="intent?.kind === 'screenshot' && intent.pages?.length" class="evb-intent-detail">
+      {{ t('pilot.proof.pages', { list: intent.pages.join(', ') }) }}
+    </p>
+    <p v-if="intent?.kind === 'journey' && intent.journey" class="evb-intent-detail">
+      <code>{{ intent.journey }}</code>
+    </p>
     <p v-if="failed" class="evb-failed">
       {{ t('pilot.evidence.failed') }}
       <span v-if="evidence?.reason" class="evb-reason">{{ evidence.reason }}</span>
@@ -100,6 +130,18 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
         </figcaption>
       </figure>
     </div>
+    <p v-if="review" class="evb-verdict">
+      <span
+        class="evb-verdict-dot"
+        :class="review.coherent ? 'evb-verdict-dot--coherent' : 'evb-verdict-dot--incoherent'"
+        aria-hidden="true"
+      ></span>
+      <span>{{
+        review.coherent
+          ? t('pilot.proof.coherent')
+          : t('pilot.proof.incoherent', { reason: review.reason })
+      }}</span>
+    </p>
     <div v-if="verification" class="evb-verification">
       <h4 class="evb-verification-title">{{ t('pilot.verification.title') }}</h4>
       <p
@@ -161,6 +203,43 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   margin: 0;
   font-size: 12.5px;
   color: var(--cs-muted);
+}
+
+.evb-intent {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--cs-muted);
+}
+
+.evb-intent-detail {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--cs-muted);
+}
+
+.evb-verdict {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--cs-text);
+}
+
+.evb-verdict-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.evb-verdict-dot--coherent {
+  background: var(--cs-green);
+}
+
+.evb-verdict-dot--incoherent {
+  background: var(--cs-red);
 }
 
 .evb-running {

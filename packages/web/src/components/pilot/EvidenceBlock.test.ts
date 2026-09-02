@@ -321,6 +321,100 @@ describe('EvidenceBlock: the verification section is absent unless there is a re
   })
 })
 
+describe('EvidenceBlock: the intent line declares what the agent set out to capture', () => {
+  test('an intent of kind "none" alongside a "skipped" status shows the declared line and the "no proof" phrase', async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({
+        status: 'skipped',
+        reason: 'the app has no UI to open',
+        items: [],
+        intent: { kind: 'none', reason: 'the app has no UI to open' },
+      }),
+    })
+    expect(html).toContain(t('pilot.proof.declared'))
+    expect(html).toContain(t('pilot.proof.kind.none'))
+    expect(html).toContain(t('pilot.evidence.none'))
+  })
+
+  test('an intent of kind "screenshot" with pages lists the declared pages', async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({
+        intent: {
+          kind: 'screenshot',
+          reason: 'covers the new settings screen',
+          pages: ['/settings', '/settings/billing'],
+        },
+      }),
+    })
+    expect(html).toContain(t('pilot.proof.kind.screenshot'))
+    expect(html).toContain('covers the new settings screen')
+    expect(html).toContain(t('pilot.proof.pages', { list: '/settings, /settings/billing' }))
+  })
+
+  test('a "skipped" status with reason "no_target" replaces the raw reason with the dedicated phrase', async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({
+        status: 'skipped',
+        reason: 'no_target',
+        items: [],
+        intent: { kind: 'none', reason: 'no_target' },
+      }),
+    })
+    expect(html).toContain(t('pilot.proof.noTarget'))
+    expect(html).not.toContain('no_target')
+  })
+})
+
+describe("EvidenceBlock: the verdict line renders the reviewer's judgment on the declared proof", () => {
+  test('a coherent review shows the confirmation phrase', async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({
+        intent: { kind: 'screenshot', reason: 'covers the new screen' },
+        review: { expected: 'screenshot', coherent: true, reason: 'matches the diff' },
+      }),
+    })
+    expect(html).toContain(t('pilot.proof.coherent'))
+  })
+
+  test("an incoherent review shows the dispute phrase with the reviewer's reason", async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({
+        intent: { kind: 'screenshot', reason: 'covers the new screen' },
+        review: {
+          expected: 'journey',
+          coherent: false,
+          reason: 'a flow was declared, not a static page',
+        },
+      }),
+    })
+    expect(html).toContain(
+      t('pilot.proof.incoherent', { reason: 'a flow was declared, not a static page' }),
+    )
+  })
+})
+
+describe('EvidenceBlock: neither intent nor review present leaves the rendering unchanged', () => {
+  test('no intent and no review renders neither the declared line nor the verdict line', async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({ items: [] }),
+    })
+    expect(html).not.toContain(t('pilot.proof.declared'))
+    expect(html).not.toContain(t('pilot.proof.coherent'))
+  })
+})
+
 describe('EvidenceBlock: no hex color literal in its scoped style', () => {
   test('every color comes from a --cs- token', () => {
     const source = readFileSync(
