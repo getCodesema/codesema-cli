@@ -3,6 +3,27 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.21.0] - unreleased
+
+### Added
+
+- **The pilot grid is now the default workspace shell**, with the previous interface reachable behind a toggle and a mobile layout below 760px.
+- **Decision D17: a turn's visual proof of its own effect is now part of the review.** A `microvm` task can declare and capture a screenshot or a Playwright journey each turn (`proof` in `.codesema/config.json`, a `PROOF: <none|screenshot|journey>` line in the agent's reply); the reviewer checks the declaration against the diff and raises a finding only on an unproven visible change or an unexplained failed proof.
+- **`codesema runbook validate`** validates a hand-edited `.codesema/runbook.json` as-is, without asking an agent for a new proposal.
+- **The runbook can declare background services**, started in the verification VM ahead of its healthchecks and tests.
+- **A task now carries its own activity**: the phase a turn is currently in is broadcast live and shown on its card and in the evidence block.
+- **A turn now emits its recap the moment it ends, and a finished task without one gets it computed on read**, with the microvm verification surfaced alongside it.
+
+### Changed
+
+- **Task events hydrate both the card and the expanded view**, instead of only one of the two.
+- **Checks hydrate the same way, and task cards gained their own actions.**
+
+### Fixed
+
+- **Claude credentials are now seeded into microvm turns and reviews**, closing the gap where either ran without them.
+- **Evidence file URLs are now scoped to their project**, so one project can no longer read another's captures.
+
 ## [0.20.0] - 2026-08-28
 
 ### Added

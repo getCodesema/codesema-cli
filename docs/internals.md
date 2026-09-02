@@ -110,3 +110,26 @@ What this never does:
 - **It never blocks a task.** A forge that cannot be reached, an absent `gh`/`glab`, a command that fails: the transition completes exactly as it would with the labels off — same status, same record — and the degradation is stated instead, as a journal line carrying `forge_unreachable`. The task record itself is never modified by this channel.
 
 **One asymmetry, documented rather than smoothed over (D8):** the prefix uses a **simple** colon, not GitLab's scoped-label form (`scope::value`). A scoped label would give GitLab forge-side mutual exclusion for free, but GitHub has no such notion, so half the users would get an exclusion the other half would not. The exclusion is therefore computed by codesema, identically on both forges; the consequence on GitLab is that `codesema:` labels are ordinary labels there — no scoped behaviour, no forge-side exclusion, no scoped rendering in its UI.
+
+## The checks chapter of a review (D16)
+
+**Decision D16 is settled: a task's checks run once, and that single result becomes a mandatory chapter of the review and fix prompts and the evidence for the mechanical `command` criteria, read once from disk and never re-derived from the diff.**
+
+## Visual proof (D17)
+
+**Decision D17 is settled: the visual proof is proportionate, declared by the agent each turn, executed mechanically, judged by the reviewer.**
+
+A screenshot or a recorded journey costs a turn its own time to capture and a reviewer real attention to read, so it is not owed for every turn: only a turn whose effect is visible earns one, and whether an effect is visible is closer to a judgment call than something a fixed rule could settle.
+
+**Declaration.** Every turn opens its final message with one line, `PROOF: <none|screenshot|journey> [pages or spec] | <reason>`, placed after the `BRANCH:`/`CRITERION:` lines when those apply.
+
+**The decision grid the agent follows:**
+
+- the interface changed and the change is visible: `screenshot` naming the pages, or `journey` naming the spec when the change is a sequence rather than one screen;
+- a UI file changed with no visible effect (a refactor with no rendered difference, a prop threaded through with no new output): `none`, with the reason stated;
+- nothing outside the interface was touched: `none`;
+- doubt: proof, not `none`. The grid resolves a tie toward capturing rather than skipping.
+
+**Judgment.** The reviewer is handed one mechanical fact, whether UI files were touched, read straight from the diff with no model call, and renders one verdict, `proof_review { expected, coherent, reason }`. Only two shapes of that verdict are a blocking incoherence: a visible change with no proof and no acceptable reason, or a proof that came back failed with nothing said about it. Both are raised as a `design`/`major` finding, anchored on the diff line that made the change visible. A proof supplied when none was owed is never blocking, since over-proving costs nothing the review needs to act on.
+
+The mechanical fact and the judgment stay on separate sides of the same verdict: what changed is read off the diff, whether the response to it was reasonable is decided by the model. A project with no `proof.url` configured turns every declaration into `skipped`, reason `no_target`, and that is never blocking: there is nothing to replay the proof against. An `undeclared` turn is not the same thing as a declared `none`: skipping the line entirely falls back to the project's own configured default, and that substitution is itself recorded as a finding, non-blocking, rather than silently read as if the agent had chosen `none` itself.

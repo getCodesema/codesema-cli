@@ -66,6 +66,37 @@ From the page you can also:
 
 **Merging.** The workspace does not merge on its own unless you ask it to: `mergePolicy` defaults to `human`. Task state lives under `.codesema/tasks/<id>/` in the repository it belongs to.
 
+## Visual proof
+
+With `isolation: "microvm"` and a validated runbook whose services include one that serves the app under test, a task's turn can prove its own effect: the verification VM replays a Playwright journey against the running app and stores the resulting screenshot or video as evidence. The runbook's image needs Playwright available, for example `mcr.microsoft.com/playwright:v1.62.0-noble`.
+
+Turn it on by adding a `proof` block to `.codesema/config.json`:
+
+```json
+{
+  "proof": {
+    "url": "http://localhost:3000",
+    "journey": "e2e/checkout.spec.ts"
+  }
+}
+```
+
+`url` is required; `journey` is optional and names the default Playwright spec a turn replays when it declares `journey` proof without naming its own.
+
+A hand-edited `.codesema/runbook.json` can be checked without asking an agent for a new proposal: `codesema runbook validate` replays install, services, healthchecks and tests as-is, and only persists the validation once all of them pass.
+
+Each turn declares its own proof in its final message, one line of the form `PROOF: <none|screenshot|journey> [pages or spec] | <reason>`:
+
+```
+PROOF: screenshot /dashboard /settings | the new toggle changed the settings layout
+PROOF: journey e2e/checkout.spec.ts | the fix touches three screens in sequence
+PROOF: none | only the API handler changed, nothing rendered differently
+```
+
+The task's evidence panel shows the capture (screenshot or video), the agent's stated intent for it, and the reviewer's verdict on whether the declaration matched the diff. Only the last 5 captures of a task are kept; older ones are purged as new ones arrive.
+
+Known limitation: evidence files are served whole, with no HTTP Range support, so scrubbing through a stored video is degraded to reloading it from the start each time.
+
 ## Runner mode
 
 A runner is a background process that connects the workspace to the codesema hub (codesema.com, or your own instance) and works hands-off through its backlog of tickets for a repository: the hub publishes tickets, the runner codes them, ships them, reviews them and reports every transition back.
