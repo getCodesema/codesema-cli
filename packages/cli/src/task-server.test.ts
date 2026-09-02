@@ -28,6 +28,7 @@ import {
   type ReviewRecord,
   type RunbookConfig,
   type RunbookValidation,
+  type TaskActivityPhase,
   type TaskChecks,
   type TaskEvent,
   type TaskIssueRef,
@@ -9864,8 +9865,13 @@ describe('automatic fix loop (T3.3)', () => {
     )
     // The reviewer's own settle() and the hook's belt-and-braces write both
     // land on the FINAL status: the loop's decision is folded INTO the
-    // transition, never applied as a second write after it.
-    expect([...new Set(loop.written)]).toEqual(['waiting_for_you'])
+    // transition, never applied as a second write after it. 'reviewing' is
+    // filtered out: it is the activity markers' own persists (checks,
+    // verification, review posed/cleared), which carry the turn's status
+    // unchanged and are expected alongside the single status transition.
+    expect([...new Set(loop.written.filter((status) => status !== 'reviewing'))]).toEqual([
+      'waiting_for_you',
+    ])
   })
 
   test('the bound is configurable: 1 allows one round, 3 allows three', async () => {
@@ -12907,6 +12913,223 @@ describe('microvm wiring (lot C7)', () => {
 
         expect(envelopes.some((e) => e.event.name === 'task_evidence')).toBe(false)
       })
+    })
+  })
+
+  describe('activity narration (D-activity, onTurnDone + boot)', () => {
+    // Local calques of the same-named helpers in 'mechanical verification
+    // (onTurnDone)' above (private to that describe, out of reach here).
+    const jsonl = (events: unknown[]) => `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+    const claudeStream = (response: string) =>
+      jsonl([
+        { type: 'system', subtype: 'init', session_id: 'sess-activity' },
+        { type: 'result', result: response },
+      ])
+
+    function seedInterruptedMicrovmTask(cwd: string): { record: TaskRecord; worktree: string } {
+      const worktree = makeRepo()
+      const record = createTask(cwd, {
+        title: 'vm task',
+        prompt: 'do it',
+        autoShip: false,
+        base: '',
+        branch: '',
+        worktree,
+        isolation: 'microvm',
+      })
+      record.worktree = worktree
+      record.status = 'interrupted'
+      saveTask(cwd, record)
+      return { record, worktree }
+    }
+
+    function validRunbookValidation(runbook: RunbookConfig): RunbookValidation {
+      return {
+        runbook_sha: computeRunbookSha(runbook),
+        validated_sha: 'deadbeefdeadbeef',
+        validated_at: '2026-01-01T00:00:00.000Z',
+        status: 'valid',
+      }
+    }
+
+    function fakeSandboxHandle(): SandboxHandle {
+      return {
+        name: 'fake-activity-handle',
+        exec: () => Promise.resolve({ code: 0, stdout: '', stderr: '', timedOut: false }),
+        shell: () => Promise.resolve({ code: 0, stdout: '', stderr: '', timedOut: false }),
+        copyFromHost: () => Promise.resolve(),
+        copyToHost: () => Promise.resolve(),
+        writeFile: () => Promise.resolve(),
+        readFile: () => Promise.resolve(''),
+        metrics: () =>
+          Promise.resolve({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
+        stop: () => Promise.resolve(),
+      }
+    }
+
+    function writeProofConfig(cwd: string): void {
+      mkdirSync(join(cwd, '.codesema'), { recursive: true })
+      writeFileSync(
+        join(cwd, '.codesema', 'config.json'),
+        JSON.stringify({
+          proof: {
+            journey: 'proof/checkout.spec.ts',
+            url: 'http://localhost:3000',
+            timeoutSeconds: 30,
+            keep: 3,
+          },
+        }),
+      )
+    }
+
+    test('a full turn narrates checks, verification, proof, review, recap in order, with no activity on the verdict frame nor the final frame', async () => {
+      const project = register(makeRepo())
+      const { record, worktree } = seedInterruptedMicrovmTask(project.path)
+      writeProofConfig(project.path)
+      mkdirSync(join(worktree, 'proof'), { recursive: true })
+      writeFileSync(join(worktree, 'proof', 'checkout.spec.ts'), 'test()\n')
+
+      const runbook = baseRunbook()
+      const validation = validRunbookValidation(runbook)
+      const verification: TaskVerification = {
+        head_sha: 'activitysha1',
+        runbook_sha: computeRunbookSha(runbook),
+        started_at: '2026-01-01T00:00:00.000Z',
+        finished_at: '2026-01-01T00:05:00.000Z',
+        status: 'passed',
+        checks: [{ command: 'npm test', status: 'passed', exit_code: 0, duration_ms: 5, tail: '' }],
+        integrity_ok: true,
+        changed_dependency_files: [],
+        error: null,
+      }
+      // `envelope.event.data` for a 'task' frame is the manager's own
+      // mutable `record`, broadcast BY REFERENCE: reading it back after the
+      // turn settles would show every entry as its FINAL state. The phase
+      // (and status) actually observed at each broadcast is read out
+      // synchronously, right here, the same way the queue-position tests
+      // above do for the same reason.
+      const taskFrames: { status: TaskStatus; activityPhase: TaskActivityPhase | null }[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => validation,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: async (opts) => {
+          await opts.captureProof?.(fakeSandboxHandle())
+          return verification
+        },
+        captureProofFn: () => Promise.resolve({ status: 'passed', reason: null }),
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ok'
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+      manager.subscribe((envelope) => {
+        if (envelope.event.name === 'task') {
+          taskFrames.push({
+            status: envelope.event.data.status,
+            activityPhase: envelope.event.data.activity?.phase ?? null,
+          })
+        }
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ok')
+
+      expect(
+        taskFrames
+          .map((f) => f.activityPhase)
+          .filter((phase): phase is TaskActivityPhase => phase !== null),
+      ).toEqual(['checks', 'verification', 'proof', 'review', 'recap'])
+      const verdictFrame = taskFrames.find((f) => f.status === 'review_ok')
+      expect(verdictFrame?.activityPhase).toBeNull()
+      expect(taskFrames.at(-1)?.activityPhase).toBeNull()
+    })
+
+    test('a rejecting verifyTaskFn is swallowed by verifyAfterCommit: the final frame still carries no activity', async () => {
+      const project = register(makeRepo())
+      const { record } = seedInterruptedMicrovmTask(project.path)
+      const runbook = baseRunbook()
+      const validation = validRunbookValidation(runbook)
+      // Same reasoning as the test above: read the phase at broadcast time,
+      // never off the shared `record` object after the fact.
+      const taskFrames: { status: TaskStatus; activityPhase: TaskActivityPhase | null }[] = []
+      const manager = createTaskManager({
+        ...managerOpts,
+        sandboxDriverFn: () => fakeDriver,
+        readRunbookConfigFn: () => runbook,
+        readRunbookValidationFn: () => validation,
+        resolveProjectSnapshotFn: () =>
+          Promise.resolve({ kind: 'cold', reason: 'test' } as ProjectSnapshot),
+        verifyTaskFn: () => Promise.reject(new Error('sandbox exploded')),
+        runChecksFn: () => Promise.resolve(finishedChecks()),
+        reviewTurnFn: async (r, io) => {
+          r.status = 'review_ko'
+          r.reason = taskReason('review_blocked', 'review failed: the review agent died')
+          io.persist()
+        },
+        runMicrovmTurnFn: (options: RunMicrovmTurnOptions) => {
+          writeFileSync(join(options.worktree, 'feature.txt'), 'from the vm\n')
+          const raw = claudeStream('all done')
+          options.onText?.(raw)
+          return Promise.resolve(raw)
+        },
+      })
+      manager.subscribe((envelope) => {
+        if (envelope.event.name === 'task') {
+          taskFrames.push({
+            status: envelope.event.data.status,
+            activityPhase: envelope.event.data.activity?.phase ?? null,
+          })
+        }
+      })
+
+      expect(manager.resume(project.id, record.id)).toEqual({ ok: true })
+      await until(() => loadTask(project.path, record.id)?.status === 'review_ko')
+
+      // No 'proof': verifyAfterCommit's own try/catch swallows the rejection
+      // before captureProof is ever reached. No 'recap' either: the turn
+      // settled on 'review_ko', which the recap block only runs past on
+      // 'review_ok'.
+      expect(
+        taskFrames
+          .map((f) => f.activityPhase)
+          .filter((phase): phase is TaskActivityPhase => phase !== null),
+      ).toEqual(['checks', 'verification', 'review'])
+      expect(taskFrames.at(-1)?.activityPhase).toBeNull()
+      expect(readTaskVerification(project.path, record.id)).toBeNull()
+    })
+
+    test('boot never lets a phase survive a restart, whether or not the record itself is rewritten', () => {
+      const repo = makeRepo()
+      register(repo)
+      const idle = seedTask(repo, 'idle with a stale phase')
+      idle.status = 'waiting_for_you'
+      idle.activity = { phase: 'review', since: '2026-01-01T00:00:00.000Z' }
+      saveTask(repo, idle)
+      const orphaned = seedTask(repo, 'orphaned with a stale phase')
+      orphaned.status = 'reviewing'
+      orphaned.activity = { phase: 'checks', since: '2026-01-01T00:00:00.000Z' }
+      saveTask(repo, orphaned)
+
+      createTaskManager({ ...managerOpts, ...fakeRunner() })
+
+      const tasks = listTasks(repo)
+      const idleAfter = tasks.find((t) => t.id === idle.id)
+      const orphanedAfter = tasks.find((t) => t.id === orphaned.id)
+      expect(idleAfter?.activity).toBeUndefined()
+      expect(idleAfter?.status).toBe('waiting_for_you')
+      expect(orphanedAfter?.activity).toBeUndefined()
+      expect(orphanedAfter?.status).toBe('interrupted')
     })
   })
 

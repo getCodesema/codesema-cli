@@ -42,6 +42,7 @@ import {
   type RecapRecord,
   type ReviewRecord,
   type RunbookConfig,
+  type TaskActivityPhase,
   type TaskChecks,
   type TaskEvent,
   type TaskIsolation,
@@ -875,8 +876,21 @@ function reconcileTasks(cwd: string, projectId: string): ReconcileOutcome {
     appendTaskEvent(cwd, record.id, { ...event, reason_code: reason.code })
   }
   for (const record of records) {
+    // A phase never survives a restart: whatever agent was 'checks',
+    // 'verification', 'proof', 'review' or 'recap' at the moment this
+    // process died is gone with it, so a stale phase is worse than none.
+    // `rewrite` below saves the SAME record object, so deleting it here
+    // (without a save) is enough to fold it into that write; a record that
+    // reaches neither branch is saved here directly.
+    const hadActivity = record.activity !== undefined
+    if (hadActivity) {
+      delete record.activity
+    }
     const status = reconciledStatus(cwd, record)
     if (status === null) {
+      if (hadActivity) {
+        saveTask(cwd, record)
+      }
       continue
     }
     if (status === 'failed') {
@@ -2826,6 +2840,8 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     ctx: ProjectContext,
     record: TaskRecord,
     timeoutMs: number,
+    /** Called the instant `captureProof` actually starts, never on a skip. */
+    onProofStart?: () => void,
   ): Promise<{ verification: TaskVerification | null; proof: ProofCaptureOutcome }> => {
     if (record.isolation !== 'microvm') {
       return { verification: null, proof: { kind: 'not_attempted' } }
@@ -2886,6 +2902,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           const guestProofDir = `${PROOF_VERIFY_GUEST_WORK_DIR}/.codesema-proof`
           const proofTimeoutMs = (proofConfig.timeoutSeconds ?? 120) * 1000
           captureProofOption = async (handle) => {
+            onProofStart?.()
             const result = await (opts.captureProofFn ?? captureProof)(handle, {
               journey: proofConfig.journey,
               url: proofConfig.url,
@@ -2910,6 +2927,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         validatedSha: validation.validated_sha,
         snapshotName: build.snapshotName,
         timeoutMs,
+        onProgress: (line) => notice(`${record.id}: ${line}`),
         ...(captureProofOption ? { captureProof: captureProofOption } : {}),
       })
       return { verification, proof: proofOutcome }
@@ -3072,19 +3090,43 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
     // rejects, so a failed auto-push cannot trip the runner's review_ko
     // fallback. `ctx` is assigned right below, before any turn can end.
     const onTurnDone: TaskTurnReviewFn = async (record, io) => {
+      // What this task's agent is doing right now (D-activity): narration
+      // only, nothing downstream branches on it. `setActivity` persists on
+      // the RAW `io`, never `gatedIo` below: the gate's own `applyGates`
+      // must not run every time a phase merely starts or ends.
+      const setActivity = (phase: TaskActivityPhase): void => {
+        record.activity = { phase, since: new Date().toISOString() }
+        io.persist()
+      }
+      const clearActivity = (): void => {
+        delete record.activity
+        io.persist()
+      }
+      const runPhase = async <T>(phase: TaskActivityPhase, fn: () => Promise<T>): Promise<T> => {
+        setActivity(phase)
+        try {
+          return await fn()
+        } finally {
+          clearActivity()
+        }
+      }
       // T3.1: wait for THIS turn's checks (if it committed) BEFORE the
       // review. The checks slot is acquired and released inside the job, so
       // it is never held while the reviewer asks for its own — the T1.3
       // deadlock the design forbids. A 409 (already running / no commit)
       // returns null immediately and does not stall the turn.
-      const thisTurnChecks = await startChecksAfterCommit(ctx, record)
+      const thisTurnChecks = await runPhase('checks', () => startChecksAfterCommit(ctx, record))
       const gateChecks =
         terminalChecksResult(thisTurnChecks) ?? terminalChecksResult(readTaskChecks(cwd, record.id))
       // Lot C7: the mechanical verification, right after checks and BEFORE
       // the review — a `'microvm'` task with a validated runbook gets
       // `runbook.tests` replayed in a fresh VM. Null (no runbook, no commit
       // from this turn, or not a 'microvm' task) means nothing to fold in.
-      const { verification, proof } = await verifyAfterCommit(ctx, record, timeoutMs)
+      // `onProofStart` turns the phase from 'verification' into 'proof' the
+      // instant the capture actually starts, without a clear in between.
+      const { verification, proof } = await runPhase('verification', () =>
+        verifyAfterCommit(ctx, record, timeoutMs, () => setActivity('proof')),
+      )
       if (verification) {
         const cleanVerification = writeTaskVerification(cwd, record.id, verification)
         emit({
@@ -3240,6 +3282,10 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           io.emit(input)
         },
         persist: () => {
+          // Cleared BEFORE the gates, so the verdict `applyGates` is about to
+          // write and the end of the 'review' phase land in the SAME write,
+          // never a separate persist a reader could catch between the two.
+          delete record.activity
           applyGates()
           io.persist()
         },
@@ -3278,7 +3324,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
           return
         }
       }
-      await reviewTurn(record, gatedIo)
+      setActivity('review')
+      try {
+        await reviewTurn(record, gatedIo)
+      } finally {
+        // Safety net: `gatedIo.persist` already clears this on the ordinary
+        // path, so this is a no-op there: it only matters for a reviewer
+        // that returns (or throws) without ever calling it, which would
+        // otherwise leave 'review' stuck on the record past this turn.
+        delete record.activity
+      }
       // Stubs that set status without persist, and the no-review path, still
       // fold the gates in: idempotent if the wrapped persist already did.
       applyGates()
@@ -3295,20 +3350,22 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // `lastTurnResponse` read task-ship.ts's `lastTurnContribution` does
       // for `summary`. Best-effort: never blocks or fails the turn's settle.
       if (record.status === 'review_ok') {
-        try {
-          const result = generateRecap(recapOptionsFor(cwd, record))
-          if (result.recap) {
-            const cleanRecap = writeTaskRecap(cwd, record.id, result.recap)
-            emit({
-              project_id: projectId,
-              task_id: record.id,
-              event: { name: 'task_recap', data: cleanRecap },
-            })
+        await runPhase('recap', async () => {
+          try {
+            const result = generateRecap(recapOptionsFor(cwd, record))
+            if (result.recap) {
+              const cleanRecap = writeTaskRecap(cwd, record.id, result.recap)
+              emit({
+                project_id: projectId,
+                task_id: record.id,
+                event: { name: 'task_recap', data: cleanRecap },
+              })
+            }
+          } catch {
+            // ignored: best-effort, same doctrine as the verification/evidence
+            // blocks above
           }
-        } catch {
-          // ignored: best-effort, same doctrine as the verification/evidence
-          // blocks above
-        }
+        })
       }
       if (record.auto_ship && record.status === 'review_ok') {
         await ship(ctx, record.id)
