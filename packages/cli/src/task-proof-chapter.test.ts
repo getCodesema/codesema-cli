@@ -25,6 +25,26 @@ describe('buildProofChapter', () => {
     expect(chapter).toContain('"severity": "major"')
   })
 
+  test('the first AND the last line state the answer is incomplete without proof_review', () => {
+    const chapter = buildProofChapter(baseInput())
+    const lines = chapter.split('\n')
+    expect(lines[0]).toContain('INCOMPLETE without a "proof_review" field')
+    expect(lines[0]).toContain('logged and treated as a MISSING verdict')
+    const last = lines.at(-1)
+    expect(last).toContain('INCOMPLETE without a "proof_review" field')
+    expect(last).toContain('logged and treated as a MISSING verdict')
+  })
+
+  test('states it extends the output shape, names the exact insertion point, and gives a literal example', () => {
+    const chapter = buildProofChapter(baseInput())
+    expect(chapter).toContain('EXTENDS the output shape')
+    expect(chapter).toContain('Output JSON shape (exactly these fields)')
+    expect(chapter).toContain('after "files_reviewed" and before the closing brace')
+    expect(chapter).toContain(
+      'Example: "proof_review": { "expected": "screenshot", "coherent": false, "reason":',
+    )
+  })
+
   test('lists the touched UI files, or "none" when there are none', () => {
     expect(buildProofChapter(baseInput())).toContain('UI files touched by this diff: none')
     expect(

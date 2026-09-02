@@ -55,8 +55,11 @@ export function buildProofChapter(input: BuildProofChapterInput): string {
     ? describeEvidence(input.evidence)
     : 'no proof for this commit'
 
+  const incompleteWithoutVerdict =
+    'Your JSON answer is INCOMPLETE without a "proof_review" field: an output that omits it is logged and treated as a MISSING verdict, never read as "nothing to add" or as this chapter waived.'
+
   return [
-    'Visual proof (MANDATORY chapter):',
+    `Visual proof (MANDATORY chapter): ${incompleteWithoutVerdict}`,
     'FACTS:',
     `- UI files touched by this diff: ${uiLine}`,
     `- other files touched: ${input.otherCount}`,
@@ -71,9 +74,12 @@ export function buildProofChapter(input: BuildProofChapterInput): string {
     '',
     'Judge whether the declaration above was a reasonable response to the FACTS above, using the grid as your standard. A proof supplied when none was owed is never blocking. An absence justified by a real lack of visible effect is coherent. A project with no proof target configured turns every declaration into "skipped", reason "no_target": that is always coherent, since there is nothing to replay a proof against.',
     '',
-    'Add ONE more top-level field to the JSON you output, after "files_reviewed":',
+    'This chapter EXTENDS the output shape given above ("Output JSON shape (exactly these fields)"): "proof_review" is REQUIRED in addition to those fields, one more top-level property, placed after "files_reviewed" and before the closing brace of the JSON object:',
     '"proof_review": { "expected": "none" | "screenshot" | "journey", "coherent": true | false, "reason": "<one sentence>" }',
+    'Example: "proof_review": { "expected": "screenshot", "coherent": false, "reason": "the diff adds a visible settings row with no captured proof" }',
     '',
     'Rule for this chapter: if "coherent" is false AND the UI files listed above are non-empty, you MUST ALSO emit a finding with "kind": "design" and "severity": "major", anchored on a line of one of those UI files, whose message names the proof that was expected. Never emit this finding when the UI files list above is empty, and never emit it merely because a proof was supplied that was not owed.',
+    '',
+    incompleteWithoutVerdict,
   ].join('\n')
 }

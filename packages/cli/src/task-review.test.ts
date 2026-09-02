@@ -1797,6 +1797,44 @@ describe('createTaskReviewer: the visual proof chapter (D17)', () => {
     const evidence = readTaskEvidence(repo, record.id)
     expect(evidence?.review).toEqual(proofReview)
   })
+
+  test('the chapter was injected but the reviewer JSON carries no proof_review: journaled, never invented', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'silent proof task')
+    record.isolation = 'microvm'
+    record.head_sha = 'e'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'skipped',
+      reason: 'no visible effect',
+      head_sha: 'e'.repeat(40),
+      items: [],
+    })
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const proofEvents = rig.events.filter((event) => event.type === 'proof')
+    expect(proofEvents).toHaveLength(1)
+    expect(proofEvents[0]?.data).toMatchObject({ name: 'review_missing' })
+    expect(readTaskEvidence(repo, record.id)?.review).toBeUndefined()
+  })
+
+  test('no chapter was injected: a missing proof_review is never journaled', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'no chapter, no proof event task')
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(rig.events.some((event) => event.type === 'proof')).toBe(false)
+  })
 })
 
 // --- D17: mechanical criteria decided without the reviewer ------------------

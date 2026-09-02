@@ -1016,11 +1016,25 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       // matching THIS record's own head_sha, resolved once above) is still
       // on disk: a review with nothing to judge (no proof chapter, an
       // unconfigured project) never writes one.
-      if (outcome.record.review.proof_review && proofEvidence) {
-        writeTaskEvidence(opts.cwd, record.id, {
-          ...proofEvidence,
-          review: outcome.record.review.proof_review,
-        })
+      if (outcome.record.review.proof_review) {
+        if (proofEvidence) {
+          writeTaskEvidence(opts.cwd, record.id, {
+            ...proofEvidence,
+            review: outcome.record.review.proof_review,
+          })
+        }
+      } else if (proofChapter) {
+        // Observed in the field: the chapter was mandatory, the model wrote a
+        // valid review anyway, and "proof_review" simply never came back.
+        // Never invented here — evidence.json's `review` stays absent, since
+        // fabricating a verdict the model never gave would be worse than
+        // saying nothing. Journaled instead, on the same 'proof' channel as
+        // 'declared'/'undeclared'/'unparsed' (task-runner.ts), so a run
+        // missing the verdict is as visible as one missing the declaration.
+        const message =
+          "the reviewer's JSON carried no proof_review despite the mandatory visual-proof chapter: the PROOF declaration above was never judged"
+        io.emit({ type: 'proof', data: { name: 'review_missing', message } })
+        console.warn(`${record.id}: ${message}`)
       }
 
       // T3.2, and BEFORE the archive on purpose: the normalized per-criterion
