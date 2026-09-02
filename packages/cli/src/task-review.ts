@@ -1026,7 +1026,7 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
       } else if (proofChapter) {
         // Observed in the field: the chapter was mandatory, the model wrote a
         // valid review anyway, and "proof_review" simply never came back.
-        // Never invented here — evidence.json's `review` stays absent, since
+        // Never invented here: evidence.json's `review` stays absent, since
         // fabricating a verdict the model never gave would be worse than
         // saying nothing. Journaled instead, on the same 'proof' channel as
         // 'declared'/'undeclared'/'unparsed' (task-runner.ts), so a run
