@@ -50,6 +50,7 @@ import {
   createTaskRunner,
   createTaskSlotPool,
   parseCriteriaProposal,
+  parseProofDeclaration,
   parseTaskBranchProposal,
   parseTaskQuestion,
   pendingResumeTurn,
@@ -178,35 +179,43 @@ describe('buildTaskPrompt / parseTaskQuestion', () => {
   })
 })
 
-function sampleProof(): ProofConfig {
+function sampleProof(overrides: Partial<ProofConfig> = {}): ProofConfig {
   return {
     journey: 'tests/e2e/main-flow.spec.ts',
     url: 'http://localhost:3000',
     timeoutSeconds: 30,
     keep: 5,
+    ...overrides,
   }
 }
 
 describe('buildTaskPrompt with a proof config', () => {
-  test('microvm isolation with a proof config adds the journey bullet', () => {
+  test('microvm isolation with a proof config adds the D17 PROOF bullet', () => {
     const task = { title: 'Add rate limiting', isolation: 'microvm' } as TaskRecord
     const prompt = buildTaskPrompt(task, { proof: sampleProof() })
-    expect(prompt).toContain('tests/e2e/main-flow.spec.ts')
+    expect(prompt).toContain('PROOF:')
     expect(prompt).toContain('CODESEMA_BASE_URL')
-    expect(prompt).toContain('Playwright')
+    expect(prompt).toContain('tests/e2e/main-flow.spec.ts')
+  })
+
+  test('url alone (no default journey configured) still adds the bullet, with no default-journey mention', () => {
+    const task = { title: 'Add rate limiting', isolation: 'microvm' } as TaskRecord
+    const prompt = buildTaskPrompt(task, { proof: sampleProof({ journey: null }) })
+    expect(prompt).toContain('PROOF:')
+    expect(prompt).not.toContain('default journey spec')
   })
 
   test('non-microvm isolation never adds the bullet, even with a proof config', () => {
     const containerTask = { title: 'Add rate limiting', isolation: 'container' } as TaskRecord
-    expect(buildTaskPrompt(containerTask, { proof: sampleProof() })).not.toContain('Playwright')
+    expect(buildTaskPrompt(containerTask, { proof: sampleProof() })).not.toContain('PROOF:')
     const policyTask = { title: 'Add rate limiting', isolation: 'policy' } as TaskRecord
-    expect(buildTaskPrompt(policyTask, { proof: sampleProof() })).not.toContain('Playwright')
+    expect(buildTaskPrompt(policyTask, { proof: sampleProof() })).not.toContain('PROOF:')
   })
 
   test('microvm isolation without a proof config adds nothing', () => {
     const task = { title: 'Add rate limiting', isolation: 'microvm' } as TaskRecord
-    expect(buildTaskPrompt(task)).not.toContain('Playwright')
-    expect(buildTaskPrompt(task, { proof: null })).not.toContain('Playwright')
+    expect(buildTaskPrompt(task)).not.toContain('PROOF:')
+    expect(buildTaskPrompt(task, { proof: null })).not.toContain('PROOF:')
   })
 })
 
@@ -369,6 +378,73 @@ describe('parseCriteriaProposal', () => {
     const parsed = parseCriteriaProposal(branch?.rest ?? '')
     expect(parsed?.texts).toHaveLength(3)
     expect(parsed?.rest).toBe('I started the work.')
+  })
+})
+
+describe('parseProofDeclaration (D17)', () => {
+  test('none: kind and reason, the line is stripped', () => {
+    const parsed = parseProofDeclaration(
+      'PROOF: none | only server-side logging changed\nDid the thing.',
+    )
+    expect(parsed.intent).toEqual({ kind: 'none', reason: 'only server-side logging changed' })
+    expect(parsed.rest).toBe('Did the thing.')
+  })
+
+  test('screenshot: pages are collected in declaration order', () => {
+    const parsed = parseProofDeclaration(
+      'PROOF: screenshot /dashboard /dashboard/settings | the settings page now shows the new toggle\nDone.',
+    )
+    expect(parsed.intent).toEqual({
+      kind: 'screenshot',
+      reason: 'the settings page now shows the new toggle',
+      pages: ['/dashboard', '/dashboard/settings'],
+    })
+    expect(parsed.rest).toBe('Done.')
+  })
+
+  test('journey: the spec path is read', () => {
+    const parsed = parseProofDeclaration(
+      'PROOF: journey tests/e2e/checkout.spec.ts | the checkout flow gained a confirmation step\nDone.',
+    )
+    expect(parsed.intent).toEqual({
+      kind: 'journey',
+      reason: 'the checkout flow gained a confirmation step',
+      journey: 'tests/e2e/checkout.spec.ts',
+    })
+    expect(parsed.rest).toBe('Done.')
+  })
+
+  test('a quoted kind is not the protocol shape: intent null, rest unchanged', () => {
+    const text = "PROOF: 'none' | reason\nDone."
+    expect(parseProofDeclaration(text)).toEqual({ intent: null, rest: text })
+  })
+
+  test('no PROOF line at all is the normal absent case', () => {
+    const text = 'all done, tests pass'
+    expect(parseProofDeclaration(text)).toEqual({ intent: null, rest: text })
+  })
+
+  test('a PROOF: line mid-text is prose, not protocol', () => {
+    const text = 'did stuff\nPROOF: none | too late'
+    expect(parseProofDeclaration(text)).toEqual({ intent: null, rest: text })
+  })
+
+  test('the shape matches but the reason is blank: unusable, still stripped as protocol', () => {
+    const parsed = parseProofDeclaration('PROOF: none |   \nDone.')
+    expect(parsed.intent).toBeNull()
+    expect(parsed.rest).toBe('Done.')
+  })
+
+  test('parses after a CRITERION block once the criteria are already stripped', () => {
+    const full = [
+      'CRITERION: WHEN a THE SYSTEM SHALL b',
+      'PROOF: none | no interface touched',
+      'Done.',
+    ].join('\n')
+    const criteria = parseCriteriaProposal(full)
+    const parsed = parseProofDeclaration(criteria?.rest ?? '')
+    expect(parsed.intent).toEqual({ kind: 'none', reason: 'no interface touched' })
+    expect(parsed.rest).toBe('Done.')
   })
 })
 
@@ -769,6 +845,94 @@ describe('runTaskTurn', () => {
     expect(fake.commands[0]).toContain('--permission-mode acceptEdits')
     expect(fake.commands[0]).not.toContain('--append-system-prompt')
     expect(fake.commands[0]).not.toContain('--tools ""')
+  })
+})
+
+describe('runTaskTurn: PROOF declaration wiring (D17)', () => {
+  test('proofAsked + a declared PROOF line: journaled and carried on the outcome, line stripped from the response', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      proofAsked: true,
+      onEvent: (e) => events.push(e),
+      runAgentFn: fakeClaude(() => 'PROOF: none | only server-side logging changed\nAll done.').run,
+    })
+    expect(outcome.response).toBe('All done.')
+    expect(outcome.kind).toBe('done')
+    expect(outcome.kind === 'done' ? outcome.proofIntent : undefined).toEqual({
+      kind: 'none',
+      reason: 'only server-side logging changed',
+    })
+    const proofEvents = events.filter((e) => e.type === 'proof')
+    expect(proofEvents).toEqual([{ type: 'proof', data: { name: 'declared', kind: 'none' } }])
+  })
+
+  test('proofAsked + a present but blank-reason line: journaled as unparsed, no proofIntent, still stripped', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      proofAsked: true,
+      onEvent: (e) => events.push(e),
+      runAgentFn: fakeClaude(() => 'PROOF: none |   \nAll done.').run,
+    })
+    expect(outcome.response).toBe('All done.')
+    expect(outcome.kind === 'done' ? outcome.proofIntent : undefined).toBeUndefined()
+    const unparsed = events.find((e) => e.type === 'proof' && e.data.name === 'unparsed')
+    expect(unparsed).toBeDefined()
+    expect(typeof unparsed?.data.message).toBe('string')
+    expect(String(unparsed?.data.message).length).toBeGreaterThan(0)
+  })
+
+  test('proofAsked + no PROOF line at all: journaled as undeclared', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      proofAsked: true,
+      onEvent: (e) => events.push(e),
+      runAgentFn: fakeClaude(() => 'All done, no protocol here.').run,
+    })
+    expect(outcome.response).toBe('All done, no protocol here.')
+    expect(outcome.kind === 'done' ? outcome.proofIntent : undefined).toBeUndefined()
+    expect(events.filter((e) => e.type === 'proof')).toEqual([
+      { type: 'proof', data: { name: 'undeclared' } },
+    ])
+  })
+
+  test('proofAsked not set (the common non-microvm case): no proof event at all, even with a PROOF-shaped line', async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'demo', 'do the thing')
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const outcome = await runTaskTurn({
+      cwd: repo,
+      task,
+      prompt: 'do the thing',
+      command: 'claude -p',
+      timeoutMs: 1000,
+      onEvent: (e) => events.push(e),
+      runAgentFn: fakeClaude(() => 'PROOF: none | unrelated to this turn\nAll done.').run,
+    })
+    // Never parsed: the line stays exactly where the agent put it.
+    expect(outcome.response).toBe('PROOF: none | unrelated to this turn\nAll done.')
+    expect(outcome.kind === 'done' ? outcome.proofIntent : undefined).toBeUndefined()
+    expect(events.some((e) => e.type === 'proof')).toBe(false)
   })
 })
 
@@ -4125,6 +4289,28 @@ describe('microvm isolation branch', () => {
       `task(${task.id}): Vmed feature — turn 1`,
     )
     expect(calls[0]?.worktree).toBe(record?.worktree)
+  })
+
+  test("a declared PROOF line persists to the turn's proof_intent (D17)", async () => {
+    const repo = makeRepo()
+    const task = makeTask(repo, 'vmed', 'do it', 'microvm')
+    writeFileSync(
+      join(repo, '.codesema', 'config.json'),
+      JSON.stringify({ proof: { url: 'http://localhost:3000' } }),
+    )
+    const runner = createTaskRunner({
+      cwd: repo,
+      command: 'claude -p',
+      timeoutMs: 1000,
+      resolveMicrovmFn: () => Promise.resolve(microvmOptions()),
+      runMicrovmTurnFn: () =>
+        Promise.resolve(claudeStream('PROOF: none | only server-side logging changed\nDone.')),
+    })
+    expect(runner.start(task)).toEqual({ ok: true })
+    await until(() => status(repo, task.id) === 'waiting_for_you')
+    const turn = loadTask(repo, task.id)?.turns[0]
+    expect(turn?.response).toBe('Done.')
+    expect(turn?.proof_intent).toEqual({ kind: 'none', reason: 'only server-side logging changed' })
   })
 })
 

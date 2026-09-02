@@ -96,7 +96,8 @@ export function readChecksConfig(repoRoot: string): ChecksConfig | null {
 }
 
 export type ProofConfig = {
-  journey: string
+  /** The repo's default replay spec (D17); null when the project has none configured yet. */
+  journey: string | null
   url: string
   timeoutSeconds: number | null
   keep: number | null
@@ -107,9 +108,11 @@ const PROOF_KEEP_MAX = 20
 
 /**
  * Reads the repo's `proof` key. Same raw re-read pattern as readChecksConfig
- * (config.ts's parseConfig whitelists its own fields). journey and url are
- * mandatory: without a journey nothing is replayable, so a missing/invalid
- * one degrades the whole record to null instead of a partial config.
+ * (config.ts's parseConfig whitelists its own fields). Only `url` is
+ * mandatory (D17: the agent declares and names its own proof per turn, so a
+ * standing journey spec is a convenience, not a requirement): a missing or
+ * invalid `url` degrades the whole record to null, since there is nothing to
+ * replay a proof against without one.
  */
 export function readProofConfig(repoRoot: string): ProofConfig | null {
   const path = repoConfigPath(repoRoot)
@@ -128,7 +131,7 @@ export function readProofConfig(repoRoot: string): ProofConfig | null {
     typeof v === 'string' && v.trim() ? v.trim().slice(0, PROOF_STRING_MAX) : undefined
   const journey = str(p.journey)
   const url = str(p.url)
-  if (journey === undefined || url === undefined) {
+  if (url === undefined) {
     return null
   }
   const timeoutSeconds =
@@ -139,7 +142,7 @@ export function readProofConfig(repoRoot: string): ProofConfig | null {
     Number.isInteger(p.keep) && (p.keep as number) > 0
       ? Math.min(p.keep as number, PROOF_KEEP_MAX)
       : null
-  return { journey, url, timeoutSeconds, keep }
+  return { journey: journey ?? null, url, timeoutSeconds, keep }
 }
 
 /**

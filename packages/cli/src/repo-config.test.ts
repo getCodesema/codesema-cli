@@ -236,9 +236,14 @@ describe('readProofConfig', () => {
     expect(readProofConfig(repoDir)).toBeNull()
   })
 
-  test('journey missing: the whole record is null', () => {
+  test('journey missing: journey is null, the record is still valid', () => {
     writeRepoConfig(JSON.stringify({ proof: { url: 'http://localhost:3000' } }))
-    expect(readProofConfig(repoDir)).toBeNull()
+    expect(readProofConfig(repoDir)).toEqual({
+      journey: null,
+      url: 'http://localhost:3000',
+      timeoutSeconds: null,
+      keep: null,
+    })
   })
 
   test('url missing: the whole record is null', () => {

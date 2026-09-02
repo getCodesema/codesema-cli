@@ -36,9 +36,12 @@ import {
   EARS_TRIGGER,
   isTerminalReason,
   reasonCodeOf,
+  sanitizeProofIntent,
   TASK_ATTACHMENTS_MAX,
   TICKET_CRITERIA_MIN,
   type AcceptanceCriterion,
+  type ProofIntent,
+  type ProofIntentKind,
   type ReasonCode,
   type RunbookConfig,
   type TaskEvent,
@@ -250,9 +253,9 @@ function criteriaDraftInstruction(): string {
  * of a forked task only (see parseTaskBranchProposal): once the branch has the
  * agent's name, re-asking would only invite a rename mid-conversation.
  *
- * `proof` adds the Playwright journey bullet, only when the task's isolation
- * is 'microvm': the standing rules never ask a caged or policy-isolated turn
- * for a browser test it has no way to run.
+ * `proof` adds the D17 PROOF declaration bullet, only when the task's
+ * isolation is 'microvm': the standing rules never ask a caged or
+ * policy-isolated turn for a proof it has no way to capture.
  */
 export function buildTaskPrompt(
   task: TaskRecord,
@@ -279,7 +282,12 @@ export function buildTaskPrompt(
     '- If the repo has cheap checks (typecheck, unit tests, lint), run them and fix what YOUR changes broke before finishing.',
     ...(task.isolation === 'microvm' && opts.proof
       ? [
-          `- This repository keeps a Playwright end-to-end journey at ${opts.proof.journey}, covering the main user flow this task touches: create it if it does not exist yet, and update it if this task changes the interface it exercises. It reads the base URL from the CODESEMA_BASE_URL environment variable, the Playwright config enables video 'on', and the test ends with a full-page screenshot. Commit the file with the rest of your changes, and make sure the test passes locally before you finish this turn.`,
+          "- Before your final message, decide whether this turn's changes are visible in the interface, and open your final message with a line of the exact form 'PROOF: <none|screenshot|journey> [pages or spec path] | <reason>' (first lines of your final message, right after any BRANCH:/CRITERION: lines). If the interface changed and the change is visible, use 'screenshot' naming the changed pages (e.g. 'PROOF: screenshot /dashboard /dashboard/settings | the settings page now shows the new toggle'), or 'journey' naming a Playwright spec path when the change is a sequence across screens rather than one (e.g. 'PROOF: journey tests/e2e/checkout.spec.ts | the checkout flow gained a new confirmation step'), reading the base URL from the CODESEMA_BASE_URL environment variable. If a UI file changed with no visible effect, or nothing outside the interface was touched, use 'none' with a precise reason (e.g. 'PROOF: none | only server-side logging changed, nothing rendered differs'). When in doubt, capture proof rather than skip it.",
+          ...(opts.proof.journey
+            ? [
+                `- This repository's default journey spec is at ${opts.proof.journey}: update it if it covers the flow this task touches, rather than creating a new one.`,
+              ]
+            : []),
         ]
       : []),
     `- Language: ${taskLanguageRule()}. This covers your summary and any 'QUESTION: <text>' line; code identifiers, file paths and commit messages stay as they are.`,
@@ -376,6 +384,52 @@ export function parseCriteriaProposal(response: string): TaskCriteriaProposal | 
     return null
   }
   return { texts, rest: lines.slice(i).join('\n').trim() }
+}
+
+export type TaskProofDeclaration = {
+  /** Parsed intent, or null when the line was absent or unusable. */
+  intent: ProofIntent | null
+  /** The reply with the protocol line removed; unchanged when none was found. */
+  rest: string
+}
+
+/** Group 1: kind. Group 2: pages/journey tokens. Group 3: reason. */
+const PROOF_DECLARATION_RE = /^PROOF:\s*(none|screenshot|journey)\b([^|]*)\|\s*(.+)$/i
+
+/**
+ * The D17 prompt asks the agent to OPEN its final message (after any
+ * BRANCH:/CRITERION: lines already consumed) with a dedicated
+ * `PROOF: <kind> [pages or spec] | <reason>` line. Like `parseTaskBranchProposal`,
+ * only the FIRST line of the text is recognized as protocol: a PROOF:
+ * mention further down is prose, not a declaration, so `rest` comes back
+ * byte-for-byte unchanged and `intent` null. A first line that matches the
+ * shape but whose content `sanitizeProofIntent` refuses (e.g. an empty
+ * reason) is still protocol and still stripped: `intent` is null but `rest`
+ * loses the line, exactly like an unreadable CRITERION list.
+ */
+export function parseProofDeclaration(text: string): TaskProofDeclaration {
+  const trimmed = text.trimStart()
+  const breakAt = trimmed.indexOf('\n')
+  // NOT trimmed at the end, unlike parseTaskBranchProposal's `first`: a line
+  // whose reason is pure trailing whitespace (the agent forgot to state one)
+  // must still match the shape and fail sanitizeProofIntent's empty-reason
+  // check, landing on 'unparsed' rather than silently reading as no line at
+  // all: trimming here first would strip that whitespace before the regex
+  // ever saw it and turn a forgotten reason into a falsely undeclared turn.
+  const first = breakAt === -1 ? trimmed : trimmed.slice(0, breakAt)
+  const match = PROOF_DECLARATION_RE.exec(first)
+  if (!match) {
+    return { intent: null, rest: text }
+  }
+  const rest = (breakAt === -1 ? '' : trimmed.slice(breakAt + 1)).trim()
+  const kind = (match[1] ?? '').toLowerCase() as ProofIntentKind
+  const tokens = (match[2] ?? '').trim().split(/\s+/).filter(Boolean)
+  // pages/journey are handed over unconditionally: sanitizeProofIntent already
+  // reads only the one that matches `kind` and drops an empty pages array or
+  // an undefined journey on its own, so gating them here first would only
+  // repeat that same decision.
+  const raw = { kind, reason: (match[3] ?? '').trim(), pages: tokens, journey: tokens[0] }
+  return { intent: sanitizeProofIntent(raw), rest }
 }
 
 /**
@@ -565,6 +619,8 @@ export type TaskTurnOutcome =
       cost: TurnCost | null
       /** First turn only: the branch name the agent proposed for the task. */
       branchProposal?: string
+      /** D17: the agent's declared visual-proof intent for this turn, when it declared one. */
+      proofIntent?: ProofIntent
     }
   | {
       kind: 'question'
@@ -579,6 +635,8 @@ export type TaskTurnOutcome =
       cost: TurnCost | null
       /** First turn only: the branch name the agent proposed for the task. */
       branchProposal?: string
+      /** D17: the agent's declared visual-proof intent for this turn, when it declared one. */
+      proofIntent?: ProofIntent
     }
 
 export type RunTaskTurnMicrovmOptions = {
@@ -601,6 +659,14 @@ export type RunTaskTurnOptions = {
   prompt: string
   /** Raw configured agent command; per-turn flags are added here. */
   command: string
+  /**
+   * True when this turn's prompt carried the D17 PROOF protocol bullet, or,
+   * for a resumed session that skipped resending the standing rules, when it
+   * carried the bullet earlier in that same session. Gates whether a missing
+   * `PROOF:` line is journaled as `undeclared` rather than silently ignored:
+   * a turn never asked for a declaration cannot be faulted for not sending one.
+   */
+  proofAsked?: boolean
   /** Last-resort absolute ceiling of the turn; the watchdog is what detects a dead one. */
   timeoutMs: number
   /** Watchdog budgets (D3), applied to the host path AND to the caged one; D3 defaults when absent. */
@@ -878,13 +944,39 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<TaskTurnOut
     }
   }
 
+  // D17: only journaled when this turn's prompt actually carried the PROOF
+  // bullet, since a turn never asked for a declaration cannot be faulted for
+  // not sending one. Never blocking, same doctrine as the criteria draft above.
+  let proofIntent: ProofIntent | undefined
+  if (opts.proofAsked) {
+    const before = response
+    const declaration = parseProofDeclaration(response)
+    response = declaration.rest
+    if (declaration.intent) {
+      proofIntent = declaration.intent
+      opts.onEvent({ type: 'proof', data: { name: 'declared', kind: declaration.intent.kind } })
+    } else if (declaration.rest !== before) {
+      opts.onEvent({
+        type: 'proof',
+        data: {
+          name: 'unparsed',
+          message:
+            'the agent reply carried a PROOF: line that could not be read, so no visual-proof intent was recorded for this turn',
+        },
+      })
+    } else {
+      opts.onEvent({ type: 'proof', data: { name: 'undeclared' } })
+    }
+  }
+  const proof = proofIntent ? { proofIntent } : {}
+
   const question = parseTaskQuestion(response)
   if (question) {
     opts.onEvent({ type: 'question', data: { question: preview(question) } })
-    return { kind: 'question', response, question, sessionId, tokens, cost, ...branch }
+    return { kind: 'question', response, question, sessionId, tokens, cost, ...branch, ...proof }
   }
   opts.onEvent({ type: 'message', data: { text: preview(response) } })
-  return { kind: 'done', response, sessionId, tokens, cost, ...branch }
+  return { kind: 'done', response, sessionId, tokens, cost, ...branch, ...proof }
 }
 
 export type TaskActionResult =
@@ -1450,6 +1542,16 @@ function attachedRepositoriesNote(record: TaskRecord): string {
   return ['Repositories available in your working directory:', ...lines].join('\n')
 }
 
+export type TurnPrompt = {
+  prompt: string
+  /**
+   * Whether this turn's prompt carries (or, for a resumed session that skips
+   * resending the standing rules, carried earlier in that same session) the
+   * D17 PROOF bullet: see `RunTaskTurnOptions.proofAsked`.
+   */
+  proofAsked: boolean
+}
+
 /**
  * First turn: standing instructions + the task prompt. Later turns: claude
  * resumes its session so the reply alone is enough; other providers get a
@@ -1461,31 +1563,35 @@ function attachedRepositoriesNote(record: TaskRecord): string {
  * per-task checkout. Re-read on every call rather than cached on the record,
  * so a config edited mid-task takes effect on the very next turn.
  */
-function composeTurnPrompt(record: TaskRecord, command: string, repoRoot: string): string {
+function composeTurnPrompt(record: TaskRecord, command: string, repoRoot: string): TurnPrompt {
   const message = record.turns.at(-1)?.prompt ?? ''
   const repositories = attachedRepositoriesNote(record)
   const withRepositories = (text: string): string =>
     repositories ? `${repositories}\n\n${text}` : text
   const proof = record.isolation === 'microvm' ? readProofConfig(repoRoot) : null
+  const proofAsked = record.isolation === 'microvm' && proof !== null
   if (record.turns.length <= 1) {
     // A work-on conversation is not asked to name anything: it works on the
     // user's own pre-existing branch, which is never renamed.
     const standing = buildTaskPrompt(record, { askBranchName: !record.work_on, proof })
     const draft = taskCriteria(record).length === 0 ? `\n\n${criteriaDraftInstruction()}` : ''
-    return withRepositories(`${standing}${draft}\n\n${message}`)
+    return { prompt: withRepositories(`${standing}${draft}\n\n${message}`), proofAsked }
   }
   if (supportsSessionResume(command) && record.agent_session_id) {
-    return withRepositories(message)
+    return { prompt: withRepositories(message), proofAsked }
   }
-  return withRepositories(
-    [
-      buildTaskPrompt(record, { proof }),
-      '',
-      transcript(record),
-      '',
-      `New instruction: ${message}`,
-    ].join('\n'),
-  )
+  return {
+    prompt: withRepositories(
+      [
+        buildTaskPrompt(record, { proof }),
+        '',
+        transcript(record),
+        '',
+        `New instruction: ${message}`,
+      ].join('\n'),
+    ),
+    proofAsked,
+  }
 }
 
 /**
@@ -1848,6 +1954,9 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       turn.ended_at = new Date().toISOString()
       if (outcome.tokens > 0) {
         turn.tokens = outcome.tokens
+      }
+      if (outcome.proofIntent) {
+        turn.proof_intent = outcome.proofIntent
       }
     }
     // `attempt.cost` and `outcome.cost` are the same last publication of the
@@ -2551,10 +2660,12 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         record.isolation === 'microvm' && opts.resolveMicrovmFn
           ? await opts.resolveMicrovmFn(record)
           : undefined
+      const { prompt, proofAsked } = composeTurnPrompt(record, taskCommand, opts.cwd)
       return runTaskTurn({
         cwd: record.worktree,
         task: record,
-        prompt: composeTurnPrompt(record, taskCommand, opts.cwd),
+        prompt,
+        proofAsked,
         command: opts.command,
         timeoutMs: opts.timeoutMs,
         ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
