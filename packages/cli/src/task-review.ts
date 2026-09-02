@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto'
 import { ensureWorkDir, type ReviewMode } from './config.js'
 import {
   sanitizeRecord,
+  type EvidenceRecord,
   type Finding,
   type ReviewRecord,
   type RunbookConfig,
@@ -40,6 +41,7 @@ import {
 } from './microvm-bootstrap.js'
 import { prep } from './prep.js'
 import { archiveRecord, findPreviousReview, readJson, resolveArchivePath } from './record.js'
+import { readProofConfig } from './repo-config.js'
 import {
   buildFullReviewPrompt,
   buildIncrementalPrompt,
@@ -63,6 +65,7 @@ import {
   unmetCriteriaFixChapter,
   type CriteriaOutcome,
 } from './task-criteria-gate.js'
+import { readTaskEvidence, writeTaskEvidence } from './task-evidence.js'
 import { reportHubTransition, type ArmTransitionDraft } from './task-hub.js'
 import {
   commandBin,
@@ -70,6 +73,7 @@ import {
   DEFAULT_BASE_IMAGE,
   DEFAULT_ISOLATION_ALLOWED_DOMAINS,
 } from './task-isolation.js'
+import { buildProofChapter } from './task-proof-chapter.js'
 import {
   REVIEW_CUT_DETAIL,
   taskCriteria,
@@ -77,6 +81,7 @@ import {
   type TaskTurnReviewFn,
 } from './task-runner.js'
 import { loadTask, readTaskChecks, taskReason } from './tasks-store.js'
+import { classifyUiPaths } from './ui-surface.js'
 import { progressLabel } from './ui.js'
 
 /**
@@ -832,8 +837,36 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
         reviewCtx.runbook,
         reviewCtx.verification,
       )
+      // D17: only a 'microvm' task whose project actually configured a proof
+      // target earns this chapter: a task with no target has nothing to
+      // replay a proof against, and a non-'microvm' task never captures one
+      // at all (task-server.ts's verifyAfterCommit gates capture the same
+      // way). `proofEvidence` is read once, here, and reused after the
+      // review to decide whether this turn's verdict may be folded back into
+      // evidence.json (see below): it is null whenever the file on disk does
+      // not match THIS record's own head_sha, which is the honest "no proof
+      // for this commit" rather than a stale one from an earlier turn.
+      let proofEvidence: EvidenceRecord | null = null
+      let proofChapter: string | null = null
+      if (record.isolation === 'microvm') {
+        const proofConfig = readProofConfig(opts.cwd)
+        if (proofConfig) {
+          const { ui, other } = classifyUiPaths(changed ? changed.split('\n').filter(Boolean) : [])
+          const lastTurn = record.turns.at(-1)
+          const intent = lastTurn?.proof_intent ?? null
+          const onDisk = readTaskEvidence(opts.cwd, record.id)
+          proofEvidence = onDisk && onDisk.head_sha === record.head_sha ? onDisk : null
+          proofChapter = buildProofChapter({
+            uiFiles: ui,
+            otherCount: other.length,
+            intent,
+            evidence: proofEvidence,
+            declared: intent !== null,
+          })
+        }
+      }
       const chapter =
-        [criteriaChapter, checksChapter, runbookChapter]
+        [criteriaChapter, checksChapter, runbookChapter, proofChapter]
           .filter((c): c is string => Boolean(c))
           .join('\n\n') || null
 
@@ -975,6 +1008,20 @@ export function createTaskReviewer(opts: CreateTaskReviewerOptions): TaskTurnRev
           : {}),
       })
       outcome.record.review.findings = reproOutcome.findings
+
+      // D17: the reviewer's proof_review verdict is folded back into
+      // evidence.json right beside the finding-repro pass above, same file
+      // task-server.ts's onTurnDone re-reads and re-emits once this hook
+      // returns. Only when the evidence this review actually judged (the one
+      // matching THIS record's own head_sha, resolved once above) is still
+      // on disk: a review with nothing to judge (no proof chapter, an
+      // unconfigured project) never writes one.
+      if (outcome.record.review.proof_review && proofEvidence) {
+        writeTaskEvidence(opts.cwd, record.id, {
+          ...proofEvidence,
+          review: outcome.record.review.proof_review,
+        })
+      }
 
       // T3.2, and BEFORE the archive on purpose: the normalized per-criterion
       // statuses are what T3.6 reads back, possibly at a later boot, so they

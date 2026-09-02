@@ -2835,11 +2835,11 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    * file is gitignored and never committed, so no commit ever touches it.
    *
    * `proof`: what the turn itself declared via `PROOF:` (D17) decides the
-   * capture — `none` is `'declined'`, no closure at all; `screenshot`
+   * capture: `none` is `'declined'`, no closure at all; `screenshot`
    * replays the turn's own named pages; `journey` (or an undeclared turn,
    * which falls back to the project's own default) replays a journey spec,
    * guarded by `existsSync` as before. Every replaying case rides a closure
-   * along on `verifyTask`'s own seam — it only fires once the healthchecks
+   * along on `verifyTask`'s own seam: it only fires once the healthchecks
    * are green (verifyTask's own contract), so `'attempted'` here means the
    * app was proven alive first. `hostIncomingDir` is FORCED under
    * `evidenceDir` (never a scratch dir elsewhere): `ingestEvidenceFiles`'
@@ -3384,6 +3384,19 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
         // that returns (or throws) without ever calling it, which would
         // otherwise leave 'review' stuck on the record past this turn.
         delete record.activity
+      }
+      // D17: the reviewer may have just folded its proof_review verdict into
+      // evidence.json (task-review.ts's createTaskReviewer, right after
+      // finding-repro verification): re-read and re-emit so the verdict
+      // reaches the card without a client re-fetch. Silent when nothing
+      // changed (no proof chapter, no evidence for this commit).
+      const postReviewEvidence = readTaskEvidence(cwd, record.id)
+      if (postReviewEvidence) {
+        emit({
+          project_id: projectId,
+          task_id: record.id,
+          event: { name: 'task_evidence', data: postReviewEvidence },
+        })
       }
       // Stubs that set status without persist, and the no-review path, still
       // fold the gates in: idempotent if the wrapped persist already did.

@@ -20,6 +20,7 @@ import {
   sanitizeReview,
   type FindingSeverity,
   type GroundingReport,
+  type ProofReview,
   type ReviewedFile,
   type ReviewRecord,
   type SanitizedReview,
@@ -572,6 +573,27 @@ export async function runSimpleFlow(opts: {
   }
 }
 
+/**
+ * D17, dual mode: the two lanes' `proof_review` folded into one, pessimistic
+ * the same way `mergeCriterionVerdicts` is: a lane that found the
+ * declaration incoherent is never overridden by a lane that shrugged or
+ * approved it, whichever lane it was. Neither lane carrying one (a task with
+ * no proof chapter) returns undefined, so a dual review without one keeps
+ * writing a record with no `proof_review` key at all.
+ */
+function mergeProofReview(
+  a: ProofReview | undefined,
+  b: ProofReview | undefined,
+): ProofReview | undefined {
+  if (a && !a.coherent) {
+    return a
+  }
+  if (b && !b.coherent) {
+    return b
+  }
+  return a ?? b
+}
+
 export type DualOutcome =
   | { ok: true; record: ReviewRecord; reportLines: string[] }
   | { ok: false; failure: 'run' | 'output'; message: string; rawOutput?: string }
@@ -748,8 +770,20 @@ export async function runDualFlow(opts: {
     groundedA.review.criteria,
     groundedB.review.criteria,
   )
+  // D17: `proof_review` is arbitrated the same way, pessimistically, right
+  // beside the criteria it is merged alongside: `assembleDualReview` only
+  // ever arbitrates findings, so this too would be dropped on the floor
+  // otherwise.
+  const mergedProofReview = mergeProofReview(
+    groundedA.review.proof_review,
+    groundedB.review.proof_review,
+  )
   const final = groundReview(
-    mergedCriteria.length > 0 ? { ...assembly.review, criteria: mergedCriteria } : assembly.review,
+    {
+      ...assembly.review,
+      ...(mergedCriteria.length > 0 ? { criteria: mergedCriteria } : {}),
+      ...(mergedProofReview ? { proof_review: mergedProofReview } : {}),
+    },
     input.diff,
   )
   const resolved = buildRecord(final.review)

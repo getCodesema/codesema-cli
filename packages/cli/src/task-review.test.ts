@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -9,6 +9,7 @@ import {
   type AcceptanceCriterion,
   type CriterionVerdict,
   type Finding,
+  type ProofReview,
   type ReviewRecord,
   type RunbookConfig,
   type TaskChecks,
@@ -35,6 +36,7 @@ import {
   type runSimpleFlow,
   type SimpleOutcome,
 } from './review.js'
+import { readTaskEvidence, writeTaskEvidence } from './task-evidence.js'
 import { DEFAULT_ISOLATION_ALLOWED_DOMAINS } from './task-isolation.js'
 import {
   actionableFindingIds,
@@ -221,6 +223,15 @@ function verificationOf(over: Partial<TaskVerification> = {}): TaskVerification 
     error: null,
     ...over,
   }
+}
+
+/** Writes the repo's `.codesema/config.json` with a `proof.url`, the D17 target readProofConfig needs to return non-null. */
+function writeProofConfig(repo: string): void {
+  mkdirSync(join(repo, '.codesema'), { recursive: true })
+  writeFileSync(
+    join(repo, '.codesema', 'config.json'),
+    JSON.stringify({ proof: { url: 'http://localhost:3000' } }),
+  )
 }
 
 /**
@@ -1616,6 +1627,175 @@ describe('createTaskReviewer: the checks chapter (D16)', () => {
     await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
 
     expect(flow.calls[0]?.prompt ?? '').not.toContain('Repository checks')
+  })
+})
+
+// --- D17: the visual proof chapter -----------------------------------------
+
+function fakeReviewWithProof(
+  verdict: Verdict,
+  findings: Finding[],
+  proofReview: ProofReview,
+): ReviewRecord {
+  const base = fakeReview(verdict, findings)
+  return { ...base, review: { ...base.review, proof_review: proofReview } }
+}
+
+describe('createTaskReviewer: the visual proof chapter (D17)', () => {
+  test('no proof configured: no chapter, and no evidence.json is ever touched', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'unconfigured proof task')
+    record.isolation = 'microvm'
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls[0]?.prompt ?? '').not.toContain('Visual proof')
+    expect(readTaskEvidence(repo, record.id)).toBeNull()
+  })
+
+  test('a non-microvm task never gets the chapter, even with proof configured', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'policy-isolated task')
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls[0]?.prompt ?? '').not.toContain('Visual proof')
+  })
+
+  test('a microvm task with proof configured gets the chapter, naming the UI files and the grid', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'proof-eligible task')
+    record.isolation = 'microvm'
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).toContain('Visual proof (MANDATORY chapter)')
+    expect(prompt).toContain('UI files touched by this diff: App.vue')
+    expect(prompt).toContain('"proof_review"')
+    expect(prompt).toContain('declaration: the agent did not declare a proof this turn')
+    expect(prompt).toContain('proof produced: no proof for this commit')
+  })
+
+  test('evidence from a DIFFERENT head_sha than the reviewed record is never read', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'stale evidence task')
+    record.isolation = 'microvm'
+    record.head_sha = 'a'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'passed',
+      reason: null,
+      head_sha: 'b'.repeat(40),
+      items: [
+        {
+          kind: 'screenshot',
+          path: 'x.png',
+          bytes: 10,
+          turn: 1,
+          created_at: new Date().toISOString(),
+        },
+      ],
+    })
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).toContain('proof produced: no proof for this commit')
+    expect(prompt).not.toContain('x.png')
+  })
+
+  test('an incoherent proof_review with a design/major finding blocks the task via hasBlockingFindings, and evidence.json records the verdict for the matching head_sha', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'incoherent proof task')
+    record.isolation = 'microvm'
+    record.head_sha = 'c'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'skipped',
+      reason: 'undeclared, defaulted to none',
+      head_sha: 'c'.repeat(40),
+      items: [],
+    })
+    const rig = fakeIo(record)
+    const finding: Finding = {
+      file: 'App.vue',
+      line: 1,
+      severity: 'major',
+      kind: 'design',
+      message: 'the interface changed but no proof was captured for it',
+    }
+    const proofReview: ProofReview = {
+      expected: 'screenshot',
+      coherent: false,
+      reason: 'the diff shows a visible UI change with no captured proof',
+    }
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithProof('approve', [finding], proofReview),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ko')
+    const evidence = readTaskEvidence(repo, record.id)
+    expect(evidence?.review).toEqual(proofReview)
+  })
+
+  test('a coherent proof_review with no finding never blocks, and still records the verdict', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'coherent proof task')
+    record.isolation = 'microvm'
+    record.head_sha = 'd'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'skipped',
+      reason: 'no visible effect',
+      head_sha: 'd'.repeat(40),
+      items: [],
+    })
+    const rig = fakeIo(record)
+    const proofReview: ProofReview = {
+      expected: 'none',
+      coherent: true,
+      reason: 'a pure refactor with no rendered difference',
+    }
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithProof('approve', [], proofReview),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ok')
+    const evidence = readTaskEvidence(repo, record.id)
+    expect(evidence?.review).toEqual(proofReview)
   })
 })
 
