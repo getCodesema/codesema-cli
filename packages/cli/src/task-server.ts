@@ -149,7 +149,7 @@ import {
 import { effectiveMergePolicyIsAuto, mergeTask, type MergeOutcome } from './task-merge.js'
 import { resolveTaskPlan, type TaskPlanDeps, type TaskPreviewResult } from './task-plan.js'
 import { replayChecksOnDefaultBranch } from './task-post-merge-checks.js'
-import { captureProof, type ProofCaptureResult } from './task-proof.js'
+import { captureProof, captureScreenshots, type ProofCaptureResult } from './task-proof.js'
 import { createTaskQueue, type TaskQueue } from './task-queue.js'
 import { publishTaskRecap } from './task-recap-publish.js'
 import { generateRecap, readTaskRecap, recapOptionsFor, writeTaskRecap } from './task-recap.js'
@@ -679,6 +679,8 @@ export type CreateTaskManagerOptions = {
   verifyTaskFn?: typeof verifyTask
   /** Test seam: the default replays the configured `proof.journey` and screenshots the fallback. */
   captureProofFn?: typeof captureProof
+  /** Test seam: the default screenshots the turn's own `PROOF: screenshot` pages (D17). */
+  captureScreenshotsFn?: typeof captureScreenshots
   /** Test seam: the default builds task-checks.ts's own microvm executor (lot C7). */
   microvmStepExecutorFn?: typeof microvmStepExecutor
   headShaFn?: typeof resolveHeadSha
@@ -2800,11 +2802,15 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    * `'not_attempted'` covers both "proof isn't configured" and "verification
    * itself never reached the capture seam" (no commit, no runbook, stale
    * runbook, isolation not `'microvm'`) — in every one of those cases nothing
-   * was captured, so nothing is recorded and no frame goes out.
+   * was captured, so nothing is recorded and no frame goes out. `'declined'`
+   * is the turn's own `PROOF: none` (D17): the agent judged nothing visible
+   * changed, so evidence.json still gets a `'skipped'` record carrying the
+   * stated reason, but no capture ever runs.
    */
   type ProofCaptureOutcome =
     | { kind: 'not_attempted' }
     | { kind: 'spec_missing'; journey: string }
+    | { kind: 'declined'; reason: string }
     | {
         kind: 'attempted'
         result: ProofCaptureResult
@@ -2828,13 +2834,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
    * `.codesema/runbook.json` itself. Never derived from git history: that
    * file is gitignored and never committed, so no commit ever touches it.
    *
-   * `proof`: when the project's `proof` config names a journey spec present
-   * in the worktree, a `captureProof` closure rides along on `verifyTask`'s
-   * own seam — it only fires once the healthchecks are green (verifyTask's
-   * own contract), so `'attempted'` here means the app was proven alive
-   * first. `hostIncomingDir` is FORCED under `evidenceDir` (never a scratch
-   * dir elsewhere): `ingestEvidenceFiles`' merge relies on a same-filesystem
-   * `renameSync`.
+   * `proof`: what the turn itself declared via `PROOF:` (D17) decides the
+   * capture — `none` is `'declined'`, no closure at all; `screenshot`
+   * replays the turn's own named pages; `journey` (or an undeclared turn,
+   * which falls back to the project's own default) replays a journey spec,
+   * guarded by `existsSync` as before. Every replaying case rides a closure
+   * along on `verifyTask`'s own seam — it only fires once the healthchecks
+   * are green (verifyTask's own contract), so `'attempted'` here means the
+   * app was proven alive first. `hostIncomingDir` is FORCED under
+   * `evidenceDir` (never a scratch dir elsewhere): `ingestEvidenceFiles`'
+   * merge relies on a same-filesystem `renameSync`.
    */
   const verifyAfterCommit = async (
     ctx: ProjectContext,
@@ -2895,16 +2904,16 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       let proofOutcome: ProofCaptureOutcome = { kind: 'not_attempted' }
       let captureProofOption: ((handle: SandboxHandle) => Promise<void>) | undefined
       if (proofConfig) {
-        if (!existsSync(join(record.worktree, proofConfig.journey))) {
-          proofOutcome = { kind: 'spec_missing', journey: proofConfig.journey }
-        } else {
-          const hostIncomingDir = join(evidenceDir(ctx.project.path, record.id), '.incoming')
-          const guestProofDir = `${PROOF_VERIFY_GUEST_WORK_DIR}/.codesema-proof`
-          const proofTimeoutMs = (proofConfig.timeoutSeconds ?? 120) * 1000
-          captureProofOption = async (handle) => {
+        const intent = record.turns.at(-1)?.proof_intent
+        const hostIncomingDir = join(evidenceDir(ctx.project.path, record.id), '.incoming')
+        const guestProofDir = `${PROOF_VERIFY_GUEST_WORK_DIR}/.codesema-proof`
+        const proofTimeoutMs = (proofConfig.timeoutSeconds ?? 120) * 1000
+        const buildJourneyCapture =
+          (journey: string) =>
+          async (handle: SandboxHandle): Promise<void> => {
             onProofStart?.()
             const result = await (opts.captureProofFn ?? captureProof)(handle, {
-              journey: proofConfig.journey,
+              journey,
               url: proofConfig.url,
               timeoutMs: proofTimeoutMs,
               guestWorkDir: PROOF_VERIFY_GUEST_WORK_DIR,
@@ -2912,6 +2921,42 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
               hostIncomingDir,
             })
             proofOutcome = { kind: 'attempted', result, hostIncomingDir, keep: proofConfig.keep }
+          }
+        const buildScreenshotCapture =
+          (pages: string[]) =>
+          async (handle: SandboxHandle): Promise<void> => {
+            onProofStart?.()
+            const result = await (opts.captureScreenshotsFn ?? captureScreenshots)(handle, {
+              pages,
+              url: proofConfig.url,
+              timeoutMs: proofTimeoutMs,
+              guestWorkDir: PROOF_VERIFY_GUEST_WORK_DIR,
+              guestProofDir,
+              hostIncomingDir,
+            })
+            proofOutcome = { kind: 'attempted', result, hostIncomingDir, keep: proofConfig.keep }
+          }
+
+        if (intent === undefined) {
+          if (proofConfig.journey !== null) {
+            if (!existsSync(join(record.worktree, proofConfig.journey))) {
+              proofOutcome = { kind: 'spec_missing', journey: proofConfig.journey }
+            } else {
+              captureProofOption = buildJourneyCapture(proofConfig.journey)
+            }
+          }
+        } else if (intent.kind === 'none') {
+          proofOutcome = { kind: 'declined', reason: intent.reason }
+        } else if (intent.kind === 'screenshot') {
+          captureProofOption = buildScreenshotCapture(intent.pages ?? [])
+        } else {
+          const journey = intent.journey ?? proofConfig.journey
+          if (journey === null) {
+            proofOutcome = { kind: 'spec_missing', journey: '' }
+          } else if (!existsSync(join(record.worktree, journey))) {
+            proofOutcome = { kind: 'spec_missing', journey }
+          } else {
+            captureProofOption = buildJourneyCapture(journey)
           }
         }
       }
@@ -3171,6 +3216,7 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
       // capture seam", so nothing is written and no frame goes out.
       if (proof.kind !== 'not_attempted') {
         try {
+          const intent = record.turns.at(-1)?.proof_intent
           const evidence =
             proof.kind === 'attempted'
               ? ingestEvidenceFiles(cwd, record.id, proof.hostIncomingDir, {
@@ -3179,13 +3225,18 @@ export function createTaskManager(opts: CreateTaskManagerOptions): TaskManager {
                   reason: proof.result.reason,
                   head_sha: verification?.head_sha ?? null,
                   keep: proof.keep,
+                  ...(intent ? { intent } : {}),
                 })
               : writeTaskEvidence(cwd, record.id, {
                   version: 1,
                   status: 'skipped',
-                  reason: `proof journey spec not found in the worktree: ${proof.journey}`,
+                  reason:
+                    proof.kind === 'declined'
+                      ? proof.reason
+                      : `proof journey spec not found in the worktree: ${proof.journey}`,
                   head_sha: verification?.head_sha ?? null,
                   items: readTaskEvidence(cwd, record.id)?.items ?? [],
+                  ...(intent ? { intent } : {}),
                 })
           emit({
             project_id: projectId,

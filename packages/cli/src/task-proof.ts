@@ -14,6 +14,15 @@ export type CaptureProofOptions = {
   hostIncomingDir: string
 }
 
+export type CaptureScreenshotsOptions = {
+  pages: string[]
+  url: string
+  timeoutMs: number
+  guestWorkDir: string
+  guestProofDir: string
+  hostIncomingDir: string
+}
+
 const PROOF_REASON_TAIL_MAX = 2_000
 
 function shellQuote(value: string): string | null {
@@ -25,6 +34,33 @@ function shellQuote(value: string): string | null {
 
 function tail(text: string): string {
   return text.slice(-PROOF_REASON_TAIL_MAX)
+}
+
+async function ensureProofDir(
+  handle: SandboxHandle,
+  guestProofDir: string,
+  timeoutMs: number,
+): Promise<void> {
+  await handle.shell(`mkdir -p ${guestProofDir}`, { timeoutMs })
+}
+
+async function finalizeCapture(
+  handle: SandboxHandle,
+  guestProofDir: string,
+  hostIncomingDir: string,
+  result: ProofCaptureResult,
+): Promise<ProofCaptureResult> {
+  try {
+    await handle.copyToHost(guestProofDir, hostIncomingDir)
+  } catch {
+    if (result.status === 'passed') {
+      return {
+        status: 'failed',
+        reason: 'proof capture passed but copying the evidence to the host failed',
+      }
+    }
+  }
+  return result
 }
 
 async function runReplay(
@@ -55,7 +91,7 @@ async function captureProofUnsafe(
   handle: SandboxHandle,
   opts: CaptureProofOptions,
 ): Promise<ProofCaptureResult> {
-  await handle.shell(`mkdir -p ${opts.guestProofDir}`, { timeoutMs: opts.timeoutMs })
+  await ensureProofDir(handle, opts.guestProofDir, opts.timeoutMs)
 
   const quotedJourney = shellQuote(opts.journey)
   const quotedUrl = shellQuote(opts.url)
@@ -71,18 +107,7 @@ async function captureProofUnsafe(
     result = await runReplay(handle, opts, quotedJourney, quotedUrl)
   }
 
-  try {
-    await handle.copyToHost(opts.guestProofDir, opts.hostIncomingDir)
-  } catch {
-    if (result.status === 'passed') {
-      return {
-        status: 'failed',
-        reason: 'proof capture passed but copying the evidence to the host failed',
-      }
-    }
-  }
-
-  return result
+  return finalizeCapture(handle, opts.guestProofDir, opts.hostIncomingDir, result)
 }
 
 export async function captureProof(
@@ -91,6 +116,59 @@ export async function captureProof(
 ): Promise<ProofCaptureResult> {
   try {
     return await captureProofUnsafe(handle, opts)
+  } catch (err) {
+    return { status: 'failed', reason: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+async function captureScreenshotsUnsafe(
+  handle: SandboxHandle,
+  opts: CaptureScreenshotsOptions,
+): Promise<ProofCaptureResult> {
+  await ensureProofDir(handle, opts.guestProofDir, opts.timeoutMs)
+
+  const execOpts: SandboxExecOptions = { timeoutMs: opts.timeoutMs, cwd: opts.guestWorkDir }
+  let passedCount = 0
+  const tails: string[] = []
+  for (const [index, page] of opts.pages.entries()) {
+    const resolvedUrl = new URL(page, opts.url).toString()
+    const quotedUrl = shellQuote(resolvedUrl)
+    if (quotedUrl === null) {
+      tails.push(
+        `refusing to screenshot ${page}: resolved URL contains a single quote, which cannot be safely quoted for the shell`,
+      )
+      continue
+    }
+    const target = `${opts.guestProofDir}/p${index}.png`
+    const shot = await handle.shell(
+      `npx playwright screenshot --full-page ${quotedUrl} ${target}`,
+      execOpts,
+    )
+    if (!shot.timedOut && shot.code === 0) {
+      passedCount += 1
+    } else {
+      tails.push(
+        shot.timedOut
+          ? `${page}: screenshot timed out after ${opts.timeoutMs}ms`
+          : `${page}: ${shot.stdout}${shot.stderr}`,
+      )
+    }
+  }
+
+  const result: ProofCaptureResult =
+    passedCount > 0
+      ? { status: 'passed', reason: null }
+      : { status: 'failed', reason: tail(tails.join('\n')) }
+
+  return finalizeCapture(handle, opts.guestProofDir, opts.hostIncomingDir, result)
+}
+
+export async function captureScreenshots(
+  handle: SandboxHandle,
+  opts: CaptureScreenshotsOptions,
+): Promise<ProofCaptureResult> {
+  try {
+    return await captureScreenshotsUnsafe(handle, opts)
   } catch (err) {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err) }
   }

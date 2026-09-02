@@ -17,6 +17,7 @@ import {
   type EvidenceKind,
   type EvidenceRecord,
   type EvidenceStatus,
+  type ProofIntent,
 } from './contract.js'
 import { taskDir } from './tasks-store.js'
 
@@ -34,6 +35,7 @@ export type IngestEvidenceMeta = {
   reason: string | null
   head_sha: string | null
   keep: number | null
+  intent?: ProofIntent
 }
 
 export function evidenceDir(cwd: string, id: string): string {
@@ -175,5 +177,6 @@ export function ingestEvidenceFiles(
     reason: meta.reason,
     head_sha: meta.head_sha,
     items: survivors,
+    ...(meta.intent !== undefined ? { intent: meta.intent } : {}),
   })
 }

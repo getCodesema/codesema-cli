@@ -5,7 +5,12 @@ import type {
   SandboxHandle,
   SandboxMetrics,
 } from './microsandbox-driver.js'
-import { captureProof, type CaptureProofOptions } from './task-proof.js'
+import {
+  captureProof,
+  captureScreenshots,
+  type CaptureProofOptions,
+  type CaptureScreenshotsOptions,
+} from './task-proof.js'
 
 type Call = { method: string; args: unknown[] }
 
@@ -171,6 +176,110 @@ describe('captureProof', () => {
       stop: () => Promise.resolve(),
     }
     const result = await captureProof(handle, baseOpts())
+    expect(result.status).toBe('failed')
+    expect(result.reason).toContain('sandbox is gone')
+  })
+})
+
+function baseScreenshotOpts(
+  overrides: Partial<CaptureScreenshotsOptions> = {},
+): CaptureScreenshotsOptions {
+  return {
+    pages: ['/dashboard'],
+    url: 'http://localhost:3000',
+    timeoutMs: 5000,
+    guestWorkDir: '/work',
+    guestProofDir: '/work/.proof',
+    hostIncomingDir: '/host/incoming',
+    ...overrides,
+  }
+}
+
+describe('captureScreenshots', () => {
+  test('one command per page, resolved against the base url, in mkdir -> screenshots -> copyToHost order', async () => {
+    const { handle, calls } = fakeHandle({})
+    const result = await captureScreenshots(
+      handle,
+      baseScreenshotOpts({ pages: ['/dashboard', '/settings'] }),
+    )
+    expect(result).toEqual({ status: 'passed', reason: null })
+    expect(calls.map((c) => c.method)).toEqual(['shell', 'shell', 'shell', 'copyToHost'])
+    expect(calls[0]?.args[0]).toBe('mkdir -p /work/.proof')
+    const shellCommands = calls.filter((c) => c.method === 'shell').map((c) => c.args[0] as string)
+    expect(shellCommands[1]).toBe(
+      "npx playwright screenshot --full-page 'http://localhost:3000/dashboard' /work/.proof/p0.png",
+    )
+    expect(shellCommands[2]).toBe(
+      "npx playwright screenshot --full-page 'http://localhost:3000/settings' /work/.proof/p1.png",
+    )
+    expect(calls.at(-1)).toEqual({ method: 'copyToHost', args: ['/work/.proof', '/host/incoming'] })
+  })
+
+  test('one page failing out of two still counts as an overall pass', async () => {
+    const { handle } = fakeHandle({
+      script: (command) => (command.includes('p0.png') ? ok({ code: 1, stderr: 'boom' }) : ok()),
+    })
+    const result = await captureScreenshots(
+      handle,
+      baseScreenshotOpts({ pages: ['/red', '/green'] }),
+    )
+    expect(result).toEqual({ status: 'passed', reason: null })
+  })
+
+  test('every page failing reports the concatenated tails', async () => {
+    const { handle } = fakeHandle({
+      script: (command) =>
+        command.includes('playwright screenshot') ? ok({ code: 1, stderr: 'boom' }) : ok(),
+    })
+    const result = await captureScreenshots(
+      handle,
+      baseScreenshotOpts({ pages: ['/red', '/also-red'] }),
+    )
+    expect(result.status).toBe('failed')
+    expect(result.reason).toContain('boom')
+  })
+
+  test('an apostrophe in a resolved page url is refused without ever running its screenshot shell', async () => {
+    const { handle, calls } = fakeHandle({})
+    const result = await captureScreenshots(handle, baseScreenshotOpts({ pages: ["/it's-broken"] }))
+    expect(result.status).toBe('failed')
+    expect(result.reason).toContain('single quote')
+    const shellCommands = calls.filter((c) => c.method === 'shell').map((c) => c.args[0] as string)
+    expect(shellCommands.some((c) => c.includes('playwright screenshot'))).toBe(false)
+  })
+
+  test('a copy failure after a passing capture degrades the verdict to failed', async () => {
+    const { handle } = fakeHandle({ copyToHostFails: true })
+    const result = await captureScreenshots(handle, baseScreenshotOpts())
+    expect(result.status).toBe('failed')
+    expect(result.reason).toContain('copy')
+  })
+
+  test('the reason tail is bounded to 2000 characters', async () => {
+    const { handle } = fakeHandle({
+      script: (command) =>
+        command.includes('playwright screenshot')
+          ? ok({ code: 1, stderr: 'x'.repeat(3000) })
+          : ok(),
+    })
+    const result = await captureScreenshots(handle, baseScreenshotOpts())
+    expect(result.reason).toHaveLength(2000)
+  })
+
+  test('no exception ever escapes captureScreenshots, even when the sandbox rejects', async () => {
+    const handle: SandboxHandle = {
+      name: 'broken',
+      exec: () => Promise.reject(new Error('exec unavailable')),
+      shell: () => Promise.reject(new Error('sandbox is gone')),
+      copyFromHost: () => Promise.resolve(),
+      copyToHost: () => Promise.resolve(),
+      writeFile: () => Promise.resolve(),
+      readFile: () => Promise.resolve(''),
+      metrics: (): Promise<SandboxMetrics> =>
+        Promise.resolve({ memoryHostResidentBytes: null, memoryBytes: null, cpuPercent: null }),
+      stop: () => Promise.resolve(),
+    }
+    const result = await captureScreenshots(handle, baseScreenshotOpts())
     expect(result.status).toBe('failed')
     expect(result.reason).toContain('sandbox is gone')
   })
