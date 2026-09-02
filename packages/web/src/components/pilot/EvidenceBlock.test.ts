@@ -27,6 +27,10 @@ type Props = {
   taskId: string
   evidence?: EvidenceRecord | null
   verification?: TaskVerification | null
+  activity?: {
+    phase: 'checks' | 'verification' | 'proof' | 'review' | 'recap'
+    since: string
+  } | null
 }
 
 async function render(props: Props): Promise<string> {
@@ -80,6 +84,58 @@ describe('EvidenceBlock: absence is stated honestly, never a placeholder', () =>
   test('the title always renders, even absent', async () => {
     const html = await render({ taskId: 'task-1', evidence: null })
     expect(html).toContain(t('pilot.evidence.title'))
+  })
+})
+
+describe('EvidenceBlock: the running-phase line replaces "none" while capturing', () => {
+  test('proof phase with no items and no verification shows the running glyph and the phase phrase, not the "none" phrase', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      activity: { phase: 'proof', since: '2026-08-14T10:00:00.000Z' },
+    })
+    expect(html).toContain(t('pilot.activity.proof'))
+    expect(html).not.toContain(t('pilot.evidence.none'))
+  })
+
+  test('verification phase with no items and no verification also shows the running line', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      activity: { phase: 'verification', since: '2026-08-14T10:00:00.000Z' },
+    })
+    expect(html).toContain(t('pilot.activity.verification'))
+    expect(html).not.toContain(t('pilot.evidence.none'))
+  })
+
+  test('a non-capture phase (recap) leaves the plain "none" phrase in place', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      activity: { phase: 'recap', since: '2026-08-14T10:00:00.000Z' },
+    })
+    expect(html).toContain(t('pilot.evidence.none'))
+    expect(html).not.toContain(t('pilot.activity.recap'))
+  })
+
+  test('items already captured render normally even during a capture-phase activity', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      evidence: record({
+        items: [{ kind: 'screenshot', path: 'a.png', bytes: 1, turn: 1, created_at: 'now' }],
+      }),
+      activity: { phase: 'proof', since: '2026-08-14T10:00:00.000Z' },
+    })
+    expect(html).toContain('<img')
+    expect(html).not.toContain(t('pilot.activity.proof'))
+    expect(html).not.toContain(t('pilot.evidence.none'))
+  })
+
+  test('a verification record already present takes priority over the running line', async () => {
+    const html = await render({
+      taskId: 'task-1',
+      verification: verificationRecord({ status: 'passed' }),
+      activity: { phase: 'proof', since: '2026-08-14T10:00:00.000Z' },
+    })
+    expect(html).toContain(t('pilot.evidence.none'))
+    expect(html).not.toContain(t('pilot.activity.proof'))
   })
 })
 

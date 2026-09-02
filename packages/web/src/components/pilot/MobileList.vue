@@ -9,7 +9,7 @@ export function needsHuman(status: TaskStatus): boolean {
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { eventSummary } from '../../composables/useTaskBoard'
+import { activityPhraseKey, eventSummary } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
 import { t } from '../../i18n'
@@ -30,6 +30,13 @@ function lastEventText(events: readonly TaskEvent[]): string {
   return last ? eventSummary(last) : ''
 }
 
+/** The activity phase phrase takes over the row's preview line when present,
+ * same precedence as AgentCard's header phrase over the plain status one. */
+function previewText(state: TaskState): string {
+  const key = activityPhraseKey(state.record)
+  return key ? t(key) : lastEventText(state.events)
+}
+
 const rows = computed(() => {
   const ordered = orderCards(props.states)
   const attention: TaskState[] = []
@@ -43,7 +50,7 @@ const rows = computed(() => {
   }
   return [...attention, ...rest].map((state) => ({
     state,
-    lastText: lastEventText(state.events),
+    lastText: previewText(state),
     age: formatRelativeAge(state.record.updated_at),
     pill: resolveChecksPill(state),
   }))

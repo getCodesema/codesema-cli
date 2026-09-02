@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
 import { extractQuickReplies } from '../../composables/useQuickReplies'
-import { lastQuestion, reviewRefOf } from '../../composables/useTaskBoard'
+import { activityPhraseKey, lastQuestion, reviewRefOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { t } from '../../i18n'
 import { TASK_EVENT_COMPONENTS, type TaskEventCtx } from '../../task-event-registry'
@@ -22,6 +22,10 @@ const props = withDefaults(
 const emit = defineEmits<{ back: []; send: [text: string]; pick: [option: string] }>()
 
 const record = computed(() => props.state.record)
+const activityPhrase = computed(() => {
+  const key = activityPhraseKey(record.value)
+  return key ? t(key) : null
+})
 
 const now = ref(Date.now())
 const ticker = setInterval(() => {
@@ -108,7 +112,10 @@ function focusComposer() {
       </button>
       <span class="mbt-headtext">
         <span class="mbt-headtitle">{{ record.title }}</span>
-        <span class="mbt-headmeta">{{ state.projectId }}</span>
+        <span class="mbt-headmeta"
+          >{{ state.projectId
+          }}<template v-if="activityPhrase"> · {{ activityPhrase }}</template></span
+        >
       </span>
     </header>
 
@@ -127,6 +134,7 @@ function focusComposer() {
             :task-id="record.id"
             :evidence="state.evidence ?? null"
             :verification="state.verification ?? null"
+            :activity="record.activity ?? null"
           />
         </div>
         <div class="mbt-event">

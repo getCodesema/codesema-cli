@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { extractQuickReplies } from '../../composables/useQuickReplies'
-import { lastQuestion, resumeStateOf } from '../../composables/useTaskBoard'
+import { activityPhraseKey, lastQuestion, resumeStateOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
 import { t } from '../../i18n'
@@ -31,6 +31,7 @@ const emit = defineEmits<{
 
 const record = computed(() => props.state.record)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
+const phraseKey = computed(() => activityPhraseKey(record.value) ?? visual.value.phraseKey)
 const age = computed(() => formatRelativeAge(record.value.updated_at))
 
 // Same three offers as TaskConversation's header, minus Cleanup (destructive
@@ -96,9 +97,7 @@ function onSend(text: string): void {
         >
         <span class="ac-title">{{ record.title }}</span>
       </span>
-      <span class="ac-state" :style="{ color: visual.text }"
-        >{{ t(visual.phraseKey) }} · {{ age }}</span
-      >
+      <span class="ac-state" :style="{ color: visual.text }">{{ t(phraseKey) }} · {{ age }}</span>
     </button>
 
     <!-- Not literal <button>s: EvidenceBlock can render a real <video
@@ -116,6 +115,7 @@ function onSend(text: string): void {
           :task-id="record.id"
           :evidence="state.evidence ?? null"
           :verification="state.verification ?? null"
+          :activity="record.activity ?? null"
         />
       </div>
       <div

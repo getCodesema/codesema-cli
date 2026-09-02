@@ -164,4 +164,27 @@ describe('MobileList: row content', () => {
     expect(html).toContain('Fresh task')
     expect(html).not.toContain('mbl-row-last')
   })
+
+  test('an activity phase takes over the preview line, ahead of the last journal event', async () => {
+    const html = await render([
+      state(
+        {
+          id: 't1',
+          title: 'Ship the button',
+          status: 'running',
+          activity: { phase: 'checks', since: '2026-08-30T08:00:00.000Z' },
+        },
+        [
+          {
+            seq: 1,
+            at: '2026-08-30T08:00:00.000Z',
+            type: 'commit',
+            data: { sha: 'abc', files_changed: 2 },
+          },
+        ],
+      ),
+    ])
+    expect(html).toContain(t('pilot.activity.checks'))
+    expect(html).not.toContain(t('workspace.evCommit'))
+  })
 })

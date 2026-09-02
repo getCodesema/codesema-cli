@@ -101,6 +101,38 @@ describe('AgentCard: header carries status, title, project and branch', () => {
     expect(html).toContain(t('workspace.phaseRunning'))
   })
 
+  test('an activity phase overrides the status phrase', async () => {
+    const html = await render({
+      state: state({
+        record: record({
+          status: 'running',
+          activity: { phase: 'checks', since: '2026-08-14T10:00:00.000Z' },
+        }),
+      }),
+    })
+    expect(html).toContain(t('pilot.activity.checks'))
+    expect(html).not.toContain(t('workspace.phaseRunning'))
+  })
+
+  // Decision: shown regardless of status: the recap phase runs after the
+  // status has already flipped to review_ok.
+  test('an activity phase still shows on review_ok', async () => {
+    const html = await render({
+      state: state({
+        record: record({
+          status: 'review_ok',
+          activity: { phase: 'recap', since: '2026-08-14T10:00:00.000Z' },
+        }),
+      }),
+    })
+    expect(html).toContain(t('pilot.activity.recap'))
+  })
+
+  test('no activity falls back to the plain status phrase', async () => {
+    const html = await render({ state: state({ record: record({ status: 'review_ok' }) }) })
+    expect(html).toContain(t('workspace.phaseReviewOk'))
+  })
+
   test('a header click target is a real, accessible button', async () => {
     const html = await render({ state: state() })
     expect(html).toContain('<button type="button" class="ac-head"')

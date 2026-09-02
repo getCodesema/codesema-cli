@@ -86,6 +86,31 @@ describe('MobileThread: header', () => {
     expect(html).toContain(t('pilot.mobile.back'))
     expect(html).toContain('Fix the login flow')
   })
+
+  test('no activity on the record shows no phase phrase', async () => {
+    const html = await render({})
+    expect(html).not.toContain(t('pilot.activity.checks'))
+    expect(html).not.toContain(t('pilot.activity.recap'))
+  })
+
+  test('an activity phase renders its phrase in the header meta line', async () => {
+    const html = await render({
+      record: { activity: { phase: 'proof', since: '2026-08-30T08:00:00.000Z' } },
+    })
+    expect(html).toContain(t('pilot.activity.proof'))
+  })
+
+  // Decision: the phrase shows regardless of status: the recap phase runs
+  // after the status has already flipped to review_ok.
+  test('an activity present on review_ok still renders its phrase', async () => {
+    const html = await render({
+      record: {
+        status: 'review_ok',
+        activity: { phase: 'recap', since: '2026-08-30T08:00:00.000Z' },
+      },
+    })
+    expect(html).toContain(t('pilot.activity.recap'))
+  })
 })
 
 describe('MobileThread: journal events render through the registry', () => {

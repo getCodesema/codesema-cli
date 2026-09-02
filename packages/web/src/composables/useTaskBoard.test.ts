@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test'
 import { EXECUTION_STATUS } from '../execution-status'
 import type { TaskEvent, TaskEventType, TaskRecord, TaskStatus } from '../types'
 import {
+  activityPhraseKey,
   agentCounts,
   applyLiveText,
   clockTime,
@@ -322,6 +323,40 @@ describe('statusPhraseKey / statusLabelKey (T3.1 checks_failed)', () => {
     expect(statusPhraseKey(held, false)).not.toBe(statusPhraseKey(blocked, false))
     expect(statusLabelKey(held)).not.toBe(statusLabelKey(blocked))
     expect(statusPhraseKey(blocked, false)).toBe('workspace.phaseChecksFailed')
+  })
+})
+
+describe('activityPhraseKey', () => {
+  test('no activity on the record yields null', () => {
+    expect(activityPhraseKey(record({ status: 'running' }))).toBeNull()
+  })
+
+  test('each activity phase resolves its own phrase key', () => {
+    const cases = [
+      ['checks', 'pilot.activity.checks'],
+      ['verification', 'pilot.activity.verification'],
+      ['proof', 'pilot.activity.proof'],
+      ['review', 'pilot.activity.review'],
+      ['recap', 'pilot.activity.recap'],
+    ] as const
+    for (const [phase, key] of cases) {
+      const withActivity = record({
+        status: 'running',
+        activity: { phase, since: '2026-08-30T08:00:00.000Z' },
+      })
+      expect(activityPhraseKey(withActivity)).toBe(key)
+    }
+  })
+
+  // Decision: the phase phrase is shown as soon as activity is present,
+  // whatever the status: the recap phase runs AFTER the status has already
+  // flipped to review_ok.
+  test('an activity present on review_ok still resolves its phrase key', () => {
+    const reviewOk = record({
+      status: 'review_ok',
+      activity: { phase: 'recap', since: '2026-08-30T08:00:00.000Z' },
+    })
+    expect(activityPhraseKey(reviewOk)).toBe('pilot.activity.recap')
   })
 })
 

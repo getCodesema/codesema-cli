@@ -1,19 +1,45 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { CHECK_GLYPH, CHECK_STATUS_KEY, shortSha } from '../../composables/useChecks'
+import { activityPhraseKey } from '../../composables/useTaskBoard'
 import { evidenceFileUrl } from '../../composables/useTasks'
 import { t, type MessageKey } from '../../i18n'
-import type { EvidenceRecord, TaskVerification, TaskVerificationStatus } from '../../types'
+import type {
+  EvidenceRecord,
+  TaskActivity,
+  TaskVerification,
+  TaskVerificationStatus,
+} from '../../types'
 
 const props = defineProps<{
   taskId: string
   evidence?: EvidenceRecord | null
   verification?: TaskVerification | null
+  activity?: TaskActivity | null
 }>()
 
 const items = computed(() => props.evidence?.items ?? [])
 const isEmpty = computed(() => props.evidence == null || items.value.length === 0)
 const failed = computed(() => props.evidence?.status === 'failed')
+
+const RUNNING_GLYPH = '●'
+
+/**
+ * The evidence zone has nothing captured yet AND no verification record to
+ * show in its place: while the agent is mid-capture (verification or proof
+ * phase), that state is worth naming rather than reading as the flat
+ * "no evidence yet" of a task that never ran one at all.
+ */
+const showRunningLine = computed(
+  () =>
+    isEmpty.value &&
+    !props.verification &&
+    (props.activity?.phase === 'verification' || props.activity?.phase === 'proof'),
+)
+
+const runningPhraseKey = computed<MessageKey | null>(() =>
+  props.activity ? activityPhraseKey({ activity: props.activity }) : null,
+)
 
 /**
  * TaskVerification has no independently-tracked status for the runbook's
@@ -47,7 +73,11 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
       {{ t('pilot.evidence.failed') }}
       <span v-if="evidence?.reason" class="evb-reason">{{ evidence.reason }}</span>
     </p>
-    <p v-if="isEmpty" class="evb-empty">{{ t('pilot.evidence.none') }}</p>
+    <p v-if="showRunningLine" class="evb-running">
+      <span class="evb-running-glyph" aria-hidden="true">{{ RUNNING_GLYPH }}</span>
+      {{ t(runningPhraseKey ?? 'pilot.evidence.none') }}
+    </p>
+    <p v-else-if="isEmpty" class="evb-empty">{{ t('pilot.evidence.none') }}</p>
     <div v-else class="evb-items">
       <figure v-for="item in items" :key="item.path" class="evb-item">
         <img
@@ -130,6 +160,36 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   margin: 0;
   font-size: 12.5px;
   color: var(--cs-muted);
+}
+
+.evb-running {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--cs-muted);
+}
+
+.evb-running-glyph {
+  color: var(--cs-muted);
+  animation: evb-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evb-running-glyph {
+    animation: none;
+  }
+}
+
+@keyframes evb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .evb-failed {

@@ -5,7 +5,14 @@
 
 import { EXECUTION_STATUS } from '../execution-status'
 import { t, type MessageKey } from '../i18n'
-import type { TaskEvent, TaskEventData, TaskEventType, TaskRecord, TaskStatus } from '../types'
+import type {
+  TaskActivityPhase,
+  TaskEvent,
+  TaskEventData,
+  TaskEventType,
+  TaskRecord,
+  TaskStatus,
+} from '../types'
 import type { FindingSeverity } from './useDiff'
 
 /** The three status zones of the rail, in display order. */
@@ -258,6 +265,25 @@ export function statusPhraseKey(
 /** Queue-card flag: same split as `statusPhraseKey`, for the short label. */
 export function statusLabelKey(record: Pick<TaskRecord, 'status' | 'reason'>): MessageKey {
   return reviewKoKeys(record)?.label ?? EXECUTION_STATUS[record.status].labelKey
+}
+
+const ACTIVITY_PHRASE_KEY: Record<TaskActivityPhase, MessageKey> = {
+  checks: 'pilot.activity.checks',
+  verification: 'pilot.activity.verification',
+  proof: 'pilot.activity.proof',
+  review: 'pilot.activity.review',
+  recap: 'pilot.activity.recap',
+}
+
+/**
+ * What a task's agent is doing right now, when it is doing something worth
+ * naming (T? pilot activity phase): the header phrase for the phase in
+ * progress, or null when the record carries no activity at all. Takes over
+ * from `statusPhraseKey` whenever present, regardless of status: the recap
+ * phase runs after the status has already flipped to `review_ok`.
+ */
+export function activityPhraseKey(record: Pick<TaskRecord, 'activity'>): MessageKey | null {
+  return record.activity ? ACTIVITY_PHRASE_KEY[record.activity.phase] : null
 }
 
 /**
