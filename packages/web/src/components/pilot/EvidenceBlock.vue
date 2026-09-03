@@ -225,7 +225,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 .evb-title {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -234,20 +234,20 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 
 .evb-empty {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
 .evb-intent {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
 .evb-intent-detail {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -256,7 +256,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-text);
 }
 
@@ -280,7 +280,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
@@ -312,7 +312,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   border-radius: 8px;
   background: var(--cs-red-soft);
   color: var(--cs-red-text);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
 }
 
@@ -366,7 +366,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
 }
 
@@ -375,7 +375,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   padding: 0;
   background: transparent;
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-text-2);
   cursor: pointer;
@@ -396,7 +396,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 .evb-verification-title {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -405,7 +405,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 
 .evb-verification-status {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-muted);
 }
@@ -424,7 +424,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 
 .evb-verification-error {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -432,14 +432,14 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   margin: 0;
   padding-left: 18px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
 .evb-verification-tests-title {
   margin: 4px 0 2px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -451,7 +451,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   padding: 0;
   list-style: none;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-text);
 }
 

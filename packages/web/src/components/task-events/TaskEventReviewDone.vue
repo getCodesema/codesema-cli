@@ -100,7 +100,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 
 .tvr-tag {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -108,7 +108,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 }
 
 .tvr-verdict {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: 999px;
   padding: 2px 10px;
@@ -132,7 +132,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 .tvr-time {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
 }
@@ -140,7 +140,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 /* The review's own words: two lines max, the full text lives in the review. */
 .tvr-summary {
   margin: 8px 0 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--cs-text);
   display: -webkit-box;
@@ -152,7 +152,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 
 .tvr-count {
   margin: 7px 0 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-text-2);
 }
 
@@ -164,7 +164,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
   list-style: none;
   margin: 7px 0 0;
   padding: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -197,7 +197,7 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 }
 
 .tvr-btn {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 5px 11px;

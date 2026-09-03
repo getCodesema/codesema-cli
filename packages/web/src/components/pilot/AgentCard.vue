@@ -265,7 +265,7 @@ function onSend(text: string): void {
 
 .ac-sub {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -273,7 +273,7 @@ function onSend(text: string): void {
 }
 
 .ac-title {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--cs-text);
   white-space: nowrap;
@@ -284,7 +284,7 @@ function onSend(text: string): void {
 .ac-state {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -336,7 +336,7 @@ function onSend(text: string): void {
 }
 
 .ac-action {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;

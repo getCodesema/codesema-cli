@@ -241,16 +241,16 @@ describe('geometry: CSS-pinned (sheet §4 and §7)', () => {
     const activityGlyphStart = SOURCE.indexOf('.cvr-activity-glyph {', activityStart)
 
     const meta = SOURCE.slice(metaStart, titleStart)
-    expect(meta).toContain('font-size: 10px;')
+    expect(meta).toContain('font-size: var(--fs-xs);')
     expect(meta).toContain('line-height: 12px;')
 
     const title = SOURCE.slice(titleStart, activityStart)
-    expect(title).toContain('font-size: 13px;')
+    expect(title).toContain('font-size: var(--fs-base);')
     expect(title).toContain('line-height: 20px;')
     expect(title).toContain('font-weight: 600;')
 
     const activity = SOURCE.slice(activityStart, activityGlyphStart)
-    expect(activity).toContain('font-size: 11px;')
+    expect(activity).toContain('font-size: var(--fs-xs);')
     expect(activity).toContain('line-height: 16px;')
   })
 
@@ -275,7 +275,7 @@ describe('geometry: CSS-pinned (sheet §4 and §7)', () => {
     expect(pill).toContain('border-radius: 4px;')
     expect(pill).toContain('border: 1px solid var(--cs-line-2);')
     expect(pill).toContain('gap: 4px;')
-    expect(pill).toContain('font-size: 10px;')
+    expect(pill).toContain('font-size: var(--fs-xs);')
     expect(pill).toContain('font-weight: 600;')
   })
 

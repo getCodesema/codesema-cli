@@ -1326,7 +1326,7 @@ const wait = computed(() =>
 
 .cv-warn {
   flex: none;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-amber-text);
 }
 
@@ -1350,7 +1350,7 @@ const wait = computed(() =>
 
 .cv-title {
   margin: 0;
-  font-size: 14.5px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   min-width: 0;
   flex: 1;
@@ -1367,7 +1367,7 @@ const wait = computed(() =>
 }
 
 .cv-btn {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -1438,7 +1438,7 @@ const wait = computed(() =>
   gap: 10px;
   flex-wrap: wrap;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
 }
 
@@ -1458,7 +1458,7 @@ const wait = computed(() =>
    wears is deliberate: attaching a repo is an ordinary action, not a state. */
 .cv-attach-select {
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-text-2);
   background: var(--cs-panel);
   border: 1px solid var(--cs-line-2);
@@ -1469,7 +1469,7 @@ const wait = computed(() =>
 
 .cv-attach-btn {
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-text-2);
   background: transparent;
@@ -1523,7 +1523,7 @@ const wait = computed(() =>
 
 .cv-notice {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-amber-text);
 }
 
@@ -1531,7 +1531,7 @@ const wait = computed(() =>
    reader's language, so this one stays muted and wraps rather than shouts. */
 .cv-reason {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--cs-muted);
   overflow-wrap: anywhere;
@@ -1539,7 +1539,7 @@ const wait = computed(() =>
 
 .cv-error {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-red-text);
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
@@ -1554,7 +1554,7 @@ const wait = computed(() =>
 }
 
 .cv-tab {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   padding: 9px 14px;
   border: none;
@@ -1646,7 +1646,7 @@ const wait = computed(() =>
   display: block;
   margin-bottom: 5px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1674,7 +1674,7 @@ const wait = computed(() =>
 
 .cv-live-text {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--cs-text);
   white-space: pre-wrap;
@@ -1699,7 +1699,7 @@ const wait = computed(() =>
 
 .cv-live-hint {
   margin: 6px 0 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-amber-text);
 }
 
@@ -1724,7 +1724,7 @@ const wait = computed(() =>
   padding: 7px 11px;
   cursor: pointer;
   list-style: none;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -1763,7 +1763,7 @@ const wait = computed(() =>
 
 .cv-tools-label--done {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .cv-tools-body {
@@ -1790,13 +1790,13 @@ const wait = computed(() =>
   border-radius: 10px;
   background: var(--cs-amber-soft);
   padding: 7px 11px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .cv-pending-label {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cs-amber-text);
@@ -1814,7 +1814,7 @@ const wait = computed(() =>
   border: none;
   background: none;
   color: var(--cs-ghost);
-  font-size: 13px;
+  font-size: var(--fs-base);
   cursor: pointer;
   padding: 0 2px;
 }
@@ -1825,7 +1825,7 @@ const wait = computed(() =>
 
 .cv-reply-dead {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-ghost);
 }
 
@@ -1836,7 +1836,7 @@ const wait = computed(() =>
   background: var(--cs-surface);
   color: var(--cs-text);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   padding: 9px 12px;
   resize: vertical;
@@ -1853,7 +1853,7 @@ const wait = computed(() =>
 }
 
 .cv-reply-send {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 700;
   font-family: inherit;
   padding: 9px 16px;
@@ -1907,7 +1907,7 @@ const wait = computed(() =>
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   border-radius: 999px;
   padding: 4px 12px;
@@ -1947,7 +1947,7 @@ const wait = computed(() =>
 .cv-checks-head,
 .cv-checks-none {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
 }
 
@@ -1958,14 +1958,14 @@ const wait = computed(() =>
 
 .cv-checks-hint {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--cs-muted);
 }
 
 /* Plan provenance chip ("detected: lefthook"), when the server labels it. */
 .cv-checks-source {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
   border: 1px solid var(--cs-line);
   border-radius: 999px;
@@ -1996,21 +1996,21 @@ const wait = computed(() =>
 .cv-setup-intro,
 .cv-setup-hint {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--cs-muted);
 }
 
 .cv-setup-title {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
 }
 
 .cv-setup-subtitle {
   margin: 3px 0 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--cs-text-2);
 }
@@ -2025,13 +2025,13 @@ const wait = computed(() =>
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-amber-text);
 }
 
 .cv-setup-error {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-red-text);
   overflow-wrap: anywhere;
 }
@@ -2041,7 +2041,7 @@ const wait = computed(() =>
   grid-template-columns: max-content 1fr;
   gap: 4px 12px;
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .cv-setup-plan dt {
@@ -2059,7 +2059,7 @@ const wait = computed(() =>
 .cv-setup-cmds code,
 .cv-setup-diff code {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .cv-setup-muted {
@@ -2094,7 +2094,7 @@ const wait = computed(() =>
 .cv-setup-diff-state {
   margin-left: auto;
   flex: none;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
 }
 
@@ -2114,7 +2114,7 @@ const wait = computed(() =>
 
 .cv-setup-rationale {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--cs-text-2);
 }
@@ -2157,7 +2157,7 @@ const wait = computed(() =>
   background: none;
   padding: 0;
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
   cursor: pointer;
   text-decoration: underline dotted;
@@ -2175,7 +2175,7 @@ const wait = computed(() =>
 /* The runner's own failure message (e.g. no container engine installed). */
 .cv-checks-broken {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-amber-text);
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
@@ -2209,7 +2209,7 @@ const wait = computed(() =>
   width: 14px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 700;
 }
 
@@ -2233,7 +2233,7 @@ const wait = computed(() =>
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-text);
   overflow-wrap: anywhere;
 }
@@ -2241,7 +2241,7 @@ const wait = computed(() =>
 .cv-check-meta {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
 }
@@ -2254,7 +2254,7 @@ const wait = computed(() =>
   cursor: pointer;
   list-style: none;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cs-muted);
@@ -2280,7 +2280,7 @@ const wait = computed(() =>
   background: var(--cs-inset);
   border: 1px solid var(--cs-line);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--cs-text-2);
   white-space: pre-wrap;

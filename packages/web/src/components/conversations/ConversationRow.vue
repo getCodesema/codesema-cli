@@ -143,14 +143,14 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
 }
 
 .cvr-meta {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   line-height: 12px;
   color: var(--cs-ghost);
 }
 
 .cvr-title {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 20px;
   font-weight: 600;
   /* Row state (rest/hover/selected) governs the title's own weight and
@@ -161,7 +161,7 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
 
 .cvr-activity {
   margin-top: 1px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 16px;
   display: flex;
   align-items: center;
@@ -241,7 +241,7 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
   padding: 1px 6px;
   border: 1px solid var(--cs-line-2);
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-muted);
   background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);

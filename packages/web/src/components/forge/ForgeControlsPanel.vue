@@ -512,7 +512,7 @@ const mrsLabelCountsFiltered = computed(() =>
   text-overflow: ellipsis;
   white-space: nowrap;
   max-height: 100%;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -586,7 +586,7 @@ const mrsLabelCountsFiltered = computed(() =>
   width: 100%;
   text-align: left;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -633,7 +633,7 @@ const mrsLabelCountsFiltered = computed(() =>
   justify-content: space-between;
   gap: 8px;
   margin: 20px 0 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -665,7 +665,7 @@ const mrsLabelCountsFiltered = computed(() =>
   width: 100%;
   text-align: left;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
   padding: 6px 8px;
   border: none;
@@ -705,7 +705,7 @@ const mrsLabelCountsFiltered = computed(() =>
   align-items: center;
   gap: 4px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   text-transform: none;
   letter-spacing: normal;
@@ -759,7 +759,7 @@ const mrsLabelCountsFiltered = computed(() =>
 .fcp-label-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 6px 28px 6px 12px;
   border: 1px solid var(--cs-line-2);
   border-radius: 8px;

@@ -62,7 +62,7 @@ const stateLabelKey = computed<MessageKey>(() =>
   align-items: center;
   gap: 6px;
   margin-bottom: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
 }
 
@@ -111,7 +111,7 @@ const stateLabelKey = computed<MessageKey>(() =>
 
 .fic-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   line-height: 1.25;
   color: var(--cs-text);
@@ -136,7 +136,7 @@ const stateLabelKey = computed<MessageKey>(() =>
   --lp-rest-bg: var(--cs-line-2);
 
   display: inline-flex;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--cs-text-2);
   padding: 2px 8px;

@@ -47,7 +47,7 @@ defineProps<{ tiles: RepositoryTiles }>()
 }
 
 .rpt-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -55,7 +55,7 @@ defineProps<{ tiles: RepositoryTiles }>()
 }
 
 .rpt-value {
-  font-size: 28px;
+  font-size: var(--fs-3xl);
   font-weight: 700;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;

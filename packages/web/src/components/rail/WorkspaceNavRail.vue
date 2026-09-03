@@ -171,12 +171,12 @@ const emit = defineEmits<{
   border-radius: 8px;
   background: var(--cs-green-soft);
   color: var(--cs-green-text);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 700;
 }
 
 .wnr-brand-name {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
   overflow: hidden;
@@ -228,7 +228,7 @@ const emit = defineEmits<{
   width: 100%;
   text-align: left;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 500;
   line-height: 20px;
   color: var(--cs-text-2);
@@ -292,7 +292,7 @@ const emit = defineEmits<{
   padding: 0 6px;
   border-radius: 999px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;

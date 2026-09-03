@@ -188,7 +188,7 @@ function onMediaClick(): void {
 }
 
 .mv-btn {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -217,12 +217,12 @@ function onMediaClick(): void {
 .mv-btn--icon {
   width: 32px;
   padding: 6px 0;
-  font-size: 15px;
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
 .mv-caption {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
   white-space: nowrap;
@@ -238,7 +238,7 @@ function onMediaClick(): void {
   min-width: 48px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
 }
 

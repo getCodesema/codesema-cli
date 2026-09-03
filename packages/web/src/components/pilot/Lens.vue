@@ -71,7 +71,7 @@ onUnmounted(() => {
 }
 
 .pl-lens-close {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -93,7 +93,7 @@ onUnmounted(() => {
 }
 
 .pl-lens-title {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
 }

@@ -38,7 +38,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 
 /* Amber: answering IS the pending human action. */
 .qr-opt {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 8px 14px;
@@ -61,7 +61,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 }
 
 .qr-other {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-family: inherit;
   padding: 8px 14px;
   border: 1px solid var(--cs-line-3);

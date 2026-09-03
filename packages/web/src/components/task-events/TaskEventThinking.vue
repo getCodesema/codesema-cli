@@ -160,7 +160,7 @@ onUnmounted(clearIdleTimer)
 .tvth-label {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 20px;
   color: var(--cs-muted);
 }
@@ -206,7 +206,7 @@ onUnmounted(clearIdleTimer)
   white-space: nowrap;
   direction: rtl;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 20px;
   color: var(--cs-muted);
 }
@@ -232,7 +232,7 @@ onUnmounted(clearIdleTimer)
   margin: 0;
   max-width: 65ch;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 20px;
   color: var(--cs-text-2);
   white-space: pre-wrap;

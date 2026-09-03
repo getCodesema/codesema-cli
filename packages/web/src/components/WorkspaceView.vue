@@ -1276,7 +1276,7 @@ watch(
   flex: none;
   margin: 0;
   padding: 6px 20px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-amber-text);
   background: var(--cs-amber-soft);
   border-bottom: 1px solid var(--cs-amber-line);
@@ -1355,7 +1355,7 @@ watch(
   margin: 0;
   flex: 1;
   min-width: 0;
-  font-size: 14.5px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   color: var(--cs-text);
   overflow: hidden;
@@ -1366,7 +1366,7 @@ watch(
 .ws-draft-project {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
 }
 
@@ -1377,7 +1377,7 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   line-height: 1;
   border: none;
@@ -1401,7 +1401,7 @@ watch(
 }
 
 .ws-draft-mode {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 5px 11px;
@@ -1424,7 +1424,7 @@ watch(
 
 .ws-draft-warning {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-amber-text);
   border: 1px solid var(--cs-amber-line);
   border-radius: 8px;
@@ -1445,7 +1445,7 @@ watch(
   align-items: center;
   gap: 5px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-text-2);
   padding: 2px 9px;
   border: 1px solid var(--cs-line-2);
@@ -1469,7 +1469,7 @@ watch(
 .ws-empty {
   margin: 0;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
   max-width: 380px;
 }
@@ -1484,7 +1484,7 @@ watch(
 
 .ws-review-back {
   margin-bottom: 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 5px 10px;

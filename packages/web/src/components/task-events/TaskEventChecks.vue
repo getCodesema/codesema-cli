@@ -41,7 +41,7 @@ const stamp = computed(() => clockTime(props.event.at))
   align-items: baseline;
   gap: 9px;
   padding: 3px 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .tvc-dot {
@@ -71,7 +71,7 @@ const stamp = computed(() => clockTime(props.event.at))
   margin-left: auto;
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
 }

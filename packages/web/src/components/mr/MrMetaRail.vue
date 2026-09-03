@@ -283,7 +283,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrr-root {
   display: flex;
   flex-direction: column;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .mrr-section {
@@ -303,7 +303,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   align-items: center;
   gap: 6px;
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -445,7 +445,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrr-check-group-heading {
   margin: 0 0 6px;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;

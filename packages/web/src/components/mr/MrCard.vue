@@ -200,7 +200,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   align-items: center;
   gap: 6px;
   margin-bottom: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
 }
 
@@ -257,7 +257,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrc-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   line-height: 1.25;
   color: var(--cs-text);
@@ -274,7 +274,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
   color: var(--cs-ghost);

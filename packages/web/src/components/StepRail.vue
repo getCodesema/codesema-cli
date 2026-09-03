@@ -82,7 +82,7 @@ function allPassed(): boolean {
 
 .rail-edge {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   color: var(--codesema-ink-3);
@@ -143,7 +143,7 @@ function allPassed(): boolean {
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   background: var(--codesema-dot-idle);
   color: #fff;
@@ -178,7 +178,7 @@ function allPassed(): boolean {
 }
 
 .rail-label {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--codesema-ink);
   white-space: nowrap;

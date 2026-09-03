@@ -181,7 +181,7 @@ function toggleDir(path: string) {
 }
 
 .ft-head-label {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   color: var(--codesema-ink-3);
   text-transform: uppercase;
@@ -190,7 +190,7 @@ function toggleDir(path: string) {
 
 .ft-head-count {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   background: var(--codesema-line-2);
   color: var(--codesema-ink-3);
   border-radius: 999px;
@@ -209,7 +209,7 @@ function toggleDir(path: string) {
   border: 1px solid var(--codesema-line);
   border-radius: 8px;
   padding: 8px 11px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-family: inherit;
   color: var(--codesema-ink);
   outline: none;
@@ -241,7 +241,7 @@ function toggleDir(path: string) {
   cursor: pointer;
   padding: 6px 9px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-2);
   text-align: left;
   transition: background 0.1s;
@@ -255,7 +255,7 @@ function toggleDir(path: string) {
 
 .ft-file-ic {
   color: var(--codesema-ink-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
 }
 
@@ -271,7 +271,7 @@ function toggleDir(path: string) {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
 }
 
@@ -284,13 +284,13 @@ function toggleDir(path: string) {
 }
 
 .ft-cmt {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--codesema-ink-3);
   flex-shrink: 0;
 }
 
 .ft-empty {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
   padding: 10px 14px;
 }

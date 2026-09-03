@@ -479,7 +479,7 @@ function onFooterRefresh(): void {
   outline: none;
   background: transparent;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 10px 0;
   color: var(--cs-text);
 }
@@ -528,14 +528,14 @@ function onFooterRefresh(): void {
 }
 
 .flp-heading {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
 }
 
 .flp-count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
@@ -543,7 +543,7 @@ function onFooterRefresh(): void {
 
 .flp-truncated {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
 }
 
@@ -552,7 +552,7 @@ function onFooterRefresh(): void {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
   background: var(--cs-inset);
   border-radius: 8px;
@@ -562,7 +562,7 @@ function onFooterRefresh(): void {
 .flp-retry {
   flex: none;
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   padding: 3px 10px;
   border: 1px solid var(--cs-line-2);
@@ -578,7 +578,7 @@ function onFooterRefresh(): void {
 
 .flp-empty {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
   padding: 4px 2px;
 }
@@ -614,7 +614,7 @@ function onFooterRefresh(): void {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 16px 16px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
 }
 

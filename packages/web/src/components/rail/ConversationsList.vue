@@ -197,7 +197,7 @@ function isSelected(state: TaskState): boolean {
 .cvl-title {
   min-width: 0;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
   overflow: hidden;
@@ -207,7 +207,7 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-count {
   flex: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--cs-ghost);
 }
@@ -228,7 +228,7 @@ function isSelected(state: TaskState): boolean {
   align-items: center;
   gap: 6px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   padding: 5px 10px;
   border: 1px solid var(--cs-green-ring);
@@ -276,7 +276,7 @@ function isSelected(state: TaskState): boolean {
 .cvl-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 7px 0 7px 28px;
   border: 1px solid var(--cs-line-2);
   border-radius: 8px;
@@ -325,7 +325,7 @@ function isSelected(state: TaskState): boolean {
 .cvl-empty {
   margin: 0;
   padding: 10px 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
 }
 
@@ -366,7 +366,7 @@ function isSelected(state: TaskState): boolean {
 .cvl-group-name {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -375,7 +375,7 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-group-count {
   flex: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--cs-ghost);
 }

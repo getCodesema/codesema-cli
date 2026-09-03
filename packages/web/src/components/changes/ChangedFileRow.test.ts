@@ -163,8 +163,8 @@ describe('geometry (fiche §5)', () => {
     expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*border-radius: 0;/)
   })
 
-  test('the path is 13px', () => {
-    expect(SOURCE).toMatch(/\.cfr-path\s*\{[^}]*font-size: 13px;/)
+  test('the path uses the base size token', () => {
+    expect(SOURCE).toMatch(/\.cfr-path\s*\{[^}]*font-size: var\(--fs-base\);/)
   })
 
   test('defect #4 fixed: the path truncates from the start (direction: rtl), never the end', () => {
@@ -173,12 +173,12 @@ describe('geometry (fiche §5)', () => {
     expect(SOURCE).not.toMatch(/\.cfr-path\s*\{[^}]*direction: ltr;/)
   })
 
-  test('the status text is 11px, attenuated size', () => {
-    expect(SOURCE).toMatch(/\.cfr-status\s*\{[^}]*font-size: 11px;/)
+  test('the status text uses the smallest size token', () => {
+    expect(SOURCE).toMatch(/\.cfr-status\s*\{[^}]*font-size: var\(--fs-xs\);/)
   })
 
-  test('the counters are 11px', () => {
-    expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-size: 11px;/)
+  test('the counters use the smallest size token', () => {
+    expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-size: var\(--fs-xs\);/)
   })
 
   test('defect #2 fixed: the counters use tabular figures', () => {

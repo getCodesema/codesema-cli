@@ -82,7 +82,7 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 }
 
 .djp-progress {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--codesema-ink-2);
   font-variant-numeric: tabular-nums;
@@ -112,7 +112,7 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
   display: flex;
   align-items: baseline;
   gap: 9px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   padding: 4px 2px;
 }
 
@@ -137,13 +137,13 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 
 .djp-id {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink);
   flex-shrink: 0;
 }
 
 .djp-source {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;

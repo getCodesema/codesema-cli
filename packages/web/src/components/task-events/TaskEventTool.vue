@@ -43,7 +43,7 @@ const detail = computed(() => {
 
 <style scoped>
 .tvt-root {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   padding: 3px 0;
 }
 
@@ -70,14 +70,14 @@ const detail = computed(() => {
 
 .tvt-glyph {
   flex: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
   transform: translateY(-1px);
 }
 
 .tvt-text {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
   min-width: 0;
   overflow-wrap: anywhere;
@@ -85,7 +85,7 @@ const detail = computed(() => {
 
 .tvt-hint {
   flex: none;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
 }
 
@@ -93,7 +93,7 @@ const detail = computed(() => {
   margin-left: auto;
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
 }
@@ -105,7 +105,7 @@ const detail = computed(() => {
   border-radius: 9px;
   background: var(--cs-surface-2);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--cs-text-2);
   white-space: pre-wrap;

@@ -400,7 +400,7 @@ defineExpose({ focus })
   background: transparent;
   color: var(--cs-text);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   padding: 12px 16px 4px;
   overflow-y: auto;

@@ -502,14 +502,14 @@ function onMobilePick(option: string): void {
 }
 
 .pv-brand-name {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   color: var(--cs-text);
 }
 
 .pv-brand-sub {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -520,7 +520,7 @@ function onMobilePick(option: string): void {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -534,7 +534,7 @@ function onMobilePick(option: string): void {
 }
 
 .pv-switch {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -564,7 +564,7 @@ function onMobilePick(option: string): void {
   margin: auto;
   max-width: 360px;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
@@ -597,7 +597,7 @@ function onMobilePick(option: string): void {
 .pv-lane-title {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--cs-text-2);
   white-space: nowrap;
@@ -613,7 +613,7 @@ function onMobilePick(option: string): void {
   background: transparent;
   padding: 3px 7px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
   cursor: pointer;
 }
@@ -642,7 +642,7 @@ function onMobilePick(option: string): void {
 
 .pv-hidden-label {
   flex: none;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
   white-space: nowrap;
 }
@@ -656,7 +656,7 @@ function onMobilePick(option: string): void {
   border-radius: 999px;
   padding: 4px 10px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-text-2);
   background: var(--cs-surface);
   cursor: pointer;

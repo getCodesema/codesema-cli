@@ -412,7 +412,7 @@ function onSortChange(event: Event): void {
 
 .bt-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
 }
@@ -458,7 +458,7 @@ function onSortChange(event: Event): void {
   outline: none;
   background: transparent;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 7px 0;
   color: var(--cs-text);
 }
@@ -473,7 +473,7 @@ function onSortChange(event: Event): void {
   border-radius: 999px;
   background: var(--cs-surface-2);
   color: var(--cs-text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -483,7 +483,7 @@ function onSortChange(event: Event): void {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -493,7 +493,7 @@ function onSortChange(event: Event): void {
   background: var(--cs-surface-2);
   color: var(--cs-text);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 4px 6px;
 }
 
@@ -507,7 +507,7 @@ function onSortChange(event: Event): void {
   background: transparent;
   color: var(--cs-text-2);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 5px 10px;
   cursor: pointer;
 }
@@ -545,13 +545,13 @@ function onSortChange(event: Event): void {
 .bt-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .bt-th {
   text-align: left;
   padding: 8px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -625,7 +625,7 @@ function onSortChange(event: Event): void {
   padding: 1px 6px;
   border: 1px solid var(--cs-line-2);
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-muted);
   background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);
@@ -640,7 +640,7 @@ function onSortChange(event: Event): void {
 
 .bt-branch-mono {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-text);
 }
 
@@ -652,7 +652,7 @@ function onSortChange(event: Event): void {
   padding: 1px 6px;
   border: 1px solid var(--cs-line-2);
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-text-2);
 }
@@ -660,7 +660,7 @@ function onSortChange(event: Event): void {
 .bt-branch-subject {
   margin: 2px 0 0;
   max-width: 360px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -671,7 +671,7 @@ function onSortChange(event: Event): void {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -681,7 +681,7 @@ function onSortChange(event: Event): void {
 }
 
 .bt-mr-state-text {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--cs-muted);
 }
@@ -703,7 +703,7 @@ function onSortChange(event: Event): void {
 }
 
 .bt-conversations-badge {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -714,7 +714,7 @@ function onSortChange(event: Event): void {
   background: transparent;
   color: var(--cs-text-2);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   padding: 5px 10px;
   cursor: pointer;
@@ -726,7 +726,7 @@ function onSortChange(event: Event): void {
 }
 
 .bt-detached-hint {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
   cursor: help;
 }
@@ -735,7 +735,7 @@ function onSortChange(event: Event): void {
   padding: 24px 16px;
   text-align: center;
   color: var(--cs-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .bt-expanded-row {
@@ -749,7 +749,7 @@ function onSortChange(event: Event): void {
 
 .bt-expanded-empty {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -777,7 +777,7 @@ function onSortChange(event: Event): void {
   background: transparent;
   color: var(--cs-text-2);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   padding: 5px 10px;
   cursor: pointer;

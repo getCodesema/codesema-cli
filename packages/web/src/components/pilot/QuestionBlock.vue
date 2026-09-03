@@ -38,7 +38,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 .qsb-banner {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -47,7 +47,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 
 .qsb-question {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--cs-text);
 }

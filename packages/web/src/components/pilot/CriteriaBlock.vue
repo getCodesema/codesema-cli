@@ -46,7 +46,7 @@ defineProps<{
 .crb-title {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -55,7 +55,7 @@ defineProps<{
 
 .crb-empty {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
@@ -72,7 +72,7 @@ defineProps<{
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-text);
 }
 
@@ -93,7 +93,7 @@ defineProps<{
 }
 
 .crb-evidence {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 

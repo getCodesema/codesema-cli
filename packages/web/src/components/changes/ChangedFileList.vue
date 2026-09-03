@@ -171,7 +171,7 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 
 .cfl-state-text {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
@@ -198,7 +198,7 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 
 .cfl-error-title {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-text);
 }
 
@@ -216,7 +216,7 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   background: var(--cs-inset);
   color: var(--cs-text-2);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: pre-wrap;
   text-align: left;
 }
@@ -228,7 +228,7 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   background: var(--cs-surface-2);
   color: var(--cs-text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   cursor: pointer;
   transition: border-color var(--cs-duration-fast) var(--cs-ease-out);
@@ -248,7 +248,7 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   padding: 8px 12px;
   border-bottom: 1px solid var(--cs-line);
   background: var(--cs-surface);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
@@ -275,7 +275,7 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 .cfl-diff-error {
   margin: 0;
   padding: 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 

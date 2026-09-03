@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'bun:test'
 
@@ -50,8 +51,8 @@ describe('style.css theme regression guard', () => {
 describe('foundations: the body sets both the size and the leading', () => {
   const body = css.slice(css.indexOf('body {'), css.indexOf('.codesema-muted'))
 
-  test('14px on 1.55: the size AND the leading, since the air comes from the leading', () => {
-    expect(body).toContain('font-size: 14px;')
+  test('the base size token on 1.55: the size AND the leading, since the air comes from the leading', () => {
+    expect(body).toContain('font-size: var(--fs-base);')
     expect(body).toContain('line-height: 1.55;')
   })
 
@@ -118,6 +119,41 @@ describe('no animation-fill-mode anywhere: the reduced-motion guard depends on i
         offenders.push(file)
       }
     }
+    expect(offenders).toEqual([])
+  })
+})
+
+const listVueFiles = (dir: string): string[] =>
+  readdirSync(dir).flatMap((entry) => {
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) {
+      return listVueFiles(path)
+    }
+    return entry.endsWith('.vue') ? [path] : []
+  })
+
+describe('type scale: every size is a --fs-* token, never a literal', () => {
+  const sizeTokens = [
+    '--fs-xs',
+    '--fs-sm',
+    '--fs-base',
+    '--fs-lg',
+    '--fs-xl',
+    '--fs-2xl',
+    '--fs-3xl',
+  ]
+
+  test('the seven tokens are declared in rem on the light root', () => {
+    for (const token of sizeTokens) {
+      expect(css).toMatch(new RegExp(`${token}: [0-9.]+rem;`))
+    }
+  })
+
+  test('no component declares a font-size in px', () => {
+    const srcDir = dirname(fileURLToPath(new URL('./style.css', import.meta.url)))
+    const offenders = listVueFiles(srcDir).filter((file) =>
+      /font-size:\s*[0-9.]+px/.test(readFileSync(file, 'utf-8')),
+    )
     expect(offenders).toEqual([])
   })
 })

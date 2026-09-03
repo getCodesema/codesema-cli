@@ -197,7 +197,7 @@ const railWidth = computed(() =>
 
 .rv-title {
   margin: 0 0 14px;
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--cs-text);
 }
@@ -211,7 +211,7 @@ const railWidth = computed(() =>
   display: inline-flex;
   align-items: center;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--cs-muted);
   padding: 8px 14px;

@@ -47,7 +47,7 @@ const tone = computed(() => checksTone(props.checks ?? null))
 .ckb-title {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -56,13 +56,13 @@ const tone = computed(() => checksTone(props.checks ?? null))
 
 .ckb-empty {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
 .ckb-verdict {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-muted);
 }
@@ -92,7 +92,7 @@ const tone = computed(() => checksTone(props.checks ?? null))
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .ckb-glyph {

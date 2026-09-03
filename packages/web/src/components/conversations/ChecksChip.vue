@@ -30,7 +30,7 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
   padding: 1px 6px;
   border: 1px solid var(--cs-line-2);
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-muted);
   background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);

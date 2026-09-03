@@ -104,7 +104,7 @@ const diffRegionId = `cfr-diff-${useId()}`
   background: none;
   color: inherit;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   text-align: left;
   cursor: pointer;
   transition: background var(--cs-duration-fast) var(--cs-ease-out);
@@ -139,14 +139,14 @@ const diffRegionId = `cfr-diff-${useId()}`
   text-align: left;
   unicode-bidi: plaintext;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-text);
 }
 
 /* Defect #1 fixed: a color per status instead of one uniform muted gray. */
 .cfr-status {
   flex: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .cfr-status--added {
@@ -170,7 +170,7 @@ const diffRegionId = `cfr-diff-${useId()}`
   flex: none;
   display: inline-flex;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }

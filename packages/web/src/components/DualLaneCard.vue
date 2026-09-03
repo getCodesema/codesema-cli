@@ -105,7 +105,7 @@ const severityCounts = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -137,7 +137,7 @@ const severityCounts = computed(() => {
   align-items: center;
   gap: 5px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-2);
   border: 1px solid var(--codesema-line);
   border-radius: 999px;
@@ -158,13 +158,13 @@ const severityCounts = computed(() => {
 
 .dlane-line {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-2);
   line-height: 1.5;
 }
 
 .dlane-line-tag {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -177,7 +177,7 @@ const severityCounts = computed(() => {
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-3);
   font-style: italic;
 }

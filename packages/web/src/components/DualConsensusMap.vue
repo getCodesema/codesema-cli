@@ -74,7 +74,7 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 }
 
 .dmap-head {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -153,7 +153,7 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -162,7 +162,7 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 
 .dmap-delta {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
   display: inline-flex;
   gap: 6px;
@@ -178,7 +178,7 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 
 .dmap-more {
   margin: 4px 0 0 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
 }
 </style>

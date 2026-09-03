@@ -117,13 +117,13 @@ const needsYouCount = computed(
 .mbl-title {
   margin: 0;
   flex: 1;
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--cs-text);
 }
 
 .mbl-badge {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-amber-text);
   background: var(--cs-amber-soft);
@@ -173,7 +173,7 @@ const needsYouCount = computed(
 }
 
 .mbl-row-title {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
   overflow: hidden;
@@ -182,7 +182,7 @@ const needsYouCount = computed(
 }
 
 .mbl-row-last {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -199,7 +199,7 @@ const needsYouCount = computed(
 
 .mbl-age {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
   white-space: nowrap;
 }

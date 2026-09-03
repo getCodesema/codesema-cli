@@ -52,7 +52,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
   align-items: baseline;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -60,7 +60,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 }
 
 .tvq-tag {
-  font-size: 8.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   color: var(--cs-amber-text);
@@ -76,7 +76,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
   border: 1px solid var(--cs-amber-line);
   border-radius: 3px 10px 10px 10px;
   background: var(--cs-amber-card);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   color: var(--cs-text);
   white-space: pre-wrap;
@@ -90,14 +90,14 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 
 .tvq-code {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-amber-text);
   white-space: pre-wrap;
 }
 
 .tvq-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-amber-text);
 }
 </style>

@@ -405,7 +405,7 @@ function focusComposer(): void {
   background: transparent;
   color: var(--cs-text-2);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   padding: 4px 6px;
   cursor: pointer;
@@ -451,7 +451,7 @@ function focusComposer(): void {
 
 .pt-sub {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -459,7 +459,7 @@ function focusComposer(): void {
 }
 
 .pt-title {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--cs-text);
   white-space: nowrap;
@@ -470,7 +470,7 @@ function focusComposer(): void {
 .pt-state {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -481,7 +481,7 @@ function focusComposer(): void {
 }
 
 .pt-action {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -578,7 +578,7 @@ function focusComposer(): void {
   padding: 7px 11px;
   cursor: pointer;
   list-style: none;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -602,7 +602,7 @@ function focusComposer(): void {
 
 .pt-tools-label--done {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .pt-tools-body {
@@ -634,7 +634,7 @@ function focusComposer(): void {
   display: inline-block;
   margin-bottom: 4px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--cs-muted);
@@ -642,7 +642,7 @@ function focusComposer(): void {
 
 .pt-live-text {
   margin: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--cs-text);
   white-space: pre-wrap;
@@ -651,7 +651,7 @@ function focusComposer(): void {
 
 .pt-live-hint {
   margin: 6px 0 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-amber-text);
 }
 

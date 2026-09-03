@@ -166,7 +166,7 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 }
 
 .rtp-project {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
 }
 
@@ -175,7 +175,7 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   align-items: center;
   gap: 8px;
   margin: 2px 0 0;
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--cs-text);
 }
@@ -188,13 +188,13 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 
 .rtp-number {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
 .rtp-hint {
   margin: 6px 0 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
 }
 
@@ -214,7 +214,7 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   background: var(--cs-surface);
   color: var(--cs-text);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -259,7 +259,7 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 
 .rtp-error {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-red-text);
 }
 
@@ -271,7 +271,7 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 
 .rtp-history-title {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -280,7 +280,7 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 
 .rtp-muted {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
@@ -304,7 +304,7 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   background: transparent;
   color: var(--cs-text-2);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
 }

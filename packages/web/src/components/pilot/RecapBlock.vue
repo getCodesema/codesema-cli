@@ -72,7 +72,7 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 .rcb-title {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -81,12 +81,12 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 
 .rcb-pending {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
 .rcb-summary {
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   color: var(--cs-text);
 }
@@ -94,7 +94,7 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 .rcb-section-title {
   margin: 0 0 4px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -104,14 +104,14 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 .rcb-list {
   margin: 0;
   padding-left: 18px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   color: var(--cs-text);
 }
 
 .rcb-list--mono {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .rcb-md :deep(p),
@@ -128,7 +128,7 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 .rcb-md :deep(h2),
 .rcb-md :deep(h3) {
   margin: 12px 0 6px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
 }
@@ -149,7 +149,7 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 
 .rcb-md :deep(code) {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-green-text);
   white-space: pre-wrap;
 }

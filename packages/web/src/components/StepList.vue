@@ -143,7 +143,7 @@ function onCardClick(index: number) {
 }
 
 .steplist-title {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -151,7 +151,7 @@ function onCardClick(index: number) {
 }
 
 .steplist-by {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
@@ -222,7 +222,7 @@ function onCardClick(index: number) {
 }
 
 .steplist-radio-check {
-  font-size: 9px;
+  font-size: var(--fs-xs);
   color: #fff;
   line-height: 1;
   font-weight: 700;
@@ -241,7 +241,7 @@ function onCardClick(index: number) {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--codesema-ink);
@@ -250,7 +250,7 @@ function onCardClick(index: number) {
 
 .steplist-card-num {
   font-family: var(--font-display);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 400;
   color: var(--codesema-ink-3);
   flex-shrink: 0;
@@ -270,7 +270,7 @@ function onCardClick(index: number) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   padding: 3px 10px;
   border-radius: 999px;
@@ -308,7 +308,7 @@ function onCardClick(index: number) {
   align-items: center;
   gap: 4px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .steplist-delta-add {
@@ -322,7 +322,7 @@ function onCardClick(index: number) {
 /* files / notes */
 .steplist-files-count,
 .steplist-findings-count {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
 }
 
@@ -336,7 +336,7 @@ function onCardClick(index: number) {
   background: var(--codesema-accent);
   /* dark ink on orange: ~7.6:1 contrast, white capped at 2.6:1 (AA = 4.5:1) */
   color: var(--codesema-bg);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
@@ -350,7 +350,7 @@ function onCardClick(index: number) {
 
 /* empty */
 .steplist-empty {
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 16px 0;
   text-align: center;
 }

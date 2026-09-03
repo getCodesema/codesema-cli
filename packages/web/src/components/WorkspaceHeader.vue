@@ -110,14 +110,14 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
 }
 
 .wh-brand-name {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   color: var(--cs-text);
 }
 
 .wh-brand-sub {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -132,7 +132,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
 }
 
 .wh-settings {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -148,7 +148,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
 }
 
 .wh-pilot-toggle {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -172,7 +172,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
   border: 1px solid var(--cs-amber-line);
   border-radius: 7px;
   background: var(--cs-amber-soft);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--cs-amber-text);
   cursor: help;
@@ -188,7 +188,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
   border: 1px solid var(--cs-amber-line);
   border-radius: 7px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--cs-amber-text);
   cursor: pointer;
@@ -202,7 +202,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 

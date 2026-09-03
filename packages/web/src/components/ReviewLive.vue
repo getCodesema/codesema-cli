@@ -264,7 +264,7 @@ function severityDot(severity?: string): string {
 }
 
 .live-title {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   margin: 0;
   font-family: var(--font-display);
@@ -273,14 +273,14 @@ function severityDot(severity?: string): string {
 .live-elapsed {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-3);
   font-variant-numeric: tabular-nums;
 }
 
 .live-branch {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-2);
   display: flex;
   align-items: center;
@@ -289,7 +289,7 @@ function severityDot(severity?: string): string {
 
 .live-branch-name {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .live-branch-arrow {
@@ -299,7 +299,7 @@ function severityDot(severity?: string): string {
 .live-agent {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
 }
 
@@ -309,7 +309,7 @@ function severityDot(severity?: string): string {
   color: var(--codesema-ink);
   border-radius: 10px;
   padding: 12px 14px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
@@ -321,7 +321,7 @@ function severityDot(severity?: string): string {
 }
 
 .live-chip {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-2);
   border: 1px solid var(--codesema-line);
   background: var(--codesema-panel);
@@ -351,7 +351,7 @@ function severityDot(severity?: string): string {
 }
 
 .live-panel-tag {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -368,7 +368,7 @@ function severityDot(severity?: string): string {
 }
 
 .live-verdict {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   border-radius: 999px;
   padding: 2px 10px;
   border: 1px solid var(--codesema-line);
@@ -396,7 +396,7 @@ function severityDot(severity?: string): string {
 
 .live-summary {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--codesema-ink);
   white-space: pre-wrap;
@@ -446,14 +446,14 @@ function severityDot(severity?: string): string {
 }
 
 .live-finding-title {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink);
   line-height: 1.45;
 }
 
 .live-finding-file {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
   overflow-wrap: anywhere;
 }
@@ -476,7 +476,7 @@ function severityDot(severity?: string): string {
 }
 
 .live-step-pill {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-2);
   border: 1px solid var(--codesema-line);
   border-radius: 999px;
@@ -488,7 +488,7 @@ function severityDot(severity?: string): string {
 
 .live-step-index {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--codesema-accent);
 }
 
@@ -507,20 +507,20 @@ function severityDot(severity?: string): string {
 
 .live-file-path {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-2);
   overflow-wrap: anywhere;
 }
 
 .live-file-delta {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   flex: none;
 }
 
 .live-file-more {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
 }
 
@@ -529,7 +529,7 @@ function severityDot(severity?: string): string {
   align-items: center;
   gap: 10px;
   margin: 4px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-3);
 }
 

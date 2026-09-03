@@ -96,7 +96,7 @@ onUnmounted(stop)
 }
 
 .app-nav-btn {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -119,7 +119,7 @@ onUnmounted(stop)
   align-items: center;
   justify-content: center;
   gap: 14px;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .app-error {
@@ -128,7 +128,7 @@ onUnmounted(stop)
 }
 
 .app-retry {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 7px 14px;

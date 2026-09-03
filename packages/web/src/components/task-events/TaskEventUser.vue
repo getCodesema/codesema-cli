@@ -39,7 +39,7 @@ const html = computed(() => renderMarkdown(props.text))
   border: 1px solid var(--cs-line-2);
   border-radius: 16px;
   background: var(--cs-surface);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 24px;
   color: var(--cs-text);
   overflow-wrap: anywhere;
@@ -63,7 +63,7 @@ const html = computed(() => renderMarkdown(props.text))
 .tvu-md :deep(h2),
 .tvu-md :deep(h3) {
   margin: 12px 0 6px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
 }
@@ -74,7 +74,7 @@ const html = computed(() => renderMarkdown(props.text))
 }
 
 .tvu-md :deep(h3) {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .tvu-md :deep(ul),
@@ -88,7 +88,7 @@ const html = computed(() => renderMarkdown(props.text))
 
 .tvu-md :deep(code) {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-green-text);
   white-space: pre-wrap;
 }

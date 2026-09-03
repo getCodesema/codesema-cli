@@ -566,7 +566,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-title {
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: var(--fs-2xl);
   font-weight: 500;
   letter-spacing: -0.01em;
   margin: 0;
@@ -579,7 +579,7 @@ const SEV_CLS: Record<string, string> = {
   align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
 }
 
@@ -595,7 +595,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-dual-stat {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   margin: 2px 0 0;
 }
 
@@ -654,7 +654,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-verdict {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   border-radius: 999px;
   padding: 5px 13px;
@@ -679,7 +679,7 @@ const SEV_CLS: Record<string, string> = {
 .sr-copy-btn {
   flex-shrink: 0;
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 6px 12px;
   border-radius: 8px;
   border: 1px solid var(--codesema-line);
@@ -705,7 +705,7 @@ const SEV_CLS: Record<string, string> = {
 .sr-fix-btn {
   flex-shrink: 0;
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 6px 12px;
   border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--codesema-accent) 45%, transparent);
@@ -740,7 +740,7 @@ const SEV_CLS: Record<string, string> = {
   padding: 10px 12px;
   margin-bottom: -1px;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--codesema-ink-3);
   cursor: pointer;
@@ -758,7 +758,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-tab-n {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   background: var(--codesema-line-2);
   border-radius: 999px;
   padding: 1px 7px;
@@ -784,7 +784,7 @@ const SEV_CLS: Record<string, string> = {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 5px 10px;
   border-radius: 7px;
   color: var(--codesema-ink-2);
@@ -805,7 +805,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-mode-n {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   background: var(--codesema-risk-high);
   color: #fff;
   border-radius: 999px;
@@ -814,7 +814,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-tabs-delta {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   gap: 6px;
 }
@@ -865,7 +865,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-general-tag {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -885,13 +885,13 @@ const SEV_CLS: Record<string, string> = {
 .sr-general-item {
   border-left: 2px solid var(--codesema-line);
   padding-left: 12px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   color: var(--codesema-ink-2);
 }
 
 .sr-sev {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   margin-right: 8px;
@@ -913,7 +913,7 @@ const SEV_CLS: Record<string, string> = {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -951,7 +951,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-general-file {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-right: 6px;
   color: var(--codesema-ink-3);
 }
@@ -963,7 +963,7 @@ const SEV_CLS: Record<string, string> = {
   background: var(--codesema-risk-low-soft);
   color: var(--codesema-risk-low);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1000,7 +1000,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-files-tbtn {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 6px 11px;
   border-radius: 8px;
   border: 1px solid var(--codesema-line);
@@ -1026,7 +1026,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-files-seg button {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 5px 10px;
   border-radius: 7px;
   color: var(--codesema-ink-2);
@@ -1054,7 +1054,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-empty-msg {
   padding: 32px 26px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 /* ── Guided note tour (floating pill) ───────────────────────── */
@@ -1080,7 +1080,7 @@ const SEV_CLS: Record<string, string> = {
   background: none;
   border: none;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--codesema-ink-2);
   cursor: pointer;
@@ -1098,7 +1098,7 @@ const SEV_CLS: Record<string, string> = {
   border-radius: 6px;
   background: var(--codesema-accent);
   color: #fff;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1112,7 +1112,7 @@ const SEV_CLS: Record<string, string> = {
   border: 1px solid var(--codesema-line);
   background: var(--codesema-panel);
   color: var(--codesema-ink-2);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-family: inherit;
   cursor: pointer;
   display: grid;
@@ -1136,7 +1136,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-tour-count {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--codesema-ink);
   min-width: 52px;

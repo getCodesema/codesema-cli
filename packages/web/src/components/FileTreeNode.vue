@@ -111,7 +111,7 @@ const paddingLeft = computed(() => {
   padding-bottom: 4px;
   padding-right: 10px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-3);
   font-weight: 600;
   text-align: left;
@@ -127,7 +127,7 @@ const paddingLeft = computed(() => {
 }
 
 .ftn-dir-ic {
-  font-size: 9px;
+  font-size: var(--fs-xs);
   transition: transform 0.15s;
   display: inline-block;
   flex-shrink: 0;
@@ -158,7 +158,7 @@ const paddingLeft = computed(() => {
   padding-bottom: 3px;
   padding-right: 10px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-2);
   text-align: left;
   transition: background 0.1s;
@@ -172,7 +172,7 @@ const paddingLeft = computed(() => {
 
 .ftn-file-ic {
   color: var(--codesema-ink-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
 }
 
@@ -188,7 +188,7 @@ const paddingLeft = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
 }
 
@@ -201,7 +201,7 @@ const paddingLeft = computed(() => {
 }
 
 .ftn-cmt {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--codesema-ink-3);
   flex-shrink: 0;
   background: var(--codesema-line-2);
