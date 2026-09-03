@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { CHECK_GLYPH, CHECK_STATUS_KEY, shortSha } from '../../composables/useChecks'
 import { activityPhraseKey } from '../../composables/useTaskBoard'
 import { evidenceFileUrl } from '../../composables/useTasks'
 import { t, type MessageKey } from '../../i18n'
 import type {
+  EvidenceItem,
   EvidenceRecord,
   ProofIntentKind,
   TaskActivity,
   TaskVerification,
   TaskVerificationStatus,
 } from '../../types'
+import MediaViewer from './MediaViewer.vue'
 
 const props = defineProps<{
   projectId: string
@@ -21,6 +23,17 @@ const props = defineProps<{
 }>()
 
 const items = computed(() => props.evidence?.items ?? [])
+
+const opened = ref<EvidenceItem | null>(null)
+
+function itemUrl(item: EvidenceItem): string {
+  return evidenceFileUrl(props.projectId, props.taskId, item.path)
+}
+
+function itemCaption(item: EvidenceItem): string {
+  const turn = t('pilot.evidence.turn', { n: item.turn })
+  return item.kind === 'video' ? `${t('pilot.evidence.videoLabel')} · ${turn}` : turn
+}
 const isEmpty = computed(() => props.evidence == null || items.value.length === 0)
 const failed = computed(() => props.evidence?.status === 'failed')
 
@@ -111,25 +124,45 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
     <p v-else-if="isEmpty" class="evb-empty">{{ t('pilot.evidence.none') }}</p>
     <div v-else class="evb-items">
       <figure v-for="item in items" :key="item.path" class="evb-item">
-        <img
+        <button
           v-if="item.kind === 'screenshot'"
-          class="evb-media"
-          :src="evidenceFileUrl(projectId, taskId, item.path)"
-          :alt="t('pilot.evidence.screenshotAlt')"
-        />
+          type="button"
+          class="evb-open"
+          :aria-label="t('pilot.media.open')"
+          @click.stop="opened = item"
+          @keydown.stop
+        >
+          <img class="evb-media" :src="itemUrl(item)" :alt="t('pilot.evidence.screenshotAlt')" />
+        </button>
         <video
           v-else
           class="evb-media"
           controls
           preload="metadata"
-          :src="evidenceFileUrl(projectId, taskId, item.path)"
+          :src="itemUrl(item)"
+          @click.stop
         />
         <figcaption class="evb-caption">
-          <span v-if="item.kind === 'video'">{{ t('pilot.evidence.videoLabel') }} · </span
-          >{{ t('pilot.evidence.turn', { n: item.turn }) }}
+          <span>{{ itemCaption(item) }}</span>
+          <button
+            v-if="item.kind === 'video'"
+            type="button"
+            class="evb-enlarge"
+            @click.stop="opened = item"
+            @keydown.stop
+          >
+            {{ t('pilot.media.open') }}
+          </button>
         </figcaption>
       </figure>
     </div>
+    <MediaViewer
+      v-if="opened"
+      :src="itemUrl(opened)"
+      :kind="opened.kind"
+      :caption="itemCaption(opened)"
+      @close="opened = null"
+    />
     <p v-if="review" class="evb-verdict">
       <span
         class="evb-verdict-dot"
@@ -309,9 +342,47 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   background: var(--cs-inset);
 }
 
+.evb-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.evb-open:focus-visible {
+  outline: 2px solid var(--cs-focus-ring);
+  outline-offset: 2px;
+}
+
+.evb-open:hover .evb-media {
+  border-color: var(--cs-line-3);
+}
+
 .evb-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   font-size: 10.5px;
   color: var(--cs-muted);
+}
+
+.evb-enlarge {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--cs-text-2);
+  cursor: pointer;
+}
+
+.evb-enlarge:hover {
+  color: var(--cs-text);
 }
 
 .evb-verification {

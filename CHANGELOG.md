@@ -16,6 +16,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Every screenshot and video in the evidence block opens a full-screen viewer** with wheel, button and keyboard zoom, click-to-zoom and drag-to-pan, closed by Escape.
 - **A widened lane, the full view and the mobile pane now share one chat-shaped thread** (`PilotThread`): the journal reads as a conversation, with the criteria, checks, evidence and recap blocks anchored where the run produced them instead of stacked at the end.
 - **Task events hydrate both the card and the expanded view**, instead of only one of the two.
 - **Checks hydrate the same way, and task cards gained their own actions.**

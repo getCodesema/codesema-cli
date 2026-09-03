@@ -947,6 +947,12 @@ const en = {
   'pilot.lane.close': 'Hide this conversation',
   'pilot.lane.hidden': '{n} conversation hidden | {n} conversations hidden',
   'pilot.lane.reopen': 'Show again',
+  'pilot.media.open': 'View larger',
+  'pilot.media.close': 'Close',
+  'pilot.media.aria': 'Evidence viewer',
+  'pilot.media.zoomIn': 'Zoom in',
+  'pilot.media.zoomOut': 'Zoom out',
+  'pilot.media.reset': 'Fit',
 }
 
 export type MessageKey = keyof typeof en
@@ -1863,6 +1869,12 @@ const fr: Record<MessageKey, string> = {
   'pilot.lane.close': 'Masquer cette conversation',
   'pilot.lane.hidden': '{n} masquée | {n} masquées',
   'pilot.lane.reopen': 'Réafficher',
+  'pilot.media.open': 'Voir en grand',
+  'pilot.media.close': 'Fermer',
+  'pilot.media.aria': 'Visionneuse de preuves',
+  'pilot.media.zoomIn': 'Agrandir',
+  'pilot.media.zoomOut': 'Réduire',
+  'pilot.media.reset': 'Ajuster',
 }
 
 /**

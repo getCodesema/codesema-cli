@@ -233,6 +233,46 @@ describe('EvidenceBlock: items render as media, URL-encoded, labeled by turn', (
   })
 })
 
+describe('EvidenceBlock: every item opens the full-screen viewer', () => {
+  test('a screenshot is wrapped in an open button, closed by default', async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({
+        items: [{ kind: 'screenshot', path: 'a.png', bytes: 1, turn: 1, created_at: 'now' }],
+      }),
+    })
+    expect(html).toMatch(/<button[^>]*class="evb-open"[^>]*aria-label="[^"]+"[^>]*>\s*<img/)
+    expect(html).toContain(`aria-label="${t('pilot.media.open')}"`)
+    expect(html).not.toContain('evb-enlarge')
+    expect(html).not.toContain('mv-root')
+  })
+
+  test('a video keeps its native controls and gets a "view larger" button in its caption', async () => {
+    const html = await render({
+      projectId: 'proj-a',
+      taskId: 'task-1',
+      evidence: record({
+        items: [{ kind: 'video', path: 'clip.webm', bytes: 1, turn: 3, created_at: 'now' }],
+      }),
+    })
+    expect(html).toContain('<video')
+    expect(html).toContain('evb-enlarge')
+    expect(html).toContain(t('pilot.media.open'))
+    expect(html).not.toContain('evb-open')
+    expect(html).toContain(
+      `${t('pilot.evidence.videoLabel')} · ${t('pilot.evidence.turn', { n: 3 })}`,
+    )
+  })
+
+  test('the open handlers stop propagation so a card zone never steals the click', () => {
+    const source = readFileSync(new URL('./EvidenceBlock.vue', import.meta.url), 'utf-8')
+    expect(source.match(/@click\.stop="opened = item"/g)).toHaveLength(2)
+    expect(source).toContain('<MediaViewer')
+    expect(source).toContain('@close="opened = null"')
+  })
+})
+
 describe('EvidenceBlock: the verification section is absent unless there is a real record', () => {
   test('undefined verification renders no verification section at all', async () => {
     const html = await render({ projectId: 'proj-a', taskId: 'task-1' })
