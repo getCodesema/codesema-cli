@@ -103,51 +103,53 @@ function onSend(text: string): void {
     <!-- Not literal <button>s: EvidenceBlock can render a real <video
          controls> and RecapBlock's markdown can render <a> links, both
          interactive content HTML5 forbids nesting inside a <button>. -->
-    <div class="ac-body">
-      <div
-        class="ac-zone"
-        role="button"
-        tabindex="0"
-        @click="openLens('evidence')"
-        @keydown="onZoneKeydown($event, 'evidence')"
-      >
-        <EvidenceBlock
-          :project-id="state.projectId"
-          :task-id="record.id"
-          :evidence="state.evidence ?? null"
-          :verification="state.verification ?? null"
-          :activity="record.activity ?? null"
-        />
+    <div class="ac-scroll">
+      <div class="ac-body">
+        <div
+          class="ac-zone"
+          role="button"
+          tabindex="0"
+          @click="openLens('evidence')"
+          @keydown="onZoneKeydown($event, 'evidence')"
+        >
+          <EvidenceBlock
+            :project-id="state.projectId"
+            :task-id="record.id"
+            :evidence="state.evidence ?? null"
+            :verification="state.verification ?? null"
+            :activity="record.activity ?? null"
+          />
+        </div>
+        <div
+          class="ac-zone"
+          role="button"
+          tabindex="0"
+          @click="openLens('recap')"
+          @keydown="onZoneKeydown($event, 'recap')"
+        >
+          <RecapBlock :recap="state.recap ?? null" />
+        </div>
       </div>
-      <div
-        class="ac-zone"
-        role="button"
-        tabindex="0"
-        @click="openLens('recap')"
-        @keydown="onZoneKeydown($event, 'recap')"
-      >
-        <RecapBlock :recap="state.recap ?? null" />
-      </div>
-    </div>
 
-    <div class="ac-proofs">
-      <div
-        class="ac-zone"
-        role="button"
-        tabindex="0"
-        @click="openLens('checks')"
-        @keydown="onZoneKeydown($event, 'checks')"
-      >
-        <ChecksBlock :checks="state.checks" />
-      </div>
-      <div
-        class="ac-zone"
-        role="button"
-        tabindex="0"
-        @click="openLens('criteria')"
-        @keydown="onZoneKeydown($event, 'criteria')"
-      >
-        <CriteriaBlock :criteria="criteria" />
+      <div class="ac-proofs">
+        <div
+          class="ac-zone"
+          role="button"
+          tabindex="0"
+          @click="openLens('checks')"
+          @keydown="onZoneKeydown($event, 'checks')"
+        >
+          <ChecksBlock :checks="state.checks" />
+        </div>
+        <div
+          class="ac-zone"
+          role="button"
+          tabindex="0"
+          @click="openLens('criteria')"
+          @keydown="onZoneKeydown($event, 'criteria')"
+        >
+          <CriteriaBlock :criteria="criteria" />
+        </div>
       </div>
     </div>
 
@@ -286,6 +288,12 @@ function onSend(text: string): void {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   white-space: nowrap;
+}
+
+.ac-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .ac-body {

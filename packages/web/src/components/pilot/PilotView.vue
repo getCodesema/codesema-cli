@@ -440,6 +440,7 @@ function onMobilePick(option: string): void {
 
     <Lens
       v-if="expandedState !== null"
+      flush
       :title="expandedState.record.title"
       @close="expandedId = null"
     >

@@ -4,6 +4,7 @@ import { t } from '../../i18n'
 
 defineProps<{
   title: string
+  flush?: boolean
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -43,7 +44,7 @@ onUnmounted(() => {
         <span class="pl-lens-title">{{ title }}</span>
       </div>
       <div class="pl-lens-body">
-        <div class="pl-lens-slot" @click.stop>
+        <div class="pl-lens-slot" :class="{ 'pl-lens-slot--flush': flush }" @click.stop>
           <slot />
         </div>
       </div>
@@ -100,14 +101,31 @@ onUnmounted(() => {
 
 .pl-lens-body {
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   place-items: center;
   padding: 0 24px 24px;
   min-height: 0;
 }
 
 .pl-lens-slot {
+  width: min(1100px, 100%);
   min-width: 0;
-  max-width: 100%;
   max-height: 100%;
+  overflow: auto;
+  padding: 20px 24px;
+  border: 1px solid var(--cs-line-2);
+  border-radius: 14px;
+  background: var(--cs-panel);
+  box-shadow: var(--cs-shadow-panel);
+}
+
+.pl-lens-slot--flush {
+  width: auto;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 </style>

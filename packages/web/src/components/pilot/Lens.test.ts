@@ -80,3 +80,28 @@ describe('Lens: no hardcoded color leaks into the component', () => {
     expect(styleBlock).not.toMatch(/animation-fill-mode\s*:|animation\s*:[^;]*\b(forwards|both)\b/)
   })
 })
+
+describe('Lens: the zoomed block sits in an opaque panel, never bare on the veil', () => {
+  const source = readFileSync(new URL('./Lens.vue', import.meta.url), 'utf-8')
+  const styleBlock = source.slice(source.indexOf('<style'), source.lastIndexOf('</style>'))
+
+  test('the slot is a bounded, scrollable panel', () => {
+    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*background: var\(--cs-panel\);/)
+    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*border: 1px solid var\(--cs-line-2\);/)
+    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*width: min\(1100px, 100%\);/)
+    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*overflow: auto;/)
+    expect(styleBlock).toMatch(/\.pl-lens-body\s*\{[^}]*grid-template-rows: minmax\(0, 1fr\);/)
+  })
+
+  test('flush drops the panel chrome for content that brings its own', async () => {
+    const Lens = (await import('./Lens.vue')).default
+    const app = createSSRApp({
+      render: () => h(Lens, { title: 'My task', flush: true }, { default: () => h('div', 'X') }),
+    })
+    const ctx: Record<string, unknown> = {}
+    await renderToString(app, ctx)
+    const teleported = (ctx.teleports as Record<string, string> | undefined)?.body ?? ''
+    expect(teleported).toContain('pl-lens-slot--flush')
+    expect(styleBlock).toMatch(/\.pl-lens-slot--flush\s*\{[^}]*background: transparent;/)
+  })
+})

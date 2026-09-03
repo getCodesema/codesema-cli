@@ -358,3 +358,22 @@ describe('AgentCard: no hex color literal in its scoped style', () => {
     expect(style.match(/#[0-9a-fA-F]{3,8}\b/g)).toBeNull()
   })
 })
+
+describe('AgentCard: the middle of the card scrolls, head and footer stay put', () => {
+  test('body and proofs sit in one scrollable region between the head and the footer', async () => {
+    const html = await render({ state: state() })
+    const scrollStart = html.indexOf('class="ac-scroll"')
+    const footStart = html.indexOf('class="ac-foot"')
+    expect(scrollStart).toBeGreaterThan(html.indexOf('class="ac-head"'))
+    expect(html.indexOf('class="ac-body"')).toBeGreaterThan(scrollStart)
+    expect(html.indexOf('class="ac-proofs"')).toBeGreaterThan(scrollStart)
+    expect(footStart).toBeGreaterThan(html.indexOf('class="ac-proofs"'))
+  })
+
+  test('the scroll region grows into the card and scrolls vertically', () => {
+    const source = readFileSync(fileURLToPath(new URL('./AgentCard.vue', import.meta.url)), 'utf-8')
+    expect(source).toMatch(/\.ac-scroll\s*\{[^}]*flex: 1;/)
+    expect(source).toMatch(/\.ac-scroll\s*\{[^}]*min-height: 0;/)
+    expect(source).toMatch(/\.ac-scroll\s*\{[^}]*overflow-y: auto;/)
+  })
+})

@@ -24,6 +24,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A task card that is not the expanded lane now scrolls** between its header and its footer instead of clipping its blocks.
+- **The lens now frames the zoomed block in an opaque panel** with a bounded width and its own scroll, instead of floating it bare over the veil.
 - **Claude credentials are now seeded into microvm turns and reviews**, closing the gap where either ran without them.
 - **Evidence file URLs are now scoped to their project**, so one project can no longer read another's captures.
 
