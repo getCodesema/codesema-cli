@@ -104,7 +104,7 @@ function onSend(text: string): void {
          controls> and RecapBlock's markdown can render <a> links, both
          interactive content HTML5 forbids nesting inside a <button>. -->
     <div class="ac-scroll">
-      <div class="ac-body">
+      <div class="ac-blocks">
         <div
           class="ac-zone"
           role="button"
@@ -129,9 +129,6 @@ function onSend(text: string): void {
         >
           <RecapBlock :recap="state.recap ?? null" />
         </div>
-      </div>
-
-      <div class="ac-proofs">
         <div
           class="ac-zone"
           role="button"
@@ -296,19 +293,12 @@ function onSend(text: string): void {
   overflow-y: auto;
 }
 
-.ac-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  padding: 12px 14px 0;
-  min-width: 0;
-}
-
-.ac-proofs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.ac-blocks {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
+  min-width: 0;
 }
 
 .ac-zone {

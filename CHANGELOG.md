@@ -16,6 +16,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **A task card stacks its four blocks in one column** (evidence, recap, checks, criteria) instead of a two-by-two grid.
 - **Every font size in the web UI is now one of seven `--fs-*` tokens declared once in `style.css`**, in rem, replacing 500 hard-coded px values; the dense sizes moved up (nothing below 11px, read text at 14px), and the tests refuse any new px font size in a component.
 - **Every screenshot and video in the evidence block opens a full-screen viewer** with wheel, button and keyboard zoom, click-to-zoom and drag-to-pan, closed by Escape.
 - **A widened lane, the full view and the mobile pane now share one chat-shaped thread** (`PilotThread`): the journal reads as a conversation, with the criteria, checks, evidence and recap blocks anchored where the run produced them instead of stacked at the end.

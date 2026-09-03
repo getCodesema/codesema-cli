@@ -360,14 +360,13 @@ describe('AgentCard: no hex color literal in its scoped style', () => {
 })
 
 describe('AgentCard: the middle of the card scrolls, head and footer stay put', () => {
-  test('body and proofs sit in one scrollable region between the head and the footer', async () => {
+  test('the four blocks sit in one scrollable column between the head and the footer', async () => {
     const html = await render({ state: state() })
     const scrollStart = html.indexOf('class="ac-scroll"')
     const footStart = html.indexOf('class="ac-foot"')
     expect(scrollStart).toBeGreaterThan(html.indexOf('class="ac-head"'))
-    expect(html.indexOf('class="ac-body"')).toBeGreaterThan(scrollStart)
-    expect(html.indexOf('class="ac-proofs"')).toBeGreaterThan(scrollStart)
-    expect(footStart).toBeGreaterThan(html.indexOf('class="ac-proofs"'))
+    expect(html.indexOf('class="ac-blocks"')).toBeGreaterThan(scrollStart)
+    expect(footStart).toBeGreaterThan(html.indexOf('class="ac-blocks"'))
   })
 
   test('the scroll region grows into the card and scrolls vertically', () => {
@@ -375,5 +374,17 @@ describe('AgentCard: the middle of the card scrolls, head and footer stay put', 
     expect(source).toMatch(/\.ac-scroll\s*\{[^}]*flex: 1;/)
     expect(source).toMatch(/\.ac-scroll\s*\{[^}]*min-height: 0;/)
     expect(source).toMatch(/\.ac-scroll\s*\{[^}]*overflow-y: auto;/)
+  })
+})
+
+describe('AgentCard: the four blocks stack in one column', () => {
+  test('evidence, recap, checks, criteria follow each other in a single flex column', () => {
+    const source = readFileSync(fileURLToPath(new URL('./AgentCard.vue', import.meta.url)), 'utf-8')
+    expect(source).toMatch(/\.ac-blocks\s*\{[^}]*flex-direction: column;/)
+    expect(source).not.toContain('grid-template-columns: 1fr 1fr')
+    const order = ['<EvidenceBlock', '<RecapBlock', '<ChecksBlock', '<CriteriaBlock'].map((tag) =>
+      source.indexOf(tag),
+    )
+    expect(order).toEqual(order.toSorted((a, b) => a - b))
   })
 })
