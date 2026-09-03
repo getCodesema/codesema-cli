@@ -3,6 +3,8 @@
 // pick, ship, stop, resume, the "other" focus) are DOM-only and not
 // observable via renderToString: only the markup a given `state` renders is
 // checked.
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
@@ -282,5 +284,23 @@ describe('PilotThread: composer', () => {
     expect(html).toContain('class="cc-root"')
     expect(html).toContain(t('workspace.replyPlaceholder'))
     expect(html).toContain('disabled')
+  })
+})
+
+describe('PilotThread: opens at the bottom and follows the tail while the reader stays there', () => {
+  const source = readFileSync(fileURLToPath(new URL('./PilotThread.vue', import.meta.url)), 'utf-8')
+
+  test('mounting and switching task both jump to the tail', () => {
+    expect(source).toContain('onMounted(jumpToTail)')
+    expect(source).toContain('() => record.value.id')
+    expect(source).toContain('pinnedToTail = true')
+  })
+
+  test('scrolling away unpins, and growth only follows while pinned', () => {
+    expect(source).toContain('class="pt-scroll" @scroll="onScroll"')
+    expect(source).toMatch(
+      /pinnedToTail = el\.scrollHeight - el\.scrollTop - el\.clientHeight < FOLLOW_MARGIN_PX/,
+    )
+    expect(source).toMatch(/if \(pinnedToTail\) \{\s*jumpToTail\(\)/)
   })
 })

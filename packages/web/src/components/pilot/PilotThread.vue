@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { extractQuickReplies } from '../../composables/useQuickReplies'
 import {
   activityPhraseKey,
@@ -182,19 +182,40 @@ const activeQuestionOptions = computed(() =>
 
 const scrollRef = ref<HTMLDivElement | null>(null)
 const FOLLOW_MARGIN_PX = 80
+let pinnedToTail = true
 
-function followTail(): void {
+function jumpToTail(): void {
+  void nextTick(() => {
+    const el = scrollRef.value
+    if (el) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
+}
+
+function onScroll(): void {
   const el = scrollRef.value
   if (!el) {
     return
   }
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_MARGIN_PX
-  if (nearBottom) {
-    void nextTick(() => {
-      el.scrollTop = el.scrollHeight
-    })
+  pinnedToTail = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_MARGIN_PX
+}
+
+function followTail(): void {
+  if (pinnedToTail) {
+    jumpToTail()
   }
 }
+
+onMounted(jumpToTail)
+
+watch(
+  () => record.value.id,
+  () => {
+    pinnedToTail = true
+    jumpToTail()
+  },
+)
 
 watch(
   () => [
@@ -272,7 +293,7 @@ function focusComposer(): void {
       </div>
     </header>
 
-    <div ref="scrollRef" class="pt-scroll">
+    <div ref="scrollRef" class="pt-scroll" @scroll="onScroll">
       <div class="pt-thread">
         <template v-for="item in thread" :key="item.key">
           <template v-if="item.kind === 'single'">
