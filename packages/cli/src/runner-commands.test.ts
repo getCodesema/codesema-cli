@@ -746,14 +746,24 @@ describe('runnerCommand', () => {
       ).rejects.toThrow()
     })
 
-    describe('connected, non-interactive (no TTY in this test environment)', () => {
+    describe('connected, non-interactive (stdin and stdout forced off the TTY)', () => {
+      const previousStdinIsTTY = process.stdin.isTTY
+      const previousStdoutIsTTY = process.stdout.isTTY
+
       beforeEach(() => {
+        process.stdin.isTTY = false
+        process.stdout.isTTY = false
         saveGlobalConfig({
           ...loadGlobalConfig(),
           syncUrl: 'https://hub.example',
           syncWorkspaceId: 'ws1',
           syncSecret: 'sec1',
         })
+      })
+
+      afterEach(() => {
+        process.stdin.isTTY = previousStdinIsTTY
+        process.stdout.isTTY = previousStdoutIsTTY
       })
 
       test('without --fingerprint or a token flag, refuses immediately and lists what is missing', async () => {
