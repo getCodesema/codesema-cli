@@ -145,7 +145,7 @@ describe('selection: the active repository is a tinted fill, never a border', ()
       SOURCE.indexOf('.rpl-project--active {'),
       SOURCE.indexOf('.rpl-icon-slot {'),
     )
-    expect(rule).toContain('background: var(--cs-green-soft);')
+    expect(rule).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
     expect(rule).not.toContain('border-color')
   })
 })
@@ -198,7 +198,7 @@ describe('removal: hidden until interaction, double-click arm pattern preserved 
       SOURCE.indexOf('.rpl-remove--armed {'),
       SOURCE.indexOf('.rpl-remove--armed {') + 150,
     )
-    expect(rule).toContain('var(--cs-red-text)')
+    expect(rule).toContain('var(--err)')
   })
 })
 
@@ -245,7 +245,6 @@ describe('root: no fixed width, matches ConversationsList.vue as a swappable slo
   test('the same card treatment as ConversationsList.vue: radius, border, shadow', () => {
     const root = SOURCE.slice(SOURCE.indexOf('.rpl-root {'), SOURCE.indexOf('.rpl-header {'))
     expect(root).toContain('border-radius: 16px;')
-    expect(root).toContain('box-shadow: var(--cs-shadow-panel);')
   })
 })
 
@@ -258,7 +257,7 @@ describe('rows carry no border: explicit, never a bare omission', () => {
     expect(block).toContain('border: none;')
   })
 
-  test('no hex literal was introduced: every color is a --cs-* token', () => {
+  test('no hex literal was introduced: every color is a theme tokens', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

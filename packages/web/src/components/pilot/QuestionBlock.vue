@@ -30,25 +30,25 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
-  border: 1px solid var(--cs-amber-line);
+  border: 1px solid var(--warn);
   border-radius: 8px;
-  background: var(--cs-amber-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .qsb-banner {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .qsb-question {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.5;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 </style>

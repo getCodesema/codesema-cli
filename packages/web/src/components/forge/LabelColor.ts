@@ -64,16 +64,16 @@ export function contrastTextColor(color: string): LabelPillTextColor {
  * (LabelChips) or just the rest one (the non-interactive compact pill,
  * which never enters a "selected" state). A `null` or unreadable color
  * collapses onto the same neutral fallback, itself expressed as `var(...)`
- * onto our own `--cs-*` tokens: never an invented color, never a literal hex
+ * onto our own theme tokens: never an invented color, never a literal hex
  * in a stylesheet.
  */
 export function labelPillStyle(color: string | null): Record<string, string> {
   const rgb = color === null ? null : parseHexColor(color)
   if (rgb === null) {
     return {
-      '--lp-rest-bg': 'var(--cs-line-2)',
-      '--lp-selected-bg': 'var(--cs-green)',
-      '--lp-selected-text': 'var(--cs-on-green)',
+      '--lp-rest-bg': 'var(--line)',
+      '--lp-selected-bg': 'var(--ok)',
+      '--lp-selected-text': 'var(--bg)',
     }
   }
   return {

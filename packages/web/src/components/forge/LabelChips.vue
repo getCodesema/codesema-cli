@@ -4,7 +4,7 @@
 // presentational: the parent owns the selection and the toggle logic. The
 // pill's fill comes from the label's own color (forge data), computed by
 // LabelColor.ts; only the neutral fallback (no color, or one that slipped
-// past upstream validation) comes from our own --cs-* tokens.
+// past upstream validation) comes from our own theme tokens.
 import { t } from '../../i18n'
 import type { LabelCount } from './ForgeLogic'
 import { labelPillStyle } from './LabelColor'
@@ -48,17 +48,17 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
    pill from the label's own forge color (see LabelColor.ts), never a literal
    hex here. */
 .lc-chip {
-  --lp-rest-bg: var(--cs-line-2);
-  --lp-selected-bg: var(--cs-green);
-  --lp-selected-text: var(--cs-on-green);
+  --lp-rest-bg: var(--line);
+  --lp-selected-bg: var(--ok);
+  --lp-selected-text: var(--bg);
 
   display: inline-flex;
   align-items: center;
   gap: 8px;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   padding: 4px 12px;
   border: none;
   border-radius: 999px;
@@ -74,8 +74,8 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
 }
 
 .lc-count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   opacity: 0.6;
 }

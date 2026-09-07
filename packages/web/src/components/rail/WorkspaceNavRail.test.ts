@@ -78,7 +78,7 @@ describe('categories: all three render, the active one carries the tinted accent
       SOURCE.indexOf('.wnr-cat--active {'),
       SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
     )
-    expect(block).toContain('background: var(--cs-green-soft);')
+    expect(block).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
     expect(block).not.toContain('border-color')
   })
 
@@ -88,7 +88,7 @@ describe('categories: all three render, the active one carries the tinted accent
       SOURCE.indexOf('.wnr-cat--active .wnr-row-icon {'),
       SOURCE.indexOf('.wnr-icon-slot {'),
     )
-    expect(block).toContain('color: var(--cs-green-text);')
+    expect(block).toContain('color: var(--ok);')
   })
 })
 
@@ -183,7 +183,7 @@ describe('footer: settings sits below a hairline, set off from the categories', 
       SOURCE.indexOf('.wnr-footer {'),
       SOURCE.indexOf('.wnr-footer {') + 150,
     )
-    expect(block).toContain('border-top: 1px solid var(--cs-line);')
+    expect(block).toContain('border-top: 1px solid var(--line);')
   })
 })
 
@@ -193,7 +193,7 @@ describe('rows carry no border: explicit, never a bare omission', () => {
     expect(block).toContain('border: none;')
   })
 
-  test('no hex literal was introduced: every color is a --cs-* token', () => {
+  test('no hex literal was introduced: every color is a theme tokens', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

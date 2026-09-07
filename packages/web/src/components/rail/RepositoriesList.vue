@@ -268,9 +268,8 @@ function requestRemove(id: string): void {
   width: 100%;
   min-height: 0;
   border-radius: 16px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-panel);
-  box-shadow: var(--cs-shadow-panel);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -281,16 +280,16 @@ function requestRemove(id: string): void {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .rpl-title {
   flex: 1;
   min-width: 0;
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -298,9 +297,9 @@ function requestRemove(id: string): void {
 
 .rpl-count {
   flex: none;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .rpl-search {
@@ -316,24 +315,24 @@ function requestRemove(id: string): void {
   transform: translateY(-50%);
   width: 14px;
   height: 14px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   pointer-events: none;
 }
 
 .rpl-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 7px 0 7px 28px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
-  color: var(--cs-text);
+  background: var(--bg-raised);
+  color: var(--fg);
 }
 
 .rpl-search-input:focus-visible {
   outline: none;
-  border-color: var(--cs-green-ring);
+  border-color: var(--ok);
 }
 
 .rpl-search-clear {
@@ -348,7 +347,7 @@ function requestRemove(id: string): void {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
@@ -359,7 +358,7 @@ function requestRemove(id: string): void {
 }
 
 .rpl-search-clear:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .rpl-scroll {
@@ -372,8 +371,8 @@ function requestRemove(id: string): void {
 .rpl-empty {
   margin: 0;
   padding: 10px 6px;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .rpl-list {
@@ -400,10 +399,10 @@ function requestRemove(id: string): void {
   height: 36px;
   text-align: left;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
   line-height: 20px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   padding: 8px 12px;
   border: none;
   border-radius: 8px;
@@ -412,14 +411,14 @@ function requestRemove(id: string): void {
 }
 
 .rpl-project:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 /* Active state: fill + text only, no border or side bar; the identity dot
    keeps its own color, which names the repo and is not a state to accent. */
 .rpl-project--active {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--fg);
   font-weight: 600;
 }
 
@@ -468,8 +467,8 @@ function requestRemove(id: string): void {
   height: 16px;
   padding: 0 6px;
   border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -478,14 +477,14 @@ function requestRemove(id: string): void {
 /* Strong amber: the human blocks these conversations, the one pastille
    that carries a colored fill (color is a state). */
 .rpl-badge--waiting {
-  background: var(--cs-amber-soft);
-  color: var(--cs-amber-text);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
 }
 
 /* Plain amber count: the machine works, nothing is asked of the human. */
 .rpl-badge--running {
-  background: var(--cs-inset);
-  color: var(--cs-amber);
+  background: var(--bg-raised);
+  color: var(--warn);
 }
 
 /* Removal stays hidden until hover/focus; red only when armed. */
@@ -497,9 +496,9 @@ function requestRemove(id: string): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-family: inherit;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -514,20 +513,20 @@ function requestRemove(id: string): void {
 }
 
 .rpl-remove:hover {
-  color: var(--cs-red-text);
-  background: var(--cs-hover);
+  color: var(--err);
+  background: var(--bg-hover);
 }
 
 /* Armed confirmation carries a state: red is doctrine here, not decoration. */
 .rpl-remove--armed {
-  color: var(--cs-red-text);
-  background: var(--cs-red-soft);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .rpl-footer {
   margin-top: 6px;
   padding: 8px;
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
 }
 
 .rpl-add {
@@ -538,10 +537,10 @@ function requestRemove(id: string): void {
   height: 36px;
   text-align: left;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
   line-height: 20px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   padding: 8px 12px;
   border: none;
   border-radius: 8px;
@@ -550,8 +549,8 @@ function requestRemove(id: string): void {
 }
 
 .rpl-add:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text-2);
+  background: var(--bg-hover);
+  color: var(--fg-dim);
 }
 
 .rpl-add-form {
@@ -567,11 +566,11 @@ function requestRemove(id: string): void {
 }
 
 .rpl-detected-label {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   padding: 2px 1px;
 }
 
@@ -579,19 +578,19 @@ function requestRemove(id: string): void {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-family: inherit;
   text-align: left;
   padding: 5px 8px;
   border-radius: 7px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  color: var(--cs-text);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg);
   cursor: pointer;
 }
 
 .rpl-detected-item:hover:not(:disabled) {
-  border-color: var(--cs-line-3);
+  border-color: var(--line);
 }
 
 .rpl-detected-item:disabled {
@@ -600,7 +599,7 @@ function requestRemove(id: string): void {
 }
 
 .rpl-detected-plus {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   font-weight: 600;
 }
 
@@ -611,18 +610,18 @@ function requestRemove(id: string): void {
 }
 
 .rpl-add-input {
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--cs-surface);
-  color: var(--cs-text);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  background: var(--bg-raised);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 12px;
   padding: 7px 9px;
 }
 
 .rpl-add-input::placeholder {
-  color: var(--cs-ghost);
-  font-family: var(--font-sans);
+  color: var(--fg-muted);
+  font-family: var(--font);
 }
 
 .rpl-add-actions {
@@ -631,20 +630,20 @@ function requestRemove(id: string): void {
 }
 
 .rpl-add-submit {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
   font-family: inherit;
   padding: 5px 12px;
   border-radius: 6px;
-  border: 1px solid var(--cs-green);
-  background: var(--cs-green);
-  color: var(--cs-on-green);
+  border: 1px solid var(--ok);
+  background: var(--ok);
+  color: var(--bg);
   cursor: pointer;
 }
 
 .rpl-add-submit:not(:disabled):hover {
-  background: var(--cs-green-hover);
-  border-color: var(--cs-green-hover);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .rpl-add-submit:disabled {
@@ -653,22 +652,22 @@ function requestRemove(id: string): void {
 }
 
 .rpl-add-cancel {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 5px 10px;
   border-radius: 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .rpl-error {
   margin: 2px 0 0;
   padding: 0 2px;
-  font-size: var(--fs-xs);
-  color: var(--cs-red-text);
+  font-size: 12px;
+  color: var(--err);
   overflow-wrap: anywhere;
 }
 </style>

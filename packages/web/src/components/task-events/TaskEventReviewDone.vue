@@ -87,9 +87,9 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 .tvr-root {
   margin: 6px 0;
   padding: 12px 14px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 11px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
 }
 
 .tvr-head {
@@ -99,50 +99,50 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 }
 
 .tvr-tag {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .tvr-verdict {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
   border-radius: 999px;
   padding: 2px 10px;
 }
 
 .tvr-verdict--go {
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .tvr-verdict--stop {
-  color: var(--cs-red-text);
-  background: var(--cs-red-soft);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .tvr-verdict--check {
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .tvr-time {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 /* The review's own words: two lines max, the full text lives in the review. */
 .tvr-summary {
   margin: 8px 0 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.5;
-  color: var(--cs-text);
+  color: var(--fg);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -152,8 +152,8 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 
 .tvr-count {
   margin: 7px 0 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 /* Severity spread: counts only, the semaphore carries the weight. */
@@ -164,30 +164,30 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
   list-style: none;
   margin: 7px 0 0;
   padding: 0;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .tvr-sev li {
   border-radius: 999px;
   padding: 2px 9px;
-  color: var(--cs-muted);
-  background: var(--cs-panel);
-  border: 1px solid var(--cs-line-2);
+  color: var(--fg-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
 }
 
 /* Doubled specificity so the tone wins over the neutral chip above. */
 .tvr-sev li.tvr-sev--critical,
 .tvr-sev li.tvr-sev--major {
-  color: var(--cs-red-text);
-  border-color: var(--cs-red-line);
-  background: var(--cs-red-soft);
+  color: var(--err);
+  border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .tvr-sev li.tvr-sev--minor {
-  color: var(--cs-amber-text);
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .tvr-actions {
@@ -197,19 +197,19 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 }
 
 .tvr-btn {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 5px 11px;
   border-radius: 8px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
   transition: border-color 0.12s ease;
 }
 
 .tvr-btn:hover {
-  border-color: var(--cs-muted);
+  border-color: var(--fg-dim);
 }
 </style>

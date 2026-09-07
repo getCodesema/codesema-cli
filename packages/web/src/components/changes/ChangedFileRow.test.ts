@@ -99,10 +99,10 @@ describe('a color per status (defect #1 fixed)', () => {
   })
 
   test('each status has its own distinct color rule, not a shared uniform one', () => {
-    expect(SOURCE).toMatch(/\.cfr-status--added\s*\{[^}]*color: var\(--cs-green-text\);/)
-    expect(SOURCE).toMatch(/\.cfr-status--modified\s*\{[^}]*color: var\(--cs-amber-text\);/)
-    expect(SOURCE).toMatch(/\.cfr-status--deleted\s*\{[^}]*color: var\(--cs-red-text\);/)
-    expect(SOURCE).toMatch(/\.cfr-status--renamed\s*\{[^}]*color: var\(--cs-water\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--added\s*\{[^}]*color: var\(--ok\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--modified\s*\{[^}]*color: var\(--warn\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--deleted\s*\{[^}]*color: var\(--err\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--renamed\s*\{[^}]*color: var\(--info\);/)
   })
 
   test.each(['added', 'modified', 'deleted', 'renamed'] as const)(
@@ -127,7 +127,7 @@ describe('the last row (defect: no bottom hairline)', () => {
   })
 
   test('the --last modifier removes the bottom hairline in CSS', () => {
-    expect(SOURCE).toMatch(/\.cfr-root\s*\{[^}]*border-bottom: 1px solid var\(--cs-line\);/)
+    expect(SOURCE).toMatch(/\.cfr-root\s*\{[^}]*border-bottom: 1px solid var\(--line\);/)
     expect(SOURCE).toMatch(/\.cfr-root--last\s*\{[^}]*border-bottom: none;/)
   })
 })
@@ -146,7 +146,7 @@ describe('the expanded slot (fiche §6: top hairline, then the diff)', () => {
   })
 
   test('the wrapper carries a top hairline, not a bottom one', () => {
-    expect(SOURCE).toMatch(/\.cfr-expanded\s*\{[^}]*border-top: 1px solid var\(--cs-line\);/)
+    expect(SOURCE).toMatch(/\.cfr-expanded\s*\{[^}]*border-top: 1px solid var\(--line\);/)
   })
 })
 
@@ -164,7 +164,7 @@ describe('geometry (fiche §5)', () => {
   })
 
   test('the path uses the base size token', () => {
-    expect(SOURCE).toMatch(/\.cfr-path\s*\{[^}]*font-size: var\(--fs-base\);/)
+    expect(SOURCE).toMatch(/\.cfr-path\s*\{[^}]*font-size: var\(--fs\);/)
   })
 
   test('defect #4 fixed: the path truncates from the start (direction: rtl), never the end', () => {
@@ -174,11 +174,11 @@ describe('geometry (fiche §5)', () => {
   })
 
   test('the status text uses the smallest size token', () => {
-    expect(SOURCE).toMatch(/\.cfr-status\s*\{[^}]*font-size: var\(--fs-xs\);/)
+    expect(SOURCE).toMatch(/\.cfr-status\s*\{[^}]*font-size: 12px;/)
   })
 
   test('the counters use the smallest size token', () => {
-    expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-size: var\(--fs-xs\);/)
+    expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-size: 12px;/)
   })
 
   test('defect #2 fixed: the counters use tabular figures', () => {

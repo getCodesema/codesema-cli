@@ -100,7 +100,7 @@ const needsYouCount = computed(
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--cs-bg);
+  background: var(--bg);
 }
 
 .mbl-head {
@@ -110,24 +110,24 @@ const needsYouCount = computed(
   align-items: center;
   gap: 10px;
   padding: 0 14px;
-  border-bottom: 1px solid var(--cs-line);
-  background: var(--cs-panel);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
 }
 
 .mbl-title {
   margin: 0;
   flex: 1;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .mbl-badge {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
-  border: 1px solid var(--cs-amber-line);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid var(--warn);
   border-radius: 999px;
   padding: 3px 10px;
   white-space: nowrap;
@@ -145,7 +145,7 @@ const needsYouCount = computed(
   width: 100%;
   padding: 12px 14px;
   border: 0;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
   background: transparent;
   color: inherit;
   font-family: inherit;
@@ -154,7 +154,7 @@ const needsYouCount = computed(
 }
 
 .mbl-row:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .mbl-dot {
@@ -173,17 +173,17 @@ const needsYouCount = computed(
 }
 
 .mbl-row-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .mbl-row-last {
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -198,9 +198,9 @@ const needsYouCount = computed(
 }
 
 .mbl-age {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-muted);
   white-space: nowrap;
 }
 </style>

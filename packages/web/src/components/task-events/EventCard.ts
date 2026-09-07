@@ -21,24 +21,24 @@ export const EVENT_CARD_TONES: readonly EventCardTone[] = [
 
 /** The state icon's color, per tone (fiche 15 section 3, item 2). */
 export const EVENT_CARD_ICON_COLOR: Record<EventCardTone, string> = {
-  neutral: 'var(--cs-muted)',
-  attention: 'var(--cs-amber-text)',
-  error: 'var(--cs-red-text)',
-  accent: 'var(--cs-green-text)',
+  neutral: 'var(--fg-dim)',
+  attention: 'var(--warn)',
+  error: 'var(--err)',
+  accent: 'var(--ok)',
 }
 
 /** The card's own border, per tone. */
 export const EVENT_CARD_BORDER_COLOR: Record<EventCardTone, string> = {
-  neutral: 'var(--cs-line-2)',
-  attention: 'var(--cs-amber-line)',
-  error: 'var(--cs-red-line)',
-  accent: 'var(--cs-green-ring)',
+  neutral: 'var(--line)',
+  attention: 'var(--warn)',
+  error: 'var(--err)',
+  accent: 'var(--ok)',
 }
 
 /** The card's own background, per tone. */
 export const EVENT_CARD_BACKGROUND_COLOR: Record<EventCardTone, string> = {
-  neutral: 'var(--cs-surface)',
-  attention: 'var(--cs-amber-soft)',
-  error: 'var(--cs-red-soft)',
-  accent: 'var(--cs-green-soft)',
+  neutral: 'var(--bg-raised)',
+  attention: 'color-mix(in srgb, var(--warn) 12%, transparent)',
+  error: 'color-mix(in srgb, var(--err) 12%, transparent)',
+  accent: 'color-mix(in srgb, var(--ok) 12%, transparent)',
 }

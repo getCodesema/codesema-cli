@@ -62,8 +62,8 @@ const stateLabelKey = computed<MessageKey>(() =>
   align-items: center;
   gap: 6px;
   margin-bottom: 4px;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .fic-state {
@@ -79,17 +79,17 @@ const stateLabelKey = computed<MessageKey>(() =>
 }
 
 .fic-state--open {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .fic-state--closed {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .fic-number {
   flex: none;
   font-weight: 700;
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .fic-author {
@@ -111,10 +111,10 @@ const stateLabelKey = computed<MessageKey>(() =>
 
 .fic-title {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   line-height: 1.25;
-  color: var(--cs-text);
+  color: var(--fg);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -133,12 +133,12 @@ const stateLabelKey = computed<MessageKey>(() =>
    (see LabelColor.ts), never a colored border: a label on a card is content,
    not a state. */
 .fic-label {
-  --lp-rest-bg: var(--cs-line-2);
+  --lp-rest-bg: var(--line);
 
   display: inline-flex;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 500;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--lp-rest-bg);

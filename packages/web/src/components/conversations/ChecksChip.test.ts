@@ -69,10 +69,10 @@ describe('tone', () => {
 describe('the pill border colour is reserved to a checks state, never decorative', () => {
   test('the base pill border is neutral, no state colour of its own', () => {
     const rule = SOURCE.slice(SOURCE.indexOf('.cc-pill {'), SOURCE.indexOf('.cc-pill-icon {'))
-    expect(rule).toContain('border: 1px solid var(--cs-line-2);')
-    expect(rule).not.toContain('--cs-red')
-    expect(rule).not.toContain('--cs-amber')
-    expect(rule).not.toContain('--cs-green')
+    expect(rule).toContain('border: 1px solid var(--line);')
+    expect(rule).not.toContain('--err')
+    expect(rule).not.toContain('--warn')
+    expect(rule).not.toContain('--ok')
   })
 
   test('each tone overrides the border colour with its own state token', () => {
@@ -80,8 +80,8 @@ describe('the pill border colour is reserved to a checks state, never decorative
       const at = SOURCE.indexOf(selector)
       return SOURCE.slice(at, SOURCE.indexOf('}', at))
     }
-    expect(ruleBody('.cc-pill--red')).toContain('--cs-red-line')
-    expect(ruleBody('.cc-pill--amber')).toContain('--cs-amber-line')
-    expect(ruleBody('.cc-pill--green')).toContain('--cs-green-ring')
+    expect(ruleBody('.cc-pill--red')).toContain('--err')
+    expect(ruleBody('.cc-pill--amber')).toContain('--warn')
+    expect(ruleBody('.cc-pill--green')).toContain('--ok')
   })
 })

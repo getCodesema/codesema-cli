@@ -374,7 +374,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 <style scoped>
 .fv-empty {
   padding: 40px 26px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .fv-root {
@@ -387,10 +387,10 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 .fv-list {
   width: 400px;
   flex-shrink: 0;
-  border-right: 1px solid var(--codesema-line);
+  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  background: color-mix(in srgb, var(--codesema-panel) 60%, var(--codesema-bg));
+  background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg));
 }
 
 .fv-list-head {
@@ -401,23 +401,23 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-list-title {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   display: inline-flex;
   align-items: center;
   gap: 7px;
 }
 
 .fv-list-n {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  background: var(--codesema-line-2);
+  font-family: var(--font);
+  font-size: 12px;
+  background: var(--line);
   border-radius: 999px;
   padding: 1px 7px;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .fv-list-spacer {
@@ -425,10 +425,10 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-sel-btn {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   background: none;
   border: none;
   cursor: pointer;
@@ -437,7 +437,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-sel-btn:hover {
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 .fv-items {
@@ -465,12 +465,12 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-item:hover,
 .fv-item:focus-visible {
-  background: color-mix(in srgb, var(--codesema-line-2) 80%, var(--codesema-bg));
+  background: color-mix(in srgb, var(--line) 80%, var(--bg));
 }
 
 .fv-item--on {
-  border-color: var(--codesema-accent);
-  background: var(--codesema-accent-soft);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .fv-check {
@@ -479,12 +479,12 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   height: 18px;
   margin-top: 1px;
   border-radius: 5px;
-  border: 1.5px solid var(--codesema-line);
-  background: var(--codesema-panel);
+  border: 1.5px solid var(--line);
+  background: var(--bg-raised);
   display: grid;
   place-items: center;
   cursor: pointer;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   color: #fff;
   font-weight: 700;
   transition:
@@ -493,8 +493,8 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-check--done {
-  background: var(--codesema-accent);
-  border-color: var(--codesema-accent);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .fv-item-body {
@@ -512,9 +512,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-item-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--codesema-ink);
+  color: var(--fg);
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -522,9 +522,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-item-file {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -532,7 +532,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-sev {
   flex-shrink: 0;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -541,18 +541,18 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-sev--high {
-  color: var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .fv-sev--med {
-  color: var(--codesema-risk-med);
-  background: var(--codesema-risk-med-soft);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .fv-sev--info {
-  color: var(--codesema-ink-3);
-  background: var(--codesema-line-2);
+  color: var(--fg-dim);
+  background: var(--line);
 }
 
 .fv-consensus {
@@ -560,17 +560,17 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .fv-consensus--pill {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   border-radius: 999px;
   padding: 2px 9px;
-  background: var(--codesema-risk-low-soft);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .fv-consensus-dots {
@@ -600,21 +600,21 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-list-foot {
   padding: 12px 14px;
-  border-top: 1px solid var(--codesema-line);
+  border-top: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
 .fv-copy {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
   transition:
     border-color 0.12s ease,
@@ -622,7 +622,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-copy:hover:not(:disabled) {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .fv-copy:disabled {
@@ -631,16 +631,16 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-copy--done {
-  color: var(--codesema-risk-low);
-  border-color: var(--codesema-risk-low);
+  color: var(--ok);
+  border-color: var(--ok);
 }
 
 .fv-warn {
-  border: 1px solid color-mix(in srgb, var(--codesema-amber) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
   border-radius: 8px;
-  background: var(--codesema-amber-soft);
-  color: var(--codesema-amber);
-  font-size: var(--fs-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: 12px;
   line-height: 1.5;
   padding: 8px 10px;
 }
@@ -650,13 +650,13 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
   font-family: inherit;
   padding: 9px 12px;
   border-radius: 8px;
-  border: 1px solid var(--codesema-accent);
-  background: var(--codesema-accent);
+  border: 1px solid var(--accent);
+  background: var(--accent);
   color: #fff;
   cursor: pointer;
   transition: opacity 0.12s ease;
@@ -688,15 +688,15 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-fix-error {
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   line-height: 1.5;
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .fv-fix-done {
-  border: 1px solid color-mix(in srgb, var(--codesema-risk-low) 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
   border-radius: 8px;
-  background: var(--codesema-risk-low-soft);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
   padding: 9px 10px;
   display: flex;
   flex-direction: column;
@@ -704,17 +704,17 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-fix-done-head {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .fv-fix-summary {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 1.55;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 180px;
@@ -738,13 +738,13 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-count {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .fv-count-total {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   font-weight: 400;
 }
 
@@ -756,10 +756,10 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   width: 28px;
   height: 28px;
   border-radius: 7px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  font-size: var(--fs-lg);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
+  font-size: 18px;
   cursor: pointer;
   display: grid;
   place-items: center;
@@ -768,7 +768,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-arrow:hover:not(:disabled) {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .fv-arrow:disabled {
@@ -777,9 +777,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-note {
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
   padding: 14px 16px;
 }
 
@@ -792,97 +792,97 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-kind {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   border-radius: 999px;
   padding: 2px 9px;
-  color: var(--codesema-accent);
-  background: var(--codesema-accent-soft);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .fv-note-file {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .fv-note-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   margin: 0 0 4px;
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .fv-note-body {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.6;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   margin: 0;
   text-wrap: pretty;
 }
 
 .fv-note code,
 .fv-note-title code {
-  font-family: var(--font-mono);
+  font-family: var(--font);
   font-size: 0.85em;
-  background: var(--codesema-line-2);
+  background: var(--line);
   padding: 1px 5px;
   border-radius: 4px;
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 .fv-sugg {
   margin-top: 11px;
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
 }
 
 .fv-sugg-head {
-  background: var(--codesema-risk-low-soft);
-  color: var(--codesema-risk-low);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
   padding: 6px 11px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
 }
 
 .fv-sugg-code {
   margin: 0;
   padding: 10px 12px;
-  background: var(--codesema-line-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  background: var(--line);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 1.6;
-  color: var(--codesema-ink);
+  color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 /* ── Code excerpt ──────────────────────────────────────────── */
 .fv-code {
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
 }
 
 .fv-code-head {
   padding: 8px 14px;
-  background: var(--codesema-line-2);
-  border-bottom: 1px solid var(--codesema-line);
-  font-size: var(--fs-sm);
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
 }
 
 .fv-code-head code {
-  font-family: var(--font-mono);
-  color: var(--codesema-ink);
+  font-family: var(--font);
+  color: var(--fg);
 }
 
 .fv-code-body {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 1.6;
   overflow-x: auto;
 }
@@ -893,31 +893,31 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-line--ctx {
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
 }
 
 .fv-line--add {
-  background: var(--codesema-diff-add);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
 .fv-line--del {
-  background: var(--codesema-diff-del);
+  background: color-mix(in srgb, var(--err) 14%, transparent);
 }
 
 .fv-line--target {
-  box-shadow: inset 3px 0 0 var(--codesema-accent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .fv-line--add .fv-sign {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .fv-line--del .fv-sign {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .fv-line--del .fv-src {
-  color: color-mix(in srgb, var(--codesema-risk-high) 70%, var(--codesema-ink-2));
+  color: color-mix(in srgb, var(--err) 70%, var(--fg-dim));
 }
 
 .fv-no {
@@ -925,9 +925,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   flex-shrink: 0;
   text-align: right;
   padding: 0 8px;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   user-select: none;
-  font-size: var(--fs-xs);
+  font-size: 12px;
 }
 
 .fv-sign {
@@ -943,11 +943,11 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   white-space: pre-wrap;
   word-break: break-word;
   padding-right: 10px;
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .fv-no-excerpt {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   margin: 0;
 }
 
@@ -959,7 +959,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   .fv-list {
     width: 100%;
     border-right: none;
-    border-bottom: 1px solid var(--codesema-line);
+    border-bottom: 1px solid var(--line);
   }
 }
 </style>

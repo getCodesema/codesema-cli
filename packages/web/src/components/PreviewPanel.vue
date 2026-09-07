@@ -186,7 +186,7 @@ function fileLabel(file: PreviewFile): string {
   justify-content: center;
   gap: 10px;
   padding: 24px 8px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   text-align: center;
 }
 
@@ -194,8 +194,8 @@ function fileLabel(file: PreviewFile): string {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2.5px solid var(--codesema-line);
-  border-top-color: var(--codesema-accent);
+  border: 2.5px solid var(--line);
+  border-top-color: var(--accent);
   animation: pv-spin 0.8s linear infinite;
 }
 
@@ -206,8 +206,8 @@ function fileLabel(file: PreviewFile): string {
 }
 
 .pv-error {
-  color: var(--codesema-risk-high);
-  font-size: var(--fs-base);
+  color: var(--err);
+  font-size: var(--fs);
   margin: 0;
 }
 
@@ -215,34 +215,34 @@ function fileLabel(file: PreviewFile): string {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .pv-branch {
-  font-family: var(--font-mono);
-  background: var(--codesema-line-2);
+  font-family: var(--font);
+  background: var(--line);
   border-radius: 6px;
   padding: 3px 8px;
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .pv-arrow {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .pv-summary {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
 }
 
 .pv-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .pv-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .pv-commits {
@@ -252,8 +252,8 @@ function fileLabel(file: PreviewFile): string {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   max-height: 140px;
   overflow-y: auto;
 }
@@ -263,7 +263,7 @@ function fileLabel(file: PreviewFile): string {
 }
 
 .pv-empty {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .pv-files {
@@ -273,7 +273,7 @@ function fileLabel(file: PreviewFile): string {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
 }
@@ -285,7 +285,7 @@ function fileLabel(file: PreviewFile): string {
   gap: 8px;
   padding: 8px 10px;
   border: none;
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
   cursor: pointer;
   font-family: inherit;
   text-align: left;
@@ -293,11 +293,11 @@ function fileLabel(file: PreviewFile): string {
 }
 
 .pv-file:hover {
-  background: var(--codesema-line-2);
+  background: var(--line);
 }
 
 .pv-file--selected {
-  background: var(--codesema-accent-soft);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .pv-file-status {
@@ -308,18 +308,18 @@ function fileLabel(file: PreviewFile): string {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
-  color: var(--codesema-ink-3);
-  background: var(--codesema-line-2);
+  color: var(--fg-dim);
+  background: var(--line);
 }
 
 .pv-file-status--added {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .pv-file-status--deleted {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .pv-file-path {
@@ -328,22 +328,22 @@ function fileLabel(file: PreviewFile): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg);
 }
 
 .pv-file-delta {
   flex-shrink: 0;
   display: inline-flex;
   gap: 6px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
 }
 
 .pv-truncated {
-  font-size: var(--fs-sm);
-  color: var(--codesema-risk-med);
+  font-size: 12px;
+  color: var(--warn);
   margin: 0 0 10px;
 }
 </style>

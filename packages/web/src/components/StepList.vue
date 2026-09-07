@@ -143,19 +143,19 @@ function onCardClick(index: number) {
 }
 
 .steplist-title {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .steplist-by {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 /* cards */
@@ -166,9 +166,9 @@ function onCardClick(index: number) {
 }
 
 .steplist-card {
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 11px;
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
   padding: 14px 15px;
   cursor: pointer;
   transition:
@@ -178,12 +178,12 @@ function onCardClick(index: number) {
 }
 
 .steplist-card:hover {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
   box-shadow: 0 1px 3px rgba(16, 24, 40, 0.05);
 }
 
 .steplist-card:focus-visible {
-  outline: 2px solid var(--codesema-accent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -208,7 +208,7 @@ function onCardClick(index: number) {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 1.5px solid var(--codesema-line);
+  border: 1.5px solid var(--line);
   display: grid;
   place-items: center;
   margin-top: 1px;
@@ -217,12 +217,12 @@ function onCardClick(index: number) {
 }
 
 .steplist-radio--done {
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low);
+  border-color: var(--ok);
+  background: var(--ok);
 }
 
 .steplist-radio-check {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   color: #fff;
   line-height: 1;
   font-weight: 700;
@@ -241,18 +241,18 @@ function onCardClick(index: number) {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: var(--codesema-ink);
+  color: var(--fg);
   line-height: 1.35;
 }
 
 .steplist-card-num {
-  font-family: var(--font-display);
-  font-size: var(--fs-lg);
+  font-family: var(--font);
+  font-size: 18px;
   font-weight: 400;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   flex-shrink: 0;
 }
 
@@ -270,7 +270,7 @@ function onCardClick(index: number) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   padding: 3px 10px;
   border-radius: 999px;
@@ -284,22 +284,22 @@ function onCardClick(index: number) {
 }
 
 .step-risk--high {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 .step-risk-bg--high {
-  background: var(--codesema-risk-high-soft);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 .step-risk--med {
-  color: var(--codesema-risk-med);
+  color: var(--warn);
 }
 .step-risk-bg--med {
-  background: var(--codesema-risk-med-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 .step-risk--low {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 .step-risk-bg--low {
-  background: var(--codesema-risk-low-soft);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 /* delta */
@@ -307,23 +307,23 @@ function onCardClick(index: number) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
 }
 
 .steplist-delta-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .steplist-delta-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 /* files / notes */
 .steplist-files-count,
 .steplist-findings-count {
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 /* cta */
@@ -333,10 +333,10 @@ function onCardClick(index: number) {
   padding: 8px 13px;
   border-radius: 8px;
   border: 0;
-  background: var(--codesema-accent);
+  background: var(--accent);
   /* dark ink on orange: ~7.6:1 contrast, white capped at 2.6:1 (AA = 4.5:1) */
-  color: var(--codesema-bg);
-  font-size: var(--fs-base);
+  color: var(--bg);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
@@ -350,7 +350,7 @@ function onCardClick(index: number) {
 
 /* empty */
 .steplist-empty {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 16px 0;
   text-align: center;
 }

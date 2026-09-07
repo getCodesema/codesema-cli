@@ -36,12 +36,12 @@ const html = computed(() => renderMarkdown(props.text))
 .tvu-bubble {
   margin: 0;
   padding: 8px 16px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 16px;
-  background: var(--cs-surface);
-  font-size: var(--fs-base);
+  background: var(--bg-raised);
+  font-size: var(--fs);
   line-height: 24px;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
 }
@@ -63,9 +63,9 @@ const html = computed(() => renderMarkdown(props.text))
 .tvu-md :deep(h2),
 .tvu-md :deep(h3) {
   margin: 12px 0 6px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .tvu-md :deep(h2:first-child),
@@ -74,7 +74,7 @@ const html = computed(() => renderMarkdown(props.text))
 }
 
 .tvu-md :deep(h3) {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .tvu-md :deep(ul),
@@ -87,25 +87,25 @@ const html = computed(() => renderMarkdown(props.text))
 }
 
 .tvu-md :deep(code) {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-green-text);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--ok);
   white-space: pre-wrap;
 }
 
 .tvu-md :deep(pre) {
   padding: 9px 11px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
   overflow-x: auto;
 }
 
 .tvu-md :deep(pre code) {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .tvu-md :deep(a) {
-  color: var(--cs-green-hover);
+  color: var(--ok);
 }
 </style>

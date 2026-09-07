@@ -28,12 +28,12 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
   align-items: center;
   gap: 4px;
   padding: 1px 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 4px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-muted);
-  background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);
+  color: var(--fg-dim);
+  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
   white-space: nowrap;
 }
 
@@ -51,20 +51,20 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
 }
 
 .cc-pill--red {
-  color: var(--cs-red-text);
-  border-color: var(--cs-red-line);
-  background: var(--cs-red-soft);
+  color: var(--err);
+  border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .cc-pill--amber {
-  color: var(--cs-amber-text);
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .cc-pill--green {
-  color: var(--cs-green-text);
-  border-color: var(--cs-green-ring);
-  background: var(--cs-green-soft);
+  color: var(--ok);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 </style>

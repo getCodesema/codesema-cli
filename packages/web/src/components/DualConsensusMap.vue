@@ -67,18 +67,18 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 
 <style scoped>
 .dmap-root {
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   border-radius: 12px;
   padding: 14px 16px;
 }
 
 .dmap-head {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   margin-bottom: 10px;
 }
 
@@ -99,17 +99,17 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 }
 
 .dmap-row--hot {
-  background: color-mix(in srgb, var(--codesema-accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   animation: dmap-pulse 2.2s ease-in-out infinite;
 }
 
 @keyframes dmap-pulse {
   0%,
   100% {
-    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--codesema-accent) 22%, transparent);
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 22%, transparent);
   }
   50% {
-    box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--codesema-accent) 16%, transparent);
+    box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
   }
 }
 
@@ -118,7 +118,7 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   overflow: hidden;
   flex-shrink: 0;
   display: inline-block;
@@ -129,7 +129,7 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
   top: 0;
   width: 50%;
   height: 100%;
-  background: var(--codesema-dot-idle);
+  background: var(--fg-muted);
   transition: background 0.2s ease;
 }
 
@@ -142,43 +142,43 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 }
 
 .dmap-dot-half--a.dmap-dot-half--on {
-  background: var(--codesema-accent);
+  background: var(--accent);
 }
 
 .dmap-dot-half--b.dmap-dot-half--on {
-  background: var(--codesema-amber);
+  background: var(--warn);
 }
 
 .dmap-path {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-2);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .dmap-delta {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   flex-shrink: 0;
   display: inline-flex;
   gap: 6px;
 }
 
 .dmap-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .dmap-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .dmap-more {
   margin: 4px 0 0 6px;
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 </style>

@@ -46,37 +46,37 @@ const tone = computed(() => checksTone(props.checks ?? null))
 
 .ckb-title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .ckb-empty {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .ckb-verdict {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .ckb-verdict--pass {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .ckb-verdict--fail {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .ckb-verdict--warn {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .ckb-list {
@@ -92,33 +92,33 @@ const tone = computed(() => checksTone(props.checks ?? null))
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
 }
 
 .ckb-glyph {
   flex: none;
-  font-family: var(--font-mono);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  color: var(--fg-dim);
 }
 
 .ckb-glyph--passed {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .ckb-glyph--failed,
 .ckb-glyph--timeout {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .ckb-command {
-  font-family: var(--font-mono);
-  color: var(--cs-text);
+  font-family: var(--font);
+  color: var(--fg);
   overflow-wrap: anywhere;
 }
 
 .ckb-status {
   margin-left: auto;
   flex: none;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 </style>

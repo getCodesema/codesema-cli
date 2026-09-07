@@ -41,32 +41,32 @@ defineProps<{ tiles: RepositoryTiles }>()
   flex-direction: column;
   gap: 6px;
   padding: 14px 16px;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--cs-panel);
+  background: var(--bg-raised);
 }
 
 .rpt-label {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .rpt-value {
-  font-size: var(--fs-3xl);
+  font-size: 24px;
   font-weight: 700;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rpt-tile--attention {
-  border-color: var(--cs-amber-line);
+  border-color: var(--warn);
 }
 
 .rpt-tile--attention .rpt-value {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 </style>

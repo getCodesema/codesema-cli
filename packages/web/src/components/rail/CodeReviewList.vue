@@ -301,9 +301,8 @@ function historyErrorOf(key: string): string | null {
   width: 100%;
   min-height: 0;
   border-radius: 16px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-panel);
-  box-shadow: var(--cs-shadow-panel);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -314,7 +313,7 @@ function historyErrorOf(key: string): string | null {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .crl-heading {
@@ -328,9 +327,9 @@ function historyErrorOf(key: string): string | null {
 .crl-title {
   min-width: 0;
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -338,9 +337,9 @@ function historyErrorOf(key: string): string | null {
 
 .crl-count {
   flex: none;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .crl-search {
@@ -356,24 +355,24 @@ function historyErrorOf(key: string): string | null {
   transform: translateY(-50%);
   width: 14px;
   height: 14px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   pointer-events: none;
 }
 
 .crl-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 7px 0 7px 28px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
-  color: var(--cs-text);
+  background: var(--bg-raised);
+  color: var(--fg);
 }
 
 .crl-search-input:focus-visible {
   outline: none;
-  border-color: var(--cs-green-ring);
+  border-color: var(--ok);
 }
 
 .crl-search-clear {
@@ -388,7 +387,7 @@ function historyErrorOf(key: string): string | null {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
@@ -399,11 +398,11 @@ function historyErrorOf(key: string): string | null {
 }
 
 .crl-search-clear:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .crl-search-clear:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -417,8 +416,8 @@ function historyErrorOf(key: string): string | null {
 .crl-empty {
   margin: 0;
   padding: 10px 6px;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .crl-row-wrap {
@@ -442,25 +441,25 @@ function historyErrorOf(key: string): string | null {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
 
 .crl-chevron-btn:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text-2);
+  background: var(--bg-hover);
+  color: var(--fg-dim);
 }
 
 .crl-chevron-btn:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 .crl-chevron-icon {
   width: 14px;
   height: 14px;
-  transition: transform var(--cs-duration-fast) var(--cs-ease-out);
+  transition: transform 150ms ease;
 }
 
 .crl-chevron-icon--closed {
@@ -476,24 +475,24 @@ function historyErrorOf(key: string): string | null {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .crl-select-btn:hover:not(.crl-select-btn--selected) {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .crl-select-btn:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
 /* Selection is a tinted fill, the same green-soft convention every other
    "currently open" row in this workspace uses (ConversationsList, RepositoriesList). */
 .crl-select-btn--selected {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--fg);
 }
 
 .crl-main {
@@ -513,41 +512,41 @@ function historyErrorOf(key: string): string | null {
   display: inline-flex;
   align-items: baseline;
   gap: 5px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
 }
 
 .crl-mr-number {
-  font-family: var(--font-mono);
+  font-family: var(--font);
 }
 
 .crl-mr-state-text {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .crl-mr-pastille--open {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .crl-mr-pastille--draft {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .crl-mr-pastille--merged {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .crl-mr-pastille--closed {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .crl-mr-title {
   min-width: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -564,14 +563,14 @@ function historyErrorOf(key: string): string | null {
   flex: none;
   width: 13px;
   height: 13px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .crl-branch-name {
   min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  color: var(--cs-text);
+  font-family: var(--font);
+  font-size: var(--fs);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -581,18 +580,18 @@ function historyErrorOf(key: string): string | null {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
 }
 
 .crl-project-tag {
   flex: none;
   padding: 1px 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 4px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-muted);
-  background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);
+  color: var(--fg-dim);
+  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
   white-space: nowrap;
 }
 
@@ -602,7 +601,7 @@ function historyErrorOf(key: string): string | null {
   align-items: center;
   padding: 1px 7px;
   border-radius: 999px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -610,8 +609,8 @@ function historyErrorOf(key: string): string | null {
 /* Plain amber, never the strong amber reserved for "the human is waited on":
    an agent is at work here, nothing is asked of the reader. */
 .crl-badge--running {
-  background: var(--cs-inset);
-  color: var(--cs-amber);
+  background: var(--bg-raised);
+  color: var(--warn);
 }
 
 .crl-verdict {
@@ -621,57 +620,57 @@ function historyErrorOf(key: string): string | null {
 }
 
 .crl-verdict--approve {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .crl-verdict--request_changes {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .crl-verdict--comment {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .crl-age {
   flex: none;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   white-space: nowrap;
 }
 
 /* Never reviewed: a neutral dash, never a fabricated status color. */
 .crl-never {
   flex: none;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: help;
 }
 
 .crl-panel {
   margin: 2px 0 4px 30px;
   padding: 8px 10px;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
 }
 
 .crl-panel-title {
   margin: 0 0 6px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .crl-history-hint {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .crl-history-error {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-red-text);
+  font-size: 12px;
+  color: var(--err);
 }
 
 .crl-history-list {
@@ -692,25 +691,25 @@ function historyErrorOf(key: string): string | null {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
 
 .crl-history-item:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .crl-history-item:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
 .crl-history-age,
 .crl-history-mode,
 .crl-history-findings {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 </style>

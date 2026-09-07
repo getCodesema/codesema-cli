@@ -156,18 +156,18 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  background: var(--cs-panel);
+  background: var(--bg-raised);
 }
 
 .rtp-head {
   flex: none;
   padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .rtp-project {
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .rtp-title {
@@ -175,9 +175,9 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   align-items: center;
   gap: 8px;
   margin: 2px 0 0;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rtp-glyph {
@@ -187,15 +187,15 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 }
 
 .rtp-number {
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .rtp-hint {
   margin: 6px 0 0;
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .rtp-actions {
@@ -209,17 +209,17 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border: 1px solid var(--cs-line-3);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--cs-surface);
-  color: var(--cs-text);
+  background: var(--bg-raised);
+  color: var(--fg);
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   cursor: pointer;
 }
 
 .rtp-run:hover:not(:disabled) {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .rtp-run:disabled {
@@ -228,15 +228,15 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 }
 
 .rtp-run:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 /* Amber, not the strong attention amber: an agent is at work and nothing is
    asked of the human. */
 .rtp-run--live {
-  border-color: var(--cs-amber-line);
-  color: var(--cs-amber-text);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
 .rtp-spin {
@@ -259,29 +259,29 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 
 .rtp-error {
   margin: 8px 0 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-red-text);
+  font-size: 12px;
+  color: var(--err);
 }
 
 .rtp-history {
   flex: none;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .rtp-history-title {
   margin: 0 0 8px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .rtp-muted {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .rtp-archives {
@@ -302,19 +302,19 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
 
 .rtp-archive:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .rtp-archive:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -325,21 +325,21 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 }
 
 .rtp-verdict--approve {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .rtp-verdict--request_changes {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .rtp-verdict--comment {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .rtp-archive-age,
 .rtp-archive-mode,
 .rtp-archive-findings {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .rtp-body {

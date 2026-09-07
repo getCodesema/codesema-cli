@@ -57,7 +57,7 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: color-mix(in srgb, var(--cs-bg) 78%, transparent);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
   backdrop-filter: blur(4px);
   display: grid;
   grid-template-rows: 44px 1fr;
@@ -68,35 +68,35 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   padding: 0 18px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .pl-lens-close {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
-  border: 1px solid var(--cs-line-3);
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .pl-lens-close:hover {
-  color: var(--cs-text);
-  border-color: var(--cs-line-2);
+  color: var(--fg);
+  border-color: var(--line);
 }
 
 .pl-lens-close:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .pl-lens-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .pl-lens-body {
@@ -113,10 +113,9 @@ onUnmounted(() => {
   max-height: 100%;
   overflow: auto;
   padding: 20px 24px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--cs-panel);
-  box-shadow: var(--cs-shadow-panel);
+  background: var(--bg-raised);
 }
 
 .pl-lens-slot--flush {

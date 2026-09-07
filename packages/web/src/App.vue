@@ -96,20 +96,20 @@ onUnmounted(stop)
 }
 
 .app-nav-btn {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
   transition: border-color 0.12s ease;
 }
 
 .app-nav-btn:hover {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .app-state {
@@ -119,37 +119,37 @@ onUnmounted(stop)
   align-items: center;
   justify-content: center;
   gap: 14px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .app-error {
-  color: var(--codesema-risk-high);
+  color: var(--err);
   margin: 0;
 }
 
 .app-retry {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 7px 14px;
   border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
   transition: border-color 0.12s ease;
 }
 
 .app-retry:hover {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .app-spinner {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 2.5px solid var(--codesema-line);
-  border-top-color: var(--codesema-accent);
+  border: 2.5px solid var(--line);
+  border-top-color: var(--accent);
   animation: app-spin 0.8s linear infinite;
 }
 

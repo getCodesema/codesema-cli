@@ -65,9 +65,11 @@ describe('EVENT_CARD tone tokens (fiche 15 section 4 guard)', () => {
   })
 
   for (const [mapName, map] of Object.entries(maps)) {
-    test(`${mapName}: every tone resolves to a --cs-* token, never a bare hex literal`, () => {
+    test(`${mapName}: every tone resolves to a theme tokens, never a bare hex literal`, () => {
       for (const tone of EVENT_CARD_TONES) {
-        expect(map[tone]).toMatch(/^var\(--cs-[\w-]+\)$/)
+        expect(map[tone]).toMatch(
+          /^(var\(--[\w-]+\)|color-mix\(in srgb, var\(--[\w-]+\) \d+%, transparent\))$/,
+        )
       }
     })
 

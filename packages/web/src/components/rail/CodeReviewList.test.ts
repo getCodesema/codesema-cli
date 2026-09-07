@@ -495,7 +495,7 @@ describe('selection: a tinted fill and aria-current, never a border', () => {
       SOURCE.indexOf('.crl-select-btn--selected {'),
       SOURCE.indexOf('.crl-main {'),
     )
-    expect(rule).toContain('background: var(--cs-green-soft);')
+    expect(rule).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
     expect(rule).not.toContain('border')
   })
 })

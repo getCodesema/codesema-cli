@@ -451,7 +451,7 @@ const issueUpdatedAge = computed(() =>
   align-items: center;
   gap: 10px;
   min-height: var(--fdp-nav-h);
-  background: var(--cs-bg);
+  background: var(--bg);
 }
 
 .fdp-back {
@@ -461,16 +461,16 @@ const issueUpdatedAge = computed(() =>
   justify-content: center;
   font-family: inherit;
   padding: 4px 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .fdp-back:hover {
-  border-color: var(--cs-line-3);
-  color: var(--cs-text-2);
+  border-color: var(--line);
+  color: var(--fg-dim);
 }
 
 .fdp-back-icon {
@@ -489,9 +489,9 @@ const issueUpdatedAge = computed(() =>
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
   opacity: 0;
   transition: opacity 150ms ease;
 }
@@ -513,10 +513,10 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-title {
   margin: 0;
-  font-size: var(--fs-3xl);
+  font-size: 24px;
   font-weight: 700;
   line-height: 1.15;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -533,7 +533,7 @@ const issueUpdatedAge = computed(() =>
   justify-content: space-between;
   gap: 12px;
   padding: 8px 0;
-  background: var(--cs-bg);
+  background: var(--bg);
 }
 
 @container fb-shell (min-width: 640px) {
@@ -548,15 +548,15 @@ const issueUpdatedAge = computed(() =>
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .fdp-state {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 500;
   padding: 2px 8px;
   border-radius: 999px;
@@ -569,33 +569,33 @@ const issueUpdatedAge = computed(() =>
 }
 
 .fdp-state--open {
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .fdp-state--draft {
-  color: var(--cs-muted);
-  background: var(--cs-line-2);
+  color: var(--fg-dim);
+  background: var(--line);
 }
 
 .fdp-state--closed {
-  color: var(--cs-red-text);
-  background: var(--cs-red-soft);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .fdp-state--merged {
-  color: var(--cs-lavender);
-  background: var(--cs-lavender-soft);
+  color: var(--alt);
+  background: color-mix(in srgb, var(--alt) 12%, transparent);
 }
 
 .fdp-number {
-  font-family: var(--font-mono);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  color: var(--fg-muted);
   text-decoration: none;
 }
 
 .fdp-number:hover {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .fdp-open {
@@ -603,21 +603,21 @@ const issueUpdatedAge = computed(() =>
   align-items: center;
   gap: 6px;
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 500;
   line-height: 1;
   padding: 4px 10px;
   border: none;
   border-radius: 8px;
-  background: var(--cs-green);
-  color: var(--cs-on-green);
+  background: var(--ok);
+  color: var(--bg);
   text-decoration: none;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .fdp-open:hover {
-  background: var(--cs-green-hover);
+  background: var(--ok);
 }
 
 .fdp-open-icon {
@@ -629,7 +629,7 @@ const issueUpdatedAge = computed(() =>
 .fdp-md {
   margin: 20px 0 0;
   overflow-wrap: anywhere;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .fdp-md p {
@@ -638,46 +638,46 @@ const issueUpdatedAge = computed(() =>
 }
 
 .fdp-md h1 {
-  font-size: var(--fs-xl);
+  font-size: 18px;
   font-weight: 700;
 }
 
 .fdp-md h2 {
-  font-size: var(--fs-xl);
+  font-size: 18px;
   font-weight: 700;
 }
 
 .fdp-md h3 {
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 600;
 }
 
 .fdp-md h4 {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
 }
 
 .fdp-md h5 {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
 }
 
 .fdp-md h6 {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .fdp-md code {
-  font-family: var(--font-mono);
-  background: var(--cs-surface);
-  color: var(--cs-green-text);
+  font-family: var(--font);
+  background: var(--bg-raised);
+  color: var(--ok);
   padding: 2px 6px;
   border-radius: 4px;
 }
 
 .fdp-md pre {
-  background: var(--cs-surface);
+  background: var(--bg-raised);
   padding: 10px 12px;
   border-radius: 8px;
   overflow-x: auto;
@@ -692,21 +692,21 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-md blockquote {
   margin: 0;
-  border-left: 3px solid var(--cs-green-text);
+  border-left: 3px solid var(--ok);
   padding-left: 12px;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   font-style: italic;
 }
 
 .fdp-md a {
-  color: var(--cs-green-text);
+  color: var(--ok);
   text-decoration: underline;
   text-decoration-style: solid;
-  text-decoration-color: color-mix(in srgb, var(--cs-green-text) 40%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--ok) 40%, transparent);
 }
 
 .fdp-md a:hover {
-  text-decoration-color: var(--cs-green-text);
+  text-decoration-color: var(--ok);
 }
 
 .fdp-md a.fdp-md-ref {
@@ -728,25 +728,25 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-md-truncated {
   margin: 12px 0 0;
-  font-size: var(--fs-base);
-  color: var(--cs-ghost);
+  font-size: var(--fs);
+  color: var(--fg-muted);
 }
 
 .fdp-md-truncated a {
-  color: var(--cs-green-text);
+  color: var(--ok);
   text-decoration: underline;
 }
 
 .fdp-description-empty {
   margin: 20px 0 0;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .fdp-empty {
   margin: auto;
   text-align: center;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
   max-width: 220px;
 }
 
@@ -756,13 +756,13 @@ const issueUpdatedAge = computed(() =>
 .fdp-issue-rail {
   display: flex;
   flex-direction: column;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .fdp-issue-rail-section {
   padding-bottom: 14px;
   margin-bottom: 14px;
-  border-bottom: 1px solid var(--cs-line-2);
+  border-bottom: 1px solid var(--line);
 }
 
 .fdp-issue-rail-section:last-child {
@@ -776,11 +776,11 @@ const issueUpdatedAge = computed(() =>
   align-items: center;
   gap: 6px;
   margin: 0 0 8px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .fdp-issue-rail-heading-icon {
@@ -791,7 +791,7 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-issue-rail-empty {
   margin: 0;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .fdp-issue-rail-chips {
@@ -804,10 +804,10 @@ const issueUpdatedAge = computed(() =>
 }
 
 .fdp-issue-rail-label-chip {
-  --lp-rest-bg: var(--cs-line-2);
+  --lp-rest-bg: var(--line);
 
   font-weight: 500;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--lp-rest-bg);
@@ -821,6 +821,6 @@ const issueUpdatedAge = computed(() =>
 }
 
 .fdp-issue-rail-def-row dt {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 </style>

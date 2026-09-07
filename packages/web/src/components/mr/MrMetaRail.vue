@@ -283,13 +283,13 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrr-root {
   display: flex;
   flex-direction: column;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .mrr-section {
   padding-bottom: 14px;
   margin-bottom: 14px;
-  border-bottom: 1px solid var(--cs-line-2);
+  border-bottom: 1px solid var(--line);
 }
 
 .mrr-section:last-child {
@@ -303,11 +303,11 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   align-items: center;
   gap: 6px;
   margin: 0 0 8px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .mrr-heading-icon {
@@ -318,12 +318,12 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrr-empty {
   margin: 0;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .mrr-value {
   margin: 0;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .mrr-chips {
@@ -336,21 +336,21 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-chip {
-  color: var(--cs-text-2);
-  background: var(--cs-surface);
-  border: 1px solid var(--cs-line-2);
+  color: var(--fg-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 3px 10px;
 }
 
 /* Non-interactive compact pill: same fill family as LabelChips' rest state
-   (see LabelColor.ts), --cs-* tokens only. Kept apart from .mrr-chip above
+   (see LabelColor.ts), theme tokens only. Kept apart from .mrr-chip above
    (reviewers, assignees), which never carries a forge color. */
 .mrr-label-chip {
-  --lp-rest-bg: var(--cs-line-2);
+  --lp-rest-bg: var(--line);
 
   font-weight: 500;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--lp-rest-bg);
@@ -371,14 +371,14 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-def-row dt {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .mrr-def-row dd {
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font);
   font-variant-numeric: tabular-nums;
-  color: var(--cs-text);
+  color: var(--fg);
   text-align: right;
 }
 
@@ -387,30 +387,30 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-def-add {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrr-def-del {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrr-mergeable-text--mergeable {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrr-mergeable-text--conflicting {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrr-mergeable-text--unknown {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .mrr-checks-aggregate {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .mrr-checks-dot {
@@ -421,20 +421,20 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-checks-dot--passed {
-  background: var(--cs-green-text);
+  background: var(--ok);
 }
 
 .mrr-checks-dot--failed {
-  background: var(--cs-red-text);
+  background: var(--err);
 }
 
 .mrr-checks-dot--pending {
-  background: var(--cs-amber-text);
+  background: var(--warn);
 }
 
 .mrr-checks-dot--skipped,
 .mrr-checks-dot--unknown {
-  background: var(--cs-dot-idle);
+  background: var(--fg-muted);
 }
 
 .mrr-checks-detailed {
@@ -445,39 +445,39 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrr-check-group-heading {
   margin: 0 0 6px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .mrr-check-entries {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  font-family: var(--font-mono);
+  font-family: var(--font);
 }
 
 .mrr-check-entry--failed {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrr-check-entry--pending {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .mrr-check-entry--skipped {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .mrr-check-passed {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--font-mono);
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
+  font-family: var(--font);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
   border: none;
   border-radius: 999px;
   padding: 3px 10px;
@@ -485,7 +485,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-check-passed:hover {
-  background: var(--cs-green-ring);
+  background: var(--ok);
 }
 
 .mrr-check-passed-icon {

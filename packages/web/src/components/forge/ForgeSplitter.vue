@@ -98,13 +98,13 @@ function onKeydown(event: KeyboardEvent): void {
   width: 5px;
   cursor: col-resize;
   background: transparent;
-  border-left: 1px solid var(--cs-line-2);
+  border-left: 1px solid var(--line);
   touch-action: none;
 }
 
 .fs-handle:hover,
 .fs-handle--active {
-  border-left-color: var(--cs-line-3);
-  background: var(--cs-hover);
+  border-left-color: var(--line);
+  background: var(--bg-hover);
 }
 </style>

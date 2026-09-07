@@ -81,7 +81,7 @@ const diffRegionId = `cfr-diff-${useId()}`
 
 <style scoped>
 .cfr-root {
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .cfr-root--last {
@@ -104,21 +104,21 @@ const diffRegionId = `cfr-diff-${useId()}`
   background: none;
   color: inherit;
   font: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   text-align: left;
   cursor: pointer;
-  transition: background var(--cs-duration-fast) var(--cs-ease-out);
+  transition: background 150ms ease;
 }
 
 .cfr-button:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .cfr-chevron {
   flex: none;
   display: inline-block;
-  color: var(--cs-muted);
-  transition: transform var(--cs-duration-fast) var(--cs-ease-out);
+  color: var(--fg-dim);
+  transition: transform 150ms ease;
 }
 
 .cfr-chevron--open {
@@ -138,31 +138,31 @@ const diffRegionId = `cfr-diff-${useId()}`
   direction: rtl;
   text-align: left;
   unicode-bidi: plaintext;
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  color: var(--cs-text);
+  font-family: var(--font);
+  font-size: var(--fs);
+  color: var(--fg);
 }
 
 /* Defect #1 fixed: a color per status instead of one uniform muted gray. */
 .cfr-status {
   flex: none;
-  font-size: var(--fs-xs);
+  font-size: 12px;
 }
 
 .cfr-status--added {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cfr-status--modified {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .cfr-status--deleted {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cfr-status--renamed {
-  color: var(--cs-water);
+  color: var(--info);
 }
 
 /* Defect #2 fixed: tabular figures so +/- counts do not dance between rows. */
@@ -170,21 +170,21 @@ const diffRegionId = `cfr-diff-${useId()}`
   flex: none;
   display: inline-flex;
   gap: 6px;
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
+  font-size: 12px;
+  font-family: var(--font);
   font-variant-numeric: tabular-nums;
 }
 
 .cfr-add {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cfr-del {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 /* fiche §6: a top hairline, then the diff render. */
 .cfr-expanded {
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
 }
 </style>

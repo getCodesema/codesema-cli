@@ -202,10 +202,9 @@ function onSend(text: string): void {
 .ac-root {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--cs-panel);
-  box-shadow: var(--cs-shadow-panel);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -215,7 +214,7 @@ function onSend(text: string): void {
   gap: 12px;
   padding: 12px 14px;
   border: none;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -251,7 +250,7 @@ function onSend(text: string): void {
 
 .ac-warn {
   flex: none;
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .ac-head-text {
@@ -263,18 +262,18 @@ function onSend(text: string): void {
 }
 
 .ac-sub {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .ac-title {
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -282,8 +281,8 @@ function onSend(text: string): void {
 
 .ac-state {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -304,18 +303,18 @@ function onSend(text: string): void {
 .ac-zone {
   min-width: 0;
   padding: 10px;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-surface-2);
+  background: var(--bg-hover);
   cursor: zoom-in;
   outline: 2px solid transparent;
   outline-offset: 2px;
-  transition: outline-color var(--cs-duration-fast) var(--cs-ease-out);
+  transition: outline-color 150ms ease;
 }
 
 .ac-zone:hover,
 .ac-zone:focus-visible {
-  outline-color: var(--cs-line-3);
+  outline-color: var(--line);
 }
 
 .ac-foot {
@@ -324,7 +323,7 @@ function onSend(text: string): void {
   flex-direction: column;
   gap: 8px;
   padding: 10px 14px 12px;
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
 }
 
 .ac-actions {
@@ -334,15 +333,15 @@ function onSend(text: string): void {
 }
 
 .ac-action {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   background: transparent;
   cursor: pointer;
-  transition: border-color var(--cs-duration-fast) var(--cs-ease-out);
+  transition: border-color 150ms ease;
 }
 
 .ac-action:disabled {
@@ -351,32 +350,32 @@ function onSend(text: string): void {
 }
 
 .ac-action--stop {
-  color: var(--cs-red-text);
-  border-color: var(--cs-red-line);
+  color: var(--err);
+  border-color: var(--err);
 }
 
 .ac-action--stop:hover:not(:disabled) {
-  border-color: var(--cs-red);
+  border-color: var(--err);
 }
 
 .ac-action--ship {
-  color: var(--cs-on-green);
-  background: var(--cs-green);
-  border-color: var(--cs-green);
+  color: var(--bg);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .ac-action--ship:hover:not(:disabled) {
-  background: var(--cs-green-hover);
-  border-color: var(--cs-green-hover);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .ac-action--resume {
-  color: var(--cs-amber-text);
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .ac-action--resume:hover:not(:disabled) {
-  border-color: var(--cs-amber);
+  border-color: var(--warn);
 }
 </style>

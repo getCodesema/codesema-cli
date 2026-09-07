@@ -455,21 +455,21 @@ function onFooterRefresh(): void {
   display: flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 0 10px;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
 }
 
 .flp-search-pill:focus-within {
-  border-color: var(--cs-green-ring);
+  border-color: var(--ok);
 }
 
 .flp-search-icon {
   flex: none;
   width: 14px;
   height: 14px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .flp-search-input {
@@ -479,13 +479,13 @@ function onFooterRefresh(): void {
   outline: none;
   background: transparent;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 10px 0;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .flp-search-input::placeholder {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .flp-search-clear {
@@ -497,13 +497,13 @@ function onFooterRefresh(): void {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
 
 .flp-search-clear:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .flp-search-clear svg {
@@ -528,23 +528,23 @@ function onFooterRefresh(): void {
 }
 
 .flp-heading {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .flp-count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .flp-truncated {
   margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .flp-degraded {
@@ -552,9 +552,9 @@ function onFooterRefresh(): void {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
-  background: var(--cs-inset);
+  font-size: 12px;
+  color: var(--fg-dim);
+  background: var(--bg-raised);
   border-radius: 8px;
   padding: 10px 12px;
 }
@@ -562,24 +562,24 @@ function onFooterRefresh(): void {
 .flp-retry {
   flex: none;
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   padding: 3px 10px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .flp-retry:hover {
-  border-color: var(--cs-line-3);
+  border-color: var(--line);
 }
 
 .flp-empty {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
   padding: 4px 2px;
 }
 
@@ -589,22 +589,22 @@ function onFooterRefresh(): void {
   text-align: left;
   font-family: inherit;
   padding: 10px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
   cursor: pointer;
 }
 
 .flp-item:hover {
-  border-color: var(--cs-line-3);
-  background: var(--cs-surface-2);
+  border-color: var(--line);
+  background: var(--bg-hover);
 }
 
 /* The selected item is a state: colored border, per the doctrine. The fill
    never changes on selection, only on hover -- selection and hover are two
    independent signals. */
 .flp-item--on {
-  border-color: var(--cs-green-ring);
+  border-color: var(--ok);
 }
 
 .flp-footer {
@@ -614,8 +614,8 @@ function onFooterRefresh(): void {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 16px 16px;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .flp-footer-fresh {
@@ -633,7 +633,7 @@ function onFooterRefresh(): void {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
@@ -644,7 +644,7 @@ function onFooterRefresh(): void {
 }
 
 .flp-footer-refresh:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .flp-footer-refresh--spin {
@@ -668,9 +668,9 @@ function onFooterRefresh(): void {
   flex-direction: column;
   gap: 6px;
   padding: 10px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
 }
 
 .flp-skel-head {
@@ -681,12 +681,7 @@ function onFooterRefresh(): void {
 
 .flp-skel-bar {
   border-radius: 4px;
-  background: linear-gradient(
-    90deg,
-    var(--cs-line-2) 25%,
-    var(--cs-line-3) 37%,
-    var(--cs-line-2) 63%
-  );
+  background: linear-gradient(90deg, var(--line) 25%, var(--line) 37%, var(--line) 63%);
   background-size: 400% 100%;
   animation: flp-shimmer 1.4s ease-in-out infinite;
 }

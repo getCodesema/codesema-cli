@@ -66,17 +66,17 @@ const padding = paddingFor(props.depth, props.node.kind)
 }
 
 .dmn-row--hot {
-  background: color-mix(in srgb, var(--codesema-accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   animation: dmn-pulse 2.2s ease-in-out infinite;
 }
 
 @keyframes dmn-pulse {
   0%,
   100% {
-    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--codesema-accent) 22%, transparent);
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 22%, transparent);
   }
   50% {
-    box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--codesema-accent) 16%, transparent);
+    box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
   }
 }
 
@@ -85,7 +85,7 @@ const padding = paddingFor(props.depth, props.node.kind)
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   overflow: hidden;
   flex-shrink: 0;
   display: inline-block;
@@ -96,7 +96,7 @@ const padding = paddingFor(props.depth, props.node.kind)
   top: 0;
   width: 50%;
   height: 100%;
-  background: var(--codesema-dot-idle);
+  background: var(--fg-muted);
   transition: background 0.2s ease;
 }
 
@@ -109,22 +109,22 @@ const padding = paddingFor(props.depth, props.node.kind)
 }
 
 .dmn-dot-half--a.dmn-dot-half--on {
-  background: var(--codesema-accent);
+  background: var(--accent);
 }
 
 .dmn-dot-half--b.dmn-dot-half--on {
-  background: var(--codesema-amber);
+  background: var(--warn);
 }
 
 .dmn-dir-name {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -133,27 +133,27 @@ const padding = paddingFor(props.depth, props.node.kind)
 .dmn-file-name {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-2);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .dmn-delta {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   flex-shrink: 0;
   display: inline-flex;
   gap: 6px;
 }
 
 .dmn-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .dmn-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 </style>

@@ -272,7 +272,7 @@ describe('BranchTable: conversations badge', () => {
       }),
     ]
     const html = await render({ rows, visibleRows: rows })
-    expect(html).toContain('var(--cs-amber-text)')
+    expect(html).toContain('var(--warn)')
   })
 })
 
@@ -393,7 +393,7 @@ describe('BranchTable: table title', () => {
 })
 
 describe('BranchTable: design tokens', () => {
-  test('no hex literal color was introduced: every color is a --cs-* token', () => {
+  test('no hex literal color was introduced: every color is a theme tokens', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

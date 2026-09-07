@@ -8,10 +8,10 @@ const SEVERITIES: ReadonlySet<Severity> = new Set(['critical', 'major', 'minor',
 
 // Same mapping as ReviewLive's single-lane findings feed: kept in sync there.
 const SEVERITY_COLOR: Record<Severity, string> = {
-  critical: 'var(--codesema-risk-high)',
-  major: 'var(--codesema-accent)',
-  minor: 'var(--codesema-risk-med)',
-  info: 'var(--codesema-risk-low)',
+  critical: 'var(--err)',
+  major: 'var(--accent)',
+  minor: 'var(--warn)',
+  info: 'var(--ok)',
 }
 
 const SEVERITY_LABEL_KEY: Record<Severity, string> = {
@@ -86,8 +86,8 @@ const severityCounts = computed(() => {
 
 <style scoped>
 .dlane-root {
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   border-radius: 12px;
   padding: 14px 16px;
   min-width: 0;
@@ -105,17 +105,17 @@ const severityCounts = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   margin-bottom: 10px;
 }
 
 .dlane-total {
-  font-family: var(--font-mono);
-  color: var(--codesema-accent);
+  font-family: var(--font);
+  color: var(--accent);
   text-transform: none;
   letter-spacing: normal;
 }
@@ -136,16 +136,16 @@ const severityCounts = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-2);
-  border: 1px solid var(--codesema-line);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 2px 9px;
 }
 
 .dlane-chip--zero {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   opacity: 0.55;
 }
 
@@ -158,17 +158,17 @@ const severityCounts = computed(() => {
 
 .dlane-line {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   line-height: 1.5;
 }
 
 .dlane-line-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   margin-right: 7px;
 }
 
@@ -177,8 +177,8 @@ const severityCounts = computed(() => {
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-3);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   font-style: italic;
 }
 
@@ -186,7 +186,7 @@ const severityCounts = computed(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--codesema-dot-idle);
+  background: var(--fg-muted);
   animation: dlane-warm-pulse 1.6s ease-in-out infinite;
 }
 

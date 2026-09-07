@@ -333,7 +333,7 @@ describe('PilotView: no new i18n keys, no hardcoded color, no animation-fill-mod
     }
   })
 
-  test('the scoped style block uses only --cs- tokens, no hex literal, no animation-fill-mode', () => {
+  test('the scoped style block uses only theme tokens, no hex literal, no animation-fill-mode', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style'), SOURCE.lastIndexOf('</style>'))
     expect(styleBlock).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
     expect(styleBlock).not.toMatch(/animation-fill-mode\s*:|animation\s*:[^;]*\b(forwards|both)\b/)

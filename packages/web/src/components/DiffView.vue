@@ -97,63 +97,63 @@ type KindMeta = { label: string; color: string; bg: string }
 const NL_KIND: Partial<Record<string, KindMeta>> = {
   security: {
     label: t('diffView.kindSecurity'),
-    color: 'var(--codesema-kind-security)',
-    bg: 'var(--codesema-kind-security-soft)',
+    color: 'var(--err)',
+    bg: 'color-mix(in srgb, var(--err) 12%, transparent)',
   },
   perf: {
     label: t('diffView.kindPerf'),
-    color: 'var(--codesema-kind-perf)',
-    bg: 'var(--codesema-kind-perf-soft)',
+    color: 'var(--warn)',
+    bg: 'color-mix(in srgb, var(--warn) 12%, transparent)',
   },
   convention: {
     label: t('diffView.kindConvention'),
-    color: 'var(--codesema-kind-convention)',
-    bg: 'var(--codesema-kind-convention-soft)',
+    color: 'var(--info)',
+    bg: 'color-mix(in srgb, var(--info) 12%, transparent)',
   },
   design: {
     label: t('diffView.kindDesign'),
-    color: 'var(--codesema-kind-design)',
-    bg: 'var(--codesema-kind-design-soft)',
+    color: 'var(--alt)',
+    bg: 'color-mix(in srgb, var(--alt) 12%, transparent)',
   },
   praise: {
     label: t('diffView.kindPraise'),
-    color: 'var(--codesema-kind-praise)',
-    bg: 'var(--codesema-kind-praise-soft)',
+    color: 'var(--ok)',
+    bg: 'color-mix(in srgb, var(--ok) 12%, transparent)',
   },
   why: {
     label: t('diffView.kindWhy'),
-    color: 'var(--codesema-kind-why)',
-    bg: 'var(--codesema-kind-why-soft)',
+    color: 'var(--fg-dim)',
+    bg: 'color-mix(in srgb, var(--fg-dim) 12%, transparent)',
   },
 }
 
 const SEV_KIND: Record<FindingSeverity, KindMeta> = {
   critical: {
     label: t('diffView.sevCritical'),
-    color: 'var(--codesema-risk-high)',
-    bg: 'var(--codesema-risk-high-soft)',
+    color: 'var(--err)',
+    bg: 'color-mix(in srgb, var(--err) 12%, transparent)',
   },
   major: {
     label: t('diffView.sevMajor'),
-    color: 'var(--codesema-risk-high)',
-    bg: 'var(--codesema-risk-high-soft)',
+    color: 'var(--err)',
+    bg: 'color-mix(in srgb, var(--err) 12%, transparent)',
   },
   minor: {
     label: t('diffView.sevMinor'),
-    color: 'var(--codesema-risk-med)',
-    bg: 'var(--codesema-risk-med-soft)',
+    color: 'var(--warn)',
+    bg: 'color-mix(in srgb, var(--warn) 12%, transparent)',
   },
   info: {
     label: t('diffView.sevInfo'),
-    color: 'var(--codesema-ink-3)',
-    bg: 'var(--codesema-line-2)',
+    color: 'var(--fg-dim)',
+    bg: 'var(--line)',
   },
 }
 
 const FALLBACK_KIND: KindMeta = {
   label: t('diffView.sevInfo'),
-  color: 'var(--codesema-ink-3)',
-  bg: 'var(--codesema-line-2)',
+  color: 'var(--fg-dim)',
+  bg: 'var(--line)',
 }
 
 function resolveKind(f: Finding): KindMeta {
@@ -572,18 +572,18 @@ watch(
 
 .diff-seg {
   display: inline-flex;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 9px;
   padding: 2px;
   gap: 2px;
 }
 
 .diff-seg button {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 5px 10px;
   border-radius: 7px;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   font-weight: 500;
   border: none;
   background: none;
@@ -595,8 +595,8 @@ watch(
 }
 
 .diff-seg button.on {
-  background: var(--codesema-ink);
-  color: var(--codesema-bg);
+  background: var(--fg);
+  color: var(--bg);
 }
 
 /* file list */
@@ -608,10 +608,10 @@ watch(
 
 /* file */
 .srd-file {
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
   /* skip layout/paint for off-screen files on large diffs */
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
@@ -622,20 +622,20 @@ watch(
   align-items: center;
   gap: 9px;
   padding: 10px 14px;
-  background: var(--codesema-line-2);
-  border-bottom: 1px solid var(--codesema-line);
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
   cursor: pointer;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   user-select: none;
 }
 
 .srd-file-head:hover {
-  background: color-mix(in srgb, var(--codesema-line) 60%, var(--codesema-panel));
+  background: color-mix(in srgb, var(--line) 60%, var(--bg-raised));
 }
 
 .srd-chev {
-  color: var(--codesema-ink-3);
-  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+  font-size: 12px;
   transition: transform 0.15s;
   display: inline-block;
   flex-shrink: 0;
@@ -646,9 +646,9 @@ watch(
 }
 
 .srd-path {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -659,14 +659,14 @@ watch(
 }
 
 .srd-cmt {
-  font-size: var(--fs-xs);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
   flex-shrink: 0;
 }
 
 .srd-delta {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -674,36 +674,36 @@ watch(
 }
 
 .srd-delta-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .srd-delta-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .srd-delta-sep {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 /* file body */
 .srd-body {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 1.6;
   overflow-x: auto;
 }
 
 /* gap bar */
 .srd-gap {
-  background: var(--codesema-line-2);
-  color: var(--codesema-ink-3);
+  background: var(--line);
+  color: var(--fg-dim);
   padding: 5px 16px;
-  font-size: var(--fs-xs);
-  border-bottom: 1px solid var(--codesema-line);
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: var(--font-mono);
+  font-family: var(--font);
 }
 
 .srd-gap-ic {
@@ -722,35 +722,35 @@ watch(
 }
 
 .srd-uline-ctx {
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
 }
 
 .srd-uline-add {
-  background: var(--codesema-diff-add);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
 .srd-uline-add .srd-no {
-  background: var(--codesema-diff-add-gut);
+  background: var(--ok);
 }
 
 .srd-uline-del {
-  background: var(--codesema-diff-del);
+  background: color-mix(in srgb, var(--err) 14%, transparent);
 }
 
 .srd-uline-del .srd-no {
-  background: var(--codesema-diff-del-gut);
+  background: var(--err);
 }
 
 .srd-uline-add .srd-sign {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .srd-uline-del .srd-sign {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .srd-uline-del .srd-code {
-  color: color-mix(in srgb, var(--codesema-risk-high) 70%, var(--codesema-ink-2));
+  color: color-mix(in srgb, var(--err) 70%, var(--fg-dim));
 }
 
 /* split view */
@@ -772,7 +772,7 @@ watch(
   min-width: 0;
   display: flex;
   align-items: flex-start;
-  border-right: 1px solid var(--codesema-line);
+  border-right: 1px solid var(--line);
 }
 
 .srd-cell:last-child {
@@ -780,44 +780,44 @@ watch(
 }
 
 .srd-cell-ctx {
-  background: var(--codesema-panel);
+  background: var(--bg-raised);
 }
 
 .srd-cell-add {
-  background: var(--codesema-diff-add);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
 .srd-cell-add .srd-no {
-  background: var(--codesema-diff-add-gut);
+  background: var(--ok);
 }
 
 .srd-cell-add .srd-sign {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .srd-cell-del {
-  background: var(--codesema-diff-del);
+  background: color-mix(in srgb, var(--err) 14%, transparent);
 }
 
 .srd-cell-del .srd-no {
-  background: var(--codesema-diff-del-gut);
+  background: var(--err);
 }
 
 .srd-cell-del .srd-sign {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .srd-cell-del .srd-code {
-  color: color-mix(in srgb, var(--codesema-risk-high) 70%, var(--codesema-ink-2));
+  color: color-mix(in srgb, var(--err) 70%, var(--fg-dim));
 }
 
 .srd-cell-nil {
   background: repeating-linear-gradient(
     45deg,
-    var(--codesema-line-2),
-    var(--codesema-line-2) 6px,
-    var(--codesema-bg) 6px,
-    var(--codesema-bg) 12px
+    var(--line),
+    var(--line) 6px,
+    var(--bg) 6px,
+    var(--bg) 12px
   );
 }
 
@@ -827,9 +827,9 @@ watch(
   flex-shrink: 0;
   text-align: right;
   padding: 0 8px;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   user-select: none;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   line-height: inherit;
 }
 
@@ -851,19 +851,19 @@ watch(
   white-space: pre-wrap;
   word-break: break-word;
   padding-right: 10px;
-  color: var(--codesema-ink);
+  color: var(--fg);
   line-height: inherit;
 }
 
 /* note card */
 .nlr-note {
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-left-width: 3px;
   border-radius: 0 9px 9px 0;
   margin: 8px 12px 10px;
   padding: 11px 13px;
-  font-family: var(--font-sans);
+  font-family: var(--font);
 }
 
 .nlr-note-inline {
@@ -893,10 +893,10 @@ watch(
   width: 20px;
   height: 20px;
   border-radius: 6px;
-  background: var(--codesema-accent);
+  background: var(--accent);
   color: #fff;
-  font-family: var(--font-display);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -906,13 +906,13 @@ watch(
 }
 
 .nlr-name {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .nlr-kind {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -924,14 +924,14 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   border-radius: 999px;
   padding: 2px 9px;
-  color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .nlr-consensus-dots {
@@ -960,32 +960,32 @@ watch(
 }
 
 .nlr-note-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   margin: 0 0 3px 0;
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .nlr-note-body {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   margin: 0;
 }
 
 .nlr-note code,
 .nlr-note-title code {
-  font-family: var(--font-mono);
+  font-family: var(--font);
   font-size: 0.85em;
-  background: var(--codesema-line-2);
+  background: var(--line);
   padding: 1px 5px;
   border-radius: 4px;
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 .nlr-note-sep {
   height: 1px;
-  background: var(--codesema-line);
+  background: var(--line);
   margin: 10px 0;
 }
 
@@ -995,10 +995,10 @@ watch(
 
 @keyframes nlr-flash {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--codesema-accent) 60%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
   }
   35% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--codesema-accent) 45%, transparent);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 45%, transparent);
   }
   100% {
     box-shadow: 0 0 0 0 transparent;
@@ -1008,7 +1008,7 @@ watch(
 /* suggested fix */
 .nlr-sugg {
   margin-top: 11px;
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -1017,22 +1017,22 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--codesema-risk-low-soft);
-  color: var(--codesema-risk-low);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
   padding: 6px 11px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
-  font-family: var(--font-sans);
+  font-family: var(--font);
 }
 
 .nlr-sugg-code {
   margin: 0;
   padding: 10px 12px;
-  background: var(--codesema-line-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  background: var(--line);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 1.6;
-  color: var(--codesema-ink);
+  color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1047,7 +1047,7 @@ watch(
 /* mobile density (<= 640px) */
 @media (max-width: 640px) {
   .srd-body {
-    font-size: var(--fs-sm);
+    font-size: 12px;
   }
   .srd-no {
     width: 30px;

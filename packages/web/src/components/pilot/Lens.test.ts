@@ -73,7 +73,7 @@ describe('Lens: dialog semantics', () => {
 })
 
 describe('Lens: no hardcoded color leaks into the component', () => {
-  test('the scoped style block uses only --cs- tokens, no hex literal', () => {
+  test('the scoped style block uses only theme tokens, no hex literal', () => {
     const source = readFileSync(new URL('./Lens.vue', import.meta.url), 'utf-8')
     const styleBlock = source.slice(source.indexOf('<style'), source.lastIndexOf('</style>'))
     expect(styleBlock).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
@@ -86,8 +86,8 @@ describe('Lens: the zoomed block sits in an opaque panel, never bare on the veil
   const styleBlock = source.slice(source.indexOf('<style'), source.lastIndexOf('</style>'))
 
   test('the slot is a bounded, scrollable panel', () => {
-    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*background: var\(--cs-panel\);/)
-    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*border: 1px solid var\(--cs-line-2\);/)
+    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*background: var\(--bg-raised\);/)
+    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*border: 1px solid var\(--line\);/)
     expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*width: min\(1100px, 100%\);/)
     expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*overflow: auto;/)
     expect(styleBlock).toMatch(/\.pl-lens-body\s*\{[^}]*grid-template-rows: minmax\(0, 1fr\);/)

@@ -565,8 +565,8 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-title {
-  font-family: var(--font-display);
-  font-size: var(--fs-2xl);
+  font-family: var(--font);
+  font-size: 24px;
   font-weight: 500;
   letter-spacing: -0.01em;
   margin: 0;
@@ -578,24 +578,24 @@ const SEV_CLS: Record<string, string> = {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .sr-branches code {
-  background: var(--codesema-line-2);
+  background: var(--line);
   border-radius: 6px;
   padding: 2px 8px;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
 }
 
 .sr-branch-arrow {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .sr-dual-stat {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   margin: 2px 0 0;
 }
 
@@ -612,7 +612,7 @@ const SEV_CLS: Record<string, string> = {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  background: var(--codesema-ink);
+  background: var(--fg);
   border-radius: 7px;
   padding: 4px;
 }
@@ -624,37 +624,37 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-sem-dot--stop {
-  background: var(--codesema-signal-stop);
+  background: var(--err);
   opacity: 0.28;
 }
 
 .sr-sem-dot--check {
-  background: var(--codesema-signal-check);
+  background: var(--warn);
   opacity: 0.32;
 }
 
 .sr-sem-dot--go {
-  background: var(--codesema-signal-go);
+  background: var(--ok);
   opacity: 0.3;
 }
 
 .sr-semaphore--request_changes .sr-sem-dot--stop {
   opacity: 1;
-  box-shadow: 0 0 8px var(--codesema-signal-stop);
+  box-shadow: 0 0 8px var(--err);
 }
 
 .sr-semaphore--comment .sr-sem-dot--check {
   opacity: 1;
-  box-shadow: 0 0 8px var(--codesema-signal-check);
+  box-shadow: 0 0 8px var(--warn);
 }
 
 .sr-semaphore--approve .sr-sem-dot--go {
   opacity: 1;
-  box-shadow: 0 0 8px var(--codesema-signal-go);
+  box-shadow: 0 0 8px var(--ok);
 }
 
 .sr-verdict {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
   border-radius: 999px;
   padding: 5px 13px;
@@ -662,29 +662,29 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-verdict--approve {
-  color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .sr-verdict--changes {
-  color: var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .sr-verdict--comment {
-  color: var(--codesema-amber);
-  background: var(--codesema-amber-soft);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .sr-copy-btn {
   flex-shrink: 0;
   margin-top: 4px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 6px 12px;
   border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   font-family: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -694,23 +694,23 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-copy-btn:hover {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .sr-copy-btn--done {
-  color: var(--codesema-risk-low);
-  border-color: var(--codesema-risk-low);
+  color: var(--ok);
+  border-color: var(--ok);
 }
 
 .sr-fix-btn {
   flex-shrink: 0;
   margin-top: 4px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 6px 12px;
   border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--codesema-accent) 45%, transparent);
-  background: var(--codesema-accent-soft);
-  color: var(--codesema-accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
   font-family: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -718,7 +718,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-fix-btn:hover {
-  border-color: var(--codesema-accent);
+  border-color: var(--accent);
 }
 
 /* ── Onglets ────────────────────────────────────────────────── */
@@ -727,7 +727,7 @@ const SEV_CLS: Record<string, string> = {
   align-items: center;
   gap: 4px;
   padding: 0 26px;
-  border-bottom: 1px solid var(--codesema-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .sr-tab {
@@ -740,29 +740,29 @@ const SEV_CLS: Record<string, string> = {
   padding: 10px 12px;
   margin-bottom: -1px;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   cursor: pointer;
   transition: color 0.12s ease;
 }
 
 .sr-tab:hover {
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .sr-tab.on {
-  color: var(--codesema-ink);
-  border-bottom-color: var(--codesema-accent);
+  color: var(--fg);
+  border-bottom-color: var(--accent);
 }
 
 .sr-tab-n {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  background: var(--codesema-line-2);
+  font-family: var(--font);
+  font-size: 12px;
+  background: var(--line);
   border-radius: 999px;
   padding: 1px 7px;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .sr-tabs-spacer {
@@ -772,8 +772,8 @@ const SEV_CLS: Record<string, string> = {
 .sr-mode {
   display: inline-flex;
   align-items: center;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 9px;
   padding: 2px;
   gap: 2px;
@@ -784,10 +784,10 @@ const SEV_CLS: Record<string, string> = {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 5px 10px;
   border-radius: 7px;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   font-weight: 500;
   border: none;
   background: none;
@@ -799,32 +799,32 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-mode button.on {
-  background: var(--codesema-ink);
-  color: var(--codesema-bg);
+  background: var(--fg);
+  color: var(--bg);
 }
 
 .sr-mode-n {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  background: var(--codesema-risk-high);
+  font-family: var(--font);
+  font-size: 12px;
+  background: var(--err);
   color: #fff;
   border-radius: 999px;
   padding: 0 6px;
 }
 
 .sr-tabs-delta {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   display: inline-flex;
   gap: 6px;
 }
 
 .sr-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .sr-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 /* ── Stage ──────────────────────────────────────────────────── */
@@ -845,7 +845,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-col-right {
-  border-left: 1px solid var(--codesema-line);
+  border-left: 1px solid var(--line);
   min-height: 100%;
 }
 
@@ -855,7 +855,7 @@ const SEV_CLS: Record<string, string> = {
   }
   .sr-col-right {
     border-left: none;
-    border-top: 1px solid var(--codesema-line);
+    border-top: 1px solid var(--line);
   }
 }
 
@@ -865,11 +865,11 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-general-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--codesema-accent);
+  color: var(--accent);
   margin-bottom: 10px;
 }
 
@@ -883,45 +883,45 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-general-item {
-  border-left: 2px solid var(--codesema-line);
+  border-left: 2px solid var(--line);
   padding-left: 12px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
 }
 
 .sr-sev {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   margin-right: 8px;
 }
 
 .sr-sev--high {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .sr-sev--med {
-  color: var(--codesema-risk-med);
+  color: var(--warn);
 }
 
 .sr-sev--info {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .sr-consensus {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   border-radius: 999px;
   padding: 1px 8px;
   margin-right: 8px;
-  color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .sr-consensus-dots {
@@ -950,20 +950,20 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-general-file {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   margin-right: 6px;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .sr-general-sugg {
   margin: 8px 0 0;
   padding: 8px 10px;
   border-radius: 7px;
-  background: var(--codesema-risk-low-soft);
-  color: var(--codesema-risk-low);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+  font-family: var(--font);
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -996,16 +996,16 @@ const SEV_CLS: Record<string, string> = {
   align-items: center;
   gap: 10px;
   padding: 12px 18px;
-  border-bottom: 1px solid var(--codesema-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .sr-files-tbtn {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 6px 11px;
   border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   font-family: inherit;
   font-weight: 500;
   cursor: pointer;
@@ -1013,23 +1013,23 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-files-tbtn:hover {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .sr-files-seg {
   display: inline-flex;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 9px;
   padding: 2px;
   gap: 2px;
 }
 
 .sr-files-seg button {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 5px 10px;
   border-radius: 7px;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   font-weight: 500;
   border: none;
   background: none;
@@ -1041,8 +1041,8 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-files-seg button.on {
-  background: var(--codesema-ink);
-  color: var(--codesema-bg);
+  background: var(--fg);
+  color: var(--bg);
 }
 
 .sr-files-difflist {
@@ -1054,7 +1054,7 @@ const SEV_CLS: Record<string, string> = {
 
 .sr-empty-msg {
   padding: 32px 26px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 /* ── Guided note tour (floating pill) ───────────────────────── */
@@ -1066,11 +1066,11 @@ const SEV_CLS: Record<string, string> = {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 7px 10px;
-  box-shadow: 0 6px 24px color-mix(in srgb, var(--codesema-ink) 14%, transparent);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--fg) 14%, transparent);
 }
 
 .sr-tour-start {
@@ -1080,25 +1080,25 @@ const SEV_CLS: Record<string, string> = {
   background: none;
   border: none;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   cursor: pointer;
   padding: 2px 6px;
   transition: color 0.12s ease;
 }
 
 .sr-tour-start:hover {
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .sr-tour-mark {
   width: 20px;
   height: 20px;
   border-radius: 6px;
-  background: var(--codesema-accent);
+  background: var(--accent);
   color: #fff;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1109,10 +1109,10 @@ const SEV_CLS: Record<string, string> = {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  font-size: var(--fs-lg);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
+  font-size: 18px;
   font-family: inherit;
   cursor: pointer;
   display: grid;
@@ -1121,7 +1121,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-tour-btn:hover:not(:disabled) {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .sr-tour-btn:disabled {
@@ -1130,21 +1130,21 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-tour-btn--done {
-  border-color: var(--codesema-risk-low);
-  color: var(--codesema-risk-low);
+  border-color: var(--ok);
+  color: var(--ok);
 }
 
 .sr-tour-count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--codesema-ink);
+  color: var(--fg);
   min-width: 52px;
   text-align: center;
 }
 
 .sr-tour-total {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   font-weight: 400;
 }
 

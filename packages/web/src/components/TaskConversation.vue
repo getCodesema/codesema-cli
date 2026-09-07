@@ -1303,7 +1303,7 @@ const wait = computed(() =>
   min-width: 0;
   flex: 1;
   min-height: 0;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
 }
 
 /* ── Header ───────────────────────────────────────────────────────────── */
@@ -1313,8 +1313,8 @@ const wait = computed(() =>
   flex-direction: column;
   gap: 9px;
   padding: 14px 20px 0;
-  background: var(--cs-head);
-  border-bottom: 1px solid var(--cs-line);
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
 }
 
 .cv-title-row {
@@ -1326,8 +1326,8 @@ const wait = computed(() =>
 
 .cv-warn {
   flex: none;
-  font-size: var(--fs-base);
-  color: var(--cs-amber-text);
+  font-size: var(--fs);
+  color: var(--warn);
 }
 
 .cv-dot {
@@ -1338,7 +1338,6 @@ const wait = computed(() =>
 }
 
 .cv-dot--pulse {
-  box-shadow: var(--cs-amber-glow);
   animation: cv-pulse 1.6s ease-in-out infinite;
 }
 
@@ -1350,7 +1349,7 @@ const wait = computed(() =>
 
 .cv-title {
   margin: 0;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 700;
   min-width: 0;
   flex: 1;
@@ -1367,47 +1366,47 @@ const wait = computed(() =>
 }
 
 .cv-btn {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   background: transparent;
   cursor: pointer;
   transition: border-color 0.12s ease;
 }
 
 .cv-btn--danger {
-  color: var(--cs-red-text);
-  border-color: var(--cs-red-line);
+  color: var(--err);
+  border-color: var(--err);
 }
 
 .cv-btn--danger:hover {
-  border-color: var(--cs-red);
+  border-color: var(--err);
 }
 
 .cv-btn--ship {
-  color: var(--cs-on-green);
-  background: var(--cs-green);
-  border-color: var(--cs-green);
+  color: var(--bg);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .cv-btn--ship:hover {
-  background: var(--cs-green-hover);
-  border-color: var(--cs-green-hover);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 /* Resume: the one thing to do on a stopped conversation, so it wears the
    amber of the zone it sits in — loud enough to be found, not a ship. */
 .cv-btn--resume {
-  color: var(--cs-amber-text);
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .cv-btn--resume:hover:not(:disabled) {
-  border-color: var(--cs-amber);
+  border-color: var(--warn);
 }
 
 .cv-btn:disabled {
@@ -1417,19 +1416,19 @@ const wait = computed(() =>
 
 .cv-btn--ghost-danger {
   border-color: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-btn--ghost-danger:hover {
-  border-color: var(--cs-red-line);
-  color: var(--cs-red-text);
+  border-color: var(--err);
+  color: var(--err);
 }
 
 /* Armed = the click is live: the danger is a STATE, so it wears the color. */
 .cv-btn--armed {
-  border-color: var(--cs-red);
-  color: var(--cs-red-text);
-  background: var(--cs-red-soft);
+  border-color: var(--err);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .cv-sub {
@@ -1437,15 +1436,15 @@ const wait = computed(() =>
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .cv-chip {
   padding: 3px 8px;
-  background: var(--cs-panel);
-  border: 1px solid var(--cs-line-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 5px;
   max-width: 100%;
   overflow: hidden;
@@ -1458,10 +1457,10 @@ const wait = computed(() =>
    wears is deliberate: attaching a repo is an ordinary action, not a state. */
 .cv-attach-select {
   font-family: inherit;
-  font-size: var(--fs-xs);
-  color: var(--cs-text-2);
-  background: var(--cs-panel);
-  border: 1px solid var(--cs-line-2);
+  font-size: 12px;
+  color: var(--fg-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 5px;
   padding: 3px 6px;
   max-width: 160px;
@@ -1469,11 +1468,11 @@ const wait = computed(() =>
 
 .cv-attach-btn {
   font-family: inherit;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   background: transparent;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 5px;
   padding: 3px 8px;
   cursor: pointer;
@@ -1481,8 +1480,8 @@ const wait = computed(() =>
 }
 
 .cv-attach-btn:hover:not(:disabled) {
-  border-color: var(--cs-line-3);
-  color: var(--cs-text);
+  border-color: var(--line);
+  color: var(--fg);
 }
 
 .cv-attach-btn:disabled {
@@ -1498,12 +1497,12 @@ const wait = computed(() =>
 }
 
 .cv-iso--container {
-  color: var(--cs-green-text);
-  border-color: var(--cs-green-ring);
+  color: var(--ok);
+  border-color: var(--ok);
 }
 
 .cv-iso--policy {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-phrase {
@@ -1514,34 +1513,34 @@ const wait = computed(() =>
   display: flex;
   gap: 10px;
   font-variant-numeric: tabular-nums;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-wait {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-notice {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-amber-text);
+  font-size: var(--fs);
+  color: var(--warn);
 }
 
 /* The refusal's technical annex: the phrase above already said it in the
    reader's language, so this one stays muted and wraps rather than shouts. */
 .cv-reason {
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   line-height: 1.5;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   overflow-wrap: anywhere;
 }
 
 .cv-error {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-red-text);
-  font-family: var(--font-mono);
+  font-size: var(--fs);
+  color: var(--err);
+  font-family: var(--font);
   overflow-wrap: anywhere;
 }
 
@@ -1554,46 +1553,46 @@ const wait = computed(() =>
 }
 
 .cv-tab {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-family: inherit;
   padding: 9px 14px;
   border: none;
   border-bottom: 2px solid transparent;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .cv-tab:hover:not(:disabled) {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 /* The active tab is underlined green (chosen, not "passing"). */
 .cv-tab--active {
-  color: var(--cs-text);
+  color: var(--fg);
   font-weight: 600;
-  border-bottom-color: var(--cs-green);
+  border-bottom-color: var(--ok);
 }
 
 .cv-tab:disabled {
   cursor: default;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   opacity: 0.7;
 }
 
 /* The Checks label IS the semaphore: its glyph and color carry the state
    (defined after --active with doubled specificity so the tone wins). */
 .cv-tab.cv-tab--checks-pass {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cv-tab.cv-tab--checks-fail {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cv-tab.cv-tab--checks-run,
 .cv-tab.cv-tab--checks-warn {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 /* ── Conversation body ────────────────────────────────────────────────── */
@@ -1624,41 +1623,41 @@ const wait = computed(() =>
   margin-top: 4px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: var(--cs-amber-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
   max-width: 85%;
 }
 
 /* Messages the agent has finished: same bubble, one notch quieter — the last
    one is the only place text is still landing. */
 .cv-live--settled {
-  background: var(--cs-surface);
-  border: 1px solid var(--cs-line-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
 }
 
 /* The review is not the agent talking: sober panel + ring, no amber bubble,
    and a mono tag naming what runs. */
 .cv-live--review {
-  background: var(--cs-panel);
-  border: 1px solid var(--cs-line-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
 }
 
 .cv-live-tag {
   display: block;
   margin-bottom: 5px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .cv-live--review .cv-caret {
-  background: var(--cs-muted);
+  background: var(--fg-dim);
 }
 
 .cv-live--review .cv-live-hint {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 /* The review runs even when it says nothing: the dot is the proof of life. */
@@ -1668,15 +1667,15 @@ const wait = computed(() =>
   height: 6px;
   margin-right: 7px;
   border-radius: 50%;
-  background: var(--cs-muted);
+  background: var(--fg-dim);
   animation: cv-tools-pulse 1.6s ease-in-out infinite;
 }
 
 .cv-live-text {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.6;
-  color: var(--cs-text);
+  color: var(--fg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1687,7 +1686,7 @@ const wait = computed(() =>
   height: 14px;
   margin-left: 3px;
   vertical-align: text-bottom;
-  background: var(--cs-amber);
+  background: var(--warn);
   animation: cv-caret 0.9s steps(2) infinite;
 }
 
@@ -1699,22 +1698,22 @@ const wait = computed(() =>
 
 .cv-live-hint {
   margin: 6px 0 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
+  font-size: 12px;
+  color: var(--warn);
 }
 
 /* Folded tool runs: inset mono block (maquette's work journal). */
 .cv-tools {
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-panel);
+  background: var(--bg-raised);
   max-width: 85%;
 }
 
 /* The live variant is a signal: quiet amber ring, pulsing dot. */
 .cv-tools--live {
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .cv-tools-summary {
@@ -1724,8 +1723,8 @@ const wait = computed(() =>
   padding: 7px 11px;
   cursor: pointer;
   list-style: none;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .cv-tools-summary::-webkit-details-marker {
@@ -1736,8 +1735,7 @@ const wait = computed(() =>
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--cs-amber);
-  box-shadow: var(--cs-amber-glow);
+  background: var(--warn);
   animation: cv-tools-pulse 1.6s ease-in-out infinite;
 }
 
@@ -1757,17 +1755,17 @@ const wait = computed(() =>
 }
 
 .cv-tools--live .cv-tools-label {
-  color: var(--cs-amber-text);
+  color: var(--warn);
   font-weight: 600;
 }
 
 .cv-tools-label--done {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
 }
 
 .cv-tools-body {
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
   padding: 6px 11px 9px;
   display: flex;
   flex-direction: column;
@@ -1786,25 +1784,25 @@ const wait = computed(() =>
   display: flex;
   align-items: baseline;
   gap: 8px;
-  border: 1px solid var(--cs-amber);
+  border: 1px solid var(--warn);
   border-radius: 10px;
-  background: var(--cs-amber-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
   padding: 7px 11px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .cv-pending-label {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .cv-pending-text {
   flex: 1;
-  color: var(--cs-text);
+  color: var(--fg);
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
@@ -1813,30 +1811,30 @@ const wait = computed(() =>
   flex: none;
   border: none;
   background: none;
-  color: var(--cs-ghost);
-  font-size: var(--fs-base);
+  color: var(--fg-muted);
+  font-size: var(--fs);
   cursor: pointer;
   padding: 0 2px;
 }
 
 .cv-pending-cancel:hover {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .cv-reply-dead {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-ghost);
+  font-size: var(--fs);
+  color: var(--fg-muted);
 }
 
 .cv-reply-input {
   flex: 1;
-  border: 1px solid var(--cs-line-3);
+  border: 1px solid var(--line);
   border-radius: 9px;
-  background: var(--cs-surface);
-  color: var(--cs-text);
+  background: var(--bg-raised);
+  color: var(--fg);
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
   padding: 9px 12px;
   resize: vertical;
@@ -1845,29 +1843,29 @@ const wait = computed(() =>
 
 /* A live question turns the composer amber: answering unblocks the agent. */
 .cv-reply-input--waiting {
-  border-color: var(--cs-amber-line);
+  border-color: var(--warn);
 }
 
 .cv-reply-input::placeholder {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-reply-send {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
   font-family: inherit;
   padding: 9px 16px;
   border-radius: 8px;
-  border: 1px solid var(--cs-green);
-  background: var(--cs-green);
-  color: var(--cs-on-green);
+  border: 1px solid var(--ok);
+  background: var(--ok);
+  color: var(--bg);
   cursor: pointer;
 }
 
 .cv-reply-send--waiting {
-  border-color: var(--cs-amber-text);
-  background: var(--cs-amber-text);
-  color: var(--cs-amber-card);
+  border-color: var(--warn);
+  background: var(--warn);
+  color: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
 .cv-reply-send:disabled {
@@ -1907,67 +1905,66 @@ const wait = computed(() =>
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
   border-radius: 999px;
   padding: 4px 12px;
-  color: var(--cs-muted);
-  background: var(--cs-panel);
-  border: 1px solid var(--cs-line-2);
+  color: var(--fg-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
 }
 
 .cv-checks-badge--pass {
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
-  border-color: var(--cs-green-ring);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: var(--ok);
 }
 
 .cv-checks-badge--fail {
-  color: var(--cs-red-text);
-  background: var(--cs-red-soft);
-  border-color: var(--cs-red-line);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+  border-color: var(--err);
 }
 
 .cv-checks-badge--run,
 .cv-checks-badge--warn {
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
-  border-color: var(--cs-amber-line);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-color: var(--warn);
 }
 
 .cv-checks-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--cs-amber);
-  box-shadow: var(--cs-amber-glow);
+  background: var(--warn);
   animation: cv-tools-pulse 1.6s ease-in-out infinite;
 }
 
 .cv-checks-head,
 .cv-checks-none {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .cv-checks-rerun {
   margin-left: auto;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cv-checks-hint {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.5;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 /* Plan provenance chip ("detected: lefthook"), when the server labels it. */
 .cv-checks-source {
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
-  border: 1px solid var(--cs-line);
+  font-size: 12px;
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 1px 7px;
 }
@@ -1977,47 +1974,47 @@ const wait = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 9px;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-panel);
+  background: var(--bg-raised);
   padding: 12px 13px;
 }
 
 /* A proposal is a decision waiting on the reader: give it the amber card. */
 .cv-setup--review {
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-card);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
 .cv-setup--applied {
-  border-color: var(--cs-green-ring);
+  border-color: var(--ok);
 }
 
 .cv-setup-intro,
 .cv-setup-hint {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.5;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .cv-setup-title {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .cv-setup-subtitle {
   margin: 3px 0 0;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cv-setup-cta {
   align-self: flex-start;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cv-setup-running {
@@ -2025,14 +2022,14 @@ const wait = computed(() =>
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-amber-text);
+  font-size: var(--fs);
+  color: var(--warn);
 }
 
 .cv-setup-error {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-red-text);
+  font-size: var(--fs);
+  color: var(--err);
   overflow-wrap: anywhere;
 }
 
@@ -2041,29 +2038,29 @@ const wait = computed(() =>
   grid-template-columns: max-content 1fr;
   gap: 4px 12px;
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: 12px;
 }
 
 .cv-setup-plan dt {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-setup-plan dd {
   margin: 0;
   min-width: 0;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow-wrap: anywhere;
 }
 
 .cv-setup-plan code,
 .cv-setup-cmds code,
 .cv-setup-diff code {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
 }
 
 .cv-setup-muted {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-setup-cmds,
@@ -2087,40 +2084,40 @@ const wait = computed(() =>
   flex: none;
   width: 12px;
   text-align: center;
-  font-family: var(--font-mono);
+  font-family: var(--font);
   font-weight: 700;
 }
 
 .cv-setup-diff-state {
   margin-left: auto;
   flex: none;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .cv-setup-diff--added .cv-setup-diff-glyph {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cv-setup-diff--removed .cv-setup-diff-glyph,
 .cv-setup-diff--removed code {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cv-setup-diff--kept .cv-setup-diff-glyph,
 .cv-setup-diff--kept code {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-setup-rationale {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.5;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cv-setup-rationale-label {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   margin-right: 6px;
 }
 
@@ -2130,18 +2127,18 @@ const wait = computed(() =>
 }
 
 .cv-setup-apply {
-  color: var(--cs-on-green);
-  background: var(--cs-green);
-  border-color: var(--cs-green);
+  color: var(--bg);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .cv-setup-apply:hover:enabled {
-  background: var(--cs-green-hover);
-  border-color: var(--cs-green-hover);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .cv-setup-dismiss {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 /* Discreet entry point once a plan already runs. */
@@ -2157,14 +2154,14 @@ const wait = computed(() =>
   background: none;
   padding: 0;
   font: inherit;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
   cursor: pointer;
   text-decoration: underline dotted;
 }
 
 .cv-setup-link:hover:enabled {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cv-setup-link:disabled {
@@ -2175,9 +2172,9 @@ const wait = computed(() =>
 /* The runner's own failure message (e.g. no container engine installed). */
 .cv-checks-broken {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-amber-text);
-  font-family: var(--font-mono);
+  font-size: var(--fs);
+  color: var(--warn);
+  font-family: var(--font);
   overflow-wrap: anywhere;
 }
 
@@ -2191,9 +2188,9 @@ const wait = computed(() =>
 }
 
 .cv-check {
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-panel);
+  background: var(--bg-raised);
   padding: 8px 11px;
 }
 
@@ -2208,41 +2205,41 @@ const wait = computed(() =>
   flex: none;
   width: 14px;
   text-align: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 700;
 }
 
 .cv-check-glyph--passed {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cv-check-glyph--failed {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cv-check-glyph--timeout {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .cv-check-glyph--skipped {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cv-check-cmd {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-text);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg);
   overflow-wrap: anywhere;
 }
 
 .cv-check-meta {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2253,11 +2250,11 @@ const wait = computed(() =>
 .cv-check-tail-summary {
   cursor: pointer;
   list-style: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .cv-check-tail-summary::-webkit-details-marker {
@@ -2277,12 +2274,12 @@ const wait = computed(() =>
   margin: 6px 0 0;
   padding: 8px 10px;
   border-radius: 6px;
-  background: var(--cs-inset);
-  border: 1px solid var(--cs-line);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 1.5;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 260px;

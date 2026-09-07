@@ -80,14 +80,14 @@ const VERDICT_META: Record<string, { labelKey: string; cls: string }> = {
 }
 
 const SEVERITY_DOT: Record<string, string> = {
-  critical: 'var(--codesema-risk-high)',
-  major: 'var(--codesema-accent)',
-  minor: 'var(--codesema-risk-med)',
-  info: 'var(--codesema-risk-low)',
+  critical: 'var(--err)',
+  major: 'var(--accent)',
+  minor: 'var(--warn)',
+  info: 'var(--ok)',
 }
 
 function severityDot(severity?: string): string {
-  return SEVERITY_DOT[severity ?? ''] ?? 'var(--codesema-ink-3)'
+  return SEVERITY_DOT[severity ?? ''] ?? 'var(--fg-dim)'
 }
 </script>
 
@@ -249,7 +249,7 @@ function severityDot(severity?: string): string {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--codesema-amber);
+  background: var(--warn);
   animation: live-pulse 1.4s ease-in-out infinite;
 }
 
@@ -264,53 +264,53 @@ function severityDot(severity?: string): string {
 }
 
 .live-title {
-  font-size: var(--fs-xl);
+  font-size: 18px;
   font-weight: 700;
   margin: 0;
-  font-family: var(--font-display);
+  font-family: var(--font);
 }
 
 .live-elapsed {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
 }
 
 .live-branch {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .live-branch-name {
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
+  font-family: var(--font);
+  font-size: var(--fs);
 }
 
 .live-branch-arrow {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .live-agent {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .live-error {
-  border: 1px solid var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
-  color: var(--codesema-ink);
+  border: 1px solid var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+  color: var(--fg);
   border-radius: 10px;
   padding: 12px 14px;
-  font-size: var(--fs-base);
-  font-family: var(--font-mono);
+  font-size: var(--fs);
+  font-family: var(--font);
   overflow-wrap: anywhere;
 }
 
@@ -321,41 +321,41 @@ function severityDot(severity?: string): string {
 }
 
 .live-chip {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
+  font-size: var(--fs);
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   border-radius: 999px;
   padding: 4px 12px;
 }
 
 .live-chip--accent {
-  color: var(--codesema-accent);
-  border-color: var(--codesema-accent);
-  background: var(--codesema-accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .live-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .live-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .live-panel {
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   border-radius: 12px;
   padding: 14px 16px;
 }
 
 .live-panel-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   margin-bottom: 10px;
   display: flex;
   align-items: center;
@@ -363,42 +363,42 @@ function severityDot(severity?: string): string {
 }
 
 .live-count {
-  font-family: var(--font-mono);
-  color: var(--codesema-accent);
+  font-family: var(--font);
+  color: var(--accent);
 }
 
 .live-verdict {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   border-radius: 999px;
   padding: 2px 10px;
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   text-transform: none;
   letter-spacing: normal;
 }
 
 .live-verdict--approve {
-  color: var(--codesema-risk-low);
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+  color: var(--ok);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .live-verdict--changes {
-  color: var(--codesema-risk-high);
-  border-color: var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
+  color: var(--err);
+  border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
 .live-verdict--comment {
-  color: var(--codesema-risk-med);
-  border-color: var(--codesema-risk-med);
-  background: var(--codesema-risk-med-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .live-summary {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.6;
-  color: var(--codesema-ink);
+  color: var(--fg);
   white-space: pre-wrap;
 }
 
@@ -408,7 +408,7 @@ function severityDot(severity?: string): string {
   height: 15px;
   margin-left: 3px;
   vertical-align: text-bottom;
-  background: var(--codesema-accent);
+  background: var(--accent);
   animation: live-caret 0.9s steps(2) infinite;
 }
 
@@ -446,15 +446,15 @@ function severityDot(severity?: string): string {
 }
 
 .live-finding-title {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink);
+  font-size: var(--fs);
+  color: var(--fg);
   line-height: 1.45;
 }
 
 .live-finding-file {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   overflow-wrap: anywhere;
 }
 
@@ -476,9 +476,9 @@ function severityDot(severity?: string): string {
 }
 
 .live-step-pill {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
-  border: 1px solid var(--codesema-line);
+  font-size: var(--fs);
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 4px 12px;
   display: inline-flex;
@@ -487,9 +487,9 @@ function severityDot(severity?: string): string {
 }
 
 .live-step-index {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--codesema-accent);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--accent);
 }
 
 .live-files {
@@ -506,22 +506,22 @@ function severityDot(severity?: string): string {
 }
 
 .live-file-path {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-2);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   overflow-wrap: anywhere;
 }
 
 .live-file-delta {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   flex: none;
 }
 
 .live-file-more {
   margin: 4px 0 0;
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .live-waiting {
@@ -529,16 +529,16 @@ function severityDot(severity?: string): string {
   align-items: center;
   gap: 10px;
   margin: 4px 0 0;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-3);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .live-spinner {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid var(--codesema-line);
-  border-top-color: var(--codesema-accent);
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
   animation: live-spin 0.8s linear infinite;
 }
 
@@ -549,7 +549,7 @@ function severityDot(severity?: string): string {
 }
 
 .live-phase {
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   font-style: italic;
 }
 

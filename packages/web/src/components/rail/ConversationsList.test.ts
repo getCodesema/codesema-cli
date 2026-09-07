@@ -103,8 +103,8 @@ describe('header: title, counter, and a primary create action', () => {
 
   test('the action button carries the primary accent styling, not a discreet link', () => {
     const block = SOURCE.slice(SOURCE.indexOf('.cvl-action {'), SOURCE.indexOf('.cvl-action:hover'))
-    expect(block).toContain('background: var(--cs-green-soft);')
-    expect(block).toContain('border: 1px solid var(--cs-green-ring);')
+    expect(block).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
+    expect(block).toContain('border: 1px solid var(--ok);')
   })
 })
 
@@ -205,7 +205,7 @@ describe('selection: highlighted rows come from the focus deck, not a single sel
       SOURCE.indexOf('.cvl-row-btn--selected {'),
       SOURCE.indexOf('.cvl-row-btn--selected :deep'),
     )
-    expect(rule).toContain('background: var(--cs-green-soft);')
+    expect(rule).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
     expect(rule).not.toContain('border')
   })
 })

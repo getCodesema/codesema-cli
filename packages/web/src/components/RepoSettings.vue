@@ -510,9 +510,9 @@ onMounted(load)
 }
 
 .cfg-title {
-  font-size: var(--fs-xl);
+  font-size: 18px;
   font-weight: 700;
-  color: var(--codesema-ink);
+  color: var(--fg);
   margin: 0 0 24px;
 }
 
@@ -523,24 +523,24 @@ onMounted(load)
   align-items: center;
   justify-content: center;
   gap: 14px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .cfg-error {
-  color: var(--codesema-risk-high);
+  color: var(--err);
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .cfg-retry {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 7px 14px;
   border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
@@ -548,8 +548,8 @@ onMounted(load)
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 2.5px solid var(--codesema-line);
-  border-top-color: var(--codesema-accent);
+  border: 2.5px solid var(--line);
+  border-top-color: var(--accent);
   animation: cfg-spin 0.8s linear infinite;
 }
 
@@ -560,34 +560,34 @@ onMounted(load)
 }
 
 .cfg-section {
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 20px;
   margin-bottom: 20px;
 }
 
 .cfg-section-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--codesema-ink);
+  color: var(--fg);
   margin: 0 0 6px;
 }
 
 .cfg-hint {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   margin: 0 0 14px;
 }
 
 .cfg-textarea {
   width: 100%;
   min-height: 260px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
+  font-family: var(--font);
+  font-size: var(--fs);
   line-height: 1.5;
-  color: var(--codesema-ink);
-  background: var(--codesema-bg);
-  border: 1px solid var(--codesema-line);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
   resize: vertical;
@@ -603,10 +603,10 @@ onMounted(load)
 .cfg-select,
 .cfg-input {
   font-family: inherit;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink);
-  background: var(--codesema-bg);
-  border: 1px solid var(--codesema-line);
+  font-size: var(--fs);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 7px 10px;
 }
@@ -632,9 +632,9 @@ onMounted(load)
 }
 
 .cfg-model-label {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
 }
 
 .cfg-input {
@@ -644,21 +644,21 @@ onMounted(load)
 .cfg-save-btn,
 .cfg-toggle-btn {
   flex-shrink: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 7px 14px;
   border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--codesema-accent) 45%, transparent);
-  background: var(--codesema-accent-soft);
-  color: var(--codesema-accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
   cursor: pointer;
   transition: border-color 0.12s ease;
 }
 
 .cfg-save-btn:hover,
 .cfg-toggle-btn:hover {
-  border-color: var(--codesema-accent);
+  border-color: var(--accent);
 }
 
 .cfg-save-btn:disabled,
@@ -668,14 +668,14 @@ onMounted(load)
 }
 
 .cfg-save-btn--done {
-  color: var(--codesema-risk-low);
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+  color: var(--ok);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .cfg-toggle-btn--on {
-  color: var(--codesema-risk-low);
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+  color: var(--ok);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 </style>

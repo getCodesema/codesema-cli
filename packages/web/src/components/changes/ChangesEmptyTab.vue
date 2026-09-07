@@ -30,12 +30,12 @@ defineProps<{ icon: Component; text: string }>()
 .cet-icon {
   width: 20px;
   height: 20px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cet-text {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 </style>

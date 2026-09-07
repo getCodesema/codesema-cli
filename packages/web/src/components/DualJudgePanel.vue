@@ -72,8 +72,8 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 
 <style scoped>
 .djp-root {
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   border-radius: 12px;
   padding: 14px 16px;
   display: flex;
@@ -82,22 +82,22 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 }
 
 .djp-progress {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
 }
 
 .djp-bar {
   height: 4px;
   border-radius: 999px;
-  background: var(--codesema-line-2);
+  background: var(--line);
   overflow: hidden;
 }
 
 .djp-bar-fill {
   height: 100%;
-  background: var(--codesema-accent);
+  background: var(--accent);
   border-radius: 999px;
   transition: width 0.4s ease;
 }
@@ -112,7 +112,7 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
   display: flex;
   align-items: baseline;
   gap: 9px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 4px 2px;
 }
 
@@ -124,41 +124,41 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 }
 
 .djp-row--kept .djp-stamp {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .djp-row--merged .djp-stamp {
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 .djp-row--rejected .djp-stamp {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .djp-id {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg);
   flex-shrink: 0;
 }
 
 .djp-source {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   flex-shrink: 0;
 }
 
 .djp-detail {
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .djp-detail--muted {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   font-style: italic;
 }
 

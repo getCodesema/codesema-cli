@@ -106,8 +106,8 @@ describe('TaskEventUser geometry matches fiche 12 section 2, exactly', () => {
   const style = source.slice(source.indexOf('<style'))
 
   test('surface background, not the old green-tinted one', () => {
-    expect(style).toContain('background: var(--cs-surface);')
-    expect(style).not.toContain('--cs-green-soft')
+    expect(style).toContain('background: var(--bg-raised);')
+    expect(style).not.toContain('var(--ok) 12%')
   })
 
   test('16px uniform radius, not the old asymmetric 10/10/3/10 one', () => {
@@ -124,7 +124,7 @@ describe('TaskEventUser geometry matches fiche 12 section 2, exactly', () => {
   })
 
   test('base size token on a 24px line height ("corps 14/24 px")', () => {
-    expect(style).toContain('font-size: var(--fs-base);')
+    expect(style).toContain('font-size: var(--fs);')
     expect(style).toContain('line-height: 24px;')
   })
 

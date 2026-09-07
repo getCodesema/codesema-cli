@@ -97,9 +97,9 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 
 <style scoped>
 .ec-root {
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -125,7 +125,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
   flex: none;
   width: 13px;
   height: 13px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   transition: transform 150ms ease;
 }
 
@@ -141,19 +141,19 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 
 .ec-title {
   flex: none;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   line-height: 20px;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 /* Truncated and dimmed, unlike the title beside it. */
 .ec-detail {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   line-height: 20px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -164,21 +164,21 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
   flex: none;
   margin-left: auto;
   padding: 2px 7px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 5px;
-  background: var(--cs-surface-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-text-2);
+  background: var(--bg-hover);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .ec-body {
   padding: 12px;
-  border-top: 1px solid var(--cs-line);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  border-top: 1px solid var(--line);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 20px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

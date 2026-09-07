@@ -51,20 +51,20 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .tvq-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -73,12 +73,12 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 .tvq-bubble {
   margin: 0;
   padding: 12px 14px;
-  border: 1px solid var(--cs-amber-line);
+  border: 1px solid var(--warn);
   border-radius: 3px 10px 10px 10px;
-  background: var(--cs-amber-card);
-  font-size: var(--fs-base);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  font-size: var(--fs);
   line-height: 1.55;
-  color: var(--cs-text);
+  color: var(--fg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-width: 0;
@@ -89,15 +89,15 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 }
 
 .tvq-code {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--warn);
   white-space: pre-wrap;
 }
 
 .tvq-hint {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
+  font-size: 12px;
+  color: var(--warn);
 }
 </style>

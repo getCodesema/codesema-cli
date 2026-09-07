@@ -121,7 +121,7 @@ describe('labels section', () => {
     expect(colored).toContain('rgba(215, 58, 74, 0.16)')
 
     const neutral = await renderRail(baseMr({ labels: [{ name: 'bug', color: null }] }))
-    expect(neutral).toContain('var(--cs-line-2)')
+    expect(neutral).toContain('var(--line)')
     expect(neutral).not.toContain('rgba(')
   })
 })

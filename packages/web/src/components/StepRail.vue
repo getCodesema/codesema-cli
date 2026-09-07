@@ -76,33 +76,33 @@ function allPassed(): boolean {
   align-items: center;
   gap: 8px;
   padding: 14px 26px;
-  border-bottom: 1px solid var(--codesema-line);
+  border-bottom: 1px solid var(--line);
   overflow-x: auto;
 }
 
 .rail-edge {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .rail-edge--merged {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .rail-link {
   flex: 1;
   min-width: 14px;
-  border-top: 1.5px dashed var(--codesema-line-idle);
+  border-top: 1.5px dashed var(--line);
   transition: border-color 0.5s ease;
 }
 
 .rail-link--passed {
-  border-top-color: var(--codesema-signal-go);
+  border-top-color: var(--ok);
 }
 
 .rail-node {
@@ -111,8 +111,8 @@ function allPassed(): boolean {
   gap: 8px;
   flex-shrink: 0;
   max-width: 190px;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 11px;
   padding: 5px 12px 5px 6px;
   font-family: inherit;
@@ -123,15 +123,15 @@ function allPassed(): boolean {
 }
 
 .rail-node:hover {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 
 .rail-node--passed {
-  border-color: var(--codesema-signal-go);
+  border-color: var(--ok);
 }
 
 .rail-node--active {
-  border-color: var(--codesema-signal-check);
+  border-color: var(--warn);
 }
 
 .rail-dot {
@@ -142,10 +142,10 @@ function allPassed(): boolean {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 700;
-  background: var(--codesema-dot-idle);
+  background: var(--fg-muted);
   color: #fff;
   transition:
     background 0.5s ease,
@@ -154,33 +154,33 @@ function allPassed(): boolean {
 
 /* The dot carries the verdict tone; read state stays on the ✓ and node border. */
 .rail-dot--tone-low {
-  background: var(--codesema-risk-low);
+  background: var(--ok);
 }
 
 .rail-dot--tone-medium {
-  background: var(--codesema-risk-med);
+  background: var(--warn);
 }
 
 .rail-dot--tone-high {
-  background: var(--codesema-risk-high);
+  background: var(--err);
 }
 
 .rail-dot--active.rail-dot--tone-low {
-  box-shadow: 0 0 8px var(--codesema-risk-low);
+  box-shadow: 0 0 8px var(--ok);
 }
 
 .rail-dot--active.rail-dot--tone-medium {
-  box-shadow: 0 0 8px var(--codesema-risk-med);
+  box-shadow: 0 0 8px var(--warn);
 }
 
 .rail-dot--active.rail-dot--tone-high {
-  box-shadow: 0 0 8px var(--codesema-risk-high);
+  box-shadow: 0 0 8px var(--err);
 }
 
 .rail-label {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--codesema-ink);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -8,7 +8,7 @@ import type { MessageKey } from './i18n'
 import type { TaskStatus } from './types'
 
 export type StatusVisual = {
-  /** Core signal color (dot, active border). Always a --cs-* token. */
+  /** Core signal color (dot, active border). Always a theme token. */
   color: string
   /** Soft wash behind the status chip. */
   soft: string
@@ -27,24 +27,24 @@ export type StatusVisual = {
 }
 
 const green: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-green)',
-  soft: 'var(--cs-green-soft)',
-  text: 'var(--cs-green-text)',
+  color: 'var(--ok)',
+  soft: 'color-mix(in srgb, var(--ok) 12%, transparent)',
+  text: 'var(--ok)',
 }
 const amber: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-amber)',
-  soft: 'var(--cs-amber-soft)',
-  text: 'var(--cs-amber-text)',
+  color: 'var(--warn)',
+  soft: 'color-mix(in srgb, var(--warn) 12%, transparent)',
+  text: 'var(--warn)',
 }
 const red: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-red)',
-  soft: 'var(--cs-red-soft)',
-  text: 'var(--cs-red-text)',
+  color: 'var(--err)',
+  soft: 'color-mix(in srgb, var(--err) 12%, transparent)',
+  text: 'var(--err)',
 }
 const idle: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-dot-idle)',
-  soft: 'var(--cs-hover)',
-  text: 'var(--cs-muted)',
+  color: 'var(--fg-muted)',
+  soft: 'var(--bg-hover)',
+  text: 'var(--fg-dim)',
 }
 
 export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {

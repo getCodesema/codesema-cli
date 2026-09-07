@@ -403,10 +403,9 @@ function focusComposer(): void {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--cs-panel);
-  box-shadow: var(--cs-shadow-panel);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -417,23 +416,23 @@ function focusComposer(): void {
   gap: 12px;
   min-height: 52px;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .pt-back {
   flex: none;
   border: 0;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   padding: 4px 6px;
   cursor: pointer;
 }
 
 .pt-back:hover {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .pt-dot {
@@ -459,7 +458,7 @@ function focusComposer(): void {
 
 .pt-warn {
   flex: none;
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .pt-head-text {
@@ -471,18 +470,18 @@ function focusComposer(): void {
 }
 
 .pt-sub {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .pt-title {
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -490,8 +489,8 @@ function focusComposer(): void {
 
 .pt-state {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -502,15 +501,15 @@ function focusComposer(): void {
 }
 
 .pt-action {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   background: transparent;
   cursor: pointer;
-  transition: border-color var(--cs-duration-fast) var(--cs-ease-out);
+  transition: border-color 150ms ease;
 }
 
 .pt-action:disabled {
@@ -519,33 +518,33 @@ function focusComposer(): void {
 }
 
 .pt-action--stop {
-  color: var(--cs-red-text);
-  border-color: var(--cs-red-line);
+  color: var(--err);
+  border-color: var(--err);
 }
 
 .pt-action--stop:hover:not(:disabled) {
-  border-color: var(--cs-red);
+  border-color: var(--err);
 }
 
 .pt-action--ship {
-  color: var(--cs-on-green);
-  background: var(--cs-green);
-  border-color: var(--cs-green);
+  color: var(--bg);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .pt-action--ship:hover:not(:disabled) {
-  background: var(--cs-green-hover);
-  border-color: var(--cs-green-hover);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .pt-action--resume {
-  color: var(--cs-amber-text);
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .pt-action--resume:hover:not(:disabled) {
-  border-color: var(--cs-amber);
+  border-color: var(--warn);
 }
 
 .pt-scroll {
@@ -553,7 +552,7 @@ function focusComposer(): void {
   min-height: 0;
   overflow-y: auto;
   padding: 14px 16px;
-  background: var(--cs-bg);
+  background: var(--bg);
 }
 
 .pt-thread {
@@ -574,22 +573,22 @@ function focusComposer(): void {
 .pt-block {
   align-self: stretch;
   padding: 12px 14px;
-  border: 1px solid var(--cs-line);
-  border-left: 3px solid var(--cs-line-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
   border-radius: 10px;
-  background: var(--cs-surface-2);
+  background: var(--bg-hover);
 }
 
 .pt-tools {
   max-width: 85%;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-panel);
+  background: var(--bg-raised);
 }
 
 .pt-tools--live {
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .pt-tools-summary {
@@ -599,8 +598,8 @@ function focusComposer(): void {
   padding: 7px 11px;
   cursor: pointer;
   list-style: none;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .pt-tools-summary::-webkit-details-marker {
@@ -611,23 +610,22 @@ function focusComposer(): void {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--cs-amber);
-  box-shadow: var(--cs-amber-glow);
+  background: var(--warn);
   animation: pt-pulse 1.6s ease-in-out infinite;
 }
 
 .pt-tools-label--live {
-  color: var(--cs-amber-text);
+  color: var(--warn);
   font-weight: 600;
 }
 
 .pt-tools-label--done {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
 }
 
 .pt-tools-body {
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
   padding: 6px 11px 9px;
   display: flex;
   flex-direction: column;
@@ -638,42 +636,42 @@ function focusComposer(): void {
   max-width: 85%;
   padding: 10px 12px;
   border-radius: 10px;
-  background: var(--cs-amber-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .pt-live--settled {
-  background: var(--cs-surface);
-  border: 1px solid var(--cs-line-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
 }
 
 .pt-live--review {
-  background: var(--cs-panel);
-  border: 1px solid var(--cs-line-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
 }
 
 .pt-live-tag {
   display: inline-block;
   margin-bottom: 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .pt-live-text {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.5;
-  color: var(--cs-text);
+  color: var(--fg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .pt-live-hint {
   margin: 6px 0 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
+  font-size: 12px;
+  color: var(--warn);
 }
 
 .pt-caret {
@@ -682,7 +680,7 @@ function focusComposer(): void {
   height: 14px;
   margin-left: 2px;
   vertical-align: text-bottom;
-  background: var(--cs-amber);
+  background: var(--warn);
   animation: pt-pulse 1s steps(2, start) infinite;
 }
 
@@ -697,7 +695,7 @@ function focusComposer(): void {
 .pt-foot {
   flex: none;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--cs-line);
-  background: var(--cs-panel);
+  border-top: 1px solid var(--line);
+  background: var(--bg-raised);
 }
 </style>

@@ -1268,18 +1268,18 @@ watch(
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  background: var(--cs-bg);
-  color: var(--cs-text);
+  background: var(--bg);
+  color: var(--fg);
 }
 
 .ws-offline {
   flex: none;
   margin: 0;
   padding: 6px 20px;
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
-  border-bottom: 1px solid var(--cs-amber-line);
+  font-size: 12px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-bottom: 1px solid var(--warn);
 }
 
 .ws-settings {
@@ -1303,7 +1303,7 @@ watch(
   min-height: 0;
   min-width: 0;
   display: flex;
-  border-right: 1px solid var(--cs-line-2);
+  border-right: 1px solid var(--line);
 }
 
 /* ── Zone 3: the stage ────────────────────────────────────────────────── */
@@ -1312,7 +1312,7 @@ watch(
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
 }
 
 .ws-stage {
@@ -1339,9 +1339,9 @@ watch(
   width: 100%;
   margin: 48px auto 24px;
   padding: 18px 20px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
 }
 
 .ws-draft-head {
@@ -1355,9 +1355,9 @@ watch(
   margin: 0;
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1365,9 +1365,9 @@ watch(
 
 .ws-draft-project {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .ws-draft-close {
@@ -1377,58 +1377,58 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-family: inherit;
   line-height: 1;
   border: none;
   border-radius: 7px;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .ws-draft-close:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .ws-draft-modes {
   display: inline-flex;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
   align-self: flex-start;
 }
 
 .ws-draft-mode {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 5px 11px;
   border: none;
-  background: var(--cs-surface);
-  color: var(--cs-muted);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .ws-draft-mode + .ws-draft-mode {
-  border-left: 1px solid var(--cs-line-2);
+  border-left: 1px solid var(--line);
 }
 
 /* The chosen mode is a state: green soft wash, per the doctrine. */
 .ws-draft-mode--on {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--fg);
   cursor: default;
 }
 
 .ws-draft-warning {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-amber-text);
-  border: 1px solid var(--cs-amber-line);
+  font-size: var(--fs);
+  color: var(--warn);
+  border: 1px solid var(--warn);
   border-radius: 8px;
-  background: var(--cs-amber-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
   padding: 6px 10px;
 }
 
@@ -1444,13 +1444,13 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-text-2);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   padding: 2px 9px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1469,8 +1469,8 @@ watch(
 .ws-empty {
   margin: 0;
   text-align: center;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   max-width: 380px;
 }
 
@@ -1484,19 +1484,19 @@ watch(
 
 .ws-review-back {
   margin-bottom: 12px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
   padding: 5px 10px;
   border-radius: 8px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .ws-review-back:hover {
-  border-color: var(--cs-muted);
+  border-color: var(--fg-dim);
 }
 
 /* Both list components fill the column the desk gives them; `min-width: 0`

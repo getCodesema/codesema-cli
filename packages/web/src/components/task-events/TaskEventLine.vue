@@ -11,10 +11,10 @@ import type { TaskEvent, TaskRecord } from '../../types'
 const props = defineProps<{ event: TaskEvent; task: TaskRecord; ctx: TaskEventCtx }>()
 
 const TONE_COLOR = {
-  go: 'var(--cs-green)',
-  check: 'var(--cs-amber)',
-  stop: 'var(--cs-red)',
-  idle: 'var(--cs-dot-idle)',
+  go: 'var(--ok)',
+  check: 'var(--warn)',
+  stop: 'var(--err)',
+  idle: 'var(--fg-muted)',
 } as const
 
 const dotColor = computed(() => TONE_COLOR[eventTone(props.event)])
@@ -38,7 +38,7 @@ const stamp = computed(() => clockTime(props.event.at))
   align-items: baseline;
   gap: 9px;
   padding: 3px 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .tev-dot {
@@ -50,23 +50,23 @@ const stamp = computed(() => clockTime(props.event.at))
 }
 
 .tev-text {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .tev-text--error {
-  color: var(--cs-red-text);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  color: var(--err);
+  font-family: var(--font);
+  font-size: 12px;
 }
 
 .tev-time {
   margin-left: auto;
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 </style>

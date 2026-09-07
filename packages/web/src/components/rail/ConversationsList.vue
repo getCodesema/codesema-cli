@@ -170,9 +170,8 @@ function isSelected(state: TaskState): boolean {
   width: 100%;
   min-height: 0;
   border-radius: 16px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-panel);
-  box-shadow: var(--cs-shadow-panel);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -183,7 +182,7 @@ function isSelected(state: TaskState): boolean {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .cvl-heading {
@@ -197,9 +196,9 @@ function isSelected(state: TaskState): boolean {
 .cvl-title {
   min-width: 0;
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -207,9 +206,9 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-count {
   flex: none;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 /* Threshold 2: under 200px the heading (title + counter) goes, so the
@@ -228,19 +227,19 @@ function isSelected(state: TaskState): boolean {
   align-items: center;
   gap: 6px;
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   padding: 5px 10px;
-  border: 1px solid var(--cs-green-ring);
+  border: 1px solid var(--ok);
   border-radius: 7px;
-  background: var(--cs-green-soft);
-  color: var(--cs-green-text);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
   cursor: pointer;
 }
 
 .cvl-action:hover {
-  background: var(--cs-green);
-  color: var(--cs-on-green);
+  background: var(--ok);
+  color: var(--bg);
 }
 
 .cvl-action-icon {
@@ -269,24 +268,24 @@ function isSelected(state: TaskState): boolean {
   transform: translateY(-50%);
   width: 14px;
   height: 14px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   pointer-events: none;
 }
 
 .cvl-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 7px 0 7px 28px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
-  color: var(--cs-text);
+  background: var(--bg-raised);
+  color: var(--fg);
 }
 
 .cvl-search-input:focus-visible {
   outline: none;
-  border-color: var(--cs-green-ring);
+  border-color: var(--ok);
 }
 
 .cvl-search-clear {
@@ -301,7 +300,7 @@ function isSelected(state: TaskState): boolean {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
@@ -312,7 +311,7 @@ function isSelected(state: TaskState): boolean {
 }
 
 .cvl-search-clear:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cvl-scroll {
@@ -325,8 +324,8 @@ function isSelected(state: TaskState): boolean {
 .cvl-empty {
   margin: 0;
   padding: 10px 6px;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .cvl-group {
@@ -344,12 +343,12 @@ function isSelected(state: TaskState): boolean {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .cvl-group-head:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .cvl-group-chevron {
@@ -366,7 +365,7 @@ function isSelected(state: TaskState): boolean {
 .cvl-group-name {
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -375,9 +374,9 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-group-count {
   flex: none;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 /* The 1fr/0fr grid track: animates toward an unmeasured height, never a
@@ -416,19 +415,19 @@ function isSelected(state: TaskState): boolean {
 }
 
 .cvl-row-btn:hover:not(.cvl-row-btn--selected) {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .cvl-row-btn:hover :deep(.cvr-title) {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .cvl-row-btn--selected {
-  background: var(--cs-green-soft);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .cvl-row-btn--selected :deep(.cvr-title) {
-  color: var(--cs-text);
+  color: var(--fg);
   font-weight: 700;
 }
 </style>

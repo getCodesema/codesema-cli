@@ -192,14 +192,14 @@ const railWidth = computed(() =>
 .rv-header {
   flex: none;
   padding: 18px 20px 0;
-  border-bottom: 1px solid var(--cs-line-2);
+  border-bottom: 1px solid var(--line);
 }
 
 .rv-title {
   margin: 0 0 14px;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rv-tabs {
@@ -211,9 +211,9 @@ const railWidth = computed(() =>
   display: inline-flex;
   align-items: center;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   padding: 8px 14px;
   border: none;
   border-radius: 8px 8px 0 0;
@@ -222,19 +222,19 @@ const railWidth = computed(() =>
 }
 
 .rv-tab:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 /* Selected: an accent-weak fill and a heavier weight, per the doctrine.
    Never a border -- a tab's identity comes from its content and fill. */
 .rv-tab--active {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--fg);
   font-weight: 600;
 }
 
 .rv-tab:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -258,10 +258,10 @@ const railWidth = computed(() =>
   flex: 0 0 var(--rv-rail-w);
   width: var(--rv-rail-w);
   min-height: 0;
-  border-right: 1px solid var(--cs-line-2);
+  border-right: 1px solid var(--line);
   transition:
-    flex-basis var(--cs-duration-base) var(--cs-ease-in),
-    width var(--cs-duration-base) var(--cs-ease-in);
+    flex-basis 200ms ease,
+    width 200ms ease;
 }
 
 .rv-forge-board {

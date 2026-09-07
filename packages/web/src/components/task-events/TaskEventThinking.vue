@@ -146,7 +146,7 @@ onUnmounted(clearIdleTimer)
 }
 
 .tvth-head:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .tvth-icon {
@@ -154,15 +154,15 @@ onUnmounted(clearIdleTimer)
   width: 12px;
   height: 12px;
   margin-top: 4px;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .tvth-label {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 20px;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 /* Live signal while the block is still filling in (fiche 12 section 3's
@@ -173,7 +173,7 @@ onUnmounted(clearIdleTimer)
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--cs-amber);
+  background: var(--warn);
   animation: tvth-pulse 1.6s ease-in-out infinite;
 }
 
@@ -188,7 +188,7 @@ onUnmounted(clearIdleTimer)
   margin-left: auto;
   width: 13px;
   height: 13px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   transition: transform 200ms ease;
 }
 
@@ -205,10 +205,10 @@ onUnmounted(clearIdleTimer)
   overflow: hidden;
   white-space: nowrap;
   direction: rtl;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 20px;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .tvth-preview-text {
@@ -223,7 +223,7 @@ onUnmounted(clearIdleTimer)
 .tvth-body {
   margin: 6px 0 0 20px;
   padding-left: 12px;
-  border-left: 2px solid color-mix(in srgb, var(--cs-green) 70%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--ok) 70%, transparent);
   max-height: 360px;
   overflow-y: auto;
 }
@@ -231,10 +231,10 @@ onUnmounted(clearIdleTimer)
 .tvth-prose {
   margin: 0;
   max-width: 65ch;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 20px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

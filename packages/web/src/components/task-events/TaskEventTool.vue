@@ -43,7 +43,7 @@ const detail = computed(() => {
 
 <style scoped>
 .tvt-root {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 3px 0;
 }
 
@@ -65,49 +65,49 @@ const detail = computed(() => {
 }
 
 .tvt-summary:hover .tvt-text {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .tvt-glyph {
   flex: none;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
   transform: translateY(-1px);
 }
 
 .tvt-text {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .tvt-hint {
   flex: none;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .tvt-time {
   margin-left: auto;
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .tvt-detail {
   margin: 6px 0 4px 20px;
   padding: 9px 12px;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 9px;
-  background: var(--cs-surface-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  background: var(--bg-hover);
+  font-family: var(--font);
+  font-size: 12px;
   line-height: 1.55;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

@@ -45,18 +45,18 @@ defineProps<{
 
 .crb-title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .crb-empty {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .crb-list {
@@ -72,8 +72,8 @@ defineProps<{
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
+  font-size: var(--fs);
+  color: var(--fg);
 }
 
 .crb-dot {
@@ -81,7 +81,7 @@ defineProps<{
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--cs-muted);
+  background: var(--fg-dim);
   margin-top: 4px;
 }
 
@@ -93,20 +93,20 @@ defineProps<{
 }
 
 .crb-evidence {
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .crb-dot--met {
-  background: var(--cs-green);
+  background: var(--ok);
 }
 
 .crb-dot--unmet {
-  background: var(--cs-red);
+  background: var(--err);
 }
 
 .crb-dot--unclear {
-  background: var(--cs-ochre);
+  background: var(--warn);
 }
 
 .crb-text {

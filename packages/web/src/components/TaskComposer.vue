@@ -304,10 +304,9 @@ defineExpose({ reset })
   flex-direction: column;
   gap: 10px;
   padding: 14px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 13px;
-  background: var(--cs-surface);
-  box-shadow: var(--cs-shadow-panel);
+  background: var(--bg-raised);
 }
 
 /* Inside a draft column the column already draws the card. */
@@ -320,12 +319,12 @@ defineExpose({ reset })
 }
 
 .tc-input {
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 9px;
-  background: var(--cs-bg);
-  color: var(--cs-text);
+  background: var(--bg);
+  color: var(--fg);
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
   padding: 10px 12px;
   resize: vertical;
@@ -333,7 +332,7 @@ defineExpose({ reset })
 }
 
 .tc-input::placeholder {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .tc-row {
@@ -347,49 +346,49 @@ defineExpose({ reset })
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .tc-agent-select {
   font-family: inherit;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
-  background: var(--cs-bg);
-  border: 1px solid var(--cs-line);
+  font-size: var(--fs);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
   border-radius: 7px;
   padding: 4px 8px;
 }
 
 .tc-hint {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .tc-autoship {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .tc-check {
-  accent-color: var(--cs-green);
+  accent-color: var(--ok);
 }
 
 .tc-launch {
   margin-left: auto;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 8px 18px;
   border-radius: 9px;
-  border: 1px solid var(--cs-green);
-  background: var(--cs-green);
-  color: var(--cs-on-green);
+  border: 1px solid var(--ok);
+  background: var(--ok);
+  color: var(--bg);
   cursor: pointer;
   transition: opacity 0.12s ease;
 }
@@ -401,8 +400,8 @@ defineExpose({ reset })
 
 .tc-error {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-red-text);
+  font-size: var(--fs);
+  color: var(--err);
 }
 
 /* ── T2.6 plan panel ──────────────────────────────────────────────────── */
@@ -411,16 +410,16 @@ defineExpose({ reset })
   flex-direction: column;
   gap: 8px;
   padding-top: 10px;
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
 }
 
 .tc-plan-title {
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .tc-plan-edit {
@@ -431,30 +430,30 @@ defineExpose({ reset })
 }
 
 .tc-plan-label {
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .tc-plan-input {
   flex: 1;
   min-width: 140px;
   font-family: inherit;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
-  background: var(--cs-bg);
-  border: 1px solid var(--cs-line);
+  font-size: var(--fs);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
   border-radius: 7px;
   padding: 4px 8px;
 }
 
 .tc-plan-apply {
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 4px 12px;
   border-radius: 7px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface);
-  color: var(--cs-text);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg);
   cursor: pointer;
 }
 
@@ -465,12 +464,12 @@ defineExpose({ reset })
 
 .tc-plan-state {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .tc-plan-state--bad {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .tc-plan-rows {
@@ -478,7 +477,7 @@ defineExpose({ reset })
   grid-template-columns: auto 1fr;
   gap: 2px 12px;
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .tc-plan-row {
@@ -486,18 +485,18 @@ defineExpose({ reset })
 }
 
 .tc-plan-key {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .tc-plan-value {
   margin: 0;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow-wrap: anywhere;
 }
 
 .tc-plan-hint {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 </style>

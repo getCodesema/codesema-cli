@@ -175,7 +175,7 @@ function onMediaClick(): void {
   z-index: 70;
   display: grid;
   grid-template-rows: 44px 1fr;
-  background: color-mix(in srgb, var(--cs-bg) 92%, transparent);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(6px);
 }
 
@@ -184,24 +184,24 @@ function onMediaClick(): void {
   align-items: center;
   gap: 10px;
   padding: 0 18px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .mv-btn {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
-  border: 1px solid var(--cs-line-3);
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .mv-btn:hover:not(:disabled) {
-  color: var(--cs-text);
-  border-color: var(--cs-line-2);
+  color: var(--fg);
+  border-color: var(--line);
 }
 
 .mv-btn:disabled {
@@ -210,21 +210,21 @@ function onMediaClick(): void {
 }
 
 .mv-btn:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .mv-btn--icon {
   width: 32px;
   padding: 6px 0;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   line-height: 1;
 }
 
 .mv-caption {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -237,9 +237,9 @@ function onMediaClick(): void {
 .mv-percent {
   min-width: 48px;
   text-align: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .mv-stage {
@@ -263,11 +263,11 @@ function onMediaClick(): void {
 .mv-media {
   max-width: 100%;
   max-height: 100%;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
   transform-origin: center;
-  transition: transform var(--cs-duration-fast) var(--cs-ease-out);
+  transition: transform 150ms ease;
   user-select: none;
 }
 

@@ -273,7 +273,7 @@ function scrollToFile(filePath: string) {
 .steprev-left {
   width: 384px;
   flex-shrink: 0;
-  border-right: 1px solid var(--codesema-line);
+  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -282,7 +282,7 @@ function scrollToFile(filePath: string) {
   top: 0;
   max-height: 100vh;
   overflow-y: auto;
-  background: color-mix(in srgb, var(--codesema-panel) 60%, var(--codesema-bg));
+  background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg));
 }
 
 /* back button */
@@ -290,9 +290,9 @@ function scrollToFile(filePath: string) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 400;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   background: none;
   border: none;
   cursor: pointer;
@@ -301,7 +301,7 @@ function scrollToFile(filePath: string) {
   transition: color 0.12s ease;
 }
 .steprev-back:hover {
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 /* nav toggle + arrows */
@@ -316,7 +316,7 @@ function scrollToFile(filePath: string) {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 1.5px solid var(--codesema-line);
+  border: 1.5px solid var(--line);
   background: transparent;
   display: grid;
   place-items: center;
@@ -327,23 +327,23 @@ function scrollToFile(filePath: string) {
     background 0.12s ease;
 }
 .steprev-radio-btn--done {
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low);
+  border-color: var(--ok);
+  background: var(--ok);
 }
 .steprev-radio-check {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   color: #fff;
   line-height: 1;
   font-weight: 700;
 }
 
 .steprev-which {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
 }
 .steprev-which-total {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   font-weight: 400;
 }
 
@@ -355,10 +355,10 @@ function scrollToFile(filePath: string) {
   width: 28px;
   height: 28px;
   border-radius: 7px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  font-size: var(--fs-lg);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
+  font-size: 18px;
   cursor: pointer;
   display: grid;
   place-items: center;
@@ -366,7 +366,7 @@ function scrollToFile(filePath: string) {
   font-family: inherit;
 }
 .steprev-arrow:hover:not(:disabled) {
-  border-color: var(--codesema-ink-3);
+  border-color: var(--fg-dim);
 }
 .steprev-arrow:disabled {
   opacity: 0.4;
@@ -375,11 +375,11 @@ function scrollToFile(filePath: string) {
 
 /* step title */
 .steprev-title {
-  font-family: var(--font-display);
-  font-size: var(--fs-2xl);
+  font-family: var(--font);
+  font-size: 24px;
   font-weight: 400;
   letter-spacing: -0.01em;
-  color: var(--codesema-ink);
+  color: var(--fg);
   margin: 16px 0 0;
   line-height: 1.15;
 }
@@ -397,7 +397,7 @@ function scrollToFile(filePath: string) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   padding: 3px 10px;
   border-radius: 999px;
@@ -409,42 +409,42 @@ function scrollToFile(filePath: string) {
   flex-shrink: 0;
 }
 .step-risk--high {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 .step-risk-bg--high {
-  background: var(--codesema-risk-high-soft);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 .step-risk--med {
-  color: var(--codesema-risk-med);
+  color: var(--warn);
 }
 .step-risk-bg--med {
-  background: var(--codesema-risk-med-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 .step-risk--low {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 .step-risk-bg--low {
-  background: var(--codesema-risk-low-soft);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .steprev-delta {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
 }
 .steprev-delta-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 .steprev-delta-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 /* rationale */
 .steprev-rationale {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   line-height: 1.6;
   margin: 0;
   text-wrap: pretty;
@@ -452,18 +452,18 @@ function scrollToFile(filePath: string) {
 
 /* to-watch amber box */
 .steprev-towatch {
-  border: 1px solid color-mix(in srgb, var(--codesema-amber) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
   border-radius: 10px;
   padding: 13px 14px;
-  background: var(--codesema-amber-soft);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
   margin-top: 18px;
 }
 .steprev-towatch-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--codesema-amber);
+  color: var(--warn);
   margin-bottom: 9px;
 }
 .steprev-towatch-row {
@@ -471,8 +471,8 @@ function scrollToFile(filePath: string) {
   align-items: flex-start;
   gap: 10px;
   cursor: pointer;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink);
+  font-size: var(--fs);
+  color: var(--fg);
   line-height: 1.5;
 }
 .steprev-check-btn {
@@ -481,7 +481,7 @@ function scrollToFile(filePath: string) {
   height: 18px;
   margin-top: 1px;
   border-radius: 4px;
-  border: 1.5px solid var(--codesema-amber);
+  border: 1.5px solid var(--warn);
   background: transparent;
   display: grid;
   place-items: center;
@@ -489,10 +489,10 @@ function scrollToFile(filePath: string) {
   transition: background 0.1s ease;
 }
 .steprev-check-btn--done {
-  background: var(--codesema-amber);
+  background: var(--warn);
 }
 .steprev-check-mark {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   color: #fff;
   font-weight: 700;
 }
@@ -505,39 +505,39 @@ function scrollToFile(filePath: string) {
   margin-top: 22px;
 }
 .steprev-files-head {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 2px;
 }
 .steprev-files-count {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
-  background: var(--codesema-line-2);
+  background: var(--line);
   border-radius: 99px;
   padding: 0 6px;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 .steprev-filter {
   width: 100%;
-  border: 1px solid var(--codesema-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 11px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-family: inherit;
-  background: var(--codesema-panel);
-  color: var(--codesema-ink);
+  background: var(--bg-raised);
+  color: var(--fg);
   outline: none;
   transition: border-color 0.12s ease;
   box-sizing: border-box;
 }
 .steprev-filter:focus {
-  border-color: var(--codesema-accent);
+  border-color: var(--accent);
 }
 .steprev-filelist {
   display: flex;
@@ -557,17 +557,17 @@ function scrollToFile(filePath: string) {
 }
 .steprev-filerow:hover,
 .steprev-filerow:focus-visible {
-  background: color-mix(in srgb, var(--codesema-line-2) 80%, var(--codesema-bg));
+  background: color-mix(in srgb, var(--line) 80%, var(--bg));
 }
 .steprev-fileicon {
-  font-size: var(--fs-xs);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
   flex-shrink: 0;
 }
 .steprev-filename {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -575,8 +575,8 @@ function scrollToFile(filePath: string) {
   min-width: 0;
 }
 .steprev-filepath {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -585,7 +585,7 @@ function scrollToFile(filePath: string) {
   display: none;
 }
 .steprev-files-empty {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 6px 0;
 }
 
@@ -606,20 +606,20 @@ function scrollToFile(filePath: string) {
   gap: 13px;
   padding: 14px 16px;
   margin: 16px 20px 0;
-  border: 1px solid color-mix(in srgb, var(--codesema-accent) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: 12px;
-  background: var(--codesema-accent-soft);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .steprev-banner-mark {
   flex-shrink: 0;
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: var(--codesema-accent);
+  background: var(--accent);
   color: #fff;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 700;
-  font-family: var(--font-display);
+  font-family: var(--font);
   display: grid;
   place-items: center;
   letter-spacing: -0.02em;
@@ -631,29 +631,29 @@ function scrollToFile(filePath: string) {
   min-width: 0;
 }
 .steprev-banner-head {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--codesema-ink);
+  color: var(--fg);
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
 .steprev-banner-count {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  background: var(--codesema-panel);
-  color: var(--codesema-accent);
-  border: 1px solid color-mix(in srgb, var(--codesema-accent) 30%, transparent);
+  background: var(--bg-raised);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: 999px;
   padding: 2px 9px;
   white-space: nowrap;
   flex-shrink: 0;
 }
 .steprev-banner-take {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
-  color: var(--codesema-ink);
+  color: var(--fg);
   margin: 6px 0 0;
   text-wrap: pretty;
 }
@@ -664,13 +664,13 @@ function scrollToFile(filePath: string) {
 }
 .steprev-nodiff {
   padding: 24px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 /* empty fallback */
 .steprev-empty {
   padding: 32px 24px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 /* responsive: stack below 900px */
@@ -683,7 +683,7 @@ function scrollToFile(filePath: string) {
     position: static;
     max-height: none;
     border-right: none;
-    border-bottom: 1px solid var(--codesema-line);
+    border-bottom: 1px solid var(--line);
   }
 }
 
@@ -693,7 +693,7 @@ function scrollToFile(filePath: string) {
     padding: 16px 14px 24px;
   }
   .steprev-title {
-    font-size: var(--fs-xl);
+    font-size: 18px;
   }
   .steprev-banner {
     margin: 14px 12px 0;

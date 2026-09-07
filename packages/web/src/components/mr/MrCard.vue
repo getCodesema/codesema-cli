@@ -200,8 +200,8 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   align-items: center;
   gap: 6px;
   margin-bottom: 4px;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .mrc-state {
@@ -217,25 +217,25 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrc-state--open {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .mrc-state--draft {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .mrc-state--merged {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrc-state--closed {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrc-number {
   flex: none;
   font-weight: 700;
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrc-author {
@@ -257,10 +257,10 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrc-title {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   line-height: 1.25;
-  color: var(--cs-text);
+  color: var(--fg);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -274,10 +274,10 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 6px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
-  font-family: var(--font-mono);
-  color: var(--cs-ghost);
+  font-family: var(--font);
+  color: var(--fg-muted);
 }
 
 .mrc-files {
@@ -304,11 +304,11 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrc-diffblock--add {
-  background: var(--cs-green-text);
+  background: var(--ok);
 }
 
 .mrc-diffblock--del {
-  background: var(--cs-red-text);
+  background: var(--err);
 }
 
 .mrc-diffcounts {
@@ -318,11 +318,11 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrc-add {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrc-del {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrc-checks {
@@ -344,19 +344,19 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrc-check-entry--passed {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrc-check-entry--failed {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrc-check-entry--pending {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .mrc-check-entry--skipped {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .mrc-checks-dot {
@@ -367,19 +367,19 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrc-checks-dot--passed {
-  background: var(--cs-green-text);
+  background: var(--ok);
 }
 
 .mrc-checks-dot--failed {
-  background: var(--cs-red-text);
+  background: var(--err);
 }
 
 .mrc-checks-dot--pending {
-  background: var(--cs-amber-text);
+  background: var(--warn);
 }
 
 .mrc-checks-dot--skipped,
 .mrc-checks-dot--unknown {
-  background: var(--cs-dot-idle);
+  background: var(--fg-muted);
 }
 </style>

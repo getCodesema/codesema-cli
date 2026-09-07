@@ -466,10 +466,10 @@ const mrsLabelCountsFiltered = computed(() =>
   align-items: center;
   justify-content: center;
   font-family: inherit;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--cs-surface);
-  color: var(--cs-muted);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
   margin: 0 8px 8px 0;
 }
@@ -480,8 +480,8 @@ const mrsLabelCountsFiltered = computed(() =>
 }
 
 .fcp-collapse:hover {
-  border-color: var(--cs-line-3);
-  color: var(--cs-text-2);
+  border-color: var(--line);
+  color: var(--fg-dim);
 }
 
 /* Collapsed band: the whole 48px-wide strip is the reopen control, no
@@ -497,13 +497,13 @@ const mrsLabelCountsFiltered = computed(() =>
   padding: 12px 0;
   border: none;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .fcp-band:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text-2);
+  background: var(--bg-hover);
+  color: var(--fg-dim);
 }
 
 .fcp-band-name {
@@ -512,7 +512,7 @@ const mrsLabelCountsFiltered = computed(() =>
   text-overflow: ellipsis;
   white-space: nowrap;
   max-height: 100%;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
 }
 
@@ -572,10 +572,9 @@ const mrsLabelCountsFiltered = computed(() =>
    elevated surface, discrete shadow. */
 .fcp-section {
   margin: 8px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 16px;
-  background: var(--cs-surface-2);
-  box-shadow: var(--cs-shadow-card);
+  background: var(--bg-hover);
   overflow: hidden;
 }
 
@@ -586,19 +585,19 @@ const mrsLabelCountsFiltered = computed(() =>
   width: 100%;
   text-align: left;
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 10px 12px;
   border: none;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .fcp-acc-head:hover {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .fcp-acc-icon {
@@ -633,11 +632,11 @@ const mrsLabelCountsFiltered = computed(() =>
   justify-content: space-between;
   gap: 8px;
   margin: 20px 0 6px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .fcp-block-title-text {
@@ -665,8 +664,8 @@ const mrsLabelCountsFiltered = computed(() =>
   width: 100%;
   text-align: left;
   font-family: inherit;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   padding: 6px 8px;
   border: none;
   border-radius: 8px;
@@ -675,14 +674,14 @@ const mrsLabelCountsFiltered = computed(() =>
 }
 
 .fcp-row:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 /* Selected: an accent-weak fill and a heavier weight, per the doctrine.
    Never a border -- a row's identity comes from its content and fill. */
 .fcp-row--on {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--fg);
   font-weight: 500;
 }
 
@@ -696,7 +695,7 @@ const mrsLabelCountsFiltered = computed(() =>
 .fcp-filter-sep {
   height: 1px;
   margin: 4px 0;
-  background: var(--cs-line-2);
+  background: var(--line);
 }
 
 .fcp-reset {
@@ -705,18 +704,18 @@ const mrsLabelCountsFiltered = computed(() =>
   align-items: center;
   gap: 4px;
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 500;
   text-transform: none;
   letter-spacing: normal;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   background: transparent;
   border: none;
   cursor: pointer;
 }
 
 .fcp-reset:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .fcp-reset svg {
@@ -734,7 +733,7 @@ const mrsLabelCountsFiltered = computed(() =>
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
 }
 
@@ -744,11 +743,11 @@ const mrsLabelCountsFiltered = computed(() =>
 }
 
 .fcp-search-toggle:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .fcp-search-toggle--on {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .fcp-label-search {
@@ -759,12 +758,12 @@ const mrsLabelCountsFiltered = computed(() =>
 .fcp-label-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 6px 28px 6px 12px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
-  color: var(--cs-text);
+  background: var(--bg-raised);
+  color: var(--fg);
 }
 
 .fcp-label-search-close {
@@ -780,7 +779,7 @@ const mrsLabelCountsFiltered = computed(() =>
   border: none;
   border-radius: 5px;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
 }
 
@@ -790,6 +789,6 @@ const mrsLabelCountsFiltered = computed(() =>
 }
 
 .fcp-label-search-close:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 </style>

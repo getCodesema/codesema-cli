@@ -412,14 +412,14 @@ function onSortChange(event: Event): void {
 
 .bt-title {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .bt-title-count {
   font-weight: 400;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .bt-toolbar {
@@ -435,20 +435,20 @@ function onSortChange(event: Event): void {
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-surface-2);
+  background: var(--bg-hover);
 }
 
 .bt-filter:focus-within {
-  border-color: var(--cs-focus-ring);
+  border-color: var(--accent);
 }
 
 .bt-filter-icon {
   flex: none;
   width: 14px;
   height: 14px;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .bt-filter-input {
@@ -458,22 +458,22 @@ function onSortChange(event: Event): void {
   outline: none;
   background: transparent;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 7px 0;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .bt-filter-input::placeholder {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .bt-row-count {
   flex: none;
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--cs-surface-2);
-  color: var(--cs-text-2);
-  font-size: var(--fs-xs);
+  background: var(--bg-hover);
+  color: var(--fg-dim);
+  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -483,17 +483,17 @@ function onSortChange(event: Event): void {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .bt-sort-select {
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--cs-surface-2);
-  color: var(--cs-text);
+  background: var(--bg-hover);
+  color: var(--fg);
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 4px 6px;
 }
 
@@ -502,18 +502,18 @@ function onSortChange(event: Event): void {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   padding: 5px 10px;
   cursor: pointer;
 }
 
 .bt-refresh:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .bt-refresh:disabled {
@@ -538,26 +538,26 @@ function onSortChange(event: Event): void {
 
 .bt-scroll {
   overflow-x: auto;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 10px;
 }
 
 .bt-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
 }
 
 .bt-th {
   text-align: left;
   padding: 8px 10px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-muted);
-  background: var(--cs-surface);
-  border-bottom: 1px solid var(--cs-line);
+  color: var(--fg-dim);
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
 
@@ -570,17 +570,17 @@ function onSortChange(event: Event): void {
 }
 
 .bt-row {
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .bt-row:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .bt-cell {
   padding: 8px 10px;
   vertical-align: top;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .bt-cell-chevron {
@@ -593,7 +593,7 @@ function onSortChange(event: Event): void {
 
 .bt-cell-age {
   white-space: nowrap;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .bt-chevron-btn {
@@ -604,7 +604,7 @@ function onSortChange(event: Event): void {
   height: 20px;
   border: none;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
   padding: 0;
 }
@@ -612,7 +612,7 @@ function onSortChange(event: Event): void {
 .bt-chevron-icon {
   width: 14px;
   height: 14px;
-  transition: transform var(--cs-duration-fast) var(--cs-ease-out);
+  transition: transform 150ms ease;
 }
 
 .bt-chevron-icon--closed {
@@ -623,12 +623,12 @@ function onSortChange(event: Event): void {
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 4px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-muted);
-  background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);
+  color: var(--fg-dim);
+  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
   white-space: nowrap;
 }
 
@@ -639,29 +639,29 @@ function onSortChange(event: Event): void {
 }
 
 .bt-branch-mono {
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  color: var(--cs-text);
+  font-family: var(--font);
+  font-size: var(--fs);
+  color: var(--fg);
 }
 
 .bt-branch-mono--detached {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .bt-current-badge {
   padding: 1px 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 4px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .bt-branch-subject {
   margin: 2px 0 0;
   max-width: 360px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -671,50 +671,50 @@ function onSortChange(event: Event): void {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .bt-mr-number {
-  font-family: var(--font-mono);
+  font-family: var(--font);
 }
 
 .bt-mr-state-text {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 500;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .bt-mr-pastille--open {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .bt-mr-pastille--draft {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .bt-mr-pastille--merged {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .bt-mr-pastille--closed {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .bt-conversations-badge {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .bt-action-btn {
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 500;
   padding: 5px 10px;
   cursor: pointer;
@@ -722,35 +722,35 @@ function onSortChange(event: Event): void {
 }
 
 .bt-action-btn:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .bt-detached-hint {
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
   cursor: help;
 }
 
 .bt-empty {
   padding: 24px 16px;
   text-align: center;
-  color: var(--cs-muted);
-  font-size: var(--fs-base);
+  color: var(--fg-dim);
+  font-size: var(--fs);
 }
 
 .bt-expanded-row {
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .bt-expanded-cell {
   padding: 10px 10px 14px 38px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
 }
 
 .bt-expanded-empty {
   margin: 0 0 8px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .bt-expanded-list {
@@ -772,18 +772,18 @@ function onSortChange(event: Event): void {
 }
 
 .bt-expanded-create {
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 500;
   padding: 5px 10px;
   cursor: pointer;
 }
 
 .bt-expanded-create:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 </style>

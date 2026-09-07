@@ -117,7 +117,7 @@ describe('RecapBlock: changes/decisions/files/tests render only when non-empty',
 })
 
 describe('RecapBlock: no hex color literal in its scoped style', () => {
-  test('every color comes from a --cs- token', () => {
+  test('every color comes from a theme tokens', () => {
     const source = readFileSync(
       fileURLToPath(new URL('./RecapBlock.vue', import.meta.url)),
       'utf-8',

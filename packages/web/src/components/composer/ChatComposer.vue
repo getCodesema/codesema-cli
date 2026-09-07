@@ -346,20 +346,20 @@ defineExpose({ focus })
   flex-direction: column;
   border-style: solid;
   border-width: 1px;
-  border-color: var(--cs-line-2);
+  border-color: var(--line);
   border-radius: 16px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
 }
 
 /* The filet itself carries the mode: 2px and colored, no separate badge. */
 .cc-root--temporary {
   border-width: 2px;
-  border-color: var(--cs-amber-line);
+  border-color: var(--warn);
 }
 
 .cc-root--private {
   border-width: 2px;
-  border-color: var(--cs-water);
+  border-color: var(--info);
 }
 
 /* ── Resize handle: invisible at rest, opaque on hover in 200ms ─────────── */
@@ -377,15 +377,15 @@ defineExpose({ focus })
   width: 48px;
   height: 3px;
   border-radius: 999px;
-  background: var(--cs-line-3);
+  background: var(--line);
   opacity: 0;
-  transition: opacity var(--cs-duration-fast) var(--cs-ease-out);
+  transition: opacity 150ms ease;
 }
 
 .cc-handle:hover .cc-handle-bar,
 .cc-handle--active .cc-handle-bar {
   opacity: 1;
-  transition: opacity var(--cs-duration-fast) var(--cs-ease-in);
+  transition: opacity 150ms ease;
 }
 
 /* ── Textarea ─────────────────────────────────────────────────────────── */
@@ -398,16 +398,16 @@ defineExpose({ focus })
   outline: none;
   resize: none;
   background: transparent;
-  color: var(--cs-text);
+  color: var(--fg);
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
   padding: 12px 16px 4px;
   overflow-y: auto;
 }
 
 .cc-textarea::placeholder {
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 /* ── Toolbar: 10px sides, 2px top, 8px bottom, two clusters ─────────────── */
@@ -437,16 +437,16 @@ defineExpose({ focus })
   border: none;
   border-radius: 12px;
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
   transition:
-    background var(--cs-duration-fast) var(--cs-ease-out),
-    color var(--cs-duration-fast) var(--cs-ease-out);
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .cc-tool:hover:not(:disabled) {
-  background: var(--cs-hover);
-  color: var(--cs-text);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .cc-tool:disabled {
@@ -467,12 +467,12 @@ defineExpose({ focus })
 /* Open is a state, so it wears a neutral elevation, not a semaphore color:
    nothing in the sémaphore trio (green/amber/red) names "a menu is open". */
 .cc-tool--attach.cc-tool--open {
-  background: var(--cs-hover);
-  color: var(--cs-text);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .cc-tool--attach .cc-tool-icon {
-  transition: transform var(--cs-duration-base) var(--cs-ease-out);
+  transition: transform 200ms ease;
 }
 
 /* The plus becomes a cross: same glyph, no swap needed. */
@@ -490,16 +490,16 @@ defineExpose({ focus })
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--cs-green);
-  color: var(--cs-on-green);
+  background: var(--ok);
+  color: var(--bg);
   cursor: pointer;
   transition:
-    background var(--cs-duration-fast) var(--cs-ease-out),
-    opacity var(--cs-duration-fast) var(--cs-ease-out);
+    background 150ms ease,
+    opacity 150ms ease;
 }
 
 .cc-send:hover:not(:disabled) {
-  background: var(--cs-green-hover);
+  background: var(--ok);
 }
 
 .cc-send:disabled {

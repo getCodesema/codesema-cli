@@ -168,7 +168,7 @@ describe('design: color is a state, never a hardcoded one', () => {
       SOURCE.indexOf('.rv-tab--active {'),
       SOURCE.indexOf('.rv-tab:focus-visible'),
     )
-    expect(block).toContain('background: var(--cs-green-soft);')
+    expect(block).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
     expect(block).not.toMatch(/\bborder(-\w+)?:\s*\d/)
   })
 
@@ -176,7 +176,7 @@ describe('design: color is a state, never a hardcoded one', () => {
     expect(SOURCE).toContain('.rv-tab:focus-visible {')
   })
 
-  test('the style block only references --cs-* tokens, never a hardcoded color', () => {
+  test('the style block only references theme tokens, never a hardcoded color', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(styleBlock.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([])
   })

@@ -71,47 +71,47 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 
 .rcb-title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .rcb-pending {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .rcb-summary {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rcb-section-title {
   margin: 0 0 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .rcb-list {
   margin: 0;
   padding-left: 18px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 1.55;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rcb-list--mono {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
 }
 
 .rcb-md :deep(p),
@@ -128,9 +128,9 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 .rcb-md :deep(h2),
 .rcb-md :deep(h3) {
   margin: 12px 0 6px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rcb-md :deep(h2:first-child),
@@ -148,25 +148,25 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 }
 
 .rcb-md :deep(code) {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-green-text);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--ok);
   white-space: pre-wrap;
 }
 
 .rcb-md :deep(pre) {
   padding: 9px 11px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
   overflow-x: auto;
 }
 
 .rcb-md :deep(pre code) {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rcb-md :deep(a) {
-  color: var(--cs-green-hover);
+  color: var(--ok);
 }
 </style>

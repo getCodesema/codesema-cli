@@ -149,11 +149,13 @@ describe('type scale: every size is a --fs-* token, never a literal', () => {
     }
   })
 
-  test('no component declares a font-size in px', () => {
+  // The kit scale: 14px body (var(--fs)), 12px small, 18px h2, 24px h1.
+  test('no component declares a font-size outside the kit scale', () => {
     const srcDir = dirname(fileURLToPath(new URL('./style.css', import.meta.url)))
-    const offenders = listVueFiles(srcDir).filter((file) =>
-      /font-size:\s*[0-9.]+px/.test(readFileSync(file, 'utf-8')),
-    )
+    const offenders = listVueFiles(srcDir).filter((file) => {
+      const sizes = readFileSync(file, 'utf-8').match(/font-size:\s*[0-9.]+px/g) ?? []
+      return sizes.some((size) => !/font-size:\s*(12|18|24)px/.test(size))
+    })
     expect(offenders).toEqual([])
   })
 })

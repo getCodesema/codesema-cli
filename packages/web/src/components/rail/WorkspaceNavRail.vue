@@ -129,11 +129,11 @@ const emit = defineEmits<{
   min-height: 0;
   padding: 12px 8px;
   gap: 4px;
-  background: var(--cs-panel);
-  border-right: 1px solid var(--cs-line);
+  background: var(--bg-raised);
+  border-right: 1px solid var(--line);
   overflow-x: hidden;
   overflow-y: auto;
-  transition: width var(--cs-duration-base) var(--cs-ease-in);
+  transition: width 200ms ease;
 }
 
 .wnr-root--collapsed {
@@ -146,7 +146,7 @@ const emit = defineEmits<{
   justify-content: space-between;
   gap: 8px;
   padding: 4px 4px 12px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .wnr-header--collapsed {
@@ -169,16 +169,16 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: var(--cs-green-soft);
-  color: var(--cs-green-text);
-  font-size: var(--fs-base);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+  font-size: var(--fs);
   font-weight: 700;
 }
 
 .wnr-brand-name {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -194,13 +194,13 @@ const emit = defineEmits<{
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .wnr-toggle:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text-2);
+  background: var(--bg-hover);
+  color: var(--fg-dim);
 }
 
 .wnr-toggle-icon {
@@ -228,10 +228,10 @@ const emit = defineEmits<{
   width: 100%;
   text-align: left;
   font-family: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 500;
   line-height: 20px;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   padding: 8px 12px;
   border: none;
   border-radius: 8px;
@@ -241,19 +241,19 @@ const emit = defineEmits<{
 
 .wnr-cat:hover,
 .wnr-settings:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 /* Active state: tinted fill + text only, no border or side bar — same
    doctrine as ProjectsNav.vue's own active rows. */
 .wnr-cat--active {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--fg);
   font-weight: 600;
 }
 
 .wnr-cat--active .wnr-row-icon {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .wnr-icon-slot {
@@ -291,13 +291,13 @@ const emit = defineEmits<{
   height: 16px;
   padding: 0 6px;
   border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
-  background: var(--cs-amber-soft);
-  color: var(--cs-amber-text);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
 }
 
 .wnr-spacer {
@@ -307,7 +307,7 @@ const emit = defineEmits<{
 .wnr-footer {
   margin-top: 6px;
   padding-top: 8px;
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
 }
 
 .wnr-root--collapsed .wnr-cat,

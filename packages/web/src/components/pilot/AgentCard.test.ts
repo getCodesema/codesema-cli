@@ -352,7 +352,7 @@ describe('AgentCard: the composer always renders', () => {
 })
 
 describe('AgentCard: no hex color literal in its scoped style', () => {
-  test('every color comes from a --cs- token', () => {
+  test('every color comes from a theme tokens', () => {
     const source = readFileSync(fileURLToPath(new URL('./AgentCard.vue', import.meta.url)), 'utf-8')
     const style = source.slice(source.indexOf('<style'))
     expect(style.match(/#[0-9a-fA-F]{3,8}\b/g)).toBeNull()

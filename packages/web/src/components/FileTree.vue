@@ -166,8 +166,8 @@ function toggleDir(path: string) {
   flex-direction: column;
   width: 252px;
   flex-shrink: 0;
-  border-right: 1px solid var(--codesema-line);
-  background: color-mix(in srgb, var(--codesema-panel) 60%, var(--codesema-bg));
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg));
   overflow: hidden;
   height: 100%;
 }
@@ -181,18 +181,18 @@ function toggleDir(path: string) {
 }
 
 .ft-head-label {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
 
 .ft-head-count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  background: var(--codesema-line-2);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: 12px;
+  background: var(--line);
+  color: var(--fg-dim);
   border-radius: 999px;
   padding: 1px 7px;
   font-weight: 600;
@@ -205,24 +205,24 @@ function toggleDir(path: string) {
 
 .ft-filter {
   width: 100%;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 11px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-family: inherit;
-  color: var(--codesema-ink);
+  color: var(--fg);
   outline: none;
   transition: border-color 0.12s;
   box-sizing: border-box;
 }
 
 .ft-filter:focus {
-  border-color: var(--codesema-accent);
+  border-color: var(--accent);
 }
 
 .ft-filter::placeholder {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .ft-body {
@@ -240,22 +240,22 @@ function toggleDir(path: string) {
   border: none;
   cursor: pointer;
   padding: 6px 9px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-2);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   text-align: left;
   transition: background 0.1s;
   min-width: 0;
 }
 
 .ft-file:hover {
-  background: var(--codesema-line-2);
-  color: var(--codesema-ink);
+  background: var(--line);
+  color: var(--fg);
 }
 
 .ft-file-ic {
-  color: var(--codesema-ink-3);
-  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+  font-size: 12px;
   flex-shrink: 0;
 }
 
@@ -271,27 +271,27 @@ function toggleDir(path: string) {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   flex-shrink: 0;
 }
 
 .ft-delta-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .ft-delta-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .ft-cmt {
-  font-size: var(--fs-xs);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
   flex-shrink: 0;
 }
 
 .ft-empty {
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
   padding: 10px 14px;
 }
 </style>

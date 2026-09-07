@@ -481,8 +481,8 @@ function onMobilePick(option: string): void {
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  background: var(--cs-bg);
-  color: var(--cs-text);
+  background: var(--bg);
+  color: var(--fg);
 }
 
 .pv-top {
@@ -492,8 +492,8 @@ function onMobilePick(option: string): void {
   gap: 16px;
   height: 52px;
   padding: 0 18px;
-  border-bottom: 1px solid var(--cs-line);
-  background: var(--cs-panel);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
 }
 
 .pv-brand {
@@ -503,30 +503,30 @@ function onMobilePick(option: string): void {
 }
 
 .pv-brand-name {
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .pv-brand-sub {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .pv-counts {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .pv-count--attention {
-  color: var(--cs-amber-text);
+  color: var(--warn);
   font-weight: 600;
 }
 
@@ -535,19 +535,19 @@ function onMobilePick(option: string): void {
 }
 
 .pv-switch {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 7px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .pv-switch:hover {
-  border-color: var(--cs-line-2);
+  border-color: var(--line);
 }
 
 .pv-grid {
@@ -565,8 +565,8 @@ function onMobilePick(option: string): void {
   margin: auto;
   max-width: 360px;
   text-align: center;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .pv-lane {
@@ -589,18 +589,18 @@ function onMobilePick(option: string): void {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-surface);
+  background: var(--bg-raised);
   cursor: pointer;
 }
 
 .pv-lane-title {
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -614,20 +614,20 @@ function onMobilePick(option: string): void {
   background: transparent;
   padding: 3px 7px;
   font-family: inherit;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .pv-lane-expand:hover,
 .pv-lane-close:hover {
-  color: var(--cs-text);
-  background: var(--cs-hover);
+  color: var(--fg);
+  background: var(--bg-hover);
 }
 
 .pv-lane-expand[aria-pressed='true'] {
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 .pv-hidden-bar {
@@ -636,15 +636,15 @@ function onMobilePick(option: string): void {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  border-top: 1px solid var(--cs-line);
-  background: var(--cs-panel);
+  border-top: 1px solid var(--line);
+  background: var(--bg-raised);
   overflow-x: auto;
 }
 
 .pv-hidden-label {
   flex: none;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
   white-space: nowrap;
 }
 
@@ -653,20 +653,20 @@ function onMobilePick(option: string): void {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 4px 10px;
   font-family: inherit;
-  font-size: var(--fs-sm);
-  color: var(--cs-text-2);
-  background: var(--cs-surface);
+  font-size: 12px;
+  color: var(--fg-dim);
+  background: var(--bg-raised);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .pv-hidden-chip:hover {
-  border-color: var(--cs-line-3);
-  color: var(--cs-text);
+  border-color: var(--line);
+  color: var(--fg);
 }
 
 .pv-hidden-dot {

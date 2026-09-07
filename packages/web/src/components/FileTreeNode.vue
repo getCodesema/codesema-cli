@@ -110,9 +110,9 @@ const paddingLeft = computed(() => {
   padding-top: 4px;
   padding-bottom: 4px;
   padding-right: 10px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   font-weight: 600;
   text-align: left;
   text-transform: uppercase;
@@ -122,16 +122,16 @@ const paddingLeft = computed(() => {
 }
 
 .ftn-dir:hover {
-  background: var(--codesema-line-2);
-  color: var(--codesema-ink-2);
+  background: var(--line);
+  color: var(--fg-dim);
 }
 
 .ftn-dir-ic {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   transition: transform 0.15s;
   display: inline-block;
   flex-shrink: 0;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .ftn-dir-ic.open {
@@ -157,22 +157,22 @@ const paddingLeft = computed(() => {
   padding-top: 3px;
   padding-bottom: 3px;
   padding-right: 10px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-2);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
   text-align: left;
   transition: background 0.1s;
   min-width: 0;
 }
 
 .ftn-file:hover {
-  background: var(--codesema-line-2);
-  color: var(--codesema-ink);
+  background: var(--line);
+  color: var(--fg);
 }
 
 .ftn-file-ic {
-  color: var(--codesema-ink-3);
-  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+  font-size: 12px;
   flex-shrink: 0;
 }
 
@@ -188,23 +188,23 @@ const paddingLeft = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   flex-shrink: 0;
 }
 
 .ftn-delta-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .ftn-delta-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .ftn-cmt {
-  font-size: var(--fs-xs);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
   flex-shrink: 0;
-  background: var(--codesema-line-2);
+  background: var(--line);
   border-radius: 999px;
   padding: 0 5px;
 }

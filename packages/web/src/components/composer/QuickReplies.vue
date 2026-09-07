@@ -38,21 +38,21 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 
 /* Amber: answering IS the pending human action. */
 .qr-opt {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 8px 14px;
-  border: 1px solid var(--cs-amber-line);
+  border: 1px solid var(--warn);
   border-radius: 8px;
-  background: var(--cs-amber-soft);
-  color: var(--cs-amber-text);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
   cursor: pointer;
   overflow-wrap: anywhere;
   text-align: left;
 }
 
 .qr-opt:hover:not(:disabled) {
-  border-color: var(--cs-amber);
+  border-color: var(--warn);
 }
 
 .qr-opt:disabled {
@@ -61,17 +61,17 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 }
 
 .qr-other {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-family: inherit;
   padding: 8px 14px;
-  border: 1px solid var(--cs-line-3);
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .qr-other:hover {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 </style>

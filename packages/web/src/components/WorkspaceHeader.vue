@@ -99,8 +99,8 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
   gap: 16px;
   height: 52px;
   padding: 0 20px;
-  border-bottom: 1px solid var(--cs-line);
-  background: var(--cs-panel);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
 }
 
 .wh-brand {
@@ -110,18 +110,18 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
 }
 
 .wh-brand-name {
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .wh-brand-sub {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .wh-right {
@@ -132,35 +132,35 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
 }
 
 .wh-settings {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 7px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .wh-settings:hover {
-  border-color: var(--cs-line-2);
+  border-color: var(--line);
 }
 
 .wh-pilot-toggle {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 7px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .wh-pilot-toggle:hover {
-  border-color: var(--cs-line-2);
+  border-color: var(--line);
 }
 
 /* A degraded capability, not an error: stated in amber like the bell, never red. */
@@ -169,12 +169,12 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
   align-items: center;
   gap: 7px;
   padding: 5px 10px;
-  border: 1px solid var(--cs-amber-line);
+  border: 1px solid var(--warn);
   border-radius: 7px;
-  background: var(--cs-amber-soft);
-  font-size: var(--fs-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-amber-text);
+  color: var(--warn);
   cursor: help;
 }
 
@@ -184,38 +184,37 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background: var(--cs-amber-soft);
-  border: 1px solid var(--cs-amber-line);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid var(--warn);
   border-radius: 7px;
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-amber-text);
+  color: var(--warn);
   cursor: pointer;
 }
 
 .wh-bell:hover {
-  border-color: var(--cs-amber);
+  border-color: var(--warn);
 }
 
 .wh-agents {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .wh-agents-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--cs-dot-idle);
+  background: var(--fg-muted);
 }
 
 /* Glow only while at least one run is actually live. */
 .wh-agents-dot--live {
-  background: var(--cs-amber);
-  box-shadow: var(--cs-amber-glow);
+  background: var(--warn);
 }
 </style>

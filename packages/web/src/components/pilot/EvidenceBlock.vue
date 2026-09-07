@@ -224,31 +224,31 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 
 .evb-title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .evb-empty {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .evb-intent {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .evb-intent-detail {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .evb-verdict {
@@ -256,8 +256,8 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
+  font-size: var(--fs);
+  color: var(--fg);
 }
 
 .evb-verdict-dot {
@@ -268,11 +268,11 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 }
 
 .evb-verdict-dot--coherent {
-  background: var(--cs-green);
+  background: var(--ok);
 }
 
 .evb-verdict-dot--incoherent {
-  background: var(--cs-red);
+  background: var(--err);
 }
 
 .evb-running {
@@ -280,12 +280,12 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .evb-running-glyph {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   animation: evb-pulse 1.6s ease-in-out infinite;
 }
 
@@ -308,11 +308,11 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 .evb-failed {
   margin: 0;
   padding: 8px 11px;
-  border: 1px solid var(--cs-red-line);
+  border: 1px solid var(--err);
   border-radius: 8px;
-  background: var(--cs-red-soft);
-  color: var(--cs-red-text);
-  font-size: var(--fs-base);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+  color: var(--err);
+  font-size: var(--fs);
   line-height: 1.5;
 }
 
@@ -337,9 +337,9 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 
 .evb-media {
   width: 100%;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--cs-inset);
+  background: var(--bg-raised);
 }
 
 .evb-open {
@@ -353,12 +353,12 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 }
 
 .evb-open:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .evb-open:hover .evb-media {
-  border-color: var(--cs-line-3);
+  border-color: var(--line);
 }
 
 .evb-caption {
@@ -366,8 +366,8 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .evb-enlarge {
@@ -375,14 +375,14 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   padding: 0;
   background: transparent;
   font-family: inherit;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .evb-enlarge:hover {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .evb-verification {
@@ -390,81 +390,81 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
   flex-direction: column;
   gap: 6px;
   padding-top: 10px;
-  border-top: 1px solid var(--cs-line);
+  border-top: 1px solid var(--line);
 }
 
 .evb-verification-title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .evb-verification-status {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .evb-verification-status--pass {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .evb-verification-status--fail {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .evb-verification-status--warn {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .evb-verification-error {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .evb-verification-files {
   margin: 0;
   padding-left: 18px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .evb-verification-tests-title {
   margin: 4px 0 2px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .evb-verification-tests-list {
   margin: 0;
   padding: 0;
   list-style: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-text);
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--fg);
 }
 
 .evb-verification-glyph {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .evb-verification-glyph--passed {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .evb-verification-glyph--failed,
 .evb-verification-glyph--timeout {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 </style>

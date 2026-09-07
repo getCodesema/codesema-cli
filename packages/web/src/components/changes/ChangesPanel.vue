@@ -403,9 +403,9 @@ function refreshFiles(): void {
      only, no border and no radius on the right, since there is nothing
      after it. */
   border-radius: 12px 0 0 0;
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-right: none;
-  background: var(--cs-panel);
+  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -425,9 +425,9 @@ function refreshFiles(): void {
   bottom: 0;
   left: 2px;
   width: 2px;
-  background: var(--cs-green);
+  background: var(--ok);
   opacity: 0;
-  transition: opacity var(--cs-duration-fast) var(--cs-ease-out);
+  transition: opacity 150ms ease;
 }
 
 .cp-handle:hover::after,
@@ -452,7 +452,7 @@ function refreshFiles(): void {
   justify-content: space-between;
   gap: 6px;
   padding: 8px;
-  background: var(--cs-surface-2);
+  background: var(--bg-hover);
 }
 
 .cp-row1-tabs {
@@ -471,15 +471,15 @@ function refreshFiles(): void {
   border: none;
   border-radius: 8px;
   background: none;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   font: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12px;
   cursor: default;
 }
 
 .cp-tab1--active {
-  background: var(--cs-line-2);
-  color: var(--cs-green-text);
+  background: var(--line);
+  color: var(--ok);
 }
 
 .cp-tab1-icon {
@@ -499,14 +499,14 @@ function refreshFiles(): void {
   border: none;
   border-radius: 6px;
   background: none;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
-  transition: background var(--cs-duration-fast) var(--cs-ease-out);
+  transition: background 150ms ease;
 }
 
 .cp-close:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .cp-close svg {
@@ -522,9 +522,9 @@ function refreshFiles(): void {
   align-items: center;
   gap: 8px;
   padding: 16px 12px;
-  border-bottom: 1px solid var(--cs-line);
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .cp-badge {
@@ -533,23 +533,23 @@ function refreshFiles(): void {
   width: 6px;
   height: 2px;
   border-radius: 4px;
-  background: var(--cs-ghost);
+  background: var(--fg-muted);
 }
 
 .cp-badge--open {
-  background: var(--cs-green);
+  background: var(--ok);
 }
 
 .cp-badge--draft {
-  background: var(--cs-ghost);
+  background: var(--fg-muted);
 }
 
 .cp-badge--merged {
-  background: var(--cs-lavender);
+  background: var(--alt);
 }
 
 .cp-badge--closed {
-  background: var(--cs-red);
+  background: var(--err);
 }
 
 .cp-forge {
@@ -562,7 +562,7 @@ function refreshFiles(): void {
   gap: 6px;
   min-width: 0;
   margin-left: auto;
-  font-family: var(--font-mono);
+  font-family: var(--font);
 }
 
 .cp-branch-copy {
@@ -579,7 +579,7 @@ function refreshFiles(): void {
 }
 
 .cp-branch-copy:hover {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cp-branch-copy-icon {
@@ -613,15 +613,15 @@ function refreshFiles(): void {
   border: none;
   border-radius: 6px;
   background: none;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   text-decoration: none;
   cursor: pointer;
-  transition: background var(--cs-duration-fast) var(--cs-ease-out);
+  transition: background 150ms ease;
 }
 
 .cp-icon-btn:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .cp-icon-btn svg {
@@ -636,15 +636,15 @@ function refreshFiles(): void {
 
 .cp-title {
   margin: 0;
-  font-size: var(--fs-lg);
+  font-size: 18px;
   font-weight: 600;
   line-height: 1.3;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .cp-number {
   font-weight: 400;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .cp-byline {
@@ -652,8 +652,8 @@ function refreshFiles(): void {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .cp-author {
@@ -664,11 +664,11 @@ function refreshFiles(): void {
 }
 
 .cp-add {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cp-del {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cp-age {
@@ -684,7 +684,7 @@ function refreshFiles(): void {
   align-items: center;
   gap: 4px;
   padding: 8px;
-  border-bottom: 1px solid var(--cs-line);
+  border-bottom: 1px solid var(--line);
 }
 
 .cp-tab2 {
@@ -695,20 +695,20 @@ function refreshFiles(): void {
   border: none;
   border-radius: 8px;
   background: none;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   font: inherit;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   cursor: pointer;
-  transition: background var(--cs-duration-fast) var(--cs-ease-out);
+  transition: background 150ms ease;
 }
 
 .cp-tab2:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .cp-tab2--active {
-  background: var(--cs-hover);
-  color: var(--cs-text);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .cp-tab2-icon {
@@ -721,12 +721,12 @@ function refreshFiles(): void {
    "12/42" do not say the same thing (fiche §3). Every other tab's counter
    (files) is attenuated text glued to the label, never a badge. */
 .cp-tab2-counter {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
 }
 
 .cp-tab2--active .cp-tab2-counter {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cp-section {
@@ -744,7 +744,7 @@ function refreshFiles(): void {
   margin: 0;
   padding: 32px 16px;
   text-align: center;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 </style>

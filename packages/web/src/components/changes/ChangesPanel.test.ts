@@ -109,10 +109,10 @@ describe('the state badge (fiche §4: green/open, lavender/merged, our own draft
   })
 
   test('each variant has its own distinct color rule', () => {
-    expect(SOURCE).toMatch(/\.cp-badge--open\s*\{[^}]*background: var\(--cs-green\);/)
-    expect(SOURCE).toMatch(/\.cp-badge--draft\s*\{[^}]*background: var\(--cs-ghost\);/)
-    expect(SOURCE).toMatch(/\.cp-badge--merged\s*\{[^}]*background: var\(--cs-lavender\);/)
-    expect(SOURCE).toMatch(/\.cp-badge--closed\s*\{[^}]*background: var\(--cs-red\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--open\s*\{[^}]*background: var\(--ok\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--draft\s*\{[^}]*background: var\(--fg-muted\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--merged\s*\{[^}]*background: var\(--alt\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--closed\s*\{[^}]*background: var\(--err\);/)
   })
 })
 
@@ -168,7 +168,7 @@ describe('the title block (fiche §4)', () => {
   })
 
   test('the title is one step above the base size, semi-bold, tight line-height', () => {
-    expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-size: var\(--fs-lg\);/)
+    expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-size: 18px;/)
     expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-weight: 600;/)
   })
 })
@@ -195,13 +195,13 @@ describe('row 1: the envelope tab (fiche §3)', () => {
     expect(SOURCE).toMatch(/\.cp-row1\s*\{[^}]*gap: 6px;/)
     expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*height: 28px;/)
     expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*border-radius: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*font-size: var\(--fs-sm\);/)
+    expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*font-size: 12px;/)
     expect(SOURCE).toMatch(/\.cp-tab1-icon\s*\{[^}]*width: 16px;/)
   })
 
   test('the active tab uses a line-colored fill and accent text', () => {
-    expect(SOURCE).toMatch(/\.cp-tab1--active\s*\{[^}]*background: var\(--cs-line-2\);/)
-    expect(SOURCE).toMatch(/\.cp-tab1--active\s*\{[^}]*color: var\(--cs-green-text\);/)
+    expect(SOURCE).toMatch(/\.cp-tab1--active\s*\{[^}]*background: var\(--line\);/)
+    expect(SOURCE).toMatch(/\.cp-tab1--active\s*\{[^}]*color: var\(--ok\);/)
   })
 })
 
@@ -243,11 +243,11 @@ describe('row 2: section tabs (fiche §3)', () => {
     expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*padding: 8px;/)
     expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*gap: 4px;/)
     expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*border-radius: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*font-size: var\(--fs-xs\);/)
+    expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*font-size: 12px;/)
   })
 
   test('row 2 sits on a bottom hairline, distinct from row 1', () => {
-    expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*border-bottom: 1px solid var\(--cs-line\);/)
+    expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*border-bottom: 1px solid var\(--line\);/)
   })
 })
 

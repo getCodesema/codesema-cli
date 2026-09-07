@@ -107,7 +107,7 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
   padding: 8px 12px 8px 14px;
   /* EVERY row carries a border, only its colour changes with the state, so
      the geometry never shifts between one row and the next. */
-  border: 1px solid var(--cs-line);
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 
@@ -118,19 +118,19 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
    by intensity, plus, for working, the living dot the activity line already
    renders. Painting all four would make a dense column read as a garland. */
 .cvr-root--attention {
-  border-color: var(--cs-amber-line);
+  border-color: var(--warn);
 }
 
 .cvr-root--ready {
-  border-color: var(--cs-green-ring);
+  border-color: var(--ok);
 }
 
 .cvr-root--active {
-  border-color: var(--cs-line-3);
+  border-color: var(--line);
 }
 
 .cvr-root--done {
-  border-color: var(--cs-line);
+  border-color: var(--line);
 }
 
 .cvr-meta,
@@ -143,25 +143,25 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
 }
 
 .cvr-meta {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   line-height: 12px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .cvr-title {
   margin-top: 2px;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   line-height: 20px;
   font-weight: 600;
   /* Row state (rest/hover/selected) governs the title's own weight and
      color from the wrapping button in rail/ConversationsList.vue: dimmed at
      rest, full on hover, reinforced when selected. */
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .cvr-activity {
   margin-top: 1px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   line-height: 16px;
   display: flex;
   align-items: center;
@@ -239,12 +239,12 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
   align-items: center;
   gap: 4px;
   padding: 1px 6px;
-  border: 1px solid var(--cs-line-2);
+  border: 1px solid var(--line);
   border-radius: 4px;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-muted);
-  background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);
+  color: var(--fg-dim);
+  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
   white-space: nowrap;
 }
 

@@ -92,7 +92,7 @@ describe('MediaViewer: dialog semantics', () => {
 })
 
 describe('MediaViewer: no hardcoded color leaks into the component', () => {
-  test('the scoped style block uses only --cs- tokens, no hex literal', () => {
+  test('the scoped style block uses only theme tokens, no hex literal', () => {
     const source = readFileSync(new URL('./MediaViewer.vue', import.meta.url), 'utf-8')
     const styleBlock = source.slice(source.indexOf('<style'), source.lastIndexOf('</style>'))
     expect(styleBlock).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)

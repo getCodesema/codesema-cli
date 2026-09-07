@@ -222,14 +222,14 @@ describe('chevron rotation and the filter separator geometry: CSS-pinned', () =>
 
   test('a selected row never gets a border, only an accent-soft fill and weight 500', () => {
     const on = SOURCE.slice(SOURCE.indexOf('.fcp-row--on {'), SOURCE.indexOf('.fcp-row-icon {'))
-    expect(on).toContain('background: var(--cs-green-soft);')
+    expect(on).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
     expect(on).toContain('font-weight: 500;')
     expect(on).not.toContain('border')
   })
 
   test('a row lights up on hover', () => {
     const hover = SOURCE.slice(SOURCE.indexOf('.fcp-row:hover {'), SOURCE.indexOf('.fcp-row--on {'))
-    expect(hover).toContain('background: var(--cs-hover);')
+    expect(hover).toContain('background: var(--bg-hover);')
   })
 })
 

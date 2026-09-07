@@ -28,11 +28,11 @@ const props = defineProps<{
   summary?: string | null
 }>()
 
-const RISK_DOT_DEFAULT = 'var(--codesema-risk-med)'
+const RISK_DOT_DEFAULT = 'var(--warn)'
 const RISK_DOT: Record<string, string> = {
-  high: 'var(--codesema-risk-high)',
+  high: 'var(--err)',
   medium: RISK_DOT_DEFAULT,
-  low: 'var(--codesema-risk-low)',
+  low: 'var(--ok)',
 }
 
 function riskDotColor(risk: string): string {
@@ -148,18 +148,18 @@ function renderInline(text: string): string {
 }
 
 .prologue-block-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--codesema-accent);
+  color: var(--accent);
   margin-bottom: 0;
 }
 
 .prologue-block-body {
-  font-size: var(--fs-lg);
+  font-size: 18px;
   line-height: 1.62;
-  color: var(--codesema-ink);
+  color: var(--fg);
   margin: 0;
   text-wrap: pretty;
 }
@@ -169,12 +169,12 @@ function renderInline(text: string): string {
 }
 
 :deep(.prologue-inline-code) {
-  font-family: var(--font-mono);
+  font-family: var(--font);
   font-size: 0.85em;
-  background: var(--codesema-line-2);
+  background: var(--line);
   padding: 1px 5px;
   border-radius: 4px;
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 .prologue-keys {
@@ -202,22 +202,22 @@ function renderInline(text: string): string {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--codesema-accent);
+  background: var(--accent);
 }
 
 .prologue-key-title {
   display: block;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: var(--codesema-ink);
+  color: var(--fg);
   line-height: 1.4;
 }
 
 .prologue-key-detail {
   display: block;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
+  font-size: var(--fs);
+  color: var(--fg-dim);
   line-height: 1.5;
   margin-top: 2px;
 }
@@ -249,31 +249,31 @@ function renderInline(text: string): string {
 
 .prologue-focus-title {
   display: block;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--codesema-ink);
+  color: var(--fg);
   line-height: 1.5;
 }
 
 .prologue-confidence {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   margin: 0;
 }
 
 .prologue-confidence--high {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .prologue-confidence--med {
-  color: var(--codesema-risk-med);
+  color: var(--warn);
 }
 
 .prologue-confidence--low {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .prologue-empty {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   padding: 16px 0;
   text-align: center;
 }

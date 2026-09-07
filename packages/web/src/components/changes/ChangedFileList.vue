@@ -171,16 +171,16 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 
 .cfl-state-text {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .cfl-spinner {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2.5px solid var(--cs-line-2);
-  border-top-color: var(--cs-green);
+  border: 2.5px solid var(--line);
+  border-top-color: var(--ok);
   animation: cfl-spin 0.8s linear infinite;
 }
 
@@ -193,13 +193,13 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 .cfl-error-icon {
   width: 20px;
   height: 20px;
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cfl-error-title {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
+  font-size: var(--fs);
+  color: var(--fg);
 }
 
 /* fiche §7: the error detail sits in a capped, scrollable frame instead of
@@ -212,11 +212,11 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   margin: 0;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-inset);
-  color: var(--cs-text-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg-dim);
+  font-family: var(--font);
+  font-size: 12px;
   white-space: pre-wrap;
   text-align: left;
 }
@@ -224,18 +224,18 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 .cfl-retry {
   padding: 6px 14px;
   border-radius: 8px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface-2);
-  color: var(--cs-text);
+  border: 1px solid var(--line);
+  background: var(--bg-hover);
+  color: var(--fg);
   font: inherit;
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 600;
   cursor: pointer;
-  transition: border-color var(--cs-duration-fast) var(--cs-ease-out);
+  transition: border-color 150ms ease;
 }
 
 .cfl-retry:hover {
-  border-color: var(--cs-line-3);
+  border-color: var(--line);
 }
 
 .cfl-summary {
@@ -246,24 +246,24 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  font-size: var(--fs-sm);
-  font-family: var(--font-mono);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+  font-size: 12px;
+  font-family: var(--font);
   font-variant-numeric: tabular-nums;
 }
 
 .cfl-summary-count {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   margin-right: auto;
 }
 
 .cfl-summary-add {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cfl-summary-del {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cfl-rows {
@@ -275,11 +275,11 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 .cfl-diff-error {
   margin: 0;
   padding: 12px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .cfl-diff-error {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 </style>

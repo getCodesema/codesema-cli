@@ -7,19 +7,19 @@ const RISK_META: Record<string, RiskMeta> = {
     label: 'reviews.riskHigh',
     textCls: 'step-risk--high',
     bgCls: 'step-risk-bg--high',
-    dotColor: 'var(--codesema-risk-high)',
+    dotColor: 'var(--err)',
   },
   medium: {
     label: 'reviews.riskMedium',
     textCls: 'step-risk--med',
     bgCls: 'step-risk-bg--med',
-    dotColor: 'var(--codesema-risk-med)',
+    dotColor: 'var(--warn)',
   },
   low: {
     label: 'reviews.riskLow',
     textCls: 'step-risk--low',
     bgCls: 'step-risk-bg--low',
-    dotColor: 'var(--codesema-risk-low)',
+    dotColor: 'var(--ok)',
   },
 }
 

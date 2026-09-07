@@ -95,7 +95,7 @@ describe('RepositoryTiles: the needs-you amber', () => {
 })
 
 describe('RepositoryTiles: design tokens', () => {
-  test('no hex literal color was introduced: every color is a --cs-* token', () => {
+  test('no hex literal color was introduced: every color is a theme tokens', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

@@ -71,14 +71,14 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 }
 
 .fa-head:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .fa-chevron {
   flex: none;
   width: 14px;
   height: 14px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   transition: transform 150ms ease;
 }
 
@@ -87,24 +87,24 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 }
 
 .fa-label {
-  font-size: var(--fs-base);
+  font-size: var(--fs);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .fa-count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-family: var(--font);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .fa-truncated {
   margin: -4px 0 0;
   padding-left: 18px;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .fa-controls {
