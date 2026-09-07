@@ -507,7 +507,7 @@ onMounted(load)
 }
 
 .cfg-title {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   color: var(--codesema-ink);
   margin: 0 0 24px;
@@ -520,17 +520,17 @@ onMounted(load)
   align-items: center;
   justify-content: center;
   gap: 14px;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .cfg-error {
   color: var(--codesema-risk-high);
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .cfg-retry {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 7px 14px;
@@ -565,14 +565,14 @@ onMounted(load)
 }
 
 .cfg-section-title {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--codesema-ink);
   margin: 0 0 6px;
 }
 
 .cfg-hint {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   margin: 0 0 14px;
 }
 
@@ -580,7 +580,7 @@ onMounted(load)
   width: 100%;
   min-height: 260px;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--codesema-ink);
   background: var(--codesema-bg);
@@ -600,7 +600,7 @@ onMounted(load)
 .cfg-select,
 .cfg-input {
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink);
   background: var(--codesema-bg);
   border: 1px solid var(--codesema-line);
@@ -629,7 +629,7 @@ onMounted(load)
 }
 
 .cfg-model-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--codesema-ink-2);
 }
@@ -641,7 +641,7 @@ onMounted(load)
 .cfg-save-btn,
 .cfg-toggle-btn {
   flex-shrink: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 7px 14px;

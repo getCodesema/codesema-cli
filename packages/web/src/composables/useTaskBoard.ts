@@ -5,7 +5,14 @@
 
 import { EXECUTION_STATUS } from '../execution-status'
 import { t, type MessageKey } from '../i18n'
-import type { TaskEvent, TaskEventData, TaskEventType, TaskRecord, TaskStatus } from '../types'
+import type {
+  TaskActivityPhase,
+  TaskEvent,
+  TaskEventData,
+  TaskEventType,
+  TaskRecord,
+  TaskStatus,
+} from '../types'
 import type { FindingSeverity } from './useDiff'
 
 /** The three status zones of the rail, in display order. */
@@ -258,6 +265,25 @@ export function statusPhraseKey(
 /** Queue-card flag: same split as `statusPhraseKey`, for the short label. */
 export function statusLabelKey(record: Pick<TaskRecord, 'status' | 'reason'>): MessageKey {
   return reviewKoKeys(record)?.label ?? EXECUTION_STATUS[record.status].labelKey
+}
+
+const ACTIVITY_PHRASE_KEY: Record<TaskActivityPhase, MessageKey> = {
+  checks: 'pilot.activity.checks',
+  verification: 'pilot.activity.verification',
+  proof: 'pilot.activity.proof',
+  review: 'pilot.activity.review',
+  recap: 'pilot.activity.recap',
+}
+
+/**
+ * What a task's agent is doing right now, when it is doing something worth
+ * naming (T? pilot activity phase): the header phrase for the phase in
+ * progress, or null when the record carries no activity at all. Takes over
+ * from `statusPhraseKey` whenever present, regardless of status: the recap
+ * phase runs after the status has already flipped to `review_ok`.
+ */
+export function activityPhraseKey(record: Pick<TaskRecord, 'activity'>): MessageKey | null {
+  return record.activity ? ACTIVITY_PHRASE_KEY[record.activity.phase] : null
 }
 
 /**
@@ -685,6 +711,7 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   prep: 'workspace.evPrep',
   criteria: 'workspace.evCriteria',
   merge: 'workspace.evMerge',
+  proof: 'workspace.evProof',
 }
 
 /** Semaphore tone of a journal line; review_done resolves from its verdict. */
@@ -733,6 +760,7 @@ const EVENT_TONE: Record<TaskEventType, EventTone> = {
   // lookup below — never red, since nothing failed: the work is committed,
   // the merge request is open, and what is missing is a decision or a fix.
   merge: 'idle',
+  proof: 'idle',
 }
 
 /**
@@ -919,6 +947,7 @@ const SUMMARY_KEYS: Record<TaskEventType, string[]> = {
   // unreachable — the translated 'workspace.evCriteria' label would be dead
   // code no journal line ever showed (§6 quater).
   criteria: [],
+  proof: [],
   // Unreachable, exactly like `resource` above, and NOT what protects this
   // type: `eventSummary` branches on `event.type === 'merge'` BEFORE it ever
   // indexes this table, so the entry — empty or not — is dead weight the
@@ -1093,6 +1122,18 @@ function criteriaEventText(data: TaskEventData): string {
   return key ? t(key) : t(EVENT_LABEL_KEY.criteria)
 }
 
+const PROOF_NAME_KEY: Record<string, MessageKey> = {
+  declared: 'workspace.evProofDeclared',
+  undeclared: 'workspace.evProofUndeclared',
+  unparsed: 'workspace.evProofUnparsed',
+}
+
+function proofEventText(data: TaskEventData): string {
+  const name = firstString(data, ['name'])
+  const key = name ? PROOF_NAME_KEY[name] : undefined
+  return key ? t(key) : t(EVENT_LABEL_KEY.proof)
+}
+
 /**
  * `data.name` of a 'shipped' event → its own translated line (T3.5, round 2
  * majeur 2). Posed ONLY when the ship landed short of the recap it was meant
@@ -1224,6 +1265,9 @@ export function eventSummary(event: TaskEvent): string {
   }
   if (event.type === 'criteria') {
     return clip(criteriaEventText(event.data))
+  }
+  if (event.type === 'proof') {
+    return clip(proofEventText(event.data))
   }
   if (event.type === 'shipped') {
     return clip(shippedEventText(event.data, label))

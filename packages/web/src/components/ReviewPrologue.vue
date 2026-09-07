@@ -148,7 +148,7 @@ function renderInline(text: string): string {
 }
 
 .prologue-block-tag {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -157,7 +157,7 @@ function renderInline(text: string): string {
 }
 
 .prologue-block-body {
-  font-size: 14.5px;
+  font-size: var(--fs-lg);
   line-height: 1.62;
   color: var(--codesema-ink);
   margin: 0;
@@ -207,7 +207,7 @@ function renderInline(text: string): string {
 
 .prologue-key-title {
   display: block;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--codesema-ink);
@@ -216,7 +216,7 @@ function renderInline(text: string): string {
 
 .prologue-key-detail {
   display: block;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--codesema-ink-2);
   line-height: 1.5;
   margin-top: 2px;
@@ -249,14 +249,14 @@ function renderInline(text: string): string {
 
 .prologue-focus-title {
   display: block;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--codesema-ink);
   line-height: 1.5;
 }
 
 .prologue-confidence {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   margin: 0;
 }
 
@@ -273,7 +273,7 @@ function renderInline(text: string): string {
 }
 
 .prologue-empty {
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 16px 0;
   text-align: center;
 }

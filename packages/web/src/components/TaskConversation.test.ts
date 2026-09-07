@@ -323,3 +323,36 @@ describe('the user turn renders markdown, like the assistant beside it', () => {
     expect(html).toContain('plain text')
   })
 })
+
+// The quick-reply buttons were extracted into their own component
+// (composer/QuickReplies.vue); this proves the wiring still holds end to
+// end — the parent still derives `quickReplies` from the active question and
+// still passes it down, rather than checking the rendering details already
+// covered by QuickReplies.test.ts.
+describe('TaskConversation wires the extracted QuickReplies component', () => {
+  const disjunctiveQuestion: TaskEvent = {
+    seq: 2,
+    at: '2026-08-30T09:00:00.000Z',
+    type: 'question',
+    data: { question: 'Do you want to use v2 or the optional field?' },
+  }
+
+  test('an active question with enumerated options renders the quick-reply buttons', async () => {
+    const html = await renderConversation({
+      record: { status: 'waiting_for_you' },
+      events: [disjunctiveQuestion],
+    })
+    expect(html).toContain('→ v2')
+    expect(html).toContain('→ the optional field')
+    expect(html).toContain(t('workspace.quickReplyOther'))
+  })
+
+  test('the same question renders no quick replies once the task is no longer waiting', async () => {
+    const html = await renderConversation({
+      record: { status: 'running' },
+      events: [disjunctiveQuestion, { ...turnStarted, seq: 3 }],
+    })
+    expect(html).not.toContain('→ v2')
+    expect(html).not.toContain(t('workspace.quickReplyOther'))
+  })
+})

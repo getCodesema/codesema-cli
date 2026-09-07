@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -9,6 +9,7 @@ import {
   type AcceptanceCriterion,
   type CriterionVerdict,
   type Finding,
+  type ProofReview,
   type ReviewRecord,
   type RunbookConfig,
   type TaskChecks,
@@ -35,6 +36,7 @@ import {
   type runSimpleFlow,
   type SimpleOutcome,
 } from './review.js'
+import { readTaskEvidence, writeTaskEvidence } from './task-evidence.js'
 import { DEFAULT_ISOLATION_ALLOWED_DOMAINS } from './task-isolation.js'
 import {
   actionableFindingIds,
@@ -221,6 +223,15 @@ function verificationOf(over: Partial<TaskVerification> = {}): TaskVerification 
     error: null,
     ...over,
   }
+}
+
+/** Writes the repo's `.codesema/config.json` with a `proof.url`, the D17 target readProofConfig needs to return non-null. */
+function writeProofConfig(repo: string): void {
+  mkdirSync(join(repo, '.codesema'), { recursive: true })
+  writeFileSync(
+    join(repo, '.codesema', 'config.json'),
+    JSON.stringify({ proof: { url: 'http://localhost:3000' } }),
+  )
 }
 
 /**
@@ -1619,6 +1630,213 @@ describe('createTaskReviewer: the checks chapter (D16)', () => {
   })
 })
 
+// --- D17: the visual proof chapter -----------------------------------------
+
+function fakeReviewWithProof(
+  verdict: Verdict,
+  findings: Finding[],
+  proofReview: ProofReview,
+): ReviewRecord {
+  const base = fakeReview(verdict, findings)
+  return { ...base, review: { ...base.review, proof_review: proofReview } }
+}
+
+describe('createTaskReviewer: the visual proof chapter (D17)', () => {
+  test('no proof configured: no chapter, and no evidence.json is ever touched', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'unconfigured proof task')
+    record.isolation = 'microvm'
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls[0]?.prompt ?? '').not.toContain('Visual proof')
+    expect(readTaskEvidence(repo, record.id)).toBeNull()
+  })
+
+  test('a non-microvm task never gets the chapter, even with proof configured', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'policy-isolated task')
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(flow.calls[0]?.prompt ?? '').not.toContain('Visual proof')
+  })
+
+  test('a microvm task with proof configured gets the chapter, naming the UI files and the grid', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'proof-eligible task')
+    record.isolation = 'microvm'
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).toContain('Visual proof (MANDATORY chapter)')
+    expect(prompt).toContain('UI files touched by this diff: App.vue')
+    expect(prompt).toContain('"proof_review"')
+    expect(prompt).toContain('declaration: the agent did not declare a proof this turn')
+    expect(prompt).toContain('proof produced: no proof for this commit')
+  })
+
+  test('evidence from a DIFFERENT head_sha than the reviewed record is never read', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'stale evidence task')
+    record.isolation = 'microvm'
+    record.head_sha = 'a'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'passed',
+      reason: null,
+      head_sha: 'b'.repeat(40),
+      items: [
+        {
+          kind: 'screenshot',
+          path: 'x.png',
+          bytes: 10,
+          turn: 1,
+          created_at: new Date().toISOString(),
+        },
+      ],
+    })
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const prompt = flow.calls[0]?.prompt ?? ''
+    expect(prompt).toContain('proof produced: no proof for this commit')
+    expect(prompt).not.toContain('x.png')
+  })
+
+  test('an incoherent proof_review with a design/major finding blocks the task via hasBlockingFindings, and evidence.json records the verdict for the matching head_sha', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'incoherent proof task')
+    record.isolation = 'microvm'
+    record.head_sha = 'c'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'skipped',
+      reason: 'undeclared, defaulted to none',
+      head_sha: 'c'.repeat(40),
+      items: [],
+    })
+    const rig = fakeIo(record)
+    const finding: Finding = {
+      file: 'App.vue',
+      line: 1,
+      severity: 'major',
+      kind: 'design',
+      message: 'the interface changed but no proof was captured for it',
+    }
+    const proofReview: ProofReview = {
+      expected: 'screenshot',
+      coherent: false,
+      reason: 'the diff shows a visible UI change with no captured proof',
+    }
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithProof('approve', [finding], proofReview),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ko')
+    const evidence = readTaskEvidence(repo, record.id)
+    expect(evidence?.review).toEqual(proofReview)
+  })
+
+  test('a coherent proof_review with no finding never blocks, and still records the verdict', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'coherent proof task')
+    record.isolation = 'microvm'
+    record.head_sha = 'd'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'skipped',
+      reason: 'no visible effect',
+      head_sha: 'd'.repeat(40),
+      items: [],
+    })
+    const rig = fakeIo(record)
+    const proofReview: ProofReview = {
+      expected: 'none',
+      coherent: true,
+      reason: 'a pure refactor with no rendered difference',
+    }
+    const flow = fakeSimpleFlow({
+      ok: true,
+      record: fakeReviewWithProof('approve', [], proofReview),
+      reportLines: [],
+    })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(record.status).toBe('review_ok')
+    const evidence = readTaskEvidence(repo, record.id)
+    expect(evidence?.review).toEqual(proofReview)
+  })
+
+  test('the chapter was injected but the reviewer JSON carries no proof_review: journaled, never invented', async () => {
+    const repo = makeRepo()
+    writeProofConfig(repo)
+    const record = await makeTaskWithWorktree(repo, 'silent proof task')
+    record.isolation = 'microvm'
+    record.head_sha = 'e'.repeat(40)
+    saveTask(repo, record)
+    commitChange(record.worktree, 'App.vue')
+    writeTaskEvidence(repo, record.id, {
+      version: 1,
+      status: 'skipped',
+      reason: 'no visible effect',
+      head_sha: 'e'.repeat(40),
+      items: [],
+    })
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    const proofEvents = rig.events.filter((event) => event.type === 'proof')
+    expect(proofEvents).toHaveLength(1)
+    expect(proofEvents[0]?.data).toMatchObject({ name: 'review_missing' })
+    expect(readTaskEvidence(repo, record.id)?.review).toBeUndefined()
+  })
+
+  test('no chapter was injected: a missing proof_review is never journaled', async () => {
+    const repo = makeRepo()
+    const record = await makeTaskWithWorktree(repo, 'no chapter, no proof event task')
+    commitChange(record.worktree, 'App.vue')
+    const rig = fakeIo(record)
+    const flow = fakeSimpleFlow({ ok: true, record: fakeReview('approve'), reportLines: [] })
+
+    await reviewer(repo, { runSimpleFlowFn: flow.fn })(record, rig.io)
+
+    expect(rig.events.some((event) => event.type === 'proof')).toBe(false)
+  })
+})
+
 // --- D17: mechanical criteria decided without the reviewer ------------------
 
 describe('createTaskReviewer: mechanical criteria (D17)', () => {
@@ -2586,6 +2804,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     const stdout = await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2614,6 +2833,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2633,6 +2853,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2653,6 +2874,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2672,6 +2894,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2693,6 +2916,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2721,6 +2945,7 @@ describe('runMicrovmReview', () => {
     const fake2 = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake1.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2731,6 +2956,7 @@ describe('runMicrovmReview', () => {
       timeoutMs: 5000,
     })
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake2.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2753,6 +2979,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2789,6 +3016,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2818,6 +3046,7 @@ describe('runMicrovmReview', () => {
 
     await expect(
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2847,6 +3076,7 @@ describe('runMicrovmReview', () => {
     })
 
     const stdout = await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2871,6 +3101,7 @@ describe('runMicrovmReview', () => {
 
     await Promise.all([
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2882,6 +3113,7 @@ describe('runMicrovmReview', () => {
         taskId: 'task-shared',
       }),
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2909,6 +3141,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver()
 
     await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2928,6 +3161,7 @@ describe('runMicrovmReview', () => {
     const fake = fakeMicrovmDriver({ destroyError: new Error('sandbox already gone') })
 
     const stdout = await runMicrovmReview({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
       driver: fake.driver,
       worktree: repo,
       projectId: 'proj-1',
@@ -2951,6 +3185,7 @@ describe('runMicrovmReview', () => {
 
     await expect(
       runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2970,6 +3205,7 @@ describe('runMicrovmReview', () => {
       const fake = fakeMicrovmDriver({ probeMissingFor: 'opencode' })
 
       await runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
         driver: fake.driver,
         worktree: repo,
         projectId: 'proj-1',
@@ -2994,6 +3230,7 @@ describe('runMicrovmReview', () => {
 
       await expect(
         runMicrovmReview({
+          env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
           driver: fake.driver,
           worktree: repo,
           projectId: 'proj-1',
@@ -3007,6 +3244,100 @@ describe('runMicrovmReview', () => {
       ).rejects.toThrow(/not installed in this microVM/)
 
       expect(fake.calls.some((c) => String(c.args[0]).includes('npm install -g'))).toBe(false)
+    })
+  })
+
+  describe('agent credentials', () => {
+    function makeCredentialsFile(content = '{"token":"secret-token-value"}'): string {
+      const dir = mkdtempSync(join(tmpdir(), 'codesema-review-creds-'))
+      cleanups.push(dir)
+      writeFileSync(join(dir, 'credentials.json'), content)
+      return join(dir, 'credentials.json')
+    }
+
+    test('no oauth token, credentials file present: written into the review VM, chmod 600, chowned, never in a shell command', async () => {
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver()
+      const credentialsPath = makeCredentialsFile('{"token":"secret-token-value"}')
+
+      await runMicrovmReview({
+        env: {},
+        credentialsPath,
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      })
+
+      const write = fake.calls.find((c) => c.method === 'writeFile')
+      expect(write?.args).toEqual([
+        '/home/agent/.claude/.credentials.json',
+        '{"token":"secret-token-value"}',
+      ])
+      const chmodChown = fake.calls.find(
+        (c) => c.method === 'shell' && String(c.args[0]).includes('chmod 600'),
+      )
+      expect(chmodChown?.args[0]).toBe(
+        'chmod 600 /home/agent/.claude/.credentials.json && chown -R agent:agent /home/agent/.claude',
+      )
+      expect((chmodChown?.args[1] as { user?: string } | undefined)?.user).toBe('root')
+      for (const call of fake.calls) {
+        if (call.method === 'shell') {
+          expect(String(call.args[0])).not.toContain('secret-token-value')
+        }
+      }
+    })
+
+    test('CLAUDE_CODE_OAUTH_TOKEN present: nothing is copied into the review VM', async () => {
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver()
+      const credentialsPath = makeCredentialsFile()
+
+      await runMicrovmReview({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'tok-secret' },
+        credentialsPath,
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      })
+
+      expect(fake.calls.some((c) => c.method === 'writeFile')).toBe(false)
+    })
+
+    test('no credentials file on the host: no write, no error', async () => {
+      const missingDir = mkdtempSync(join(tmpdir(), 'codesema-review-creds-'))
+      cleanups.push(missingDir)
+      const missingPath = join(missingDir, 'nope.json')
+      const repo = makeRepo()
+      const fake = fakeMicrovmDriver()
+
+      const stdout = await runMicrovmReview({
+        env: {},
+        credentialsPath: missingPath,
+        driver: fake.driver,
+        worktree: repo,
+        projectId: 'proj-1',
+        snapshotName: null,
+        image: 'node:26',
+        command: 'claude -p',
+        prompt: 'p',
+        timeoutMs: 5000,
+        taskId: 'task-abc',
+      })
+
+      expect(stdout).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
+      expect(fake.calls.some((c) => c.method === 'writeFile')).toBe(false)
     })
   })
 })
@@ -3050,7 +3381,21 @@ describe('createTaskReviewer: microvm wiring', () => {
 
     // Calling it drives the fake driver exactly as `runMicrovmReview` alone
     // does — the wiring built by `createTaskReviewer`, exercised end to end.
-    const raw = await runAgentInVm?.('hand-built prompt')
+    // This call site (task-review.ts's own runAgentInVm closure) has no env
+    // seam, so it falls through to the real process.env: pinned here so
+    // ensureAgentCredentials never touches this machine's real credentials.
+    const previousToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'tok-secret'
+    let raw: string | undefined
+    try {
+      raw = await runAgentInVm?.('hand-built prompt')
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      } else {
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = previousToken
+      }
+    }
     expect(raw).toBe('{"verdict":"approve","summary":"ok","findings":[]}')
     expect(fake.specs[0]?.name).toMatch(new RegExp(`^codesema-review-${record.id}-[0-9a-f]{8}$`))
     expect(fake.calls.map((c) => c.method)).toEqual([

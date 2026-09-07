@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test'
 import { EXECUTION_STATUS } from '../execution-status'
 import type { TaskEvent, TaskEventType, TaskRecord, TaskStatus } from '../types'
 import {
+  activityPhraseKey,
   agentCounts,
   applyLiveText,
   clockTime,
@@ -325,6 +326,40 @@ describe('statusPhraseKey / statusLabelKey (T3.1 checks_failed)', () => {
   })
 })
 
+describe('activityPhraseKey', () => {
+  test('no activity on the record yields null', () => {
+    expect(activityPhraseKey(record({ status: 'running' }))).toBeNull()
+  })
+
+  test('each activity phase resolves its own phrase key', () => {
+    const cases = [
+      ['checks', 'pilot.activity.checks'],
+      ['verification', 'pilot.activity.verification'],
+      ['proof', 'pilot.activity.proof'],
+      ['review', 'pilot.activity.review'],
+      ['recap', 'pilot.activity.recap'],
+    ] as const
+    for (const [phase, key] of cases) {
+      const withActivity = record({
+        status: 'running',
+        activity: { phase, since: '2026-08-30T08:00:00.000Z' },
+      })
+      expect(activityPhraseKey(withActivity)).toBe(key)
+    }
+  })
+
+  // Decision: the phase phrase is shown as soon as activity is present,
+  // whatever the status: the recap phase runs AFTER the status has already
+  // flipped to review_ok.
+  test('an activity present on review_ok still resolves its phrase key', () => {
+    const reviewOk = record({
+      status: 'review_ok',
+      activity: { phase: 'recap', since: '2026-08-30T08:00:00.000Z' },
+    })
+    expect(activityPhraseKey(reviewOk)).toBe('pilot.activity.recap')
+  })
+})
+
 // T3.6 adversarial review, MAJEUR 1, second half. The i18n phrase names the
 // blocker; only `reason.detail` names the way OUT (DP1) — and nothing in the
 // web rendered that field at all, on any component, for any status.
@@ -602,7 +637,7 @@ describe('eventSummary', () => {
           },
         }),
       ),
-    ).toBe('No container runtime — HOME volume could not be released')
+    ).toBe('No container runtime: HOME volume could not be released')
   })
 
   test('resource: an unrecognized (or absent) name falls back to the localized type label, never to data.message', () => {
@@ -720,7 +755,7 @@ describe('eventSummary', () => {
         }),
       )
       expect(summary).toBe(
-        'Ticket edited on the forge — sections: goal, out of scope; criteria added: AC-4, AC-5; removed: AC-1',
+        'Ticket edited on the forge · sections: goal, out of scope; criteria added: AC-4, AC-5; removed: AC-1',
       )
       // Belt and braces on the swap specifically: the added ids come BEFORE
       // the removed one, and neither list leaks into the other's slot.
@@ -737,7 +772,7 @@ describe('eventSummary', () => {
             data: { name: 'edited', sections: 'context', criteria_added: '', criteria_removed: '' },
           }),
         ),
-      ).toBe('Ticket edited on the forge — sections: context; criteria added: none; removed: none')
+      ).toBe('Ticket edited on the forge · sections: context; criteria added: none; removed: none')
       // A snapshot with no per-section breakdown: the body hash PROVED
       // something moved, so "none" here would state the opposite of the truth.
       const unknown = eventSummary(

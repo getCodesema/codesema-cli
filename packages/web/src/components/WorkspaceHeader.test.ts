@@ -140,6 +140,15 @@ describe('and stays silent when there is nothing to state', () => {
   })
 })
 
+describe('the pilot shell toggle sits with the other header actions', () => {
+  test('a discreet button offers the grid shell, always visible', async () => {
+    const html = await renderHeader(info({}))
+    const match = html.match(/<button[^>]*class="wh-pilot-toggle"[^>]*>/)
+    expect(match).not.toBeNull()
+    expect(html).toContain(t('pilot.toggle.grid'))
+  })
+})
+
 describe('forgeUnavailableKey — the mapping the badge reads', () => {
   test('null for available and for unknown; a key only for an explicit false', () => {
     expect(forgeUnavailableKey(null)).toBeNull()

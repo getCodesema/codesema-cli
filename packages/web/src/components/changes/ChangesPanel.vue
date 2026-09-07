@@ -473,7 +473,7 @@ function refreshFiles(): void {
   background: none;
   color: var(--cs-text-2);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: default;
 }
 
@@ -523,7 +523,7 @@ function refreshFiles(): void {
   gap: 8px;
   padding: 16px 12px;
   border-bottom: 1px solid var(--cs-line);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
 }
 
@@ -636,7 +636,7 @@ function refreshFiles(): void {
 
 .cp-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   line-height: 1.3;
   color: var(--cs-text);
@@ -652,7 +652,7 @@ function refreshFiles(): void {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-muted);
 }
 
@@ -697,7 +697,7 @@ function refreshFiles(): void {
   background: none;
   color: var(--cs-muted);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   transition: background var(--cs-duration-fast) var(--cs-ease-out);
 }
@@ -744,7 +744,7 @@ function refreshFiles(): void {
   margin: 0;
   padding: 32px 16px;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 </style>

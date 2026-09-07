@@ -123,8 +123,8 @@ describe('TaskEventUser geometry matches fiche 12 section 2, exactly', () => {
     expect(style).toContain('width: fit-content;')
   })
 
-  test('14px body on a 24px line height ("corps 14/24 px")', () => {
-    expect(style).toContain('font-size: 14px;')
+  test('base size token on a 24px line height ("corps 14/24 px")', () => {
+    expect(style).toContain('font-size: var(--fs-base);')
     expect(style).toContain('line-height: 24px;')
   })
 

@@ -3,6 +3,34 @@
 All notable changes to `codesema` (the npm package in `packages/cli`) are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org).
 
+## [0.21.0] - unreleased
+
+### Added
+
+- **The pilot grid is now the default workspace shell**, with the previous interface reachable behind a toggle and a mobile layout below 760px.
+- **Decision D17: a turn's visual proof of its own effect is now part of the review.** A `microvm` task can declare and capture a screenshot or a Playwright journey each turn (`proof` in `.codesema/config.json`, a `PROOF: <none|screenshot|journey>` line in the agent's reply); the reviewer checks the declaration against the diff and raises a finding only on an unproven visible change or an unexplained failed proof.
+- **`codesema runbook validate`** validates a hand-edited `.codesema/runbook.json` as-is, without asking an agent for a new proposal.
+- **The runbook can declare background services**, started in the verification VM ahead of its healthchecks and tests.
+- **A task now carries its own activity**: the phase a turn is currently in is broadcast live and shown on its card and in the evidence block.
+- **A turn now emits its recap the moment it ends, and a finished task without one gets it computed on read**, with the microvm verification surfaced alongside it.
+
+### Changed
+
+- **A task card stacks its four blocks in one column** (evidence, recap, checks, criteria) instead of a two-by-two grid.
+- **Every font size in the web UI is now one of seven `--fs-*` tokens declared once in `style.css`**, in rem, replacing 500 hard-coded px values; the dense sizes moved up (nothing below 11px, read text at 14px), and the tests refuse any new px font size in a component.
+- **Every screenshot and video in the evidence block opens a full-screen viewer** with wheel, button and keyboard zoom, click-to-zoom and drag-to-pan, closed by Escape.
+- **A widened lane, the full view and the mobile pane now share one chat-shaped thread** (`PilotThread`): the journal reads as a conversation, with the criteria, checks, evidence and recap blocks anchored where the run produced them instead of stacked at the end.
+- **Task events hydrate both the card and the expanded view**, instead of only one of the two.
+- **Checks hydrate the same way, and task cards gained their own actions.**
+
+### Fixed
+
+- **A task thread now opens scrolled to its latest message**, and keeps following new ones until the reader scrolls up.
+- **A task card that is not the expanded lane now scrolls** between its header and its footer instead of clipping its blocks.
+- **The lens now frames the zoomed block in an opaque panel** with a bounded width and its own scroll, instead of floating it bare over the veil.
+- **Claude credentials are now seeded into microvm turns and reviews**, closing the gap where either ran without them.
+- **Evidence file URLs are now scoped to their project**, so one project can no longer read another's captures.
+
 ## [0.20.0] - 2026-08-28
 
 ### Added

@@ -580,7 +580,7 @@ watch(
 }
 
 .diff-seg button {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 5px 10px;
   border-radius: 7px;
   color: var(--codesema-ink-2);
@@ -625,7 +625,7 @@ watch(
   background: var(--codesema-line-2);
   border-bottom: 1px solid var(--codesema-line);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   user-select: none;
 }
 
@@ -635,7 +635,7 @@ watch(
 
 .srd-chev {
   color: var(--codesema-ink-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   transition: transform 0.15s;
   display: inline-block;
   flex-shrink: 0;
@@ -647,7 +647,7 @@ watch(
 
 .srd-path {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -659,14 +659,14 @@ watch(
 }
 
 .srd-cmt {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--codesema-ink-3);
   flex-shrink: 0;
 }
 
 .srd-delta {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -688,7 +688,7 @@ watch(
 /* file body */
 .srd-body {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   overflow-x: auto;
 }
@@ -698,7 +698,7 @@ watch(
   background: var(--codesema-line-2);
   color: var(--codesema-ink-3);
   padding: 5px 16px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   border-bottom: 1px solid var(--codesema-line);
   display: flex;
   align-items: center;
@@ -829,7 +829,7 @@ watch(
   padding: 0 8px;
   color: var(--codesema-ink-3);
   user-select: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: inherit;
 }
 
@@ -896,7 +896,7 @@ watch(
   background: var(--codesema-accent);
   color: #fff;
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -906,13 +906,13 @@ watch(
 }
 
 .nlr-name {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--codesema-ink);
 }
 
 .nlr-kind {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -924,7 +924,7 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -960,14 +960,14 @@ watch(
 }
 
 .nlr-note-title {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   margin: 0 0 3px 0;
   color: var(--codesema-ink);
 }
 
 .nlr-note-body {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   color: var(--codesema-ink-2);
   margin: 0;
@@ -1020,7 +1020,7 @@ watch(
   background: var(--codesema-risk-low-soft);
   color: var(--codesema-risk-low);
   padding: 6px 11px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   font-family: var(--font-sans);
 }
@@ -1030,7 +1030,7 @@ watch(
   padding: 10px 12px;
   background: var(--codesema-line-2);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--codesema-ink);
   white-space: pre-wrap;
@@ -1047,7 +1047,7 @@ watch(
 /* mobile density (<= 640px) */
 @media (max-width: 640px) {
   .srd-body {
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
   }
   .srd-no {
     width: 30px;

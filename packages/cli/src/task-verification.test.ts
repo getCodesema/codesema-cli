@@ -375,7 +375,7 @@ describe('verifyTask', () => {
     const repo = makeRepo()
     const sha = commitSha(repo)
     const { driver, calls } = fakeDriver((command) =>
-      command === 'docker compose up -d' ? ok({ code: 1 }) : ok(),
+      command.includes('nohup') ? ok({ code: 1 }) : ok(),
     )
     const result = await verifyTask({
       driver,
@@ -395,6 +395,54 @@ describe('verifyTask', () => {
     expect(result.status).toBe('error')
     expect(result.error).toContain('docker compose up -d')
     expect(calls.filter((c) => c.method === 'shell')).toHaveLength(1)
+  })
+
+  test('a service is launched in the background with nohup, one shell call per service', async () => {
+    const repo = makeRepo()
+    const sha = commitSha(repo)
+    const { driver, calls } = fakeDriver(() => ok())
+    const result = await verifyTask({
+      driver,
+      worktree: repo,
+      projectId: 'p1',
+      taskId: 't1',
+      headSha: 'headsha1',
+      runbook: baseRunbook({
+        services: { host_up: ['npm start'], compose_file: null },
+      }),
+      runbookSha: '0123456789abcdef',
+      validatedSha: sha,
+      snapshotName: 'codesema-p1-hash',
+      timeoutMs: 5000,
+    })
+    expect(result.status).toBe('passed')
+    const shellCommands = calls.filter((c) => c.method === 'shell').map((c) => c.args[0])
+    expect(shellCommands[0]).toContain('nohup')
+    expect(shellCommands[0]).toContain('/tmp/codesema-service-0.log')
+  })
+
+  test('a single quote in the service command is escaped in the background script', async () => {
+    const repo = makeRepo()
+    const sha = commitSha(repo)
+    const { driver, calls } = fakeDriver(() => ok())
+    await verifyTask({
+      driver,
+      worktree: repo,
+      projectId: 'p1',
+      taskId: 't1',
+      headSha: 'headsha1',
+      runbook: baseRunbook({
+        services: { host_up: ["echo it's up"], compose_file: null },
+      }),
+      runbookSha: '0123456789abcdef',
+      validatedSha: sha,
+      snapshotName: 'codesema-p1-hash',
+      timeoutMs: 5000,
+    })
+    const shellCommands = calls.filter((c) => c.method === 'shell').map((c) => c.args[0])
+    expect(shellCommands[0]).toBe(
+      "nohup sh -c 'echo it'\\''s up' > /tmp/codesema-service-0.log 2>&1 &",
+    )
   })
 
   test('the sandbox is created with the exact sandboxName for the task, never a generic one', async () => {
@@ -476,6 +524,81 @@ describe('verifyTask', () => {
     })
     const destroy = calls.find((c) => c.method === 'destroy')
     expect(destroy?.args[0]).toBe('codesema-verify-t1')
+  })
+
+  test('captureProof runs after healthchecks pass and before runbook.tests', async () => {
+    const repo = makeRepo()
+    const sha = commitSha(repo)
+    const { driver, calls } = fakeDriver(() => ok())
+    const result = await verifyTask({
+      driver,
+      worktree: repo,
+      projectId: 'p1',
+      taskId: 't1',
+      headSha: 'headsha1',
+      runbook: baseRunbook({ healthchecks: ['curl -f http://localhost:3000'] }),
+      runbookSha: '0123456789abcdef',
+      validatedSha: sha,
+      snapshotName: 'codesema-p1-hash',
+      timeoutMs: 5000,
+      captureProof: async (handle) => {
+        await handle.shell('proof-marker', { timeoutMs: 1000, cwd: '/work' })
+      },
+    })
+    expect(result.status).toBe('passed')
+    const shellCommands = calls.filter((c) => c.method === 'shell').map((c) => c.args[0])
+    expect(shellCommands).toEqual(['curl -f http://localhost:3000', 'proof-marker', 'npm test'])
+  })
+
+  test('captureProof is not called when healthchecks never pass', async () => {
+    const repo = makeRepo()
+    const sha = commitSha(repo)
+    const { driver } = fakeDriver((command) =>
+      command === 'curl -f http://localhost:3000' ? ok({ code: 1, stderr: 'not up' }) : ok(),
+    )
+    let called = false
+    const result = await verifyTask({
+      driver,
+      worktree: repo,
+      projectId: 'p1',
+      taskId: 't1',
+      headSha: 'headsha1',
+      runbook: baseRunbook({ healthchecks: ['curl -f http://localhost:3000'] }),
+      runbookSha: '0123456789abcdef',
+      validatedSha: sha,
+      snapshotName: 'codesema-p1-hash',
+      timeoutMs: 5000,
+      healthcheckDeadlineMs: 10,
+      healthcheckRetryDelayMs: 1,
+      captureProof: async () => {
+        called = true
+      },
+    })
+    expect(result.status).toBe('error')
+    expect(called).toBe(false)
+  })
+
+  test('an exception from captureProof is swallowed and never changes the verdict', async () => {
+    const repo = makeRepo()
+    const sha = commitSha(repo)
+    const { driver } = fakeDriver(() => ok())
+    const result = await verifyTask({
+      driver,
+      worktree: repo,
+      projectId: 'p1',
+      taskId: 't1',
+      headSha: 'headsha1',
+      runbook: baseRunbook(),
+      runbookSha: '0123456789abcdef',
+      validatedSha: sha,
+      snapshotName: 'codesema-p1-hash',
+      timeoutMs: 5000,
+      captureProof: async () => {
+        throw new Error('proof capture boom')
+      },
+    })
+    expect(result.status).toBe('passed')
+    expect(result.checks).toHaveLength(1)
   })
 
   test('carries head_sha and runbook_sha through, on every status', async () => {

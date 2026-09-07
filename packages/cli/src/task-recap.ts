@@ -34,6 +34,8 @@ import {
   type TaskRecord,
 } from './contract.js'
 import { tryGit } from './git.js'
+import { readTaskReview } from './task-review.js'
+import { taskCriteria } from './task-runner.js'
 import { readTaskChecks, readTaskEvents, taskDir } from './tasks-store.js'
 
 /** Model's own draft of the recap: read for exactly these three keys, structurally nothing else (see module doc). */
@@ -268,6 +270,51 @@ function buildModelFields(opts: GenerateRecapOptions): {
       ? model.decisions.filter((d): d is string => typeof d === 'string')
       : []
   return { summary, changes, decisions }
+}
+
+/**
+ * The agent's own last turn response, as `modelOutput.summary`: the same
+ * read task-ship.ts's `lastTurnContribution` does for the ship path,
+ * duplicated here rather than shared across that module boundary. The
+ * caller this ticket adds (task-server.ts's end-of-turn recap) has no other
+ * prose source and does not spend an extra model turn getting one: a
+ * deterministic recap without `changes[]`/`decisions[]` is what it produces
+ * instead. `Array.isArray`, not a bare `.findLast`: a hand-edited or
+ * truncated task.json can carry a record without `turns`, and this must
+ * degrade, not throw.
+ */
+export function lastTurnResponse(task: TaskRecord): RecapModelContribution | null {
+  const turns = Array.isArray(task.turns) ? task.turns : []
+  const summary = turns.findLast((turn) => turn?.response)?.response
+  return summary ? { summary } : null
+}
+
+/**
+ * `GenerateRecapOptions` for a recap built OUTSIDE the ship: task-server.ts's
+ * end-of-turn write, and the recap route's read-time fallback for a task
+ * that finished its turn before either existed. Both need the SAME
+ * criteria/model inputs, so this is the one place that builds them,
+ * `criteriaVerdicts`/`acceptanceCriteria` read `taskCriteria` and the
+ * review archive the same way task-ship.ts's own `criteriaForRecap` does for
+ * the ship path (duplicated there rather than shared across that module
+ * boundary, unchanged by this ticket).
+ */
+export function recapOptionsFor(
+  cwd: string,
+  task: TaskRecord,
+  readTaskReviewFn: typeof readTaskReview = readTaskReview,
+): GenerateRecapOptions {
+  const criteria = taskCriteria(task)
+  const criteriaVerdicts = readTaskReviewFn(cwd, task.id)?.review.criteria
+  const modelOutput = lastTurnResponse(task)
+  return {
+    cwd,
+    task,
+    ...(modelOutput ? { modelOutput } : {}),
+    ...(criteria.length > 0 && criteriaVerdicts
+      ? { criteriaVerdicts, acceptanceCriteria: criteria }
+      : {}),
+  }
 }
 
 /**

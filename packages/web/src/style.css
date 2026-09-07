@@ -75,6 +75,14 @@
   --font-display:
     'Instrument Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --fs-xs: 0.6875rem;
+  --fs-sm: 0.75rem;
+  --fs-base: 0.875rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.25rem;
+  --fs-2xl: 1.5rem;
+  --fs-3xl: 1.75rem;
 }
 
 * {
@@ -88,15 +96,20 @@ body {
   background: var(--codesema-bg);
   color: var(--codesema-ink);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* The --fs-* tokens are rem, so html must keep the browser default size;
+   only body sets the working size. */
+body {
   /* 14px on 21.7px. Both halves matter and the second one is the one that
      gets forgotten: a dense working screen reads at 14px, but its air comes
      from the 1.55 leading, not from the size. Left to the browser this was
      16px on roughly 1.2, which is simultaneously too big and too tight.
      Anything without a font-size of its own inherits from here. */
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.55;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
 .codesema-muted {

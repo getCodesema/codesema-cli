@@ -422,17 +422,17 @@ describe('the T3.3 fix-loop exit, read in French', () => {
     for (const line of [findings, criteria]) {
       expect(line?.phrase).toContain('budget de correction complet')
       // The sentence that would be a lie: nobody asked anything.
-      expect(line?.phrase).not.toBe('en pause — attend votre réponse')
+      expect(line?.phrase).not.toBe('en pause · attend votre réponse')
       // ...and not the English server detail either.
       expect(line?.phrase).not.toContain('leaks a descriptor')
       expect(line?.phrase).not.toContain('acceptance criteria')
     }
-    expect(asking?.phrase).toBe('en pause — attend votre réponse')
+    expect(asking?.phrase).toBe('en pause · attend votre réponse')
     expect(asking?.label).toBe('Besoin de toi')
     // The whole point of the split, in the language a human actually reads:
     // the parked task and the blocked review do NOT say the same thing.
     expect(blockedReview?.label).toBe('Review bloquée')
-    expect(blockedReview?.phrase).toBe('review bloquée — findings à corriger')
+    expect(blockedReview?.phrase).toBe('review bloquée · findings à corriger')
     expect(blockedReview?.label).not.toBe(findings?.label)
     expect(blockedReview?.phrase).not.toBe(findings?.phrase)
   })
@@ -588,20 +588,20 @@ describe('the T3.6 merge refusal, read in French on the card', () => {
       { status: 'waiting_for_you' },
     ])
     expect(unavailable?.label).toBe('Checks indisponibles')
-    expect(unavailable?.phrase).toBe("fusion suspendue — les checks n'ont pas pu être exécutés")
+    expect(unavailable?.phrase).toBe("fusion suspendue · les checks n'ont pas pu être exécutés")
     expect(missing?.label).toBe('Critères manquants')
-    expect(missing?.phrase).toBe("fusion suspendue — aucun critère d'acceptation validé")
+    expect(missing?.phrase).toBe("fusion suspendue · aucun critère d'acceptation validé")
     // The two codes DP1/DP2 minted precisely so they would not be confused
     // with their neighbours: "checks failed" and "criteria not met" are the
     // opposite statements, and neither may be shown here.
     expect(unavailable?.label).not.toBe('Checks en échec')
     expect(missing?.label).not.toBe('Critères non satisfaits')
     for (const line of [unavailable, missing]) {
-      expect(line?.phrase).not.toBe('en pause — attend votre réponse')
+      expect(line?.phrase).not.toBe('en pause · attend votre réponse')
       expect(line?.phrase).not.toContain('repository')
       expect(line?.phrase).not.toContain('acceptance criterion')
     }
-    expect(asking?.phrase).toBe('en pause — attend votre réponse')
+    expect(asking?.phrase).toBe('en pause · attend votre réponse')
   })
 
   // Adversarial review of T3.6, MAJEUR 1: the gate posts SIX codes on
@@ -635,18 +635,18 @@ describe('the T3.6 merge refusal, read in French on the card', () => {
       },
     ])
     expect(conflict?.label).toBe('Conflit de fusion')
-    expect(conflict?.phrase).toBe('fusion suspendue — la branche est en conflit avec sa cible')
+    expect(conflict?.phrase).toBe('fusion suspendue · la branche est en conflit avec sa cible')
     expect(forge?.label).toBe('Forge injoignable')
-    expect(forge?.phrase).toBe("fusion suspendue — la forge n'a pas effectué la fusion")
+    expect(forge?.phrase).toBe("fusion suspendue · la forge n'a pas effectué la fusion")
     expect(diverged?.label).toBe('Branche pas à jour')
-    expect(diverged?.phrase).toBe("fusion suspendue — la branche n'est pas à jour avec sa cible")
+    expect(diverged?.phrase).toBe("fusion suspendue · la branche n'est pas à jour avec sa cible")
     // Same code as a blocked review, and deliberately NOT its sentence: the
     // review passed, it is the merge that is held.
     expect(checks?.label).toBe('Fusion suspendue')
-    expect(checks?.phrase).toBe('fusion suspendue — les checks du dépôt ont échoué')
-    expect(checks?.phrase).not.toBe('review bloquée — checks en échec')
+    expect(checks?.phrase).toBe('fusion suspendue · les checks du dépôt ont échoué')
+    expect(checks?.phrase).not.toBe('review bloquée · checks en échec')
     for (const line of [conflict, forge, diverged, checks]) {
-      expect(line?.phrase).not.toBe('en pause — attend votre réponse')
+      expect(line?.phrase).not.toBe('en pause · attend votre réponse')
       expect(line?.label).not.toBe('Besoin de toi')
       // Real French, not the English catalog leaking through a missing key.
       expect(line?.phrase).not.toContain('merge held')

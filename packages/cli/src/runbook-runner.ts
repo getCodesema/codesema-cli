@@ -30,8 +30,12 @@ import {
 } from './microsandbox-driver.js'
 import { buildProjectSnapshot, type ProjectSnapshot } from './microvm-snapshot.js'
 import { MICROVM_TURN_DEFAULTS, runMicrovmTurn } from './microvm-turn.js'
+import { SERVICE_LAUNCH_TIMEOUT_MS, serviceLaunchScript } from './runbook-services.js'
 import {
   buildRunbookSetupPrompt,
+  runbookSha as computeRunbookSha,
+  readRunbookConfig,
+  RUNBOOK_FILE,
   sanitizeRunbookProposal,
   writeRunbookConfig,
   writeRunbookValidation,
@@ -58,9 +62,6 @@ export const RUNBOOK_SCAN_LEASE_SECONDS = 900
 
 /** How often a healthcheck is retried before the attempt's shared deadline. */
 export const RUNBOOK_HEALTHCHECK_RETRY_MS = 2_000
-
-/** Wall-clock budget for launching one background service (the launcher itself, not the service). */
-const SERVICE_LAUNCH_TIMEOUT_MS = 15_000
 
 /** Absolute ceiling on a scan's own VM lease, whatever the runbook's command count computes to. */
 const EXECUTION_MAX_DURATION_SECONDS_CAP = 6 * 3600
@@ -99,11 +100,6 @@ function defaultRenewSleep(ms: number, signal: AbortSignal): Promise<void> {
       { once: true },
     )
   })
-}
-
-/** Single-quotes a value for `sh -c '...'`, escaping any embedded single quote. */
-function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 function toCheckResult(
@@ -195,6 +191,21 @@ export type RunRunbookScanOptions = {
   runProposalFn?: (prompt: string) => Promise<string>
   /** Test seam: no real 2s waits between healthcheck retries in a test. */
   sleepFn?: (ms: number) => Promise<void>
+}
+
+export type RunRunbookValidateOptions = Omit<
+  RunRunbookScanOptions,
+  | 'command'
+  | 'secrets'
+  | 'allowedDomains'
+  | 'buildPromptFn'
+  | 'sanitizeProposalFn'
+  | 'runProposalFn'
+> & {
+  /** Fingerprint the snapshot is built and installed under; matches the scan's own `commandBin(command) || 'claude'`. */
+  agentId: string
+  /** Test seam: never a real file read in a test. */
+  readRunbookConfigFn?: (worktree: string) => RunbookConfig | null
 }
 
 type ExecuteRunbookResult =
@@ -296,7 +307,7 @@ async function executeRunbook(input: ExecuteRunbookInput): Promise<ExecuteRunboo
 
     for (let i = 0; i < runbook.services.host_up.length; i += 1) {
       const command = runbook.services.host_up[i] ?? ''
-      const script = `nohup sh -c ${shellSingleQuote(command)} > /tmp/codesema-service-${i}.log 2>&1 &`
+      const script = serviceLaunchScript(command, i)
       const startedAt = Date.now()
       const result = await handle.shell(script, {
         cwd: MICROVM_TURN_DEFAULTS.workDir,
@@ -346,6 +357,79 @@ async function executeRunbook(input: ExecuteRunbookInput): Promise<ExecuteRunboo
       onProgress?.(`could not destroy sandbox ${name}: ${errorMessage(err)}`)
     }
   }
+}
+
+type FinalizeValidatedRunbookInput = {
+  driver: SandboxDriver
+  projectId: string
+  worktree: string
+  headSha: string
+  runbook: RunbookConfig
+  runbookSha: string
+  agentId: string
+  timeoutMs: number
+  checks: TaskCheckResult[]
+  attempts: number
+  onProgress?: (line: string) => void
+  buildSnapshot: typeof buildProjectSnapshot
+  writeValidation: typeof writeRunbookValidation
+}
+
+/**
+ * Shared tail of a green execution, for both the scan (after a fresh proposal
+ * passes) and validate (after the existing runbook passes as-is): builds the
+ * project snapshot, writes the local validation record, returns the outcome.
+ */
+async function finalizeValidatedRunbook(
+  input: FinalizeValidatedRunbookInput,
+): Promise<RunbookScanOutcome> {
+  const {
+    driver,
+    projectId,
+    worktree,
+    headSha,
+    runbook,
+    runbookSha,
+    agentId,
+    timeoutMs,
+    checks,
+    attempts,
+    onProgress,
+    buildSnapshot,
+    writeValidation,
+  } = input
+  let snapshotName: string | null = null
+  try {
+    const snapshot = await buildSnapshot({
+      driver,
+      projectId,
+      worktree,
+      runbook,
+      agentId,
+      timeoutMs,
+      ...(onProgress ? { onProgress } : {}),
+    })
+    snapshotName = snapshot.kind === 'cold' ? null : snapshot.name
+  } catch (err) {
+    onProgress?.(
+      `snapshot build failed (keeping the validated runbook, cold boots only): ${errorMessage(err)}`,
+    )
+    snapshotName = null
+  }
+
+  const validation: RunbookValidation = {
+    runbook_sha: runbookSha,
+    validated_sha: headSha,
+    validated_at: new Date().toISOString(),
+    status: 'valid',
+  }
+  // Written locally at the project root, alongside RUNBOOK_FILE: the
+  // mechanical verification (task-server.ts's verifyAfterCommit) reads it
+  // back to find the sha this runbook was validated against, rather than
+  // walking git history for a commit that touched RUNBOOK_FILE: that file
+  // is gitignored and never committed, so no such commit ever exists.
+  writeValidation(worktree, validation)
+  return { status: 'completed', runbook, validation, snapshotName, checks, attempts }
 }
 
 export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<RunbookScanOutcome> {
@@ -437,45 +521,21 @@ export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<Runbo
 
     opts.onProgress?.(`attempt ${attempts}: green, writing the runbook`)
     const runbookSha = writeConfig(opts.worktree, runbook)
-    let snapshotName: string | null = null
-    try {
-      const snapshot = await buildSnapshot({
-        driver: opts.driver,
-        projectId: opts.projectId,
-        worktree: opts.worktree,
-        runbook,
-        agentId: commandBin(opts.command) || 'claude',
-        timeoutMs: opts.timeoutMs,
-        ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
-      })
-      snapshotName = snapshot.kind === 'cold' ? null : snapshot.name
-    } catch (err) {
-      opts.onProgress?.(
-        `snapshot build failed (keeping the validated runbook, cold boots only): ${errorMessage(err)}`,
-      )
-      snapshotName = null
-    }
-
-    const validation: RunbookValidation = {
-      runbook_sha: runbookSha,
-      validated_sha: opts.headSha,
-      validated_at: new Date().toISOString(),
-      status: 'valid',
-    }
-    // Written locally at the project root, alongside RUNBOOK_FILE: the
-    // mechanical verification (task-server.ts's verifyAfterCommit) reads it
-    // back to find the sha this runbook was validated against, rather than
-    // walking git history for a commit that touched RUNBOOK_FILE — that file
-    // is gitignored and never committed, so no such commit ever exists.
-    writeValidation(opts.worktree, validation)
-    return {
-      status: 'completed',
+    return finalizeValidatedRunbook({
+      driver: opts.driver,
+      projectId: opts.projectId,
+      worktree: opts.worktree,
+      headSha: opts.headSha,
       runbook,
-      validation,
-      snapshotName,
+      runbookSha,
+      agentId: commandBin(opts.command) || 'claude',
+      timeoutMs: opts.timeoutMs,
       checks: executed.checks,
       attempts,
-    }
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+      buildSnapshot,
+      writeValidation,
+    })
   }
 
   return {
@@ -484,6 +544,69 @@ export async function runRunbookScan(opts: RunRunbookScanOptions): Promise<Runbo
     attempts,
     lastTail,
   }
+}
+
+/**
+ * Validates the existing `.codesema/runbook.json` as-is: no proposal, no
+ * agent, the file is never rewritten. A single install → services →
+ * healthchecks → tests pass through `executeRunbook`, then the same
+ * snapshot + validation tail as a scan (`finalizeValidatedRunbook`).
+ */
+export async function runRunbookValidate(
+  opts: RunRunbookValidateOptions,
+): Promise<RunbookScanOutcome> {
+  const readConfig = opts.readRunbookConfigFn ?? readRunbookConfig
+  const writeValidation = opts.writeRunbookValidationFn ?? writeRunbookValidation
+  const buildSnapshot = opts.buildProjectSnapshotFn ?? buildProjectSnapshot
+  const sleepFn = opts.sleepFn ?? defaultSleep
+
+  const runbook = readConfig(opts.worktree)
+  if (!runbook) {
+    return {
+      status: 'failed',
+      error: `no runbook found at ${RUNBOOK_FILE}, run \`codesema runbook scan\` first`,
+      attempts: 0,
+      lastTail: null,
+    }
+  }
+
+  opts.onProgress?.('runbook validate: executing')
+  let executed: ExecuteRunbookResult
+  try {
+    executed = await executeRunbook({
+      driver: opts.driver,
+      runbook,
+      worktree: opts.worktree,
+      projectId: opts.projectId,
+      attempt: 1,
+      timeoutMs: opts.timeoutMs,
+      sleepFn,
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
+  } catch (err) {
+    executed = { ok: false, tail: tailOf(errorMessage(err)), checks: [] }
+  }
+  if (!executed.ok) {
+    return { status: 'failed', error: executed.tail, attempts: 1, lastTail: executed.tail }
+  }
+
+  opts.onProgress?.('runbook validate: green')
+  return finalizeValidatedRunbook({
+    driver: opts.driver,
+    projectId: opts.projectId,
+    worktree: opts.worktree,
+    headSha: opts.headSha,
+    runbook,
+    runbookSha: computeRunbookSha(runbook),
+    agentId: opts.agentId,
+    timeoutMs: opts.timeoutMs,
+    checks: executed.checks,
+    attempts: 1,
+    ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+    buildSnapshot,
+    writeValidation,
+  })
 }
 
 export type RunbookScanRunnerOptions = {

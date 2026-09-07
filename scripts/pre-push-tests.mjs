@@ -24,11 +24,21 @@ import { spawn } from 'node:child_process'
 const PACKAGES = ['packages/cli', 'packages/web', 'packages/contract']
 
 /**
- * Four times the measured parallel run (21s). Long enough that a slow machine
- * or a cold filesystem cache never trips it, short enough that a hung runner
- * costs a minute and a half rather than an afternoon.
+ * Three times the measured parallel run (77s on 190 files, 2026-09-06; it was
+ * 21s on 93 files when this script was written). Long enough that a slow
+ * machine, a cold filesystem cache or the other pre-push jobs competing for
+ * the cores never trip it, short enough that a hung runner costs minutes
+ * rather than an afternoon.
  */
-const PARALLEL_DEADLINE_MS = 90_000
+const PARALLEL_DEADLINE_MS = 240_000
+
+/**
+ * Three times the measured serial run (142s, same day). The serial retry used
+ * to have no deadline at all: a test waiting on a prompt or a socket that
+ * never answers kept the hook open for twenty minutes, long enough for the
+ * remote to close the SSH connection the push had opened before the hook.
+ */
+const SERIAL_DEADLINE_MS = 420_000
 
 /** Same policy as the `test:only` script: half the cores locally, serial in CI. */
 function parallelArgs() {
@@ -86,6 +96,13 @@ if (code !== null) {
 }
 
 console.error(
-  `\nthe parallel test run went quiet for ${PARALLEL_DEADLINE_MS / 1000}s. This is the known --parallel hang, not a failure. Running the suite serially instead; expect about a minute.\n`,
+  `\nthe parallel test run went quiet for ${PARALLEL_DEADLINE_MS / 1000}s. This is the known --parallel hang, not a failure. Running the suite serially instead; expect a couple of minutes.\n`,
 )
-process.exit(await runTests({ extraArgs: [], deadlineMs: undefined }))
+const serial = await runTests({ extraArgs: [], deadlineMs: SERIAL_DEADLINE_MS })
+if (serial === null) {
+  console.error(
+    `\nthe serial test run went quiet for ${SERIAL_DEADLINE_MS / 1000}s as well: a test is waiting on something that never comes (a prompt, a socket, a child process). Refusing the push. Run \`bun test ${PACKAGES.join(' ')}\` to find it.\n`,
+  )
+  process.exit(1)
+}
+process.exit(serial)

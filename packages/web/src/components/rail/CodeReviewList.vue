@@ -328,7 +328,7 @@ function historyErrorOf(key: string): string | null {
 .crl-title {
   min-width: 0;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
   overflow: hidden;
@@ -338,7 +338,7 @@ function historyErrorOf(key: string): string | null {
 
 .crl-count {
   flex: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--cs-ghost);
 }
@@ -363,7 +363,7 @@ function historyErrorOf(key: string): string | null {
 .crl-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 7px 0 7px 28px;
   border: 1px solid var(--cs-line-2);
   border-radius: 8px;
@@ -417,7 +417,7 @@ function historyErrorOf(key: string): string | null {
 .crl-empty {
   margin: 0;
   padding: 10px 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
 }
 
@@ -513,7 +513,7 @@ function historyErrorOf(key: string): string | null {
   display: inline-flex;
   align-items: baseline;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
 }
 
@@ -522,7 +522,7 @@ function historyErrorOf(key: string): string | null {
 }
 
 .crl-mr-state-text {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--cs-muted);
 }
@@ -545,7 +545,7 @@ function historyErrorOf(key: string): string | null {
 
 .crl-mr-title {
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
   display: -webkit-box;
@@ -570,7 +570,7 @@ function historyErrorOf(key: string): string | null {
 .crl-branch-name {
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -581,7 +581,7 @@ function historyErrorOf(key: string): string | null {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .crl-project-tag {
@@ -589,7 +589,7 @@ function historyErrorOf(key: string): string | null {
   padding: 1px 6px;
   border: 1px solid var(--cs-line-2);
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-muted);
   background: color-mix(in srgb, var(--cs-surface-2) 60%, transparent);
@@ -602,7 +602,7 @@ function historyErrorOf(key: string): string | null {
   align-items: center;
   padding: 1px 7px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   white-space: nowrap;
 }
@@ -655,7 +655,7 @@ function historyErrorOf(key: string): string | null {
 
 .crl-panel-title {
   margin: 0 0 6px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -664,13 +664,13 @@ function historyErrorOf(key: string): string | null {
 
 .crl-history-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 
 .crl-history-error {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-red-text);
 }
 
@@ -694,7 +694,7 @@ function historyErrorOf(key: string): string | null {
   background: transparent;
   color: var(--cs-text-2);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
 }

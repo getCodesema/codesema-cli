@@ -167,8 +167,8 @@ describe('the title block (fiche §4)', () => {
     expect(html).not.toContain('class="cp-del"')
   })
 
-  test('the title is 15px semi-bold, tight line-height', () => {
-    expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-size: 15px;/)
+  test('the title is one step above the base size, semi-bold, tight line-height', () => {
+    expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-size: var\(--fs-lg\);/)
     expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-weight: 600;/)
   })
 })
@@ -195,7 +195,7 @@ describe('row 1: the envelope tab (fiche §3)', () => {
     expect(SOURCE).toMatch(/\.cp-row1\s*\{[^}]*gap: 6px;/)
     expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*height: 28px;/)
     expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*border-radius: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*font-size: 12px;/)
+    expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*font-size: var\(--fs-sm\);/)
     expect(SOURCE).toMatch(/\.cp-tab1-icon\s*\{[^}]*width: 16px;/)
   })
 
@@ -243,7 +243,7 @@ describe('row 2: section tabs (fiche §3)', () => {
     expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*padding: 8px;/)
     expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*gap: 4px;/)
     expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*border-radius: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*font-size: 11px;/)
+    expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*font-size: var\(--fs-xs\);/)
   })
 
   test('row 2 sits on a bottom hairline, distinct from row 1', () => {

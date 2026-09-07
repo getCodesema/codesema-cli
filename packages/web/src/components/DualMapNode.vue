@@ -120,7 +120,7 @@ const padding = paddingFor(props.depth, props.node.kind)
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -134,7 +134,7 @@ const padding = paddingFor(props.depth, props.node.kind)
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--codesema-ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -143,7 +143,7 @@ const padding = paddingFor(props.depth, props.node.kind)
 
 .dmn-delta {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
   display: inline-flex;
   gap: 6px;

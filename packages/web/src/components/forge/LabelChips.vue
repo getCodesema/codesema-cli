@@ -56,7 +56,7 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
   align-items: center;
   gap: 8px;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--cs-text-2);
   padding: 4px 12px;
@@ -75,7 +75,7 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
 
 .lc-count {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   opacity: 0.6;
 }

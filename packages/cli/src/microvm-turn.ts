@@ -47,6 +47,7 @@ import {
 import {
   AGENT_INSTALL_DOMAINS,
   assertValidGuestUser,
+  ensureAgentCredentials,
   ensureAgentInstalled,
   ensureGuestUser,
 } from './microvm-bootstrap.js'
@@ -74,6 +75,8 @@ export type RunMicrovmTurnOptions = Omit<
   secrets: readonly SandboxSecret[]
   /** Guest user the agent runs as (never root: `--dangerously-skip-permissions` refuses root). */
   user?: string
+  /** Test seam: overrides ensureAgentCredentials' host credentials file. */
+  credentialsPath?: string
 }
 
 export const MICROVM_TURN_DEFAULTS = {
@@ -375,6 +378,10 @@ export async function runMicrovmTurn(opts: RunMicrovmTurnOptions): Promise<strin
     // as root.
     await ensureGuestUser(handle, user)
     await ensureAgentInstalled(handle, agentId, { install: cold })
+    await ensureAgentCredentials(handle, user, agentId, {
+      env,
+      ...(opts.credentialsPath ? { credentialsPath: opts.credentialsPath } : {}),
+    })
     await handle.shell(`mkdir -p ${CAGE_WORK_DIR}`, {
       timeoutMs: BOOTSTRAP_TIMEOUT_MS,
       user: 'root',

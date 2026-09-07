@@ -38,7 +38,7 @@ const props = defineProps<{
 /** Null when the forge answers, and null when nothing is known about it. */
 const forgeReasonKey = computed(() => forgeUnavailableKey(props.workspace ?? null))
 
-const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
+const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shell': [] }>()
 </script>
 
 <template>
@@ -63,6 +63,9 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
         <span aria-hidden="true">⚠</span>
         {{ t('workspace.forgeUnavailable') }} — {{ t(forgeReasonKey) }}
       </span>
+      <button class="wh-pilot-toggle" type="button" @click="emit('switch-shell')">
+        {{ t('pilot.toggle.grid') }}
+      </button>
       <button class="wh-settings" type="button" @click="emit('settings')">
         {{ settingsOpen ? t('workspace.back') : t('nav.settings') }}
       </button>
@@ -107,14 +110,14 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
 }
 
 .wh-brand-name {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   color: var(--cs-text);
 }
 
 .wh-brand-sub {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -129,7 +132,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
 }
 
 .wh-settings {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   font-family: inherit;
   padding: 6px 12px;
@@ -144,6 +147,22 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
   border-color: var(--cs-line-2);
 }
 
+.wh-pilot-toggle {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  font-family: inherit;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--cs-line);
+  background: var(--cs-surface);
+  color: var(--cs-text-2);
+  cursor: pointer;
+}
+
+.wh-pilot-toggle:hover {
+  border-color: var(--cs-line-2);
+}
+
 /* A degraded capability, not an error: stated in amber like the bell, never red. */
 .wh-forge {
   display: flex;
@@ -153,7 +172,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
   border: 1px solid var(--cs-amber-line);
   border-radius: 7px;
   background: var(--cs-amber-soft);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--cs-amber-text);
   cursor: help;
@@ -169,7 +188,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
   border: 1px solid var(--cs-amber-line);
   border-radius: 7px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--cs-amber-text);
   cursor: pointer;
@@ -183,7 +202,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-muted);
 }
 

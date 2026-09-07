@@ -74,14 +74,14 @@ describe('checksEventLine', () => {
   test('a green run reads its passed count (no window: English catalog)', () => {
     expect(checksEventLine({ status: 'passed', passed: 3, failed: 0 })).toEqual({
       tone: 'go',
-      text: 'Checks — 3 passed',
+      text: 'Checks · 3 passed',
     })
   })
 
   test('a red run reads its failed count', () => {
     expect(checksEventLine({ status: 'failed', passed: 2, failed: 1 })).toEqual({
       tone: 'stop',
-      text: 'Checks — 1 failed',
+      text: 'Checks · 1 failed',
     })
   })
 
@@ -92,7 +92,7 @@ describe('checksEventLine', () => {
 
   test('an unknown status or malformed counts degrade, never crash', () => {
     expect(checksEventLine({})).toEqual({ tone: 'idle', text: 'Checks' })
-    expect(checksEventLine({ status: 'passed', passed: 'three' }).text).toBe('Checks — 0 passed')
+    expect(checksEventLine({ status: 'passed', passed: 'three' }).text).toBe('Checks · 0 passed')
   })
 })
 

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
@@ -20,6 +20,7 @@ import {
   sanitizeRecord,
   TASK_AGENT_MAX,
   type ArmTicket,
+  type RecapRecord,
   type ReviewRecord,
 } from './contract.js'
 import type { JudgeDecision } from './dual.js'
@@ -60,8 +61,11 @@ import {
 import { startRunnerDaemon, type RunnerDaemonHandle } from './runner-daemon.js'
 import { loadSyncCredentials } from './sync.js'
 import { applyTaskCriteria } from './task-criteria.js'
+import { EVIDENCE_MAX_BYTES, evidenceDir, readTaskEvidence } from './task-evidence.js'
+import { generateRecap, readTaskRecap, recapOptionsFor } from './task-recap.js'
 import type { TaskActionResult } from './task-runner.js'
 import type { CreateTaskManagerInput, TaskEnvelope, TaskManager } from './task-server.js'
+import { loadTask } from './tasks-store.js'
 import {
   AGENT_DEFS,
   composeCommand,
@@ -232,6 +236,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.webm': 'video/webm',
 }
 
 /**
@@ -1460,11 +1465,79 @@ async function serveStaticFile(res: ServerResponse, pathname: string): Promise<v
   res.end(content)
 }
 
+const EVIDENCE_FILENAME_RE = /^[A-Za-z0-9._-]+$/
+
+async function serveTaskEvidenceFile(
+  res: ServerResponse,
+  taskId: string,
+  filename: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const projectId = requiredProjectParam(params)
+  if (!projectId) {
+    return sendText(res, 400, 'bad request')
+  }
+  if (!isTaskId(taskId) || !EVIDENCE_FILENAME_RE.test(filename)) {
+    return sendText(res, 404, 'not found')
+  }
+  const project = getProject(projectId)
+  if (!project) {
+    return sendText(res, 404, 'not found')
+  }
+  const filePath = resolveStaticPath(evidenceDir(project.path, taskId), `/${filename}`)
+  if (!filePath) {
+    return sendText(res, 404, 'not found')
+  }
+  let size: number
+  try {
+    size = statSync(filePath).size
+  } catch {
+    return sendText(res, 404, 'not found')
+  }
+  if (size > EVIDENCE_MAX_BYTES) {
+    return sendText(res, 413, 'payload too large')
+  }
+  let content: Buffer
+  try {
+    content = await readFile(filePath)
+  } catch {
+    return sendText(res, 404, 'not found')
+  }
+  const evidenceMime =
+    MIME_BY_EXTENSION[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+  res.writeHead(200, { 'content-type': evidenceMime, 'x-content-type-options': 'nosniff' })
+  res.end(content)
+}
+
+/**
+ * Read-time fallback for a task whose turn ended before the end-of-turn
+ * recap write existed (task-server.ts's `onTurnDone`): every entry the
+ * generator needs is already on disk, so this computes the SAME recap that
+ * write would have produced, using the SAME entries (`recapOptionsFor`,
+ * task-recap.ts). Pure read: never calls `writeTaskRecap`, so a GET never
+ * creates the file `onTurnDone` and the ship are the only writers of: the
+ * disk stays the single source of truth for what actually happened at
+ * turn-end or ship time. `'review_ok'`/`'shipped'` only: any other status
+ * means either the review never landed clean or nothing to summarize yet,
+ * and the route answers 404 exactly as it did before this fallback existed.
+ */
+function computeFallbackRecap(cwd: string, id: string): RecapRecord | null {
+  const task = loadTask(cwd, id)
+  if (!task || (task.status !== 'review_ok' && task.status !== 'shipped')) {
+    return null
+  }
+  return generateRecap(recapOptionsFor(cwd, task)).recap
+}
+
 const TASK_ACTION_RE =
   /^\/api\/tasks\/([^/]+)\/(reply|ship|interrupt|abandon|checks|resume|criteria|attach)$/
 const TASK_GET_RE = /^\/api\/tasks\/([^/]+)$/
 const TASK_CHECKS_RE = /^\/api\/tasks\/([^/]+)\/checks$/
+const TASK_VERIFICATION_RE = /^\/api\/tasks\/([^/]+)\/verification$/
 const TASK_REVIEW_RE = /^\/api\/tasks\/([^/]+)\/review$/
+const TASK_RECAP_RE = /^\/api\/tasks\/([^/]+)\/recap$/
+const TASK_EVIDENCE_RE = /^\/api\/tasks\/([^/]+)\/evidence$/
+const TASK_EVIDENCE_FILE_RE = /^\/api\/tasks\/([^/]+)\/evidence\/(.+)$/
 const PROJECT_DELETE_RE = /^\/api\/projects\/([^/]+)$/
 const PROJECT_CHECKS_SETUP_RE = /^\/api\/projects\/([^/]+)\/checks-setup$/
 const PROJECT_CHECKS_APPLY_RE = /^\/api\/projects\/([^/]+)\/checks-apply$/
@@ -1767,6 +1840,26 @@ function createRequestHandler(handlerOpts: {
         }
         return sendJson(res, 200, checks)
       }
+      const taskVerificationGet = TASK_VERIFICATION_RE.exec(pathname)
+      if (taskVerificationGet?.[1]) {
+        if (!tasks) {
+          return sendJson(res, 501, { error: 'task manager unavailable' })
+        }
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        // 404 covers unknown project, unknown/malformed task id AND a task
+        // whose mechanical verification never ran: the file simply is not
+        // there yet, same doctrine as the checks route above.
+        const verification = isTaskId(taskVerificationGet[1])
+          ? tasks.manager.getVerification(projectId, taskVerificationGet[1])
+          : null
+        if (!verification) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, verification)
+      }
       const taskReviewGet = TASK_REVIEW_RE.exec(pathname)
       if (taskReviewGet?.[1]) {
         if (!tasks) {
@@ -1787,6 +1880,48 @@ function createRequestHandler(handlerOpts: {
           return sendText(res, 404, 'not found')
         }
         return sendJson(res, 200, review)
+      }
+      const taskRecapGet = TASK_RECAP_RE.exec(pathname)
+      if (taskRecapGet?.[1]) {
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        const project = getProject(projectId)
+        const recap =
+          project && isTaskId(taskRecapGet[1])
+            ? (readTaskRecap(project.path, taskRecapGet[1]) ??
+              computeFallbackRecap(project.path, taskRecapGet[1]))
+            : null
+        if (!recap) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, recap)
+      }
+      const taskEvidenceGet = TASK_EVIDENCE_RE.exec(pathname)
+      if (taskEvidenceGet?.[1]) {
+        const projectId = requiredProjectParam(searchParams)
+        if (!projectId) {
+          return sendText(res, 400, 'bad request')
+        }
+        const project = getProject(projectId)
+        const evidence =
+          project && isTaskId(taskEvidenceGet[1])
+            ? readTaskEvidence(project.path, taskEvidenceGet[1])
+            : null
+        if (!evidence) {
+          return sendText(res, 404, 'not found')
+        }
+        return sendJson(res, 200, evidence)
+      }
+      const taskEvidenceFileGet = TASK_EVIDENCE_FILE_RE.exec(pathname)
+      if (taskEvidenceFileGet?.[1] && taskEvidenceFileGet[2]) {
+        return void serveTaskEvidenceFile(
+          res,
+          taskEvidenceFileGet[1],
+          taskEvidenceFileGet[2],
+          searchParams,
+        )
       }
       const taskGet = TASK_GET_RE.exec(pathname)
       if (taskGet?.[1]) {

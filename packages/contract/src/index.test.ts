@@ -706,6 +706,7 @@ describe('reviewRecordSchema', () => {
       narrative: { intent: 'i', steps: [], review_first: [] },
       files_reviewed: ['a.ts'],
       criteria: [{ criterion_id: 'ac-000000000001', status: 'met', evidence: 'a.ts:1 x' }],
+      proof_review: { expected: 'none', coherent: true, reason: '' },
     })
     const declared = new Set(Object.keys(reviewRecordSchema.$defs.review.properties))
     expect(Object.keys(produced).length).toBeGreaterThan(4)
@@ -774,6 +775,41 @@ describe('sanitizeReview criteria (DP12)', () => {
       review: { verdict: 'approve', criteria: [{ criterion_id: AC_A, status: 'met' }] },
     })
     expect(record?.review.criteria).toEqual([{ criterion_id: AC_A, status: 'met' }])
+  })
+})
+
+describe('sanitizeReview proof_review (D17)', () => {
+  test('a valid proof_review round-trips', () => {
+    const review = sanitizeReview({
+      proof_review: { expected: 'journey', coherent: true, reason: 'matches what was declared' },
+    })
+    expect(review.proof_review).toEqual({
+      expected: 'journey',
+      coherent: true,
+      reason: 'matches what was declared',
+    })
+  })
+
+  test('an unreadable proof_review omits the key', () => {
+    expect(sanitizeReview({}).proof_review).toBeUndefined()
+    expect(
+      sanitizeReview({ proof_review: { expected: 'bogus', coherent: true, reason: '' } })
+        .proof_review,
+    ).toBeUndefined()
+  })
+
+  test('sanitizeRecord carries proof_review back off disk (the whitelist keeps it)', () => {
+    const record = sanitizeRecord({
+      version: 1,
+      meta: {},
+      commits: [],
+      diff: '',
+      review: {
+        verdict: 'approve',
+        proof_review: { expected: 'none', coherent: true, reason: '' },
+      },
+    })
+    expect(record?.review.proof_review).toEqual({ expected: 'none', coherent: true, reason: '' })
   })
 })
 
@@ -1367,10 +1403,20 @@ describe('cross test: sanitizeRecord output validates against reviewRecordSchema
           { criterion_id: AC_A, status: 'met', evidence: 'src/auth.ts:11 — added here' },
           { criterion_id: AC_B, status: 'unclear', question: 'does this cover offline mode too?' },
         ],
+        proof_review: {
+          expected: 'journey',
+          coherent: true,
+          reason: 'matches the declared intent',
+        },
       },
     })
     expect(schemaErrors(record)).toEqual([])
     expect(record?.review.findings[0]?.repro).toEqual({ command: 'npm test', expected: 'exit 0' })
+    expect(record?.review.proof_review).toEqual({
+      expected: 'journey',
+      coherent: true,
+      reason: 'matches the declared intent',
+    })
   })
 
   test('the minimal record — everything the sanitizer defaults — validates', () => {

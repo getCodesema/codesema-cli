@@ -87,14 +87,14 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 }
 
 .fa-label {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
 }
 
 .fa-count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--cs-ghost);
   font-variant-numeric: tabular-nums;
@@ -103,7 +103,7 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 .fa-truncated {
   margin: -4px 0 0;
   padding-left: 18px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-ghost);
 }
 

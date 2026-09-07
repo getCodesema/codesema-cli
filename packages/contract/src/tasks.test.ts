@@ -11,6 +11,7 @@ import {
   sanitizeTaskEvent,
   sanitizeTaskRecord,
   sanitizeTaskVerification,
+  TASK_ACTIVITY_PHASES,
   TASK_AGENT_MAX,
   TASK_CHECK_COMMAND_MAX,
   TASK_CHECK_TAIL_MAX,
@@ -348,6 +349,38 @@ describe('sanitizeTaskRecord', () => {
     expect(
       sanitizeTaskRecord({ ...validRecord, cycle_step: 42 }) &&
         'cycle_step' in sanitizeTaskRecord({ ...validRecord, cycle_step: 42 })!,
+    ).toBe(false)
+  })
+
+  test('activity: optional, whitelisted phase + bounded since, unusable dropped', () => {
+    expect(sanitizeTaskRecord(validRecord) && 'activity' in sanitizeTaskRecord(validRecord)!).toBe(
+      false,
+    )
+    for (const phase of TASK_ACTIVITY_PHASES) {
+      const activity = { phase, since: '2026-08-14T09:00:00.000Z' }
+      expect(sanitizeTaskRecord({ ...validRecord, activity })?.activity).toEqual(activity)
+    }
+    const unknownPhase = { activity: { phase: 'unknown', since: '2026-08-14T09:00:00.000Z' } }
+    expect(
+      sanitizeTaskRecord({ ...validRecord, ...unknownPhase }) &&
+        'activity' in sanitizeTaskRecord({ ...validRecord, ...unknownPhase })!,
+    ).toBe(false)
+    const missingSince = { activity: { phase: 'checks' } }
+    expect(
+      sanitizeTaskRecord({ ...validRecord, ...missingSince }) &&
+        'activity' in sanitizeTaskRecord({ ...validRecord, ...missingSince })!,
+    ).toBe(false)
+    const blankSince = { activity: { phase: 'checks', since: '' } }
+    expect(
+      sanitizeTaskRecord({ ...validRecord, ...blankSince }) &&
+        'activity' in sanitizeTaskRecord({ ...validRecord, ...blankSince })!,
+    ).toBe(false)
+    const overlongSince = {
+      activity: { phase: 'checks', since: '2'.repeat(TASK_TIMESTAMP_MAX + 1) },
+    }
+    expect(
+      sanitizeTaskRecord({ ...validRecord, ...overlongSince }) &&
+        'activity' in sanitizeTaskRecord({ ...validRecord, ...overlongSince })!,
     ).toBe(false)
   })
 
@@ -753,6 +786,37 @@ describe('sanitizeTaskRecord', () => {
     expect(r?.turns[0]?.response).toBeNull()
     expect(r?.turns[0]?.question).toBeNull()
     expect(r?.turns[0]?.ended_at).toBeNull()
+  })
+
+  test('turns: proof_intent round-trips when valid, is absent when not supplied', () => {
+    const withIntent = sanitizeTaskRecord({
+      ...validRecord,
+      turns: [
+        {
+          ...validRecord.turns[0],
+          proof_intent: {
+            kind: 'journey',
+            reason: 'exercises the checkout flow',
+            journey: 'checkout',
+          },
+        },
+      ],
+    })
+    expect(withIntent?.turns[0]?.proof_intent).toEqual({
+      kind: 'journey',
+      reason: 'exercises the checkout flow',
+      journey: 'checkout',
+    })
+    const withoutIntent = sanitizeTaskRecord(structuredClone(validRecord))
+    expect(withoutIntent?.turns[0] && 'proof_intent' in withoutIntent.turns[0]).toBe(false)
+  })
+
+  test('turns: an unreadable proof_intent drops the key rather than storing junk', () => {
+    const r = sanitizeTaskRecord({
+      ...validRecord,
+      turns: [{ ...validRecord.turns[0], proof_intent: { kind: 'bogus', reason: 'r' } }],
+    })
+    expect(r?.turns[0] && 'proof_intent' in r.turns[0]).toBe(false)
   })
 
   test('turns are capped', () => {
@@ -1212,6 +1276,7 @@ describe('sanitizeTaskEvent', () => {
       'issue',
       'criteria',
       'post_merge_checks',
+      'proof',
     ] as const
     for (const type of types) {
       expect(sanitizeTaskEvent({ ...validEvent, type })?.type).toBe(type)

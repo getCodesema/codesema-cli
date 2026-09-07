@@ -8,13 +8,16 @@ import {
   type AcceptanceCriterion,
   type CriterionVerdict,
   type RecapRecord,
+  type ReviewRecord,
   type TaskChecks,
   type TaskEvent,
   type TaskRecord,
 } from './contract.js'
 import {
   generateRecap,
+  lastTurnResponse,
   readTaskRecap,
+  recapOptionsFor,
   renderRecapMarkdown,
   writeTaskRecap,
   type DiffFilesFn,
@@ -568,6 +571,147 @@ describe('generateRecap: the model contributes only summary/changes/decisions (i
     expect(recap.files).toHaveLength(5)
     // The prose is not rewritten either — it simply has no power over files[].
     expect(recap.summary).toBe('3 fichiers modifiés dans cette tâche.')
+  })
+})
+
+// --- lastTurnResponse: the prose source for a recap generated before any ship
+
+function fakeTurn(over: Partial<TaskRecord['turns'][number]> = {}): TaskRecord['turns'][number] {
+  return {
+    prompt: 'do it',
+    response: null,
+    question: null,
+    started_at: '2026-01-01T00:00:00.000Z',
+    ended_at: '2026-01-01T00:01:00.000Z',
+    ...over,
+  }
+}
+
+describe('lastTurnResponse', () => {
+  test('the last turn carrying a response, not necessarily the last turn overall', () => {
+    const task = fakeTask({
+      turns: [
+        fakeTurn({ response: 'first turn done' }),
+        fakeTurn({ response: null, question: 'need more context' }),
+      ],
+    })
+    expect(lastTurnResponse(task)).toEqual({ summary: 'first turn done' })
+  })
+
+  test('no turn has a response yet: null, not an empty string', () => {
+    const task = fakeTask({ turns: [fakeTurn({ response: null })] })
+    expect(lastTurnResponse(task)).toBeNull()
+  })
+
+  test('no turns at all: null', () => {
+    const task = fakeTask({ turns: [] })
+    expect(lastTurnResponse(task)).toBeNull()
+  })
+
+  test('a hand-edited task.json without turns degrades to null instead of throwing', () => {
+    const task = fakeTask({ turns: undefined as unknown as TaskRecord['turns'] })
+    expect(() => lastTurnResponse(task)).not.toThrow()
+    expect(lastTurnResponse(task)).toBeNull()
+  })
+
+  test('the result feeds generateRecap as modelOutput.summary, changes/decisions stay empty', () => {
+    const task = fakeTask({ turns: [fakeTurn({ response: 'Rewired the worktree cleanup.' })] })
+    const contribution = lastTurnResponse(task)
+    const { recap } = generate(
+      baseOptions({ task, ...(contribution ? { modelOutput: contribution } : {}) }),
+    )
+    expect(recap.summary).toBe('Rewired the worktree cleanup.')
+    expect(recap.changes).toEqual([])
+    expect(recap.decisions).toEqual([])
+  })
+})
+
+// --- recapOptionsFor: the shared entries for a recap built outside the ship -
+
+function fakeReviewRecord(criteria: CriterionVerdict[]): ReviewRecord {
+  return {
+    version: 1,
+    meta: {
+      title: 'x',
+      branch: 'codesema/task-x',
+      target: 'main',
+      merge_base: 'deadbeef',
+      repo_root: '/unused',
+      created_at: '2026-01-01T00:00:00.000Z',
+    },
+    commits: [],
+    diff: '',
+    review: {
+      verdict: 'approve',
+      summary: 'ok',
+      findings: [],
+      criteria,
+    },
+  } as unknown as ReviewRecord
+}
+
+describe('recapOptionsFor', () => {
+  test('sources criteria from taskCriteria + the injected review reader, and modelOutput from the last turn', () => {
+    const cwd = tmpCwd()
+    const criterion: AcceptanceCriterion = {
+      id: acceptanceCriterionId('WHEN a ticket is launched THE SYSTEM SHALL lint its body'),
+      text: 'WHEN a ticket is launched THE SYSTEM SHALL lint its body',
+    }
+    const task = createTask(cwd, {
+      title: 'x',
+      prompt: 'x',
+      autoShip: false,
+      base: '',
+      branch: 'codesema/task-x',
+      worktree: '',
+      isolation: 'policy',
+    })
+    task.criteria = [criterion]
+    task.turns = [fakeTurn({ response: 'done' })]
+    const verdicts: CriterionVerdict[] = [
+      { criterion_id: criterion.id, status: 'met', evidence: 'ok' },
+    ]
+    const readTaskReviewFn = () => fakeReviewRecord(verdicts)
+
+    const opts = recapOptionsFor(cwd, task, readTaskReviewFn)
+
+    expect(opts.acceptanceCriteria).toEqual([criterion])
+    expect(opts.criteriaVerdicts).toEqual(verdicts)
+    expect(opts.modelOutput).toEqual({ summary: 'done' })
+  })
+
+  test('a task with no criteria at all: neither field is set (DP12)', () => {
+    const cwd = tmpCwd()
+    const task = createTask(cwd, {
+      title: 'x',
+      prompt: 'x',
+      autoShip: false,
+      base: '',
+      branch: 'codesema/task-y',
+      worktree: '',
+      isolation: 'policy',
+    })
+    const opts = recapOptionsFor(cwd, task, () => null)
+    expect(opts.acceptanceCriteria).toBeUndefined()
+    expect(opts.criteriaVerdicts).toBeUndefined()
+    expect(opts.modelOutput).toBeUndefined()
+  })
+
+  test('by default (no readTaskReviewFn override) it reads the real review archive', () => {
+    const cwd = tmpCwd()
+    const task = createTask(cwd, {
+      title: 'x',
+      prompt: 'x',
+      autoShip: false,
+      base: '',
+      branch: 'codesema/task-z',
+      worktree: '',
+      isolation: 'policy',
+    })
+    const opts = recapOptionsFor(cwd, task)
+    expect(opts.criteriaVerdicts).toBeUndefined()
+    expect(opts.cwd).toBe(cwd)
+    expect(opts.task).toBe(task)
   })
 })
 

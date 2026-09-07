@@ -374,7 +374,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 <style scoped>
 .fv-empty {
   padding: 40px 26px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .fv-root {
@@ -401,7 +401,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-list-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -413,7 +413,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-list-n {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   background: var(--codesema-line-2);
   border-radius: 999px;
   padding: 1px 7px;
@@ -425,7 +425,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-sel-btn {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: inherit;
   color: var(--codesema-ink-3);
@@ -484,7 +484,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   display: grid;
   place-items: center;
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: #fff;
   font-weight: 700;
   transition:
@@ -512,7 +512,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-item-title {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--codesema-ink);
   overflow: hidden;
@@ -523,7 +523,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-item-file {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--codesema-ink-3);
   white-space: nowrap;
   overflow: hidden;
@@ -532,7 +532,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-sev {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -564,7 +564,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-consensus--pill {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -607,7 +607,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-copy {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 8px 12px;
@@ -640,7 +640,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   border-radius: 8px;
   background: var(--codesema-amber-soft);
   color: var(--codesema-amber);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   padding: 8px 10px;
 }
@@ -650,7 +650,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   font-family: inherit;
   padding: 9px 12px;
@@ -688,7 +688,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-fix-error {
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--codesema-risk-high);
 }
@@ -704,7 +704,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-fix-done-head {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   color: var(--codesema-risk-low);
 }
@@ -712,7 +712,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 .fv-fix-summary {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.55;
   color: var(--codesema-ink-2);
   white-space: pre-wrap;
@@ -738,7 +738,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-count {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--codesema-ink);
 }
@@ -759,7 +759,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   border: 1px solid var(--codesema-line);
   background: var(--codesema-panel);
   color: var(--codesema-ink-2);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   cursor: pointer;
   display: grid;
   place-items: center;
@@ -792,7 +792,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-kind {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -804,19 +804,19 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-note-file {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--codesema-ink-3);
 }
 
 .fv-note-title {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   margin: 0 0 4px;
   color: var(--codesema-ink);
 }
 
 .fv-note-body {
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--codesema-ink-2);
   margin: 0;
@@ -844,7 +844,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   background: var(--codesema-risk-low-soft);
   color: var(--codesema-risk-low);
   padding: 6px 11px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
 }
 
@@ -853,7 +853,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   padding: 10px 12px;
   background: var(--codesema-line-2);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--codesema-ink);
   white-space: pre-wrap;
@@ -872,7 +872,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   padding: 8px 14px;
   background: var(--codesema-line-2);
   border-bottom: 1px solid var(--codesema-line);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .fv-code-head code {
@@ -882,7 +882,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-code-body {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   overflow-x: auto;
 }
@@ -927,7 +927,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   padding: 0 8px;
   color: var(--codesema-ink-3);
   user-select: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .fv-sign {
@@ -947,7 +947,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-no-excerpt {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   margin: 0;
 }
 

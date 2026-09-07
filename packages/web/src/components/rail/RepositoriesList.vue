@@ -288,7 +288,7 @@ function requestRemove(id: string): void {
   flex: 1;
   min-width: 0;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
   overflow: hidden;
@@ -298,7 +298,7 @@ function requestRemove(id: string): void {
 
 .rpl-count {
   flex: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--cs-ghost);
 }
@@ -323,7 +323,7 @@ function requestRemove(id: string): void {
 .rpl-search-input {
   width: 100%;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   padding: 7px 0 7px 28px;
   border: 1px solid var(--cs-line-2);
   border-radius: 8px;
@@ -372,7 +372,7 @@ function requestRemove(id: string): void {
 .rpl-empty {
   margin: 0;
   padding: 10px 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
 }
 
@@ -400,7 +400,7 @@ function requestRemove(id: string): void {
   height: 36px;
   text-align: left;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 500;
   line-height: 20px;
   color: var(--cs-text-2);
@@ -469,7 +469,7 @@ function requestRemove(id: string): void {
   padding: 0 6px;
   border-radius: 999px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -497,7 +497,7 @@ function requestRemove(id: string): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: inherit;
   color: var(--cs-ghost);
   border: none;
@@ -538,7 +538,7 @@ function requestRemove(id: string): void {
   height: 36px;
   text-align: left;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 500;
   line-height: 20px;
   color: var(--cs-ghost);
@@ -568,7 +568,7 @@ function requestRemove(id: string): void {
 
 .rpl-detected-label {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cs-ghost);
@@ -579,7 +579,7 @@ function requestRemove(id: string): void {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   text-align: left;
   padding: 5px 8px;
@@ -616,7 +616,7 @@ function requestRemove(id: string): void {
   background: var(--cs-surface);
   color: var(--cs-text);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 7px 9px;
 }
 
@@ -631,7 +631,7 @@ function requestRemove(id: string): void {
 }
 
 .rpl-add-submit {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   font-family: inherit;
   padding: 5px 12px;
@@ -653,7 +653,7 @@ function requestRemove(id: string): void {
 }
 
 .rpl-add-cancel {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
   padding: 5px 10px;
@@ -667,7 +667,7 @@ function requestRemove(id: string): void {
 .rpl-error {
   margin: 2px 0 0;
   padding: 0 2px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-red-text);
   overflow-wrap: anywhere;
 }

@@ -35,7 +35,7 @@ defineProps<{ icon: Component; text: string }>()
 
 .cet-text {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 </style>

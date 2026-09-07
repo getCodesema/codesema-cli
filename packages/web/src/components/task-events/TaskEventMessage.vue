@@ -46,7 +46,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 .tvm-meta {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -59,7 +59,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
   border: 1px solid var(--cs-line-2);
   border-radius: 3px 10px 10px 10px;
   background: var(--cs-surface);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   color: var(--cs-text);
   overflow-wrap: anywhere;
@@ -81,7 +81,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 .tvm-md :deep(h2),
 .tvm-md :deep(h3) {
   margin: 12px 0 6px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 700;
   color: var(--cs-text);
 }
@@ -92,7 +92,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 }
 
 .tvm-md :deep(h3) {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .tvm-md :deep(ul),
@@ -106,7 +106,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 
 .tvm-md :deep(code) {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--cs-green-text);
   white-space: pre-wrap;
 }

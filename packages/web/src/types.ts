@@ -402,6 +402,22 @@ export const TICKS_PER_USD = 10_000_000_000
  */
 export type CostBasis = 'harness' | 'lower_bound'
 
+// Mirrors packages/contract/src/proof-intent.ts
+export type ProofIntentKind = 'none' | 'screenshot' | 'journey'
+
+export type ProofIntent = {
+  kind: ProofIntentKind
+  reason: string
+  pages?: string[]
+  journey?: string
+}
+
+export type ProofReview = {
+  expected: ProofIntentKind
+  coherent: boolean
+  reason: string
+}
+
 export type TaskTurn = {
   prompt: string
   response: string | null
@@ -422,6 +438,7 @@ export type TaskTurn = {
    * — a provenance with no number behind it describes nothing.
    */
   cost_basis?: CostBasis
+  proof_intent?: ProofIntent
 }
 
 export type TaskEventType =
@@ -500,6 +517,7 @@ export type TaskEventType =
    * last line, same rebase courtesy as `criteria`.
    */
   | 'merge'
+  | 'proof'
 
 /**
  * The closed vocabulary of degradations (mirrors packages/contract/src/reasons.ts,
@@ -643,6 +661,19 @@ export type TaskAttachment = {
   base: string
 }
 
+/** The closed set of `TaskActivity.phase` values. Mirrors packages/contract/src/tasks.ts. */
+export const TASK_ACTIVITY_PHASES = ['checks', 'verification', 'proof', 'review', 'recap'] as const
+
+export type TaskActivityPhase = (typeof TASK_ACTIVITY_PHASES)[number]
+
+/** What a task's agent is doing right now, and since when (ISO-8601). Purely
+ * informational, unlike `TaskStatus` or `checks_status`. Mirrors
+ * packages/contract/src/tasks.ts. */
+export type TaskActivity = {
+  phase: TaskActivityPhase
+  since: string
+}
+
 export type TaskRecord = {
   version: 1
   id: string
@@ -694,6 +725,12 @@ export type TaskRecord = {
    * status. Mirror of packages/contract/src/tasks.ts.
    */
   checks_status?: Exclude<TaskChecksStatus, 'running'>
+  /**
+   * What the task's agent is doing right now, when it is running, and since
+   * when. Absent on records written before this field existed, and on a task
+   * between phases (or not running). Mirror of packages/contract/src/tasks.ts.
+   */
+  activity?: TaskActivity
   /** Last liveness beat of the task's agent (ISO-8601), written by the semantic
    * watchdog. Tells a LONG task from a DEAD one: `updated_at` only moves when
    * something happens. Only meaningful while `running` (a starting turn clears
@@ -822,6 +859,35 @@ export type TaskChecks = {
   source?: TaskChecksSource | string
 }
 
+// Mirrors packages/contract/src/tasks.ts: the outcome of the MECHANICAL
+// verification of a task (a fresh VM replays the validated runbook's tests
+// with the ticket's worktree attached; the agent's own claim never enters
+// this record).
+
+export type TaskVerificationStatus = 'passed' | 'failed' | 'refused' | 'error'
+
+/** The persisted verification.json of one task (.codesema/tasks/<id>/verification.json). */
+export type TaskVerification = {
+  /** Worktree HEAD the verification ran against. */
+  head_sha: string
+  /** sha (16 hex) of the runbook whose tests were replayed. */
+  runbook_sha: string
+  started_at: string
+  finished_at: string | null
+  status: TaskVerificationStatus
+  /** One entry per `runbook.tests` command that ran, in order; empty when
+   * refused or errored before running. Same shape as the contract's
+   * TaskCheckResult: TaskCheck is that type's own mirror name here. */
+  checks: TaskCheck[]
+  /** True when every `depends_on_files` entry matched the validated runbook. */
+  integrity_ok: boolean
+  /** The `depends_on_files` entries that differed; empty when `integrity_ok`. */
+  changed_dependency_files: string[]
+  /** Readable failure when status is 'error': the VM could not boot, or an
+   * install/service/healthcheck step failed before the tests ever ran. */
+  error: string | null
+}
+
 // Mirrors the ticket contract (packages/contract/src/ticket.ts, decision D6):
 // a ticket is a title — the task's — plus a body of five sections whose
 // acceptance criteria are a structured list.
@@ -947,6 +1013,13 @@ export type TaskEnvelope =
   // Agent-assisted checks setup: PROJECT-scoped, no task_id — the proposal
   // belongs to the repo, not to a conversation.
   | { project_id: string; event: { name: 'checks_proposal'; data: unknown } }
+  | { project_id: string; task_id: string; event: { name: 'task_recap'; data: RecapRecord } }
+  | { project_id: string; task_id: string; event: { name: 'task_evidence'; data: EvidenceRecord } }
+  | {
+      project_id: string
+      task_id: string
+      event: { name: 'task_verification'; data: TaskVerification }
+    }
 
 // Mirrors packages/cli/src/projects.ts (global project registry) and the
 // /api/projects endpoints.
@@ -1087,4 +1160,31 @@ export type RecapRecord = {
   branch: string
   /** The merge/pull request URL opened at ship time. Absent before the task has shipped — never a placeholder. */
   mr_url?: string
+}
+
+// Mirrors packages/contract/src/evidence.ts: the normalized run evidence
+// (screenshots/videos captured while proving a task's outcome). Same
+// doctrine as RecapRecord above: sanitized on the server.
+
+export type EvidenceKind = 'screenshot' | 'video'
+
+export type EvidenceItem = {
+  kind: EvidenceKind
+  path: string
+  bytes: number
+  turn: number
+  created_at: string
+}
+
+export type EvidenceStatus = 'passed' | 'failed' | 'skipped'
+
+/** The normalized evidence of one task (.codesema/tasks/<id>/evidence.json). */
+export type EvidenceRecord = {
+  version: 1
+  status: EvidenceStatus
+  reason: string | null
+  head_sha: string | null
+  items: EvidenceItem[]
+  intent?: ProofIntent
+  review?: ProofReview
 }

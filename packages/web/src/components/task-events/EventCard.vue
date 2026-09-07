@@ -141,7 +141,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 
 .ec-title {
   flex: none;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   line-height: 20px;
   color: var(--cs-text);
@@ -151,7 +151,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 .ec-detail {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 20px;
   color: var(--cs-text-2);
   opacity: 0.75;
@@ -168,7 +168,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
   border-radius: 5px;
   background: var(--cs-surface-2);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--cs-text-2);
 }
 
@@ -176,7 +176,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
   padding: 12px;
   border-top: 1px solid var(--cs-line);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 20px;
   color: var(--cs-text-2);
   white-space: pre-wrap;

@@ -583,6 +583,68 @@ describe('runDualFlow', () => {
     expect(outcome.record.review.criteria).toEqual([{ criterion_id: CRITERION, status: 'unmet' }])
   }, 30000)
 
+  // D17: proof_review is arbitrated the same pessimistic way as criteria,
+  // right beside them, and would otherwise be dropped on the floor by
+  // `assembleDualReview` (findings only).
+  const laneReviewWithProof = (proofReview: string): string =>
+    `{"verdict":"approve","summary":"ok","findings":[],"proof_review":${proofReview}}`
+
+  test('proof_review fuses pessimistically: an incoherent lane wins over a coherent one', async () => {
+    const fixture = setupDualRepo(REVIEW)
+    twoLaneAgent(
+      fixture,
+      laneReviewWithProof('{"expected":"none","coherent":true,"reason":"nothing visible changed"}'),
+      laneReviewWithProof(
+        '{"expected":"screenshot","coherent":false,"reason":"a visible change has no proof"}',
+      ),
+    )
+
+    const outcome = await runDualFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    expect(outcome.record.review.proof_review).toEqual({
+      expected: 'screenshot',
+      coherent: false,
+      reason: 'a visible change has no proof',
+    })
+  }, 30000)
+
+  test('proof_review fuses to lane A when both lanes agree it is coherent', async () => {
+    const fixture = setupDualRepo(REVIEW)
+    twoLaneAgent(
+      fixture,
+      laneReviewWithProof('{"expected":"none","coherent":true,"reason":"lane a reason"}'),
+      laneReviewWithProof('{"expected":"none","coherent":true,"reason":"lane b reason"}'),
+    )
+
+    const outcome = await runDualFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    expect(outcome.record.review.proof_review).toEqual({
+      expected: 'none',
+      coherent: true,
+      reason: 'lane a reason',
+    })
+  }, 30000)
+
+  test('neither lane declaring a proof_review leaves the record with no such key', async () => {
+    const fixture = setupDualRepo(REVIEW)
+
+    const outcome = await runDualFlow(flowOpts(fixture))
+
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) {
+      return
+    }
+    expect(outcome.record.review.proof_review).toBeUndefined()
+  }, 20000)
+
   test('an aborted signal cuts the dual LANES, not just the simple flow', async () => {
     const fixture = setupDualRepo(REVIEW)
     // Lanes that would hold the review for a full minute if left alone.

@@ -489,7 +489,7 @@ const issueUpdatedAge = computed(() =>
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--cs-text);
   opacity: 0;
@@ -513,7 +513,7 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-title {
   margin: 0;
-  font-size: 27px;
+  font-size: var(--fs-3xl);
   font-weight: 700;
   line-height: 1.15;
   color: var(--cs-text);
@@ -548,7 +548,7 @@ const issueUpdatedAge = computed(() =>
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-muted);
 }
 
@@ -556,7 +556,7 @@ const issueUpdatedAge = computed(() =>
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   padding: 2px 8px;
   border-radius: 999px;
@@ -603,7 +603,7 @@ const issueUpdatedAge = computed(() =>
   align-items: center;
   gap: 6px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   line-height: 1;
   padding: 4px 10px;
@@ -638,32 +638,32 @@ const issueUpdatedAge = computed(() =>
 }
 
 .fdp-md h1 {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 700;
 }
 
 .fdp-md h2 {
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 700;
 }
 
 .fdp-md h3 {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
 .fdp-md h4 {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
 .fdp-md h5 {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 500;
 }
 
 .fdp-md h6 {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--cs-muted);
 }
@@ -728,7 +728,7 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-md-truncated {
   margin: 12px 0 0;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--cs-ghost);
 }
 
@@ -745,7 +745,7 @@ const issueUpdatedAge = computed(() =>
 .fdp-empty {
   margin: auto;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--cs-ghost);
   max-width: 220px;
 }
@@ -756,7 +756,7 @@ const issueUpdatedAge = computed(() =>
 .fdp-issue-rail {
   display: flex;
   flex-direction: column;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .fdp-issue-rail-section {
@@ -776,7 +776,7 @@ const issueUpdatedAge = computed(() =>
   align-items: center;
   gap: 6px;
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
