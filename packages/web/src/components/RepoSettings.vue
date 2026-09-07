@@ -7,6 +7,7 @@ import {
   type MergeStrategy,
   type RunnerSettings,
 } from '../composables/useSettings'
+import { G } from '../glyphs'
 import type { AgentOption } from '../types'
 import ThemePicker from './ThemePicker.vue'
 
@@ -332,36 +333,36 @@ onMounted(load)
     <ThemePicker />
 
     <div v-if="loading" class="cfg-state">
-      <span class="cfg-spinner" aria-hidden="true" />
-      <p class="codesema-muted">{{ $t('settings.loading') }}</p>
+      <p class="cfg-state-line status" data-s="running">{{ $t('settings.loading') }}</p>
     </div>
     <div v-else-if="loadError" class="cfg-state">
-      <p class="cfg-error">{{ $t('settings.loadError') }} ({{ loadError }})</p>
-      <button class="cfg-retry" @click="load">{{ $t('app.retry') }}</button>
+      <p class="cfg-error live err">{{ $t('settings.loadError') }} ({{ loadError }})</p>
+      <button class="cfg-retry btn" type="button" @click="load">{{ $t('app.retry') }}</button>
     </div>
     <template v-else>
-      <section class="cfg-section">
-        <h2 class="cfg-section-title">{{ $t('settings.rulesTitle') }}</h2>
-        <p class="cfg-hint codesema-muted">{{ $t('settings.rulesHint') }}</p>
+      <section class="cfg-section panel">
+        <h2 class="cfg-section-title panel-title left">{{ $t('settings.rulesTitle') }}</h2>
+        <p class="cfg-hint muted">{{ $t('settings.rulesHint') }}</p>
         <textarea v-model="rulesContent" class="cfg-textarea" rows="14" spellcheck="false" />
         <div class="cfg-section-actions">
           <button
-            class="cfg-save-btn"
+            class="cfg-save-btn btn primary"
             :class="{ 'cfg-save-btn--done': rulesSaved }"
+            type="button"
             :disabled="!configToken || savingRules"
             @click="saveRules"
           >
             {{ rulesSaved ? $t('settings.saved') : $t('settings.save') }}
           </button>
-          <p v-if="rulesError" class="cfg-error">
+          <p v-if="rulesError" class="cfg-error live err">
             {{ $t('settings.saveError') }} ({{ rulesError }})
           </p>
         </div>
       </section>
 
-      <section v-if="agents.length > 0" class="cfg-section">
-        <h2 class="cfg-section-title">{{ $t('settings.agentTitle') }}</h2>
-        <p class="cfg-hint codesema-muted">{{ $t('settings.agentHint') }}</p>
+      <section v-if="agents.length > 0" class="cfg-section panel">
+        <h2 class="cfg-section-title panel-title left">{{ $t('settings.agentTitle') }}</h2>
+        <p class="cfg-hint muted">{{ $t('settings.agentHint') }}</p>
         <div class="cfg-agent-fields">
           <select
             class="cfg-select"
@@ -378,7 +379,7 @@ onMounted(load)
               {{ opt.label }}
             </option>
           </select>
-          <label class="cfg-model">
+          <label class="cfg-model field">
             <span class="cfg-model-label">{{ $t('settings.modelLabel') }}</span>
             <input
               class="cfg-input"
@@ -399,7 +400,7 @@ onMounted(load)
               <option v-for="id in modelOptions" :key="id" :value="id" />
             </datalist>
           </label>
-          <label v-if="effortOptions.length > 0" class="cfg-model cfg-effort">
+          <label v-if="effortOptions.length > 0" class="cfg-model cfg-effort field">
             <span class="cfg-model-label">{{ $t('settings.effortLabel') }}</span>
             <select
               class="cfg-select cfg-input"
@@ -414,52 +415,56 @@ onMounted(load)
             </select>
           </label>
         </div>
-        <p v-if="agentError" class="cfg-error">
+        <p v-if="agentError" class="cfg-error live err">
           {{ $t('settings.agentError') }} ({{ agentError }})
         </p>
       </section>
 
-      <section class="cfg-section">
-        <h2 class="cfg-section-title">{{ $t('settings.autoSyncTitle') }}</h2>
-        <p class="cfg-hint codesema-muted">{{ $t('settings.autoSyncHint') }}</p>
+      <section class="cfg-section panel">
+        <h2 class="cfg-section-title panel-title left">{{ $t('settings.autoSyncTitle') }}</h2>
+        <p class="cfg-hint muted">{{ $t('settings.autoSyncHint') }}</p>
         <div class="cfg-section-actions">
           <button
-            class="cfg-toggle-btn"
-            :class="{ 'cfg-toggle-btn--on': syncAutoPush }"
+            class="cfg-toggle-btn toggle"
+            type="button"
+            :aria-pressed="syncAutoPush"
             :disabled="!configToken || togglingSync"
             @click="toggleAutoSync"
           >
-            {{ syncAutoPush ? $t('settings.autoSyncOn') : $t('settings.autoSyncOff') }}
+            <i aria-hidden="true">{{ syncAutoPush ? G.ok : G.minus }}</i>
+            <span>{{ syncAutoPush ? $t('settings.autoSyncOn') : $t('settings.autoSyncOff') }}</span>
           </button>
-          <p v-if="syncError" class="cfg-error">
+          <p v-if="syncError" class="cfg-error live err">
             {{ $t('settings.autoSyncError') }} ({{ syncError }})
           </p>
         </div>
       </section>
 
-      <section class="cfg-section">
-        <h2 class="cfg-section-title">{{ $t('settings.runnerTitle') }}</h2>
+      <section class="cfg-section panel">
+        <h2 class="cfg-section-title panel-title left">{{ $t('settings.runnerTitle') }}</h2>
 
-        <p class="cfg-hint codesema-muted">{{ $t('settings.runnerAutoMergeHint') }}</p>
+        <p class="cfg-hint muted">{{ $t('settings.runnerAutoMergeHint') }}</p>
         <div class="cfg-section-actions">
           <button
-            class="cfg-toggle-btn"
-            :class="{ 'cfg-toggle-btn--on': runnerAutoMerge }"
+            class="cfg-toggle-btn toggle"
+            type="button"
+            :aria-pressed="runnerAutoMerge"
             :disabled="!configToken || savingRunnerAutoMerge"
             @click="saveRunnerAutoMerge(!runnerAutoMerge)"
           >
-            {{
+            <i aria-hidden="true">{{ runnerAutoMerge ? G.ok : G.minus }}</i>
+            <span>{{
               runnerAutoMerge ? $t('settings.runnerAutoMergeOn') : $t('settings.runnerAutoMergeOff')
-            }}
+            }}</span>
           </button>
-          <p v-if="runnerAutoMergeError" class="cfg-error">
+          <p v-if="runnerAutoMergeError" class="cfg-error live err">
             {{ $t('settings.runnerAutoMergeError') }} ({{ runnerAutoMergeError }})
           </p>
         </div>
 
-        <p class="cfg-hint codesema-muted">{{ $t('settings.mergeStrategyHint') }}</p>
+        <p class="cfg-hint muted">{{ $t('settings.mergeStrategyHint') }}</p>
         <div class="cfg-section-actions">
-          <label class="cfg-model">
+          <label class="cfg-model field">
             <span class="cfg-model-label">{{ $t('settings.mergeStrategyLabel') }}</span>
             <select
               class="cfg-select cfg-input"
@@ -473,14 +478,14 @@ onMounted(load)
               <option value="rebase">rebase</option>
             </select>
           </label>
-          <p v-if="mergeStrategyError" class="cfg-error">
+          <p v-if="mergeStrategyError" class="cfg-error live err">
             {{ $t('settings.mergeStrategyError') }} ({{ mergeStrategyError }})
           </p>
         </div>
 
-        <p class="cfg-hint codesema-muted">{{ $t('settings.maxTaskTurnsHint') }}</p>
+        <p class="cfg-hint muted">{{ $t('settings.maxTaskTurnsHint') }}</p>
         <div class="cfg-section-actions">
-          <label class="cfg-model cfg-effort">
+          <label class="cfg-model cfg-effort field">
             <span class="cfg-model-label">{{ $t('settings.maxTaskTurnsLabel') }}</span>
             <input
               class="cfg-input"
@@ -493,7 +498,7 @@ onMounted(load)
               @change="saveMaxTaskTurns(($event.target as HTMLInputElement).value)"
             />
           </label>
-          <p v-if="maxTaskTurnsError" class="cfg-error">
+          <p v-if="maxTaskTurnsError" class="cfg-error live err">
             {{ $t('settings.maxTaskTurnsError') }} ({{ maxTaskTurnsError }})
           </p>
         </div>
@@ -504,16 +509,16 @@ onMounted(load)
 
 <style scoped>
 .cfg-root {
-  max-width: 720px;
+  max-width: 90ch;
   margin: 0 auto;
-  padding: 32px 20px 60px;
+  padding: calc(var(--row) * 2) 2ch calc(var(--row) * 3);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--row) * 1.5);
 }
 
 .cfg-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--fg);
-  margin: 0 0 24px;
+  margin: 0;
 }
 
 .cfg-state {
@@ -522,160 +527,70 @@ onMounted(load)
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  font-size: var(--fs);
+  gap: var(--row);
 }
 
+.cfg-state-line,
 .cfg-error {
-  color: var(--err);
   margin: 0;
-  font-size: var(--fs);
-}
-
-.cfg-retry {
-  font-size: var(--fs);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 7px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
-  color: var(--fg-dim);
-  cursor: pointer;
-}
-
-.cfg-spinner {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 2.5px solid var(--line);
-  border-top-color: var(--accent);
-  animation: cfg-spin 0.8s linear infinite;
-}
-
-@keyframes cfg-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.cfg-section {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 20px;
 }
 
 .cfg-section-title {
   font-size: var(--fs);
-  font-weight: 700;
-  color: var(--fg);
-  margin: 0 0 6px;
+  font-weight: 400;
 }
 
 .cfg-hint {
-  font-size: var(--fs);
-  margin: 0 0 14px;
+  margin: 0 0 calc(var(--row) / 2);
 }
 
 .cfg-textarea {
   width: 100%;
-  min-height: 260px;
-  font-family: var(--font);
-  font-size: var(--fs);
-  line-height: 1.5;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
+  min-width: 0;
+  min-height: calc(var(--row) * 12);
   resize: vertical;
 }
 
 .cfg-section-actions {
-  margin-top: 12px;
+  margin-top: calc(var(--row) / 2);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 2ch;
+  flex-wrap: wrap;
 }
 
-.cfg-select,
-.cfg-input {
-  font-family: inherit;
-  font-size: var(--fs);
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 7px 10px;
+.cfg-save-btn--done {
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .cfg-agent-fields {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 12px;
+  gap: 2ch var(--row);
 }
 
 .cfg-model {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: min(100%, 280px);
+  min-width: min(100%, 40ch);
   flex: 1;
 }
 
 .cfg-effort {
-  min-width: min(100%, 140px);
-  flex: 0 1 140px;
+  min-width: min(100%, 20ch);
+  flex: 0 1 20ch;
 }
 
 .cfg-model-label {
-  font-size: 12px;
-  font-weight: 600;
   color: var(--fg-dim);
+}
+
+.cfg-select,
+.cfg-input {
+  min-width: 0;
 }
 
 .cfg-input {
   width: 100%;
-}
-
-.cfg-save-btn,
-.cfg-toggle-btn {
-  flex-shrink: 0;
-  font-size: var(--fs);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 7px 14px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
-  cursor: pointer;
-  transition: border-color 0.12s ease;
-}
-
-.cfg-save-btn:hover,
-.cfg-toggle-btn:hover {
-  border-color: var(--accent);
-}
-
-.cfg-save-btn:disabled,
-.cfg-toggle-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.cfg-save-btn--done {
-  color: var(--ok);
-  border-color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-}
-
-.cfg-toggle-btn--on {
-  color: var(--ok);
-  border-color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 </style>

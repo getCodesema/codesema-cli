@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { G } from '../glyphs'
 import { t } from '../i18n'
 import type { TaskIsolation, TaskRecord, WorkspaceInfo } from '../types'
 import {
@@ -43,7 +44,7 @@ describe('isolationBadge', () => {
     const badge = isolationBadge(record('container'))
     expect(badge).toEqual({
       isolation: 'container',
-      glyph: '🛡',
+      glyph: G.shield,
       labelKey: 'workspace.isolationContainer',
       hintKey: 'workspace.isolationContainerHint',
     })
@@ -60,7 +61,7 @@ describe('isolationBadge', () => {
     const badge = isolationBadge(record('microvm'))
     expect(badge).toEqual({
       isolation: 'microvm',
-      glyph: '▣',
+      glyph: G.file,
       labelKey: 'workspace.isolationMicrovm',
       hintKey: 'workspace.isolationMicrovmHint',
     })

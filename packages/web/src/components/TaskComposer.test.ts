@@ -272,8 +272,12 @@ describe('TaskComposer plan panel', () => {
     })
     expect(caged).toContain(t('workspace.planIsolationContainer'))
     expect(caged).toContain('podman is available')
+    expect(caged).not.toContain('class="tc-plan-value warn"')
     const degraded = await renderComposer({ draft: forkDraft('develop'), plan: PLAN })
     expect(degraded).not.toContain(`>${t('workspace.planIsolationContainer')}`)
+    // A fallen-back isolation is a warning, carried by the tone class rather
+    // than by an inline colour.
+    expect(degraded).toContain('class="tc-plan-value warn"')
   })
 
   test('a branch the server would not promise is NOT shown as final', async () => {
@@ -297,7 +301,7 @@ describe('TaskComposer plan panel', () => {
     expect(fork).toContain(t('workspace.planBaseLabel'))
     expect(fork).toContain('value="develop"')
     // Nothing to apply until the field actually differs from the draft.
-    expect(fork).toContain('class="tc-plan-apply" type="button" disabled')
+    expect(fork).toContain('class="tc-plan-apply btn" type="button" disabled')
     // Fork mode says the branch follows the title — the one field a fork's
     // branch name actually depends on.
     expect(fork).toContain(t('workspace.planBranchDerived'))
