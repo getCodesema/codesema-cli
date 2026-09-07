@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { G } from '../glyphs'
 import type { JudgeDecision, JudgeLive } from '../types'
 
 const props = defineProps<{
@@ -9,9 +10,9 @@ const props = defineProps<{
 type Stamp = 'merged' | 'rejected' | 'kept'
 
 const STAMP_GLYPH: Record<Stamp, string> = {
-  merged: '⟲',
-  rejected: '✗',
-  kept: '✓',
+  merged: G.retry,
+  rejected: G.fail,
+  kept: G.ok,
 }
 
 const STAMP_LABEL_KEY: Record<Stamp, string> = {
@@ -48,7 +49,7 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
       <div class="djp-bar-fill" :style="{ width: `${pct}%` }" />
     </div>
 
-    <TransitionGroup name="djp-fade" tag="div" class="djp-list">
+    <div class="djp-list">
       <div
         v-for="d in reversedDecisions"
         :key="d.id"
@@ -66,7 +67,7 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
           $t(STAMP_LABEL_KEY[stampFor(d)])
         }}</span>
       </div>
-    </TransitionGroup>
+    </div>
   </section>
 </template>
 
@@ -74,23 +75,18 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 .djp-root {
   border: 1px solid var(--line);
   background: var(--bg-raised);
-  border-radius: 12px;
-  padding: 14px 16px;
+  padding: calc(var(--row) / 2) 1ch;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: calc(var(--row) / 2);
 }
 
 .djp-progress {
-  font-size: var(--fs);
-  font-weight: 600;
   color: var(--fg-dim);
-  font-variant-numeric: tabular-nums;
 }
 
 .djp-bar {
-  height: 4px;
-  border-radius: 999px;
+  height: 2px;
   background: var(--line);
   overflow: hidden;
 }
@@ -98,27 +94,22 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 .djp-bar-fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 999px;
-  transition: width 0.4s ease;
 }
 
 .djp-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .djp-row {
   display: flex;
   align-items: baseline;
-  gap: 9px;
-  font-size: var(--fs);
-  padding: 4px 2px;
+  gap: 1ch;
 }
 
 .djp-stamp {
   flex-shrink: 0;
-  width: 16px;
+  width: 2ch;
   text-align: center;
   font-weight: 700;
 }
@@ -136,9 +127,7 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 }
 
 .djp-id {
-  font-family: var(--font);
   font-size: 12px;
-  color: var(--fg);
   flex-shrink: 0;
 }
 
@@ -158,18 +147,6 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 }
 
 .djp-detail--muted {
-  color: var(--fg-dim);
-  font-style: italic;
-}
-
-.djp-fade-enter-active {
-  transition:
-    opacity 0.3s ease,
-    transform 0.3s ease;
-}
-
-.djp-fade-enter-from {
-  opacity: 0;
-  transform: translateY(-4px);
+  color: var(--fg-muted);
 }
 </style>

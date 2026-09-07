@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { DiffFile, Finding, FindingSeverity } from '../composables/useDiff'
 import { buildFixPrompt } from '../composables/useFixPrompt'
 import { excerptFor } from '../composables/useFocusList'
+import { G } from '../glyphs'
 import type { FixStatus, ReviewRecord } from '../types'
 
 const props = defineProps<{
@@ -158,13 +159,11 @@ onUnmounted(() => {
   stopPolling()
 })
 
-type SevMeta = { labelKey: string; cls: string }
-
-const SEV_META: Record<FindingSeverity, SevMeta> = {
-  critical: { labelKey: 'diffView.sevCritical', cls: 'fv-sev--high' },
-  major: { labelKey: 'diffView.sevMajor', cls: 'fv-sev--high' },
-  minor: { labelKey: 'diffView.sevMinor', cls: 'fv-sev--med' },
-  info: { labelKey: 'diffView.sevInfo', cls: 'fv-sev--info' },
+const SEV_LABEL_KEY: Record<FindingSeverity, string> = {
+  critical: 'diffView.sevCritical',
+  major: 'diffView.sevMajor',
+  minor: 'diffView.sevMinor',
+  info: 'diffView.sevInfo',
 }
 
 const KIND_LABEL: Partial<Record<string, string>> = {
@@ -196,7 +195,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 <template>
   <div v-if="list.length === 0" class="fv-empty">
-    <p class="codesema-muted">{{ $t('focus.empty') }}</p>
+    <p class="empty">{{ $t('focus.empty') }}</p>
   </div>
 
   <div v-else class="fv-root">
@@ -207,8 +206,12 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
           <span class="fv-list-n">{{ list.length }}</span>
         </span>
         <span class="fv-list-spacer" />
-        <button class="fv-sel-btn" @click="selectAll">{{ $t('focus.selectAll') }}</button>
-        <button class="fv-sel-btn" @click="selectNone">{{ $t('focus.selectNone') }}</button>
+        <button class="fv-sel-btn btn ghost" @click="selectAll">
+          {{ $t('focus.selectAll') }}
+        </button>
+        <button class="fv-sel-btn btn ghost" @click="selectNone">
+          {{ $t('focus.selectNone') }}
+        </button>
       </div>
 
       <div class="fv-items">
@@ -223,20 +226,20 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
           @keydown.enter="cursor = i"
         >
           <button
-            class="fv-check"
+            class="fv-check btn ghost"
             :class="{ 'fv-check--done': selected.has(f.id!) }"
             :aria-pressed="selected.has(f.id!)"
             @click.stop="toggle(f.id!)"
           >
-            <span v-if="selected.has(f.id!)">✓</span>
+            <span aria-hidden="true">{{ selected.has(f.id!) ? G.ok : G.pending }}</span>
           </button>
           <div class="fv-item-body">
             <div class="fv-item-top">
-              <span class="fv-sev" :class="SEV_META[f.severity].cls">{{
-                $t(SEV_META[f.severity].labelKey)
+              <span class="fv-sev sev" :data-v="f.severity">{{
+                $t(SEV_LABEL_KEY[f.severity])
               }}</span>
               <span v-if="f.consensus" class="fv-consensus" :title="$t('finding.consensus')">
-                <span class="fv-consensus-dots" aria-hidden="true"><span /><span /></span>
+                <span class="fv-consensus-dots" aria-hidden="true">{{ G.dot }}{{ G.dot }}</span>
               </span>
               <span class="fv-item-title">{{ f.title ?? f.message }}</span>
             </div>
@@ -256,15 +259,15 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
         </div>
         <button
           v-if="fixAvailable"
-          class="fv-run"
+          class="fv-run btn primary"
           :disabled="selectedCount === 0 || fixRunning"
           @click="runFixes"
         >
-          <span v-if="fixRunning" class="fv-run-spin" aria-hidden="true" />
+          <span v-if="fixRunning" class="fv-run-spin status" data-s="running" />
           {{ fixRunning ? $t('focus.fixRunning') : $t('focus.runFixes', { n: selectedCount }) }}
         </button>
         <button
-          class="fv-copy"
+          class="fv-copy btn"
           :class="{ 'fv-copy--done': copied }"
           :disabled="selectedCount === 0"
           @click="copySelection"
@@ -275,7 +278,9 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
           {{ $t('focus.fixFailed') }} · {{ fixRequestError }}
         </p>
         <div v-if="fixDetail?.phase === 'done'" class="fv-fix-done">
-          <div class="fv-fix-done-head">✓ {{ $t('focus.fixDone') }}</div>
+          <div class="fv-fix-done-head">
+            <span aria-hidden="true">{{ G.ok }}</span> {{ $t('focus.fixDone') }}
+          </div>
           <pre v-if="fixDetail.summary" class="fv-fix-summary">{{ fixDetail.summary }}</pre>
         </div>
         <p v-else-if="fixDetail?.phase === 'error'" class="fv-fix-error">
@@ -293,35 +298,35 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
         </span>
         <span class="fv-nav-spacer" />
         <button
-          class="fv-arrow"
+          class="fv-arrow btn"
           :disabled="!canPrev"
           :title="$t('focus.prev')"
           :aria-label="$t('focus.prev')"
           @click="goPrev"
         >
-          ‹
+          <span aria-hidden="true">{{ G.back }}</span>
         </button>
         <button
-          class="fv-arrow"
+          class="fv-arrow btn"
           :disabled="!canNext"
           :title="$t('focus.next')"
           :aria-label="$t('focus.next')"
           @click="goNext"
         >
-          ›
+          <span aria-hidden="true">{{ G.arrow }}</span>
         </button>
       </div>
 
-      <div class="fv-note">
+      <div class="fv-note note" :data-kind="current.kind">
         <div class="fv-note-head">
-          <span class="fv-sev" :class="SEV_META[current.severity].cls">{{
-            $t(SEV_META[current.severity].labelKey)
+          <span class="fv-sev sev" :data-v="current.severity">{{
+            $t(SEV_LABEL_KEY[current.severity])
           }}</span>
           <span v-if="current.kind && KIND_LABEL[current.kind]" class="fv-kind">{{
             $t(KIND_LABEL[current.kind]!)
           }}</span>
           <span v-if="current.consensus" class="fv-consensus fv-consensus--pill">
-            <span class="fv-consensus-dots" aria-hidden="true"><span /><span /></span>
+            <span class="fv-consensus-dots" aria-hidden="true">{{ G.dot }}{{ G.dot }}</span>
             {{ $t('finding.consensus') }}
           </span>
           <code class="fv-note-file"
@@ -366,38 +371,35 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
           </div>
         </div>
       </div>
-      <p v-else class="fv-no-excerpt codesema-muted">{{ $t('focus.noExcerpt') }}</p>
+      <p v-else class="fv-no-excerpt empty">{{ $t('focus.noExcerpt') }}</p>
     </section>
   </div>
 </template>
 
 <style scoped>
 .fv-empty {
-  padding: 40px 26px;
-  font-size: var(--fs);
+  padding: var(--row) 2ch;
 }
 
 .fv-root {
   display: flex;
   align-items: stretch;
-  min-height: calc(100vh - 170px);
+  min-height: calc(100vh - var(--row) * 8);
 }
 
-/* ── Left: selectable list ─────────────────────────────────── */
 .fv-list {
-  width: 400px;
+  width: 52ch;
   flex-shrink: 0;
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg));
 }
 
 .fv-list-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 16px 18px 10px;
+  align-items: baseline;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 2ch;
 }
 
 .fv-list-title {
@@ -407,16 +409,12 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   letter-spacing: 0.06em;
   color: var(--fg-dim);
   display: inline-flex;
-  align-items: center;
-  gap: 7px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .fv-list-n {
-  font-family: var(--font);
   font-size: 12px;
-  background: var(--line);
-  border-radius: 999px;
-  padding: 1px 7px;
   color: var(--fg-dim);
 }
 
@@ -426,95 +424,65 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-sel-btn {
   font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  color: var(--fg-dim);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 4px;
-  transition: color 0.12s ease;
+  padding: 0 1ch;
 }
 
 .fv-sel-btn:hover {
   color: var(--accent);
+  background: transparent;
 }
 
 .fv-items {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 10px 10px;
+  padding: 0 1ch;
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
 
 .fv-item {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 11px;
-  border: 1px solid transparent;
-  border-radius: 10px;
+  align-items: baseline;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 1ch;
+  border-left: 2px solid transparent;
   cursor: pointer;
-  outline: none;
-  transition:
-    background 0.1s ease,
-    border-color 0.1s ease;
 }
 
 .fv-item:hover,
 .fv-item:focus-visible {
-  background: color-mix(in srgb, var(--line) 80%, var(--bg));
+  background: var(--bg-hover);
 }
 
 .fv-item--on {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left-color: var(--accent);
+  background: var(--bg-hover);
 }
 
 .fv-check {
   flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  border-radius: 5px;
-  border: 1.5px solid var(--line);
-  background: var(--bg-raised);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  font-size: 12px;
-  color: #fff;
-  font-weight: 700;
-  transition:
-    background 0.1s ease,
-    border-color 0.1s ease;
+  padding: 0 1ch;
 }
 
 .fv-check--done {
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .fv-item-body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
 
 .fv-item-top {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 1ch;
   min-width: 0;
 }
 
 .fv-item-title {
-  font-size: var(--fs);
-  font-weight: 600;
-  color: var(--fg);
+  font-weight: 700;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -522,9 +490,10 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-item-file {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
+  background: none;
+  padding: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -533,101 +502,37 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 .fv-sev {
   flex-shrink: 0;
   font-size: 12px;
-  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-
-.fv-sev--high {
-  color: var(--err);
-  background: color-mix(in srgb, var(--err) 12%, transparent);
-}
-
-.fv-sev--med {
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-
-.fv-sev--info {
-  color: var(--fg-dim);
-  background: var(--line);
 }
 
 .fv-consensus {
   flex-shrink: 0;
   display: inline-flex;
-  align-items: center;
-  gap: 5px;
+  align-items: baseline;
+  gap: 1ch;
   color: var(--ok);
 }
 
 .fv-consensus--pill {
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
-  border-radius: 999px;
-  padding: 2px 9px;
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  letter-spacing: 0.04em;
+  border: 1px solid currentColor;
+  padding: 0 1ch;
 }
 
 .fv-consensus-dots {
-  position: relative;
-  width: 11px;
-  height: 8px;
   flex-shrink: 0;
-}
-
-.fv-consensus-dots span {
-  position: absolute;
-  top: 1px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.fv-consensus-dots span:first-child {
-  left: 0;
-}
-
-.fv-consensus-dots span:last-child {
-  left: 5px;
-  opacity: 0.65;
+  letter-spacing: -0.1em;
 }
 
 .fv-list-foot {
-  padding: 12px 14px;
+  padding: calc(var(--row) / 2) 2ch;
   border-top: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.fv-copy {
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
-  color: var(--fg-dim);
-  cursor: pointer;
-  transition:
-    border-color 0.12s ease,
-    color 0.12s ease;
-}
-
-.fv-copy:hover:not(:disabled) {
-  border-color: var(--fg-dim);
-}
-
-.fv-copy:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+  gap: calc(var(--row) / 2);
 }
 
 .fv-copy--done {
@@ -636,71 +541,29 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-warn {
-  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid var(--warn);
   color: var(--warn);
   font-size: 12px;
-  line-height: 1.5;
-  padding: 8px 10px;
+  padding: 2px 1ch;
 }
 
 .fv-run {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  font-family: inherit;
-  padding: 9px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
-  transition: opacity 0.12s ease;
-}
-
-.fv-run:hover:not(:disabled) {
-  opacity: 0.9;
-}
-
-.fv-run:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.fv-run-spin {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 2px solid color-mix(in srgb, #fff 45%, transparent);
-  border-top-color: #fff;
-  animation: fv-spin 0.8s linear infinite;
-}
-
-@keyframes fv-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  gap: 1ch;
 }
 
 .fv-fix-error {
-  margin: 0;
   font-size: 12px;
-  line-height: 1.5;
   color: var(--err);
 }
 
 .fv-fix-done {
-  border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  padding: 9px 10px;
+  border: 1px solid var(--ok);
+  padding: 2px 1ch;
   display: flex;
   flex-direction: column;
-  gap: 7px;
 }
 
 .fv-fix-done-head {
@@ -711,36 +574,31 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-fix-summary {
   margin: 0;
-  font-family: var(--font);
   font-size: 12px;
-  line-height: 1.55;
   color: var(--fg-dim);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 180px;
+  max-height: calc(var(--row) * 8);
   overflow-y: auto;
 }
 
-/* ── Right: focused problem ────────────────────────────────── */
 .fv-detail {
   flex: 1;
   min-width: 0;
-  padding: 16px 22px 60px;
+  padding: var(--row) 2ch;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--row);
 }
 
 .fv-nav {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .fv-count {
-  font-size: var(--fs);
-  font-weight: 600;
-  color: var(--fg);
+  font-weight: 700;
 }
 
 .fv-count-total {
@@ -753,147 +611,95 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-arrow {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
+  padding: 0 1ch;
   color: var(--fg-dim);
-  font-size: 18px;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: border-color 0.1s ease;
-  font-family: inherit;
-}
-
-.fv-arrow:hover:not(:disabled) {
-  border-color: var(--fg-dim);
-}
-
-.fv-arrow:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.fv-note {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg-raised);
-  padding: 14px 16px;
 }
 
 .fv-note-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 1ch;
   flex-wrap: wrap;
-  margin-bottom: 9px;
 }
 
 .fv-kind {
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
-  border-radius: 999px;
-  padding: 2px 9px;
+  letter-spacing: 0.04em;
+  border: 1px solid currentColor;
+  padding: 0 1ch;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .fv-note-file {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
+  background: none;
+  padding: 0;
 }
 
 .fv-note-title {
-  font-size: var(--fs);
-  font-weight: 600;
-  margin: 0 0 4px;
+  font-weight: 700;
   color: var(--fg);
 }
 
 .fv-note-body {
-  font-size: var(--fs);
-  line-height: 1.6;
   color: var(--fg-dim);
-  margin: 0;
-  text-wrap: pretty;
 }
 
 .fv-note code,
 .fv-note-title code {
-  font-family: var(--font);
-  font-size: 0.85em;
-  background: var(--line);
-  padding: 1px 5px;
-  border-radius: 4px;
+  background: var(--bg-raised);
+  padding: 0 0.5ch;
   color: var(--accent);
 }
 
 .fv-sugg {
-  margin-top: 11px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
 }
 
 .fv-sugg-head {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
   color: var(--ok);
-  padding: 6px 11px;
+  padding: 0 1ch;
   font-size: 12px;
   font-weight: 700;
+  border-bottom: 1px solid var(--line);
 }
 
 .fv-sugg-code {
   margin: 0;
-  padding: 10px 12px;
-  background: var(--line);
-  font-family: var(--font);
+  padding: 2px 1ch;
+  background: var(--bg-raised);
   font-size: 12px;
-  line-height: 1.6;
-  color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* ── Code excerpt ──────────────────────────────────────────── */
 .fv-code {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
   background: var(--bg-raised);
 }
 
 .fv-code-head {
-  padding: 8px 14px;
-  background: var(--line);
+  padding: 0 2ch;
   border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 
 .fv-code-head code {
-  font-family: var(--font);
-  color: var(--fg);
+  background: none;
+  padding: 0;
 }
 
 .fv-code-body {
-  font-family: var(--font);
   font-size: 12px;
-  line-height: 1.6;
   overflow-x: auto;
 }
 
 .fv-line {
   display: flex;
-  align-items: flex-start;
-}
-
-.fv-line--ctx {
-  background: var(--bg-raised);
+  align-items: baseline;
+  border-left: 2px solid transparent;
 }
 
 .fv-line--add {
@@ -905,7 +711,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-line--target {
-  box-shadow: inset 3px 0 0 var(--accent);
+  border-left-color: var(--accent);
 }
 
 .fv-line--add .fv-sign {
@@ -916,22 +722,17 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   color: var(--err);
 }
 
-.fv-line--del .fv-src {
-  color: color-mix(in srgb, var(--err) 70%, var(--fg-dim));
-}
-
 .fv-no {
-  width: 38px;
+  width: 6ch;
   flex-shrink: 0;
   text-align: right;
-  padding: 0 8px;
-  color: var(--fg-dim);
+  padding: 0 1ch;
+  color: var(--fg-muted);
   user-select: none;
-  font-size: 12px;
 }
 
 .fv-sign {
-  width: 12px;
+  width: 2ch;
   flex-shrink: 0;
   user-select: none;
   text-align: center;
@@ -942,16 +743,13 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  padding-right: 10px;
-  color: var(--fg);
+  padding-right: 1ch;
 }
 
 .fv-no-excerpt {
-  font-size: var(--fs);
   margin: 0;
 }
 
-/* responsive */
 @media (max-width: 900px) {
   .fv-root {
     flex-direction: column;

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ConsensusNode } from '../composables/useConsensusTree'
+import { G } from '../glyphs'
 
 const props = defineProps<{
   node: ConsensusNode
@@ -7,7 +8,7 @@ const props = defineProps<{
 }>()
 
 function paddingFor(depth: number, kind: 'dir' | 'file'): number {
-  return (kind === 'dir' ? 8 : 12) + depth * 14
+  return (kind === 'dir' ? 1 : 2) + depth * 2
 }
 
 const padding = paddingFor(props.depth, props.node.kind)
@@ -18,11 +19,19 @@ const padding = paddingFor(props.depth, props.node.kind)
     <div
       class="dmn-row dmn-dir"
       :class="{ 'dmn-row--hot': node.hot }"
-      :style="{ paddingLeft: `${padding}px` }"
+      :style="{ paddingLeft: `${padding}ch` }"
     >
-      <span class="dmn-dot" :title="node.hot ? $t('live.consensusHotZone') : undefined">
-        <span class="dmn-dot-half dmn-dot-half--a" :class="{ 'dmn-dot-half--on': node.a }" />
-        <span class="dmn-dot-half dmn-dot-half--b" :class="{ 'dmn-dot-half--on': node.b }" />
+      <span
+        class="dmn-dot"
+        aria-hidden="true"
+        :title="node.hot ? $t('live.consensusHotZone') : undefined"
+      >
+        <span class="dmn-dot-half dmn-dot-half--a" :class="{ 'dmn-dot-half--on': node.a }">{{
+          G.dot
+        }}</span>
+        <span class="dmn-dot-half dmn-dot-half--b" :class="{ 'dmn-dot-half--on': node.b }">{{
+          G.dot
+        }}</span>
       </span>
       <span class="dmn-dir-name">{{ node.dir }}</span>
     </div>
@@ -33,11 +42,19 @@ const padding = paddingFor(props.depth, props.node.kind)
     v-else
     class="dmn-row dmn-file"
     :class="{ 'dmn-row--hot': node.row.hot }"
-    :style="{ paddingLeft: `${padding}px` }"
+    :style="{ paddingLeft: `${padding}ch` }"
   >
-    <span class="dmn-dot" :title="node.row.hot ? $t('live.consensusHotZone') : undefined">
-      <span class="dmn-dot-half dmn-dot-half--a" :class="{ 'dmn-dot-half--on': node.row.a }" />
-      <span class="dmn-dot-half dmn-dot-half--b" :class="{ 'dmn-dot-half--on': node.row.b }" />
+    <span
+      class="dmn-dot"
+      aria-hidden="true"
+      :title="node.row.hot ? $t('live.consensusHotZone') : undefined"
+    >
+      <span class="dmn-dot-half dmn-dot-half--a" :class="{ 'dmn-dot-half--on': node.row.a }">{{
+        G.dot
+      }}</span>
+      <span class="dmn-dot-half dmn-dot-half--b" :class="{ 'dmn-dot-half--on': node.row.b }">{{
+        G.dot
+      }}</span>
     </span>
     <span class="dmn-file-name">{{ node.name }}</span>
     <span class="dmn-delta">
@@ -55,71 +72,36 @@ const padding = paddingFor(props.depth, props.node.kind)
 
 .dmn-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-right: 8px;
-  border-radius: 7px;
+  align-items: baseline;
+  gap: 1ch;
+  padding-right: 1ch;
   min-width: 0;
-  transition: background 0.2s ease;
 }
 
 .dmn-row--hot {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  animation: dmn-pulse 2.2s ease-in-out infinite;
-}
-
-@keyframes dmn-pulse {
-  0%,
-  100% {
-    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 22%, transparent);
-  }
-  50% {
-    box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
-  }
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .dmn-dot {
-  position: relative;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1px solid var(--line);
-  overflow: hidden;
   flex-shrink: 0;
-  display: inline-block;
+  letter-spacing: -0.1em;
 }
 
 .dmn-dot-half {
-  position: absolute;
-  top: 0;
-  width: 50%;
-  height: 100%;
-  background: var(--fg-muted);
-  transition: background 0.2s ease;
-}
-
-.dmn-dot-half--a {
-  left: 0;
-}
-
-.dmn-dot-half--b {
-  left: 50%;
+  color: var(--fg-muted);
 }
 
 .dmn-dot-half--a.dmn-dot-half--on {
-  background: var(--accent);
+  color: var(--accent);
 }
 
 .dmn-dot-half--b.dmn-dot-half--on {
-  background: var(--warn);
+  color: var(--warn);
 }
 
 .dmn-dir-name {
   flex: 1;
   min-width: 0;
-  font-family: var(--font);
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
@@ -133,7 +115,6 @@ const padding = paddingFor(props.depth, props.node.kind)
 .dmn-file-name {
   flex: 1;
   min-width: 0;
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
   overflow: hidden;
@@ -142,11 +123,10 @@ const padding = paddingFor(props.depth, props.node.kind)
 }
 
 .dmn-delta {
-  font-family: var(--font);
   font-size: 12px;
   flex-shrink: 0;
   display: inline-flex;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .dmn-add {

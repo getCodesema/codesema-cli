@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { buildConsensusTree } from '../composables/useConsensusTree'
 import { sameFile } from '../composables/useDiff'
+import { G } from '../glyphs'
 import type { LiveInput, PartialReview } from '../types'
 import DualMapNode from './DualMapNode.vue'
 
@@ -50,9 +51,17 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
         class="dmap-row"
         :class="{ 'dmap-row--hot': row.hot }"
       >
-        <span class="dmap-dot" :title="row.hot ? $t('live.consensusHotZone') : undefined">
-          <span class="dmap-dot-half dmap-dot-half--a" :class="{ 'dmap-dot-half--on': row.a }" />
-          <span class="dmap-dot-half dmap-dot-half--b" :class="{ 'dmap-dot-half--on': row.b }" />
+        <span
+          class="dmap-dot"
+          aria-hidden="true"
+          :title="row.hot ? $t('live.consensusHotZone') : undefined"
+        >
+          <span class="dmap-dot-half dmap-dot-half--a" :class="{ 'dmap-dot-half--on': row.a }">{{
+            G.dot
+          }}</span>
+          <span class="dmap-dot-half dmap-dot-half--b" :class="{ 'dmap-dot-half--on': row.b }">{{
+            G.dot
+          }}</span>
         </span>
         <span class="dmap-path">{{ row.path }}</span>
         <span class="dmap-delta">
@@ -69,8 +78,7 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 .dmap-root {
   border: 1px solid var(--line);
   background: var(--bg-raised);
-  border-radius: 12px;
-  padding: 14px 16px;
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .dmap-head {
@@ -79,80 +87,45 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-dim);
-  margin-bottom: 10px;
 }
 
 .dmap-rows,
 .dmap-tree {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .dmap-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 6px;
-  border-radius: 7px;
-  transition: background 0.2s ease;
+  align-items: baseline;
+  gap: 1ch;
+  padding: 0 1ch;
 }
 
 .dmap-row--hot {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  animation: dmap-pulse 2.2s ease-in-out infinite;
-}
-
-@keyframes dmap-pulse {
-  0%,
-  100% {
-    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 22%, transparent);
-  }
-  50% {
-    box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
-  }
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .dmap-dot {
-  position: relative;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1px solid var(--line);
-  overflow: hidden;
   flex-shrink: 0;
-  display: inline-block;
+  letter-spacing: -0.1em;
 }
 
 .dmap-dot-half {
-  position: absolute;
-  top: 0;
-  width: 50%;
-  height: 100%;
-  background: var(--fg-muted);
-  transition: background 0.2s ease;
-}
-
-.dmap-dot-half--a {
-  left: 0;
-}
-
-.dmap-dot-half--b {
-  left: 50%;
+  color: var(--fg-muted);
 }
 
 .dmap-dot-half--a.dmap-dot-half--on {
-  background: var(--accent);
+  color: var(--accent);
 }
 
 .dmap-dot-half--b.dmap-dot-half--on {
-  background: var(--warn);
+  color: var(--warn);
 }
 
 .dmap-path {
   flex: 1;
   min-width: 0;
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
   overflow: hidden;
@@ -161,11 +134,10 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 }
 
 .dmap-delta {
-  font-family: var(--font);
   font-size: 12px;
   flex-shrink: 0;
   display: inline-flex;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .dmap-add {
@@ -177,8 +149,8 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 }
 
 .dmap-more {
-  margin: 4px 0 0 6px;
   font-size: 12px;
   color: var(--fg-dim);
+  padding-left: 1ch;
 }
 </style>

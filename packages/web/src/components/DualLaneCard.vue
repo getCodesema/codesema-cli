@@ -6,14 +6,6 @@ type Severity = 'critical' | 'major' | 'minor' | 'info'
 
 const SEVERITIES: ReadonlySet<Severity> = new Set(['critical', 'major', 'minor', 'info'])
 
-// Same mapping as ReviewLive's single-lane findings feed: kept in sync there.
-const SEVERITY_COLOR: Record<Severity, string> = {
-  critical: 'var(--err)',
-  major: 'var(--accent)',
-  minor: 'var(--warn)',
-  info: 'var(--ok)',
-}
-
 const SEVERITY_LABEL_KEY: Record<Severity, string> = {
   critical: 'diffView.sevCritical',
   major: 'diffView.sevMajor',
@@ -59,11 +51,11 @@ const severityCounts = computed(() => {
         <span
           v-for="sev in SEVERITIES"
           :key="sev"
-          class="dlane-chip"
+          class="dlane-chip sev"
           :class="{ 'dlane-chip--zero': severityCounts[sev] === 0 }"
+          :data-v="sev"
           :title="$t(SEVERITY_LABEL_KEY[sev])"
         >
-          <span class="dlane-chip-dot" :style="{ background: SEVERITY_COLOR[sev] }" />
           {{ severityCounts[sev] }}
         </span>
       </div>
@@ -77,8 +69,7 @@ const severityCounts = computed(() => {
       </p>
     </div>
 
-    <p v-else class="dlane-warming">
-      <span class="dlane-warm-dot" aria-hidden="true" />
+    <p v-else class="dlane-warming status" data-s="running">
       {{ $t('live.laneWarmingUp') }}
     </p>
   </div>
@@ -88,33 +79,26 @@ const severityCounts = computed(() => {
 .dlane-root {
   border: 1px solid var(--line);
   background: var(--bg-raised);
-  border-radius: 12px;
-  padding: 14px 16px;
+  padding: calc(var(--row) / 2) 1ch;
   min-width: 0;
-  transition:
-    opacity 0.25s ease,
-    padding 0.25s ease;
 }
 
 .dlane-root--dim {
-  opacity: 0.55;
-  padding: 10px 14px;
+  color: var(--fg-dim);
 }
 
 .dlane-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 1ch;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-dim);
-  margin-bottom: 10px;
 }
 
 .dlane-total {
-  font-family: var(--font);
   color: var(--accent);
   text-transform: none;
   letter-spacing: normal;
@@ -123,44 +107,29 @@ const severityCounts = computed(() => {
 .dlane-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .dlane-sevrow {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .dlane-chip {
   display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font);
+  align-items: baseline;
+  gap: 1ch;
   font-size: 12px;
-  color: var(--fg-dim);
   border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 2px 9px;
+  padding: 0 1ch;
 }
 
 .dlane-chip--zero {
-  color: var(--fg-dim);
-  opacity: 0.55;
-}
-
-.dlane-chip-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
+  color: var(--fg-muted);
 }
 
 .dlane-line {
-  margin: 0;
-  font-size: var(--fs);
   color: var(--fg-dim);
-  line-height: 1.5;
 }
 
 .dlane-line-tag {
@@ -169,34 +138,10 @@ const severityCounts = computed(() => {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-dim);
-  margin-right: 7px;
+  margin-right: 1ch;
 }
 
 .dlane-warming {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: var(--fs);
   color: var(--fg-dim);
-  font-style: italic;
-}
-
-.dlane-warm-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--fg-muted);
-  animation: dlane-warm-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes dlane-warm-pulse {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 1;
-  }
 }
 </style>
