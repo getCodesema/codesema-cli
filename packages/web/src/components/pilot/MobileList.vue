@@ -63,9 +63,9 @@ const needsYouCount = computed(
 
 <template>
   <div class="mbl-root">
-    <header class="mbl-head">
+    <header class="mbl-head queue-h">
       <h2 class="mbl-title">{{ t('pilot.mobile.title') }}</h2>
-      <span v-if="needsYouCount > 0" class="mbl-badge"
+      <span v-if="needsYouCount > 0" class="mbl-badge badge" data-tone="warn"
         >{{ needsYouCount }} {{ t('pilot.mobile.needsYou') }}</span
       >
     </header>
@@ -73,17 +73,18 @@ const needsYouCount = computed(
       <button
         v-for="row in rows"
         :key="row.state.record.id"
-        class="mbl-row"
+        class="mbl-row card"
+        :data-s="row.state.record.status"
         type="button"
         @click="emit('open', row.state.record.id)"
       >
         <span
-          class="mbl-dot"
-          :style="{ background: EXECUTION_STATUS[row.state.record.status].color }"
+          class="mbl-dot status"
+          :data-tone="EXECUTION_STATUS[row.state.record.status].tone"
           aria-hidden="true"
         />
         <span class="mbl-text">
-          <span class="mbl-row-title">{{ row.state.record.title }}</span>
+          <span class="mbl-row-title title">{{ row.state.record.title }}</span>
           <span v-if="row.lastText" class="mbl-row-last">{{ row.lastText }}</span>
         </span>
         <span class="mbl-meta">
@@ -105,11 +106,9 @@ const needsYouCount = computed(
 
 .mbl-head {
   flex: none;
-  height: 52px;
-  display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
+  gap: 2ch;
+  padding: calc(var(--row) / 2) 1ch;
   border-bottom: 1px solid var(--line);
   background: var(--bg-raised);
 }
@@ -117,19 +116,11 @@ const needsYouCount = computed(
 .mbl-title {
   margin: 0;
   flex: 1;
-  font-size: 18px;
-  font-weight: 600;
   color: var(--fg);
 }
 
 .mbl-badge {
-  font-size: 12px;
-  font-weight: 600;
   color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  border: 1px solid var(--warn);
-  border-radius: 999px;
-  padding: 3px 10px;
   white-space: nowrap;
 }
 
@@ -141,14 +132,15 @@ const needsYouCount = computed(
 .mbl-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 1ch;
   width: 100%;
-  padding: 12px 14px;
+  padding: calc(var(--row) / 2) 1ch;
   border: 0;
   border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--c);
   background: transparent;
   color: inherit;
-  font-family: inherit;
+  font: inherit;
   text-align: left;
   cursor: pointer;
 }
@@ -159,9 +151,6 @@ const needsYouCount = computed(
 
 .mbl-dot {
   flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
 }
 
 .mbl-text {
@@ -169,12 +158,9 @@ const needsYouCount = computed(
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .mbl-row-title {
-  font-size: var(--fs);
-  font-weight: 600;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -182,7 +168,6 @@ const needsYouCount = computed(
 }
 
 .mbl-row-last {
-  font-size: var(--fs);
   color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -194,11 +179,9 @@ const needsYouCount = computed(
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 5px;
 }
 
 .mbl-age {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-muted);
   white-space: nowrap;

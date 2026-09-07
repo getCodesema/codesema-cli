@@ -12,6 +12,7 @@ import {
 } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import { TASK_EVENT_COMPONENTS, type TaskEventCtx } from '../../task-event-registry'
@@ -241,32 +242,26 @@ function focusComposer(): void {
 </script>
 
 <template>
-  <section class="pt-root" :class="`pt-root--${record.status}`">
+  <section class="pt-root" :class="`pt-root--${record.status}`" :data-tone="visual.tone">
     <header class="pt-head">
-      <button v-if="showBack" class="pt-back" type="button" @click="emit('back')">
+      <button v-if="showBack" class="pt-back btn ghost" type="button" @click="emit('back')">
         {{ t('pilot.mobile.back') }}
       </button>
-      <span v-if="visual.attention" class="pt-warn" aria-hidden="true">⚠</span>
-      <span
-        v-else
-        class="pt-dot"
-        :class="{ 'pt-dot--pulse': visual.pulse }"
-        :style="{ background: visual.color }"
-        aria-hidden="true"
-      />
+      <span v-if="visual.attention" class="pt-warn" aria-hidden="true">{{ G.attention }}</span>
+      <span v-else class="pt-dot status" :data-tone="visual.tone" aria-hidden="true" />
       <span class="pt-head-text">
         <span class="pt-sub"
-          >{{ state.projectId }} · <span aria-hidden="true">⎇</span>
+          >{{ state.projectId }} · <span aria-hidden="true">{{ G.branch }}</span>
           {{ record.branch || record.base }}</span
         >
         <span class="pt-title">{{ record.title }}</span>
       </span>
-      <span class="pt-state" :style="{ color: visual.text }">{{ t(phraseKey) }} · {{ age }}</span>
+      <span class="pt-state">{{ t(phraseKey) }} · {{ age }}</span>
       <div v-if="hasActions" class="pt-actions">
         <button
           v-if="resumeState === 'ready'"
           type="button"
-          class="pt-action pt-action--resume"
+          class="btn pt-action pt-action--resume"
           :disabled="sending"
           @click="emit('resume')"
         >
@@ -275,7 +270,7 @@ function focusComposer(): void {
         <button
           v-if="canStop"
           type="button"
-          class="pt-action pt-action--stop"
+          class="btn pt-action pt-action--stop"
           :disabled="sending"
           @click="emit('stop')"
         >
@@ -284,7 +279,7 @@ function focusComposer(): void {
         <button
           v-if="canShip"
           type="button"
-          class="pt-action pt-action--ship"
+          class="btn pt-action pt-action--ship"
           :disabled="sending"
           @click="emit('ship')"
         >
@@ -294,7 +289,7 @@ function focusComposer(): void {
     </header>
 
     <div ref="scrollRef" class="pt-scroll" @scroll="onScroll">
-      <div class="pt-thread">
+      <div class="pt-thread thread">
         <template v-for="item in thread" :key="item.key">
           <template v-if="item.kind === 'single'">
             <TaskEventUser v-if="item.prompt !== null" :text="item.prompt" />
@@ -310,12 +305,12 @@ function focusComposer(): void {
 
           <details
             v-else-if="item.kind === 'tools'"
-            class="pt-tools"
+            class="pt-tools tools"
             :class="{ 'pt-tools--live': isLiveTools(item) }"
           >
             <summary class="pt-tools-summary">
               <template v-if="isLiveTools(item)">
-                <span class="pt-tools-dot" aria-hidden="true" />
+                <span class="pt-tools-dot status" data-tone="info" aria-hidden="true" />
                 <span class="pt-tools-label pt-tools-label--live"
                   >{{ t('workspace.agentWorking') }}{{ liveSummary() }}</span
                 >
@@ -359,7 +354,9 @@ function focusComposer(): void {
         >
           <p class="pt-live-text">
             {{ bubble.text
-            }}<span v-if="index === liveBubbles.length - 1" class="pt-caret" aria-hidden="true" />
+            }}<span v-if="index === liveBubbles.length - 1" class="pt-caret" aria-hidden="true">{{
+              G.cursor
+            }}</span>
           </p>
           <p v-if="index === liveBubbles.length - 1" class="pt-live-hint">
             {{ t('workspace.agentWriting') }}
@@ -369,7 +366,7 @@ function focusComposer(): void {
         <div v-if="reviewStreaming" class="pt-live pt-live--review">
           <span class="pt-live-tag">{{ t('workspace.evReviewStarted') }}</span>
           <p v-if="state.liveText.trim().length > 0" class="pt-live-text">
-            {{ state.liveText }}<span class="pt-caret" aria-hidden="true" />
+            {{ state.liveText }}<span class="pt-caret" aria-hidden="true">{{ G.cursor }}</span>
           </p>
         </div>
 
@@ -404,8 +401,8 @@ function focusComposer(): void {
   height: 100%;
   min-height: 0;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg-raised);
+  border-left: 3px solid var(--tone, var(--line));
+  background: var(--bg);
   overflow: hidden;
 }
 
@@ -413,22 +410,15 @@ function focusComposer(): void {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 52px;
-  padding: 8px 14px;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 1ch;
   border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
 }
 
 .pt-back {
   flex: none;
-  border: 0;
-  background: transparent;
   color: var(--fg-dim);
-  font-family: inherit;
-  font-size: var(--fs);
-  font-weight: 600;
-  padding: 4px 6px;
-  cursor: pointer;
 }
 
 .pt-back:hover {
@@ -437,28 +427,12 @@ function focusComposer(): void {
 
 .pt-dot {
   flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.pt-dot--pulse {
-  animation: pt-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes pt-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
 }
 
 .pt-warn {
   flex: none;
   color: var(--warn);
+  font-weight: 700;
 }
 
 .pt-head-text {
@@ -466,11 +440,9 @@ function focusComposer(): void {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
 .pt-sub {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
   white-space: nowrap;
@@ -479,8 +451,7 @@ function focusComposer(): void {
 }
 
 .pt-title {
-  font-size: 18px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
@@ -489,32 +460,20 @@ function focusComposer(): void {
 
 .pt-state {
   flex: none;
-  font-family: var(--font);
   font-size: 12px;
+  color: var(--tone, var(--fg-dim));
   white-space: nowrap;
 }
 
 .pt-actions {
   flex: none;
   display: flex;
-  gap: 8px;
+  gap: 1ch;
 }
 
-.pt-action {
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: transparent;
-  cursor: pointer;
-  transition: border-color 150ms ease;
-}
-
-.pt-action:disabled {
-  opacity: 0.45;
-  cursor: default;
+.pt-action--resume {
+  color: var(--warn);
+  border-color: var(--warn);
 }
 
 .pt-action--stop {
@@ -522,43 +481,28 @@ function focusComposer(): void {
   border-color: var(--err);
 }
 
-.pt-action--stop:hover:not(:disabled) {
-  border-color: var(--err);
-}
-
 .pt-action--ship {
   color: var(--bg);
   background: var(--ok);
   border-color: var(--ok);
+  font-weight: 700;
 }
 
 .pt-action--ship:hover:not(:disabled) {
-  background: var(--ok);
-  border-color: var(--ok);
-}
-
-.pt-action--resume {
-  color: var(--warn);
-  border-color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-
-.pt-action--resume:hover:not(:disabled) {
-  border-color: var(--warn);
+  background: var(--fg);
+  border-color: var(--fg);
 }
 
 .pt-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px 16px;
   background: var(--bg);
 }
 
 .pt-thread {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  max-height: none;
+  overflow: visible;
 }
 
 .pt-event {
@@ -572,30 +516,25 @@ function focusComposer(): void {
 
 .pt-block {
   align-self: stretch;
-  padding: 12px 14px;
+  padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
   border-left: 3px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg-hover);
+  background: var(--bg-raised);
 }
 
 .pt-tools {
   max-width: 85%;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-raised);
 }
 
 .pt-tools--live {
-  border-color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-color: var(--info);
 }
 
 .pt-tools-summary {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 11px;
+  gap: 1ch;
+  padding: 2px 1ch;
   cursor: pointer;
   list-style: none;
   font-size: 12px;
@@ -607,94 +546,61 @@ function focusComposer(): void {
 }
 
 .pt-tools-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--warn);
-  animation: pt-pulse 1.6s ease-in-out infinite;
+  flex: none;
 }
 
 .pt-tools-label--live {
-  color: var(--warn);
-  font-weight: 600;
-}
-
-.pt-tools-label--done {
-  font-family: var(--font);
-  font-size: 12px;
+  color: var(--info);
 }
 
 .pt-tools-body {
   border-top: 1px solid var(--line);
-  padding: 6px 11px 9px;
+  padding: 2px 1ch;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .pt-live {
   max-width: 85%;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-
-.pt-live--settled {
+  padding: 2px 1ch;
+  border-left: 2px solid var(--info);
   background: var(--bg-raised);
-  border: 1px solid var(--line);
 }
 
+.pt-live--settled,
 .pt-live--review {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
+  border-left-color: var(--line);
 }
 
 .pt-live-tag {
   display: inline-block;
-  margin-bottom: 4px;
-  font-family: var(--font);
   font-size: 12px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-dim);
 }
 
 .pt-live-text {
   margin: 0;
-  font-size: var(--fs);
-  line-height: 1.5;
   color: var(--fg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .pt-live-hint {
-  margin: 6px 0 0;
+  margin: 0;
   font-size: 12px;
-  color: var(--warn);
+  color: var(--fg-dim);
 }
 
 .pt-caret {
-  display: inline-block;
-  width: 7px;
-  height: 14px;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  background: var(--warn);
-  animation: pt-pulse 1s steps(2, start) infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pt-dot--pulse,
-  .pt-tools-dot,
-  .pt-caret {
-    animation: none;
-  }
+  color: var(--accent);
+  animation: blink 1s steps(2) infinite;
 }
 
 .pt-foot {
   flex: none;
-  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  padding: calc(var(--row) / 2) 1ch calc(var(--row) / 2 + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
   background: var(--bg-raised);
 }

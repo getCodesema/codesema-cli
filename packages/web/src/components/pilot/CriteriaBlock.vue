@@ -1,11 +1,26 @@
 <script setup lang="ts">
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
-import type { RecapRecord } from '../../types'
+import type { CriterionStatus, RecapRecord, TaskCheckStatus } from '../../types'
+
+const CRITERION_GLYPH: Record<CriterionStatus, string> = {
+  met: G.ok,
+  unmet: G.fail,
+  unclear: G.attention,
+}
+
+/** The kit's check-row tones are keyed on a check status: met reads as passed,
+ * unmet as failed, unclear as the amber timeout row. */
+const CRITERION_CHECK_STATUS: Record<CriterionStatus, TaskCheckStatus> = {
+  met: 'passed',
+  unmet: 'failed',
+  unclear: 'timeout',
+}
 
 // `criteria` is RecapRecord's own criteria[] (RecapCriterionVerdict: a status
 // plus the denormalized ticket text), not TaskRecord's (AcceptanceCriterion:
-// text only, no status): the pastille this block renders needs a verdict to
-// color itself with, which only the recap's shape carries.
+// text only, no status): the row this block renders needs a verdict to take
+// its tone from, which only the recap's shape carries.
 defineProps<{
   criteria?: RecapRecord['criteria']
 }>()
@@ -17,14 +32,20 @@ defineProps<{
     <p v-if="!criteria || criteria.length === 0" class="crb-empty">
       {{ t('pilot.criteria.none') }}
     </p>
-    <ul v-else class="crb-list">
-      <li v-for="verdict in criteria" :key="verdict.criterion_id" class="crb-row">
+    <ul v-else class="crb-list checks">
+      <li
+        v-for="verdict in criteria"
+        :key="verdict.criterion_id"
+        class="crb-row check-row"
+        :data-s="CRITERION_CHECK_STATUS[verdict.status]"
+      >
         <span
-          class="crb-dot"
+          class="crb-dot g"
           :class="`crb-dot--${verdict.status}`"
           :title="verdict.status"
           aria-hidden="true"
-        />
+          >{{ CRITERION_GLYPH[verdict.status] }}</span
+        >
         <span class="crb-body">
           <span class="crb-text">{{ verdict.text ?? verdict.criterion_id }}</span>
           <span v-if="verdict.evidence" class="crb-evidence"
@@ -40,22 +61,19 @@ defineProps<{
 .crb-root {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(var(--row) / 2);
 }
 
 .crb-title {
   margin: 0;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-size: var(--fs);
+  color: var(--fg-dim);
   text-transform: uppercase;
-  color: var(--fg-muted);
+  letter-spacing: 0.08em;
 }
 
 .crb-empty {
   margin: 0;
-  font-size: var(--fs);
   color: var(--fg-dim);
 }
 
@@ -63,32 +81,16 @@ defineProps<{
   margin: 0;
   padding: 0;
   list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
 .crb-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: var(--fs);
+  grid-template-columns: 2ch 1fr;
   color: var(--fg);
-}
-
-.crb-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--fg-dim);
-  margin-top: 4px;
 }
 
 .crb-body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
 
@@ -98,15 +100,15 @@ defineProps<{
 }
 
 .crb-dot--met {
-  background: var(--ok);
+  color: var(--ok);
 }
 
 .crb-dot--unmet {
-  background: var(--err);
+  color: var(--err);
 }
 
 .crb-dot--unclear {
-  background: var(--warn);
+  color: var(--warn);
 }
 
 .crb-text {

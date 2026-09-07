@@ -12,9 +12,9 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 </script>
 
 <template>
-  <div v-if="question !== null" class="qsb-root">
+  <div v-if="question !== null" class="qsb-root question">
     <p class="qsb-banner">{{ t('pilot.question.waiting') }}</p>
-    <p class="qsb-question">{{ question }}</p>
+    <p class="qsb-question q">{{ question }}</p>
     <QuickReplies
       :options="options"
       :disabled="disabled"
@@ -25,30 +25,17 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 </template>
 
 <style scoped>
-.qsb-root {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--warn);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-
 .qsb-banner {
   margin: 0;
-  font-family: var(--font);
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--warn);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .qsb-question {
   margin: 0;
-  font-size: var(--fs);
-  line-height: 1.5;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 </style>

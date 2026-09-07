@@ -32,32 +32,42 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
     <template v-else-if="recap">
       <!-- eslint-disable-next-line vue/no-v-html: renderMarkdown escapes everything first -->
       <div class="rcb-summary rcb-md" v-html="summaryHtml" />
-      <div v-if="recap.changes.length > 0" class="rcb-section">
-        <h4 class="rcb-section-title">{{ t('pilot.recap.changes') }}</h4>
-        <ul class="rcb-list">
-          <li v-for="(change, i) in recap.changes" :key="i">{{ change }}</li>
-        </ul>
-      </div>
-      <div v-if="recap.decisions.length > 0" class="rcb-section">
-        <h4 class="rcb-section-title">{{ t('pilot.recap.decisions') }}</h4>
-        <ul class="rcb-list">
-          <li v-for="(decision, i) in recap.decisions" :key="i">{{ decision }}</li>
-        </ul>
-      </div>
-      <div v-if="recap.files.length > 0" class="rcb-section">
-        <h4 class="rcb-section-title">{{ t('pilot.recap.files') }}</h4>
-        <ul class="rcb-list rcb-list--mono">
-          <li v-for="file in recap.files" :key="file">{{ file }}</li>
-        </ul>
-      </div>
-      <div v-if="recap.tests.length > 0" class="rcb-section">
-        <h4 class="rcb-section-title">{{ t('pilot.recap.tests') }}</h4>
-        <ul class="rcb-list rcb-list--mono">
-          <li v-for="(test, i) in recap.tests" :key="i">
-            {{ test.command }} : {{ t(RECAP_TEST_STATUS_KEY[test.status]) }}
-          </li>
-        </ul>
-      </div>
+      <dl class="rcb-sections kvs">
+        <template v-if="recap.changes.length > 0">
+          <dt class="rcb-section-title">{{ t('pilot.recap.changes') }}</dt>
+          <dd>
+            <ul class="rcb-list">
+              <li v-for="(change, i) in recap.changes" :key="i">{{ change }}</li>
+            </ul>
+          </dd>
+        </template>
+        <template v-if="recap.decisions.length > 0">
+          <dt class="rcb-section-title">{{ t('pilot.recap.decisions') }}</dt>
+          <dd>
+            <ul class="rcb-list">
+              <li v-for="(decision, i) in recap.decisions" :key="i">{{ decision }}</li>
+            </ul>
+          </dd>
+        </template>
+        <template v-if="recap.files.length > 0">
+          <dt class="rcb-section-title">{{ t('pilot.recap.files') }}</dt>
+          <dd>
+            <ul class="rcb-list rcb-list--mono">
+              <li v-for="file in recap.files" :key="file">{{ file }}</li>
+            </ul>
+          </dd>
+        </template>
+        <template v-if="recap.tests.length > 0">
+          <dt class="rcb-section-title">{{ t('pilot.recap.tests') }}</dt>
+          <dd>
+            <ul class="rcb-list rcb-list--mono">
+              <li v-for="(test, i) in recap.tests" :key="i">
+                {{ test.command }} : {{ t(RECAP_TEST_STATUS_KEY[test.status]) }}
+              </li>
+            </ul>
+          </dd>
+        </template>
+      </dl>
     </template>
   </section>
 </template>
@@ -66,51 +76,38 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 .rcb-root {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: calc(var(--row) / 2);
 }
 
 .rcb-title {
   margin: 0;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-size: var(--fs);
+  color: var(--fg-dim);
   text-transform: uppercase;
-  color: var(--fg-muted);
+  letter-spacing: 0.08em;
 }
 
 .rcb-pending {
   margin: 0;
-  font-size: var(--fs);
   color: var(--fg-dim);
 }
 
 .rcb-summary {
-  font-size: var(--fs);
-  line-height: 1.55;
   color: var(--fg);
 }
 
 .rcb-section-title {
-  margin: 0 0 4px;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  letter-spacing: 0.08em;
 }
 
 .rcb-list {
   margin: 0;
-  padding-left: 18px;
-  font-size: var(--fs);
-  line-height: 1.55;
+  padding-left: 2ch;
   color: var(--fg);
 }
 
 .rcb-list--mono {
-  font-family: var(--font);
   font-size: 12px;
 }
 
@@ -118,7 +115,7 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 .rcb-md :deep(ul),
 .rcb-md :deep(ol),
 .rcb-md :deep(pre) {
-  margin: 0 0 8px;
+  margin: 0 0 calc(var(--row) / 2);
 }
 
 .rcb-md :deep(:last-child) {
@@ -127,7 +124,7 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 
 .rcb-md :deep(h2),
 .rcb-md :deep(h3) {
-  margin: 12px 0 6px;
+  margin: var(--row) 0 calc(var(--row) / 2);
   font-size: var(--fs);
   font-weight: 700;
   color: var(--fg);
@@ -140,24 +137,18 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 
 .rcb-md :deep(ul),
 .rcb-md :deep(ol) {
-  padding-left: 20px;
-}
-
-.rcb-md :deep(li) {
-  margin: 2px 0;
+  padding-left: 2ch;
 }
 
 .rcb-md :deep(code) {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--ok);
   white-space: pre-wrap;
 }
 
 .rcb-md :deep(pre) {
-  padding: 9px 11px;
+  padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
-  border-radius: 8px;
   background: var(--bg-raised);
   overflow-x: auto;
 }
@@ -167,6 +158,6 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 }
 
 .rcb-md :deep(a) {
-  color: var(--ok);
+  color: var(--accent);
 }
 </style>

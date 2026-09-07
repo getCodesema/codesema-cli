@@ -86,8 +86,8 @@ describe('Lens: the zoomed block sits in an opaque panel, never bare on the veil
   const styleBlock = source.slice(source.indexOf('<style'), source.lastIndexOf('</style>'))
 
   test('the slot is a bounded, scrollable panel', () => {
-    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*background: var\(--bg-raised\);/)
-    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*border: 1px solid var\(--line\);/)
+    expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*background: var\(--bg\);/)
+    expect(source).toContain("flush ? 'pl-lens-slot--flush' : 'panel'")
     expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*width: min\(1100px, 100%\);/)
     expect(styleBlock).toMatch(/\.pl-lens-slot\s*\{[^}]*overflow: auto;/)
     expect(styleBlock).toMatch(/\.pl-lens-body\s*\{[^}]*grid-template-rows: minmax\(0, 1fr\);/)

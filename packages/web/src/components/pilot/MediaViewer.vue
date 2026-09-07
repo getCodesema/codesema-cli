@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type { EvidenceKind } from '../../types'
 import {
@@ -108,30 +109,30 @@ function onMediaClick(): void {
       @click="emit('close')"
     >
       <div class="mv-bar" @click.stop>
-        <button ref="closeButton" class="mv-btn" type="button" @click="emit('close')">
+        <button ref="closeButton" class="mv-btn btn" type="button" @click="emit('close')">
           {{ t('pilot.media.close') }}
         </button>
         <span class="mv-caption">{{ caption }}</span>
         <span class="mv-spacer" />
         <button
-          class="mv-btn mv-btn--icon"
+          class="mv-btn btn mv-btn--icon"
           type="button"
           :aria-label="t('pilot.media.zoomOut')"
           :disabled="!zoomed"
           @click="zoom = zoomOut(zoom)"
         >
-          −
+          {{ G.minus }}
         </button>
         <span class="mv-percent">{{ percent }}</span>
         <button
-          class="mv-btn mv-btn--icon"
+          class="mv-btn btn mv-btn--icon"
           type="button"
           :aria-label="t('pilot.media.zoomIn')"
           @click="zoom = zoomIn(zoom)"
         >
           +
         </button>
-        <button class="mv-btn" type="button" :disabled="!zoomed" @click="zoom = ZOOM_RESET">
+        <button class="mv-btn btn" type="button" :disabled="!zoomed" @click="zoom = ZOOM_RESET">
           {{ t('pilot.media.reset') }}
         </button>
       </div>
@@ -174,57 +175,33 @@ function onMediaClick(): void {
   inset: 0;
   z-index: 70;
   display: grid;
-  grid-template-rows: 44px 1fr;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(6px);
+  grid-template-rows: calc(var(--row) * 2) 1fr;
+  background: color-mix(in srgb, var(--bg) 96%, transparent);
 }
 
 .mv-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 18px;
+  gap: 1ch;
+  padding: 0 2ch;
   color: var(--fg-dim);
 }
 
 .mv-btn {
-  font-size: var(--fs);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
   color: var(--fg-dim);
-  cursor: pointer;
 }
 
 .mv-btn:hover:not(:disabled) {
   color: var(--fg);
-  border-color: var(--line);
-}
-
-.mv-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.mv-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .mv-btn--icon {
-  width: 32px;
-  padding: 6px 0;
-  font-size: 18px;
-  line-height: 1;
+  padding: 2px 1ch;
 }
 
 .mv-caption {
-  font-size: var(--fs);
-  font-weight: 600;
   color: var(--fg);
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -235,9 +212,8 @@ function onMediaClick(): void {
 }
 
 .mv-percent {
-  min-width: 48px;
+  min-width: 6ch;
   text-align: center;
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
 }
@@ -247,7 +223,7 @@ function onMediaClick(): void {
   overflow: hidden;
   display: grid;
   place-items: center;
-  padding: 0 24px 24px;
+  padding: 0 2ch var(--row);
   cursor: zoom-in;
   touch-action: none;
 }
@@ -264,7 +240,6 @@ function onMediaClick(): void {
   max-width: 100%;
   max-height: 100%;
   border: 1px solid var(--line);
-  border-radius: 8px;
   background: var(--bg-raised);
   transform-origin: center;
   transition: transform 150ms ease;

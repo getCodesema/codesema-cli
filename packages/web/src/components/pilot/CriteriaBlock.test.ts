@@ -113,7 +113,7 @@ describe('CriteriaBlock: a verdict carrying evidence shows it as a discreet line
 })
 
 describe('CriteriaBlock: no hex color literal in its scoped style', () => {
-  test('every color comes from a theme tokens', () => {
+  test('every color comes from a theme token', () => {
     const source = readFileSync(
       fileURLToPath(new URL('./CriteriaBlock.vue', import.meta.url)),
       'utf-8',

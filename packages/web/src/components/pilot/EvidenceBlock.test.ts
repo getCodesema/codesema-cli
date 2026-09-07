@@ -456,7 +456,7 @@ describe('EvidenceBlock: neither intent nor review present leaves the rendering 
 })
 
 describe('EvidenceBlock: no hex color literal in its scoped style', () => {
-  test('every color comes from a theme tokens', () => {
+  test('every color comes from a theme token', () => {
     const source = readFileSync(
       fileURLToPath(new URL('./EvidenceBlock.vue', import.meta.url)),
       'utf-8',

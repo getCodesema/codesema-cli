@@ -281,7 +281,7 @@ describe('PilotThread: the active question surfaces its own QuestionBlock, once'
 describe('PilotThread: composer', () => {
   test('the reply composer renders, disabled while sending', async () => {
     const html = await render({ sending: true })
-    expect(html).toContain('class="cc-root"')
+    expect(html).toContain('cc-root')
     expect(html).toContain(t('workspace.replyPlaceholder'))
     expect(html).toContain('disabled')
   })

@@ -98,7 +98,7 @@ describe('ChecksBlock: the overall verdict and one row per check', () => {
 })
 
 describe('ChecksBlock: no hex color literal in its scoped style', () => {
-  test('every color comes from a theme tokens', () => {
+  test('every color comes from a theme token', () => {
     const source = readFileSync(
       fileURLToPath(new URL('./ChecksBlock.vue', import.meta.url)),
       'utf-8',

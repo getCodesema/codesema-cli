@@ -5,6 +5,7 @@ import { extractQuickReplies } from '../../composables/useQuickReplies'
 import { agentCounts, lastQuestion } from '../../composables/useTaskBoard'
 import { useTasks, type ApiResult, type TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
+import { G } from '../../glyphs'
 import { t, type MessageKey } from '../../i18n'
 import type { TaskStatus } from '../../types'
 import AgentCard from './AgentCard.vue'
@@ -331,13 +332,13 @@ function onMobilePick(option: string): void {
         </span>
       </div>
       <div class="pv-spacer" />
-      <button type="button" class="pv-switch" @click="onSwitchShell">
+      <button type="button" class="pv-switch btn" @click="onSwitchShell">
         {{ t('pilot.toggle.classic') }}
       </button>
     </header>
 
     <div class="pv-grid" :style="{ 'grid-template-columns': laneGridTemplate }">
-      <p v-if="orderedStates.length === 0" class="pv-empty">{{ t('pilot.grid.empty') }}</p>
+      <p v-if="orderedStates.length === 0" class="pv-empty empty">{{ t('pilot.grid.empty') }}</p>
       <div
         v-for="state in visibleLaneStates"
         :key="`${state.projectId}:${state.record.id}`"
@@ -352,7 +353,7 @@ function onMobilePick(option: string): void {
             :aria-label="t(laneToggleKey(state.record.id))"
             @click.stop="onToggleLane(state.record.id)"
           >
-            {{ expandedLaneId === state.record.id ? '⤡' : '⤢' }}
+            {{ G.swap }}
           </button>
           <button
             type="button"
@@ -360,7 +361,7 @@ function onMobilePick(option: string): void {
             :aria-label="t('pilot.lane.close')"
             @click.stop="onCloseLane(state.record.id)"
           >
-            ✕
+            {{ G.ko }}
           </button>
         </div>
         <PilotThread
@@ -402,8 +403,8 @@ function onMobilePick(option: string): void {
         @click="onReopenLane(state.record.id)"
       >
         <span
-          class="pv-hidden-dot"
-          :style="{ background: EXECUTION_STATUS[state.record.status].color }"
+          class="pv-hidden-dot status"
+          :data-tone="EXECUTION_STATUS[state.record.status].tone"
           aria-hidden="true"
         />
         <span class="pv-hidden-title">{{ state.record.title }}</span>
@@ -489,9 +490,8 @@ function onMobilePick(option: string): void {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 16px;
-  height: 52px;
-  padding: 0 18px;
+  gap: 2ch;
+  padding: calc(var(--row) / 2) 2ch;
   border-bottom: 1px solid var(--line);
   background: var(--bg-raised);
 }
@@ -499,7 +499,7 @@ function onMobilePick(option: string): void {
 .pv-brand {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 1ch;
 }
 
 .pv-brand-name {
@@ -509,10 +509,8 @@ function onMobilePick(option: string): void {
 }
 
 .pv-brand-sub {
-  font-family: var(--font);
   font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-dim);
 }
@@ -520,14 +518,14 @@ function onMobilePick(option: string): void {
 .pv-counts {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 2ch;
   font-size: 12px;
   color: var(--fg-dim);
 }
 
 .pv-count--attention {
   color: var(--warn);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .pv-spacer {
@@ -535,19 +533,11 @@ function onMobilePick(option: string): void {
 }
 
 .pv-switch {
-  font-size: var(--fs);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
   color: var(--fg-dim);
-  cursor: pointer;
 }
 
 .pv-switch:hover {
-  border-color: var(--line);
+  color: var(--fg);
 }
 
 .pv-grid {
@@ -555,18 +545,15 @@ function onMobilePick(option: string): void {
   min-height: 0;
   overflow: auto;
   display: grid;
-  grid-auto-rows: minmax(320px, 1fr);
-  gap: 16px;
-  padding: 16px;
+  grid-auto-rows: minmax(calc(var(--row) * 14), 1fr);
+  gap: var(--row) 2ch;
+  padding: var(--row) 2ch;
 }
 
 .pv-empty {
   grid-column: 1 / -1;
   margin: auto;
-  max-width: 360px;
-  text-align: center;
-  font-size: var(--fs);
-  color: var(--fg-dim);
+  max-width: 60ch;
 }
 
 .pv-lane {
@@ -574,7 +561,6 @@ function onMobilePick(option: string): void {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  gap: 6px;
 }
 
 .pv-lane > .ac-root,
@@ -587,10 +573,10 @@ function onMobilePick(option: string): void {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 1ch;
+  padding: 2px 1ch;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-bottom: 0;
   background: var(--bg-raised);
   cursor: pointer;
 }
@@ -599,7 +585,6 @@ function onMobilePick(option: string): void {
   flex: 1;
   min-width: 0;
   font-size: 12px;
-  font-weight: 600;
   color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -610,10 +595,9 @@ function onMobilePick(option: string): void {
 .pv-lane-close {
   flex: none;
   border: 0;
-  border-radius: 5px;
   background: transparent;
-  padding: 3px 7px;
-  font-family: inherit;
+  padding: 0 1ch;
+  font: inherit;
   font-size: 12px;
   color: var(--fg-dim);
   cursor: pointer;
@@ -626,16 +610,15 @@ function onMobilePick(option: string): void {
 }
 
 .pv-lane-expand[aria-pressed='true'] {
-  color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--accent);
 }
 
 .pv-hidden-bar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 1ch;
+  padding: 2px 2ch;
   border-top: 1px solid var(--line);
   background: var(--bg-raised);
   overflow-x: auto;
@@ -652,11 +635,10 @@ function onMobilePick(option: string): void {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
   border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-family: inherit;
+  padding: 0 1ch;
+  font: inherit;
   font-size: 12px;
   color: var(--fg-dim);
   background: var(--bg-raised);
@@ -665,19 +647,16 @@ function onMobilePick(option: string): void {
 }
 
 .pv-hidden-chip:hover {
-  border-color: var(--line);
+  border-color: var(--fg-muted);
   color: var(--fg);
 }
 
 .pv-hidden-dot {
   flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
 }
 
 .pv-hidden-title {
-  max-width: 160px;
+  max-width: 24ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -697,8 +676,6 @@ function onMobilePick(option: string): void {
 .pv-mobile-thread {
   flex: 1;
   border: 0;
-  border-radius: 0;
-  box-shadow: none;
 }
 
 @media (max-width: 760px) {

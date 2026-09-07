@@ -327,7 +327,7 @@ describe("AgentCard: the action row mirrors TaskConversation's header conditions
       state: state({ record: record({ status: 'review_ok' }) }),
       sending: true,
     })
-    const match = html.match(/<button[^>]*class="ac-action ac-action--ship"[^>]*>/)
+    const match = html.match(/<button[^>]*class="btn ac-action ac-action--ship"[^>]*>/)
     expect(match).not.toBeNull()
     expect(match?.[0]).toContain('disabled')
   })
@@ -352,7 +352,7 @@ describe('AgentCard: the composer always renders', () => {
 })
 
 describe('AgentCard: no hex color literal in its scoped style', () => {
-  test('every color comes from a theme tokens', () => {
+  test('every color comes from a theme token', () => {
     const source = readFileSync(fileURLToPath(new URL('./AgentCard.vue', import.meta.url)), 'utf-8')
     const style = source.slice(source.indexOf('<style'))
     expect(style.match(/#[0-9a-fA-F]{3,8}\b/g)).toBeNull()

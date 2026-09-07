@@ -24,13 +24,16 @@ const tone = computed(() => checksTone(props.checks ?? null))
       <p class="ckb-verdict" :class="`ckb-verdict--${tone}`">
         {{ t(CHECKS_STATUS_KEY[checks.status]) }}
       </p>
-      <ul v-if="checks.checks.length > 0" class="ckb-list">
-        <li v-for="(check, i) in checks.checks" :key="`${check.command}-${i}`" class="ckb-row">
-          <span class="ckb-glyph" :class="`ckb-glyph--${check.status}`" aria-hidden="true">{{
-            CHECK_GLYPH[check.status]
-          }}</span>
+      <ul v-if="checks.checks.length > 0" class="ckb-list checks">
+        <li
+          v-for="(check, i) in checks.checks"
+          :key="`${check.command}-${i}`"
+          class="ckb-row check-row"
+          :data-s="check.status"
+        >
+          <span class="ckb-glyph g" aria-hidden="true">{{ CHECK_GLYPH[check.status] }}</span>
           <span class="ckb-command">{{ check.command }}</span>
-          <span class="ckb-status">{{ t(CHECK_STATUS_KEY[check.status]) }}</span>
+          <span class="ckb-status r">{{ t(CHECK_STATUS_KEY[check.status]) }}</span>
         </li>
       </ul>
     </template>
@@ -41,29 +44,25 @@ const tone = computed(() => checksTone(props.checks ?? null))
 .ckb-root {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(var(--row) / 2);
 }
 
 .ckb-title {
   margin: 0;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-size: var(--fs);
+  color: var(--fg-dim);
   text-transform: uppercase;
-  color: var(--fg-muted);
+  letter-spacing: 0.08em;
 }
 
 .ckb-empty {
   margin: 0;
-  font-size: var(--fs);
   color: var(--fg-dim);
 }
 
 .ckb-verdict {
   margin: 0;
-  font-size: var(--fs);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--fg-dim);
 }
 
@@ -83,42 +82,14 @@ const tone = computed(() => checksTone(props.checks ?? null))
   margin: 0;
   padding: 0;
   list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
 .ckb-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.ckb-glyph {
-  flex: none;
-  font-family: var(--font);
-  color: var(--fg-dim);
-}
-
-.ckb-glyph--passed {
-  color: var(--ok);
-}
-
-.ckb-glyph--failed,
-.ckb-glyph--timeout {
-  color: var(--err);
+  grid-template-columns: 2ch 1fr auto;
 }
 
 .ckb-command {
-  font-family: var(--font);
-  color: var(--fg);
+  min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.ckb-status {
-  margin-left: auto;
-  flex: none;
-  color: var(--fg-dim);
 }
 </style>

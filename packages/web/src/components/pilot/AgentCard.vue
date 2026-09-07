@@ -4,6 +4,7 @@ import { extractQuickReplies } from '../../composables/useQuickReplies'
 import { activityPhraseKey, lastQuestion, resumeStateOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import ChatComposer from '../composer/ChatComposer.vue'
@@ -80,24 +81,18 @@ function onSend(text: string): void {
 </script>
 
 <template>
-  <article class="ac-root" :class="`ac-root--${record.status}`">
+  <article class="ac-root card" :class="`ac-root--${record.status}`" :data-tone="visual.tone">
     <button type="button" class="ac-head" @click="emit('open-full')">
-      <span v-if="visual.attention" class="ac-warn" aria-hidden="true">⚠</span>
-      <span
-        v-else
-        class="ac-dot"
-        :class="{ 'ac-dot--pulse': visual.pulse }"
-        :style="{ background: visual.color }"
-        aria-hidden="true"
-      />
+      <span v-if="visual.attention" class="ac-warn" aria-hidden="true">{{ G.attention }}</span>
+      <span v-else class="ac-dot status" :data-tone="visual.tone" aria-hidden="true" />
       <span class="ac-head-text">
         <span class="ac-sub"
-          >{{ state.projectId }} · <span aria-hidden="true">⎇</span>
+          >{{ state.projectId }} · <span aria-hidden="true">{{ G.branch }}</span>
           {{ record.branch || record.base }}</span
         >
         <span class="ac-title">{{ record.title }}</span>
       </span>
-      <span class="ac-state" :style="{ color: visual.text }">{{ t(phraseKey) }} · {{ age }}</span>
+      <span class="ac-state">{{ t(phraseKey) }} · {{ age }}</span>
     </button>
 
     <!-- Not literal <button>s: EvidenceBlock can render a real <video
@@ -155,7 +150,7 @@ function onSend(text: string): void {
         <button
           v-if="resumeState === 'ready'"
           type="button"
-          class="ac-action ac-action--resume"
+          class="btn ac-action ac-action--resume"
           :disabled="sending"
           @click="emit('resume')"
         >
@@ -164,7 +159,7 @@ function onSend(text: string): void {
         <button
           v-if="canStop"
           type="button"
-          class="ac-action ac-action--stop"
+          class="btn ac-action ac-action--stop"
           :disabled="sending"
           @click="emit('stop')"
         >
@@ -173,7 +168,7 @@ function onSend(text: string): void {
         <button
           v-if="canShip"
           type="button"
-          class="ac-action ac-action--ship"
+          class="btn ac-action ac-action--ship"
           :disabled="sending"
           @click="emit('ship')"
         >
@@ -202,55 +197,38 @@ function onSend(text: string): void {
 .ac-root {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg-raised);
-  overflow: hidden;
+  gap: 0;
+  padding: 0;
+  cursor: default;
+  background: var(--bg);
+}
+
+.ac-root:hover {
+  background: var(--bg);
 }
 
 .ac-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 1ch;
   border: none;
   border-bottom: 1px solid var(--line);
   background: transparent;
   cursor: pointer;
   text-align: left;
-  font-family: inherit;
+  font: inherit;
+  color: var(--fg);
 }
 
 .ac-dot {
   flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.ac-dot--pulse {
-  animation: ac-pulse 1.6s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ac-dot--pulse {
-    animation: none;
-  }
-}
-
-@keyframes ac-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
 }
 
 .ac-warn {
   flex: none;
   color: var(--warn);
+  font-weight: 700;
 }
 
 .ac-head-text {
@@ -258,11 +236,9 @@ function onSend(text: string): void {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
 .ac-sub {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
   white-space: nowrap;
@@ -271,8 +247,7 @@ function onSend(text: string): void {
 }
 
 .ac-title {
-  font-size: 18px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
@@ -281,8 +256,8 @@ function onSend(text: string): void {
 
 .ac-state {
   flex: none;
-  font-family: var(--font);
   font-size: 12px;
+  color: var(--tone, var(--fg-dim));
   white-space: nowrap;
 }
 
@@ -295,58 +270,42 @@ function onSend(text: string): void {
 .ac-blocks {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: var(--row);
+  padding: var(--row) 1ch;
   min-width: 0;
 }
 
 .ac-zone {
   min-width: 0;
-  padding: 10px;
+  padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-hover);
+  background: var(--bg-raised);
   cursor: zoom-in;
-  outline: 2px solid transparent;
-  outline-offset: 2px;
-  transition: outline-color 150ms ease;
 }
 
 .ac-zone:hover,
 .ac-zone:focus-visible {
-  outline-color: var(--line);
+  border-color: var(--fg-muted);
 }
 
 .ac-foot {
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 14px 12px;
+  gap: calc(var(--row) / 2);
+  padding: calc(var(--row) / 2) 1ch;
   border-top: 1px solid var(--line);
 }
 
 .ac-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 1ch;
 }
 
-.ac-action {
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: transparent;
-  cursor: pointer;
-  transition: border-color 150ms ease;
-}
-
-.ac-action:disabled {
-  opacity: 0.45;
-  cursor: default;
+.ac-action--resume {
+  color: var(--warn);
+  border-color: var(--warn);
 }
 
 .ac-action--stop {
@@ -354,28 +313,15 @@ function onSend(text: string): void {
   border-color: var(--err);
 }
 
-.ac-action--stop:hover:not(:disabled) {
-  border-color: var(--err);
-}
-
 .ac-action--ship {
   color: var(--bg);
   background: var(--ok);
   border-color: var(--ok);
+  font-weight: 700;
 }
 
 .ac-action--ship:hover:not(:disabled) {
-  background: var(--ok);
-  border-color: var(--ok);
-}
-
-.ac-action--resume {
-  color: var(--warn);
-  border-color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-
-.ac-action--resume:hover:not(:disabled) {
-  border-color: var(--warn);
+  background: var(--fg);
+  border-color: var(--fg);
 }
 </style>

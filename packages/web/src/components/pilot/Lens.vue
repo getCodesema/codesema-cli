@@ -38,13 +38,18 @@ onUnmounted(() => {
       @click="emit('close')"
     >
       <div class="pl-lens-bar" @click.stop>
-        <button ref="closeButton" class="pl-lens-close" type="button" @click="emit('close')">
+        <button
+          ref="closeButton"
+          class="pl-lens-close btn ghost"
+          type="button"
+          @click="emit('close')"
+        >
           {{ t('pilot.lens.close') }}
         </button>
         <span class="pl-lens-title">{{ title }}</span>
       </div>
       <div class="pl-lens-body">
-        <div class="pl-lens-slot" :class="{ 'pl-lens-slot--flush': flush }" @click.stop>
+        <div class="pl-lens-slot" :class="flush ? 'pl-lens-slot--flush' : 'panel'" @click.stop>
           <slot />
         </div>
       </div>
@@ -57,53 +62,38 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: color-mix(in srgb, var(--bg) 78%, transparent);
-  backdrop-filter: blur(4px);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
   display: grid;
-  grid-template-rows: 44px 1fr;
+  grid-template-rows: calc(var(--row) * 2) 1fr;
 }
 
 .pl-lens-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 18px;
+  gap: 2ch;
+  padding: 0 2ch;
   color: var(--fg-dim);
 }
 
 .pl-lens-close {
-  font-size: var(--fs);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
   color: var(--fg-dim);
-  cursor: pointer;
+  border-color: var(--line);
 }
 
 .pl-lens-close:hover {
   color: var(--fg);
-  border-color: var(--line);
-}
-
-.pl-lens-close:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .pl-lens-title {
-  font-size: var(--fs);
-  font-weight: 600;
   color: var(--fg);
+  font-weight: 700;
 }
 
 .pl-lens-body {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   place-items: center;
-  padding: 0 24px 24px;
+  padding: 0 2ch var(--row);
   min-height: 0;
 }
 
@@ -112,10 +102,7 @@ onUnmounted(() => {
   min-width: 0;
   max-height: 100%;
   overflow: auto;
-  padding: 20px 24px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--bg-raised);
+  background: var(--bg);
 }
 
 .pl-lens-slot--flush {
@@ -123,8 +110,6 @@ onUnmounted(() => {
   overflow: visible;
   padding: 0;
   border: 0;
-  border-radius: 0;
   background: transparent;
-  box-shadow: none;
 }
 </style>
