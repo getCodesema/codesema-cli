@@ -138,6 +138,12 @@ const en = {
   'nav.backToReview': '← Back to review',
 
   'settings.title': 'Repo settings',
+  'settings.themeTitle': 'Theme',
+  'settings.themeHint': 'Stored in this browser only: it never touches the repo config.',
+  'settings.paletteLabel': 'Palette',
+  'settings.contrastLabel': 'Contrast',
+  'settings.contrastAa': 'AA',
+  'settings.contrastAaa': 'AAA',
   'settings.loading': 'Loading repo settings…',
   'settings.loadError': 'Could not load the repo settings.',
   'settings.rulesTitle': 'Review rules',
@@ -1093,6 +1099,13 @@ const fr: Record<MessageKey, string> = {
   'nav.backToReview': '← Retour à la revue',
 
   'settings.title': 'Paramètres du dépôt',
+  'settings.themeTitle': 'Thème',
+  'settings.themeHint':
+    'Mémorisé dans ce navigateur seulement : ne touche jamais la config du dépôt.',
+  'settings.paletteLabel': 'Palette',
+  'settings.contrastLabel': 'Contraste',
+  'settings.contrastAa': 'AA',
+  'settings.contrastAaa': 'AAA',
   'settings.loading': 'Chargement des paramètres…',
   'settings.loadError': 'Impossible de charger les paramètres du dépôt.',
   'settings.rulesTitle': 'Règles de revue',

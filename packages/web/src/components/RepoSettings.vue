@@ -8,6 +8,7 @@ import {
   type RunnerSettings,
 } from '../composables/useSettings'
 import type { AgentOption } from '../types'
+import ThemePicker from './ThemePicker.vue'
 
 type RepoConfigSnapshot = {
   rulesContent: string
@@ -327,6 +328,8 @@ onMounted(load)
 <template>
   <div class="cfg-root">
     <h1 class="cfg-title">{{ $t('settings.title') }}</h1>
+
+    <ThemePicker />
 
     <div v-if="loading" class="cfg-state">
       <span class="cfg-spinner" aria-hidden="true" />

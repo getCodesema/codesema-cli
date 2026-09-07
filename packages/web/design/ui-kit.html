@@ -1,0 +1,3006 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Codesema UI Kit</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Cascadia+Mono:ital,wght@0,400;0,700;1,400&amp;display=swap"
+    />
+  </head>
+  <body>
+    <style>
+      :root {
+        /* ---- tokens: Tokyo Night ---- */
+        --bg: #1a1b26;
+        --bg-raised: #1f2335;
+        --bg-hover: #292e42;
+        --line: #3b4261;
+        --fg: #c0caf5;
+        --fg-muted: #565f89; /* décoratif uniquement : arbre, #, désactivé. Jamais du texte à lire */
+        --fg-dim: #8a92bd; /* texte secondaire, AA ≥ 4.5 sur --bg et --bg-raised */
+        --accent: #7dcfff; /* focus, liens, action principale */
+        --ok: #9ece6a;
+        --warn: #e0af68;
+        --err: #f7768e;
+        --info: #7aa2f7;
+        --alt: #bb9af7;
+        /* ---- type ---- */
+        --font:
+          'CaskaydiaMono Nerd Font', 'CaskaydiaCove Nerd Font', 'Cascadia Mono', 'Cascadia Code',
+          'JetBrains Mono', ui-monospace, monospace;
+        --fs: 14px;
+        --lh: 1.6;
+        /* ---- espace : tout en multiples de 1ch / 1 ligne ---- */
+        --u: 1ch;
+        --row: calc(var(--fs) * var(--lh));
+      }
+      /* variante AAA (≥ 7:1 sur --bg et --bg-raised) : mêmes teintes, éclaircies */
+      :root[data-contrast='aaa'] {
+        --fg-dim: #a7adce;
+        --info: #8eb0f8;
+        --err: #f991a5;
+      }
+      /* palettes alternatives : mêmes rôles, AA garanti (couleurs éclaircies au besoin) */
+      :root[data-palette='nord'] {
+        --bg: #2e3440;
+        --bg-raised: #353b49;
+        --bg-hover: #3b4252;
+        --line: #4c566a;
+        --fg: #d8dee9;
+        --fg-dim: #a5adbd;
+        --fg-muted: #616e88;
+        --accent: #88c0d0;
+        --info: #88a8c8;
+        --ok: #a3be8c;
+        --warn: #ebcb8b;
+        --err: #ce969b;
+        --alt: #bf99b8;
+      }
+      /* Nord : fond trop clair pour passer les couleurs d'état à 7:1 sans les griser. AAA n'éclaircit que le texte secondaire. */
+      :root[data-palette='nord'][data-contrast='aaa'] {
+        --fg-dim: #c8ceda;
+      }
+      :root[data-palette='gruvbox'] {
+        --bg: #282828;
+        --bg-raised: #32302f;
+        --bg-hover: #3c3836;
+        --line: #504945;
+        --fg: #ebdbb2;
+        --fg-dim: #a89984;
+        --fg-muted: #7c6f64;
+        --accent: #8ec07c;
+        --info: #83a598;
+        --ok: #b8bb26;
+        --warn: #fabd2f;
+        --err: #fb6954;
+        --alt: #d3869b;
+      }
+      :root[data-palette='gruvbox'][data-contrast='aaa'] {
+        --fg-dim: #cbbca7;
+        --info: #a3c5b8;
+        --err: #fba59b;
+        --alt: #d3b5ca;
+        --accent: #99cb87;
+        --ok: #c1c438;
+      }
+      :root[data-palette='catppuccin'] {
+        --bg: #1e1e2e;
+        --bg-raised: #262638;
+        --bg-hover: #313244;
+        --line: #45475a;
+        --fg: #cdd6f4;
+        --fg-dim: #a6adc8;
+        --fg-muted: #6c7086;
+        --accent: #89dceb;
+        --info: #89b4fa;
+        --ok: #a6e3a1;
+        --warn: #f9e2af;
+        --err: #f38ba8;
+        --alt: #cba6f7;
+      }
+      :root[data-palette='catppuccin'][data-contrast='aaa'] {
+        --fg-dim: #abb2cd;
+        --err: #f398b5;
+      }
+      :root[data-palette='aamis'] {
+        --bg: #0f0f0f;
+        --bg-raised: #171515;
+        --bg-hover: #211e1e;
+        --line: #3a3535;
+        --fg: #eadccc;
+        --fg-dim: #b8a999;
+        --fg-muted: #706a6a;
+        --accent: #f4bb54;
+        --info: #d8c4a8;
+        --ok: #b8b36a;
+        --warn: #e07a3a;
+        --err: #e25d6c;
+        --alt: #a08a8a;
+      }
+      :root[data-palette='aamis'][data-contrast='aaa'] {
+        --err: #e28790;
+        --alt: #b29c9c;
+        --warn: #e08c5e;
+      }
+      :root[data-palette='artzen'] {
+        --bg: #181c1f;
+        --bg-raised: #1f2427;
+        --bg-hover: #2a3034;
+        --line: #3e4549;
+        --fg: #fdf9f8;
+        --fg-dim: #c4bcbb;
+        --fg-muted: #7a7270;
+        --accent: #ecbeb9;
+        --info: #9a8c8a;
+        --ok: #9fb08a;
+        --warn: #d7a06a;
+        --err: #ed555d;
+        --alt: #bb7872;
+      }
+      :root[data-palette='artzen'][data-contrast='aaa'] {
+        --info: #b9aba9;
+        --err: #ed969a;
+        --alt: #cea49e;
+        --ok: #a3b48e;
+        --warn: #d7a46e;
+      }
+      :root[data-palette='bauhaus'] {
+        --bg: #101318;
+        --bg-raised: #161b22;
+        --bg-hover: #2b3040;
+        --line: #3a3f4c;
+        --fg: #eaeff5;
+        --fg-dim: #a3ada7;
+        --fg-muted: #6c7c82;
+        --accent: #e37b66;
+        --info: #7fa3c8;
+        --ok: #789fa2;
+        --warn: #e9b95a;
+        --err: #ce634e;
+        --alt: #937b95;
+      }
+      :root[data-palette='bauhaus'][data-contrast='aaa'] {
+        --info: #85a9ce;
+        --err: #ce988e;
+        --alt: #b69eb8;
+        --accent: #e3907d;
+        --ok: #85acaf;
+      }
+      :root[data-palette='aetheria'] {
+        --bg: #0e091d;
+        --bg-raised: #150f28;
+        --bg-hover: #1f1738;
+        --line: #332a52;
+        --fg: #14b9b5;
+        --fg-dim: #5e9e9c;
+        --fg-muted: #4a3f66;
+        --accent: #c8e967;
+        --info: #04c5f0;
+        --ok: #7cd699;
+        --warn: #ffbe74;
+        --err: #e23c72;
+        --alt: #a167b8;
+      }
+      :root[data-palette='aetheria'][data-contrast='aaa'] {
+        --fg-dim: #70aaa8;
+        --err: #e282a1;
+        --alt: #c48bce;
+      }
+      :root[data-palette='arcblueberry'] {
+        --bg: #111422;
+        --bg-raised: #171b2e;
+        --bg-hover: #1e2440;
+        --line: #313b62;
+        --fg: #bcc1dc;
+        --fg-dim: #8a90b0;
+        --fg-muted: #4d5578;
+        --accent: #f38cec;
+        --info: #69c3ff;
+        --ok: #3cec85;
+        --warn: #eacd61;
+        --err: #e35535;
+        --alt: #22ecdb;
+      }
+      :root[data-palette='arcblueberry'][data-contrast='aaa'] {
+        --fg-dim: #9fa5c5;
+        --err: #e39181;
+      }
+      .seg {
+        display: inline-grid;
+        grid-auto-flow: column;
+        gap: 1px;
+        border: 1px solid var(--line);
+        background: var(--line);
+      }
+      .seg.palettes {
+        grid-auto-flow: row;
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .seg button {
+        font: inherit;
+        color: var(--fg-dim);
+        background: var(--bg);
+        border: 0;
+        padding: 2px 2ch;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .seg button[aria-pressed='true'] {
+        background: var(--fg);
+        color: var(--bg);
+        font-weight: 700;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 400 var(--fs)/var(--lh) var(--font);
+        font-variant-numeric: tabular-nums;
+        -webkit-font-smoothing: antialiased;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      a:hover {
+        color: var(--fg);
+      }
+      :focus-visible {
+        outline: 1px solid var(--accent);
+        outline-offset: 2px;
+      }
+      ::selection {
+        background: var(--line);
+      }
+
+      /* ---- layout ---- */
+      .page {
+        display: grid;
+        grid-template-columns: 34ch 1fr;
+        gap: 6ch;
+        max-width: 130ch;
+        margin: 0 auto;
+        padding: var(--row) 4ch calc(var(--row) * 4);
+      }
+      header.hero {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--row);
+        padding: calc(var(--row) * 2) 0 var(--row);
+        text-align: center;
+      }
+      .logo {
+        display: block;
+        width: min(56ch, 90vw);
+        height: auto;
+      }
+      .hero p {
+        margin: 0;
+        color: var(--fg-dim);
+        max-width: 60ch;
+      }
+
+      nav.toc {
+        position: sticky;
+        top: var(--row);
+        align-self: start;
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        border-right: 1px solid var(--line);
+        padding-right: 2ch;
+      }
+      nav.toc a {
+        display: grid;
+        grid-template-columns: 3ch 1fr;
+        gap: 1ch;
+        color: var(--info);
+        text-decoration: none;
+        padding: 2px 0;
+      }
+      nav.toc a span:first-child {
+        color: var(--fg-dim);
+      }
+      nav.toc a:hover {
+        color: var(--fg);
+      }
+      nav.toc a.current {
+        color: var(--fg);
+        font-weight: 700;
+      }
+      nav.toc a.current span:first-child {
+        color: var(--accent);
+      }
+
+      main {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--row) * 3);
+      }
+      section {
+        display: flex;
+        flex-direction: column;
+        gap: var(--row);
+        scroll-margin-top: var(--row);
+      }
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        font-weight: 700;
+        line-height: 1.3;
+        text-wrap: balance;
+      }
+      h1 {
+        font-size: 24px;
+      }
+      h2 {
+        font-size: 18px;
+      }
+      h2::before {
+        content: '# ';
+        color: var(--fg-muted);
+      }
+      h3 {
+        font-size: var(--fs);
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      p {
+        margin: 0;
+        max-width: 72ch;
+      }
+      p.note {
+        color: var(--fg-dim);
+      }
+      code,
+      kbd {
+        font-family: inherit;
+        background: var(--bg-raised);
+        padding: 0 0.5ch;
+        border-radius: 2px;
+      }
+      kbd {
+        border: 1px solid var(--line);
+        border-bottom-width: 2px;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1ch var(--row);
+        align-items: center;
+      }
+      .grid {
+        display: grid;
+        gap: 2ch;
+      }
+      .muted {
+        color: var(--fg-dim);
+      }
+
+      /* ---- panneau : titre intégré dans la bordure (style fastfetch) ---- */
+      .panel {
+        position: relative;
+        border: 1px solid var(--line);
+        padding: var(--row) 2ch;
+        background: var(--bg);
+      }
+      .panel > .panel-title {
+        position: absolute;
+        top: calc(var(--row) / -2);
+        right: 2ch;
+        background: var(--bg);
+        padding: 0 1ch;
+        color: var(--fg-dim);
+      }
+      .panel > .panel-title.left {
+        right: auto;
+        left: 2ch;
+      }
+
+      /* ---- tuile : une tâche / un worktree ---- */
+      .tile {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        min-height: calc(var(--row) * 7);
+        --tile: var(--line);
+        border-color: var(--tile);
+      }
+      .tile[data-state='focus'] {
+        --tile: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+      .tile[data-state='running'] {
+        --tile: var(--info);
+      }
+      .tile[data-state='waiting'] {
+        --tile: var(--warn);
+      }
+      .tile[data-state='done'] {
+        --tile: var(--ok);
+      }
+      .tile[data-state='error'] {
+        --tile: var(--err);
+      }
+      .tile-head {
+        display: grid;
+        grid-template-columns: 4ch 1fr auto;
+        gap: 1ch;
+        align-items: baseline;
+        padding: 2px 1ch;
+        border-bottom: 1px solid var(--tile);
+        color: var(--fg-dim);
+      }
+      .tile-head .idx {
+        color: var(--tile);
+      }
+      .tile-head .name {
+        color: var(--fg);
+        font-weight: 700;
+      }
+      .tile-body {
+        padding: calc(var(--row) / 2) 1ch;
+        color: var(--fg-dim);
+        flex: 1;
+        white-space: pre-wrap;
+        overflow: auto;
+      }
+      .tile-foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 1ch;
+        padding: 2px 1ch;
+        border-top: 1px solid var(--line);
+        color: var(--fg-dim);
+      }
+
+      /* ---- statut ---- */
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 1ch;
+        color: var(--fg-dim);
+      }
+      .status::before {
+        content: '●';
+      }
+      .status[data-s='idle']::before {
+        color: var(--fg-dim);
+      }
+      .status[data-s='running']::before {
+        color: var(--info);
+        animation: blink 1.2s steps(2) infinite;
+      }
+      .status[data-s='waiting']::before {
+        color: var(--warn);
+      }
+      .status[data-s='done']::before {
+        color: var(--ok);
+      }
+      .status[data-s='error']::before {
+        color: var(--err);
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0.25;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .status::before {
+          animation: none;
+        }
+      }
+      .badge {
+        display: inline-block;
+        padding: 0 1ch;
+        border: 1px solid currentColor;
+        color: var(--fg-dim);
+      }
+      .badge.ok {
+        color: var(--ok);
+      }
+      .badge.warn {
+        color: var(--warn);
+      }
+      .badge.err {
+        color: var(--err);
+      }
+      .badge.info {
+        color: var(--info);
+      }
+      .badge.alt {
+        color: var(--alt);
+      }
+
+      /* ---- boutons ---- */
+      .btn {
+        font: inherit;
+        cursor: pointer;
+        padding: 2px 2ch;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--fg);
+        border-radius: 0;
+      }
+      .btn:hover {
+        background: var(--bg-hover);
+      }
+      .btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--bg);
+        font-weight: 700;
+      }
+      .btn.primary:hover {
+        background: var(--fg);
+        border-color: var(--fg);
+      }
+      .btn.danger {
+        color: var(--err);
+        border-color: var(--err);
+      }
+      .btn.danger:hover {
+        background: var(--err);
+        color: var(--bg);
+      }
+      .btn.ghost {
+        border-color: transparent;
+        color: var(--fg-dim);
+      }
+      .btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .btn .key {
+        color: var(--fg-dim);
+        margin-left: 1ch;
+      }
+      .btn.primary .key {
+        color: var(--bg);
+        opacity: 0.6;
+      }
+
+      /* ---- arbre clé/valeur ---- */
+      .kv {
+        margin: 0;
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0 1ch;
+      }
+      .kv dt {
+        color: var(--fg-dim);
+      }
+      .kv dt::before {
+        content: '├─ ';
+        color: var(--fg-muted);
+      }
+      .kv dt:last-of-type::before {
+        content: '└─ ';
+      }
+      .kv dt.root::before {
+        content: '';
+      }
+      .kv dt.root {
+        color: var(--fg);
+        font-weight: 700;
+      }
+      .kv dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+
+      /* ---- log ---- */
+      .log {
+        margin: 0;
+        padding: calc(var(--row) / 2) 1ch;
+        background: var(--bg-raised);
+        border-left: 2px solid var(--line);
+        overflow-x: auto;
+        white-space: pre;
+        font: inherit;
+      }
+      .log .t {
+        color: var(--fg-dim);
+      }
+      .log .ok {
+        color: var(--ok);
+      }
+      .log .warn {
+        color: var(--warn);
+      }
+      .log .err {
+        color: var(--err);
+      }
+      .log .info {
+        color: var(--info);
+      }
+
+      /* ---- champs ---- */
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .field label {
+        color: var(--fg-dim);
+      }
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: var(--fg);
+        background: var(--bg-raised);
+        border: 1px solid var(--line);
+        padding: 2px 1ch;
+        border-radius: 0;
+        min-width: 24ch;
+      }
+      input::placeholder {
+        color: var(--fg-dim);
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .field .hint {
+        color: var(--fg-dim);
+      }
+      .field.invalid input {
+        border-color: var(--err);
+      }
+      .field.invalid .hint {
+        color: var(--err);
+      }
+      .check {
+        display: inline-flex;
+        gap: 1ch;
+        align-items: center;
+        cursor: pointer;
+      }
+      .check input {
+        min-width: 0;
+        accent-color: var(--accent);
+        margin: 0;
+      }
+
+      /* ---- tableau ---- */
+      .table-wrap {
+        overflow-x: auto;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 2px 1ch;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+      th {
+        color: var(--fg-dim);
+        font-weight: 400;
+        border-bottom-color: var(--fg-muted);
+      }
+      tr:hover td {
+        background: var(--bg-hover);
+      }
+      td.num {
+        text-align: right;
+      }
+
+      /* ---- onglets ---- */
+      .tabs {
+        display: flex;
+        gap: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .tab {
+        padding: 2px 2ch;
+        color: var(--fg-dim);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        cursor: pointer;
+      }
+      .tab[aria-selected='true'] {
+        color: var(--fg);
+        border-bottom-color: var(--accent);
+      }
+      .tab .n {
+        color: var(--fg-dim);
+        margin-right: 1ch;
+      }
+
+      /* ---- toast ---- */
+      .toast {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 2ch;
+        align-items: baseline;
+        border: 1px solid var(--line);
+        border-left-width: 3px;
+        padding: calc(var(--row) / 2) 2ch;
+        background: var(--bg-raised);
+        max-width: 64ch;
+      }
+      .toast.ok {
+        border-left-color: var(--ok);
+      }
+      .toast.err {
+        border-left-color: var(--err);
+      }
+      .toast.warn {
+        border-left-color: var(--warn);
+      }
+      .toast .k {
+        color: var(--fg-dim);
+      }
+
+      /* ---- swatches ---- */
+      .swatches {
+        grid-template-columns: repeat(auto-fill, minmax(18ch, 1fr));
+      }
+      .sw {
+        display: grid;
+        grid-template-columns: 4ch 1fr;
+        gap: 1ch;
+        align-items: center;
+      }
+      .sw i {
+        display: block;
+        width: 4ch;
+        height: calc(var(--row) * 1.6);
+        border: 1px solid var(--line);
+      }
+      .sw b {
+        display: block;
+        font-weight: 400;
+      }
+      .sw small {
+        display: block;
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+
+      /* ---- type scale ---- */
+      .scale > div {
+        display: grid;
+        grid-template-columns: 22ch 1fr;
+        gap: 2ch;
+        align-items: baseline;
+        padding: 4px 0;
+        border-bottom: 1px solid var(--bg-hover);
+      }
+      .scale > div span:first-child {
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+
+      /* ---- workspace demo ---- */
+      .ws {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        grid-auto-rows: calc(var(--row) * 11);
+        gap: 1ch;
+        padding: 1ch;
+        background: var(--bg-raised);
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        gap: 2ch;
+        padding: 2px 2ch;
+        background: var(--bg-raised);
+        color: var(--fg-dim);
+      }
+      .topbar .ws-n {
+        display: inline-flex;
+        gap: 2ch;
+      }
+      .topbar .ws-n b {
+        color: var(--fg);
+        font-weight: 400;
+        background: var(--bg-hover);
+        padding: 0 1ch;
+      }
+
+      /* ================= composants applicatifs (d'après packages/web) ================= */
+
+      /* ---- barre d'app + rail projets ---- */
+      .appbar {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        height: calc(var(--row) + 8px);
+        border: 1px solid var(--line);
+        background: var(--bg-raised);
+      }
+      .appbar > * {
+        display: flex;
+        align-items: center;
+        height: 100%;
+      }
+      .appbar .brand {
+        padding: 0 2ch;
+        border-right: 1px solid var(--line);
+        font-weight: 700;
+      }
+      .appbar .brand i {
+        font-style: normal;
+        color: var(--ok);
+      }
+      .appbar .search {
+        gap: 1ch;
+        padding: 0 2ch;
+        color: var(--fg-dim);
+      }
+      .appbar .search input {
+        flex: 1;
+        min-width: 0;
+        border: 0;
+        background: transparent;
+        padding: 0;
+        color: var(--fg);
+      }
+      .appbar .search input:focus {
+        outline: none;
+      }
+      .appbar .search kbd {
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .appbar .cells {
+        padding: 0;
+      }
+      .cell {
+        display: flex;
+        align-items: center;
+        gap: 1ch;
+        height: 100%;
+        padding: 0 2ch;
+        border-left: 1px solid var(--line);
+        color: var(--fg-dim);
+        white-space: nowrap;
+      }
+      .cell.warn {
+        color: var(--warn);
+      }
+      .cell.err {
+        color: var(--err);
+      }
+      .cell b {
+        font-weight: 400;
+        color: var(--fg);
+      }
+      button.cell {
+        font: inherit;
+        background: transparent;
+        border-top: 0;
+        border-right: 0;
+        border-bottom: 0;
+        cursor: pointer;
+      }
+      button.cell:hover {
+        background: var(--bg-hover);
+        color: var(--fg);
+      }
+      button.cell[aria-pressed='true'] {
+        background: var(--fg);
+        color: var(--bg);
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 30ch 1fr;
+        border: 1px solid var(--line);
+        border-top: 0;
+      }
+      .rail {
+        border-right: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+      }
+      .rail-h {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        height: calc(var(--row) + 4px);
+        padding: 0 1ch 0 2ch;
+        color: var(--fg-dim);
+        border-bottom: 1px solid var(--line);
+        background: var(--bg-raised);
+      }
+      .rail-h button {
+        font: inherit;
+        background: none;
+        border: 0;
+        color: var(--accent);
+        cursor: pointer;
+        padding: 0;
+      }
+      .proj {
+        display: grid;
+        grid-template-columns: 1ch 1fr auto;
+        gap: 1ch;
+        padding: 2px 1ch 2px 2ch;
+        align-items: baseline;
+        cursor: pointer;
+      }
+      .proj:hover {
+        background: var(--bg-hover);
+      }
+      .proj[aria-current='true'] {
+        background: var(--bg-hover);
+        color: var(--fg);
+      }
+      .proj[aria-current='true'] .name {
+        font-weight: 700;
+      }
+      .proj .dot {
+        color: var(--fg-muted);
+      }
+      .proj .dot.on {
+        color: var(--ok);
+      }
+      .proj .cnt {
+        color: var(--fg-dim);
+        font-variant-numeric: tabular-nums;
+      }
+      .proj .cnt b {
+        color: var(--warn);
+        font-weight: 400;
+      }
+      .rail .sub {
+        padding: 0 1ch 4px 3ch;
+        color: var(--fg-dim);
+      }
+      .rail .sub div::before {
+        content: '├─ ';
+        color: var(--fg-muted);
+      }
+      .rail .sub div:last-child::before {
+        content: '└─ ';
+      }
+      .shell .legend {
+        padding: var(--row) 2ch;
+      }
+
+      /* ---- carte de tâche (file de travail) ---- */
+      .queue {
+        display: flex;
+        flex-direction: column;
+        gap: var(--row);
+      }
+      .queue-h {
+        display: flex;
+        justify-content: space-between;
+        color: var(--fg-dim);
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 2px;
+      }
+      .queue-h.warn {
+        color: var(--warn);
+      }
+      .queue-h.ok {
+        color: var(--ok);
+      }
+      .queue-h .n {
+        color: var(--fg-muted);
+      }
+      .card {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 2px 2ch;
+        padding: calc(var(--row) / 2) 1ch;
+        border: 1px solid var(--line);
+        border-left-width: 3px;
+        cursor: pointer;
+        --c: var(--line);
+        border-left-color: var(--c);
+      }
+      .card:hover {
+        background: var(--bg-hover);
+      }
+      .card[data-s='waiting_for_you'] {
+        --c: var(--warn);
+      }
+      .card[data-s='running'],
+      .card[data-s='reviewing'] {
+        --c: var(--info);
+      }
+      .card[data-s='review_ok'],
+      .card[data-s='shipped'] {
+        --c: var(--ok);
+      }
+      .card[data-s='review_ko'],
+      .card[data-s='failed'] {
+        --c: var(--err);
+      }
+      .card[data-s='queued'],
+      .card[data-s='interrupted'] {
+        --c: var(--fg-muted);
+      }
+      .card .title {
+        font-weight: 700;
+      }
+      .card .meta {
+        grid-column: 1 / -1;
+        color: var(--fg-dim);
+        display: flex;
+        gap: 2ch;
+        flex-wrap: wrap;
+      }
+      .card .meta .q {
+        color: var(--fg-muted);
+      }
+      .card .act {
+        display: flex;
+        gap: 1ch;
+        align-self: start;
+      }
+      .card .ask {
+        grid-column: 1 / -1;
+        color: var(--warn);
+      }
+      .bar {
+        grid-column: 1 / -1;
+        height: 2px;
+        background: var(--line);
+        overflow: hidden;
+      }
+      .bar i {
+        display: block;
+        height: 100%;
+        width: 40%;
+        background: var(--info);
+        animation: slide 1.6s linear infinite;
+      }
+      @keyframes slide {
+        from {
+          transform: translateX(-100%);
+        }
+        to {
+          transform: translateX(250%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .bar i {
+          animation: none;
+          width: 100%;
+          opacity: 0.4;
+        }
+      }
+      .kvs {
+        margin: 0;
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0 2ch;
+      }
+      .kvs dt {
+        color: var(--fg-dim);
+      }
+      .kvs dd {
+        margin: 0;
+      }
+      .st {
+        display: grid;
+        grid-template-columns: 3ch max-content 1fr;
+        gap: 0 1ch;
+      }
+      .st .g {
+        text-align: center;
+      }
+      .st .k {
+        color: var(--fg-dim);
+      }
+
+      /* ---- conversation (chat ops) ---- */
+      .conv {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+      }
+      .conv-h {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 1ch;
+        padding: 2px 1ch;
+        border-bottom: 1px solid var(--line);
+      }
+      .conv-h .chips {
+        grid-column: 1 / -1;
+        display: flex;
+        gap: 2ch;
+        color: var(--fg-dim);
+        flex-wrap: wrap;
+      }
+      .conv-h .act {
+        display: flex;
+        gap: 1ch;
+      }
+      .conv .tabs {
+        padding: 0 1ch;
+      }
+      .thread {
+        display: flex;
+        flex-direction: column;
+        gap: var(--row);
+        padding: var(--row) 1ch;
+        max-height: calc(var(--row) * 26);
+        overflow: auto;
+      }
+      .msg {
+        display: grid;
+        grid-template-columns: 4ch 1fr;
+        gap: 1ch;
+      }
+      .msg .who {
+        color: var(--fg-muted);
+        text-align: right;
+      }
+      .msg .who.you {
+        color: var(--accent);
+      }
+      .msg .who.ai {
+        color: var(--fg-dim);
+      }
+      .msg .body {
+        min-width: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .msg.user .body {
+        color: var(--fg);
+        border-left: 2px solid var(--accent);
+        padding-left: 1ch;
+      }
+      .msg.live .body::after {
+        content: '▌';
+        color: var(--accent);
+        animation: blink 1s steps(2) infinite;
+      }
+      .msg .ts {
+        color: var(--fg-muted);
+        font-size: 12px;
+      }
+      .tools {
+        border: 1px solid var(--line);
+        background: var(--bg-raised);
+      }
+      .tools summary {
+        cursor: pointer;
+        padding: 2px 1ch;
+        color: var(--fg-dim);
+        list-style: none;
+      }
+      .tools summary::before {
+        content: '▸ ';
+        color: var(--fg-muted);
+      }
+      .tools[open] summary::before {
+        content: '▾ ';
+      }
+      .tools summary .status {
+        margin-right: 1ch;
+      }
+      .tool {
+        display: grid;
+        grid-template-columns: 2ch 1fr auto;
+        gap: 1ch;
+        padding: 0 1ch 0 3ch;
+        color: var(--fg-dim);
+      }
+      .tool .g {
+        color: var(--fg-muted);
+      }
+      .tool .g.ret {
+        color: var(--ok);
+      }
+      .tool code {
+        color: var(--fg);
+        background: none;
+        padding: 0;
+      }
+      .tool .d {
+        color: var(--fg-muted);
+      }
+      .question {
+        border: 1px solid var(--warn);
+        padding: calc(var(--row) / 2) 1ch;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .question .q {
+        color: var(--warn);
+      }
+      .question .q::before {
+        content: '? ';
+        font-weight: 700;
+      }
+      .qr {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1ch;
+      }
+      .qr .btn {
+        color: var(--warn);
+        border-color: var(--warn);
+      }
+      .qr .btn::before {
+        content: '→ ';
+      }
+      .qr .btn.ghost {
+        color: var(--fg-dim);
+        border-color: transparent;
+      }
+      .qr .btn.ghost::before {
+        content: '';
+      }
+      .strip {
+        display: flex;
+        justify-content: space-between;
+        gap: 2ch;
+        padding: 2px 1ch;
+        background: var(--bg-raised);
+        border-top: 1px solid var(--line);
+        color: var(--fg-dim);
+      }
+      .strip button {
+        font: inherit;
+        background: none;
+        border: 0;
+        color: var(--fg-dim);
+        cursor: pointer;
+      }
+      .composer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 1ch;
+        padding: calc(var(--row) / 2) 1ch;
+        border-top: 1px solid var(--line);
+      }
+      .composer textarea {
+        min-width: 0;
+        width: 100%;
+        resize: vertical;
+        min-height: calc(var(--row) * 2);
+      }
+      .composer[data-mode='question'] textarea {
+        border-color: var(--warn);
+      }
+      .composer[data-mode='dead'] {
+        color: var(--fg-dim);
+      }
+      .composer .hint {
+        grid-column: 1 / -1;
+        color: var(--fg-muted);
+        font-size: 12px;
+      }
+      .review-live {
+        border: 1px solid var(--info);
+        padding: 2px 1ch;
+        display: flex;
+        justify-content: space-between;
+        gap: 2ch;
+        color: var(--fg-dim);
+      }
+      .review-live b {
+        color: var(--info);
+        font-weight: 400;
+      }
+
+      /* ---- composer de tâche + plan ---- */
+      .plan {
+        border: 1px dashed var(--line);
+        padding: calc(var(--row) / 2) 1ch;
+      }
+      .plan .kvs dd.warn {
+        color: var(--warn);
+      }
+      .toggle {
+        display: inline-flex;
+        gap: 1ch;
+        align-items: center;
+        cursor: pointer;
+        color: var(--fg-dim);
+      }
+      .toggle i {
+        display: inline-block;
+        width: 5ch;
+        border: 1px solid var(--line);
+        font-style: normal;
+        text-align: left;
+        padding: 0 0.5ch;
+      }
+      .toggle[aria-pressed='true'] {
+        color: var(--fg);
+      }
+      .toggle[aria-pressed='true'] i {
+        border-color: var(--ok);
+        color: var(--ok);
+        text-align: right;
+      }
+
+      /* ---- diff ---- */
+      .diff {
+        border: 1px solid var(--line);
+      }
+      .diff-t {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 2ch;
+        height: calc(var(--row) + 4px);
+        padding: 0 2ch;
+        background: var(--bg-raised);
+        border-bottom: 1px solid var(--line);
+        color: var(--fg-dim);
+      }
+      .diff-t .seg {
+        height: calc(var(--row) - 2px);
+      }
+      .diff-t .seg button {
+        padding: 0 1ch;
+      }
+      .diff-f {
+        display: grid;
+        grid-template-columns: 2ch 1fr auto auto;
+        gap: 2ch;
+        align-items: center;
+        height: calc(var(--row) + 4px);
+        padding: 0 2ch;
+        background: var(--bg-raised);
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        cursor: pointer;
+      }
+      .diff-f:first-of-type {
+        border-top: 0;
+      }
+      .diff-f .chev {
+        color: var(--fg-muted);
+      }
+      .diff-f .path {
+        color: var(--fg);
+      }
+      .diff-f .notes {
+        color: var(--warn);
+      }
+      .diff-f .pm {
+        color: var(--fg-dim);
+        font-variant-numeric: tabular-nums;
+      }
+      .diff-f .pm .a {
+        color: var(--ok);
+      }
+      .diff-f .pm .d {
+        color: var(--err);
+      }
+      .diff-body {
+        overflow-x: auto;
+      }
+      .diff table {
+        border-collapse: collapse;
+        width: 100%;
+        table-layout: fixed;
+      }
+      .diff col.n {
+        width: 6ch;
+      }
+      .diff td {
+        padding: 0 1ch;
+        border: 0;
+        line-height: var(--lh);
+        white-space: pre;
+      }
+      .diff tr:hover td {
+        background: transparent;
+      }
+      .diff td.n {
+        text-align: right;
+        color: var(--fg-muted);
+        user-select: none;
+        background: var(--bg-raised);
+      }
+      .diff td.n + td.n {
+        border-right: 1px solid var(--line);
+      }
+      .diff tr.add td.c {
+        background: color-mix(in srgb, var(--ok) 14%, transparent);
+      }
+      .diff tr.add td.n:last-of-type {
+        color: var(--ok);
+      }
+      .diff tr.del td.c {
+        background: color-mix(in srgb, var(--err) 14%, transparent);
+      }
+      .diff tr.del td.n:first-of-type {
+        color: var(--err);
+      }
+      .diff tr.gap td.c {
+        color: var(--fg-muted);
+        cursor: pointer;
+      }
+      .diff tr.gap td.c::before {
+        content: '↕ ';
+      }
+      .diff tr.gap:hover td.c {
+        color: var(--accent);
+      }
+      .diff tr.note td.c {
+        white-space: normal;
+        padding: 6px 1ch;
+      }
+      .note {
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--kind, var(--info));
+        padding: 4px 1ch 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-width: 80ch;
+        background: var(--bg);
+      }
+      .note .h {
+        display: flex;
+        gap: 2ch;
+        align-items: baseline;
+        flex-wrap: wrap;
+      }
+      .note .h .t {
+        color: var(--fg);
+        font-weight: 700;
+      }
+      .note .h .who {
+        color: var(--fg-muted);
+        margin-left: auto;
+      }
+      .note .kind {
+        color: var(--kind, var(--info));
+        border: 1px solid currentColor;
+        padding: 0 1ch;
+      }
+      .note[data-kind='security'] {
+        --kind: var(--err);
+      }
+      .note[data-kind='perf'] {
+        --kind: var(--warn);
+      }
+      .note[data-kind='convention'] {
+        --kind: var(--info);
+      }
+      .note[data-kind='design'] {
+        --kind: var(--alt);
+      }
+      .note[data-kind='praise'] {
+        --kind: var(--ok);
+      }
+      .note[data-kind='why'] {
+        --kind: var(--fg-dim);
+      }
+      .note p {
+        color: var(--fg-dim);
+      }
+      .note pre {
+        margin: 0;
+        background: var(--bg-raised);
+        border-left: 2px solid var(--line);
+        padding: 2px 1ch;
+        overflow-x: auto;
+        white-space: pre;
+      }
+      .note .a {
+        display: flex;
+        gap: 1ch;
+      }
+      .sev {
+        color: var(--fg-dim);
+      }
+      .sev[data-v='critical'] {
+        color: var(--err);
+        font-weight: 700;
+      }
+      .sev[data-v='major'] {
+        color: var(--err);
+      }
+      .sev[data-v='minor'] {
+        color: var(--warn);
+      }
+      .sev[data-v='info'] {
+        color: var(--info);
+      }
+      .kinds {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(22ch, 1fr));
+        gap: 2px 2ch;
+      }
+      .kinds .note {
+        flex-direction: row;
+        align-items: baseline;
+        gap: 1ch;
+        padding: 2px 1ch;
+        border-left-width: 3px;
+      }
+      .kinds .note span:last-child {
+        color: var(--fg-dim);
+      }
+
+      /* ---- checks ---- */
+      .checks {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .check-row {
+        display: grid;
+        grid-template-columns: 2ch 1fr auto auto;
+        gap: 2ch;
+        padding: 2px 1ch;
+        border: 1px solid var(--line);
+        align-items: baseline;
+      }
+      .check-row .g {
+        text-align: center;
+      }
+      .check-row[data-s='passed'] .g {
+        color: var(--ok);
+      }
+      .check-row[data-s='failed'] .g {
+        color: var(--err);
+      }
+      .check-row[data-s='timeout'] .g {
+        color: var(--warn);
+      }
+      .check-row[data-s='skipped'] .g,
+      .check-row[data-s='skipped'] {
+        color: var(--fg-dim);
+      }
+      .check-row .r {
+        color: var(--fg-dim);
+      }
+      .check-row details {
+        grid-column: 1 / -1;
+      }
+      .check-row summary {
+        color: var(--fg-dim);
+        cursor: pointer;
+      }
+
+      /* ---- verdict de review ---- */
+      .verdict {
+        display: inline-flex;
+        gap: 1ch;
+        align-items: center;
+        padding: 0 1ch;
+        border: 1px solid currentColor;
+      }
+      .verdict[data-v='go'] {
+        color: var(--ok);
+      }
+      .verdict[data-v='check'] {
+        color: var(--warn);
+      }
+      .verdict[data-v='stop'] {
+        color: var(--err);
+      }
+      .verdict::before {
+        content: '●';
+      }
+      .steprail {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        overflow-x: auto;
+        padding: 2px 0;
+      }
+      .steprail .node {
+        padding: 0 1ch;
+        border: 1px solid var(--line);
+        white-space: nowrap;
+        color: var(--fg-dim);
+        cursor: pointer;
+      }
+      .steprail .node.done {
+        color: var(--ok);
+        border-color: var(--ok);
+      }
+      .steprail .node.cur {
+        color: var(--fg);
+        border-color: var(--accent);
+        font-weight: 700;
+      }
+      .steprail .node.risk {
+        border-color: var(--err);
+      }
+      .steprail .link {
+        width: 2ch;
+        border-top: 1px solid var(--line);
+      }
+      .stepcard {
+        display: grid;
+        grid-template-columns: 3ch 1fr auto;
+        gap: 1ch;
+        padding: 4px 1ch;
+        border: 1px solid var(--line);
+      }
+      .stepcard .i {
+        color: var(--fg-muted);
+      }
+      .stepcard .r {
+        color: var(--fg-dim);
+        grid-column: 2;
+      }
+      .stepcard .risk {
+        font-size: 12px;
+      }
+      .stepcard .risk[data-r='high'] {
+        color: var(--err);
+      }
+      .stepcard .risk[data-r='medium'] {
+        color: var(--warn);
+      }
+      .stepcard .risk[data-r='low'] {
+        color: var(--ok);
+      }
+
+      /* ---- états système ---- */
+      .empty {
+        border: 1px dashed var(--line);
+        padding: var(--row) 2ch;
+        color: var(--fg-dim);
+        text-align: center;
+      }
+      .empty b {
+        display: block;
+        color: var(--fg);
+        font-weight: 400;
+      }
+      .live {
+        display: flex;
+        gap: 1ch;
+        align-items: baseline;
+        padding: 2px 1ch;
+        border-left: 3px solid var(--warn);
+        background: var(--bg-raised);
+      }
+      .live.err {
+        border-left-color: var(--err);
+      }
+      .btn.armed {
+        background: var(--err);
+        border-color: var(--err);
+        color: var(--bg);
+      }
+
+      @media (max-width: 900px) {
+        .page {
+          grid-template-columns: 1fr;
+          gap: var(--row);
+          padding-inline: 2ch;
+        }
+        nav.toc {
+          position: static;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          padding: 0 0 var(--row);
+        }
+        .ws {
+          grid-template-columns: 1fr;
+        }
+        .shell {
+          grid-template-columns: 1fr;
+        }
+        .rail {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+        .appbar {
+          grid-template-columns: auto 1fr;
+        }
+        .appbar .cells {
+          grid-column: 1 / -1;
+          border-top: 1px solid var(--line);
+        }
+        .appbar {
+          height: auto;
+        }
+        .appbar > * {
+          height: calc(var(--row) + 8px);
+        }
+      }
+    </style>
+
+    <div class="page">
+      <header class="hero">
+        <svg
+          class="logo"
+          viewBox="0 0 76 9"
+          shape-rendering="crispEdges"
+          aria-label="codesema"
+          role="img"
+          style="fill: var(--ok)"
+        >
+          <!-- 1 unité = 1 pixel de la grille -->
+          <path d="M1 1h6v2H3v3h4v2H1z"></path>
+          <path d="M9 1h6v7H9zm2 2v3h2V3z"></path>
+          <path d="M17 1h5l1 1v5l-1 1h-5zm2 2v3h2V3z"></path>
+          <path d="M25 1h6v2h-4v1h4v2h-4v1h4v1h-6z"></path>
+          <path d="M33 1h6v2h-4v1h4v4h-6V6h4V5h-4z"></path>
+          <path d="M41 1h6v2h-4v1h4v2h-4v1h4v1h-6z"></path>
+          <path d="M49 1h2l2 2 2-2h2v7h-2V4l-2 2-2-2v4h-2z"></path>
+          <path d="M59 1h6v7h-2V6h-2v2h-2zm2 2v1h2V3z"></path>
+          <path d="M67 3h2v2h-2zM67 6h2v2h-2z" style="fill: var(--accent)"></path>
+        </svg>
+        <h1>Codesema UI Kit</h1>
+        <p>
+          Un thème, une police, huit couleurs. Chaque composant du workspace est défini ici une
+          fois, dans tous ses états, puis réutilisé tel quel dans <code>codesema-tools web</code>.
+        </p>
+        <div class="row" style="justify-content: center">
+          <div class="seg palettes" role="group" aria-label="Palette">
+            <button type="button" data-p="tokyonight" aria-pressed="true">Tokyo Night</button>
+            <button type="button" data-p="nord" aria-pressed="false">Nord</button>
+            <button type="button" data-p="gruvbox" aria-pressed="false">Gruvbox Dark</button>
+            <button type="button" data-p="catppuccin" aria-pressed="false">Catppuccin Mocha</button>
+            <button type="button" data-p="bauhaus" aria-pressed="false">Bauhaus</button>
+            <button type="button" data-p="aamis" aria-pressed="false">Aamis</button>
+            <button type="button" data-p="aetheria" aria-pressed="false">Aetheria</button>
+            <button type="button" data-p="arcblueberry" aria-pressed="false">Arc Blueberry</button>
+            <button type="button" data-p="artzen" aria-pressed="false">Artzen</button>
+          </div>
+          <div class="seg" role="group" aria-label="Niveau de contraste">
+            <button type="button" data-c="aa" aria-pressed="true">AA</button>
+            <button type="button" data-c="aaa" aria-pressed="false">AAA</button>
+          </div>
+        </div>
+      </header>
+
+      <nav class="toc" aria-label="Sommaire">
+        <a href="#principes" class=""><span>01</span><span>Principes</span></a>
+        <a href="#couleurs" class="current"><span>02</span><span>Couleurs</span></a>
+        <a href="#typo"><span>03</span><span>Typographie &amp; espace</span></a>
+        <a href="#panneau"><span>04</span><span>Panneau</span></a>
+        <a href="#tuile"><span>05</span><span>Tuile de tâche</span></a>
+        <a href="#statut"><span>06</span><span>Statuts &amp; badges</span></a>
+        <a href="#boutons"><span>07</span><span>Boutons</span></a>
+        <a href="#kv"><span>08</span><span>Arbre clé / valeur</span></a>
+        <a href="#log"><span>09</span><span>Journal</span></a>
+        <a href="#champs"><span>10</span><span>Champs</span></a>
+        <a href="#tableau"><span>11</span><span>Tableau &amp; onglets</span></a>
+        <a href="#toast"><span>12</span><span>Notifications</span></a>
+        <a href="#workspace"><span>13</span><span>Workspace assemblé</span></a>
+        <a href="#appbar"><span>14</span><span>Barre d'app &amp; rail</span></a>
+        <a href="#queue"><span>15</span><span>File de travail</span></a>
+        <a href="#conversation"><span>16</span><span>Conversation</span></a>
+        <a href="#composer"><span>17</span><span>Nouvelle tâche &amp; plan</span></a>
+        <a href="#diff"><span>18</span><span>Diff &amp; notes</span></a>
+        <a href="#checks"><span>19</span><span>Checks</span></a>
+        <a href="#review"><span>20</span><span>Verdict &amp; parcours</span></a>
+        <a href="#etats"><span>21</span><span>États système</span></a>
+      </nav>
+
+      <main>
+        <section id="principes">
+          <h2>Principes</h2>
+          <p>
+            Cinq règles, pas une de plus. Si un écran les respecte, il ressemble au reste sans
+            effort.
+          </p>
+          <dl class="kv">
+            <dt class="root">règles</dt>
+            <dd></dd>
+            <dt>police</dt>
+            <dd>
+              une seule, monospace, partout. La hiérarchie vient du gras et de la couleur, jamais
+              d'une deuxième fonte.
+            </dd>
+            <dt>grille</dt>
+            <dd>
+              tout est un multiple de <code>1ch</code> en largeur et d'une ligne
+              (<code>--row</code>) en hauteur.
+            </dd>
+            <dt>couleur</dt>
+            <dd>
+              gris pour le calme, une seule couleur d'accent pour le focus et l'action, quatre
+              couleurs sémantiques pour l'état.
+            </dd>
+            <dt>bordures</dt>
+            <dd>1px, sans arrondi, sans ombre. La bordure d'une tuile <em>est</em> son état.</dd>
+            <dt>texte</dt>
+            <dd>72 caractères max par ligne, interligne 1.6, jamais de blanc pur.</dd>
+          </dl>
+        </section>
+
+        <section id="couleurs">
+          <h2>Couleurs</h2>
+          <p>
+            Palette Tokyo Night. Les quatre premières font 95 % de l'écran ; l'accent et les
+            couleurs d'état sont rares, donc visibles.
+          </p>
+          <h3>Fonds &amp; texte</h3>
+          <div class="grid swatches">
+            <div class="sw">
+              <i style="background: var(--bg)"></i>
+              <div>
+                <b>--bg</b><small><span class="hex">#1a1b26</span> · fond</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--bg-raised)"></i>
+              <div>
+                <b>--bg-raised</b><small><span class="hex">#1f2335</span> · champs, log</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--bg-hover)"></i>
+              <div>
+                <b>--bg-hover</b><small><span class="hex">#292e42</span> · survol</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--line)"></i>
+              <div>
+                <b>--line</b><small><span class="hex">#3b4261</span> · bordures</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--fg)"></i>
+              <div>
+                <b>--fg</b><small><span class="hex">#c0caf5</span> · texte</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--fg-dim)"></i>
+              <div>
+                <b>--fg-dim</b><small><span class="hex">#8a92bd</span> · secondaire (AA)</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--fg-muted)"></i>
+              <div>
+                <b>--fg-muted</b
+                ><small><span class="hex">#565f89</span> · décoratif seulement</small>
+              </div>
+            </div>
+          </div>
+          <h3>Accent &amp; état</h3>
+          <div class="grid swatches">
+            <div class="sw">
+              <i style="background: var(--accent)"></i>
+              <div>
+                <b>--accent</b
+                ><small><span class="hex">#7dcfff</span> · focus, liens, action</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--info)"></i>
+              <div>
+                <b>--info</b><small><span class="hex">#7aa2f7</span> · en cours</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--ok)"></i>
+              <div>
+                <b>--ok</b><small><span class="hex">#9ece6a</span> · terminé</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--warn)"></i>
+              <div>
+                <b>--warn</b><small><span class="hex">#e0af68</span> · en attente</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--err)"></i>
+              <div>
+                <b>--err</b><small><span class="hex">#f7768e</span> · erreur</small>
+              </div>
+            </div>
+            <div class="sw">
+              <i style="background: var(--alt)"></i>
+              <div>
+                <b>--alt</b><small><span class="hex">#bb9af7</span> · agent custom</small>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="typo">
+          <h2>Typographie &amp; espace</h2>
+          <p>
+            Police : <b>CaskaydiaMono Nerd Font</b> si installée, sinon Cascadia Mono depuis Google
+            Fonts. Une seule taille de corps ; les titres montent d'un cran, jamais deux.
+          </p>
+          <div class="scale">
+            <div>
+              <span>h1 · 24px 700</span>
+              <h1>Titre de page</h1>
+            </div>
+            <div>
+              <span>h2 · 18px 700</span>
+              <h2 style="display: inline">Titre de section</h2>
+            </div>
+            <div>
+              <span>h3 · 14px caps</span>
+              <h3>Sous-titre</h3>
+            </div>
+            <div>
+              <span>body · 14px / 1.6</span
+              ><span
+                >Texte courant, <a href="#typo">un lien</a>, <code>du code</code>, <kbd>Ctrl</kbd>
+                <kbd>K</kbd>, <em>italique</em>, <b>gras</b>.</span
+              >
+            </div>
+            <div>
+              <span>small · 12px</span
+              ><small class="muted">Légende, horodatage, aide contextuelle.</small>
+            </div>
+          </div>
+          <p class="note">
+            Espacement : 1ch horizontal, 1 ligne vertical. Padding d'un panneau = 1 ligne × 2ch. Gap
+            entre tuiles = 1ch. Rien d'autre à mémoriser.
+          </p>
+        </section>
+
+        <section id="panneau">
+          <h2>Panneau</h2>
+          <p>
+            Le titre vit dans la bordure, à droite par défaut. C'est le seul élément décoratif de
+            tout le kit, et il porte du sens : il nomme le groupe.
+          </p>
+          <div
+            class="grid"
+            style="
+              grid-template-columns: repeat(auto-fit, minmax(30ch, 1fr));
+              margin-top: calc(var(--row) / 2);
+            "
+          >
+            <div class="panel">
+              <span class="panel-title">Hardware</span>
+              <dl class="kv">
+                <dt class="root">PC</dt>
+                <dd>Inspiron 15 3520</dd>
+                <dt>cpu</dt>
+                <dd>i5-1235U</dd>
+                <dt>mem</dt>
+                <dd>5.10 GiB / 15.30 GiB <span style="color: var(--ok)">(33%)</span></dd>
+              </dl>
+            </div>
+            <div class="panel">
+              <span class="panel-title left">Agents</span>
+              <dl class="kv">
+                <dt class="root">roster</dt>
+                <dd></dd>
+                <dt>claude</dt>
+                <dd><span class="status" data-s="running">2 actifs</span></dd>
+                <dt>codex</dt>
+                <dd><span class="status" data-s="idle">inactif</span></dd>
+                <dt>custom</dt>
+                <dd><span class="badge alt">reviewer</span></dd>
+              </dl>
+            </div>
+          </div>
+        </section>
+
+        <section id="tuile">
+          <h2>Tuile de tâche</h2>
+          <p>
+            Une tuile = une tâche = un worktree. La couleur de bordure dit l'état, le focus ajoute
+            un double trait. Aucune icône nécessaire.
+          </p>
+          <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(34ch, 1fr))">
+            <article class="tile" data-state="idle">
+              <div class="tile-head">
+                <span class="idx">01</span><span class="name">fix-auth-redirect</span
+                ><span class="status" data-s="idle">idle</span>
+              </div>
+              <div class="tile-body">Aucun agent assigné.</div>
+              <div class="tile-foot"><span>⎇ wt/fix-auth</span><span>—</span></div>
+            </article>
+            <article class="tile" data-state="focus">
+              <div class="tile-head">
+                <span class="idx">02</span><span class="name">migrate-bun</span
+                ><span class="status" data-s="running">running</span>
+              </div>
+              <div class="tile-body">claude · lecture package.json › remplace npm scripts…</div>
+              <div class="tile-foot">
+                <span>⎇ wt/migrate-bun</span><span>focus · <kbd>2</kbd></span>
+              </div>
+            </article>
+            <article class="tile" data-state="running">
+              <div class="tile-head">
+                <span class="idx">03</span><span class="name">add-tile-layout</span
+                ><span class="status" data-s="running">running</span>
+              </div>
+              <div class="tile-body">codex · écrit src/ui/grid.ts +124 −8</div>
+              <div class="tile-foot"><span>⎇ wt/tile-layout</span><span>4m 12s</span></div>
+            </article>
+            <article class="tile" data-state="waiting">
+              <div class="tile-head">
+                <span class="idx">04</span><span class="name">rename-package</span
+                ><span class="status" data-s="waiting">waiting</span>
+              </div>
+              <div class="tile-body">claude demande : « Garder l'alias <code>nolyra</code> ? »</div>
+              <div class="tile-foot">
+                <span>⎇ wt/rename</span><span>répondre · <kbd>Enter</kbd></span>
+              </div>
+            </article>
+            <article class="tile" data-state="done">
+              <div class="tile-head">
+                <span class="idx">05</span><span class="name">lint-cleanup</span
+                ><span class="status" data-s="done">done</span>
+              </div>
+              <div class="tile-body">3 fichiers · tests ok · prêt à merger</div>
+              <div class="tile-foot">
+                <span>⎇ wt/lint</span><span>merge · <kbd>m</kbd></span>
+              </div>
+            </article>
+            <article class="tile" data-state="error">
+              <div class="tile-head">
+                <span class="idx">06</span><span class="name">upgrade-deps</span
+                ><span class="status" data-s="error">error</span>
+              </div>
+              <div class="tile-body" style="color: var(--err)">
+                bun install : conflit de peer dep sur zod@4
+              </div>
+              <div class="tile-foot">
+                <span>⎇ wt/deps</span><span>relancer · <kbd>r</kbd></span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="statut">
+          <h2>Statuts &amp; badges</h2>
+          <p>
+            Le statut est un point coloré suivi d'un mot. Le badge est un mot dans un cadre fin : il
+            classe, il ne juge pas.
+          </p>
+          <div class="row">
+            <span class="status" data-s="idle">idle</span>
+            <span class="status" data-s="running">running</span>
+            <span class="status" data-s="waiting">waiting</span>
+            <span class="status" data-s="done">done</span>
+            <span class="status" data-s="error">error</span>
+          </div>
+          <div class="row">
+            <span class="badge">worktree</span>
+            <span class="badge info">claude</span>
+            <span class="badge alt">custom</span>
+            <span class="badge ok">merged</span>
+            <span class="badge warn">stale</span>
+            <span class="badge err">conflict</span>
+          </div>
+        </section>
+
+        <section id="boutons">
+          <h2>Boutons</h2>
+          <p>
+            Un seul bouton plein par écran. Le raccourci clavier est affiché dans le bouton, pas
+            dans une infobulle.
+          </p>
+          <div class="row">
+            <button class="btn primary">Lancer <span class="key">Enter</span></button>
+            <button class="btn">Ouvrir le diff <span class="key">d</span></button>
+            <button class="btn ghost">Annuler <span class="key">Esc</span></button>
+            <button class="btn danger">Supprimer le worktree</button>
+            <button class="btn" disabled="">Merger</button>
+          </div>
+        </section>
+
+        <section id="kv">
+          <h2>Arbre clé / valeur</h2>
+          <p>
+            La structure fastfetch : une racine en gras, des branches en caractères de boîte. Sert
+            aux détails d'une tâche, d'un agent, d'un worktree.
+          </p>
+          <dl class="kv">
+            <dt class="root">migrate-bun</dt>
+            <dd class="muted">tâche #02</dd>
+            <dt>agent</dt>
+            <dd>claude · <span class="badge info">opus</span></dd>
+            <dt>worktree</dt>
+            <dd>.codesema/wt/migrate-bun</dd>
+            <dt>branche</dt>
+            <dd>feat/migrate-bun ← main</dd>
+            <dt>diff</dt>
+            <dd>
+              <span style="color: var(--ok)">+312</span>
+              <span style="color: var(--err)">−140</span> · 9 fichiers
+            </dd>
+            <dt>durée</dt>
+            <dd>12m 04s</dd>
+          </dl>
+        </section>
+
+        <section id="log">
+          <h2>Journal</h2>
+          <p>
+            Sortie brute, jamais reformatée. Horodatage en gris, niveau en couleur, le reste en
+            texte.
+          </p>
+          <pre
+            class="log"
+          ><span class="t">14:30:02</span> <span class="info">info</span>  worktree créé  .codesema/wt/migrate-bun
+<span class="t">14:30:03</span> <span class="info">info</span>  agent claude démarré (opus)
+<span class="t">14:31:40</span> <span class="ok">ok</span>    bun install · 412 paquets · 1.8s
+<span class="t">14:33:15</span> <span class="warn">warn</span>  script "postinstall" ignoré (husky → lefthook)
+<span class="t">14:34:01</span> <span class="err">err</span>   bun test · 2 échecs · src/cli/init.test.ts
+<span class="t">14:34:02</span> <span class="info">info</span>  agent en attente d'une réponse</pre>
+        </section>
+
+        <section id="champs">
+          <h2>Champs</h2>
+          <p>
+            Fond légèrement relevé, bordure qui passe à l'accent au focus. L'erreur est une couleur
+            de bordure et une ligne de texte, pas une icône.
+          </p>
+          <div class="row" style="align-items: flex-start">
+            <div class="field">
+              <label for="f1">Nom de la tâche</label
+              ><input id="f1" placeholder="fix-auth-redirect" /><span class="hint"
+                >kebab-case, devient le nom de branche</span
+              >
+            </div>
+            <div class="field">
+              <label for="f2">Agent</label
+              ><select id="f2">
+                <option>claude · opus</option>
+                <option>claude · sonnet</option>
+                <option>codex</option>
+                <option>custom · reviewer</option>
+              </select>
+            </div>
+            <div class="field invalid">
+              <label for="f3">Base</label><input id="f3" value="main " /><span class="hint"
+                >branche introuvable : « main » (espace final)</span
+              >
+            </div>
+          </div>
+          <div class="row">
+            <label class="check"
+              ><input type="checkbox" checked="" /> Créer le worktree maintenant</label
+            >
+            <label class="check"><input type="checkbox" /> Ouvrir dans une nouvelle tuile</label>
+          </div>
+        </section>
+
+        <section id="tableau">
+          <h2>Tableau &amp; onglets</h2>
+          <div class="tabs" role="tablist">
+            <span class="tab" role="tab" aria-selected="true"><span class="n">1</span>Tâches</span>
+            <span class="tab" role="tab" aria-selected="false"
+              ><span class="n">2</span>Worktrees</span
+            >
+            <span class="tab" role="tab" aria-selected="false"><span class="n">3</span>Agents</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>tâche</th>
+                  <th>agent</th>
+                  <th>état</th>
+                  <th class="num">diff</th>
+                  <th class="num">durée</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="muted">01</td>
+                  <td>fix-auth-redirect</td>
+                  <td class="muted">—</td>
+                  <td><span class="status" data-s="idle">idle</span></td>
+                  <td class="num muted">—</td>
+                  <td class="num muted">—</td>
+                </tr>
+                <tr>
+                  <td class="muted">02</td>
+                  <td>migrate-bun</td>
+                  <td>claude</td>
+                  <td><span class="status" data-s="running">running</span></td>
+                  <td class="num">+312 −140</td>
+                  <td class="num">12m 04s</td>
+                </tr>
+                <tr>
+                  <td class="muted">03</td>
+                  <td>add-tile-layout</td>
+                  <td>codex</td>
+                  <td><span class="status" data-s="running">running</span></td>
+                  <td class="num">+124 −8</td>
+                  <td class="num">4m 12s</td>
+                </tr>
+                <tr>
+                  <td class="muted">04</td>
+                  <td>rename-package</td>
+                  <td>claude</td>
+                  <td><span class="status" data-s="waiting">waiting</span></td>
+                  <td class="num">+18 −18</td>
+                  <td class="num">2m 50s</td>
+                </tr>
+                <tr>
+                  <td class="muted">05</td>
+                  <td>lint-cleanup</td>
+                  <td>claude</td>
+                  <td><span class="status" data-s="done">done</span></td>
+                  <td class="num">+0 −61</td>
+                  <td class="num">1m 07s</td>
+                </tr>
+                <tr>
+                  <td class="muted">06</td>
+                  <td>upgrade-deps</td>
+                  <td>codex</td>
+                  <td><span class="status" data-s="error">error</span></td>
+                  <td class="num">+2 −2</td>
+                  <td class="num">0m 38s</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="toast">
+          <h2>Notifications</h2>
+          <p>
+            Trait vertical coloré à gauche, clé en gris, message en clair, action à droite. Même
+            forme pour les trois niveaux.
+          </p>
+          <div class="toast ok">
+            <span class="k">#05</span><span>lint-cleanup mergé dans main</span
+            ><a href="#toast">voir</a>
+          </div>
+          <div class="toast warn">
+            <span class="k">#04</span><span>rename-package attend une réponse</span
+            ><a href="#toast">répondre</a>
+          </div>
+          <div class="toast err">
+            <span class="k">#06</span><span>upgrade-deps : bun install a échoué</span
+            ><a href="#toast">relancer</a>
+          </div>
+        </section>
+
+        <section id="workspace">
+          <h2>Workspace assemblé</h2>
+          <p>
+            Tout ce qui précède, posé ensemble. Barre du haut façon Hyprland : numéros de workspace
+            à gauche, horloge, état global à droite.
+          </p>
+          <div>
+            <div class="topbar">
+              <span class="ws-n"><b>1</b><span>2</span><span>3</span></span>
+              <span>Monday 14:34</span>
+              <span
+                ><span class="status" data-s="running">2</span>
+                <span class="status" data-s="waiting">1</span>
+                <span class="status" data-s="error">1</span></span
+              >
+            </div>
+            <div class="ws">
+              <article class="tile" data-state="focus">
+                <div class="tile-head">
+                  <span class="idx">02</span><span class="name">migrate-bun</span
+                  ><span class="status" data-s="running">running</span>
+                </div>
+                <div class="tile-body">
+                  claude · opus › bun install ok › bun test : 2 échecs › corrige
+                  src/cli/init.test.ts…
+                </div>
+                <div class="tile-foot"><span>⎇ wt/migrate-bun</span><span>12m 04s</span></div>
+              </article>
+              <article class="tile" data-state="running">
+                <div class="tile-head">
+                  <span class="idx">03</span><span class="name">add-tile-layout</span
+                  ><span class="status" data-s="running">running</span>
+                </div>
+                <div class="tile-body">codex › écrit src/ui/grid.ts › +124 −8</div>
+                <div class="tile-foot"><span>⎇ wt/tile-layout</span><span>4m 12s</span></div>
+              </article>
+              <article class="tile" data-state="waiting">
+                <div class="tile-head">
+                  <span class="idx">04</span><span class="name">rename-package</span
+                  ><span class="status" data-s="waiting">waiting</span>
+                </div>
+                <div class="tile-body">
+                  claude demande : « Garder l'alias nolyra dans package.json ? »
+                </div>
+                <div class="tile-foot">
+                  <span>⎇ wt/rename</span><span>répondre · <kbd>Enter</kbd></span>
+                </div>
+              </article>
+              <article class="tile" data-state="error">
+                <div class="tile-head">
+                  <span class="idx">06</span><span class="name">upgrade-deps</span
+                  ><span class="status" data-s="error">error</span>
+                </div>
+                <div class="tile-body" style="color: var(--err)">
+                  bun install : conflit de peer dep sur zod@4
+                </div>
+                <div class="tile-foot">
+                  <span>⎇ wt/deps</span><span>relancer · <kbd>r</kbd></span>
+                </div>
+              </article>
+            </div>
+          </div>
+          <p class="note">
+            Navigation prévue : <kbd>1</kbd>–<kbd>9</kbd> focus tuile, <kbd>n</kbd> nouvelle tâche,
+            <kbd>d</kbd> diff, <kbd>m</kbd> merge, <kbd>Esc</kbd> retour.
+          </p>
+        </section>
+
+        <section id="appbar">
+          <h2>Barre d'app &amp; rail projets</h2>
+          <p>
+            Traduction de <code>WorkspaceHeader</code> et <code>ProjectsNav</code>. La cloche compte
+            les tâches qui attendent une réponse, le compteur d'agents ce qui tourne.
+          </p>
+          <div class="appbar">
+            <span class="brand">code<i>sema</i></span>
+            <label class="search"
+              ><span>⌕</span><input placeholder="tâche, branche, MR…" aria-label="Recherche" /><kbd
+                >⌘K</kbd
+              ></label
+            >
+            <span class="cells">
+              <span class="cell warn">⚠ <b>2</b> à répondre</span>
+              <span class="cell"><span class="status" data-s="running"></span><b>3</b> agents</span>
+              <span class="cell err">forge hors ligne</span>
+              <button type="button" class="cell" aria-pressed="false">réglages</button>
+            </span>
+          </div>
+          <div class="shell">
+            <div class="rail">
+              <div class="rail-h"><span>projets</span><button type="button">+ ajouter</button></div>
+              <div class="proj" aria-current="true">
+                <span class="dot on">●</span><span class="name">codesema-cli</span
+                ><span class="cnt"><b>2</b> · 3</span>
+              </div>
+              <div class="sub">
+                <div>⎇ feat/migrate-bun</div>
+                <div>⎇ fix/auth-redirect</div>
+                <div>!42 rename package</div>
+              </div>
+              <div class="proj">
+                <span class="dot on">●</span><span class="name">nolyra</span
+                ><span class="cnt">1</span>
+              </div>
+              <div class="proj">
+                <span class="dot">○</span><span class="name">speccov</span
+                ><span class="cnt">—</span>
+              </div>
+            </div>
+            <div class="legend">
+              <dl class="kvs">
+                <dt>cellules</dt>
+                <dd>
+                  même hauteur, même padding, séparées d'un trait. Un chiffre en clair, le libellé
+                  en gris.
+                </dd>
+                <dt>● vert</dt>
+                <dd>au moins un agent actif sur le projet</dd>
+                <dt>○ gris</dt>
+                <dd>projet au repos</dd>
+                <dt><b style="color: var(--warn)">2</b> · 3</dt>
+                <dd>2 attendent une réponse, 3 en cours</dd>
+                <dt>réglages</dt>
+                <dd>bouton dans la barre, s'inverse quand le panneau est ouvert</dd>
+              </dl>
+            </div>
+          </div>
+        </section>
+
+        <section id="queue">
+          <h2>File de travail</h2>
+          <p>
+            Les cartes de <code>WorkQueue</code>, groupées en quatre sections fixes. Le trait gauche
+            porte le statut, les boutons n'apparaissent que là où une action est possible.
+          </p>
+          <div class="queue">
+            <div class="queue-h warn"><span>⚠ besoin de toi</span><span class="n">2</span></div>
+            <article class="card" data-s="waiting_for_you">
+              <span class="title">rename-package</span
+              ><span class="act"><button class="btn">répondre</button></span>
+              <span class="ask">« Garder l'alias nolyra dans package.json ? »</span>
+              <span class="meta"
+                ><span>codesema-cli</span><span>⎇ wt/rename</span><span>claude · opus</span
+                ><span>attend depuis 4m</span></span
+              >
+            </article>
+            <article class="card" data-s="review_ko">
+              <span class="title">upgrade-deps</span
+              ><span class="act"
+                ><button class="btn">voir la review</button
+                ><button class="btn">corriger</button></span
+              >
+              <span class="ask" style="color: var(--err)">review : 1 critique, 2 majeurs</span>
+              <span class="meta"
+                ><span>codesema-cli</span><span>⎇ wt/deps</span><span>codex</span></span
+              >
+            </article>
+            <div class="queue-h"><span>en cours</span><span class="n">3</span></div>
+            <article class="card" data-s="running">
+              <span class="title">migrate-bun</span
+              ><span class="act"><button class="btn ghost">interrompre</button></span>
+              <span class="bar"><i></i></span>
+              <span class="meta"
+                ><span>codesema-cli</span><span>⎇ wt/migrate-bun</span><span>claude · opus</span
+                ><span>12m 04s</span></span
+              >
+            </article>
+            <article class="card" data-s="queued">
+              <span class="title">lint-cleanup-2</span><span class="act"></span>
+              <span class="meta"
+                ><span class="q">file d'attente · position 2</span><span>nolyra</span></span
+              >
+            </article>
+            <div class="queue-h ok"><span>prêt à expédier</span><span class="n">1</span></div>
+            <article class="card" data-s="review_ok">
+              <span class="title">lint-cleanup</span
+              ><span class="act"
+                ><button class="btn primary">expédier</button
+                ><button class="btn">diff</button></span
+              >
+              <span class="meta"
+                ><span>codesema-cli</span><span>⎇ wt/lint</span
+                ><span class="badge ok">checks ✓</span><span>+0 −61</span></span
+              >
+            </article>
+            <div class="queue-h"><span>▸ terminé</span><span class="n">14</span></div>
+          </div>
+          <h3>Les 9 statuts de tâche</h3>
+          <div class="st">
+            <span class="g" style="color: var(--fg-muted)">○</span><span class="k">queued</span
+            ><span>en attente d'un créneau</span> <span class="g" style="color: var(--info)">●</span
+            ><span class="k">running</span><span>agent au travail</span>
+            <span class="g" style="color: var(--warn)">?</span><span class="k">waiting_for_you</span
+            ><span>question posée, humain requis</span>
+            <span class="g" style="color: var(--info)">◎</span><span class="k">reviewing</span
+            ><span>review automatique en cours</span>
+            <span class="g" style="color: var(--ok)">✓</span><span class="k">review_ok</span
+            ><span>prêt à expédier</span> <span class="g" style="color: var(--err)">✕</span
+            ><span class="k">review_ko</span><span>findings bloquants</span>
+            <span class="g" style="color: var(--ok)">↗</span><span class="k">shipped</span
+            ><span>poussé / mergé</span> <span class="g" style="color: var(--err)">✕</span
+            ><span class="k">failed</span><span>erreur, voir la raison</span>
+            <span class="g" style="color: var(--fg-dim)">‖</span><span class="k">interrupted</span
+            ><span>arrêté par l'utilisateur</span>
+          </div>
+          <p class="note">
+            Même glyphes que <code>execution-status.ts</code> aujourd'hui. Seules les couleurs
+            changent : elles viennent des tokens.
+          </p>
+        </section>
+
+        <section id="conversation">
+          <h2>Conversation</h2>
+          <p>
+            Le cœur de <code>TaskConversation</code> : en-tête avec actions, trois onglets, fil de
+            messages, groupe d'outils repliable, question avec réponses rapides, bulle en cours
+            d'écriture, composeur.
+          </p>
+          <div class="conv">
+            <div class="conv-h">
+              <span
+                ><span class="status" data-s="waiting">●</span> <b>rename-package</b>
+                <span class="muted">📌</span></span
+              >
+              <span class="act"
+                ><button class="btn ghost">interrompre</button
+                ><button class="btn armed">confirmer le nettoyage</button></span
+              >
+              <span class="chips"
+                ><span>codesema-cli</span><span>⎇ feat/rename</span
+                ><span class="badge info">🛡 conteneur</span
+                ><span style="color: var(--warn)">attend une réponse</span
+                ><span>travail 6m 12s · attente 4m 03s</span></span
+              >
+            </div>
+            <div class="tabs" role="tablist">
+              <span class="tab" role="tab" aria-selected="true">Conversation</span
+              ><span class="tab" role="tab" aria-selected="false"
+                >Diff <span class="n">3</span></span
+              ><span class="tab" role="tab" aria-selected="false" style="color: var(--ok)"
+                >Checks ✓</span
+              >
+            </div>
+            <div class="thread">
+              <div class="msg user">
+                <span class="who you">toi</span
+                ><span class="body"
+                  >Renomme le paquet nolyra → codesema partout, garde l'historique git propre.</span
+                >
+              </div>
+              <div class="msg">
+                <span class="who ai">agent</span
+                ><span class="body"
+                  >Je commence par lister les occurrences, puis je renomme en un seul commit.</span
+                >
+              </div>
+              <details class="tools">
+                <summary>
+                  <span class="status" data-s="done"></span>outils — 4 appels · rg, 2 × edit, bun
+                  test
+                </summary>
+                <div class="tool">
+                  <span class="g">⚙</span><span><code>rg nolyra --files-with-matches</code></span
+                  ><span class="d">0.1s</span>
+                </div>
+                <div class="tool">
+                  <span class="g ret">↩</span><span class="muted">7 fichiers</span
+                  ><span class="d"></span>
+                </div>
+                <div class="tool">
+                  <span class="g">⚙</span><span><code>edit package.json</code></span
+                  ><span class="d"></span>
+                </div>
+                <div class="tool">
+                  <span class="g">⚙</span><span><code>edit README.md</code></span
+                  ><span class="d"></span>
+                </div>
+                <div class="tool">
+                  <span class="g">⚙</span><span><code>bun test</code></span
+                  ><span class="d">4.2s</span>
+                </div>
+                <div class="tool">
+                  <span class="g ret">↩</span><span class="muted">42 pass, 0 fail</span
+                  ><span class="d"></span>
+                </div>
+              </details>
+              <details class="tools" open="">
+                <summary>
+                  <span class="status" data-s="running"></span>l'agent travaille… — lecture de
+                  src/cli/init.ts
+                </summary>
+                <div class="tool">
+                  <span class="g">⚙</span><span><code>read src/cli/init.ts</code></span
+                  ><span class="d"></span>
+                </div>
+              </details>
+              <div class="question">
+                <span class="q"
+                  >Le champ <code>bin.nolyra</code> est utilisé par 3 scripts externes. Garder
+                  l'alias ?</span
+                >
+                <div class="qr">
+                  <button class="btn">garder l'alias</button
+                  ><button class="btn">supprimer, casser les scripts</button
+                  ><button class="btn ghost">autre…</button>
+                </div>
+              </div>
+              <div class="msg live">
+                <span class="who ai">agent</span
+                ><span class="body"
+                  >En attendant, je prépare le changelog : « Renommage nolyra → codesema, alias
+                  conservé jusqu'à la</span
+                >
+              </div>
+              <div class="review-live">
+                <span><b>review</b> · lecture du diff · 3 fichiers</span><span>0m 41s</span>
+              </div>
+            </div>
+            <div class="strip" role="status">
+              <span
+                >réponse en attente : « garde l'alias » sera envoyée quand l'agent aura fini</span
+              ><button type="button" aria-label="Annuler">✕</button>
+            </div>
+            <form class="composer" data-mode="question" onsubmit="return false">
+              <textarea aria-label="Réponse" placeholder="Réponds à la question…"></textarea>
+              <button class="btn primary" type="submit">
+                répondre <span class="key">⌘↵</span>
+              </button>
+              <span class="hint"
+                >mode question : la réponse débloque l'agent. En mode file, elle part après le tour
+                en cours. Tâche terminée = composeur remplacé par « reprendre ».</span
+              >
+            </form>
+          </div>
+        </section>
+
+        <section id="composer">
+          <h2>Nouvelle tâche &amp; plan</h2>
+          <p>
+            <code>TaskComposer</code> : prompt, agent, expédition automatique, et le panneau de plan
+            qui dit exactement ce qui va être créé avant de lancer.
+          </p>
+          <div
+            class="grid"
+            style="grid-template-columns: repeat(auto-fit, minmax(36ch, 1fr)); align-items: start"
+          >
+            <form
+              class="composer"
+              style="border: 1px solid var(--line); grid-template-columns: 1fr"
+              onsubmit="return false"
+            >
+              <textarea aria-label="Prompt" rows="4">
+Migre les scripts npm vers bun, garde les mêmes noms de commandes.</textarea>
+              <div class="row">
+                <select aria-label="Agent">
+                  <option>claude · opus</option>
+                  <option>claude · sonnet</option>
+                  <option>codex</option>
+                </select>
+                <button type="button" class="toggle" aria-pressed="true">
+                  <i>on</i> expédier auto
+                </button>
+                <button class="btn primary" type="submit">
+                  lancer <span class="key">⌘↵</span>
+                </button>
+              </div>
+            </form>
+            <div class="plan">
+              <h3>plan</h3>
+              <dl class="kvs">
+                <dt>mode</dt>
+                <dd>fork depuis main</dd>
+                <dt>branche</dt>
+                <dd>feat/migrate-bun <span class="muted">(certaine)</span></dd>
+                <dt>worktree</dt>
+                <dd>.codesema/wt/migrate-bun</dd>
+                <dt>isolation</dt>
+                <dd class="warn">politique · conteneur indisponible</dd>
+                <dt>agent</dt>
+                <dd>claude · opus</dd>
+                <dt>file</dt>
+                <dd>position 1, démarre tout de suite</dd>
+                <dt>issue</dt>
+                <dd class="muted">aucune</dd>
+              </dl>
+            </div>
+          </div>
+        </section>
+
+        <section id="diff">
+          <h2>Diff &amp; notes de review</h2>
+          <p>
+            <code>DiffView</code> : en-tête par fichier, gouttières, trous repliés, notes ancrées
+            sur une ligne. Le trait gauche de la note porte le <em>kind</em>, le mot porte la
+            sévérité.
+          </p>
+          <div class="diff">
+            <div class="diff-t">
+              <span
+                >3 fichiers · <b style="color: var(--ok)">+20</b>
+                <b style="color: var(--err)">−6</b> · 2 notes</span
+              >
+              <span class="seg" role="group" aria-label="Mode"
+                ><button type="button" aria-pressed="true">unifié</button
+                ><button type="button" aria-pressed="false">scindé</button></span
+              >
+            </div>
+            <div class="diff-f">
+              <span class="chev">▾</span><span class="path">src/cli/init.ts</span
+              ><span class="notes">✦ 2</span
+              ><span class="pm"><span class="a">+18</span> <span class="d">−4</span></span>
+            </div>
+            <div class="diff-body">
+              <table>
+                <colgroup>
+                  <col class="n" />
+                  <col class="n" />
+                  <col />
+                </colgroup>
+                <tbody>
+                  <tr class="gap">
+                    <td class="n"></td>
+                    <td class="n"></td>
+                    <td class="c">41 lignes</td>
+                  </tr>
+                  <tr>
+                    <td class="n">42</td>
+                    <td class="n">42</td>
+                    <td class="c">export async function init(opts: InitOptions) {</td>
+                  </tr>
+                  <tr class="del">
+                    <td class="n">43</td>
+                    <td class="n"></td>
+                    <td class="c">
+                      - const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+                    </td>
+                  </tr>
+                  <tr class="add">
+                    <td class="n"></td>
+                    <td class="n">43</td>
+                    <td class="c">+ const pkg = await readPackage(opts.cwd);</td>
+                  </tr>
+                  <tr class="add">
+                    <td class="n"></td>
+                    <td class="n">44</td>
+                    <td class="c">+ if (!pkg.name) throw new Error('package.json sans name');</td>
+                  </tr>
+                  <tr class="note">
+                    <td class="n"></td>
+                    <td class="n"></td>
+                    <td class="c">
+                      <div class="note" data-kind="security">
+                        <div class="h">
+                          <span class="kind">security</span
+                          ><span class="sev" data-v="major">major</span
+                          ><span class="t">Chemin non validé avant lecture</span
+                          ><span class="who">A + B</span>
+                        </div>
+                        <p>
+                          <code>opts.cwd</code> vient de l'utilisateur : un <code>../</code> sort du
+                          dépôt.
+                        </p>
+                        <pre>
+const cwd = path.resolve(root, opts.cwd);
+if (!cwd.startsWith(root)) throw new Error('cwd hors du dépôt');</pre>
+                        <div class="a">
+                          <button class="btn">corriger</button
+                          ><button class="btn ghost">copier</button>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="n">44</td>
+                    <td class="n">45</td>
+                    <td class="c">const bin = pkg.bin ?? {};</td>
+                  </tr>
+                  <tr class="note">
+                    <td class="n"></td>
+                    <td class="n"></td>
+                    <td class="c">
+                      <div class="note" data-kind="praise">
+                        <div class="h">
+                          <span class="kind">praise</span><span class="sev" data-v="info">info</span
+                          ><span class="t">Lecture asynchrone, bon réflexe</span
+                          ><span class="who">A</span>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="n">45</td>
+                    <td class="n">46</td>
+                    <td class="c">for (const [name, target] of Object.entries(bin)) {</td>
+                  </tr>
+                  <tr class="gap">
+                    <td class="n"></td>
+                    <td class="n"></td>
+                    <td class="c">12 lignes</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="diff-f">
+              <span class="chev">▸</span><span class="path">package.json</span><span></span
+              ><span class="pm"><span class="a">+2</span> <span class="d">−2</span></span>
+            </div>
+            <div class="diff-f">
+              <span class="chev">▸</span><span class="path">README.md</span><span></span
+              ><span class="pm"><span class="a">+0</span> <span class="d">−0</span></span>
+            </div>
+          </div>
+          <h3>Sévérité · kind</h3>
+          <div class="row">
+            <span class="sev" data-v="critical">critical</span
+            ><span class="sev" data-v="major">major</span
+            ><span class="sev" data-v="minor">minor</span
+            ><span class="sev" data-v="info">info</span>
+          </div>
+          <div class="kinds">
+            <div class="note" data-kind="security">
+              <span class="kind">security</span><span>faille, donnée non validée</span>
+            </div>
+            <div class="note" data-kind="perf">
+              <span class="kind">perf</span><span>coût inutile</span>
+            </div>
+            <div class="note" data-kind="convention">
+              <span class="kind">convention</span><span>style, nommage</span>
+            </div>
+            <div class="note" data-kind="design">
+              <span class="kind">design</span><span>structure, découpage</span>
+            </div>
+            <div class="note" data-kind="praise">
+              <span class="kind">praise</span><span>à garder tel quel</span>
+            </div>
+            <div class="note" data-kind="why">
+              <span class="kind">why</span><span>question sur l'intention</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="checks">
+          <h2>Checks</h2>
+          <p>
+            Onglet Checks : un badge global, un vérificateur par ligne, la sortie repliée. « Jamais
+            lancé » n'est pas « passé ».
+          </p>
+          <div class="row">
+            <span class="badge err">checks ✕</span
+            ><span class="muted">head 3f2a9c1 · il y a 2 min · source lefthook</span
+            ><button class="btn">relancer</button>
+          </div>
+          <div class="checks">
+            <div class="check-row" data-s="passed">
+              <span class="g">✓</span><code>bun run typecheck</code><span class="r">exit 0</span
+              ><span class="r">3.1s</span>
+            </div>
+            <div class="check-row" data-s="passed">
+              <span class="g">✓</span><code>bun run lint</code><span class="r">exit 0</span
+              ><span class="r">1.4s</span>
+            </div>
+            <div class="check-row" data-s="failed">
+              <span class="g">✕</span><code>bun test</code><span class="r">exit 1</span
+              ><span class="r">4.2s</span>
+              <details>
+                <summary>sortie (12 dernières lignes)</summary>
+                <pre
+                  class="log"
+                ><span class="err">✗</span> src/cli/init.test.ts &gt; refuse un cwd hors dépôt
+  Expected: throw
+  Received: undefined
+<span class="t">42 pass · 1 fail</span></pre>
+              </details>
+            </div>
+            <div class="check-row" data-s="timeout">
+              <span class="g">◷</span><code>bun run e2e</code><span class="r">timeout</span
+              ><span class="r">120s</span>
+            </div>
+            <div class="check-row" data-s="skipped">
+              <span class="g">–</span><code>bun run build</code><span class="r">ignoré</span
+              ><span class="r"></span>
+            </div>
+          </div>
+          <div class="empty">
+            <b>Checks jamais lancés</b>aucune commande configurée ·
+            <a href="#checks">laisser l'agent proposer une configuration</a>
+          </div>
+        </section>
+
+        <section id="review">
+          <h2>Verdict &amp; parcours de review</h2>
+          <p>
+            <code>ReviewShell</code>, <code>StepRail</code>, <code>StepList</code> : un feu
+            tricolore, une suite d'étapes, une carte par étape avec son risque.
+          </p>
+          <div class="row">
+            <span class="verdict" data-v="check">à vérifier</span
+            ><span class="muted"
+              >4 findings · <span class="sev" data-v="major">1 major</span> ·
+              <span class="sev" data-v="minor">2 minor</span> ·
+              <span class="sev" data-v="info">1 info</span></span
+            ><span class="muted">·</span
+            ><span><b style="color: var(--ok)">+312</b> <b style="color: var(--err)">−140</b></span
+            ><button class="btn ghost">copier le prompt</button
+            ><button class="btn">corriger les 3 sélectionnés</button>
+          </div>
+          <div class="row">
+            <span class="verdict" data-v="go">go</span
+            ><span class="verdict" data-v="check">à vérifier</span
+            ><span class="verdict" data-v="stop">stop</span>
+          </div>
+          <div class="steprail">
+            <span class="node done">MR</span><span class="link"></span>
+            <span class="node done">1 lecture</span><span class="link"></span>
+            <span class="node cur">2 init.ts</span><span class="link"></span>
+            <span class="node risk">3 scripts</span><span class="link"></span>
+            <span class="node">4 tests</span><span class="link"></span>
+            <span class="node">merge</span>
+          </div>
+          <div class="stepcard">
+            <span class="i">02</span><span>Lecture asynchrone du package.json</span
+            ><span class="risk" data-r="medium">risque moyen</span
+            ><span class="r"
+              >Remplace le readFileSync par un helper. Touche 2 fichiers, 1 finding.</span
+            >
+          </div>
+          <div class="stepcard">
+            <span class="i">03</span><span>Réécriture des scripts npm → bun</span
+            ><span class="risk" data-r="high">risque élevé</span
+            ><span class="r">Le script postinstall disparaît. 4 fichiers, 2 findings.</span>
+          </div>
+        </section>
+
+        <section id="etats">
+          <h2>États système</h2>
+          <p>
+            Vide, dégradé, confirmation par armement. La règle du code actuel reste : un manque est
+            nommé, jamais caché.
+          </p>
+          <div class="empty">
+            <b>Aucune tâche dans ce projet</b><kbd>n</kbd> pour en créer une, ou glisse une issue
+            depuis le rail.
+          </div>
+          <div class="live" role="status">
+            <span style="color: var(--warn)">⚠</span
+            ><span>connexion perdue · nouvelle tentative dans 3s</span>
+          </div>
+          <div class="live err" role="status">
+            <span style="color: var(--err)">✕</span
+            ><span>forge injoignable : GITLAB_TOKEN absent. Les MR ne sont pas listées.</span>
+          </div>
+          <div class="row">
+            <button class="btn danger">supprimer le worktree</button
+            ><span class="muted">→ second clic →</span
+            ><button class="btn armed">confirmer la suppression</button
+            ><span class="muted">pas de modale, le bouton change de libellé</span>
+          </div>
+          <div class="row">
+            <span class="muted">coût inconnu :</span><span>—</span
+            ><span class="muted">jamais « 0 $ »</span><span class="muted">·</span
+            ><span class="muted">coût borne basse :</span><span>≥ 0.42 $</span>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      // palette + contraste, mémorisés par navigateur
+      const root = document.documentElement
+      function seg(attr, key, def, apply) {
+        const btns = [...document.querySelectorAll(`.seg button[data-${attr}]`)]
+        const set = (v) => {
+          apply(v)
+          btns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset[attr] === v)))
+          try {
+            localStorage.setItem(key, v)
+          } catch {}
+        }
+        btns.forEach((b) => b.addEventListener('click', () => set(b.dataset[attr])))
+        let v = def
+        try {
+          v = localStorage.getItem(key) || def
+        } catch {}
+        set(v)
+      }
+      seg('p', 'palette', 'tokyonight', (v) => {
+        if (v === 'tokyonight') delete root.dataset.palette
+        else root.dataset.palette = v
+      })
+      seg('c', 'contrast', 'aa', (v) => {
+        if (v === 'aaa') root.dataset.contrast = 'aaa'
+        else delete root.dataset.contrast
+      })
+
+      // hex des swatches = valeur réelle du token actif
+      function fillHex() {
+        const cs = getComputedStyle(root)
+        document.querySelectorAll('.sw').forEach((sw) => {
+          const tok = sw.querySelector('b').textContent.trim()
+          sw.querySelector('.hex').textContent = cs.getPropertyValue(tok).trim()
+        })
+      }
+      new MutationObserver(fillHex).observe(root, {
+        attributes: true,
+        attributeFilter: ['data-palette', 'data-contrast'],
+      })
+      fillHex()
+
+      // surligne l'entrée du sommaire correspondant à la section visible
+      const links = [...document.querySelectorAll('nav.toc a')]
+      const byId = Object.fromEntries(links.map((a) => [a.getAttribute('href').slice(1), a]))
+      const io = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((e) => {
+            if (e.isIntersecting) {
+              links.forEach((a) => a.classList.remove('current'))
+              byId[e.target.id]?.classList.add('current')
+            }
+          })
+        },
+        { rootMargin: '-10% 0px -70% 0px' },
+      )
+      document.querySelectorAll('main section').forEach((s) => io.observe(s))
+    </script>
+  </body>
+</html>

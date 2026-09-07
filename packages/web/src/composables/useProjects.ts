@@ -6,6 +6,7 @@
 // bottom are the only impure parts and stay best-effort.
 
 import type { MessageKey } from '../i18n'
+import { readStorageItem, removeStorageItem, writeStorageItem } from '../storage'
 import type {
   ForgeMr,
   ForgeUnavailableReason,
@@ -334,26 +335,6 @@ export function resolveBranchClick(
   return { kind: 'draft-workon', branch: short, target: mr ? shortBranch(mr.targetBranch) : null }
 }
 
-// ── localStorage wrappers (best-effort: privacy modes can throw) ───────────
-
-function readStorageItem(key: string): string | null {
-  try {
-    return typeof localStorage === 'undefined' ? null : localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-function writeStorageItem(key: string, value: string): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(key, value)
-    }
-  } catch {
-    // Best-effort: the API's `current` re-seeds the choice next launch.
-  }
-}
-
 /** Reads the persisted active card, seeded from the retired composer key. */
 export function readPersistedActiveProject(): string | null {
   return migrateActiveProject(
@@ -369,13 +350,7 @@ export function persistActiveProject(id: string): void {
 
 /** Removes the retired keys; call once after readPersistedActiveProject. */
 export function purgeDeadStorageKeys(): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      for (const key of DEAD_STORAGE_KEYS) {
-        localStorage.removeItem(key)
-      }
-    }
-  } catch {
-    // Best-effort.
+  for (const key of DEAD_STORAGE_KEYS) {
+    removeStorageItem(key)
   }
 }
