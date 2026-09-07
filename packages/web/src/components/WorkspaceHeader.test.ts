@@ -143,7 +143,7 @@ describe('and stays silent when there is nothing to state', () => {
 describe('the pilot shell toggle sits with the other header actions', () => {
   test('a discreet button offers the grid shell, always visible', async () => {
     const html = await renderHeader(info({}))
-    const match = html.match(/<button[^>]*class="wh-pilot-toggle"[^>]*>/)
+    const match = html.match(/<button[^>]*class="wh-pilot-toggle cell"[^>]*>/)
     expect(match).not.toBeNull()
     expect(html).toContain(t('pilot.toggle.grid'))
   })

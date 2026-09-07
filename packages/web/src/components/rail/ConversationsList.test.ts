@@ -101,10 +101,12 @@ describe('header: title, counter, and a primary create action', () => {
     expect(html).toMatch(/class="cvl-count">0</)
   })
 
-  test('the action button carries the primary accent styling, not a discreet link', () => {
+  test('the action button carries the accent, on the kit button', async () => {
+    const html = await render()
+    expect(html).toContain('class="cvl-action btn"')
     const block = SOURCE.slice(SOURCE.indexOf('.cvl-action {'), SOURCE.indexOf('.cvl-action:hover'))
-    expect(block).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
-    expect(block).toContain('border: 1px solid var(--ok);')
+    expect(block).toContain('border-color: var(--ok);')
+    expect(block).toContain('color: var(--ok);')
   })
 })
 
@@ -200,12 +202,12 @@ describe('selection: highlighted rows come from the focus deck, not a single sel
     expect(rows.some((m) => m[1]?.includes('aria-current="true"'))).toBe(false)
   })
 
-  test('a selected row is a tinted fill, never a border', () => {
+  test('a selected row is a fill, never a border', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.cvl-row-btn--selected {'),
       SOURCE.indexOf('.cvl-row-btn--selected :deep'),
     )
-    expect(rule).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
+    expect(rule).toContain('background: var(--bg-hover);')
     expect(rule).not.toContain('border')
   })
 })

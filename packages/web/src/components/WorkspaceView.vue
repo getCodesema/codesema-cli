@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Workspace shell: a global 52px header (search, attention bell, agents
+// Workspace shell: a global app bar (attention cell, agents
 // counter), the projects column on the left, the conversations column in the
 // center-left, and the focus zone on the right. The focus zone shows ONE
 // thing at a time, named by a single FocusView value (useWorkspaceNav, pure)
@@ -69,6 +69,7 @@ import {
   type NavCategory,
   type RepoTab,
 } from '../composables/useWorkspaceNav'
+import { G } from '../glyphs'
 import { t } from '../i18n'
 import type {
   AgentOption,
@@ -658,7 +659,7 @@ type SearchableList = { focusSearch: () => void }
 const conversationsList = ref<SearchableList | null>(null)
 const repositoriesList = ref<SearchableList | null>(null)
 
-/** ⌘K / Ctrl+K focuses the list column's own search — the shell owns the
+/** Cmd/Ctrl+K focuses the list column's own search — the shell owns the
  * shortcut because which list is up is the shell's own state. */
 function onGlobalKeydown(e: KeyboardEvent): void {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -977,14 +978,15 @@ watch(
       @switch-shell="emit('switch-shell')"
     />
 
-    <p v-if="!connected" class="ws-offline" role="status">
-      {{ t('workspace.connectionLost') }}
+    <p v-if="!connected" class="ws-offline live" role="status">
+      <span aria-hidden="true">{{ G.attention }}</span>
+      <span>{{ t('workspace.connectionLost') }}</span>
     </p>
 
     <div v-if="showSettings" class="ws-settings">
       <RepoSettings />
     </div>
-    <div v-else class="ws-body">
+    <div v-else class="ws-body shell" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
       <WorkspaceNavRail
         :category="railPrefs.category"
         :collapsed="railPrefs.navCollapsed"
@@ -994,7 +996,7 @@ watch(
         @settings="toggleSettings"
       />
 
-      <aside class="ws-list" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
+      <aside class="ws-list">
         <ConversationsList
           v-if="railPrefs.category === 'conversations'"
           ref="conversationsList"
@@ -1049,7 +1051,9 @@ watch(
       <main class="ws-focus">
         <!-- Review view: the existing guided review, over the focus zone. -->
         <div v-if="reviewRecord" class="ws-review">
-          <button class="ws-review-back" @click="backFromReview">{{ t('workspace.back') }}</button>
+          <button class="ws-review-back btn ghost" type="button" @click="backFromReview">
+            {{ t('workspace.back') }} <kbd>Esc</kbd>
+          </button>
           <ReviewShell :record="reviewRecord" />
         </div>
 
@@ -1081,12 +1085,13 @@ watch(
                   {{ projectNameById.get(draftEntry.projectId) ?? draftEntry.projectId }}
                 </span>
                 <button
-                  class="ws-draft-close"
+                  class="ws-draft-close btn ghost"
+                  type="button"
                   :aria-label="t('workspace.addProjectCancel')"
                   :title="t('workspace.addProjectCancel')"
                   @click="onFocusDraftClose"
                 >
-                  ✕
+                  {{ G.ko }}
                 </button>
               </header>
               <!-- No repository at all: neither a work-on/fork mode nor a
@@ -1094,13 +1099,14 @@ watch(
                      shows none of it (only the composer's own sober notice). -->
               <div
                 v-if="draftEntry.draft.mode !== 'scratch'"
-                class="ws-draft-modes"
+                class="ws-draft-modes seg"
                 role="group"
                 :aria-label="t('workspace.draftModeLabel')"
               >
                 <button
                   class="ws-draft-mode"
                   :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'workon' }"
+                  :aria-pressed="draftEntry.draft.mode === 'workon'"
                   type="button"
                   @click="draftEntry.draft.mode === 'fork' && onFocusToggleDraftMode()"
                 >
@@ -1109,6 +1115,7 @@ watch(
                 <button
                   class="ws-draft-mode"
                   :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'fork' }"
+                  :aria-pressed="draftEntry.draft.mode === 'fork'"
                   type="button"
                   @click="draftEntry.draft.mode === 'workon' && onFocusToggleDraftMode()"
                 >
@@ -1123,14 +1130,14 @@ watch(
               </p>
               <div v-if="draftEntry.draft.mode !== 'scratch'" class="ws-draft-chips">
                 <span
-                  class="ws-draft-chip"
+                  class="ws-draft-chip badge"
                   :title="
                     draftEntry.draft.mode === 'fork'
                       ? t('workspace.draftBaseHint', { branch: draftEntry.draft.base })
                       : t('workspace.draftWorkonHint', { branch: draftEntry.draft.branch })
                   "
                 >
-                  <span aria-hidden="true">⎇</span>
+                  <span aria-hidden="true">{{ G.branch }}</span>
                   {{
                     draftEntry.draft.mode === 'fork'
                       ? draftEntry.draft.base
@@ -1140,7 +1147,7 @@ watch(
                 <!-- Work-on from an MR node: the merge target rides along. -->
                 <span
                   v-if="draftEntry.draft.mode === 'workon' && draftEntry.draft.target !== null"
-                  class="ws-draft-chip"
+                  class="ws-draft-chip badge"
                   :title="t('workspace.draftTargetHint', { target: draftEntry.draft.target })"
                 >
                   <span aria-hidden="true">→</span> {{ draftEntry.draft.target }}
@@ -1253,7 +1260,7 @@ watch(
 
         <!-- Empty focus: a sober invite (no project selected, or none registered). -->
         <div v-else class="ws-empty-focus">
-          <p class="ws-empty">
+          <p class="ws-empty empty">
             {{ t('workspace.focusEmpty') }}
           </p>
         </div>
@@ -1275,11 +1282,6 @@ watch(
 .ws-offline {
   flex: none;
   margin: 0;
-  padding: 6px 20px;
-  font-size: 12px;
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  border-bottom: 1px solid var(--warn);
 }
 
 .ws-settings {
@@ -1288,28 +1290,28 @@ watch(
   overflow: auto;
 }
 
+/* Four sibling zones on one grid: the category rail, the list column, its
+   drag handle, the stage. The list width is the one layout value the desk
+   owns, so it rides on the grid track itself. */
 .ws-body {
   flex: 1;
   min-height: 0;
-  display: flex;
+  grid-template-columns: auto var(--ws-list-w, 30ch) auto 1fr;
   align-items: stretch;
 }
 
-/* Zone 2: the list column. The nav rail (zone 1) sizes itself; this one is
-   dragged, so its width is the one layout value the desk owns. */
-.ws-list {
-  flex: 0 0 var(--ws-list-w);
-  width: var(--ws-list-w);
-  min-height: 0;
+.ws-body > * {
   min-width: 0;
+  min-height: 0;
+}
+
+.ws-list {
   display: flex;
   border-right: 1px solid var(--line);
 }
 
 /* ── Zone 3: the stage ────────────────────────────────────────────────── */
 .ws-focus {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-raised);
@@ -1328,36 +1330,31 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 16px;
+  padding: 0 2ch;
 }
 
 .ws-draft {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-width: 560px;
+  gap: var(--row);
+  max-width: 72ch;
   width: 100%;
-  margin: 48px auto 24px;
-  padding: 18px 20px;
+  margin: calc(var(--row) * 2) auto var(--row);
+  padding: var(--row) 2ch;
   border: 1px solid var(--line);
-  border-radius: 12px;
   background: var(--bg-raised);
 }
 
 .ws-draft-head {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: baseline;
+  gap: 1ch;
   min-width: 0;
 }
 
 .ws-draft-title {
-  margin: 0;
   flex: 1;
   min-width: 0;
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1365,92 +1362,52 @@ watch(
 
 .ws-draft-project {
   flex: none;
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-muted);
 }
 
 .ws-draft-close {
   flex: none;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-family: inherit;
-  line-height: 1;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--fg-dim);
-  cursor: pointer;
-}
-
-.ws-draft-close:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
+  padding: 0 1ch;
 }
 
 .ws-draft-modes {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
   align-self: flex-start;
 }
 
 .ws-draft-mode {
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 5px 11px;
-  border: none;
-  background: var(--bg-raised);
+  font: inherit;
+  padding: 2px 2ch;
+  border: 0;
+  background: var(--bg);
   color: var(--fg-dim);
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.ws-draft-mode + .ws-draft-mode {
-  border-left: 1px solid var(--line);
-}
-
-/* The chosen mode is a state: green soft wash, per the doctrine. */
+/* The chosen mode is a state: it inverts, like every other segment. */
 .ws-draft-mode--on {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  color: var(--fg);
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 700;
   cursor: default;
 }
 
 .ws-draft-warning {
-  margin: 0;
-  font-size: var(--fs);
   color: var(--warn);
   border: 1px solid var(--warn);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  padding: 6px 10px;
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .ws-draft-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 1ch;
 }
 
 /* Branch chips: the base to fork from, or the branch worked on (+ target). */
 .ws-draft-chip {
   align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font);
-  font-size: 12px;
-  color: var(--fg-dim);
-  padding: 2px 9px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--bg-raised);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1463,15 +1420,11 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: var(--row) 2ch;
 }
 
 .ws-empty {
-  margin: 0;
-  text-align: center;
-  font-size: var(--fs);
-  color: var(--fg-dim);
-  max-width: 380px;
+  max-width: 56ch;
 }
 
 /* ── Review ───────────────────────────────────────────────────────────── */
@@ -1479,24 +1432,11 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px 24px 60px;
+  padding: var(--row) 2ch calc(var(--row) * 3);
 }
 
 .ws-review-back {
-  margin-bottom: 12px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
-  color: var(--fg-dim);
-  cursor: pointer;
-}
-
-.ws-review-back:hover {
-  border-color: var(--fg-dim);
+  margin-bottom: var(--row);
 }
 
 /* Both list components fill the column the desk gives them; `min-width: 0`

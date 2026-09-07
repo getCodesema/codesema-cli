@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test'
  * here is the WIRING of the draft panel, on the source itself.
  *
  * The reason this file exists is T2.6's own risk: the plan panel was added to
- * `TaskComposer.vue`, while the trunk warning and the `⎇`/`→` chips live
+ * `TaskComposer.vue`, while the trunk warning and the branch/target chips live
  * HERE, in the column around it. "Extend the composer" and "keep the warning"
  * are two different files, and nothing else in this repo would notice the
  * second one disappearing.
@@ -30,7 +30,7 @@ describe('the draft column keeps what it already showed (T2.6 IV.3)', () => {
 
   test('the two chips are still there, with their glyphs and their hints', () => {
     expect(SOURCE.split('ws-draft-chip').length - 1).toBeGreaterThanOrEqual(2)
-    expect(SOURCE).toContain('⎇')
+    expect(SOURCE).toContain('G.branch')
     expect(SOURCE).toContain('→')
     expect(SOURCE).toContain('workspace.draftBaseHint')
     expect(SOURCE).toContain('workspace.draftWorkonHint')
@@ -354,7 +354,7 @@ describe('a scratch draft shows no branch/base chrome', () => {
 
   test('the fork/work-on mode toggle and the branch/target chips are both hidden for it', () => {
     expect(draftColumn.split(`v-if="draftEntry.draft.mode !== 'scratch'"`).length - 1).toBe(2)
-    expect(draftColumn).toContain('class="ws-draft-modes"')
+    expect(draftColumn).toContain('ws-draft-modes')
     expect(draftColumn).toContain('ws-draft-chips')
   })
 

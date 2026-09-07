@@ -490,13 +490,13 @@ describe('selection: a tinted fill and aria-current, never a border', () => {
     expect(buttons[1]?.[1]).not.toContain('aria-current')
   })
 
-  test('the selected fill is a tint, not a border (doctrine, not decoration)', () => {
+  test('the selected row is a fill plus an accented edge, on theme tokens only', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.crl-select-btn--selected {'),
       SOURCE.indexOf('.crl-main {'),
     )
-    expect(rule).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
-    expect(rule).not.toContain('border')
+    expect(rule).toContain('background: var(--bg-hover);')
+    expect(rule).toContain('border-left-color: var(--accent);')
   })
 })
 

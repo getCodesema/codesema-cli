@@ -157,19 +157,19 @@ describe('issues and mrs tabs: the forge controls rail and board, no slot', () =
 describe('repository name', () => {
   test('shown as the view heading', async () => {
     const html = await render({ projectName: 'my-repo' })
-    expect(html).toContain('class="rv-title"')
+    expect(html).toContain('rv-title')
     expect(html).toContain('my-repo')
   })
 })
 
 describe('design: color is a state, never a hardcoded one', () => {
-  test('the active tab is a tinted fill, no border', () => {
+  test('the active tab is an accent underline, on theme tokens only', () => {
     const block = SOURCE.slice(
       SOURCE.indexOf('.rv-tab--active {'),
       SOURCE.indexOf('.rv-tab:focus-visible'),
     )
-    expect(block).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
-    expect(block).not.toMatch(/\bborder(-\w+)?:\s*\d/)
+    expect(block).toContain('color: var(--fg);')
+    expect(block).toContain('border-bottom-color: var(--accent);')
   })
 
   test('every tab honors :focus-visible', () => {

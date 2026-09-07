@@ -73,13 +73,11 @@ describe('categories: all three render, the active one carries the tinted accent
     expect(buttons[2]?.[0]).toContain('wnr-cat--active')
   })
 
-  test('the active row uses the tinted fill token, no border', () => {
-    const block = SOURCE.slice(
-      SOURCE.indexOf('.wnr-cat--active {'),
-      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
-    )
-    expect(block).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
-    expect(block).not.toContain('border-color')
+  test('the active row is named by aria-current, on the kit row class', async () => {
+    const buttons = catButtons(await render({ category: 'codeReview' }))
+    expect(buttons[2]?.[0]).toContain('proj')
+    expect(buttons[2]?.[1]).toContain('aria-current="true"')
+    expect(buttons[0]?.[1]).toContain('aria-current="false"')
   })
 
   test('the active row accents its own icon on top of the tinted fill', () => {
@@ -175,7 +173,7 @@ describe('footer: settings sits below a hairline, set off from the categories', 
   test('the settings action emits on click semantics render (button present with the right label)', async () => {
     const html = await render()
     expect(html).toContain(t('nav.settings'))
-    expect(html).toContain('class="wnr-settings"')
+    expect(html).toContain('class="wnr-settings proj"')
   })
 
   test('the footer carries a hairline above it', () => {
@@ -189,11 +187,14 @@ describe('footer: settings sits below a hairline, set off from the categories', 
 
 describe('rows carry no border: explicit, never a bare omission', () => {
   test('category and settings rows declare border: none', () => {
-    const block = SOURCE.slice(SOURCE.indexOf('.wnr-cat,'), SOURCE.indexOf('.wnr-cat:hover'))
+    const block = SOURCE.slice(
+      SOURCE.indexOf('.wnr-cat,'),
+      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
+    )
     expect(block).toContain('border: none;')
   })
 
-  test('no hex literal was introduced: every color is a theme tokens', () => {
+  test('no hex literal was introduced: every colour is a theme token', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

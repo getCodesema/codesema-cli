@@ -89,14 +89,14 @@ const railWidth = computed(() =>
   <div class="rv-root">
     <header class="rv-header">
       <h1 class="rv-title">{{ projectName }}</h1>
-      <div class="rv-tabs" role="tablist">
+      <div class="rv-tabs tabs" role="tablist">
         <button
           v-for="entry in TABS"
           :key="entry.value"
           :id="tabId(entry.value)"
           type="button"
           role="tab"
-          class="rv-tab"
+          class="rv-tab tab"
           :class="{ 'rv-tab--active': tab === entry.value }"
           :aria-selected="tab === entry.value"
           :aria-controls="panelId(entry.value)"
@@ -191,50 +191,33 @@ const railWidth = computed(() =>
 
 .rv-header {
   flex: none;
-  padding: 18px 20px 0;
-  border-bottom: 1px solid var(--line);
+  padding: var(--row) 2ch 0;
 }
 
 .rv-title {
-  margin: 0 0 14px;
+  margin-bottom: calc(var(--row) / 2);
   font-size: 18px;
-  font-weight: 600;
   color: var(--fg);
-}
-
-.rv-tabs {
-  display: flex;
-  gap: 4px;
 }
 
 .rv-tab {
   display: inline-flex;
   align-items: center;
-  font-family: inherit;
-  font-size: var(--fs);
-  font-weight: 500;
-  color: var(--fg-dim);
-  padding: 8px 14px;
+  font: inherit;
   border: none;
-  border-radius: 8px 8px 0 0;
+  border-bottom: 2px solid transparent;
   background: transparent;
-  cursor: pointer;
 }
 
-.rv-tab:hover {
-  color: var(--fg-dim);
-}
-
-/* Selected: an accent-weak fill and a heavier weight, per the doctrine.
-   Never a border -- a tab's identity comes from its content and fill. */
+/* Selected: the kit underline, never a fill — a tab's identity comes from
+   its content and its edge. */
 .rv-tab--active {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
   color: var(--fg);
-  font-weight: 600;
+  border-bottom-color: var(--accent);
 }
 
 .rv-tab:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 1px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -260,8 +243,8 @@ const railWidth = computed(() =>
   min-height: 0;
   border-right: 1px solid var(--line);
   transition:
-    flex-basis 200ms ease,
-    width 200ms ease;
+    flex-basis 150ms ease,
+    width 150ms ease;
 }
 
 .rv-forge-board {

@@ -15,7 +15,8 @@ import {
 } from '../../composables/useRepository'
 import { queueSectionOf, type QueueSection } from '../../composables/useTaskBoard'
 import { taskKey, type TaskState } from '../../composables/useTasks'
-import { EXECUTION_STATUS } from '../../execution-status'
+import { EXECUTION_STATUS, type StatusTone } from '../../execution-status'
+import { G } from '../../glyphs'
 import { t, type MessageKey } from '../../i18n'
 import type { ForgeMr, TaskStatus } from '../../types'
 import ConversationRow from '../conversations/ConversationRow.vue'
@@ -150,7 +151,7 @@ type RowEntry =
       worktreeLabel: string
       mrPastille: MrPastille | null
       conversationsLabel: string | null
-      conversationsColor: string | null
+      conversationsTone: StatusTone | null
       actionLabel: string
       actionTarget: TaskState | null
     }
@@ -185,7 +186,7 @@ function toRowEntry(row: BranchRow): RowEntry {
             row.conversations.length,
           )
         : null,
-    conversationsColor: urgent !== null ? EXECUTION_STATUS[urgent].text : null,
+    conversationsTone: urgent !== null ? EXECUTION_STATUS[urgent].tone : null,
     actionLabel: t(openTarget !== null ? 'repository.rowOpen' : 'repository.rowNewConversation'),
     actionTarget: openTarget,
   }
@@ -234,7 +235,7 @@ function onSortChange(event: Event): void {
           @input="onFilterInput"
         />
       </div>
-      <span class="bt-row-count">{{ visibleRows.length }}</span>
+      <span class="bt-row-count badge">{{ visibleRows.length }}</span>
       <label class="bt-sort">
         <span class="bt-sort-label">{{ t('repository.sortLabel') }}</span>
         <select class="bt-sort-select" :value="sort" @change="onSortChange">
@@ -245,7 +246,7 @@ function onSortChange(event: Event): void {
       </label>
       <button
         type="button"
-        class="bt-refresh"
+        class="bt-refresh btn"
         :class="{ 'bt-refresh--spin': loading }"
         :disabled="loading"
         @click="emit('refresh')"
@@ -270,10 +271,14 @@ function onSortChange(event: Event): void {
         </thead>
         <tbody>
           <tr v-if="rows.length === 0">
-            <td class="bt-empty" colspan="7">{{ t('repository.noBranches') }}</td>
+            <td class="bt-empty" colspan="7">
+              <span class="empty">{{ t('repository.noBranches') }}</span>
+            </td>
           </tr>
           <tr v-else-if="visibleRows.length === 0">
-            <td class="bt-empty" colspan="7">{{ t('repository.filterEmpty') }}</td>
+            <td class="bt-empty" colspan="7">
+              <span class="empty">{{ t('repository.filterEmpty') }}</span>
+            </td>
           </tr>
           <template v-for="entry in entries" :key="entry.key">
             <tr class="bt-row">
@@ -302,13 +307,13 @@ function onSortChange(event: Event): void {
                 </button>
               </td>
               <td class="bt-cell">
-                <span class="bt-pill">{{ entry.worktreeLabel }}</span>
+                <span class="bt-pill badge">{{ entry.worktreeLabel }}</span>
               </td>
               <td class="bt-cell bt-cell-branch">
                 <template v-if="entry.kind === 'branch'">
                   <div class="bt-branch-name">
                     <span class="bt-branch-mono">{{ entry.row.name }}</span>
-                    <span v-if="entry.row.isCurrent" class="bt-current-badge">
+                    <span v-if="entry.row.isCurrent" class="bt-current-badge badge">
                       {{ t('repository.branchCurrent') }}
                     </span>
                   </div>
@@ -321,7 +326,7 @@ function onSortChange(event: Event): void {
               <td class="bt-cell">
                 <span
                   v-if="entry.kind === 'branch' && entry.mrPastille"
-                  class="bt-mr-pastille"
+                  class="bt-mr-pastille badge"
                   :class="`bt-mr-pastille--${entry.mrPastille.variant}`"
                 >
                   <span class="bt-mr-number">{{ entry.mrPastille.number }}</span>
@@ -331,16 +336,14 @@ function onSortChange(event: Event): void {
               <td class="bt-cell">
                 <span
                   v-if="entry.kind === 'branch' && entry.conversationsLabel"
-                  class="bt-conversations-badge"
-                  :style="
-                    entry.conversationsColor ? { color: entry.conversationsColor } : undefined
-                  "
+                  class="bt-conversations-badge status"
+                  :data-tone="entry.conversationsTone ?? undefined"
                 >
                   {{ entry.conversationsLabel }}
                 </span>
               </td>
               <td class="bt-cell bt-cell-age">
-                {{ entry.kind === 'branch' ? entry.row.lastCommitRelative : '–' }}
+                {{ entry.kind === 'branch' ? entry.row.lastCommitRelative : G.minus }}
               </td>
               <td class="bt-cell bt-cell-actions">
                 <span
@@ -353,7 +356,7 @@ function onSortChange(event: Event): void {
                 <button
                   v-else-if="entry.kind === 'branch'"
                   type="button"
-                  class="bt-action-btn"
+                  class="bt-action-btn btn"
                   @click="handleRowAction(entry)"
                 >
                   {{ entry.actionLabel }}
@@ -383,7 +386,7 @@ function onSortChange(event: Event): void {
                   </div>
                   <button
                     type="button"
-                    class="bt-expanded-create"
+                    class="bt-expanded-create btn"
                     @click="emit('new-conversation', entry.row)"
                   >
                     {{ t('repository.rowNewConversation') }}
@@ -402,7 +405,7 @@ function onSortChange(event: Event): void {
 .bt-root {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--row);
 }
 
 .bt-header {
@@ -411,9 +414,7 @@ function onSortChange(event: Event): void {
 }
 
 .bt-title {
-  margin: 0;
-  font-size: var(--fs);
-  font-weight: 600;
+  font-size: 18px;
   color: var(--fg);
 }
 
@@ -425,19 +426,18 @@ function onSortChange(event: Event): void {
 .bt-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 1ch;
 }
 
 .bt-filter {
   flex: 1;
-  min-width: 160px;
+  min-width: 24ch;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+  gap: 1ch;
+  padding: 0 1ch;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-hover);
+  background: var(--bg-raised);
 }
 
 .bt-filter:focus-within {
@@ -457,24 +457,11 @@ function onSortChange(event: Event): void {
   border: none;
   outline: none;
   background: transparent;
-  font-family: inherit;
-  font-size: var(--fs);
-  padding: 7px 0;
-  color: var(--fg);
-}
-
-.bt-filter-input::placeholder {
-  color: var(--fg-dim);
+  padding: 2px 0;
 }
 
 .bt-row-count {
   flex: none;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  color: var(--fg-dim);
-  font-size: 12px;
-  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
@@ -482,109 +469,64 @@ function onSortChange(event: Event): void {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 1ch;
   color: var(--fg-dim);
 }
 
 .bt-sort-select {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg-hover);
-  color: var(--fg);
-  font-family: inherit;
-  font-size: 12px;
-  padding: 4px 6px;
+  min-width: 0;
 }
 
 .bt-refresh {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: transparent;
+  gap: 1ch;
   color: var(--fg-dim);
-  font-family: inherit;
-  font-size: 12px;
-  padding: 5px 10px;
-  cursor: pointer;
-}
-
-.bt-refresh:hover {
-  background: var(--bg-hover);
-}
-
-.bt-refresh:disabled {
-  cursor: default;
-  opacity: 0.7;
 }
 
 .bt-refresh-icon {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
-.bt-refresh--spin .bt-refresh-icon {
-  animation: bt-spin 0.9s linear infinite;
-}
-
-@keyframes bt-spin {
-  to {
-    transform: rotate(360deg);
-  }
+/* Loading is a colour, never a spin: the whole package carries one motion
+   vocabulary and rotation is not part of it. */
+.bt-refresh--spin {
+  color: var(--info);
 }
 
 .bt-scroll {
   overflow-x: auto;
   border: 1px solid var(--line);
-  border-radius: 10px;
 }
 
 .bt-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: var(--fs);
 }
 
 .bt-th {
-  text-align: left;
-  padding: 8px 10px;
-  font-size: 12px;
-  font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-dim);
   background: var(--bg-raised);
-  border-bottom: 1px solid var(--line);
-  white-space: nowrap;
 }
 
 .bt-th-chevron {
-  width: 28px;
+  width: 4ch;
 }
 
 .bt-th-actions {
   text-align: right;
 }
 
-.bt-row {
-  border-bottom: 1px solid var(--line);
-}
-
-.bt-row:hover {
-  background: var(--bg-hover);
-}
-
 .bt-cell {
-  padding: 8px 10px;
   vertical-align: top;
   color: var(--fg-dim);
+  white-space: normal;
 }
 
 .bt-cell-chevron {
-  width: 28px;
+  width: 4ch;
 }
 
 .bt-cell-actions {
@@ -593,15 +535,12 @@ function onSortChange(event: Event): void {
 
 .bt-cell-age {
   white-space: nowrap;
-  color: var(--fg-dim);
 }
 
 .bt-chevron-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
   border: none;
   background: transparent;
   color: var(--fg-dim);
@@ -619,28 +558,13 @@ function onSortChange(event: Event): void {
   transform: rotate(-90deg);
 }
 
-.bt-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-dim);
-  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
-  white-space: nowrap;
-}
-
 .bt-branch-name {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .bt-branch-mono {
-  font-family: var(--font);
-  font-size: var(--fs);
   color: var(--fg);
 }
 
@@ -648,18 +572,8 @@ function onSortChange(event: Event): void {
   color: var(--fg-dim);
 }
 
-.bt-current-badge {
-  padding: 1px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-dim);
-}
-
 .bt-branch-subject {
-  margin: 2px 0 0;
-  max-width: 360px;
+  max-width: 48ch;
   font-size: 12px;
   color: var(--fg-dim);
   overflow: hidden;
@@ -669,20 +583,12 @@ function onSortChange(event: Event): void {
 
 .bt-mr-pastille {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
+  align-items: baseline;
+  gap: 1ch;
   white-space: nowrap;
 }
 
-.bt-mr-number {
-  font-family: var(--font);
-}
-
 .bt-mr-state-text {
-  font-size: 12px;
-  font-weight: 500;
   color: var(--fg-dim);
 }
 
@@ -703,61 +609,42 @@ function onSortChange(event: Event): void {
 }
 
 .bt-conversations-badge {
-  font-size: 12px;
-  font-weight: 600;
   white-space: nowrap;
 }
 
 .bt-action-btn {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-dim);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 5px 10px;
-  cursor: pointer;
   white-space: nowrap;
 }
 
-.bt-action-btn:hover {
-  background: var(--bg-hover);
-}
-
 .bt-detached-hint {
-  font-size: 12px;
   color: var(--fg-dim);
   cursor: help;
 }
 
 .bt-empty {
-  padding: 24px 16px;
+  padding: var(--row) 2ch;
   text-align: center;
-  color: var(--fg-dim);
-  font-size: var(--fs);
 }
 
-.bt-expanded-row {
-  border-bottom: 1px solid var(--line);
+.bt-empty .empty {
+  display: block;
 }
 
 .bt-expanded-cell {
-  padding: 10px 10px 14px 38px;
+  padding: calc(var(--row) / 2) 1ch calc(var(--row) / 2) 4ch;
   background: var(--bg-raised);
+  white-space: normal;
 }
 
 .bt-expanded-empty {
-  margin: 0 0 8px;
-  font-size: 12px;
+  margin-bottom: calc(var(--row) / 2);
   color: var(--fg-dim);
 }
 
 .bt-expanded-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: calc(var(--row) / 2);
 }
 
 .bt-conversation-btn {
@@ -767,23 +654,11 @@ function onSortChange(event: Event): void {
   background: transparent;
   padding: 0;
   text-align: left;
-  cursor: pointer;
-  border-radius: 8px;
-}
-
-.bt-expanded-create {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-dim);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 5px 10px;
+  font: inherit;
   cursor: pointer;
 }
 
-.bt-expanded-create:hover {
+.bt-conversation-btn:hover {
   background: var(--bg-hover);
 }
 </style>

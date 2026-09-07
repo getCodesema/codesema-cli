@@ -89,7 +89,7 @@ describe('empty vs. non-empty registry', () => {
   test('no project registered: the empty message, no rows', async () => {
     const html = await render({ projects: [] })
     expect(html).toContain(t('rail.repositoriesEmpty'))
-    expect(html).not.toContain('class="rpl-project"')
+    expect(html).not.toContain('class="rpl-project proj"')
   })
 
   test('projects registered: no empty message, one row per project', async () => {
@@ -99,7 +99,7 @@ describe('empty vs. non-empty registry', () => {
     expect(html).not.toContain(t('rail.repositoriesEmpty'))
     expect(html).toContain('one')
     expect(html).toContain('two')
-    expect((html.match(/class="rpl-project"/g) ?? []).length).toBe(2)
+    expect((html.match(/class="rpl-project proj"/g) ?? []).length).toBe(2)
   })
 })
 
@@ -121,7 +121,7 @@ describe('search: no-match message wiring (query is internal state, not a prop â
   })
 })
 
-describe('selection: the active repository is a tinted fill, never a border', () => {
+describe('selection: the active repository is named by aria-current', () => {
   test('the selected project carries the active class, the others do not', async () => {
     const html = await render({
       projects: [project({ id: 'a', name: 'one' }), project({ id: 'b', name: 'two' })],
@@ -140,17 +140,18 @@ describe('selection: the active repository is a tinted fill, never a border', ()
     expect(html).not.toContain('rpl-project--active')
   })
 
-  test('the active rule is a tinted fill, no border property', () => {
-    const rule = SOURCE.slice(
-      SOURCE.indexOf('.rpl-project--active {'),
-      SOURCE.indexOf('.rpl-icon-slot {'),
-    )
-    expect(rule).toContain('background: color-mix(in srgb, var(--ok) 12%, transparent);')
-    expect(rule).not.toContain('border-color')
+  test('the selected row carries aria-current, which is what the kit styles', async () => {
+    const html = await render({
+      projects: [project({ id: 'a', name: 'one' }), project({ id: 'b', name: 'two' })],
+      selected: 'b',
+    })
+    const rows = [...html.matchAll(/<button type="button" class="rpl-project[^"]*"([^>]*)>/g)]
+    expect(rows[0]?.[1]).toContain('aria-current="false"')
+    expect(rows[1]?.[1]).toContain('aria-current="true"')
   })
 })
 
-describe('activity badges: waiting (strong amber) and running (plain amber count)', () => {
+describe('activity badges: waiting (amber) and running (plain count)', () => {
   test('no activity: no badge renders', async () => {
     const html = await render({ projects: [project({ id: 'a' })], activity: new Map() })
     expect(html).not.toContain('rpl-badge--waiting')
@@ -173,6 +174,27 @@ describe('activity badges: waiting (strong amber) and running (plain amber count
     })
     expect(html).toContain('rpl-badge--running')
     expect(html).toContain('5')
+  })
+})
+
+describe('the project dot is a binary state, never an identity hue', () => {
+  test('idle: the empty glyph, no colour class', async () => {
+    const html = await render({ projects: [project({ id: 'a' })], activity: new Map() })
+    expect(html).toContain('rpl-dot dot')
+    expect(html).not.toContain('rpl-dot dot on')
+  })
+
+  test('live: the filled glyph, marked on', async () => {
+    const html = await render({
+      projects: [project({ id: 'a' })],
+      activity: new Map([['a', { waiting: 0, active: 1 }]]),
+    })
+    expect(html).toContain('rpl-dot dot on')
+  })
+
+  test('no per-name hue is computed any more', () => {
+    expect(SOURCE).not.toContain('nameColor')
+    expect(SOURCE).not.toContain('hsl(')
   })
 })
 
@@ -241,23 +263,15 @@ describe('root: no fixed width, matches ConversationsList.vue as a swappable slo
     expect(root).not.toContain('max-width:')
     expect(root).toContain('width: 100%;')
   })
-
-  test('the same card treatment as ConversationsList.vue: radius, border, shadow', () => {
-    const root = SOURCE.slice(SOURCE.indexOf('.rpl-root {'), SOURCE.indexOf('.rpl-header {'))
-    expect(root).toContain('border-radius: 16px;')
-  })
 })
 
 describe('rows carry no border: explicit, never a bare omission', () => {
   test('a repository row declares border: none', () => {
-    const block = SOURCE.slice(
-      SOURCE.indexOf('.rpl-project {'),
-      SOURCE.indexOf('.rpl-project:hover'),
-    )
+    const block = SOURCE.slice(SOURCE.indexOf('.rpl-project {'), SOURCE.indexOf('.rpl-icon-slot {'))
     expect(block).toContain('border: none;')
   })
 
-  test('no hex literal was introduced: every color is a theme tokens', () => {
+  test('no hex literal was introduced: every colour is a theme token', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

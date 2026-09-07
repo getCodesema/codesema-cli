@@ -6,7 +6,8 @@
 // on top, visually identical to ConversationsList.vue's own search field.
 import { Plus, Search, X } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
-import { nameColor, type ProjectActivity } from '../../composables/useProjects'
+import type { ProjectActivity } from '../../composables/useProjects'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type { Project, ProjectCandidate } from '../../types'
 import { searchRightPadding } from '../conversations/ConversationsLogic'
@@ -36,16 +37,19 @@ const emit = defineEmits<{
 const countsOf = (id: string): ProjectActivity =>
   props.activity.get(id) ?? { waiting: 0, active: 0 }
 
-const dotStyle = (name: string): Record<string, string> => ({
-  background: `hsl(${nameColor(name)} 55% 62%)`,
-})
+/** A project is "live" when at least one agent works on it or waits for the
+ * human: the dot is that binary fact, never a decorative identity hue. */
+const isLive = (id: string): boolean => {
+  const counts = countsOf(id)
+  return counts.waiting > 0 || counts.active > 0
+}
 
 // ── Search: local name filter over the registered list only (never the
 // detected candidates, which live behind the add form) ────────────────────
 const query = ref('')
 const searchInput = ref<HTMLInputElement | null>(null)
 
-/** Exposed for the shell's ⌘K, which focuses whichever list is up
+/** Exposed for the shell's Cmd/Ctrl+K, which focuses whichever list is up
  * rather than a search box of its own. */
 defineExpose({ focusSearch: () => searchInput.value?.focus() })
 
@@ -118,8 +122,8 @@ function requestRemove(id: string): void {
 </script>
 
 <template>
-  <nav class="rpl-root" :aria-label="t('rail.repositoriesTitle')">
-    <header class="rpl-header">
+  <nav class="rpl-root rail" :aria-label="t('rail.repositoriesTitle')">
+    <header class="rpl-header rail-h">
       <h2 class="rpl-title">{{ t('rail.repositoriesTitle') }}</h2>
       <span class="rpl-count">{{ projects.length }}</span>
     </header>
@@ -147,36 +151,42 @@ function requestRemove(id: string): void {
     </div>
 
     <div class="rpl-scroll">
-      <p v-if="isEmpty" class="rpl-empty">{{ t('rail.repositoriesEmpty') }}</p>
-      <p v-else-if="isSearchEmpty" class="rpl-empty">{{ t('rail.repositoriesSearchEmpty') }}</p>
+      <p v-if="isEmpty" class="rpl-empty empty">{{ t('rail.repositoriesEmpty') }}</p>
+      <p v-else-if="isSearchEmpty" class="rpl-empty empty">
+        {{ t('rail.repositoriesSearchEmpty') }}
+      </p>
 
       <div class="rpl-list">
         <div v-for="project in filteredProjects" :key="project.id" class="rpl-row">
           <button
             type="button"
-            class="rpl-project"
+            class="rpl-project proj"
             :class="{ 'rpl-project--active': project.id === selected }"
             :title="project.path"
+            :aria-current="project.id === selected"
             :aria-pressed="project.id === selected"
             @click="emit('select', project.id)"
           >
             <span class="rpl-icon-slot">
-              <span class="rpl-dot" :style="dotStyle(project.name)" aria-hidden="true" />
+              <span class="rpl-dot dot" :class="{ on: isLive(project.id) }" aria-hidden="true">{{
+                isLive(project.id) ? G.dot : G.pending
+              }}</span>
             </span>
-            <span class="rpl-name">{{ project.name }}</span>
-            <span class="rpl-badges">
+            <span class="rpl-name name">{{ project.name }}</span>
+            <span class="rpl-badges cnt">
               <!-- Strong amber: conversations blocked on the human. -->
               <span
                 v-if="countsOf(project.id).waiting > 0"
-                class="rpl-count-pill rpl-badge rpl-badge--waiting"
+                class="rpl-badge rpl-badge--waiting"
                 :title="t('workspace.cardWaiting', { n: countsOf(project.id).waiting })"
               >
-                ⚠ {{ countsOf(project.id).waiting }}
+                <span aria-hidden="true">{{ G.attention }}</span>
+                <b>{{ countsOf(project.id).waiting }}</b>
               </span>
               <!-- Plain amber count: agents at work, nothing asked of the human. -->
               <span
                 v-if="countsOf(project.id).active > 0"
-                class="rpl-count-pill rpl-badge rpl-badge--running"
+                class="rpl-badge rpl-badge--running"
                 :title="t('workspace.cardActive', { n: countsOf(project.id).active })"
               >
                 {{ countsOf(project.id).active }}
@@ -199,7 +209,7 @@ function requestRemove(id: string): void {
             "
             @click="requestRemove(project.id)"
           >
-            ✕
+            {{ G.ko }}
           </button>
         </div>
       </div>
@@ -207,7 +217,7 @@ function requestRemove(id: string): void {
 
     <!-- Menu footer: the add-project control, set off by a hairline above. -->
     <div class="rpl-footer">
-      <button v-if="!formOpen" type="button" class="rpl-add" @click="openForm">
+      <button v-if="!formOpen" type="button" class="rpl-add proj" @click="openForm">
         <span class="rpl-icon-slot">
           <Plus class="rpl-row-icon" aria-hidden="true" />
         </span>
@@ -239,10 +249,14 @@ function requestRemove(id: string): void {
           spellcheck="false"
         />
         <div class="rpl-add-actions">
-          <button class="rpl-add-submit" type="submit" :disabled="addBusy || !pathDraft.trim()">
+          <button
+            class="rpl-add-submit btn primary"
+            type="submit"
+            :disabled="addBusy || !pathDraft.trim()"
+          >
             {{ addBusy ? t('workspace.addProjectBusy') : t('workspace.addProjectSubmit') }}
           </button>
-          <button class="rpl-add-cancel" type="button" @click="cancelForm">
+          <button class="rpl-add-cancel btn ghost" type="button" @click="cancelForm">
             {{ t('workspace.addProjectCancel') }}
           </button>
         </div>
@@ -259,36 +273,25 @@ function requestRemove(id: string): void {
 </template>
 
 <style scoped>
-/* Same swappable-slot doctrine as ConversationsList.vue's own root: no
-   fixed width, the parent's zone gives it 100%. Same card treatment
-   (radius/border/shadow) so the two read as one family when toggled. */
+/* Same swappable-slot doctrine as ConversationsList.vue's own root: no fixed
+   width, the parent's zone gives it 100%. */
 .rpl-root {
-  display: flex;
-  flex-direction: column;
   width: 100%;
   min-height: 0;
-  border-radius: 16px;
-  border: 1px solid var(--line);
   background: var(--bg-raised);
   overflow: hidden;
 }
 
 .rpl-header {
   flex: none;
-  height: 40px;
-  padding: 0 12px;
-  display: flex;
   align-items: baseline;
-  gap: 6px;
-  border-bottom: 1px solid var(--line);
+  gap: 1ch;
 }
 
 .rpl-title {
   flex: 1;
   min-width: 0;
-  margin: 0;
   font-size: var(--fs);
-  font-weight: 700;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -297,7 +300,6 @@ function requestRemove(id: string): void {
 
 .rpl-count {
   flex: none;
-  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -305,12 +307,12 @@ function requestRemove(id: string): void {
 .rpl-search {
   flex: none;
   position: relative;
-  padding: 8px 12px;
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .rpl-search-icon {
   position: absolute;
-  left: 19px;
+  left: 2ch;
   top: 50%;
   transform: translateY(-50%);
   width: 14px;
@@ -321,23 +323,13 @@ function requestRemove(id: string): void {
 
 .rpl-search-input {
   width: 100%;
-  font-family: inherit;
-  font-size: var(--fs);
-  padding: 7px 0 7px 28px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-raised);
-  color: var(--fg);
-}
-
-.rpl-search-input:focus-visible {
-  outline: none;
-  border-color: var(--ok);
+  min-width: 0;
+  padding-left: 4ch;
 }
 
 .rpl-search-clear {
   position: absolute;
-  right: 20px;
+  right: 2ch;
   top: 50%;
   transform: translateY(-50%);
   width: 14px;
@@ -365,67 +357,38 @@ function requestRemove(id: string): void {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 8px 8px;
 }
 
 .rpl-empty {
-  margin: 0;
-  padding: 10px 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
+  margin: 1ch;
 }
 
 .rpl-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
 }
 
 .rpl-row {
   display: flex;
   align-items: stretch;
-  gap: 2px;
 }
 
-/* Exact anatomy of ProjectsNav.vue's own `.pn-project`: 36px, 8px/12px
-   padding, 8px radius, 14px/500/20px text, 16px icon with a 10px gap. */
-.rpl-project {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 36px;
-  text-align: left;
-  font-family: inherit;
-  font-size: var(--fs);
-  font-weight: 500;
-  line-height: 20px;
-  color: var(--fg-dim);
-  padding: 8px 12px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.rpl-project:hover {
+.rpl-row:hover {
   background: var(--bg-hover);
 }
 
-/* Active state: fill + text only, no border or side bar; the identity dot
-   keeps its own color, which names the repo and is not a state to accent. */
-.rpl-project--active {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  color: var(--fg);
-  font-weight: 600;
+.rpl-project {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: var(--fg-dim);
+  border: none;
+  background: transparent;
 }
 
 .rpl-icon-slot {
   flex: none;
-  width: 16px;
-  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -433,15 +396,8 @@ function requestRemove(id: string): void {
 
 .rpl-row-icon {
   flex: none;
-  width: 16px;
-  height: 16px;
-}
-
-.rpl-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
+  width: 14px;
+  height: 14px;
 }
 
 .rpl-name {
@@ -455,152 +411,110 @@ function requestRemove(id: string): void {
   margin-left: auto;
   flex: none;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
-.rpl-count-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 16px;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-/* Strong amber: the human blocks these conversations, the one pastille
-   that carries a colored fill (color is a state). */
+/* Amber: the human blocks these conversations (colour is a state). */
 .rpl-badge--waiting {
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
   color: var(--warn);
 }
 
-/* Plain amber count: the machine works, nothing is asked of the human. */
+/* The machine works, nothing is asked of the human. */
 .rpl-badge--running {
-  background: var(--bg-raised);
-  color: var(--warn);
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Removal stays hidden until hover/focus; red only when armed. */
 .rpl-remove {
   flex: none;
   align-self: center;
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-family: inherit;
+  padding: 0 1ch;
+  font: inherit;
   color: var(--fg-muted);
   border: none;
-  border-radius: 6px;
   background: transparent;
   cursor: pointer;
-  opacity: 0;
+  visibility: hidden;
 }
 
 .rpl-row:hover .rpl-remove,
 .rpl-remove:focus-visible,
 .rpl-remove--armed {
-  opacity: 1;
+  visibility: visible;
 }
 
 .rpl-remove:hover {
   color: var(--err);
-  background: var(--bg-hover);
 }
 
 /* Armed confirmation carries a state: red is doctrine here, not decoration. */
 .rpl-remove--armed {
   color: var(--err);
-  background: color-mix(in srgb, var(--err) 12%, transparent);
+  border: 1px solid var(--err);
 }
 
 .rpl-footer {
-  margin-top: 6px;
-  padding: 8px;
+  flex: none;
   border-top: 1px solid var(--line);
 }
 
 .rpl-add {
-  display: flex;
+  grid-template-columns: 2ch 1fr;
   align-items: center;
-  gap: 10px;
   width: 100%;
-  height: 36px;
   text-align: left;
-  font-family: inherit;
-  font-size: var(--fs);
-  font-weight: 500;
-  line-height: 20px;
-  color: var(--fg-muted);
-  padding: 8px 12px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.rpl-add:hover {
-  background: var(--bg-hover);
+  font: inherit;
   color: var(--fg-dim);
+  border: none;
+  background: transparent;
 }
 
 .rpl-add-form {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: calc(var(--row) / 2);
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .rpl-detected {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .rpl-detected-label {
-  font-family: var(--font);
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
-  padding: 2px 1px;
+  color: var(--fg-dim);
 }
 
 .rpl-detected-item {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  font-family: inherit;
+  align-items: baseline;
+  gap: 1ch;
+  font: inherit;
   text-align: left;
-  padding: 5px 8px;
-  border-radius: 7px;
+  padding: 2px 1ch;
   border: 1px solid var(--line);
-  background: var(--bg-raised);
+  background: var(--bg);
   color: var(--fg);
   cursor: pointer;
 }
 
 .rpl-detected-item:hover:not(:disabled) {
-  border-color: var(--line);
+  background: var(--bg-hover);
 }
 
 .rpl-detected-item:disabled {
-  opacity: 0.45;
+  color: var(--fg-muted);
   cursor: default;
 }
 
 .rpl-detected-plus {
   color: var(--fg-muted);
-  font-weight: 600;
 }
 
 .rpl-detected-name {
@@ -610,63 +524,18 @@ function requestRemove(id: string): void {
 }
 
 .rpl-add-input {
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--bg-raised);
-  color: var(--fg);
-  font-family: var(--font);
-  font-size: 12px;
-  padding: 7px 9px;
-}
-
-.rpl-add-input::placeholder {
-  color: var(--fg-muted);
-  font-family: var(--font);
+  width: 100%;
+  min-width: 0;
 }
 
 .rpl-add-actions {
   display: flex;
-  gap: 6px;
-}
-
-.rpl-add-submit {
-  font-size: 12px;
-  font-weight: 700;
-  font-family: inherit;
-  padding: 5px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--ok);
-  background: var(--ok);
-  color: var(--bg);
-  cursor: pointer;
-}
-
-.rpl-add-submit:not(:disabled):hover {
-  background: var(--ok);
-  border-color: var(--ok);
-}
-
-.rpl-add-submit:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.rpl-add-cancel {
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  padding: 5px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--fg-dim);
-  cursor: pointer;
+  gap: 1ch;
 }
 
 .rpl-error {
   margin: 2px 0 0;
-  padding: 0 2px;
-  font-size: 12px;
+  padding: 0 1ch;
   color: var(--err);
   overflow-wrap: anywhere;
 }

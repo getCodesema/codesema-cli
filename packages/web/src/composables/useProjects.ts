@@ -29,20 +29,6 @@ export function shortBranch(name: string): string {
   return name.startsWith('origin/') ? name.slice('origin/'.length) : name
 }
 
-/**
- * Stable identity hue of a project, derived from its name alone (FNV-1a hash
- * spread by the golden angle): the same name always gets the same hue, two
- * neighbouring names land far apart on the wheel. Range: [0, 360).
- */
-export function nameColor(name: string): number {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < name.length; i++) {
-    hash ^= name.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return Math.round(((hash >>> 0) * 137.508) % 360)
-}
-
 /** localStorage key of the active project card (single id). */
 export const ACTIVE_PROJECT_STORAGE_KEY = 'codesema-ws-active-project'
 

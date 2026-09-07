@@ -262,7 +262,7 @@ describe('BranchTable: conversations badge', () => {
     expect(html).not.toContain('bt-conversations-badge')
   })
 
-  test('the badge is tinted by the most urgent status among several', async () => {
+  test('the badge carries the tone of the most urgent status among several', async () => {
     const rows = [
       branchRow({
         conversations: [
@@ -272,7 +272,9 @@ describe('BranchTable: conversations badge', () => {
       }),
     ]
     const html = await render({ rows, visibleRows: rows })
-    expect(html).toContain('var(--warn)')
+    expect(html).toContain('data-tone="warn"')
+    // The tone is an attribute the stylesheet reads, never an inline colour.
+    expect(html).not.toContain('style="color')
   })
 })
 
@@ -393,7 +395,7 @@ describe('BranchTable: table title', () => {
 })
 
 describe('BranchTable: design tokens', () => {
-  test('no hex literal color was introduced: every color is a theme tokens', () => {
+  test('no hex literal colour was introduced: every colour is a theme token', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

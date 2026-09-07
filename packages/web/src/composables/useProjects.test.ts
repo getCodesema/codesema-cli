@@ -7,7 +7,6 @@ import {
   isolationForProject,
   isTrunkBranch,
   migrateActiveProject,
-  nameColor,
   nodeHasActiveConversation,
   otherBranches,
   resolveBranchClick,
@@ -510,25 +509,5 @@ describe('nodeHasActiveConversation', () => {
     expect(nodeHasActiveConversation(done)).toBe(false)
     const empty = buildProjectTree([], [mr({ number: 1 })])[0]!
     expect(nodeHasActiveConversation(empty)).toBe(false)
-  })
-})
-
-describe('nameColor', () => {
-  test('deterministic: the same name always yields the same hue', () => {
-    expect(nameColor('nolyra')).toBe(nameColor('nolyra'))
-    expect(nameColor('codesema-cli')).toBe(nameColor('codesema-cli'))
-  })
-
-  test('hue stays in [0, 360)', () => {
-    for (const name of ['nolyra', 'codesema-cli', 'solstice-rush', 'a', '', 'émoji-ç']) {
-      const hue = nameColor(name)
-      expect(hue).toBeGreaterThanOrEqual(0)
-      expect(hue).toBeLessThan(360)
-      expect(Number.isInteger(hue)).toBe(true)
-    }
-  })
-
-  test('close names spread apart on the wheel', () => {
-    expect(nameColor('project-a')).not.toBe(nameColor('project-b'))
   })
 })

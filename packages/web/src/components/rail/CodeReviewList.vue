@@ -12,6 +12,7 @@ import {
   isCodeReviewRowRunning,
   type CodeReviewRow,
 } from '../../composables/useCodeReview'
+import { G } from '../../glyphs'
 import { t, type MessageKey } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import type { ForgeMr, MrReviewMode, MrReviewStatus, ReviewArchiveSummary } from '../../types'
@@ -44,7 +45,7 @@ const emit = defineEmits<{
 
 const searchInput = ref<HTMLInputElement | null>(null)
 
-/** Exposed for the shell's ⌘K, which focuses whichever list is up
+/** Exposed for the shell's Cmd/Ctrl+K, which focuses whichever list is up
  * rather than a search box of its own. */
 defineExpose({ focusSearch: () => searchInput.value?.focus() })
 
@@ -150,8 +151,8 @@ function historyErrorOf(key: string): string | null {
 </script>
 
 <template>
-  <section class="crl-root" :aria-label="t('codeReview.title')">
-    <header class="crl-header">
+  <section class="crl-root rail" :aria-label="t('codeReview.title')">
+    <header class="crl-header rail-h">
       <div class="crl-heading">
         <h2 class="crl-title">{{ t('codeReview.title') }}</h2>
         <span class="crl-count">{{ rows.length }}</span>
@@ -182,8 +183,10 @@ function historyErrorOf(key: string): string | null {
     </div>
 
     <div class="crl-scroll">
-      <p v-if="isEmpty" class="crl-empty">{{ t('codeReview.empty') }}</p>
-      <p v-else-if="isSearchEmpty" class="crl-empty">{{ t('codeReview.searchEmpty') }}</p>
+      <p v-if="isEmpty" class="crl-empty empty">{{ t('codeReview.empty') }}</p>
+      <p v-else-if="isSearchEmpty" class="crl-empty empty">
+        {{ t('codeReview.searchEmpty') }}
+      </p>
 
       <div v-for="entry in entries" :key="entry.key" class="crl-row-wrap">
         <div class="crl-row">
@@ -217,7 +220,7 @@ function historyErrorOf(key: string): string | null {
               <span v-if="entry.row.kind === 'mr'" class="crl-mr-head">
                 <span
                   v-if="entry.mrVariant"
-                  class="crl-mr-pastille"
+                  class="crl-mr-pastille badge"
                   :class="`crl-mr-pastille--${entry.mrVariant}`"
                 >
                   <span class="crl-mr-number">{{ entry.mrNumber }}</span>
@@ -231,9 +234,13 @@ function historyErrorOf(key: string): string | null {
               </span>
 
               <span class="crl-meta">
-                <span class="crl-project-tag">{{ entry.row.projectName }}</span>
+                <span class="crl-project-tag badge">{{ entry.row.projectName }}</span>
 
-                <span v-if="isRunning(entry.row)" class="crl-badge crl-badge--running">
+                <span
+                  v-if="isRunning(entry.row)"
+                  class="crl-badge crl-badge--running status"
+                  data-s="running"
+                >
                   {{ t('codeReview.running') }}
                 </span>
                 <template v-else-if="entry.row.lastReview">
@@ -244,7 +251,9 @@ function historyErrorOf(key: string): string | null {
                     formatRelativeAge(entry.row.lastReview.created_at)
                   }}</span>
                 </template>
-                <span v-else class="crl-never" :title="t('codeReview.neverReviewed')">–</span>
+                <span v-else class="crl-never" :title="t('codeReview.neverReviewed')">{{
+                  G.minus
+                }}</span>
               </span>
             </span>
           </button>
@@ -293,27 +302,17 @@ function historyErrorOf(key: string): string | null {
 
 <style scoped>
 /* Same swappable-slot doctrine as ConversationsList.vue/RepositoriesList.vue:
-   no own width, the parent's rail slot gives this 100%. Same card treatment
-   so all three read as one family when toggled. */
+   no own width, the parent's rail slot gives this 100%. */
 .crl-root {
-  display: flex;
-  flex-direction: column;
   width: 100%;
   min-height: 0;
-  border-radius: 16px;
-  border: 1px solid var(--line);
   background: var(--bg-raised);
   overflow: hidden;
 }
 
 .crl-header {
   flex: none;
-  height: 40px;
-  padding: 0 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--line);
+  gap: 1ch;
 }
 
 .crl-heading {
@@ -321,14 +320,12 @@ function historyErrorOf(key: string): string | null {
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .crl-title {
   min-width: 0;
-  margin: 0;
   font-size: var(--fs);
-  font-weight: 700;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -337,7 +334,6 @@ function historyErrorOf(key: string): string | null {
 
 .crl-count {
   flex: none;
-  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -345,12 +341,12 @@ function historyErrorOf(key: string): string | null {
 .crl-search {
   flex: none;
   position: relative;
-  padding: 8px 12px;
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .crl-search-icon {
   position: absolute;
-  left: 19px;
+  left: 2ch;
   top: 50%;
   transform: translateY(-50%);
   width: 14px;
@@ -361,23 +357,13 @@ function historyErrorOf(key: string): string | null {
 
 .crl-search-input {
   width: 100%;
-  font-family: inherit;
-  font-size: var(--fs);
-  padding: 7px 0 7px 28px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-raised);
-  color: var(--fg);
-}
-
-.crl-search-input:focus-visible {
-  outline: none;
-  border-color: var(--ok);
+  min-width: 0;
+  padding-left: 4ch;
 }
 
 .crl-search-clear {
   position: absolute;
-  right: 20px;
+  right: 2ch;
   top: 50%;
   transform: translateY(-50%);
   width: 14px;
@@ -401,33 +387,23 @@ function historyErrorOf(key: string): string | null {
   color: var(--fg-dim);
 }
 
-.crl-search-clear:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .crl-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 8px 8px;
 }
 
 .crl-empty {
-  margin: 0;
-  padding: 10px 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
+  margin: 1ch;
 }
 
 .crl-row-wrap {
-  margin-top: 4px;
+  border-bottom: 1px solid var(--line);
 }
 
 .crl-row {
   display: flex;
   align-items: stretch;
-  gap: 2px;
 }
 
 .crl-chevron-btn {
@@ -436,24 +412,15 @@ function historyErrorOf(key: string): string | null {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  padding: 0 1ch;
   border: none;
-  border-radius: 6px;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 0;
 }
 
 .crl-chevron-btn:hover {
-  background: var(--bg-hover);
   color: var(--fg-dim);
-}
-
-.crl-chevron-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 
 .crl-chevron-icon {
@@ -470,10 +437,10 @@ function historyErrorOf(key: string): string | null {
   flex: 1;
   min-width: 0;
   text-align: left;
-  font-family: inherit;
-  padding: 7px 10px;
+  font: inherit;
+  padding: calc(var(--row) / 2) 1ch;
   border: none;
-  border-radius: 8px;
+  border-left: 3px solid transparent;
   background: transparent;
   color: var(--fg-dim);
   cursor: pointer;
@@ -483,46 +450,33 @@ function historyErrorOf(key: string): string | null {
   background: var(--bg-hover);
 }
 
-.crl-select-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* Selection is a tinted fill, the same green-soft convention every other
-   "currently open" row in this workspace uses (ConversationsList, RepositoriesList). */
+/* Selection is a fill and an accented edge, the same convention every other
+   "currently open" row in this workspace uses. */
 .crl-select-btn--selected {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
   color: var(--fg);
 }
 
 .crl-main {
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
 
 .crl-mr-head {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 1ch;
 }
 
 .crl-mr-pastille {
   flex: none;
   display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.crl-mr-number {
-  font-family: var(--font);
+  gap: 1ch;
 }
 
 .crl-mr-state-text {
-  font-size: 12px;
-  font-weight: 500;
   color: var(--fg-dim);
 }
 
@@ -544,8 +498,6 @@ function historyErrorOf(key: string): string | null {
 
 .crl-mr-title {
   min-width: 0;
-  font-size: var(--fs);
-  font-weight: 600;
   color: var(--fg);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -556,20 +508,18 @@ function historyErrorOf(key: string): string | null {
 .crl-branch-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 1ch;
 }
 
 .crl-branch-icon {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   color: var(--fg-muted);
 }
 
 .crl-branch-name {
   min-width: 0;
-  font-family: var(--font);
-  font-size: var(--fs);
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -579,43 +529,27 @@ function historyErrorOf(key: string): string | null {
 .crl-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 2ch;
   font-size: 12px;
 }
 
 .crl-project-tag {
   flex: none;
-  padding: 1px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-dim);
-  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
   white-space: nowrap;
 }
 
 .crl-badge {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
   white-space: nowrap;
 }
 
-/* Plain amber, never the strong amber reserved for "the human is waited on":
-   an agent is at work here, nothing is asked of the reader. */
+/* The machine works here; nothing is asked of the reader. */
 .crl-badge--running {
-  background: var(--bg-raised);
-  color: var(--warn);
+  color: var(--info);
 }
 
 .crl-verdict {
   flex: none;
-  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -637,7 +571,7 @@ function historyErrorOf(key: string): string | null {
   white-space: nowrap;
 }
 
-/* Never reviewed: a neutral dash, never a fabricated status color. */
+/* Never reviewed: a neutral dash, never a fabricated status colour. */
 .crl-never {
   flex: none;
   color: var(--fg-muted);
@@ -645,31 +579,22 @@ function historyErrorOf(key: string): string | null {
 }
 
 .crl-panel {
-  margin: 2px 0 4px 30px;
-  padding: 8px 10px;
+  margin: 0 0 calc(var(--row) / 2) 4ch;
+  padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-raised);
+  background: var(--bg);
 }
 
 .crl-panel-title {
-  margin: 0 0 6px;
+  margin-bottom: calc(var(--row) / 2);
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
 }
 
 .crl-history-hint {
-  margin: 0;
-  font-size: 12px;
   color: var(--fg-dim);
 }
 
 .crl-history-error {
-  margin: 0;
-  font-size: 12px;
   color: var(--err);
 }
 
@@ -679,32 +604,24 @@ function historyErrorOf(key: string): string | null {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .crl-history-item {
   width: 100%;
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 5px 6px;
+  gap: 2ch;
+  padding: 0 1ch;
   border: none;
-  border-radius: 6px;
   background: transparent;
   color: var(--fg-dim);
-  font-family: inherit;
-  font-size: 12px;
+  font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
 .crl-history-item:hover {
   background: var(--bg-hover);
-}
-
-.crl-history-item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 
 .crl-history-age,

@@ -35,7 +35,7 @@ const emit = defineEmits<{
 const query = ref('')
 const searchInput = ref<HTMLInputElement | null>(null)
 
-/** Exposed for the shell's ⌘K, which focuses whichever list is up
+/** Exposed for the shell's Cmd/Ctrl+K, which focuses whichever list is up
  * rather than a search box of its own. */
 defineExpose({ focusSearch: () => searchInput.value?.focus() })
 
@@ -74,13 +74,13 @@ function isSelected(state: TaskState): boolean {
 </script>
 
 <template>
-  <section class="cvl-root" :aria-label="t('conversations.title')">
-    <header class="cvl-header">
+  <section class="cvl-root rail" :aria-label="t('conversations.title')">
+    <header class="cvl-header rail-h">
       <div class="cvl-heading">
         <h2 class="cvl-title">{{ t('conversations.title') }}</h2>
         <span class="cvl-count">{{ states.length }}</span>
       </div>
-      <button type="button" class="cvl-action" @click="emit('create')">
+      <button type="button" class="cvl-action btn" @click="emit('create')">
         <Plus class="cvl-action-icon" aria-hidden="true" />
         <span class="cvl-action-label">{{ t('conversations.newAction') }}</span>
       </button>
@@ -109,13 +109,15 @@ function isSelected(state: TaskState): boolean {
     </div>
 
     <div class="cvl-scroll">
-      <p v-if="isEmpty" class="cvl-empty">{{ t('conversations.empty') }}</p>
-      <p v-else-if="isSearchEmpty" class="cvl-empty">{{ t('conversations.searchEmpty') }}</p>
+      <p v-if="isEmpty" class="cvl-empty empty">{{ t('conversations.empty') }}</p>
+      <p v-else-if="isSearchEmpty" class="cvl-empty empty">
+        {{ t('conversations.searchEmpty') }}
+      </p>
 
       <div v-for="group in groups" :key="group.projectId" class="cvl-group">
         <button
           type="button"
-          class="cvl-group-head"
+          class="cvl-group-head queue-h"
           :aria-expanded="isOpen(group.projectId)"
           :aria-controls="`cvl-body-${group.projectId}`"
           :aria-label="t('conversations.groupToggleAria', { project: group.projectName })"
@@ -165,24 +167,15 @@ function isSelected(state: TaskState): boolean {
 .cvl-root {
   container-type: inline-size;
   container-name: cvl-shell;
-  display: flex;
-  flex-direction: column;
   width: 100%;
   min-height: 0;
-  border-radius: 16px;
-  border: 1px solid var(--line);
   background: var(--bg-raised);
   overflow: hidden;
 }
 
 .cvl-header {
   flex: none;
-  height: 40px;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--line);
+  gap: 1ch;
 }
 
 .cvl-heading {
@@ -190,14 +183,12 @@ function isSelected(state: TaskState): boolean {
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .cvl-title {
   min-width: 0;
-  margin: 0;
   font-size: var(--fs);
-  font-weight: 700;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -206,7 +197,6 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-count {
   flex: none;
-  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -225,16 +215,10 @@ function isSelected(state: TaskState): boolean {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 5px 10px;
-  border: 1px solid var(--ok);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  gap: 1ch;
+  padding: 0 1ch;
+  border-color: var(--ok);
   color: var(--ok);
-  cursor: pointer;
 }
 
 .cvl-action:hover {
@@ -258,12 +242,12 @@ function isSelected(state: TaskState): boolean {
 .cvl-search {
   flex: none;
   position: relative;
-  padding: 8px 12px;
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .cvl-search-icon {
   position: absolute;
-  left: 19px;
+  left: 2ch;
   top: 50%;
   transform: translateY(-50%);
   width: 14px;
@@ -274,23 +258,13 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-search-input {
   width: 100%;
-  font-family: inherit;
-  font-size: var(--fs);
-  padding: 7px 0 7px 28px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-raised);
-  color: var(--fg);
-}
-
-.cvl-search-input:focus-visible {
-  outline: none;
-  border-color: var(--ok);
+  min-width: 0;
+  padding-left: 4ch;
 }
 
 .cvl-search-clear {
   position: absolute;
-  right: 20px;
+  right: 2ch;
   top: 50%;
   transform: translateY(-50%);
   width: 14px;
@@ -318,30 +292,26 @@ function isSelected(state: TaskState): boolean {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 8px 8px;
 }
 
 .cvl-empty {
-  margin: 0;
-  padding: 10px 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
+  margin: 1ch;
 }
 
 .cvl-group {
-  margin-top: 4px;
+  margin-top: calc(var(--row) / 2);
 }
 
 .cvl-group-head {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 1ch;
   width: 100%;
   text-align: left;
-  font-family: inherit;
-  padding: 6px 14px;
+  font: inherit;
+  padding: 0 1ch 2px;
   border: none;
-  border-radius: 8px;
+  border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--fg-dim);
   cursor: pointer;
@@ -365,8 +335,6 @@ function isSelected(state: TaskState): boolean {
 .cvl-group-name {
   flex: 1;
   min-width: 0;
-  font-size: var(--fs);
-  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -374,7 +342,6 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-group-count {
   flex: none;
-  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -406,10 +373,9 @@ function isSelected(state: TaskState): boolean {
   display: block;
   width: 100%;
   text-align: left;
-  font-family: inherit;
+  font: inherit;
   padding: 0;
   border: none;
-  border-radius: 8px;
   background: transparent;
   cursor: pointer;
 }
@@ -423,7 +389,7 @@ function isSelected(state: TaskState): boolean {
 }
 
 .cvl-row-btn--selected {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  background: var(--bg-hover);
 }
 
 .cvl-row-btn--selected :deep(.cvr-title) {
