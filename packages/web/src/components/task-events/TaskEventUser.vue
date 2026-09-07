@@ -28,19 +28,16 @@ const html = computed(() => renderMarkdown(props.text))
 .tvu-root {
   align-self: flex-end;
   width: fit-content;
-  max-width: 550px;
+  max-width: 72ch;
   min-width: 0;
-  margin: 4px 0;
 }
 
 .tvu-bubble {
   margin: 0;
-  padding: 8px 16px;
+  padding: calc(var(--row) / 2) 2ch;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-left: 2px solid var(--accent);
   background: var(--bg-raised);
-  font-size: var(--fs);
-  line-height: 24px;
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -53,7 +50,7 @@ const html = computed(() => renderMarkdown(props.text))
 .tvu-md :deep(ul),
 .tvu-md :deep(ol),
 .tvu-md :deep(pre) {
-  margin: 0 0 8px;
+  margin: 0 0 calc(var(--row) / 2);
 }
 
 .tvu-md :deep(:last-child) {
@@ -62,7 +59,7 @@ const html = computed(() => renderMarkdown(props.text))
 
 .tvu-md :deep(h2),
 .tvu-md :deep(h3) {
-  margin: 12px 0 6px;
+  margin: var(--row) 0 calc(var(--row) / 2);
   font-size: var(--fs);
   font-weight: 700;
   color: var(--fg);
@@ -73,13 +70,9 @@ const html = computed(() => renderMarkdown(props.text))
   margin-top: 0;
 }
 
-.tvu-md :deep(h3) {
-  font-size: var(--fs);
-}
-
 .tvu-md :deep(ul),
 .tvu-md :deep(ol) {
-  padding-left: 20px;
+  padding-left: 3ch;
 }
 
 .tvu-md :deep(li) {
@@ -87,16 +80,16 @@ const html = computed(() => renderMarkdown(props.text))
 }
 
 .tvu-md :deep(code) {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--ok);
+  background: none;
+  padding: 0;
   white-space: pre-wrap;
 }
 
 .tvu-md :deep(pre) {
-  padding: 9px 11px;
+  padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
-  border-radius: 8px;
   background: var(--bg-raised);
   overflow-x: auto;
 }
@@ -106,6 +99,6 @@ const html = computed(() => renderMarkdown(props.text))
 }
 
 .tvu-md :deep(a) {
-  color: var(--ok);
+  color: var(--accent);
 }
 </style>

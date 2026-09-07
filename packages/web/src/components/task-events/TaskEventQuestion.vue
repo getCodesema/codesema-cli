@@ -25,13 +25,15 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
       <span
         >{{ t('workspace.agentLabel') }}<template v-if="ago"> · {{ ago }}</template></span
       >
-      <span class="tvq-tag">{{ t('workspace.evQuestion') }}</span>
+      <span class="tvq-tag badge" data-tone="warn">{{ t('workspace.evQuestion') }}</span>
     </p>
-    <p class="tvq-bubble" :class="{ 'tvq-bubble--active': ctx.active }">
-      <template v-for="(segment, i) in segments" :key="i">
-        <code v-if="segment.code" class="tvq-code">{{ segment.text }}</code>
-        <template v-else>{{ segment.text }}</template>
-      </template>
+    <p class="tvq-bubble question" :class="{ 'tvq-bubble--active': ctx.active }">
+      <span class="tvq-text q">
+        <template v-for="(segment, i) in segments" :key="i">
+          <code v-if="segment.code" class="tvq-code">{{ segment.text }}</code>
+          <template v-else>{{ segment.text }}</template>
+        </template>
+      </span>
     </p>
     <p v-if="ctx.active" class="tvq-hint">{{ t('workspace.questionHint') }}</p>
   </div>
@@ -41,57 +43,39 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 .tvq-root {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: calc(var(--row) / 2);
   max-width: 85%;
-  margin: 4px 0;
 }
 
 .tvq-meta {
   margin: 0;
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  font-family: var(--font);
+  gap: 1ch;
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg-muted);
-}
-
-.tvq-tag {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  padding: 2px 6px;
-  border-radius: 4px;
 }
 
 /* Amber carries the state: this question blocks the task. */
 .tvq-bubble {
   margin: 0;
-  padding: 12px 14px;
-  border: 1px solid var(--warn);
-  border-radius: 3px 10px 10px 10px;
-  background: color-mix(in srgb, var(--warn) 14%, transparent);
-  font-size: var(--fs);
-  line-height: 1.55;
-  color: var(--fg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-width: 0;
 }
 
+/* The live question — the one the composer is waiting on — is the only one
+   that gets the soft wash; answered ones keep the plain bordered box. */
 .tvq-bubble--active {
-  box-shadow: 0 0 18px rgba(232, 196, 106, 0.07);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .tvq-code {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--warn);
+  background: none;
+  padding: 0;
   white-space: pre-wrap;
 }
 

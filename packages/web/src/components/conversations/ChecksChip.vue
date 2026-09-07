@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { AlertTriangle, Check, X } from '@lucide/vue'
 import type { Component } from 'vue'
-import type { ReferencePill, ReferencePillGlyph } from './ConversationsLogic'
+import type { StatusTone } from '../../execution-status'
+import { G } from '../../glyphs'
+import type { ReferencePill, ReferencePillGlyph, ReferencePillTone } from './ConversationsLogic'
 
 defineProps<{
   pill: ReferencePill
@@ -12,11 +14,17 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
   'alert-triangle': AlertTriangle,
   check: Check,
 }
+
+const CHECKS_TONES: Record<ReferencePillTone, StatusTone> = {
+  red: 'err',
+  amber: 'warn',
+  green: 'ok',
+}
 </script>
 
 <template>
-  <span class="cc-pill" :class="`cc-pill--${pill.tone}`">
-    <span v-if="pill.glyph === 'dot'" class="cc-dot" aria-hidden="true" />
+  <span class="cc-pill badge" :class="`cc-pill--${pill.tone}`" :data-tone="CHECKS_TONES[pill.tone]">
+    <span v-if="pill.glyph === 'dot'" class="cc-dot" aria-hidden="true">{{ G.dot }}</span>
     <component :is="CHECKS_ICONS[pill.glyph]" v-else class="cc-pill-icon" aria-hidden="true" />
     <span class="cc-pill-text">{{ pill.text }}</span>
   </span>
@@ -26,45 +34,21 @@ const CHECKS_ICONS: Partial<Record<ReferencePillGlyph, Component>> = {
 .cc-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-dim);
-  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
+  gap: 1ch;
+  border-color: var(--line);
   white-space: nowrap;
+}
+
+/* The state tone is the ONE thing that colours this chip: one attribute, no
+   per-tone class of its own reaching for a token. */
+.cc-pill[data-tone] {
+  color: var(--tone);
+  border-color: var(--tone);
 }
 
 .cc-pill-icon {
   flex: none;
-  width: 10px;
-  height: 10px;
-}
-
-.cc-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentcolor;
-}
-
-.cc-pill--red {
-  color: var(--err);
-  border-color: var(--err);
-  background: color-mix(in srgb, var(--err) 12%, transparent);
-}
-
-.cc-pill--amber {
-  color: var(--warn);
-  border-color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-
-.cc-pill--green {
-  color: var(--ok);
-  border-color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  width: 1em;
+  height: 1em;
 }
 </style>

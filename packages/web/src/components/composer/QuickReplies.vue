@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 
 defineProps<{
@@ -10,7 +11,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 </script>
 
 <template>
-  <div v-if="options.length > 0" class="qr-quick">
+  <div v-if="options.length > 0" class="qr-quick qr">
     <button
       v-for="option in options"
       :key="option"
@@ -19,7 +20,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
       :disabled="disabled"
       @click="emit('pick', option)"
     >
-      → {{ option }}
+      {{ G.arrow }} {{ option }}
     </button>
     <button class="qr-other" type="button" @click="emit('other')">
       {{ t('workspace.quickReplyOther') }}
@@ -28,23 +29,15 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 </template>
 
 <style scoped>
-/* ── Quick replies ────────────────────────────────────────────────────── */
-.qr-quick {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 2px;
-}
-
-/* Amber: answering IS the pending human action. */
-.qr-opt {
-  font-size: var(--fs);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 8px 14px;
+/* Amber: answering IS the pending human action. The kit's own `.qr .btn`
+   look, kept scoped because the option buttons carry their BEM class alone
+   (pilot/QuestionBlock.test.ts matches the exact class attribute). */
+.qr-opt,
+.qr-other {
+  font: inherit;
+  padding: 2px 2ch;
   border: 1px solid var(--warn);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  background: transparent;
   color: var(--warn);
   cursor: pointer;
   overflow-wrap: anywhere;
@@ -52,23 +45,17 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 }
 
 .qr-opt:hover:not(:disabled) {
-  border-color: var(--warn);
+  background: var(--bg-hover);
 }
 
 .qr-opt:disabled {
-  opacity: 0.5;
-  cursor: default;
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .qr-other {
-  font-size: var(--fs);
-  font-family: inherit;
-  padding: 8px 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
+  border-color: transparent;
   color: var(--fg-dim);
-  cursor: pointer;
 }
 
 .qr-other:hover {

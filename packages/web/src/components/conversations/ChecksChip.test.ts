@@ -66,22 +66,37 @@ describe('tone', () => {
   })
 })
 
-describe('the pill border colour is reserved to a checks state, never decorative', () => {
+describe('the pill colour is reserved to a checks state, never decorative', () => {
   test('the base pill border is neutral, no state colour of its own', () => {
-    const rule = SOURCE.slice(SOURCE.indexOf('.cc-pill {'), SOURCE.indexOf('.cc-pill-icon {'))
-    expect(rule).toContain('border: 1px solid var(--line);')
+    const rule = SOURCE.slice(SOURCE.indexOf('.cc-pill {'), SOURCE.indexOf('.cc-pill[data-tone]'))
+    expect(rule).toContain('border-color: var(--line);')
+    expect(rule).not.toContain('--tone')
     expect(rule).not.toContain('--err')
     expect(rule).not.toContain('--warn')
     expect(rule).not.toContain('--ok')
   })
 
-  test('each tone overrides the border colour with its own state token', () => {
-    function ruleBody(selector: string): string {
-      const at = SOURCE.indexOf(selector)
-      return SOURCE.slice(at, SOURCE.indexOf('}', at))
+  test('one rule paints the chip, from the semantic tone alone', () => {
+    const at = SOURCE.indexOf('.cc-pill[data-tone] {')
+    const rule = SOURCE.slice(at, SOURCE.indexOf('}', at))
+    expect(rule).toContain('color: var(--tone);')
+    expect(rule).toContain('border-color: var(--tone);')
+  })
+
+  test('each pill tone maps onto the shared semantic tone attribute', async () => {
+    const cases = [
+      ['red', 'err'],
+      ['amber', 'warn'],
+      ['green', 'ok'],
+    ] as const
+    for (const [tone, expected] of cases) {
+      const html = await render({ tone, glyph: 'check', text: 'x' })
+      expect(html).toContain(`data-tone="${expected}"`)
     }
-    expect(ruleBody('.cc-pill--red')).toContain('--err')
-    expect(ruleBody('.cc-pill--amber')).toContain('--warn')
-    expect(ruleBody('.cc-pill--green')).toContain('--ok')
+  })
+
+  test('no colour is spelled out: only theme tokens, never a plain hex', () => {
+    expect(SOURCE).not.toMatch(/#[0-9a-fA-F]{3,8}/)
+    expect(SOURCE).not.toContain('border-radius')
   })
 })

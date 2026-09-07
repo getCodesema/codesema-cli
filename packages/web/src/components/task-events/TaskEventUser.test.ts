@@ -98,7 +98,7 @@ describe('TaskEventUser stays safe on adversarial user text', () => {
 // <style> never reaches the SSR string), so the exact measures the brief
 // specifies — fiche 12 section 2 — are checked directly on the component's
 // own source, the same technique style.test.ts uses for style.css.
-describe('TaskEventUser geometry matches fiche 12 section 2, exactly', () => {
+describe('TaskEventUser geometry follows the kit, not a bubble of its own', () => {
   const source = readFileSync(
     fileURLToPath(new URL('./TaskEventUser.vue', import.meta.url)),
     'utf-8',
@@ -110,22 +110,34 @@ describe('TaskEventUser geometry matches fiche 12 section 2, exactly', () => {
     expect(style).not.toContain('var(--ok) 12%')
   })
 
-  test('16px uniform radius, not the old asymmetric 10/10/3/10 one', () => {
-    expect(style).toContain('border-radius: 16px;')
+  test('square corners: the kit has no radius anywhere', () => {
+    expect(style).not.toContain('border-radius')
   })
 
-  test('16px horizontal / 8px vertical padding ("16 px sur 8 px")', () => {
-    expect(style).toContain('padding: 8px 16px;')
+  test('the accent edge is what marks the user side, not a filled bubble', () => {
+    expect(style).toContain('border-left: 2px solid var(--accent);')
   })
 
-  test('550px max width, fitted to content', () => {
-    expect(style).toContain('max-width: 550px;')
+  test('padding on the kit grid: half a row vertically, whole characters horizontally', () => {
+    expect(style).toContain('padding: calc(var(--row) / 2) 2ch;')
+  })
+
+  test('width capped in characters, fitted to content', () => {
+    expect(style).toContain('max-width: 72ch;')
     expect(style).toContain('width: fit-content;')
   })
 
-  test('base size token on a 24px line height ("corps 14/24 px")', () => {
-    expect(style).toContain('font-size: var(--fs);')
-    expect(style).toContain('line-height: 24px;')
+  test('the bubble pins neither a size nor a line height: both inherit the kit', () => {
+    const start = style.indexOf('.tvu-bubble {')
+    const bubble = style.slice(start, style.indexOf('}', start))
+    expect(bubble).not.toContain('font-size')
+    expect(bubble).not.toContain('line-height')
+    expect(style).not.toMatch(/line-height: \d+px;/)
+  })
+
+  test('no hex literal and no raw rgba: theme tokens only', () => {
+    expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(style).not.toContain('rgba(')
   })
 
   test('right-aligned, and no avatar element anywhere in the template', () => {

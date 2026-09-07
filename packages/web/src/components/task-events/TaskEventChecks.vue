@@ -6,54 +6,49 @@
 import { computed } from 'vue'
 import { checksEventLine } from '../../composables/useChecks'
 import { clockTime } from '../../composables/useTaskBoard'
+import { G } from '../../glyphs'
 import type { TaskEventCtx } from '../../task-event-registry'
 import type { TaskEvent, TaskRecord } from '../../types'
 
 const props = defineProps<{ event: TaskEvent; task: TaskRecord; ctx: TaskEventCtx }>()
 
-const TONE_COLOR = {
-  go: 'var(--ok)',
-  check: 'var(--warn)',
-  stop: 'var(--err)',
-  idle: 'var(--fg-muted)',
+const ROW_STATUS = {
+  go: 'passed',
+  check: 'passed',
+  stop: 'failed',
+  idle: 'skipped',
+} as const
+
+const ROW_GLYPH = {
+  go: G.ok,
+  check: G.ok,
+  stop: G.ko,
+  idle: G.minus,
 } as const
 
 const line = computed(() => checksEventLine(props.event.data))
+const rowStatus = computed(() => ROW_STATUS[line.value.tone])
+const glyph = computed(() => ROW_GLYPH[line.value.tone])
 const stamp = computed(() => clockTime(props.event.at))
 </script>
 
 <template>
-  <div class="tvc-line">
-    <span class="tvc-dot" :style="{ background: TONE_COLOR[line.tone] }" aria-hidden="true" />
-    <span
-      class="tvc-text"
-      :class="{ 'tvc-text--go': line.tone === 'go', 'tvc-text--stop': line.tone === 'stop' }"
-    >
-      {{ line.text }}
-    </span>
-    <span class="tvc-time">{{ stamp }}</span>
+  <div class="checks">
+    <div class="tvc-line check-row" :data-s="rowStatus">
+      <span class="tvc-dot g" aria-hidden="true">{{ glyph }}</span>
+      <span
+        class="tvc-text"
+        :class="{ 'tvc-text--go': line.tone === 'go', 'tvc-text--stop': line.tone === 'stop' }"
+      >
+        {{ line.text }}
+      </span>
+      <span class="tvc-time r">{{ stamp }}</span>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.tvc-line {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  padding: 3px 0;
-  font-size: var(--fs);
-}
-
-.tvc-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex: none;
-  transform: translateY(-1px);
-}
-
 .tvc-text {
-  color: var(--fg-dim);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -68,9 +63,6 @@ const stamp = computed(() => clockTime(props.event.at))
 }
 
 .tvc-time {
-  margin-left: auto;
-  flex: none;
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;

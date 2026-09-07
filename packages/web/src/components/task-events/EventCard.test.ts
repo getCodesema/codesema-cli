@@ -2,18 +2,14 @@
 // `.vue` loader drops the template, so `vue/compiler-sfc` recompiles the SFC
 // with the template inlined and `vue/server-renderer` renders it to a
 // string. No DOM, no timers.
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { RotateCcw, TriangleAlert } from '@lucide/vue'
 import { describe, expect, test } from 'bun:test'
 import { createSSRApp, h } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
-import {
-  EVENT_CARD_BACKGROUND_COLOR,
-  EVENT_CARD_BORDER_COLOR,
-  EVENT_CARD_ICON_COLOR,
-  EVENT_CARD_TONES,
-  type EventCardTone,
-} from './EventCard'
+import { EVENT_CARD_DATA_TONE, EVENT_CARD_TONES, type EventCardTone } from './EventCard'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -48,42 +44,32 @@ async function renderCard(props: CardProps, body?: string): Promise<string> {
 // alert-triangle color class undefined, so it silently rendered as the
 // container's own muted grey — the "anormal" and "routinier" cards became
 // indistinguishable by color, the icon SHAPE being all that was left to tell
-// them apart. A Record<EventCardTone, string> cannot have that gap (a
+// them apart. A Record<EventCardTone, StatusTone> cannot have that gap (a
 // missing tone is TS2741, not a silent fallback), but the exhaustiveness of
 // the TYPE only proves every tone has SOME value — it does not prove the
 // values are actually different from one another. These tests prove that.
-describe('EVENT_CARD tone tokens (fiche 15 section 4 guard)', () => {
-  const maps = {
-    icon: EVENT_CARD_ICON_COLOR,
-    border: EVENT_CARD_BORDER_COLOR,
-    background: EVENT_CARD_BACKGROUND_COLOR,
-  } as const
-
+describe('EVENT_CARD_DATA_TONE (fiche 15 section 4 guard)', () => {
   test('EVENT_CARD_TONES lists exactly the four tones the brief names', () => {
     const expected: EventCardTone[] = ['neutral', 'attention', 'error', 'accent']
     expect([...EVENT_CARD_TONES].toSorted()).toEqual(expected.toSorted())
   })
 
-  for (const [mapName, map] of Object.entries(maps)) {
-    test(`${mapName}: every tone resolves to a theme tokens, never a bare hex literal`, () => {
-      for (const tone of EVENT_CARD_TONES) {
-        expect(map[tone]).toMatch(
-          /^(var\(--[\w-]+\)|color-mix\(in srgb, var\(--[\w-]+\) \d+%, transparent\))$/,
-        )
-      }
-    })
+  test('every tone maps to a semantic tone the kit knows, never a raw color', () => {
+    for (const tone of EVENT_CARD_TONES) {
+      expect(EVENT_CARD_DATA_TONE[tone]).toMatch(/^(ok|warn|err|info|idle)$/)
+    }
+  })
 
-    test(`${mapName}: the four tones resolve to four DISTINCT tokens`, () => {
-      const values = EVENT_CARD_TONES.map((tone) => map[tone])
-      expect(new Set(values).size).toBe(EVENT_CARD_TONES.length)
-    })
+  test('the four tones resolve to four DISTINCT semantic tones', () => {
+    const values = EVENT_CARD_TONES.map((tone) => EVENT_CARD_DATA_TONE[tone])
+    expect(new Set(values).size).toBe(EVENT_CARD_TONES.length)
+  })
 
-    // The exact defect: 'attention' silently equal to 'neutral' would leave
-    // an anomaly-flagging card the same color as a routine one.
-    test(`${mapName}: 'attention' is not 'neutral' in disguise`, () => {
-      expect(map.attention).not.toBe(map.neutral)
-    })
-  }
+  // The exact defect: 'attention' silently equal to 'neutral' would leave
+  // an anomaly-flagging card the same color as a routine one.
+  test("'attention' is not 'neutral' in disguise", () => {
+    expect(EVENT_CARD_DATA_TONE.attention).not.toBe(EVENT_CARD_DATA_TONE.neutral)
+  })
 })
 
 describe('EventCard renders the header row', () => {
@@ -127,25 +113,34 @@ describe('EventCard renders the header row', () => {
   })
 })
 
-describe('EventCard tone coloring reaches the rendered DOM (not just the map)', () => {
+describe('EventCard tone reaches the rendered DOM (not just the map)', () => {
+  const source = readFileSync(fileURLToPath(new URL('./EventCard.vue', import.meta.url)), 'utf-8')
+  const style = source.slice(source.indexOf('<style'))
+
   for (const tone of EVENT_CARD_TONES) {
-    test(`tone="${tone}": the icon, border and background all carry ${tone}'s own tokens`, async () => {
+    test(`tone="${tone}": the card root carries its own data-tone, and no inline color`, async () => {
       const html = await renderCard({ title: 'Recovery', tone, icon: TriangleAlert })
-      const flat = html.replaceAll(' ', '')
-      // Inline styles are serialized without the selector; check each
-      // declaration independently since exact spacing/order is not
-      // contractual, and strip spaces on both sides for the same reason.
-      expect(flat).toContain(`color:${EVENT_CARD_ICON_COLOR[tone]}`.replaceAll(' ', ''))
-      expect(flat).toContain(`border-color:${EVENT_CARD_BORDER_COLOR[tone]}`.replaceAll(' ', ''))
-      expect(flat).toContain(`background:${EVENT_CARD_BACKGROUND_COLOR[tone]}`.replaceAll(' ', ''))
+      expect(html).toContain(`data-tone="${EVENT_CARD_DATA_TONE[tone]}"`)
+      expect(html).not.toContain('style=')
     })
   }
 
   test('tone omitted defaults to neutral', async () => {
     const html = await renderCard({ title: 'Recovery', icon: TriangleAlert })
-    expect(html.replaceAll(' ', '')).toContain(
-      `color:${EVENT_CARD_ICON_COLOR.neutral}`.replaceAll(' ', ''),
-    )
+    expect(html).toContain(`data-tone="${EVENT_CARD_DATA_TONE.neutral}"`)
+  })
+
+  // The colors themselves now come from kit.css's `[data-tone]` -> `--tone`,
+  // so what this component still owns is READING that variable: a border and
+  // an icon painted with `var(--tone)`, and never a hex literal of its own.
+  test('the border and the icon are painted from var(--tone), not from a local palette', () => {
+    expect(style).toContain('border: 1px solid var(--tone);')
+    expect(style).toContain('color: var(--tone);')
+    expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+  })
+
+  test('the neutral card falls back to the plain line color, not to a state color', () => {
+    expect(style).toContain("[data-tone='idle']")
   })
 })
 

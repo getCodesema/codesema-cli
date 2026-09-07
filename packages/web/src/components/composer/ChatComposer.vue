@@ -2,8 +2,8 @@
 // Autonomous chat composer (fiche 13, sections 1-3): an auto-growing
 // textarea with three distinct height caps, a drag-or-keyboard resize handle
 // with a reset gesture, a placeholder that doubles as a state display, and a
-// toolbar topped by the one control every use of this box needs: the round
-// send button. Everything a caller wires (create a task, answer a running
+// toolbar topped by the one control every use of this box needs: the send
+// button. Everything a caller wires (create a task, answer a running
 // agent, park a message) stays outside: this component only emits `send`
 // and the text itself via v-model, exactly like a native input, so it has no
 // branch into our task flow.
@@ -259,8 +259,9 @@ defineExpose({ focus })
 
 <template>
   <div
-    class="cc-root"
+    class="cc-root composer"
     :class="{ 'cc-root--temporary': mode === 'temporary', 'cc-root--private': mode === 'private' }"
+    :data-mode="mode"
   >
     <div
       class="cc-handle"
@@ -344,28 +345,24 @@ defineExpose({ focus })
 .cc-root {
   display: flex;
   flex-direction: column;
-  border-style: solid;
-  border-width: 1px;
-  border-color: var(--line);
-  border-radius: 16px;
+  padding: 0;
+  border: 1px solid var(--line);
   background: var(--bg-raised);
 }
 
-/* The filet itself carries the mode: 2px and colored, no separate badge. */
+/* The border itself carries the mode: a colour, no separate badge. */
 .cc-root--temporary {
-  border-width: 2px;
   border-color: var(--warn);
 }
 
 .cc-root--private {
-  border-width: 2px;
   border-color: var(--info);
 }
 
-/* ── Resize handle: invisible at rest, opaque on hover in 200ms ─────────── */
+/* -- Resize handle: invisible at rest, drawn on hover ------------------- */
 .cc-handle {
   flex: none;
-  height: 6px;
+  height: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -374,68 +371,63 @@ defineExpose({ focus })
 }
 
 .cc-handle-bar {
-  width: 48px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--line);
-  opacity: 0;
-  transition: opacity 150ms ease;
+  width: 8ch;
+  height: 2px;
+  background: transparent;
+  transition: background 150ms ease;
 }
 
 .cc-handle:hover .cc-handle-bar,
 .cc-handle--active .cc-handle-bar {
-  opacity: 1;
-  transition: opacity 150ms ease;
+  background: var(--line);
 }
 
-/* ── Textarea ─────────────────────────────────────────────────────────── */
+/* -- Textarea ---------------------------------------------------------- */
 .cc-textarea {
   flex: none;
   width: 100%;
-  min-height: 44px;
+  min-width: 0;
+  min-height: calc(var(--row) * 2);
   max-height: 50vh;
   border: none;
   outline: none;
   resize: none;
   background: transparent;
   color: var(--fg);
-  font-family: inherit;
-  font-size: var(--fs);
-  line-height: 1.55;
-  padding: 12px 16px 4px;
+  font: inherit;
+  padding: calc(var(--row) / 2) 1ch 0;
   overflow-y: auto;
 }
 
 .cc-textarea::placeholder {
-  color: var(--fg-muted);
+  color: var(--fg-dim);
 }
 
-/* ── Toolbar: 10px sides, 2px top, 8px bottom, two clusters ─────────────── */
+/* -- Toolbar: two clusters, one text line tall -------------------------- */
 .cc-toolbar {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 2px 10px 8px;
+  gap: 1ch;
+  padding: 2px 1ch calc(var(--row) / 2);
 }
 
 .cc-toolbar-start,
 .cc-toolbar-end {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .cc-tool {
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: calc(var(--row) + 4px);
+  height: calc(var(--row) + 4px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  border-radius: 12px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--fg-dim);
   cursor: pointer;
@@ -450,29 +442,24 @@ defineExpose({ focus })
 }
 
 .cc-tool:disabled {
-  opacity: 0.45;
-  cursor: default;
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .cc-tool-icon {
-  width: 18px;
-  height: 18px;
+  width: 1em;
+  height: 1em;
 }
 
-.cc-tool-icon--sm {
-  width: 16px;
-  height: 16px;
-}
-
-/* Open is a state, so it wears a neutral elevation, not a semaphore color:
-   nothing in the sémaphore trio (green/amber/red) names "a menu is open". */
+/* Open is a state, so it wears a neutral elevation, not a semaphore colour:
+   nothing in the ok/warn/err trio names "a menu is open". */
 .cc-tool--attach.cc-tool--open {
   background: var(--bg-hover);
   color: var(--fg);
 }
 
 .cc-tool--attach .cc-tool-icon {
-  transition: transform 200ms ease;
+  transition: transform 150ms ease;
 }
 
 /* The plus becomes a cross: same glyph, no swap needed. */
@@ -480,35 +467,33 @@ defineExpose({ focus })
   transform: rotate(45deg);
 }
 
-/* ── Send: 32px exact circle, 30% opacity when disabled ──────────────────── */
+/* -- Send: the composer's one primary action ---------------------------- */
 .cc-send {
   flex: none;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: none;
+  width: calc(var(--row) + 4px);
+  height: calc(var(--row) + 4px);
+  border: 1px solid var(--accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--ok);
+  background: var(--accent);
   color: var(--bg);
   cursor: pointer;
-  transition:
-    background 150ms ease,
-    opacity 150ms ease;
+  transition: background 150ms ease;
 }
 
 .cc-send:hover:not(:disabled) {
-  background: var(--ok);
+  background: var(--fg);
+  border-color: var(--fg);
 }
 
 .cc-send:disabled {
-  opacity: 0.3;
-  cursor: default;
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .cc-send-icon {
-  width: 18px;
-  height: 18px;
+  width: 1em;
+  height: 1em;
 }
 </style>

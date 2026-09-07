@@ -10,24 +10,19 @@
 // shell is not.
 import { ChevronRight } from '@lucide/vue'
 import { computed, ref, type Component } from 'vue'
-import {
-  EVENT_CARD_BACKGROUND_COLOR,
-  EVENT_CARD_BORDER_COLOR,
-  EVENT_CARD_ICON_COLOR,
-  type EventCardTone,
-} from './EventCard'
+import { EVENT_CARD_DATA_TONE, type EventCardTone } from './EventCard'
 
 const props = defineProps<{
   tone?: EventCardTone
   /**
-   * State icon (13px). WHICH glyph is the caller's judgment, see fiche 15
+   * State icon (14px). WHICH glyph is the caller's judgment, see fiche 15
    * section 3 names a triangle for the anomalous, an arrow for the routine,
    * layers for a synthesis, information otherwise. This template only
    * colors whatever icon it is given, by tone; it does not choose one.
    */
   icon?: Component
-  /** Demi-gras, never truncated (fiche 15 section 3): keep it short at the
-   * call site instead of relying on this template to clip it. */
+  /** Bold, never truncated (fiche 15 section 3): keep it short at the call
+   * site instead of relying on this template to clip it. */
   title: string
   detail?: string | null
   /** Right-pinned monospace chip, e.g. a short id or a count. */
@@ -44,14 +39,11 @@ const props = defineProps<{
 
 const open = ref(props.defaultOpen ?? false)
 
-const toneValue = computed(() => props.tone ?? 'neutral')
-const iconColor = computed(() => EVENT_CARD_ICON_COLOR[toneValue.value])
-const borderColor = computed(() => EVENT_CARD_BORDER_COLOR[toneValue.value])
-const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.value])
+const dataTone = computed(() => EVENT_CARD_DATA_TONE[props.tone ?? 'neutral'])
 </script>
 
 <template>
-  <div class="ec-root" :style="{ borderColor, background: backgroundColor }">
+  <div class="ec-root" :data-tone="dataTone">
     <button
       v-if="$slots.default"
       type="button"
@@ -60,13 +52,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
       @click="open = !open"
     >
       <ChevronRight class="ec-chevron" :class="{ 'ec-chevron--open': open }" aria-hidden="true" />
-      <component
-        :is="icon"
-        v-if="icon"
-        class="ec-icon"
-        :style="{ color: iconColor }"
-        aria-hidden="true"
-      />
+      <component :is="icon" v-if="icon" class="ec-icon" aria-hidden="true" />
       <span class="ec-title">{{ title }}</span>
       <span v-if="detail" class="ec-detail">{{ detail }}</span>
       <span v-if="token" class="ec-token">{{ token }}</span>
@@ -75,13 +61,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
          nothing (fiche 15's cards are all foldable, but a shared shell must
          also serve a caller with no expanded content to offer). -->
     <div v-else class="ec-head ec-head--static">
-      <component
-        :is="icon"
-        v-if="icon"
-        class="ec-icon"
-        :style="{ color: iconColor }"
-        aria-hidden="true"
-      />
+      <component :is="icon" v-if="icon" class="ec-icon" aria-hidden="true" />
       <span class="ec-title">{{ title }}</span>
       <span v-if="detail" class="ec-detail">{{ detail }}</span>
       <span v-if="token" class="ec-token">{{ token }}</span>
@@ -97,22 +77,25 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 
 <style scoped>
 .ec-root {
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid var(--tone);
   background: var(--bg-raised);
   overflow: hidden;
+}
+
+.ec-root[data-tone='idle'] {
+  --tone: var(--line);
 }
 
 .ec-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 1ch;
   width: 100%;
-  padding: 8px 12px;
+  padding: 2px 1ch;
   border: none;
   background: transparent;
   color: inherit;
-  font-family: inherit;
+  font: inherit;
   text-align: left;
   cursor: pointer;
 }
@@ -123,8 +106,8 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 
 .ec-chevron {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   color: var(--fg-muted);
   transition: transform 150ms ease;
 }
@@ -135,15 +118,18 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 
 .ec-icon {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
+  color: var(--tone);
+}
+
+.ec-root[data-tone='idle'] .ec-icon {
+  color: var(--fg-dim);
 }
 
 .ec-title {
   flex: none;
-  font-size: var(--fs);
-  font-weight: 600;
-  line-height: 20px;
+  font-weight: 700;
   color: var(--fg);
 }
 
@@ -152,9 +138,7 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
   flex: 1 1 auto;
   min-width: 0;
   font-size: 12px;
-  line-height: 20px;
   color: var(--fg-dim);
-  opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -163,21 +147,16 @@ const backgroundColor = computed(() => EVENT_CARD_BACKGROUND_COLOR[toneValue.val
 .ec-token {
   flex: none;
   margin-left: auto;
-  padding: 2px 7px;
+  padding: 0 1ch;
   border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--bg-hover);
-  font-family: var(--font);
   font-size: 12px;
   color: var(--fg-dim);
 }
 
 .ec-body {
-  padding: 12px;
+  padding: calc(var(--row) / 2) 1ch;
   border-top: 1px solid var(--line);
-  font-family: var(--font);
   font-size: 12px;
-  line-height: 20px;
   color: var(--fg-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;

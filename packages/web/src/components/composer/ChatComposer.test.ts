@@ -118,6 +118,18 @@ describe('ChatComposer: placeholder is a state display (fiche section 2)', () =>
   })
 })
 
+describe('ChatComposer: the box wears the shared kit surface', () => {
+  test('the root carries the kit composer class alongside its own', async () => {
+    const html = await render(BASE)
+    expect(html).toContain('cc-root composer')
+  })
+
+  test('the mode is exposed as a data attribute the kit can style', async () => {
+    expect(await render({ ...BASE, mode: 'clean' })).toContain('data-mode="clean"')
+    expect(await render({ ...BASE, mode: 'private' })).toContain('data-mode="private"')
+  })
+})
+
 describe('ChatComposer: mode carries the filet color (fiche section 1)', () => {
   test('clean mode adds neither modifier class', async () => {
     const html = await render({ ...BASE, mode: 'clean' })

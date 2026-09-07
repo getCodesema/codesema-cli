@@ -4,13 +4,12 @@
 // element and decides what a click does, same split as ForgeIssueCard.vue /
 // ForgeListPanel.vue.
 //
-// Geometry and the four lines follow the row spec of the internal
-// measurement notes: 14/12/8 padding, radius 8, NO gap between
-// rows (the column stacks them edge to edge, spacing comes only from this
-// padding), every icon at 10px, the first three lines truncated to one line
-// and never wrapped. The activity line and the reference pills are resolved
-// upstream (ConversationsLogic.ts, §7-8) so this component only renders what
-// it is handed.
+// Geometry follows the UI kit's `.card` row: one text line per line, no gap
+// between rows (the column stacks them edge to edge, spacing comes only from
+// this padding), the first three lines truncated to one line and never
+// wrapped. The activity line and the reference pills are resolved upstream
+// (ConversationsLogic.ts, §7-8) so this component only renders what it is
+// handed.
 import {
   Check,
   CircleAlert,
@@ -26,6 +25,7 @@ import { computed, type Component } from 'vue'
 import { queueSectionOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { EXECUTION_STATUS } from '../../execution-status'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import ChecksChip from './ChecksChip.vue'
 import {
@@ -51,10 +51,7 @@ const activity = computed(() => resolveActivityLine(props.state))
 const checksPill = computed(() => resolveChecksPill(props.state))
 const ticket = computed(() => props.state.record.issue)
 const timestamp = computed(() => formatConversationTimestamp(props.state.record.updated_at))
-// Reuses the same status -> color table every other status treatment in the
-// workspace already reads from, rather than a second opinion on what
-// "running" or "review_ko" should look like.
-const activityColor = computed(() => EXECUTION_STATUS[props.state.record.status].text)
+const tone = computed(() => EXECUTION_STATUS[props.state.record.status].tone)
 
 const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
   pause: Pause,
@@ -69,16 +66,16 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
 </script>
 
 <template>
-  <div class="cvr-root" :class="`cvr-root--${section}`">
-    <p class="cvr-meta">{{ projectName }} · {{ timestamp }}</p>
+  <div class="cvr-root card" :class="`cvr-root--${section}`" :data-tone="tone">
+    <p class="cvr-meta">{{ projectName }} {{ G.sep }} {{ timestamp }}</p>
     <p class="cvr-title">{{ state.record.title }}</p>
-    <p class="cvr-activity" :style="{ color: activityColor }">
+    <p class="cvr-activity">
       <span
         class="cvr-activity-glyph"
         :class="`cvr-activity-glyph--${activity.motion}`"
         aria-hidden="true"
       >
-        <span v-if="activity.glyph === 'dot'" class="cvr-dot" />
+        <span v-if="activity.glyph === 'dot'" class="cvr-dot">{{ G.dot }}</span>
         <component :is="ACTIVITY_ICONS[activity.glyph]" v-else />
       </span>
       <span class="cvr-activity-text">{{ activity.text }}</span>
@@ -86,7 +83,7 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
     <div v-if="ticket || checksPill" class="cvr-pills">
       <span
         v-if="ticket"
-        class="cvr-pill"
+        class="cvr-pill badge"
         :title="t('conversations.ticketRefAria', { n: ticket.iid })"
       >
         <Ticket class="cvr-pill-icon" aria-hidden="true" />
@@ -99,38 +96,39 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
 
 <style scoped>
 /* No gap of its own: the column stacks rows edge to edge and this padding IS
-   the spacing (sheet §4). Height stays auto/variable, never fixed. */
+   the spacing. Height stays auto/variable, never fixed. */
 .cvr-root {
   display: flex;
   flex-direction: column;
   width: 100%;
-  padding: 8px 12px 8px 14px;
+  padding: calc(var(--row) / 2) 1ch;
   /* EVERY row carries a border, only its colour changes with the state, so
      the geometry never shifts between one row and the next. */
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-left-width: 3px;
+  border-left-color: var(--c);
 }
 
-/* State outlines. DESIGN.md reserves a COLOURED border for a state, never for
-   decoration, so only the two sections that ask something of the reader get
-   one: amber when the human is the bottleneck, green when the work is one
+/* State outlines. A COLOURED left rail is reserved for a state, never for
+   decoration, so only the two sections that ask something of the reader read
+   the row's semantic tone: the human is the bottleneck, or the work is one
    click from shipping. "Working" and "done" stay neutral and are told apart
-   by intensity, plus, for working, the living dot the activity line already
-   renders. Painting all four would make a dense column read as a garland. */
+   by the activity line. Painting all four would make a dense column read as
+   a garland. */
 .cvr-root--attention {
-  border-color: var(--warn);
+  --c: var(--tone);
 }
 
 .cvr-root--ready {
-  border-color: var(--ok);
+  --c: var(--tone);
 }
 
 .cvr-root--active {
-  border-color: var(--line);
+  --c: var(--line);
 }
 
 .cvr-root--done {
-  border-color: var(--line);
+  --c: var(--line);
 }
 
 .cvr-meta,
@@ -144,15 +142,11 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
 
 .cvr-meta {
   font-size: 12px;
-  line-height: 12px;
   color: var(--fg-muted);
 }
 
 .cvr-title {
-  margin-top: 2px;
-  font-size: var(--fs);
-  line-height: 20px;
-  font-weight: 600;
+  font-weight: 700;
   /* Row state (rest/hover/selected) governs the title's own weight and
      color from the wrapping button in rail/ConversationsList.vue: dimmed at
      rest, full on hover, reinforced when selected. */
@@ -160,26 +154,23 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
 }
 
 .cvr-activity {
-  margin-top: 1px;
   font-size: 12px;
-  line-height: 16px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
+  color: var(--tone);
 }
 
 .cvr-activity-glyph {
   flex: none;
-  width: 10px;
-  height: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 .cvr-activity-glyph svg {
-  width: 10px;
-  height: 10px;
+  width: 1em;
+  height: 1em;
 }
 
 .cvr-activity-text {
@@ -189,68 +180,33 @@ const ACTIVITY_ICONS: Partial<Record<ActivityGlyph, Component>> = {
   white-space: nowrap;
 }
 
-/* A live dot for the "pulse" motion (running): same visual language as
-   WorkQueue's own wq-dot--pulse, no fill mode, the reduced-motion guard in
-   style.css clamps this back to at-rest without a frozen keyframe. */
-.cvr-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentcolor;
-}
-
+/* A live dot for the "pulse" motion (running): the one animation the kit
+   allows, shared with every other running signal. */
 .cvr-activity-glyph--pulse .cvr-dot {
-  animation: cvr-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes cvr-pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
-/* Sheet §7's own point: the "in progress" glyph never turns. Spin is
-   reserved for the activity line's own 'reviewing' state below. */
-.cvr-activity-glyph--spin svg {
-  animation: cvr-spin 0.9s linear infinite;
-}
-
-@keyframes cvr-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: blink 1.2s steps(2) infinite;
 }
 
 .cvr-pills {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 1ch;
+  margin-top: 2px;
 }
 
-/* Sheet §7's gabarit: 6px horizontal by 1px vertical padding, radius 4,
-   10px text with no dedicated line-height, semi-bold, a 1px hairline, an
-   elevated-surface fill at 60%, 4px between the icon and the text. Neutral
-   by default (the ticket reference carries no state of its own); a toned
-   variant below overrides the fill for the checks pill. */
+/* Neutral by default: the ticket reference carries no state of its own, so
+   it keeps the kit badge's hairline and dimmed text. */
 .cvr-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-dim);
-  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
+  gap: 1ch;
+  border-color: var(--line);
   white-space: nowrap;
 }
 
 .cvr-pill-icon {
   flex: none;
-  width: 10px;
-  height: 10px;
+  width: 1em;
+  height: 1em;
 }
 </style>

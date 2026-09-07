@@ -214,11 +214,11 @@ describe('reference pills: ticket and checks, both optional, independent', () =>
   })
 })
 
-describe('geometry: CSS-pinned (sheet §4 and §7)', () => {
-  test('the row padding is 14 left, 12 right, 8 vertical, radius 8, no gap of its own', () => {
+describe('geometry: CSS-pinned against the UI kit', () => {
+  test('the row padding is half a line by one character, no gap of its own', () => {
     const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-meta,'))
-    expect(rule).toContain('padding: 8px 12px 8px 14px;')
-    expect(rule).toContain('border-radius: 8px;')
+    expect(rule).toContain('padding: calc(var(--row) / 2) 1ch;')
+    expect(rule).not.toContain('border-radius')
     expect(rule).not.toContain('gap:')
   })
 
@@ -229,7 +229,7 @@ describe('geometry: CSS-pinned (sheet §4 and §7)', () => {
     expect(rule).toContain('white-space: nowrap;')
   })
 
-  test('the four line sizes match the sheet: 10/12, 13/20 semi-bold, 11/16', () => {
+  test('the three lines take the kit sizes: 12px meta and activity, bold body title', () => {
     // Each boundary search starts AFTER the previous one: the shared
     // `.cvr-meta, .cvr-title, .cvr-activity {` selector group at the top of
     // the file repeats these same class names before the real per-class
@@ -242,58 +242,53 @@ describe('geometry: CSS-pinned (sheet §4 and §7)', () => {
 
     const meta = SOURCE.slice(metaStart, titleStart)
     expect(meta).toContain('font-size: 12px;')
-    expect(meta).toContain('line-height: 12px;')
+    expect(meta).not.toContain('line-height')
 
     const title = SOURCE.slice(titleStart, activityStart)
-    expect(title).toContain('font-size: var(--fs);')
-    expect(title).toContain('line-height: 20px;')
-    expect(title).toContain('font-weight: 600;')
+    expect(title).toContain('font-weight: 700;')
+    expect(title).not.toContain('font-size')
+    expect(title).not.toContain('line-height')
 
     const activity = SOURCE.slice(activityStart, activityGlyphStart)
     expect(activity).toContain('font-size: 12px;')
-    expect(activity).toContain('line-height: 16px;')
+    expect(activity).not.toContain('line-height')
   })
 
-  test('every glyph in the row is 10px, one size for all of them', () => {
-    const glyph = SOURCE.slice(
-      SOURCE.indexOf('.cvr-activity-glyph {'),
-      SOURCE.indexOf('.cvr-activity-glyph svg'),
-    )
-    expect(glyph).toContain('width: 10px;')
-    expect(glyph).toContain('height: 10px;')
+  test('every icon in the row is one em, one size for all of them', () => {
     const svg = SOURCE.slice(
       SOURCE.indexOf('.cvr-activity-glyph svg {'),
       SOURCE.indexOf('.cvr-activity-text {'),
     )
-    expect(svg).toContain('width: 10px;')
-    expect(svg).toContain('height: 10px;')
+    expect(svg).toContain('width: 1em;')
+    expect(svg).toContain('height: 1em;')
+    const icon = SOURCE.slice(SOURCE.indexOf('.cvr-pill-icon {'), SOURCE.length)
+    expect(icon).toContain('width: 1em;')
+    expect(icon).toContain('height: 1em;')
   })
 
-  test('the pill gabarit: 6px by 1px padding, radius 4, a hairline, 4px icon-to-text gap', () => {
+  test('the ticket pill is the kit badge: a neutral hairline, one character of gap', () => {
     const pill = SOURCE.slice(SOURCE.indexOf('.cvr-pill {'), SOURCE.indexOf('.cvr-pill-icon {'))
-    expect(pill).toContain('padding: 1px 6px;')
-    expect(pill).toContain('border-radius: 4px;')
-    expect(pill).toContain('border: 1px solid var(--line);')
-    expect(pill).toContain('gap: 4px;')
-    expect(pill).toContain('font-size: 12px;')
-    expect(pill).toContain('font-weight: 600;')
+    expect(pill).toContain('border-color: var(--line);')
+    expect(pill).toContain('gap: 1ch;')
+    expect(pill).not.toContain('border-radius')
+    expect(pill).not.toContain('font-weight')
+    expect(SOURCE).toContain('class="cvr-pill badge"')
   })
 
-  test('the pills row sits 4px below the activity line, per the sheet', () => {
+  test('the pills row sits one notch below the activity line', () => {
     const pills = SOURCE.slice(SOURCE.indexOf('.cvr-pills {'), SOURCE.indexOf('.cvr-pill {'))
-    expect(pills).toContain('margin-top: 4px;')
+    expect(pills).toContain('margin-top: 2px;')
   })
 
-  test('the reference pill background is the elevated surface at 60%, never a plain hex', () => {
-    expect(SOURCE).toContain('color-mix(in srgb, var(--bg-hover) 60%, transparent)')
+  test('no colour is spelled out: only theme tokens, never a plain hex', () => {
     expect(SOURCE).not.toMatch(/#[0-9a-fA-F]{3,8}/)
+    expect(SOURCE).not.toContain('rgba(')
   })
 })
 
-// The state outline. DESIGN.md reserves a coloured border for a STATE and
-// forbids it as decoration, so only the two sections that ask something of
-// the reader are coloured: amber when the human is the bottleneck, green when
-// the work is one click from shipping. Working and done stay neutral.
+// The state outline. A coloured left rail is reserved for a STATE and
+// forbidden as decoration, so only the two sections that ask something of the
+// reader read the row's semantic tone. Working and done stay neutral.
 //
 // Every row carries a border either way, so switching state never shifts the
 // geometry by a pixel.
@@ -317,27 +312,34 @@ describe('the row outlines its work state', () => {
     }
   })
 
-  test('only the two sections that ask for an action are coloured', () => {
+  test('only the two sections that ask for an action read the semantic tone', () => {
     /** The body of one outline rule, and nothing else. */
     function ruleBody(selector: string): string {
       const at = SOURCE.indexOf(selector)
       return SOURCE.slice(at, SOURCE.indexOf('}', at))
     }
-    expect(ruleBody('.cvr-root--attention')).toContain('--warn')
-    expect(ruleBody('.cvr-root--ready')).toContain('--ok')
+    expect(ruleBody('.cvr-root--attention')).toContain('--c: var(--tone);')
+    expect(ruleBody('.cvr-root--ready')).toContain('--c: var(--tone);')
     // Working and done are neutral: neither may reach for a state colour.
     for (const selector of ['.cvr-root--active', '.cvr-root--done']) {
       const body = ruleBody(selector)
       expect(body).toContain('--line')
-      expect(body).not.toContain('--warn')
-      expect(body).not.toContain('--ok')
-      expect(body).not.toContain('--err')
+      expect(body).not.toContain('--tone')
     }
+  })
+
+  test('the tone comes from the one status table, never from an inline style', async () => {
+    const html = await render(taskState({ status: 'waiting_for_you' }))
+    expect(html).toContain('data-tone="warn"')
+    expect(html).not.toContain('style="color:')
+    const shipped = await render(taskState({ status: 'shipped' }))
+    expect(shipped).toContain('data-tone="ok"')
   })
 
   test('the border is on every row, so a state change never moves the layout', () => {
     const root = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-root--attention'))
     expect(root).toContain('border: 1px solid var(--line);')
-    expect(root).toContain('padding: 8px 12px 8px 14px;')
+    expect(root).toContain('border-left-width: 3px;')
+    expect(root).toContain('padding: calc(var(--row) / 2) 1ch;')
   })
 })

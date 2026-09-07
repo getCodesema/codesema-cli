@@ -38,29 +38,22 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 .tvm-root {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: calc(var(--row) / 2);
   max-width: 85%;
-  margin: 4px 0;
 }
 
 .tvm-meta {
   margin: 0;
-  font-family: var(--font);
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg-muted);
 }
 
 .tvm-bubble {
   margin: 0;
-  padding: 11px 13px;
+  padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
-  border-radius: 3px 10px 10px 10px;
   background: var(--bg-raised);
-  font-size: var(--fs);
-  line-height: 1.55;
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -71,7 +64,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 .tvm-md :deep(ul),
 .tvm-md :deep(ol),
 .tvm-md :deep(pre) {
-  margin: 0 0 8px;
+  margin: 0 0 calc(var(--row) / 2);
 }
 
 .tvm-md :deep(:last-child) {
@@ -80,7 +73,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 
 .tvm-md :deep(h2),
 .tvm-md :deep(h3) {
-  margin: 12px 0 6px;
+  margin: var(--row) 0 calc(var(--row) / 2);
   font-size: var(--fs);
   font-weight: 700;
   color: var(--fg);
@@ -91,13 +84,9 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
   margin-top: 0;
 }
 
-.tvm-md :deep(h3) {
-  font-size: var(--fs);
-}
-
 .tvm-md :deep(ul),
 .tvm-md :deep(ol) {
-  padding-left: 20px;
+  padding-left: 3ch;
 }
 
 .tvm-md :deep(li) {
@@ -105,16 +94,16 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 }
 
 .tvm-md :deep(code) {
-  font-family: var(--font);
   font-size: 12px;
   color: var(--ok);
+  background: none;
+  padding: 0;
   white-space: pre-wrap;
 }
 
 .tvm-md :deep(pre) {
-  padding: 9px 11px;
+  padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
-  border-radius: 8px;
   background: var(--bg-raised);
   overflow-x: auto;
 }
@@ -124,6 +113,6 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 }
 
 .tvm-md :deep(a) {
-  color: var(--ok);
+  color: var(--accent);
 }
 </style>
