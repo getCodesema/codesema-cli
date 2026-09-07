@@ -59,6 +59,18 @@ describe('EXECUTION_STATUS', () => {
     expect(EXECUTION_STATUS.queued.color).toBe('var(--fg-muted)')
   })
 
+  test('tone: ok and err are final, info is the machine, warn is the human, idle is nothing', () => {
+    expect(EXECUTION_STATUS.review_ok.tone).toBe('ok')
+    expect(EXECUTION_STATUS.shipped.tone).toBe('ok')
+    expect(EXECUTION_STATUS.review_ko.tone).toBe('err')
+    expect(EXECUTION_STATUS.failed.tone).toBe('err')
+    expect(EXECUTION_STATUS.running.tone).toBe('info')
+    expect(EXECUTION_STATUS.reviewing.tone).toBe('info')
+    expect(EXECUTION_STATUS.waiting_for_you.tone).toBe('warn')
+    expect(EXECUTION_STATUS.interrupted.tone).toBe('warn')
+    expect(EXECUTION_STATUS.queued.tone).toBe('idle')
+  })
+
   test('pulse is reserved for statuses where the agent itself works', () => {
     const pulsing = ALL_STATUSES.filter((s) => EXECUTION_STATUS[s].pulse).toSorted()
     expect(pulsing).toEqual(['reviewing', 'running'])

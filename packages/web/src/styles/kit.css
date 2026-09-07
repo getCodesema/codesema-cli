@@ -59,6 +59,35 @@
   left: 2ch;
 }
 
+/* ---- semantic tone: one attribute, read by every kit surface through --tone ---- */
+[data-tone='ok'] {
+  --tone: var(--ok);
+}
+[data-tone='warn'] {
+  --tone: var(--warn);
+}
+[data-tone='err'] {
+  --tone: var(--err);
+}
+[data-tone='info'] {
+  --tone: var(--info);
+}
+[data-tone='idle'] {
+  --tone: var(--fg-muted);
+}
+.status[data-tone]::before {
+  color: var(--tone);
+}
+.status[data-tone='info']::before {
+  animation: blink 1.2s steps(2) infinite;
+}
+.badge[data-tone] {
+  color: var(--tone);
+}
+.card[data-tone] {
+  --c: var(--tone);
+}
+
 /* ---- status ---- */
 
 .status {

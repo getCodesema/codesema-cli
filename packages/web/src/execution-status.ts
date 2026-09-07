@@ -7,7 +7,12 @@
 import type { MessageKey } from './i18n'
 import type { TaskStatus } from './types'
 
+export type StatusTone = 'ok' | 'warn' | 'err' | 'info' | 'idle'
+
 export type StatusVisual = {
+  /** Semantic tone, rendered by CSS through `data-s`/`data-tone`: info = the
+   * machine works, warn = the human is awaited, ok/err = final, idle = nothing. */
+  tone: StatusTone
   /** Core signal color (dot, active border). Always a theme token. */
   color: string
   /** Soft wash behind the status chip. */
@@ -26,22 +31,26 @@ export type StatusVisual = {
   attention: boolean
 }
 
-const green: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
+const green: Pick<StatusVisual, 'tone' | 'color' | 'soft' | 'text'> = {
+  tone: 'ok',
   color: 'var(--ok)',
   soft: 'color-mix(in srgb, var(--ok) 12%, transparent)',
   text: 'var(--ok)',
 }
-const amber: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
+const amber: Pick<StatusVisual, 'tone' | 'color' | 'soft' | 'text'> = {
+  tone: 'warn',
   color: 'var(--warn)',
   soft: 'color-mix(in srgb, var(--warn) 12%, transparent)',
   text: 'var(--warn)',
 }
-const red: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
+const red: Pick<StatusVisual, 'tone' | 'color' | 'soft' | 'text'> = {
+  tone: 'err',
   color: 'var(--err)',
   soft: 'color-mix(in srgb, var(--err) 12%, transparent)',
   text: 'var(--err)',
 }
-const idle: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
+const idle: Pick<StatusVisual, 'tone' | 'color' | 'soft' | 'text'> = {
+  tone: 'idle',
   color: 'var(--fg-muted)',
   soft: 'var(--bg-hover)',
   text: 'var(--fg-dim)',
@@ -58,6 +67,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   running: {
     ...amber,
+    tone: 'info',
     icon: '●',
     labelKey: 'workspace.statusRunning',
     phraseKey: 'workspace.phaseRunning',
@@ -74,6 +84,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   reviewing: {
     ...amber,
+    tone: 'info',
     icon: '◎',
     labelKey: 'workspace.statusReviewing',
     phraseKey: 'workspace.phaseReviewing',
