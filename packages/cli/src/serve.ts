@@ -2011,6 +2011,14 @@ export function devIndexHtml(viteOrigin: string): string {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>codesema</title>
+    <script>
+      try {
+        var root = document.documentElement
+        var palette = localStorage.getItem('codesema-palette')
+        if (palette && palette !== 'tokyonight') root.dataset.palette = palette
+        if (localStorage.getItem('codesema-contrast') === 'aaa') root.dataset.contrast = 'aaa'
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>
