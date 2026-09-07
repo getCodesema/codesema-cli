@@ -1,16 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import {
-  collapsedByBudget,
-  toSplit,
-  type DiffFile,
-  type Finding,
-  type FindingSeverity,
-  type HunkBlock,
-  type HunkLine,
-  type SplitRow,
-} from '../composables/useDiff'
+import { collapsedByBudget, type DiffFile } from '../composables/useDiff'
 import { t } from '../i18n'
+import { readStorageItem, writeStorageItem } from '../storage'
+import DiffFileBlock from './diff/DiffFile.vue'
 
 const props = defineProps<{
   files: DiffFile[]
@@ -24,15 +17,10 @@ const props = defineProps<{
   reveal?: { id: number; nonce: number } | null | undefined
 }>()
 
-const isClient = typeof window !== 'undefined'
-
 const SPLIT_KEY = 'codesema-diff-mode'
 
 function loadMode(): 'split' | 'unified' {
-  if (!isClient) {
-    return 'unified'
-  }
-  return (localStorage.getItem(SPLIT_KEY) as 'split' | 'unified') ?? 'unified'
+  return readStorageItem(SPLIT_KEY) === 'split' ? 'split' : 'unified'
 }
 
 const internalMode = ref<'split' | 'unified'>(loadMode())
@@ -41,9 +29,7 @@ const diffMode = computed<'split' | 'unified'>(() => props.mode ?? internalMode.
 
 function setMode(m: 'split' | 'unified') {
   internalMode.value = m
-  if (isClient) {
-    localStorage.setItem(SPLIT_KEY, m)
-  }
+  writeStorageItem(SPLIT_KEY, m)
 }
 
 // Large files (or files past the page's cumulative budget) start collapsed: their
@@ -72,150 +58,26 @@ watch(
 )
 
 function toggleFile(path: string) {
-  if (collapsed.value.has(path)) {
-    collapsed.value.delete(path)
+  const next = new Set(collapsed.value)
+  if (next.has(path)) {
+    next.delete(path)
   } else {
-    collapsed.value.add(path)
+    next.add(path)
   }
-  // force reactivity
-  collapsed.value = new Set(collapsed.value)
+  collapsed.value = next
 }
 
-function isCollapsed(path: string): boolean {
-  return collapsed.value.has(path)
-}
-
-function fileFindingCount(file: {
-  topFindings: Finding[]
-  byLine: Record<number, Finding[]>
-}): number {
-  return file.topFindings.length + Object.values(file.byLine).reduce((n, arr) => n + arr.length, 0)
-}
-
-type KindMeta = { label: string; color: string; bg: string }
-
-const NL_KIND: Partial<Record<string, KindMeta>> = {
-  security: {
-    label: t('diffView.kindSecurity'),
-    color: 'var(--err)',
-    bg: 'color-mix(in srgb, var(--err) 12%, transparent)',
-  },
-  perf: {
-    label: t('diffView.kindPerf'),
-    color: 'var(--warn)',
-    bg: 'color-mix(in srgb, var(--warn) 12%, transparent)',
-  },
-  convention: {
-    label: t('diffView.kindConvention'),
-    color: 'var(--info)',
-    bg: 'color-mix(in srgb, var(--info) 12%, transparent)',
-  },
-  design: {
-    label: t('diffView.kindDesign'),
-    color: 'var(--alt)',
-    bg: 'color-mix(in srgb, var(--alt) 12%, transparent)',
-  },
-  praise: {
-    label: t('diffView.kindPraise'),
-    color: 'var(--ok)',
-    bg: 'color-mix(in srgb, var(--ok) 12%, transparent)',
-  },
-  why: {
-    label: t('diffView.kindWhy'),
-    color: 'var(--fg-dim)',
-    bg: 'color-mix(in srgb, var(--fg-dim) 12%, transparent)',
-  },
-}
-
-const SEV_KIND: Record<FindingSeverity, KindMeta> = {
-  critical: {
-    label: t('diffView.sevCritical'),
-    color: 'var(--err)',
-    bg: 'color-mix(in srgb, var(--err) 12%, transparent)',
-  },
-  major: {
-    label: t('diffView.sevMajor'),
-    color: 'var(--err)',
-    bg: 'color-mix(in srgb, var(--err) 12%, transparent)',
-  },
-  minor: {
-    label: t('diffView.sevMinor'),
-    color: 'var(--warn)',
-    bg: 'color-mix(in srgb, var(--warn) 12%, transparent)',
-  },
-  info: {
-    label: t('diffView.sevInfo'),
-    color: 'var(--fg-dim)',
-    bg: 'var(--line)',
-  },
-}
-
-const FALLBACK_KIND: KindMeta = {
-  label: t('diffView.sevInfo'),
-  color: 'var(--fg-dim)',
-  bg: 'var(--line)',
-}
-
-function resolveKind(f: Finding): KindMeta {
-  if (f.kind) {
-    const k = NL_KIND[f.kind]
-    if (k) {
-      return k
-    }
+const totals = computed(() => {
+  let add = 0
+  let del = 0
+  let notes = 0
+  for (const f of props.files) {
+    add += f.addCount
+    del += f.delCount
+    notes += f.topFindings.length + Object.values(f.byLine).reduce((n, arr) => n + arr.length, 0)
   }
-  return SEV_KIND[f.severity] ?? FALLBACK_KIND
-}
-
-function noteBorderColor(f: Finding): string {
-  return resolveKind(f).color
-}
-
-function richParts(s: string): { text: string; isCode: boolean }[] {
-  return s.split(/(`[^`]+`)/g).map((p) => ({
-    text: p.startsWith('`') && p.endsWith('`') ? p.slice(1, -1) : p,
-    isCode: p.startsWith('`') && p.endsWith('`'),
-  }))
-}
-
-function splitRows(rows: HunkLine[]): SplitRow[] {
-  return toSplit(rows)
-}
-
-function cellClass(kind: 'add' | 'del' | 'ctx' | 'nil'): string {
-  if (kind === 'add') {
-    return 'srd-cell-add'
-  }
-  if (kind === 'del') {
-    return 'srd-cell-del'
-  }
-  if (kind === 'nil') {
-    return 'srd-cell-nil'
-  }
-  return 'srd-cell-ctx'
-}
-
-function isGap(block: HunkBlock): block is { gap: number } {
-  return 'gap' in block
-}
-
-function isHunkRows(block: HunkBlock): block is { rows: HunkLine[] } {
-  return 'rows' in block
-}
-
-function gapSize(block: HunkBlock): number {
-  return (block as { gap: number }).gap
-}
-
-function hunkRows(block: HunkBlock): HunkLine[] {
-  return (block as { rows: HunkLine[] }).rows
-}
-
-function extraNotes(byLine: Record<number, Finding[]>, lineNo: number | null): Finding[] {
-  if (lineNo == null) {
-    return []
-  }
-  return (byLine[lineNo] ?? []).slice(1)
-}
+  return { add, del, notes }
+})
 
 const rootEl = ref<HTMLElement | null>(null)
 
@@ -230,8 +92,9 @@ function fileContaining(id: number): DiffFile | undefined {
 async function revealFinding(id: number): Promise<void> {
   const file = fileContaining(id)
   if (file && collapsed.value.has(file.path)) {
-    collapsed.value.delete(file.path)
-    collapsed.value = new Set(collapsed.value)
+    const next = new Set(collapsed.value)
+    next.delete(file.path)
+    collapsed.value = next
   }
   await nextTick()
   const anchor = rootEl.value?.querySelector(`[data-finding-id="${id}"]`)
@@ -255,810 +118,64 @@ watch(
 </script>
 
 <template>
-  <p v-if="!files.length" class="codesema-muted text-sm">{{ $t('reviews.noDiff') }}</p>
-  <div v-else ref="rootEl" class="diff-view-root">
-    <div v-if="!hideToolbar" class="diff-toolbar">
-      <div class="diff-seg">
-        <button :class="{ on: diffMode === 'unified' }" @click="setMode('unified')">
-          {{ $t('diffView.modeUnified') }}
+  <p v-if="!files.length" class="muted">{{ t('reviews.noDiff') }}</p>
+  <div v-else ref="rootEl" class="diff diff-view-root">
+    <div v-if="!hideToolbar" class="diff-t diff-toolbar">
+      <span class="dv-totals">
+        {{ t('preview.filesChanged', { n: files.length }, files.length) }}
+        <span class="dv-add">+{{ totals.add }}</span>
+        <span class="dv-del">−{{ totals.del }}</span>
+        <span v-if="totals.notes">{{
+          t('diffView.noteCount', { n: totals.notes }, totals.notes)
+        }}</span>
+      </span>
+      <span class="seg diff-seg" role="group">
+        <button
+          type="button"
+          :aria-pressed="diffMode === 'unified'"
+          :class="{ on: diffMode === 'unified' }"
+          @click="setMode('unified')"
+        >
+          {{ t('diffView.modeUnified') }}
         </button>
-        <button :class="{ on: diffMode === 'split' }" @click="setMode('split')">
-          {{ $t('diffView.modeSplit') }}
+        <button
+          type="button"
+          :aria-pressed="diffMode === 'split'"
+          :class="{ on: diffMode === 'split' }"
+          @click="setMode('split')"
+        >
+          {{ t('diffView.modeSplit') }}
         </button>
-      </div>
+      </span>
     </div>
 
-    <div class="diff-files">
-      <div v-for="file in files" :key="file.path" class="srd-file">
-        <div class="srd-file-head" :data-diff-file="file.path" @click="toggleFile(file.path)">
-          <span class="srd-chev" :class="{ open: !isCollapsed(file.path) }">▸</span>
-          <code class="srd-path diff-file-path">{{ file.path }}</code>
-          <span class="srd-flex1" />
-          <span v-if="fileFindingCount(file)" class="srd-cmt">
-            {{ $t('diffView.noteCount', { n: fileFindingCount(file) }, fileFindingCount(file)) }}
-          </span>
-          <span class="srd-delta">
-            <span class="srd-delta-add">+{{ file.addCount }}</span>
-            <span class="srd-delta-sep"> </span>
-            <span class="srd-delta-del">−{{ file.delCount }}</span>
-          </span>
-        </div>
-
-        <div v-if="!isCollapsed(file.path)" class="srd-body">
-          <template v-if="file.topFindings.length">
-            <div
-              v-for="(f, i) in file.topFindings"
-              :key="'top-' + i"
-              class="nlr-note"
-              :data-finding-id="f.id"
-              :style="{ borderLeftColor: noteBorderColor(f) }"
-            >
-              <div class="nlr-note-head">
-                <span class="nlr-mark">✦</span>
-                <span class="nlr-name">{{ $t('note.author') }}</span>
-                <span
-                  class="nlr-kind"
-                  :style="{ color: resolveKind(f).color, background: resolveKind(f).bg }"
-                  >{{ resolveKind(f).label }}</span
-                >
-                <span v-if="f.consensus" class="nlr-consensus" :title="$t('finding.consensus')">
-                  <span class="nlr-consensus-dots" aria-hidden="true"><span /><span /></span>
-                  {{ $t('finding.consensus') }}
-                </span>
-              </div>
-              <p v-if="f.title" class="nlr-note-title">
-                <template v-for="(part, j) in richParts(f.title)" :key="j">
-                  <code v-if="part.isCode">{{ part.text }}</code>
-                  <template v-else>{{ part.text }}</template>
-                </template>
-              </p>
-              <p class="nlr-note-body">
-                <template v-for="(part, j) in richParts(f.message)" :key="j">
-                  <code v-if="part.isCode">{{ part.text }}</code>
-                  <template v-else>{{ part.text }}</template>
-                </template>
-              </p>
-              <div v-if="f.suggestion" class="nlr-sugg">
-                <div class="nlr-sugg-head">
-                  <span>{{ $t('diffView.suggestionLabel') }}</span>
-                </div>
-                <pre class="nlr-sugg-code"><code>{{ f.suggestion }}</code></pre>
-              </div>
-            </div>
-          </template>
-
-          <template v-for="(block, bi) in file.hunks" :key="bi">
-            <div v-if="isGap(block)" class="srd-gap">
-              <span class="srd-gap-ic">↕</span>
-              {{ $t('diffView.gapLines', { n: gapSize(block) }, gapSize(block)) }}
-            </div>
-
-            <template v-else-if="isHunkRows(block) && diffMode === 'unified'">
-              <div class="srd-unified">
-                <template v-for="(row, ri) in hunkRows(block)" :key="ri">
-                  <div
-                    class="srd-uline"
-                    :class="
-                      row.t === 'add'
-                        ? 'srd-uline-add'
-                        : row.t === 'del'
-                          ? 'srd-uline-del'
-                          : 'srd-uline-ctx'
-                    "
-                  >
-                    <span class="srd-no">{{ row.o ?? '' }}</span>
-                    <span class="srd-no">{{ row.n ?? '' }}</span>
-                    <span class="srd-sign">{{
-                      row.t === 'add' ? '+' : row.t === 'del' ? '−' : ' '
-                    }}</span>
-                    <span class="srd-code">{{ row.c || ' ' }}</span>
-                  </div>
-                  <div
-                    v-if="row.note"
-                    class="nlr-note nlr-note-inline"
-                    :data-finding-id="row.note.id"
-                    :style="{ borderLeftColor: noteBorderColor(row.note) }"
-                  >
-                    <div class="nlr-note-head">
-                      <span class="nlr-mark">✦</span>
-                      <span class="nlr-name">{{ $t('note.author') }}</span>
-                      <span
-                        class="nlr-kind"
-                        :style="{
-                          color: resolveKind(row.note).color,
-                          background: resolveKind(row.note).bg,
-                        }"
-                        >{{ resolveKind(row.note).label }}</span
-                      >
-                      <span
-                        v-if="row.note.consensus"
-                        class="nlr-consensus"
-                        :title="$t('finding.consensus')"
-                      >
-                        <span class="nlr-consensus-dots" aria-hidden="true"><span /><span /></span>
-                        {{ $t('finding.consensus') }}
-                      </span>
-                    </div>
-                    <p v-if="row.note.title" class="nlr-note-title">
-                      <template v-for="(part, j) in richParts(row.note.title)" :key="j">
-                        <code v-if="part.isCode">{{ part.text }}</code>
-                        <template v-else>{{ part.text }}</template>
-                      </template>
-                    </p>
-                    <p class="nlr-note-body">
-                      <template v-for="(part, j) in richParts(row.note.message)" :key="j">
-                        <code v-if="part.isCode">{{ part.text }}</code>
-                        <template v-else>{{ part.text }}</template>
-                      </template>
-                    </p>
-                    <div v-if="row.note.suggestion" class="nlr-sugg">
-                      <div class="nlr-sugg-head">
-                        <span>{{ $t('diffView.suggestionLabel') }}</span>
-                      </div>
-                      <pre class="nlr-sugg-code"><code>{{ row.note.suggestion }}</code></pre>
-                    </div>
-                    <template v-if="extraNotes(file.byLine, row.n).length">
-                      <template
-                        v-for="(extraNote, en) in extraNotes(file.byLine, row.n)"
-                        :key="'extra-' + en"
-                      >
-                        <div class="nlr-note-sep" />
-                        <div class="nlr-note-head" :data-finding-id="extraNote.id">
-                          <span class="nlr-mark">✦</span>
-                          <span class="nlr-name">{{ $t('note.author') }}</span>
-                          <span
-                            class="nlr-kind"
-                            :style="{
-                              color: resolveKind(extraNote).color,
-                              background: resolveKind(extraNote).bg,
-                            }"
-                            >{{ resolveKind(extraNote).label }}</span
-                          >
-                          <span
-                            v-if="extraNote.consensus"
-                            class="nlr-consensus"
-                            :title="$t('finding.consensus')"
-                          >
-                            <span class="nlr-consensus-dots" aria-hidden="true"
-                              ><span /><span
-                            /></span>
-                            {{ $t('finding.consensus') }}
-                          </span>
-                        </div>
-                        <p v-if="extraNote.title" class="nlr-note-title">
-                          <template v-for="(part, j) in richParts(extraNote.title)" :key="j">
-                            <code v-if="part.isCode">{{ part.text }}</code>
-                            <template v-else>{{ part.text }}</template>
-                          </template>
-                        </p>
-                        <p class="nlr-note-body">
-                          <template v-for="(part, j) in richParts(extraNote.message)" :key="j">
-                            <code v-if="part.isCode">{{ part.text }}</code>
-                            <template v-else>{{ part.text }}</template>
-                          </template>
-                        </p>
-                        <div v-if="extraNote.suggestion" class="nlr-sugg">
-                          <div class="nlr-sugg-head">
-                            <span>{{ $t('diffView.suggestionLabel') }}</span>
-                          </div>
-                          <pre class="nlr-sugg-code"><code>{{ extraNote.suggestion }}</code></pre>
-                        </div>
-                      </template>
-                    </template>
-                  </div>
-                </template>
-              </div>
-            </template>
-
-            <template v-else-if="isHunkRows(block) && diffMode === 'split'">
-              <div class="srd-split">
-                <template v-for="(srow, si) in splitRows(hunkRows(block))" :key="si">
-                  <div v-if="srow.kind === 'note'" class="srd-split-note-row">
-                    <div
-                      class="nlr-note nlr-note-split"
-                      :data-finding-id="srow.note.id"
-                      :style="{ borderLeftColor: noteBorderColor(srow.note) }"
-                    >
-                      <div class="nlr-note-head">
-                        <span class="nlr-mark">✦</span>
-                        <span class="nlr-name">{{ $t('note.author') }}</span>
-                        <span
-                          class="nlr-kind"
-                          :style="{
-                            color: resolveKind(srow.note).color,
-                            background: resolveKind(srow.note).bg,
-                          }"
-                          >{{ resolveKind(srow.note).label }}</span
-                        >
-                        <span
-                          v-if="srow.note.consensus"
-                          class="nlr-consensus"
-                          :title="$t('finding.consensus')"
-                        >
-                          <span class="nlr-consensus-dots" aria-hidden="true"
-                            ><span /><span
-                          /></span>
-                          {{ $t('finding.consensus') }}
-                        </span>
-                      </div>
-                      <p v-if="srow.note.title" class="nlr-note-title">
-                        <template v-for="(part, j) in richParts(srow.note.title)" :key="j">
-                          <code v-if="part.isCode">{{ part.text }}</code>
-                          <template v-else>{{ part.text }}</template>
-                        </template>
-                      </p>
-                      <p class="nlr-note-body">
-                        <template v-for="(part, j) in richParts(srow.note.message)" :key="j">
-                          <code v-if="part.isCode">{{ part.text }}</code>
-                          <template v-else>{{ part.text }}</template>
-                        </template>
-                      </p>
-                      <div v-if="srow.note.suggestion" class="nlr-sugg">
-                        <div class="nlr-sugg-head">
-                          <span>{{ $t('diffView.suggestionLabel') }}</span>
-                        </div>
-                        <pre class="nlr-sugg-code"><code>{{ srow.note.suggestion }}</code></pre>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div v-else class="srd-row">
-                    <div
-                      class="srd-cell"
-                      :class="
-                        srow.kind === 'ctx'
-                          ? cellClass('ctx')
-                          : srow.left
-                            ? cellClass('del')
-                            : cellClass('nil')
-                      "
-                    >
-                      <span class="srd-no">{{
-                        srow.kind === 'ctx' ? (srow.left.o ?? '') : (srow.left?.o ?? '')
-                      }}</span>
-                      <span class="srd-sign">{{
-                        srow.kind !== 'ctx' && srow.left ? '−' : ' '
-                      }}</span>
-                      <span class="srd-code">{{
-                        srow.kind === 'ctx' ? srow.left.c || ' ' : (srow.left?.c ?? ' ')
-                      }}</span>
-                    </div>
-                    <div
-                      class="srd-cell"
-                      :class="
-                        srow.kind === 'ctx'
-                          ? cellClass('ctx')
-                          : srow.right
-                            ? cellClass('add')
-                            : cellClass('nil')
-                      "
-                    >
-                      <span class="srd-no">{{
-                        srow.kind === 'ctx' ? (srow.right.n ?? '') : (srow.right?.n ?? '')
-                      }}</span>
-                      <span class="srd-sign">{{
-                        srow.kind !== 'ctx' && srow.right ? '+' : ' '
-                      }}</span>
-                      <span class="srd-code">{{
-                        srow.kind === 'ctx' ? srow.right.c || ' ' : (srow.right?.c ?? ' ')
-                      }}</span>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </template>
-          </template>
-        </div>
-      </div>
-    </div>
+    <DiffFileBlock
+      v-for="file in files"
+      :key="file.path"
+      :file="file"
+      :mode="diffMode"
+      :collapsed="collapsed.has(file.path)"
+      @toggle="toggleFile(file.path)"
+    />
   </div>
 </template>
 
 <style scoped>
-/* root */
-.diff-view-root {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+p.muted {
+  font-size: 12px;
 }
 
-/* toolbar */
-.diff-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.diff-seg {
+.dv-totals {
   display: inline-flex;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 2px;
-  gap: 2px;
+  gap: 1ch;
+  align-items: baseline;
 }
 
-.diff-seg button {
-  font-size: 12px;
-  padding: 5px 10px;
-  border-radius: 7px;
-  color: var(--fg-dim);
-  font-weight: 500;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-family: inherit;
-  transition:
-    background 0.12s,
-    color 0.12s;
-}
-
-.diff-seg button.on {
-  background: var(--fg);
-  color: var(--bg);
-}
-
-/* file list */
-.diff-files {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-/* file */
-.srd-file {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--bg-raised);
-  /* skip layout/paint for off-screen files on large diffs */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 320px;
-}
-
-.srd-file-head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 10px 14px;
-  background: var(--line);
-  border-bottom: 1px solid var(--line);
-  cursor: pointer;
-  font-size: var(--fs);
-  user-select: none;
-}
-
-.srd-file-head:hover {
-  background: color-mix(in srgb, var(--line) 60%, var(--bg-raised));
-}
-
-.srd-chev {
-  color: var(--fg-dim);
-  font-size: 12px;
-  transition: transform 0.15s;
-  display: inline-block;
-  flex-shrink: 0;
-}
-
-.srd-chev.open {
-  transform: rotate(90deg);
-}
-
-.srd-path {
-  font-family: var(--font);
-  font-size: 12px;
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.srd-flex1 {
-  flex: 1;
-}
-
-.srd-cmt {
-  font-size: 12px;
-  color: var(--fg-dim);
-  flex-shrink: 0;
-}
-
-.srd-delta {
-  font-family: var(--font);
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.srd-delta-add {
+.dv-add {
   color: var(--ok);
 }
 
-.srd-delta-del {
+.dv-del {
   color: var(--err);
-}
-
-.srd-delta-sep {
-  color: var(--fg-dim);
-}
-
-/* file body */
-.srd-body {
-  font-family: var(--font);
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-x: auto;
-}
-
-/* gap bar */
-.srd-gap {
-  background: var(--line);
-  color: var(--fg-dim);
-  padding: 5px 16px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font);
-}
-
-.srd-gap-ic {
-  opacity: 0.6;
-}
-
-/* unified view */
-.srd-unified {
-  display: flex;
-  flex-direction: column;
-}
-
-.srd-uline {
-  display: flex;
-  align-items: flex-start;
-}
-
-.srd-uline-ctx {
-  background: var(--bg-raised);
-}
-
-.srd-uline-add {
-  background: color-mix(in srgb, var(--ok) 14%, transparent);
-}
-
-.srd-uline-add .srd-no {
-  background: var(--ok);
-}
-
-.srd-uline-del {
-  background: color-mix(in srgb, var(--err) 14%, transparent);
-}
-
-.srd-uline-del .srd-no {
-  background: var(--err);
-}
-
-.srd-uline-add .srd-sign {
-  color: var(--ok);
-}
-
-.srd-uline-del .srd-sign {
-  color: var(--err);
-}
-
-.srd-uline-del .srd-code {
-  color: color-mix(in srgb, var(--err) 70%, var(--fg-dim));
-}
-
-/* split view */
-.srd-split {
-  display: flex;
-  flex-direction: column;
-}
-
-.srd-row {
-  display: flex;
-  min-width: 0;
-}
-
-.srd-split-note-row {
-}
-
-.srd-cell {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  border-right: 1px solid var(--line);
-}
-
-.srd-cell:last-child {
-  border-right: 0;
-}
-
-.srd-cell-ctx {
-  background: var(--bg-raised);
-}
-
-.srd-cell-add {
-  background: color-mix(in srgb, var(--ok) 14%, transparent);
-}
-
-.srd-cell-add .srd-no {
-  background: var(--ok);
-}
-
-.srd-cell-add .srd-sign {
-  color: var(--ok);
-}
-
-.srd-cell-del {
-  background: color-mix(in srgb, var(--err) 14%, transparent);
-}
-
-.srd-cell-del .srd-no {
-  background: var(--err);
-}
-
-.srd-cell-del .srd-sign {
-  color: var(--err);
-}
-
-.srd-cell-del .srd-code {
-  color: color-mix(in srgb, var(--err) 70%, var(--fg-dim));
-}
-
-.srd-cell-nil {
-  background: repeating-linear-gradient(
-    45deg,
-    var(--line),
-    var(--line) 6px,
-    var(--bg) 6px,
-    var(--bg) 12px
-  );
-}
-
-/* line numbers + sign */
-.srd-no {
-  width: 38px;
-  flex-shrink: 0;
-  text-align: right;
-  padding: 0 8px;
-  color: var(--fg-dim);
-  user-select: none;
-  font-size: 12px;
-  line-height: inherit;
-}
-
-.srd-uline .srd-no {
-  width: 34px;
-}
-
-.srd-sign {
-  width: 12px;
-  flex-shrink: 0;
-  user-select: none;
-  text-align: center;
-  line-height: inherit;
-}
-
-.srd-code {
-  flex: 1;
-  min-width: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding-right: 10px;
-  color: var(--fg);
-  line-height: inherit;
-}
-
-/* note card */
-.nlr-note {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-left-width: 3px;
-  border-radius: 0 9px 9px 0;
-  margin: 8px 12px 10px;
-  padding: 11px 13px;
-  font-family: var(--font);
-}
-
-.nlr-note-inline {
-  margin-left: 0;
-  margin-right: 0;
-  border-radius: 0;
-  border-left-width: 3px;
-  border-right: none;
-}
-
-.nlr-note-split {
-  margin-left: 0;
-  margin-right: 0;
-  border-radius: 0;
-  border-left-width: 3px;
-  border-right: none;
-}
-
-.nlr-note-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 7px;
-}
-
-.nlr-mark {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  font-family: var(--font);
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.nlr-name {
-  font-size: var(--fs);
-  font-weight: 700;
-  color: var(--fg);
-}
-
-.nlr-kind {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  padding: 2px 9px;
-}
-
-.nlr-consensus {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  padding: 2px 9px;
-  color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-}
-
-.nlr-consensus-dots {
-  position: relative;
-  width: 11px;
-  height: 8px;
-  flex-shrink: 0;
-}
-
-.nlr-consensus-dots span {
-  position: absolute;
-  top: 1px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.nlr-consensus-dots span:first-child {
-  left: 0;
-}
-
-.nlr-consensus-dots span:last-child {
-  left: 5px;
-  opacity: 0.65;
-}
-
-.nlr-note-title {
-  font-size: var(--fs);
-  font-weight: 600;
-  margin: 0 0 3px 0;
-  color: var(--fg);
-}
-
-.nlr-note-body {
-  font-size: var(--fs);
-  line-height: 1.55;
-  color: var(--fg-dim);
-  margin: 0;
-}
-
-.nlr-note code,
-.nlr-note-title code {
-  font-family: var(--font);
-  font-size: 0.85em;
-  background: var(--line);
-  padding: 1px 5px;
-  border-radius: 4px;
-  color: var(--accent);
-}
-
-.nlr-note-sep {
-  height: 1px;
-  background: var(--line);
-  margin: 10px 0;
-}
-
-.nlr-note--flash {
-  animation: nlr-flash 1.6s ease;
-}
-
-@keyframes nlr-flash {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
-  }
-  35% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-}
-
-/* suggested fix */
-.nlr-sugg {
-  margin-top: 11px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.nlr-sugg-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  color: var(--ok);
-  padding: 6px 11px;
-  font-size: 12px;
-  font-weight: 700;
-  font-family: var(--font);
-}
-
-.nlr-sugg-code {
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--line);
-  font-family: var(--font);
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.nlr-sugg-code code {
-  background: none;
-  padding: 0;
-  color: inherit;
-  font-size: inherit;
-}
-
-/* mobile density (<= 640px) */
-@media (max-width: 640px) {
-  .srd-body {
-    font-size: 12px;
-  }
-  .srd-no {
-    width: 30px;
-    padding: 0 5px;
-  }
-  .srd-uline .srd-no {
-    width: 28px;
-  }
-  .nlr-note {
-    margin: 8px 8px 10px;
-    padding: 10px 11px;
-  }
 }
 </style>

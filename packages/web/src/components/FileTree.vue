@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { DiffFile, Finding } from '../composables/useDiff'
+import { G } from '../glyphs'
 import FileTreeNode from './FileTreeNode.vue'
 
 const props = defineProps<{
@@ -100,7 +101,7 @@ function toggleDir(path: string) {
   <div class="ft-root">
     <div class="ft-head">
       <span class="ft-head-label">{{ $t('fileTree.files') }}</span>
-      <span class="ft-head-count">{{ files.length }}</span>
+      <span class="ft-head-count muted">{{ files.length }}</span>
     </div>
 
     <div class="ft-filter-wrap">
@@ -120,10 +121,9 @@ function toggleDir(path: string) {
           v-for="path in filteredPaths"
           :key="path"
           class="ft-file"
-          style="padding-left: 12px"
           @click="emit('pick', path)"
         >
-          <span class="ft-file-ic">▤</span>
+          <span class="ft-file-ic" aria-hidden="true">{{ G.file }}</span>
           <span class="ft-file-name">{{ path.split('/').pop() }}</span>
           <span v-if="fileMap.get(path)" class="ft-delta">
             <span class="ft-delta-add">+{{ fileMap.get(path)!.addCount }}</span>
@@ -164,10 +164,10 @@ function toggleDir(path: string) {
 .ft-root {
   display: flex;
   flex-direction: column;
-  width: 252px;
+  width: 36ch;
   flex-shrink: 0;
   border-right: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg));
+  background: var(--bg-raised);
   overflow: hidden;
   height: 100%;
 }
@@ -175,87 +175,55 @@ function toggleDir(path: string) {
 .ft-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 14px 14px 6px;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 1ch;
   flex-shrink: 0;
+  color: var(--fg-dim);
 }
 
 .ft-head-label {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--fg-dim);
   text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
-
-.ft-head-count {
-  font-family: var(--font);
-  font-size: 12px;
-  background: var(--line);
-  color: var(--fg-dim);
-  border-radius: 999px;
-  padding: 1px 7px;
-  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
 .ft-filter-wrap {
-  padding: 0 10px 8px;
+  padding: 0 1ch calc(var(--row) / 2);
   flex-shrink: 0;
 }
 
 .ft-filter {
   width: 100%;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 11px;
-  font-size: var(--fs);
-  font-family: inherit;
-  color: var(--fg);
-  outline: none;
-  transition: border-color 0.12s;
-  box-sizing: border-box;
-}
-
-.ft-filter:focus {
-  border-color: var(--accent);
-}
-
-.ft-filter::placeholder {
-  color: var(--fg-dim);
+  min-width: 0;
 }
 
 .ft-body {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
+  padding-bottom: calc(var(--row) / 2);
 }
 
 .ft-file {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
   width: 100%;
   background: none;
   border: none;
   cursor: pointer;
-  padding: 6px 9px;
-  font-family: var(--font);
-  font-size: 12px;
+  padding: 0 1ch;
+  font: inherit;
   color: var(--fg-dim);
   text-align: left;
-  transition: background 0.1s;
   min-width: 0;
 }
 
 .ft-file:hover {
-  background: var(--line);
+  background: var(--bg-hover);
   color: var(--fg);
 }
 
 .ft-file-ic {
-  color: var(--fg-dim);
-  font-size: 12px;
+  color: var(--fg-muted);
   flex-shrink: 0;
 }
 
@@ -270,7 +238,7 @@ function toggleDir(path: string) {
 .ft-delta {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 1ch;
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -285,13 +253,12 @@ function toggleDir(path: string) {
 
 .ft-cmt {
   font-size: 12px;
-  color: var(--fg-dim);
+  color: var(--warn);
   flex-shrink: 0;
 }
 
 .ft-empty {
-  font-size: 12px;
   color: var(--fg-dim);
-  padding: 10px 14px;
+  padding: calc(var(--row) / 2) 1ch;
 }
 </style>

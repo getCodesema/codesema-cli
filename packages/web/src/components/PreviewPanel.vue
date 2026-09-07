@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { parseDiff, type Finding } from '../composables/useDiff'
+import { G } from '../glyphs'
 import type { PreviewFile, PreviewFileDiff, PreviewResult, ReviewSource } from '../types'
 import DiffView from './DiffView.vue'
 
@@ -103,20 +104,17 @@ function fileLabel(file: PreviewFile): string {
 
 <template>
   <div class="pv-root">
-    <div v-if="loading" class="pv-state">
-      <span class="pv-spinner" aria-hidden="true" />
-      <p class="codesema-muted">{{ $t('preview.loading') }}</p>
-    </div>
+    <p v-if="loading" class="status pv-state" data-s="running">{{ $t('preview.loading') }}</p>
     <p v-else-if="loadError" class="pv-error">{{ $t('preview.loadError') }} ({{ loadError }})</p>
 
     <template v-else-if="preview">
       <div class="pv-refs">
         <code class="pv-branch">{{ preview.branch }}</code>
-        <span class="pv-arrow" aria-hidden="true">→</span>
+        <span class="pv-arrow" aria-hidden="true">{{ G.arrow }}</span>
         <code class="pv-branch">{{ preview.target }}</code>
       </div>
 
-      <div class="pv-summary codesema-muted">
+      <div class="pv-summary muted">
         <span>{{
           $t('preview.commits', { n: preview.commits.length }, preview.commits.length)
         }}</span>
@@ -127,11 +125,11 @@ function fileLabel(file: PreviewFile): string {
         <span class="pv-del">−{{ preview.diffStats.deletions }}</span>
       </div>
 
-      <ul v-if="preview.commits.length" class="pv-commits">
+      <ul v-if="preview.commits.length" class="log pv-commits">
         <li v-for="(subject, i) in preview.commits" :key="i">{{ subject }}</li>
       </ul>
 
-      <p v-if="preview.files.length === 0" class="codesema-muted pv-empty">
+      <p v-if="preview.files.length === 0" class="muted pv-empty">
         {{ $t('preview.noFiles') }}
       </p>
       <ul v-else class="pv-files">
@@ -141,7 +139,7 @@ function fileLabel(file: PreviewFile): string {
             :class="{ 'pv-file--selected': file.path === selectedPath }"
             @click="pickFile(file.path)"
           >
-            <span class="pv-file-status" :class="`pv-file-status--${file.status}`">{{
+            <span class="badge pv-file-status" :class="`pv-file-status--${file.status}`">{{
               STATUS_LABEL[file.status]
             }}</span>
             <span class="pv-file-path" :title="fileLabel(file)">{{ fileLabel(file) }}</span>
@@ -154,9 +152,9 @@ function fileLabel(file: PreviewFile): string {
       </ul>
 
       <div class="pv-diff">
-        <div v-if="diffLoading" class="pv-state">
-          <span class="pv-spinner" aria-hidden="true" />
-        </div>
+        <p v-if="diffLoading" class="status pv-state" data-s="running">
+          {{ $t('preview.loading') }}
+        </p>
         <p v-else-if="diffError" class="pv-error">
           {{ $t('preview.diffLoadError') }} ({{ diffError }})
         </p>
@@ -164,7 +162,7 @@ function fileLabel(file: PreviewFile): string {
           <p v-if="diffResult.truncated" class="pv-truncated">{{ $t('preview.diffTruncated') }}</p>
           <DiffView :files="diffFiles" hide-toolbar />
         </template>
-        <p v-else-if="preview.files.length" class="codesema-muted pv-empty">
+        <p v-else-if="preview.files.length" class="muted pv-empty">
           {{ $t('preview.selectFileHint') }}
         </p>
       </div>
@@ -176,54 +174,23 @@ function fileLabel(file: PreviewFile): string {
 .pv-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--row);
 }
 
 .pv-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 24px 8px;
-  font-size: var(--fs);
-  text-align: center;
-}
-
-.pv-spinner {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2.5px solid var(--line);
-  border-top-color: var(--accent);
-  animation: pv-spin 0.8s linear infinite;
-}
-
-@keyframes pv-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  margin: 0;
+  padding: var(--row) 1ch;
 }
 
 .pv-error {
   color: var(--err);
-  font-size: var(--fs);
   margin: 0;
 }
 
 .pv-refs {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: var(--fs);
-}
-
-.pv-branch {
-  font-family: var(--font);
-  background: var(--line);
-  border-radius: 6px;
-  padding: 3px 8px;
-  color: var(--fg);
+  gap: 1ch;
 }
 
 .pv-arrow {
@@ -233,7 +200,7 @@ function fileLabel(file: PreviewFile): string {
 .pv-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 2ch;
   font-size: 12px;
 }
 
@@ -247,23 +214,13 @@ function fileLabel(file: PreviewFile): string {
 
 .pv-commits {
   list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: var(--fs);
-  color: var(--fg-dim);
-  max-height: 140px;
+  max-height: calc(var(--row) * 6);
   overflow-y: auto;
-}
-
-.pv-commits li {
-  padding: 2px 0;
+  color: var(--fg-dim);
 }
 
 .pv-empty {
-  font-size: var(--fs);
+  color: var(--fg-dim);
 }
 
 .pv-files {
@@ -272,46 +229,36 @@ function fileLabel(file: PreviewFile): string {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
 }
 
 .pv-file {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 1ch;
+  padding: 0 1ch;
   border: none;
+  border-left: 2px solid transparent;
   background: var(--bg-raised);
   cursor: pointer;
-  font-family: inherit;
+  font: inherit;
+  color: var(--fg-dim);
   text-align: left;
-  transition: background 0.1s;
 }
 
 .pv-file:hover {
-  background: var(--line);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .pv-file--selected {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left-color: var(--accent);
+  color: var(--fg);
 }
 
 .pv-file-status {
   flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--fg-dim);
-  background: var(--line);
 }
 
 .pv-file-status--added {
@@ -328,22 +275,19 @@ function fileLabel(file: PreviewFile): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font);
-  font-size: 12px;
   color: var(--fg);
 }
 
 .pv-file-delta {
   flex-shrink: 0;
   display: inline-flex;
-  gap: 6px;
-  font-family: var(--font);
+  gap: 1ch;
   font-size: 12px;
 }
 
 .pv-truncated {
   font-size: 12px;
   color: var(--warn);
-  margin: 0 0 10px;
+  margin: 0 0 calc(var(--row) / 2);
 }
 </style>

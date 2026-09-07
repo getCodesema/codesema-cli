@@ -151,20 +151,20 @@ describe('the expanded slot (fiche §6: top hairline, then the diff)', () => {
 })
 
 describe('geometry (fiche §5)', () => {
-  test('the button is full width, 12px horizontal / 10px vertical padding, 8px gap', () => {
+  test('the row is the kit file row, full width, one text line of padding', () => {
+    expect(SOURCE).toContain('class="diff-f cfr-button"')
     expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*width: 100%;/)
-    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*padding: 10px 12px;/)
-    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*gap: 8px;/)
+    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*padding: 2px 1ch;/)
+    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*gap: 2ch;/)
   })
 
-  test('defect #3 fixed: background, border and radius all explicitly neutralized', () => {
+  test('defect #3 fixed: background and border explicitly neutralized', () => {
     expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*background: none;/)
     expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*border: none;/)
-    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*border-radius: 0;/)
   })
 
-  test('the path uses the base size token', () => {
-    expect(SOURCE).toMatch(/\.cfr-path\s*\{[^}]*font-size: var\(--fs\);/)
+  test('the path inherits the base size, never a size of its own', () => {
+    expect(SOURCE).not.toMatch(/\.cfr-path\s*\{[^}]*font-size:/)
   })
 
   test('defect #4 fixed: the path truncates from the start (direction: rtl), never the end', () => {
@@ -185,8 +185,9 @@ describe('geometry (fiche §5)', () => {
     expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-variant-numeric: tabular-nums;/)
   })
 
-  test('the chevron rotates open, does not just swap glyph', () => {
-    expect(SOURCE).toMatch(/\.cfr-chevron--open\s*\{[^}]*transform: rotate\(90deg\);/)
+  test('the chevron swaps between the two kit glyphs, never rotates', () => {
+    expect(SOURCE).toContain('expanded ? G.expand : G.collapse')
+    expect(SOURCE).not.toContain('rotate(90deg)')
   })
 
   test('never uses animation-fill-mode (project-wide rule)', () => {

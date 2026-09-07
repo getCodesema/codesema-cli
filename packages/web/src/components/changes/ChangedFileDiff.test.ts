@@ -70,7 +70,7 @@ describe('renders the diff content', () => {
 
 describe("fiche §6: DiffView's own per-file header is not repeated", () => {
   test('the header is hidden from outside, not by editing DiffView.vue', () => {
-    expect(SOURCE).toMatch(/:deep\(\.srd-file-head\)\s*\{[^}]*display: none;/)
+    expect(SOURCE).toMatch(/:deep\(\.diff-f\)\s*\{[^}]*display: none;/)
   })
 
   test('DiffView.vue itself is only imported, never modified from here', () => {
@@ -102,19 +102,18 @@ describe('fiche §6: wraps instead of scrolling horizontally', () => {
   })
 
   test('the diff body never scrolls horizontally', () => {
-    expect(SOURCE).toMatch(/:deep\(\.srd-body\)\s*\{[^}]*overflow-x: visible;/)
+    expect(SOURCE).toMatch(/:deep\(\.diff-body\)\s*\{[^}]*overflow-x: visible;/)
   })
 
   test('long unbroken tokens still break rather than overflow', () => {
-    expect(SOURCE).toMatch(/:deep\(\.srd-code\)\s*\{[^}]*overflow-wrap: anywhere;/)
+    expect(SOURCE).toMatch(/:deep\(\.diff td\.c\)\s*\{[^}]*overflow-wrap: anywhere;/)
   })
 })
 
 describe('the redundant per-file card chrome is neutralized once its header is gone', () => {
-  test('border, radius and background are all reset', () => {
-    expect(SOURCE).toMatch(/:deep\(\.srd-file\)\s*\{[^}]*border: none;/)
-    expect(SOURCE).toMatch(/:deep\(\.srd-file\)\s*\{[^}]*border-radius: 0;/)
-    expect(SOURCE).toMatch(/:deep\(\.srd-file\)\s*\{[^}]*background: none;/)
+  test('border and background are both reset', () => {
+    expect(SOURCE).toMatch(/:deep\(\.diff\)\s*\{[^}]*border: none;/)
+    expect(SOURCE).toMatch(/:deep\(\.diff\)\s*\{[^}]*background: none;/)
   })
 })
 

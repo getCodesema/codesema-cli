@@ -10,7 +10,7 @@ defineProps<{ icon: Component; text: string }>()
 </script>
 
 <template>
-  <div class="cet-root">
+  <div class="empty cet-root">
     <component :is="icon" class="cet-icon" aria-hidden="true" />
     <p class="cet-text">{{ text }}</p>
   </div>
@@ -22,20 +22,17 @@ defineProps<{ icon: Component; text: string }>()
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 48px 16px;
-  text-align: center;
+  gap: calc(var(--row) / 2);
+  padding: var(--row) 2ch;
 }
 
 .cet-icon {
-  width: 20px;
-  height: 20px;
+  width: 14px;
+  height: 14px;
   color: var(--fg-muted);
 }
 
 .cet-text {
   margin: 0;
-  font-size: var(--fs);
-  color: var(--fg-dim);
 }
 </style>

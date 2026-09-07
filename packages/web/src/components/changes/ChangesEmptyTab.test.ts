@@ -39,8 +39,9 @@ describe('ChangesEmptyTab', () => {
     expect(html).toContain('aria-hidden="true"')
   })
 
-  test('fiche §7: 48px vertical padding', () => {
-    expect(SOURCE).toMatch(/\.cet-root\s*\{[^}]*padding: 48px 16px;/)
+  test('fiche §7: one text line of vertical padding, kit .empty frame', () => {
+    expect(SOURCE).toContain('class="empty cet-root"')
+    expect(SOURCE).toMatch(/\.cet-root\s*\{[^}]*padding: var\(--row\) 2ch;/)
   })
 
   test('never uses animation-fill-mode (project-wide rule)', () => {

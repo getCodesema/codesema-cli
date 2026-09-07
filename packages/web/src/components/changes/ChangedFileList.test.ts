@@ -52,11 +52,11 @@ async function render(props: Props): Promise<string> {
 }
 
 describe('loading / idle', () => {
-  test('idle renders the same spinner as loading (nothing requested yet still looks like "about to load")', async () => {
+  test('idle renders the same running status as loading (nothing requested yet still looks like "about to load")', async () => {
     const idleHtml = await render({ filesState: { phase: 'idle' }, mrNumber: 42 })
     const loadingHtml = await render({ filesState: { phase: 'loading' }, mrNumber: 42 })
-    expect(idleHtml).toContain('cfl-spinner')
-    expect(loadingHtml).toContain('cfl-spinner')
+    expect(idleHtml).toContain('data-s="running"')
+    expect(loadingHtml).toContain('data-s="running"')
     expect(idleHtml).toContain(t('changes.fileList.loading'))
   })
 
@@ -75,12 +75,12 @@ describe('error (fiche §7: capped scrollable detail, a retry action)', () => {
     })
     expect(html).toContain(t('changes.fileList.loadError'))
     expect(html).toContain('HTTP 500')
-    expect(html).toContain('class="cfl-retry"')
+    expect(html).toContain('class="btn cfl-retry"')
     expect(html).toContain(t('changes.fileList.retry'))
   })
 
   test('the detail sits in its own capped, scrollable frame', () => {
-    expect(SOURCE).toMatch(/\.cfl-error-detail\s*\{[^}]*max-height: 120px;/)
+    expect(SOURCE).toMatch(/\.cfl-error-detail\s*\{[^}]*max-height: calc\(var\(--row\) \* 5\);/)
     expect(SOURCE).toMatch(/\.cfl-error-detail\s*\{[^}]*overflow-y: auto;/)
   })
 

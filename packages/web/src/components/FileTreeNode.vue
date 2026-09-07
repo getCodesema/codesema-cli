@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { DiffFile } from '../composables/useDiff'
+import { G } from '../glyphs'
 
 type FileLeaf = {
   kind: 'file'
@@ -39,22 +40,13 @@ const dirPath = computed(() => {
 
 const isCollapsed = computed(() => props.collapsedDirs.has(dirPath.value))
 
-const paddingLeft = computed(() => {
-  if (props.node.kind === 'dir') {
-    return 8 + props.depth * 14
-  }
-  return 12 + props.depth * 14
-})
+const indent = computed(() => `${props.depth * 2}ch`)
 </script>
 
 <template>
   <div v-if="node.kind === 'dir'" class="ftn-dir-wrap">
-    <button
-      class="ftn-dir"
-      :style="{ paddingLeft: paddingLeft + 'px' }"
-      @click="emit('toggleDir', dirPath)"
-    >
-      <span class="ftn-dir-ic" :class="{ open: !isCollapsed }">▸</span>
+    <button class="ftn-dir" :style="{ paddingLeft: indent }" @click="emit('toggleDir', dirPath)">
+      <span class="ftn-dir-ic" aria-hidden="true">{{ isCollapsed ? G.collapse : G.expand }}</span>
       <span class="ftn-dir-name">{{ (node as DirNode).dir }}</span>
     </button>
     <template v-if="!isCollapsed">
@@ -76,10 +68,10 @@ const paddingLeft = computed(() => {
   <button
     v-else
     class="ftn-file"
-    :style="{ paddingLeft: paddingLeft + 'px' }"
+    :style="{ paddingLeft: indent }"
     @click="emit('pick', (node as FileLeaf).path)"
   >
-    <span class="ftn-file-ic">▤</span>
+    <span class="ftn-file-ic" aria-hidden="true">{{ G.file }}</span>
     <span class="ftn-file-name">{{ (node as FileLeaf).name }}</span>
     <template v-if="fileMap.get((node as FileLeaf).path)">
       <span class="ftn-delta">
@@ -99,83 +91,48 @@ const paddingLeft = computed(() => {
   flex-direction: column;
 }
 
-.ftn-dir {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-right: 10px;
-  font-family: var(--font);
-  font-size: 12px;
-  color: var(--fg-dim);
-  font-weight: 600;
-  text-align: left;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  transition: background 0.1s;
-  min-width: 0;
-}
-
-.ftn-dir:hover {
-  background: var(--line);
-  color: var(--fg-dim);
-}
-
-.ftn-dir-ic {
-  font-size: 12px;
-  transition: transform 0.15s;
-  display: inline-block;
-  flex-shrink: 0;
-  color: var(--fg-dim);
-}
-
-.ftn-dir-ic.open {
-  transform: rotate(90deg);
-}
-
-.ftn-dir-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+.ftn-dir,
 .ftn-file {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
   width: 100%;
   background: none;
   border: none;
   cursor: pointer;
-  padding-top: 3px;
-  padding-bottom: 3px;
-  padding-right: 10px;
-  font-family: var(--font);
-  font-size: 12px;
+  padding-right: 1ch;
+  font: inherit;
   color: var(--fg-dim);
   text-align: left;
-  transition: background 0.1s;
   min-width: 0;
 }
 
+/* The tree lines are drawn, not indented into: one glyph per row, the last
+   sibling closing its branch. */
+.ftn-dir::before,
+.ftn-file::before {
+  content: '├─ ';
+  color: var(--fg-muted);
+}
+
+.ftn-dir-wrap:last-child > .ftn-dir::before,
+.ftn-file:last-child::before {
+  content: '└─ ';
+}
+
+.ftn-dir:hover,
 .ftn-file:hover {
-  background: var(--line);
+  background: var(--bg-hover);
   color: var(--fg);
 }
 
+.ftn-dir-ic,
 .ftn-file-ic {
-  color: var(--fg-dim);
-  font-size: 12px;
   flex-shrink: 0;
+  color: var(--fg-muted);
 }
 
+.ftn-dir-name,
 .ftn-file-name {
   flex: 1;
   min-width: 0;
@@ -187,7 +144,7 @@ const paddingLeft = computed(() => {
 .ftn-delta {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 1ch;
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -202,10 +159,7 @@ const paddingLeft = computed(() => {
 
 .ftn-cmt {
   font-size: 12px;
-  color: var(--fg-dim);
+  color: var(--warn);
   flex-shrink: 0;
-  background: var(--line);
-  border-radius: 999px;
-  padding: 0 5px;
 }
 </style>

@@ -25,10 +25,10 @@ import {
   ListChecks,
   LoaderCircle,
   RefreshCw,
-  X,
 } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import { useChangedFiles } from '../../composables/useChangedFiles'
+import { G } from '../../glyphs'
 import { t, type MessageKey } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import type { ForgeMr } from '../../types'
@@ -275,31 +275,27 @@ function refreshFiles(): void {
 
     <div class="cp-body">
       <div class="cp-row1">
-        <div class="cp-row1-tabs">
-          <button v-if="mr" type="button" class="cp-tab1 cp-tab1--active">
+        <div class="tabs cp-row1-tabs">
+          <button v-if="mr" type="button" class="tab cp-tab1 cp-tab1--active" aria-selected="true">
             <GitPullRequest class="cp-tab1-icon" aria-hidden="true" />
             {{ t('mrs.number', { n: mr.number }) }}
           </button>
         </div>
         <button
           type="button"
-          class="cp-close"
+          class="btn ghost cp-close"
           :aria-label="t('changes.close')"
           @click="emit('close')"
         >
-          <X aria-hidden="true" />
+          <span aria-hidden="true">{{ G.ko }}</span>
         </button>
       </div>
 
       <template v-if="mr">
         <div class="cp-meta">
-          <span
-            v-if="mrState"
-            class="cp-badge"
-            :class="`cp-badge--${mrState}`"
-            role="img"
-            :aria-label="t(MR_STATE_LABEL_KEYS[mrState])"
-          />
+          <span v-if="mrState" class="badge cp-badge" :class="`cp-badge--${mrState}`">{{
+            t(MR_STATE_LABEL_KEYS[mrState])
+          }}</span>
           <span class="cp-forge">{{ forgeName }}</span>
           <span class="cp-branches">
             <button
@@ -312,7 +308,7 @@ function refreshFiles(): void {
               <Check v-if="copied" class="cp-branch-copy-icon" aria-hidden="true" />
               <Copy v-else class="cp-branch-copy-icon" aria-hidden="true" />
             </button>
-            <span class="cp-branch-arrow" aria-hidden="true">→</span>
+            <span class="cp-branch-arrow" aria-hidden="true">{{ G.arrow }}</span>
             <code class="cp-branch-target" :title="mr.targetBranch">{{ mr.targetBranch }}</code>
           </span>
           <span class="cp-meta-actions">
@@ -348,19 +344,21 @@ function refreshFiles(): void {
           </p>
         </div>
 
-        <div class="cp-row2">
+        <div class="tabs cp-row2">
           <button
             type="button"
-            class="cp-tab2"
+            class="tab cp-tab2"
             :class="{ 'cp-tab2--active': activeSection === 'files' }"
+            :aria-selected="activeSection === 'files'"
             @click="activeSection = 'files'"
           >
             {{ filesTabLabel }}
           </button>
           <button
             type="button"
-            class="cp-tab2"
+            class="tab cp-tab2"
             :class="{ 'cp-tab2--active': activeSection === 'checks' }"
+            :aria-selected="activeSection === 'checks'"
             @click="activeSection = 'checks'"
           >
             <component
@@ -399,10 +397,8 @@ function refreshFiles(): void {
   align-items: stretch;
   height: 100%;
   min-height: 0;
-  /* fiche §2: a card accolée au bord droit, radius on the top-left corner
-     only, no border and no radius on the right, since there is nothing
-     after it. */
-  border-radius: 12px 0 0 0;
+  /* fiche §2: a card docked to the right edge, no border and nothing after
+     it on that side. */
   border: 1px solid var(--line);
   border-right: none;
   background: var(--bg-raised);
@@ -450,68 +446,38 @@ function refreshFiles(): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  padding: 8px;
-  background: var(--bg-hover);
+  gap: 1ch;
+  padding: 2px 1ch;
+  border-bottom: 1px solid var(--line);
 }
 
 .cp-row1-tabs {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  border-bottom: none;
   min-width: 0;
 }
 
 .cp-tab1 {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
+  gap: 1ch;
   border: none;
-  border-radius: 8px;
   background: none;
-  color: var(--fg-dim);
   font: inherit;
-  font-size: 12px;
   cursor: default;
 }
 
 .cp-tab1--active {
-  background: var(--line);
   color: var(--ok);
 }
 
 .cp-tab1-icon {
   flex: none;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .cp-close {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 4px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--fg-dim);
-  cursor: pointer;
-  transition: background 150ms ease;
-}
-
-.cp-close:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-
-.cp-close svg {
-  width: 15px;
-  height: 15px;
 }
 
 /* ── PR header (fiche §4) ──────────────────────────────────────────────── */
@@ -520,8 +486,8 @@ function refreshFiles(): void {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 16px 12px;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 1ch;
   border-bottom: 1px solid var(--line);
   font-size: 12px;
   color: var(--fg-dim);
@@ -529,27 +495,22 @@ function refreshFiles(): void {
 
 .cp-badge {
   flex: none;
-  display: inline-block;
-  width: 6px;
-  height: 2px;
-  border-radius: 4px;
-  background: var(--fg-muted);
 }
 
 .cp-badge--open {
-  background: var(--ok);
+  color: var(--ok);
 }
 
 .cp-badge--draft {
-  background: var(--fg-muted);
+  color: var(--fg-dim);
 }
 
 .cp-badge--merged {
-  background: var(--alt);
+  color: var(--alt);
 }
 
 .cp-badge--closed {
-  background: var(--err);
+  color: var(--err);
 }
 
 .cp-forge {
@@ -559,32 +520,30 @@ function refreshFiles(): void {
 .cp-branches {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
   min-width: 0;
   margin-left: auto;
-  font-family: var(--font);
 }
 
 .cp-branch-copy {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 1ch;
   padding: 0;
   border: none;
   background: none;
   color: inherit;
   font: inherit;
-  font-family: inherit;
   cursor: pointer;
 }
 
 .cp-branch-copy:hover {
-  color: var(--fg-dim);
+  color: var(--fg);
 }
 
 .cp-branch-copy-icon {
-  width: 11px;
-  height: 11px;
+  width: 14px;
+  height: 14px;
 }
 
 .cp-branch-arrow {
@@ -592,7 +551,7 @@ function refreshFiles(): void {
 }
 
 .cp-branch-target {
-  max-width: 120px;
+  max-width: 24ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -602,43 +561,36 @@ function refreshFiles(): void {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1ch;
 }
 
 .cp-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  padding: 0 1ch;
   border: none;
-  border-radius: 6px;
   background: none;
   color: var(--fg-dim);
   text-decoration: none;
   cursor: pointer;
-  transition: background 150ms ease;
 }
 
 .cp-icon-btn:hover {
-  background: var(--bg-hover);
   color: var(--fg);
 }
 
 .cp-icon-btn svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .cp-titleblock {
   flex: none;
-  padding: 12px 12px 10px;
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .cp-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.3;
   color: var(--fg);
 }
 
@@ -648,10 +600,10 @@ function refreshFiles(): void {
 }
 
 .cp-byline {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 2ch;
   font-size: 12px;
   color: var(--fg-dim);
 }
@@ -680,41 +632,27 @@ function refreshFiles(): void {
 
 .cp-row2 {
   flex: none;
-  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px;
-  border-bottom: 1px solid var(--line);
+  gap: 1ch;
+  padding: 0 1ch;
 }
 
 .cp-tab2 {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 8px;
+  gap: 1ch;
+  border-top: none;
+  border-left: none;
+  border-right: none;
   background: none;
-  color: var(--fg-dim);
   font: inherit;
-  font-size: 12px;
   cursor: pointer;
-  transition: background 150ms ease;
-}
-
-.cp-tab2:hover {
-  background: var(--bg-hover);
-}
-
-.cp-tab2--active {
-  background: var(--bg-hover);
-  color: var(--fg);
 }
 
 .cp-tab2-icon {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 /* The checks tab's counter is a fraction, not a bare count: "42/42" and
@@ -723,10 +661,6 @@ function refreshFiles(): void {
 .cp-tab2-counter {
   color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
-}
-
-.cp-tab2--active .cp-tab2-counter {
-  color: var(--fg-dim);
 }
 
 .cp-section {
@@ -742,9 +676,8 @@ function refreshFiles(): void {
   align-items: center;
   justify-content: center;
   margin: 0;
-  padding: 32px 16px;
+  padding: var(--row) 2ch;
   text-align: center;
-  font-size: var(--fs);
   color: var(--fg-dim);
 }
 </style>
