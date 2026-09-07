@@ -1347,15 +1347,15 @@ button.cell[aria-pressed='true'] {
   font-size: 12px;
 }
 
-.stepcard .risk[data-r='high'] {
+.risk[data-r='high'] {
   color: var(--err);
 }
 
-.stepcard .risk[data-r='medium'] {
+.risk[data-r='medium'] {
   color: var(--warn);
 }
 
-.stepcard .risk[data-r='low'] {
+.risk[data-r='low'] {
   color: var(--ok);
 }
 

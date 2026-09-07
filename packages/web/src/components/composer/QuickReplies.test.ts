@@ -52,7 +52,7 @@ describe('QuickReplies: one button per option, plus the "other" escape hatch', (
 
   test('option buttons are type="button" so they never submit a form', async () => {
     const html = await render({ options: ['A', 'B'] })
-    const buttons = [...html.matchAll(/<button[^>]*class="qr-opt"[^>]*>/g)].map((m) => m[0])
+    const buttons = [...html.matchAll(/<button[^>]*class="qr-opt btn"[^>]*>/g)].map((m) => m[0])
     expect(buttons).toHaveLength(2)
     for (const button of buttons) {
       expect(button).toContain('type="button"')
@@ -63,7 +63,7 @@ describe('QuickReplies: one button per option, plus the "other" escape hatch', (
 describe('QuickReplies: disabled state only reaches the option buttons', () => {
   test('disabled marks every option button', async () => {
     const html = await render({ options: ['A', 'B'], disabled: true })
-    const buttons = [...html.matchAll(/<button[^>]*class="qr-opt"[^>]*>/g)].map((m) => m[0])
+    const buttons = [...html.matchAll(/<button[^>]*class="qr-opt btn"[^>]*>/g)].map((m) => m[0])
     expect(buttons).toHaveLength(2)
     for (const button of buttons) {
       expect(button).toContain('disabled')
@@ -79,7 +79,7 @@ describe('QuickReplies: disabled state only reaches the option buttons', () => {
 
   test('undefined disabled leaves the option buttons enabled', async () => {
     const html = await render({ options: ['A'] })
-    const match = html.match(/<button[^>]*class="qr-opt"[^>]*>/)
+    const match = html.match(/<button[^>]*class="qr-opt btn"[^>]*>/)
     expect(match).not.toBeNull()
     expect(match?.[0]).not.toContain('disabled')
   })

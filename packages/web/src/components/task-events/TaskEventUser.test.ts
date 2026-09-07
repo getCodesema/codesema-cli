@@ -97,7 +97,7 @@ describe('TaskEventUser stays safe on adversarial user text', () => {
 // Geometry cannot be read back from server-rendered HTML text (scoped
 // <style> never reaches the SSR string), so the exact measures the brief
 // specifies — fiche 12 section 2 — are checked directly on the component's
-// own source, the same technique style.test.ts uses for style.css.
+// own source, the same technique styles.test.ts uses.
 describe('TaskEventUser geometry follows the kit, not a bubble of its own', () => {
   const source = readFileSync(
     fileURLToPath(new URL('./TaskEventUser.vue', import.meta.url)),

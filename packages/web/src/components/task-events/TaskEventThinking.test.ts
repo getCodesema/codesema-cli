@@ -158,7 +158,7 @@ describe('TaskEventThinking chrome', () => {
 // Geometry cannot be read back from server-rendered HTML text (scoped
 // <style> never reaches the SSR string), so the exact measures the brief
 // specifies — fiche 12 section 3 — are checked directly on the component's
-// own source, the same technique style.test.ts uses for style.css.
+// own source, the same technique styles.test.ts uses.
 describe('TaskEventThinking geometry follows the kit grid', () => {
   const source = readFileSync(
     fileURLToPath(new URL('./TaskEventThinking.vue', import.meta.url)),

@@ -7,6 +7,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **One visual system for the whole web UI, ported from the Codesema UI Kit** (`packages/web/design/ui-kit.html`): 13 colour tokens, a single self-hosted monospace font (Cascadia Mono, 42 KB subset), 14px/1.6 text on a `1ch` × line grid, 1px borders with no radius and no shadow, and shared component classes (`packages/web/src/styles/{tokens,base,kit}.css`).
+- **Nine switchable palettes and an AAA contrast variant** (Tokyo Night by default, plus Nord, Gruvbox Dark, Catppuccin Mocha, Bauhaus, Aamis, Aetheria, Arc Blueberry, Artzen), chosen from the repo settings page and remembered per browser, applied before the first paint.
 - **The pilot grid is now the default workspace shell**, with the previous interface reachable behind a toggle and a mobile layout below 760px.
 - **Decision D17: a turn's visual proof of its own effect is now part of the review.** A `microvm` task can declare and capture a screenshot or a Playwright journey each turn (`proof` in `.codesema/config.json`, a `PROOF: <none|screenshot|journey>` line in the agent's reply); the reviewer checks the declaration against the diff and raises a finding only on an unproven visible change or an unexplained failed proof.
 - **`codesema runbook validate`** validates a hand-edited `.codesema/runbook.json` as-is, without asking an agent for a new proposal.
@@ -16,6 +18,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **The standalone review mode now shares the dark workspace theme**: the light "Semaphore" palette, the `--codesema-*`/`--cs-*` token families, Instrument Sans and JetBrains Mono are gone, along with the Tailwind token bridge.
+- **Task, event and finding states are rendered through semantic tones** (`data-tone`, `data-s`, `data-v`, `data-r`) read by CSS, instead of colour tables in TypeScript.
+- **`TaskConversation.vue` and `DiffView.vue` are split** into `task-conversation/*` and `diff/*` components with a thin orchestrator each.
+- **Emojis and glyphs missing from the shipped font are replaced** by the `G` glyph set (`packages/web/src/glyphs.ts`), so no line ever falls back to a second font.
 - **A task card stacks its four blocks in one column** (evidence, recap, checks, criteria) instead of a two-by-two grid.
 - **Every font size in the web UI is now one of seven `--fs-*` tokens declared once in `style.css`**, in rem, replacing 500 hard-coded px values; the dense sizes moved up (nothing below 11px, read text at 14px), and the tests refuse any new px font size in a component.
 - **Every screenshot and video in the evidence block opens a full-screen viewer** with wheel, button and keyboard zoom, click-to-zoom and drag-to-pan, closed by Escape.

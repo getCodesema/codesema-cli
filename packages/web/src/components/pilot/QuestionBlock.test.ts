@@ -53,7 +53,7 @@ describe('QuestionBlock: a pending question shows the amber banner, the question
 
   test('disabled reaches the nested QuickReplies option buttons', async () => {
     const html = await render({ question: 'Pick one', options: ['A'], disabled: true })
-    const match = html.match(/<button[^>]*class="qr-opt"[^>]*>/)
+    const match = html.match(/<button[^>]*class="qr-opt btn"[^>]*>/)
     expect(match).not.toBeNull()
     expect(match?.[0]).toContain('disabled')
   })

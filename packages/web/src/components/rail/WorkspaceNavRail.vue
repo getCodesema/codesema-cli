@@ -6,7 +6,7 @@
 // Rows are kit `.proj` rows: the current one is named by `aria-current` and
 // reads as a filled row, never as a border. `border: none` stays explicit on
 // every native <button>, since this project imports no Tailwind preflight to
-// reset the browser's own default (see style.css).
+// reset the browser's own default (see styles/base.css).
 import {
   FolderGit2,
   MessageSquare,

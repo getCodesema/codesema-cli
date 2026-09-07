@@ -79,7 +79,6 @@ kbd {
   font-family: inherit;
   background: var(--bg-raised);
   padding: 0 0.5ch;
-  border-radius: 2px;
 }
 
 kbd {

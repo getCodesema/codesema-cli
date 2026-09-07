@@ -780,7 +780,7 @@ const en = {
   'changes.fileList.diffLoadError': 'Could not load the diff',
 
   // --- Chat composer (autonomous input box: components/composer/ChatComposer.vue) ---
-  'composer.hintShortcuts': '(Ctrl/⌘+Enter to send · Enter for a new line)',
+  'composer.hintShortcuts': '(Ctrl/Cmd+Enter to send · Enter for a new line)',
   'composer.hintOffline': 'Offline, your message will send once reconnected',
   'composer.hintStopping': 'Stopping…',
   'composer.hintDictating': 'Listening…',
@@ -1708,7 +1708,7 @@ const fr: Record<MessageKey, string> = {
   'changes.fileList.diffLoadError': 'Impossible de charger le différentiel',
 
   // --- Zone de saisie (boîte autonome : components/composer/ChatComposer.vue) ---
-  'composer.hintShortcuts': '(Ctrl/⌘+Entrée pour envoyer · Entrée pour une nouvelle ligne)',
+  'composer.hintShortcuts': '(Ctrl/Cmd+Entrée pour envoyer · Entrée pour une nouvelle ligne)',
   'composer.hintOffline': 'Hors ligne, ton message partira à la reconnexion',
   'composer.hintStopping': 'Arrêt en cours…',
   'composer.hintDictating': 'Dictée en cours…',

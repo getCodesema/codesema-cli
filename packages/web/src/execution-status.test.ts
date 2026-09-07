@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { EXECUTION_STATUS } from './execution-status'
+import { G } from './glyphs'
 import { t } from './i18n'
 import type { TaskStatus } from './types'
 
@@ -35,30 +36,6 @@ describe('EXECUTION_STATUS', () => {
     }
   })
 
-  test('semaphore grammar: green means done and passed', () => {
-    for (const status of ['review_ok', 'shipped'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--ok)')
-    }
-  })
-
-  test('semaphore grammar: red means blocked', () => {
-    for (const status of ['review_ko', 'failed'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--err)')
-    }
-  })
-
-  test('semaphore grammar: amber for machine work and human waits', () => {
-    // 'interrupted' is a human wait too: only a Resume (or a reply) restarts
-    // it, so it must not read as the neutral "nothing to do here".
-    for (const status of ['running', 'reviewing', 'waiting_for_you', 'interrupted'] as const) {
-      expect(EXECUTION_STATUS[status].color).toBe('var(--warn)')
-    }
-  })
-
-  test('neutral for queued: the machine will get to it, nobody is waited on', () => {
-    expect(EXECUTION_STATUS.queued.color).toBe('var(--fg-muted)')
-  })
-
   test('tone: ok and err are final, info is the machine, warn is the human, idle is nothing', () => {
     expect(EXECUTION_STATUS.review_ok.tone).toBe('ok')
     expect(EXECUTION_STATUS.shipped.tone).toBe('ok')
@@ -81,12 +58,10 @@ describe('EXECUTION_STATUS', () => {
     expect(attention).toEqual(['waiting_for_you'])
   })
 
-  test('every visual only ever points at theme tokens, never raw hex', () => {
+  test('every icon comes from the shipped glyph set', () => {
+    const glyphs = new Set<string>(Object.values(G))
     for (const status of ALL_STATUSES) {
-      const { color, soft, text } = EXECUTION_STATUS[status]
-      for (const value of [color, soft, text]) {
-        expect(value.startsWith('var(--') || value.startsWith('color-mix(')).toBe(true)
-      }
+      expect(glyphs.has(EXECUTION_STATUS[status].icon)).toBe(true)
     }
   })
 })

@@ -15,7 +15,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
     <button
       v-for="option in options"
       :key="option"
-      class="qr-opt"
+      class="qr-opt btn"
       type="button"
       :disabled="disabled"
       @click="emit('pick', option)"

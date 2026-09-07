@@ -346,18 +346,6 @@ function scrollToFile(filePath: string) {
   color: var(--fg-dim);
 }
 
-.steprev-risk-badge[data-r='high'] {
-  color: var(--err);
-}
-
-.steprev-risk-badge[data-r='medium'] {
-  color: var(--warn);
-}
-
-.steprev-risk-badge[data-r='low'] {
-  color: var(--ok);
-}
-
 .steprev-delta {
   display: inline-flex;
   align-items: baseline;

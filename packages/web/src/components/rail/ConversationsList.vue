@@ -349,7 +349,7 @@ function isSelected(state: TaskState): boolean {
 /* The 1fr/0fr grid track: animates toward an unmeasured height, never a
    guessed pixel value. `inert` (bound in the template) drops the closed
    body from keyboard navigation for real. NEVER animation-fill-mode here
-   (package-wide guard, style.test.ts). */
+   (package-wide guard, styles.test.ts). */
 .cvl-group-body {
   display: grid;
   grid-template-rows: 1fr;
