@@ -2,6 +2,7 @@
 // review_first comes from the parent (narrative); all fields optional, never throws on missing data.
 
 import { computed } from 'vue'
+import { G } from '../glyphs'
 
 type KeyChange = { title: string; detail: string }
 type ReviewFirstItem = {
@@ -27,17 +28,6 @@ const props = defineProps<{
   confidence?: string | null | undefined
   summary?: string | null
 }>()
-
-const RISK_DOT_DEFAULT = 'var(--warn)'
-const RISK_DOT: Record<string, string> = {
-  high: 'var(--err)',
-  medium: RISK_DOT_DEFAULT,
-  low: 'var(--ok)',
-}
-
-function riskDotColor(risk: string): string {
-  return RISK_DOT[risk] ?? RISK_DOT_DEFAULT
-}
 
 const hasPrologue = computed(
   () => !!(props.prologue?.why || props.prologue?.what || props.prologue?.key_changes?.length),
@@ -87,7 +77,9 @@ function renderInline(text: string): string {
         <div class="prologue-block-tag">{{ $t('reviews.prologue.reviewFirst') }}</div>
         <div class="prologue-focus">
           <div v-for="(item, i) in reviewFirst" :key="i" class="prologue-focus-row">
-            <span class="prologue-focus-dot" :style="{ background: riskDotColor(item.risk) }" />
+            <span class="prologue-focus-dot" :data-r="item.risk" aria-hidden="true">{{
+              G.dot
+            }}</span>
             <div class="prologue-focus-content">
               <!-- eslint-disable-next-line vue/no-v-html -->
               <span class="prologue-focus-title" v-html="renderInline(item.point)" />
@@ -126,7 +118,7 @@ function renderInline(text: string): string {
         <p class="prologue-block-body prologue-block-body--preformatted">{{ summary }}</p>
       </section>
 
-      <p v-if="!intent && !summary" class="prologue-empty codesema-muted">
+      <p v-if="!intent && !summary" class="prologue-empty empty">
         {{ $t('reviews.prologue.empty') }}
       </p>
     </template>
@@ -137,14 +129,14 @@ function renderInline(text: string): string {
 .prologue-root {
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  padding: 24px 26px;
+  gap: var(--row);
+  padding: var(--row) 2ch;
 }
 
 .prologue-block {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 2px;
 }
 
 .prologue-block-tag {
@@ -153,15 +145,10 @@ function renderInline(text: string): string {
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--accent);
-  margin-bottom: 0;
 }
 
 .prologue-block-body {
   font-size: 18px;
-  line-height: 1.62;
-  color: var(--fg);
-  margin: 0;
-  text-wrap: pretty;
 }
 
 .prologue-block-body--preformatted {
@@ -170,10 +157,8 @@ function renderInline(text: string): string {
 
 :deep(.prologue-inline-code) {
   font-family: var(--font);
-  font-size: 0.85em;
-  background: var(--line);
-  padding: 1px 5px;
-  border-radius: 4px;
+  background: var(--bg-raised);
+  padding: 0 0.5ch;
   color: var(--accent);
 }
 
@@ -183,63 +168,55 @@ function renderInline(text: string): string {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 13px;
+  gap: calc(var(--row) / 2);
 }
 
 .prologue-key-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-left: 16px;
+  padding-left: 2ch;
   position: relative;
 }
 
 .prologue-key-item::before {
-  content: '';
+  content: '▪';
   position: absolute;
   left: 0;
-  top: 7px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
+  color: var(--accent);
 }
 
 .prologue-key-title {
   display: block;
-  font-size: var(--fs);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--fg);
-  line-height: 1.4;
+  font-weight: 700;
 }
 
 .prologue-key-detail {
   display: block;
-  font-size: var(--fs);
   color: var(--fg-dim);
-  line-height: 1.5;
-  margin-top: 2px;
 }
 
 .prologue-focus {
   display: flex;
   flex-direction: column;
-  gap: 11px;
 }
 
 .prologue-focus-row {
   display: flex;
-  align-items: flex-start;
-  gap: 11px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .prologue-focus-dot {
-  flex: 0 0 8px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-top: 5px;
+  flex-shrink: 0;
+  color: var(--warn);
+}
+
+.prologue-focus-dot[data-r='high'] {
+  color: var(--err);
+}
+
+.prologue-focus-dot[data-r='low'] {
+  color: var(--ok);
 }
 
 .prologue-focus-content {
@@ -249,15 +226,11 @@ function renderInline(text: string): string {
 
 .prologue-focus-title {
   display: block;
-  font-size: var(--fs);
-  font-weight: 600;
-  color: var(--fg);
-  line-height: 1.5;
+  font-weight: 700;
 }
 
 .prologue-confidence {
   font-size: 12px;
-  margin: 0;
 }
 
 .prologue-confidence--high {
@@ -273,8 +246,6 @@ function renderInline(text: string): string {
 }
 
 .prologue-empty {
-  font-size: var(--fs);
-  padding: 16px 0;
-  text-align: center;
+  margin-top: var(--row);
 }
 </style>
