@@ -94,6 +94,16 @@ const CHECK_LABEL_KEYS: Record<CheckBucket, MessageKey> = {
   skipped: 'mrs.checks.skipped',
 }
 
+/** The kit's own status vocabulary, so the aggregate dot is the same dot every
+ * other running/done/failed signal uses. */
+const CHECK_DOT_STATE: Record<CheckAggregateStatus, string> = {
+  passed: 'done',
+  failed: 'error',
+  pending: 'running',
+  skipped: 'idle',
+  unknown: 'idle',
+}
+
 const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   passed: 'mrs.checks.aggregatePassed',
   failed: 'mrs.checks.aggregateFailed',
@@ -150,8 +160,9 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
       <span v-if="checksDisplay" class="mrc-checks">
         <template v-if="checksDisplay.kind === 'aggregate'">
           <span
-            class="mrc-checks-dot"
+            class="mrc-checks-dot status"
             :class="`mrc-checks-dot--${checksDisplay.status}`"
+            :data-s="CHECK_DOT_STATE[checksDisplay.status]"
             aria-hidden="true"
           />
           <span
@@ -198,16 +209,15 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrc-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
+  gap: 1ch;
   font-size: 12px;
   color: var(--fg-muted);
 }
 
 .mrc-state {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   display: inline-flex;
 }
 
@@ -247,7 +257,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrc-author::before {
   content: '·';
-  margin-right: 6px;
+  margin-right: 1ch;
 }
 
 .mrc-age {
@@ -257,9 +267,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrc-title {
   margin: 0;
-  font-size: var(--fs);
-  font-weight: 600;
-  line-height: 1.25;
+  font-weight: 700;
   color: var(--fg);
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -272,24 +280,22 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 2ch;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  font-family: var(--font);
   color: var(--fg-muted);
 }
 
 .mrc-files {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 1ch;
 }
 
 .mrc-file-icon {
   flex: none;
-  width: 11px;
-  height: 11px;
+  width: 14px;
+  height: 14px;
 }
 
 .mrc-diffbar {
@@ -298,9 +304,8 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrc-diffblock {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
+  width: 4px;
+  height: 4px;
 }
 
 .mrc-diffblock--add {
@@ -314,7 +319,7 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrc-diffcounts {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .mrc-add {
@@ -328,19 +333,19 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrc-checks {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 2ch;
 }
 
 .mrc-check-entry {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 1ch;
 }
 
 .mrc-check-icon {
   flex: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .mrc-check-entry--passed {
@@ -357,29 +362,5 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrc-check-entry--skipped {
   color: var(--fg-muted);
-}
-
-.mrc-checks-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.mrc-checks-dot--passed {
-  background: var(--ok);
-}
-
-.mrc-checks-dot--failed {
-  background: var(--err);
-}
-
-.mrc-checks-dot--pending {
-  background: var(--warn);
-}
-
-.mrc-checks-dot--skipped,
-.mrc-checks-dot--unknown {
-  background: var(--fg-muted);
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronDown } from '@lucide/vue'
+import { G } from '../../glyphs'
 
 // Shared accordion chrome for one forge board list (issues or pull requests):
 // a foldable header with its count and, when the forge capped the list, an
@@ -28,7 +28,9 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 <template>
   <section class="fa-root">
     <button class="fa-head" :aria-expanded="open" @click="emit('update:open', !open)">
-      <ChevronDown class="fa-chevron" :class="{ 'fa-chevron--closed': !open }" aria-hidden="true" />
+      <span class="fa-chevron" :class="{ 'fa-chevron--closed': !open }" aria-hidden="true">{{
+        open ? G.expand : G.collapse
+      }}</span>
       <span class="fa-label">{{ label }}</span>
       <span v-if="count !== null" class="fa-count">{{ count }}</span>
     </button>
@@ -53,19 +55,19 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 .fa-root {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: calc(var(--row) / 2);
 }
 
 .fa-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 1ch;
   text-align: left;
-  font-family: inherit;
-  padding: 4px;
-  margin: -4px;
+  font: inherit;
+  color: var(--fg);
+  padding: 0 1ch;
+  margin: 0 -1ch;
   border: none;
-  border-radius: 6px;
   background: transparent;
   cursor: pointer;
 }
@@ -76,53 +78,43 @@ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 
 .fa-chevron {
   flex: none;
-  width: 14px;
-  height: 14px;
   color: var(--fg-muted);
-  transition: transform 150ms ease;
-}
-
-.fa-chevron--closed {
-  transform: rotate(-90deg);
 }
 
 .fa-label {
-  font-size: var(--fs);
   font-weight: 700;
   color: var(--fg);
 }
 
 .fa-count {
-  font-family: var(--font);
   font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-muted);
+  color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
 }
 
 .fa-truncated {
-  margin: -4px 0 0;
-  padding-left: 18px;
+  margin: 0;
+  padding-left: 2ch;
   font-size: 12px;
-  color: var(--fg-muted);
+  color: var(--fg-dim);
 }
 
 .fa-controls {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(var(--row) / 2);
 }
 
 .fa-controls-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 1ch;
 }
 
 .fa-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(var(--row) / 2);
 }
 </style>

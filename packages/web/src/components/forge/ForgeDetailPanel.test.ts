@@ -191,11 +191,11 @@ describe('the header', () => {
 // from source the same way the pre-existing "layout geometry" describe
 // blocks below already do.
 describe('the head: three bands', () => {
-  test('band 1 (nav) is sticky, pinned to the very top of the scroll container, 44px minimum height', () => {
+  test('band 1 (nav) is sticky, pinned to the very top of the scroll container, one row tall', () => {
     expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*position: sticky;/)
     expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*top: 0;/)
     expect(SOURCE).toMatch(/\.fdp-nav\s*\{[^}]*min-height: var\(--fdp-nav-h\);/)
-    expect(SOURCE).toContain('--fdp-nav-h: 44px;')
+    expect(SOURCE).toContain('--fdp-nav-h: calc(var(--row) + 8px);')
   })
 
   test('band 1 renders the back control and a title echo, both always in the markup', async () => {
@@ -226,9 +226,9 @@ describe('the head: three bands', () => {
     expect(SOURCE).not.toContain('line-clamp')
   })
 
-  test('band 2 padding: 16px top / 12px bottom by default, 20px top / 0 bottom past 640px', () => {
-    expect(SOURCE).toContain('padding: 16px 0 12px;')
-    expect(SOURCE).toContain('padding: 20px 0 0;')
+  test('band 2 padding: one row top / half a row bottom by default, no bottom padding past 640px', () => {
+    expect(SOURCE).toContain('padding: var(--row) 0 calc(var(--row) / 2);')
+    expect(SOURCE).toContain('padding: var(--row) 0 0;')
   })
 
   test('band 3 (toolbar) is sticky right under band 1 on narrow widths, static past 640px', () => {
@@ -239,9 +239,9 @@ describe('the head: three bands', () => {
     )
   })
 
-  test('band 3 padding: 8px vertical by default, 16px vertical past 640px', () => {
-    expect(SOURCE).toContain('padding: 8px 0;')
-    expect(SOURCE).toContain('padding: 16px 0;')
+  test('band 3 padding: half a row vertical by default, a full row past 640px', () => {
+    expect(SOURCE).toContain('padding: calc(var(--row) / 2) 0;')
+    expect(SOURCE).toContain('padding: var(--row) 0;')
   })
 
   test('band 3 renders the state badge, number and open action', async () => {
@@ -249,7 +249,7 @@ describe('the head: three bands', () => {
     expect(html).toContain('class="fdp-toolbar"')
     expect(html).toContain('fdp-state--open')
     expect(html).toContain('class="fdp-number"')
-    expect(html).toContain('class="fdp-open"')
+    expect(html).toContain('fdp-open')
   })
 
   test('the stacking breakpoint (max-width: 640px) is still the only max-width query: the band overrides use min-width instead', () => {
@@ -478,18 +478,18 @@ describe('the metadata rail', () => {
 })
 
 describe('layout geometry (read from source: scoped CSS never reaches SSR output)', () => {
-  test('the rail is fixed at 236px and never shrinks', () => {
-    expect(SOURCE).toContain('flex: 0 0 236px;')
-    expect(SOURCE).toContain('width: 236px;')
+  test('the rail is fixed at 30 characters and never shrinks', () => {
+    expect(SOURCE).toContain('flex: 0 0 30ch;')
+    expect(SOURCE).toContain('width: 30ch;')
   })
 
-  test('a 24px gap separates the two columns', () => {
-    expect(SOURCE).toContain('gap: 24px;')
+  test('a two-character gap separates the two columns', () => {
+    expect(SOURCE).toContain('gap: 2ch;')
   })
 
-  test('16px side padding, 20px vertical, on both columns', () => {
+  test('two characters of side padding, one row vertical, on both columns', () => {
     expect(SOURCE).toMatch(/\.fdp-main,\s*\n\s*\.fdp-rail\s*\{/)
-    expect(SOURCE).toContain('padding: 20px 16px;')
+    expect(SOURCE).toContain('padding: var(--row) 2ch;')
   })
 
   test('the stacking breakpoint reuses fb-shell, the same one the three panels already stack at', () => {

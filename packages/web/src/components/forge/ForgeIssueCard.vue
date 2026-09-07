@@ -42,7 +42,7 @@ const stateLabelKey = computed<MessageKey>(() =>
       <span
         v-for="label in labels"
         :key="label.name"
-        class="fic-label"
+        class="fic-label badge"
         :style="labelPillStyle(label.color)"
         >{{ label.name }}</span
       >
@@ -60,16 +60,15 @@ const stateLabelKey = computed<MessageKey>(() =>
 .fic-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
+  gap: 1ch;
   font-size: 12px;
   color: var(--fg-muted);
 }
 
 .fic-state {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   display: inline-flex;
 }
 
@@ -101,7 +100,7 @@ const stateLabelKey = computed<MessageKey>(() =>
 
 .fic-author::before {
   content: '·';
-  margin-right: 6px;
+  margin-right: 1ch;
 }
 
 .fic-age {
@@ -111,9 +110,7 @@ const stateLabelKey = computed<MessageKey>(() =>
 
 .fic-title {
   margin: 0;
-  font-size: var(--fs);
-  font-weight: 600;
-  line-height: 1.25;
+  font-weight: 700;
   color: var(--fg);
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -125,8 +122,7 @@ const stateLabelKey = computed<MessageKey>(() =>
 .fic-labels {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
+  gap: 1ch;
 }
 
 /* Non-interactive compact pill: same fill family as LabelChips' rest state
@@ -135,12 +131,7 @@ const stateLabelKey = computed<MessageKey>(() =>
 .fic-label {
   --lp-rest-bg: var(--line);
 
-  display: inline-flex;
   font-size: 12px;
-  font-weight: 500;
-  color: var(--fg-dim);
-  padding: 2px 8px;
-  border-radius: 999px;
   background: var(--lp-rest-bg);
 }
 </style>

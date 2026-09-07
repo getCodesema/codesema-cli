@@ -95,7 +95,7 @@ function onKeydown(event: KeyboardEvent): void {
  * color, since a divider carries no state of its own. */
 .fs-handle {
   flex: none;
-  width: 5px;
+  width: 1ch;
   cursor: col-resize;
   background: transparent;
   border-left: 1px solid var(--line);
@@ -104,7 +104,7 @@ function onKeydown(event: KeyboardEvent): void {
 
 .fs-handle:hover,
 .fs-handle--active {
-  border-left-color: var(--line);
+  border-left-color: var(--accent);
   background: var(--bg-hover);
 }
 </style>

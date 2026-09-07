@@ -41,7 +41,7 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
 .lc-root {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 1ch;
 }
 
 /* Neutral tokens by default; a colored --lp-* triple is injected inline per
@@ -54,14 +54,11 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
 
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-family: inherit;
-  font-size: var(--fs);
-  font-weight: 500;
+  gap: 1ch;
+  font: inherit;
   color: var(--fg-dim);
-  padding: 4px 12px;
-  border: none;
-  border-radius: 999px;
+  padding: 0 1ch;
+  border: 1px solid var(--line);
   background: var(--lp-rest-bg);
   cursor: pointer;
 }
@@ -69,18 +66,18 @@ const isSelected = (label: string): boolean => props.selected.includes(label)
 /* Selected is the state: full-strength fill, contrast-computed text. */
 .lc-chip--on {
   background: var(--lp-selected-bg);
+  border-color: var(--lp-selected-bg);
   color: var(--lp-selected-text);
   font-weight: 700;
 }
 
 .lc-count {
-  font-family: var(--font);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  opacity: 0.6;
+  color: var(--fg-muted);
 }
 
 .lc-chip--on .lc-count {
-  opacity: 0.9;
+  color: inherit;
 }
 </style>
