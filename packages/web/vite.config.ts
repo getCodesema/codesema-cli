@@ -1,12 +1,11 @@
 import { fileURLToPath } from 'node:url'
-import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
 const DEV_PORT = 5173
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue()],
   // Dev only, Vite's backend integration mode: the CLI serves the page and
   // points it at this origin (CODESEMA_DEV_VITE), Vite serves the modules.
   // `origin` makes asset URLs absolute so they resolve from the CLI's port, and

@@ -134,7 +134,7 @@ const detailItem = computed(() =>
 .fb-panel--detail {
   flex: 1 1 auto;
   min-width: 0;
-  border-left: 1px solid var(--cs-line-2);
+  border-left: 1px solid var(--line);
 }
 
 /* Below 640px of the shell's OWN width: stack the panels and let the whole
@@ -153,7 +153,7 @@ const detailItem = computed(() =>
 
   .fb-panel--detail {
     border-left: none;
-    border-top: 1px solid var(--cs-line-2);
+    border-top: 1px solid var(--line);
   }
 
   /* Dragging a divider between stacked, full-width panels makes no sense:

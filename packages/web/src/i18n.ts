@@ -138,6 +138,12 @@ const en = {
   'nav.backToReview': '← Back to review',
 
   'settings.title': 'Repo settings',
+  'settings.themeTitle': 'Theme',
+  'settings.themeHint': 'Stored in this browser only: it never touches the repo config.',
+  'settings.paletteLabel': 'Palette',
+  'settings.contrastLabel': 'Contrast',
+  'settings.contrastAa': 'AA',
+  'settings.contrastAaa': 'AAA',
   'settings.loading': 'Loading repo settings…',
   'settings.loadError': 'Could not load the repo settings.',
   'settings.rulesTitle': 'Review rules',
@@ -285,6 +291,8 @@ const en = {
     'Stopped after the agent had answered: nothing to restart. Send a message to continue.',
   'workspace.ship': 'Confirm and ship',
   'workspace.shipSoon': 'Shipping lands in an upcoming version: the review verdict is saved.',
+  'workspace.showPrompt': 'What was asked',
+  'workspace.hidePrompt': 'Hide what was asked',
   'workspace.replyPlaceholder': 'Answer the agent…',
   'workspace.replyQueuePlaceholder': 'Prepare your next instruction…',
   'workspace.replySend': 'Send',
@@ -468,7 +476,7 @@ const en = {
   /** The composer's target select, for the scratch project: never its raw
    * name ('scratch'), so it reads as a real choice, not a stray repo. */
   'workspace.noRepoOption': 'No repository',
-  'workspace.focusEmpty': 'Open a conversation from the work queue.',
+  'workspace.focusEmpty': 'Pick a conversation in the list on the left.',
 
   // --- F2 focus zone (tabs / status phrases / quick replies / pin) ---
   'workspace.tabConversation': 'Conversation',
@@ -490,7 +498,6 @@ const en = {
   'workspace.agentLabel': 'Agent',
   'workspace.agentBuildHint':
     'The first task with this agent builds a container image (~1.4 GB); later tasks reuse it.',
-  'workspace.agoTime': '{t} ago',
   'workspace.quickReplyOther': 'Something else…',
   'workspace.phaseQueued': 'queued · waiting for a slot',
   'workspace.phaseQueuedMachine': 'queued · waiting for a machine-wide slot',
@@ -668,14 +675,13 @@ const en = {
   'workspace.forgeUnavailableHint':
     'Conversations still run: a task can be created from a title and a prompt, and a task already bound to a ticket carries on with the copy it froze. What is off: binding a new issue, posting a recap on a merge request, and merging.',
 
-  // --- Relative time (forge list cards) ---
+  // --- Relative time (forge list cards, conversation stamps) ---
+  // BCP 47 tag of this catalog: the date formats below a day old are built by
+  // Intl, not by a template string.
+  'time.locale': 'en',
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
   'time.hoursAgo': '{n}h ago',
-  'time.daysAgo': '{n}d ago',
-  'time.weeksAgo': '{n}w ago',
-  'time.monthsAgo': '{n}mo ago',
-  'time.yearsAgo': '{n}y ago',
 
   // --- Forge board (C3): two accordions, issues and pull requests ---
   'forge.issuesTitle': 'Issues',
@@ -774,7 +780,7 @@ const en = {
   'changes.fileList.diffLoadError': 'Could not load the diff',
 
   // --- Chat composer (autonomous input box: components/composer/ChatComposer.vue) ---
-  'composer.hintShortcuts': '(Ctrl/⌘+Enter to send · Enter for a new line)',
+  'composer.hintSend': 'Ctrl+Enter to send',
   'composer.hintOffline': 'Offline, your message will send once reconnected',
   'composer.hintStopping': 'Stopping…',
   'composer.hintDictating': 'Listening…',
@@ -785,6 +791,13 @@ const en = {
   'composer.improveAria': 'Improve text (coming soon)',
   'composer.sendAria': 'Send',
 
+  // --- Open conversation: thread stamps, folded setup, danger zone ---
+  'conversation.you': 'you',
+  'conversation.setupSummary':
+    'preparation · {n} step · {duration} | preparation · {n} steps · {duration}',
+  'conversation.checksLine': '{text} · turn {n}',
+  'conversation.dangerZone': 'Danger zone',
+
   // --- Conversations column: header, search, activity line, reference pills ---
   'conversations.title': 'Conversations',
   'conversations.newAction': 'New conversation',
@@ -792,13 +805,6 @@ const en = {
   'conversations.searchClear': 'Clear the search',
   'conversations.empty': 'No conversation yet.',
   'conversations.searchEmpty': 'No conversation matches this search.',
-  'conversations.groupToggleAria': 'Show or hide the {project} group',
-  'conversations.ticketRefAria': 'Linked ticket #{n}',
-  'conversations.questionExcerpt': '“{q}”',
-  'conversations.checksPassed': 'Checks passed',
-  'conversations.checksFailed': 'Checks failed',
-  'conversations.checksRunning': 'Checks running',
-  'conversations.checksConflict': 'Merge conflict',
 
   // --- Navigation rail: two categories, a list column, a pinned footer ---
   'rail.conversations': 'Conversation',
@@ -872,87 +878,12 @@ const en = {
     'A branch with no merge request is reviewed against its detected target.',
 
   // --- Relative timestamp, five regimes (conversations column §9) ---
-  'time.yesterdayAt': 'yesterday {t}',
-  'time.weekdayAt': '{day} {t}',
-  'time.monthDay': '{month} {day}',
-  'time.monthDayYear': '{month} {day}, {year}',
-  'time.weekdaySun': 'Sun',
-  'time.weekdayMon': 'Mon',
-  'time.weekdayTue': 'Tue',
-  'time.weekdayWed': 'Wed',
-  'time.weekdayThu': 'Thu',
-  'time.weekdayFri': 'Fri',
-  'time.weekdaySat': 'Sat',
-  'time.monthJan': 'Jan',
-  'time.monthFeb': 'Feb',
-  'time.monthMar': 'Mar',
-  'time.monthApr': 'Apr',
-  'time.monthMay': 'May',
-  'time.monthJun': 'Jun',
-  'time.monthJul': 'Jul',
-  'time.monthAug': 'Aug',
-  'time.monthSep': 'Sep',
-  'time.monthOct': 'Oct',
-  'time.monthNov': 'Nov',
-  'time.monthDec': 'Dec',
 
-  'pilot.header.conversations': '{n} conversation | {n} conversations',
-  'pilot.header.working': '{n} agent working | {n} agents working',
-  'pilot.toggle.classic': 'Switch to classic view',
-  'pilot.toggle.grid': 'Switch to grid view',
-  'pilot.cols.aria': 'Choose the number of columns',
-  'pilot.lens.close': 'Close',
-  'pilot.lens.aria': 'Conversation lens',
-  'pilot.evidence.title': 'Evidence',
-  'pilot.evidence.none': 'No evidence yet.',
-  'pilot.evidence.screenshotAlt': 'Screenshot of the run',
-  'pilot.evidence.videoLabel': 'Video',
-  'pilot.evidence.failed': 'The run failed. The reason is shown next to it.',
-  'pilot.evidence.turn': 'turn {n}',
-  'pilot.proof.declared': 'Declared by the agent:',
-  'pilot.proof.kind.none': 'no visual proof',
-  'pilot.proof.kind.screenshot': 'page captures',
-  'pilot.proof.kind.journey': 'recorded journey',
-  'pilot.proof.pages': 'Pages: {list}',
-  'pilot.proof.coherent': 'The reviewer confirms: evidence matches the change',
-  'pilot.proof.incoherent': 'The reviewer disputes it: {reason}',
-  'pilot.proof.noTarget': 'This project has no app to capture.',
-  'pilot.recap.title': 'Recap',
-  'pilot.recap.pending': 'The recap arrives once this ships.',
-  'pilot.recap.changes': 'Changes',
-  'pilot.recap.decisions': 'Decisions',
-  'pilot.recap.files': 'Files',
-  'pilot.recap.tests': 'Tests',
-  'pilot.checks.title': 'Checks',
-  'pilot.verification.title': 'Verification in a fresh environment',
-  'pilot.verification.passed': 'Passed',
-  'pilot.verification.failed': 'Failed',
-  'pilot.verification.refused': 'Refused: files changed since the validated runbook',
-  'pilot.verification.error': 'Could not run',
-  'pilot.criteria.title': 'Criteria',
-  'pilot.criteria.none': 'No acceptance criteria yet.',
-  'pilot.criteria.evidence': 'Evidence',
-  'pilot.question.waiting': 'Waiting for your answer',
   'pilot.activity.checks': 'Checks running',
   'pilot.activity.verification': 'Verifying in a fresh environment',
   'pilot.activity.proof': 'Replaying the run and capturing proof',
   'pilot.activity.review': 'Reviewing',
   'pilot.activity.recap': 'Writing the recap',
-  'pilot.mobile.needsYou': 'Needs you',
-  'pilot.mobile.back': '← Back',
-  'pilot.mobile.title': 'Pilot',
-  'pilot.grid.empty': 'No conversation here yet. Launch one to see it take shape in the grid.',
-  'pilot.lane.expand': 'Expand',
-  'pilot.lane.collapse': 'Collapse',
-  'pilot.lane.close': 'Hide this conversation',
-  'pilot.lane.hidden': '{n} conversation hidden | {n} conversations hidden',
-  'pilot.lane.reopen': 'Show again',
-  'pilot.media.open': 'View larger',
-  'pilot.media.close': 'Close',
-  'pilot.media.aria': 'Evidence viewer',
-  'pilot.media.zoomIn': 'Zoom in',
-  'pilot.media.zoomOut': 'Zoom out',
-  'pilot.media.reset': 'Fit',
 }
 
 export type MessageKey = keyof typeof en
@@ -1093,6 +1024,13 @@ const fr: Record<MessageKey, string> = {
   'nav.backToReview': '← Retour à la revue',
 
   'settings.title': 'Paramètres du dépôt',
+  'settings.themeTitle': 'Thème',
+  'settings.themeHint':
+    'Mémorisé dans ce navigateur seulement : ne touche jamais la config du dépôt.',
+  'settings.paletteLabel': 'Palette',
+  'settings.contrastLabel': 'Contraste',
+  'settings.contrastAa': 'AA',
+  'settings.contrastAaa': 'AAA',
   'settings.loading': 'Chargement des paramètres…',
   'settings.loadError': 'Impossible de charger les paramètres du dépôt.',
   'settings.rulesTitle': 'Règles de revue',
@@ -1236,6 +1174,8 @@ const fr: Record<MessageKey, string> = {
   'workspace.ship': 'Confirmer et publier',
   'workspace.shipSoon':
     'La publication arrive dans une prochaine version : le verdict de review est enregistré.',
+  'workspace.showPrompt': 'Ce qui a été demandé',
+  'workspace.hidePrompt': 'Masquer ce qui a été demandé',
   'workspace.replyPlaceholder': "Réponds à l'agent…",
   'workspace.replyQueuePlaceholder': 'Prépare ta prochaine consigne…',
   'workspace.replySend': 'Envoyer',
@@ -1404,7 +1344,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.diffAction': 'Diff',
   'workspace.projectTarget': 'Projet cible',
   'workspace.noRepoOption': 'Sans dépôt',
-  'workspace.focusEmpty': 'Ouvre une conversation depuis la file de travail.',
+  'workspace.focusEmpty': 'Choisis une conversation dans la liste à gauche.',
 
   // --- F2 focus zone (tabs / status phrases / quick replies / pin) ---
   'workspace.tabConversation': 'Conversation',
@@ -1420,7 +1360,6 @@ const fr: Record<MessageKey, string> = {
   'workspace.agentLabel': 'Agent',
   'workspace.agentBuildHint':
     'La première tâche avec cet agent construit une image de container (~1,4 Go) ; les suivantes la réutilisent.',
-  'workspace.agoTime': 'il y a {t}',
   'workspace.quickReplyOther': 'Autre chose…',
   'workspace.phaseQueued': 'en file · attend un créneau',
   'workspace.phaseQueuedMachine': 'en file · attend un slot machine',
@@ -1590,14 +1529,11 @@ const fr: Record<MessageKey, string> = {
   'workspace.forgeUnavailableHint':
     "Les conversations continuent : on peut créer une tâche à partir d'un titre et d'un prompt, et une tâche déjà rattachée à un ticket poursuit sur la copie qu'elle a figée. Ce qui est coupé : rattacher une nouvelle issue, poster un récap sur une merge request, et merger.",
 
-  // --- Temps relatif (cartes de la liste forge) ---
+  // --- Temps relatif (cartes de la liste forge, horodatage du fil) ---
+  'time.locale': 'fr',
   'time.justNow': "à l'instant",
   'time.minutesAgo': 'il y a {n} min',
   'time.hoursAgo': 'il y a {n} h',
-  'time.daysAgo': 'il y a {n} j',
-  'time.weeksAgo': 'il y a {n} sem',
-  'time.monthsAgo': 'il y a {n} mois',
-  'time.yearsAgo': 'il y a {n} an | il y a {n} ans',
 
   // --- Forge board (C3) : deux accordéons, issues et pull requests ---
   'forge.issuesTitle': 'Issues',
@@ -1695,7 +1631,7 @@ const fr: Record<MessageKey, string> = {
   'changes.fileList.diffLoadError': 'Impossible de charger le différentiel',
 
   // --- Zone de saisie (boîte autonome : components/composer/ChatComposer.vue) ---
-  'composer.hintShortcuts': '(Ctrl/⌘+Entrée pour envoyer · Entrée pour une nouvelle ligne)',
+  'composer.hintSend': 'Ctrl+Entrée pour envoyer',
   'composer.hintOffline': 'Hors ligne, ton message partira à la reconnexion',
   'composer.hintStopping': 'Arrêt en cours…',
   'composer.hintDictating': 'Dictée en cours…',
@@ -1706,6 +1642,13 @@ const fr: Record<MessageKey, string> = {
   'composer.improveAria': 'Améliorer le texte (bientôt disponible)',
   'composer.sendAria': 'Envoyer',
 
+  // --- Conversation ouverte : horodatage, préparation repliée, zone de danger ---
+  'conversation.you': 'toi',
+  'conversation.setupSummary':
+    'préparation · {n} étape · {duration} | préparation · {n} étapes · {duration}',
+  'conversation.checksLine': '{text} · tour {n}',
+  'conversation.dangerZone': 'Zone de danger',
+
   // --- Colonne des conversations ---
   'conversations.title': 'Conversations',
   'conversations.newAction': 'Nouvelle conversation',
@@ -1713,13 +1656,6 @@ const fr: Record<MessageKey, string> = {
   'conversations.searchClear': 'Effacer la recherche',
   'conversations.empty': 'Aucune conversation pour le moment.',
   'conversations.searchEmpty': 'Aucune conversation ne correspond à cette recherche.',
-  'conversations.groupToggleAria': 'Afficher ou masquer le groupe {project}',
-  'conversations.ticketRefAria': 'Ticket lié n°{n}',
-  'conversations.questionExcerpt': '« {q} »',
-  'conversations.checksPassed': 'Vérifications réussies',
-  'conversations.checksFailed': 'Vérifications échouées',
-  'conversations.checksRunning': 'Vérifications en cours',
-  'conversations.checksConflict': 'Conflit de fusion',
 
   // --- Navigation rail: two categories, a list column, a pinned footer ---
   'rail.conversations': 'Conversation',
@@ -1793,88 +1729,12 @@ const fr: Record<MessageKey, string> = {
     'Une branche sans merge request est révisée contre sa cible détectée.',
 
   // --- Horodatage relatif, cinq régimes (colonne des conversations §9) ---
-  'time.yesterdayAt': 'hier {t}',
-  'time.weekdayAt': '{day} {t}',
-  'time.monthDay': '{day} {month}',
-  'time.monthDayYear': '{day} {month} {year}',
-  'time.weekdaySun': 'dim.',
-  'time.weekdayMon': 'lun.',
-  'time.weekdayTue': 'mar.',
-  'time.weekdayWed': 'mer.',
-  'time.weekdayThu': 'jeu.',
-  'time.weekdayFri': 'ven.',
-  'time.weekdaySat': 'sam.',
-  'time.monthJan': 'janv.',
-  'time.monthFeb': 'févr.',
-  'time.monthMar': 'mars',
-  'time.monthApr': 'avr.',
-  'time.monthMay': 'mai',
-  'time.monthJun': 'juin',
-  'time.monthJul': 'juil.',
-  'time.monthAug': 'août',
-  'time.monthSep': 'sept.',
-  'time.monthOct': 'oct.',
-  'time.monthNov': 'nov.',
-  'time.monthDec': 'déc.',
 
-  'pilot.header.conversations': '{n} conversation | {n} conversations',
-  'pilot.header.working': '{n} agent travaille | {n} agents travaillent',
-  'pilot.toggle.classic': "Passer à l'ancienne interface",
-  'pilot.toggle.grid': 'Passer à la grille',
-  'pilot.cols.aria': 'Choix du nombre de colonnes',
-  'pilot.lens.close': 'Fermer',
-  'pilot.lens.aria': 'Loupe de la conversation',
-  'pilot.evidence.title': 'Preuves',
-  'pilot.evidence.none': "Aucune preuve pour l'instant.",
-  'pilot.evidence.screenshotAlt': "Capture d'écran du parcours",
-  'pilot.evidence.videoLabel': 'Vidéo',
-  'pilot.evidence.failed': 'Le parcours a échoué. La raison est affichée à côté.',
-  'pilot.evidence.turn': 'tour {n}',
-  'pilot.proof.declared': "Déclaré par l'agent :",
-  'pilot.proof.kind.none': 'aucune preuve visuelle',
-  'pilot.proof.kind.screenshot': 'captures de pages',
-  'pilot.proof.kind.journey': 'parcours enregistré',
-  'pilot.proof.pages': 'Pages : {list}',
-  'pilot.proof.coherent': 'Le reviewer confirme : preuve cohérente avec le changement',
-  'pilot.proof.incoherent': 'Le reviewer conteste : {reason}',
-  'pilot.proof.noTarget': "Ce projet n'a pas d'application à capturer.",
-  'pilot.recap.title': 'Récapitulatif',
-  'pilot.recap.pending': 'Le récapitulatif arrive à la publication.',
-  'pilot.recap.changes': 'Changements',
-  'pilot.recap.decisions': 'Décisions',
-  'pilot.recap.files': 'Fichiers',
-  'pilot.recap.tests': 'Tests',
-  'pilot.checks.title': 'Checks',
-  'pilot.verification.title': 'Vérification en environnement neuf',
-  'pilot.verification.passed': 'Réussie',
-  'pilot.verification.failed': 'Échouée',
-  'pilot.verification.refused': 'Refusée : fichiers modifiés depuis le runbook validé',
-  'pilot.verification.error': "N'a pas pu tourner",
-  'pilot.criteria.title': 'Critères',
-  'pilot.criteria.none': "Aucun critère d'acceptation pour l'instant.",
-  'pilot.criteria.evidence': 'Preuve',
-  'pilot.question.waiting': 'En attente de ta réponse',
   'pilot.activity.checks': 'Vérifications en cours',
   'pilot.activity.verification': 'Vérification en environnement neuf en cours',
   'pilot.activity.proof': 'Rejeu du parcours et capture en cours',
   'pilot.activity.review': 'Relecture en cours',
   'pilot.activity.recap': 'Récapitulatif en cours',
-  'pilot.mobile.needsYou': 'Besoin de toi',
-  'pilot.mobile.back': '← Retour',
-  'pilot.mobile.title': 'Pilote',
-  'pilot.grid.empty':
-    'Aucune conversation pour le moment. Lance-en une pour la voir prendre forme dans la grille.',
-  'pilot.lane.expand': 'Élargir',
-  'pilot.lane.collapse': 'Réduire',
-  'pilot.lane.close': 'Masquer cette conversation',
-  'pilot.lane.hidden': '{n} masquée | {n} masquées',
-  'pilot.lane.reopen': 'Réafficher',
-  'pilot.media.open': 'Voir en grand',
-  'pilot.media.close': 'Fermer',
-  'pilot.media.aria': 'Visionneuse de preuves',
-  'pilot.media.zoomIn': 'Agrandir',
-  'pilot.media.zoomOut': 'Réduire',
-  'pilot.media.reset': 'Ajuster',
 }
 
 /**

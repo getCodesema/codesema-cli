@@ -37,16 +37,15 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.cfd-root :deep(.srd-file-head) {
+.cfd-root :deep(.diff-f) {
   display: none;
 }
 
-/* The per-file card chrome (border, radius, background) is redundant once
-   its header is gone: the row above already frames this content with its
-   own top hairline (ChangedFileRow.vue's .cfr-expanded). */
-.cfd-root :deep(.srd-file) {
+/* The per-file card chrome (border, background) is redundant once its header
+   is gone: the row above already frames this content with its own top
+   hairline (ChangedFileRow.vue's .cfr-expanded). */
+.cfd-root :deep(.diff) {
   border: none;
-  border-radius: 0;
   background: none;
 }
 
@@ -54,11 +53,12 @@ onMounted(() => {
    above already keeps this narrow (no side-by-side split columns); this is
    the defensive half, for a single unbroken long token that plain
    white-space wrapping would not break on its own. */
-.cfd-root :deep(.srd-body) {
+.cfd-root :deep(.diff-body) {
   overflow-x: visible;
 }
 
-.cfd-root :deep(.srd-code) {
+.cfd-root :deep(.diff td.c) {
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 </style>

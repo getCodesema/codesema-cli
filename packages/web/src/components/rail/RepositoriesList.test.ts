@@ -14,6 +14,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { ProjectActivity } from '../../composables/useProjects'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type { Project, ProjectCandidate } from '../../types'
 
@@ -83,13 +84,22 @@ describe('header: title and a count that reflects the registry size', () => {
     })
     expect(html).toMatch(/class="rpl-count">2</)
   })
+
+  test('the title sits at the rail weight, the count is the smaller muted size', () => {
+    const title = SOURCE.slice(SOURCE.indexOf('.rpl-title {'), SOURCE.indexOf('.rpl-count {'))
+    expect(title).toContain('font-weight: 400;')
+    expect(title).toContain('color: inherit;')
+    const count = SOURCE.slice(SOURCE.indexOf('.rpl-count {'), SOURCE.indexOf('.rpl-search {'))
+    expect(count).toContain('font-size: 12px;')
+    expect(count).toContain('color: var(--fg-muted);')
+  })
 })
 
 describe('empty vs. non-empty registry', () => {
   test('no project registered: the empty message, no rows', async () => {
     const html = await render({ projects: [] })
     expect(html).toContain(t('rail.repositoriesEmpty'))
-    expect(html).not.toContain('class="rpl-project"')
+    expect(html).not.toContain('class="rpl-project proj"')
   })
 
   test('projects registered: no empty message, one row per project', async () => {
@@ -99,7 +109,7 @@ describe('empty vs. non-empty registry', () => {
     expect(html).not.toContain(t('rail.repositoriesEmpty'))
     expect(html).toContain('one')
     expect(html).toContain('two')
-    expect((html.match(/class="rpl-project"/g) ?? []).length).toBe(2)
+    expect((html.match(/class="rpl-project proj"/g) ?? []).length).toBe(2)
   })
 })
 
@@ -109,6 +119,22 @@ describe('search: no-match message wiring (query is internal state, not a prop â
     expect(html).toContain(t('rail.repositoriesSearchPlaceholder'))
     expect(html).not.toContain('rpl-search-clear')
     expect(html).toContain('padding-right:36px')
+  })
+
+  test('the search glyph is the kit one, from G, never a lucide icon', async () => {
+    const html = await render()
+    expect(html).toContain(`class="rpl-search-glyph" aria-hidden="true">${G.search}<`)
+    expect(SOURCE).not.toContain('<Search')
+  })
+
+  test('the input carries no frame of its own, the line does', () => {
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.rpl-search-input {'),
+      SOURCE.indexOf('.rpl-search-input:focus'),
+    )
+    expect(rule).toContain('border: 0;')
+    expect(rule).toContain('background: transparent;')
+    expect(SOURCE).toContain('height: calc(var(--row) + 4px);')
   })
 
   test('the no-match branch is wired to its own key, distinct from the empty-registry one', () => {
@@ -121,7 +147,7 @@ describe('search: no-match message wiring (query is internal state, not a prop â
   })
 })
 
-describe('selection: the active repository is a tinted fill, never a border', () => {
+describe('selection: the active repository is named by aria-current', () => {
   test('the selected project carries the active class, the others do not', async () => {
     const html = await render({
       projects: [project({ id: 'a', name: 'one' }), project({ id: 'b', name: 'two' })],
@@ -140,17 +166,18 @@ describe('selection: the active repository is a tinted fill, never a border', ()
     expect(html).not.toContain('rpl-project--active')
   })
 
-  test('the active rule is a tinted fill, no border property', () => {
-    const rule = SOURCE.slice(
-      SOURCE.indexOf('.rpl-project--active {'),
-      SOURCE.indexOf('.rpl-icon-slot {'),
-    )
-    expect(rule).toContain('background: var(--cs-green-soft);')
-    expect(rule).not.toContain('border-color')
+  test('the selected row carries aria-current, which is what the kit styles', async () => {
+    const html = await render({
+      projects: [project({ id: 'a', name: 'one' }), project({ id: 'b', name: 'two' })],
+      selected: 'b',
+    })
+    const rows = [...html.matchAll(/<button type="button" class="rpl-project[^"]*"([^>]*)>/g)]
+    expect(rows[0]?.[1]).toContain('aria-current="false"')
+    expect(rows[1]?.[1]).toContain('aria-current="true"')
   })
 })
 
-describe('activity badges: waiting (strong amber) and running (plain amber count)', () => {
+describe('activity badges: waiting (amber) and running (plain count)', () => {
   test('no activity: no badge renders', async () => {
     const html = await render({ projects: [project({ id: 'a' })], activity: new Map() })
     expect(html).not.toContain('rpl-badge--waiting')
@@ -176,6 +203,27 @@ describe('activity badges: waiting (strong amber) and running (plain amber count
   })
 })
 
+describe('the project dot is a binary state, never an identity hue', () => {
+  test('idle: the empty glyph, no colour class', async () => {
+    const html = await render({ projects: [project({ id: 'a' })], activity: new Map() })
+    expect(html).toContain('rpl-dot dot')
+    expect(html).not.toContain('rpl-dot dot on')
+  })
+
+  test('live: the filled glyph, marked on', async () => {
+    const html = await render({
+      projects: [project({ id: 'a' })],
+      activity: new Map([['a', { waiting: 0, active: 1 }]]),
+    })
+    expect(html).toContain('rpl-dot dot on')
+  })
+
+  test('no per-name hue is computed any more', () => {
+    expect(SOURCE).not.toContain('nameColor')
+    expect(SOURCE).not.toContain('hsl(')
+  })
+})
+
 describe('removal: hidden until interaction, double-click arm pattern preserved from ProjectsNav.vue', () => {
   test('the remove button is present but unarmed by default', async () => {
     const html = await render({ projects: [project({ id: 'a' })] })
@@ -198,7 +246,7 @@ describe('removal: hidden until interaction, double-click arm pattern preserved 
       SOURCE.indexOf('.rpl-remove--armed {'),
       SOURCE.indexOf('.rpl-remove--armed {') + 150,
     )
-    expect(rule).toContain('var(--cs-red-text)')
+    expect(rule).toContain('var(--err)')
   })
 })
 
@@ -241,24 +289,15 @@ describe('root: no fixed width, matches ConversationsList.vue as a swappable slo
     expect(root).not.toContain('max-width:')
     expect(root).toContain('width: 100%;')
   })
-
-  test('the same card treatment as ConversationsList.vue: radius, border, shadow', () => {
-    const root = SOURCE.slice(SOURCE.indexOf('.rpl-root {'), SOURCE.indexOf('.rpl-header {'))
-    expect(root).toContain('border-radius: 16px;')
-    expect(root).toContain('box-shadow: var(--cs-shadow-panel);')
-  })
 })
 
 describe('rows carry no border: explicit, never a bare omission', () => {
   test('a repository row declares border: none', () => {
-    const block = SOURCE.slice(
-      SOURCE.indexOf('.rpl-project {'),
-      SOURCE.indexOf('.rpl-project:hover'),
-    )
+    const block = SOURCE.slice(SOURCE.indexOf('.rpl-project {'), SOURCE.indexOf('.rpl-icon-slot {'))
     expect(block).toContain('border: none;')
   })
 
-  test('no hex literal was introduced: every color is a --cs-* token', () => {
+  test('no hex literal was introduced: every colour is a theme token', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })

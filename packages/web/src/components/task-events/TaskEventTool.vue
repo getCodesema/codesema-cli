@@ -5,6 +5,7 @@
 // expanded view is safe to render as-is.
 import { computed } from 'vue'
 import { clockTime, eventSummary } from '../../composables/useTaskBoard'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type { TaskEventCtx } from '../../task-event-registry'
 import type { TaskEvent, TaskRecord } from '../../types'
@@ -13,6 +14,8 @@ const props = defineProps<{ event: TaskEvent; task: TaskRecord; ctx: TaskEventCt
 
 const summary = computed(() => eventSummary(props.event))
 const stamp = computed(() => clockTime(props.event.at))
+const isCall = computed(() => props.event.type === 'tool_use')
+const glyph = computed(() => (isCall.value ? G.gear : G.reply))
 
 const detail = computed(() => {
   const lines = Object.entries(props.event.data)
@@ -26,38 +29,26 @@ const detail = computed(() => {
 
 <template>
   <details v-if="detail" class="tvt-root">
-    <summary class="tvt-summary">
-      <span class="tvt-glyph" aria-hidden="true">{{ event.type === 'tool_use' ? '⚙' : '↩' }}</span>
+    <summary class="tvt-summary tool">
+      <span class="tvt-glyph g" :class="{ ret: !isCall }" aria-hidden="true">{{ glyph }}</span>
       <span class="tvt-text">{{ summary }}</span>
       <span class="tvt-hint">{{ t('workspace.details') }}</span>
-      <span class="tvt-time">{{ stamp }}</span>
+      <span class="tvt-time d">{{ stamp }}</span>
     </summary>
-    <pre class="tvt-detail">{{ detail }}</pre>
+    <pre class="tvt-detail log">{{ detail }}</pre>
   </details>
-  <div v-else class="tvt-root tvt-plain">
-    <span class="tvt-glyph" aria-hidden="true">{{ event.type === 'tool_use' ? '⚙' : '↩' }}</span>
+  <div v-else class="tvt-root tvt-plain tool">
+    <span class="tvt-glyph g" :class="{ ret: !isCall }" aria-hidden="true">{{ glyph }}</span>
     <span class="tvt-text">{{ summary }}</span>
-    <span class="tvt-time">{{ stamp }}</span>
+    <span class="tvt-time d">{{ stamp }}</span>
   </div>
 </template>
 
 <style scoped>
-.tvt-root {
-  font-size: var(--fs-base);
-  padding: 3px 0;
-}
-
-.tvt-plain,
 .tvt-summary {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-}
-
-.tvt-summary {
+  grid-template-columns: 2ch 1fr auto auto;
   cursor: pointer;
   list-style: none;
-  border-radius: 6px;
 }
 
 .tvt-summary::-webkit-details-marker {
@@ -65,49 +56,37 @@ const detail = computed(() => {
 }
 
 .tvt-summary:hover .tvt-text {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .tvt-glyph {
   flex: none;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
-  transform: translateY(-1px);
 }
 
 .tvt-text {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .tvt-hint {
   flex: none;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .tvt-time {
-  margin-left: auto;
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .tvt-detail {
-  margin: 6px 0 4px 20px;
-  padding: 9px 12px;
-  border: 1px solid var(--cs-line);
-  border-radius: 9px;
-  background: var(--cs-surface-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  line-height: 1.55;
-  color: var(--cs-text-2);
+  margin: calc(var(--row) / 2) 0 0 3ch;
+  font-size: 12px;
+  color: var(--fg-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

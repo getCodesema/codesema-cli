@@ -1,13 +1,16 @@
 <script setup lang="ts">
-// Global 52px workspace header: brand + WORKSPACE label, and the two live
-// signals on the right — the amber bell badge "N agents need you" (visible
-// only when N > 0, clicking it opens the conversation that has waited the
-// longest) and the "● N agents" counter (running + reviewing, amber glowing
-// dot while at least one run is live). No avatar, per the maquette.
+// The stage's segment of the workspace header band: the same height and the
+// same hairline as the rail and list headers next to it, so the three
+// columns read as ONE line across the desk. It carries only what is about
+// the workspace as a whole and about nothing on screen in particular — the
+// live signals, right-aligned.
 //
-// The search lives in the list column, not here: each list searches its own
-// corpus (conversations, repositories), and a header field on top of them
-// would be a second box searching an overlapping third thing. ⌘K is owned by
+// The brand lives in the rail header and the settings entry in the rail
+// footer: neither is repeated here.
+//
+// The search lives in the list column too: each list searches its own corpus
+// (conversations, repositories), and a header field on top of them would be
+// a second box searching an overlapping third thing. Cmd/Ctrl+K is owned by
 // the shell, which focuses whichever list is up.
 //
 // Plus, since T2.7/D9, the one place the workspace says it cannot reach a
@@ -16,6 +19,7 @@
 // underneath is exactly the ambiguity D9 exists to remove.
 import { computed } from 'vue'
 import { forgeUnavailableKey } from '../composables/useProjects'
+import { G } from '../glyphs'
 import { t } from '../i18n'
 import type { WorkspaceInfo } from '../types'
 
@@ -24,8 +28,6 @@ const props = defineProps<{
   needsYou: number
   /** Agents currently working: running + reviewing. */
   agents: number
-  /** Settings overlay is open: the button reads as back. */
-  settingsOpen?: boolean
   /**
    * Workspace facts of the card being looked at (GET /api/projects). Null
    * while they have not been fetched — which is UNKNOWN, not "the forge is
@@ -38,17 +40,14 @@ const props = defineProps<{
 /** Null when the forge answers, and null when nothing is known about it. */
 const forgeReasonKey = computed(() => forgeUnavailableKey(props.workspace ?? null))
 
-const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shell': [] }>()
+const emit = defineEmits<{ 'open-oldest-waiting': [] }>()
 </script>
 
 <template>
-  <header class="wh-root">
-    <div class="wh-brand">
-      <span class="wh-brand-name">codesema</span>
-      <span class="wh-brand-sub">{{ t('workspace.title') }}</span>
-    </div>
+  <header class="wh-root appbar">
+    <div class="wh-gap" />
 
-    <div class="wh-right">
+    <div class="wh-right cells">
       <!--
         Never a silence: when the server says the forge is unreachable, the
         header names it AND names why, with the hint spelling out what still
@@ -56,35 +55,26 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
       -->
       <span
         v-if="forgeReasonKey"
-        class="wh-forge"
+        class="wh-forge cell warn"
         role="status"
         :title="t('workspace.forgeUnavailableHint')"
       >
-        <span aria-hidden="true">⚠</span>
+        <span aria-hidden="true">{{ G.attention }}</span>
         {{ t('workspace.forgeUnavailable') }} — {{ t(forgeReasonKey) }}
       </span>
-      <button class="wh-pilot-toggle" type="button" @click="emit('switch-shell')">
-        {{ t('pilot.toggle.grid') }}
-      </button>
-      <button class="wh-settings" type="button" @click="emit('settings')">
-        {{ settingsOpen ? t('workspace.back') : t('nav.settings') }}
-      </button>
       <!-- Amber attention: at least one agent is blocked on the human. -->
       <button
         v-if="needsYou > 0"
-        class="wh-bell"
+        class="wh-bell cell warn"
+        type="button"
         :title="t('workspace.openOldestWaiting')"
         @click="emit('open-oldest-waiting')"
       >
-        <span aria-hidden="true">🔔</span>
+        <span aria-hidden="true">{{ G.attention }}</span>
         {{ t('workspace.needsYouBadge', { n: needsYou }) }}
       </button>
-      <span class="wh-agents">
-        <span
-          class="wh-agents-dot"
-          :class="{ 'wh-agents-dot--live': agents > 0 }"
-          aria-hidden="true"
-        />
+      <span class="wh-agents cell" :class="{ 'wh-agents--none': agents === 0 }">
+        <span class="wh-agents-dot status" :data-s="agents > 0 ? 'running' : 'idle'" />
         {{ t('workspace.agentsCount', { n: agents }) }}
       </span>
     </div>
@@ -92,130 +82,38 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
 </template>
 
 <style scoped>
+/* One band with the rail and list headers: the same height, and the same
+   single hairline under it — never a frame of its own. */
 .wh-root {
   flex: none;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  height: 52px;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--cs-line);
-  background: var(--cs-panel);
+  grid-template-columns: 1fr auto;
+  height: calc(var(--row) + 4px);
+  border: 0;
+  border-bottom: 1px solid var(--line);
 }
 
-.wh-brand {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.wh-brand-name {
-  font-size: var(--fs-lg);
-  font-weight: 700;
-  color: var(--cs-text);
-}
-
-.wh-brand-sub {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--cs-muted);
+.wh-gap {
+  min-width: 0;
 }
 
 .wh-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 14px;
+  justify-content: flex-end;
 }
 
-.wh-settings {
-  font-size: var(--fs-base);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border-radius: 7px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
-  cursor: pointer;
+/* Plain text across the band: the hairline the kit puts between cells would
+   frame facts that are not states. */
+.wh-right .cell {
+  border-left: 0;
 }
 
-.wh-settings:hover {
-  border-color: var(--cs-line-2);
-}
-
-.wh-pilot-toggle {
-  font-size: var(--fs-base);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border-radius: 7px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
-  cursor: pointer;
-}
-
-.wh-pilot-toggle:hover {
-  border-color: var(--cs-line-2);
-}
-
-/* A degraded capability, not an error: stated in amber like the bell, never red. */
 .wh-forge {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 10px;
-  border: 1px solid var(--cs-amber-line);
-  border-radius: 7px;
-  background: var(--cs-amber-soft);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--cs-amber-text);
   cursor: help;
 }
 
-/* The bell is a STATE: amber means the human is the bottleneck right now. */
-.wh-bell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--cs-amber-soft);
-  border: 1px solid var(--cs-amber-line);
-  border-radius: 7px;
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--cs-amber-text);
-  cursor: pointer;
-}
-
-.wh-bell:hover {
-  border-color: var(--cs-amber);
-}
-
-.wh-agents {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
-}
-
-.wh-agents-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--cs-dot-idle);
-}
-
-/* Glow only while at least one run is actually live. */
-.wh-agents-dot--live {
-  background: var(--cs-amber);
-  box-shadow: var(--cs-amber-glow);
+/* An idle desk is not a state to act on: counter and dot go to the quietest
+   grey, and only a running agent brings the dot back. */
+.wh-agents--none,
+.wh-agents--none .wh-agents-dot[data-s='idle']::before {
+  color: var(--fg-muted);
 }
 </style>

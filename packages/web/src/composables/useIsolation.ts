@@ -7,6 +7,7 @@
 // comes from a CLI that had none, so it is 'policy' — the weaker claim. The UI
 // never upgrades a task's containment on its own.
 
+import { G, type Glyph } from '../glyphs'
 import type { MessageKey } from '../i18n'
 import type { TaskIsolation, TaskRecord, WorkspaceInfo } from '../types'
 
@@ -18,11 +19,11 @@ export function taskIsolation(record: Pick<TaskRecord, 'isolation'>): TaskIsolat
   return 'policy'
 }
 
-/** Chip glyph: the shield is the cage, the box is the microVM, the diamond is the policy hardening. */
-export const ISOLATION_GLYPH: Record<TaskIsolation, string> = {
-  container: '🛡',
-  microvm: '▣',
-  policy: '◇',
+/** Chip glyph: the shield is the cage, the box is the microVM, the branch mark is the policy hardening. */
+export const ISOLATION_GLYPH: Record<TaskIsolation, Glyph> = {
+  container: G.shield,
+  microvm: G.file,
+  policy: G.branch,
 }
 
 /** Chip text — technical words, identical in every locale. */
@@ -42,7 +43,7 @@ export const ISOLATION_HINT_KEY: Record<TaskIsolation, MessageKey> = {
 /** Everything a chip needs, resolved from the record alone. */
 export type IsolationBadge = {
   isolation: TaskIsolation
-  glyph: string
+  glyph: Glyph
   labelKey: MessageKey
   hintKey: MessageKey
 }

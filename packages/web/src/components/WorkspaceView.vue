@@ -1,9 +1,11 @@
 <script setup lang="ts">
-// Workspace shell: a global 52px header (search, attention bell, agents
-// counter), the projects column on the left, the conversations column in the
-// center-left, and the focus zone on the right. The focus zone shows ONE
-// thing at a time, named by a single FocusView value (useWorkspaceNav, pure)
-// rather than deduced from several independent refs. Owns the single
+// Workspace shell: the category rail on the left, the list column next to
+// it, and the stage on the right. The three columns open on ONE header band
+// — the rail header, the list header and the stage's app bar segment share a
+// height and a single hairline — because each column owns its own header;
+// the band is an alignment, not a fourth element above them. The stage shows
+// ONE thing at a time, named by a single FocusView value (useWorkspaceNav,
+// pure) rather than deduced from several independent refs. Owns the single
 // useTasks stream; every child stays presentational and derives from pure
 // functions.
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
@@ -69,6 +71,7 @@ import {
   type NavCategory,
   type RepoTab,
 } from '../composables/useWorkspaceNav'
+import { G } from '../glyphs'
 import { t } from '../i18n'
 import type {
   AgentOption,
@@ -94,7 +97,6 @@ import TaskConversation from './TaskConversation.vue'
 import WorkspaceHeader from './WorkspaceHeader.vue'
 
 const props = defineProps<{ token: string }>()
-const emit = defineEmits<{ 'switch-shell': [] }>()
 
 const {
   store,
@@ -658,7 +660,7 @@ type SearchableList = { focusSearch: () => void }
 const conversationsList = ref<SearchableList | null>(null)
 const repositoriesList = ref<SearchableList | null>(null)
 
-/** ⌘K / Ctrl+K focuses the list column's own search — the shell owns the
+/** Cmd/Ctrl+K focuses the list column's own search — the shell owns the
  * shortcut because which list is up is the shell's own state. */
 function onGlobalKeydown(e: KeyboardEvent): void {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -967,24 +969,7 @@ watch(
 
 <template>
   <div class="ws-root">
-    <WorkspaceHeader
-      :needs-you="counters.needsYou"
-      :agents="counters.agents"
-      :settings-open="showSettings"
-      :workspace="headerWorkspace"
-      @open-oldest-waiting="openOldestWaiting"
-      @settings="toggleSettings"
-      @switch-shell="emit('switch-shell')"
-    />
-
-    <p v-if="!connected" class="ws-offline" role="status">
-      {{ t('workspace.connectionLost') }}
-    </p>
-
-    <div v-if="showSettings" class="ws-settings">
-      <RepoSettings />
-    </div>
-    <div v-else class="ws-body">
+    <div class="ws-body shell" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
       <WorkspaceNavRail
         :category="railPrefs.category"
         :collapsed="railPrefs.navCollapsed"
@@ -994,12 +979,11 @@ watch(
         @settings="toggleSettings"
       />
 
-      <aside class="ws-list" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
+      <aside class="ws-list">
         <ConversationsList
           v-if="railPrefs.category === 'conversations'"
           ref="conversationsList"
           :states="queueStates"
-          :project-names="projectNameById"
           :focused-keys="focusedKeys"
           @select="(state) => openConversation(state.projectId, state.record.id)"
           @create="onNewConversation"
@@ -1047,9 +1031,31 @@ watch(
       />
 
       <main class="ws-focus">
+        <!-- The stage's segment of the header band: one line, one hairline,
+             shared with the rail and list headers on its left. -->
+        <WorkspaceHeader
+          :needs-you="counters.needsYou"
+          :agents="counters.agents"
+          :workspace="headerWorkspace"
+          @open-oldest-waiting="openOldestWaiting"
+        />
+
+        <p v-if="!connected" class="ws-offline live" role="status">
+          <span aria-hidden="true">{{ G.attention }}</span>
+          <span>{{ t('workspace.connectionLost') }}</span>
+        </p>
+
+        <!-- Settings stay INSIDE the stage: the rail entry that opened them
+             is still on screen, and is what closes them again. -->
+        <div v-if="showSettings" class="ws-settings">
+          <RepoSettings />
+        </div>
+
         <!-- Review view: the existing guided review, over the focus zone. -->
-        <div v-if="reviewRecord" class="ws-review">
-          <button class="ws-review-back" @click="backFromReview">{{ t('workspace.back') }}</button>
+        <div v-else-if="reviewRecord" class="ws-review">
+          <button class="ws-review-back btn ghost" type="button" @click="backFromReview">
+            {{ t('workspace.back') }} <kbd>Esc</kbd>
+          </button>
           <ReviewShell :record="reviewRecord" />
         </div>
 
@@ -1081,12 +1087,13 @@ watch(
                   {{ projectNameById.get(draftEntry.projectId) ?? draftEntry.projectId }}
                 </span>
                 <button
-                  class="ws-draft-close"
+                  class="ws-draft-close btn ghost"
+                  type="button"
                   :aria-label="t('workspace.addProjectCancel')"
                   :title="t('workspace.addProjectCancel')"
                   @click="onFocusDraftClose"
                 >
-                  ✕
+                  {{ G.ko }}
                 </button>
               </header>
               <!-- No repository at all: neither a work-on/fork mode nor a
@@ -1094,13 +1101,14 @@ watch(
                      shows none of it (only the composer's own sober notice). -->
               <div
                 v-if="draftEntry.draft.mode !== 'scratch'"
-                class="ws-draft-modes"
+                class="ws-draft-modes seg"
                 role="group"
                 :aria-label="t('workspace.draftModeLabel')"
               >
                 <button
                   class="ws-draft-mode"
                   :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'workon' }"
+                  :aria-pressed="draftEntry.draft.mode === 'workon'"
                   type="button"
                   @click="draftEntry.draft.mode === 'fork' && onFocusToggleDraftMode()"
                 >
@@ -1109,6 +1117,7 @@ watch(
                 <button
                   class="ws-draft-mode"
                   :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'fork' }"
+                  :aria-pressed="draftEntry.draft.mode === 'fork'"
                   type="button"
                   @click="draftEntry.draft.mode === 'workon' && onFocusToggleDraftMode()"
                 >
@@ -1123,14 +1132,14 @@ watch(
               </p>
               <div v-if="draftEntry.draft.mode !== 'scratch'" class="ws-draft-chips">
                 <span
-                  class="ws-draft-chip"
+                  class="ws-draft-chip badge"
                   :title="
                     draftEntry.draft.mode === 'fork'
                       ? t('workspace.draftBaseHint', { branch: draftEntry.draft.base })
                       : t('workspace.draftWorkonHint', { branch: draftEntry.draft.branch })
                   "
                 >
-                  <span aria-hidden="true">⎇</span>
+                  <span aria-hidden="true">{{ G.branch }}</span>
                   {{
                     draftEntry.draft.mode === 'fork'
                       ? draftEntry.draft.base
@@ -1140,7 +1149,7 @@ watch(
                 <!-- Work-on from an MR node: the merge target rides along. -->
                 <span
                   v-if="draftEntry.draft.mode === 'workon' && draftEntry.draft.target !== null"
-                  class="ws-draft-chip"
+                  class="ws-draft-chip badge"
                   :title="t('workspace.draftTargetHint', { target: draftEntry.draft.target })"
                 >
                   <span aria-hidden="true">→</span> {{ draftEntry.draft.target }}
@@ -1253,7 +1262,7 @@ watch(
 
         <!-- Empty focus: a sober invite (no project selected, or none registered). -->
         <div v-else class="ws-empty-focus">
-          <p class="ws-empty">
+          <p class="ws-empty empty">
             {{ t('workspace.focusEmpty') }}
           </p>
         </div>
@@ -1268,18 +1277,13 @@ watch(
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  background: var(--cs-bg);
-  color: var(--cs-text);
+  background: var(--bg);
+  color: var(--fg);
 }
 
 .ws-offline {
   flex: none;
   margin: 0;
-  padding: 6px 20px;
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
-  border-bottom: 1px solid var(--cs-amber-line);
 }
 
 .ws-settings {
@@ -1288,31 +1292,33 @@ watch(
   overflow: auto;
 }
 
+/* Four sibling zones on one grid: the category rail, the list column, its
+   drag handle, the stage. Each carries its own header at the same band
+   height, which is what makes the three headers read as one line. The list
+   width is the one layout value the desk owns, so it rides on the grid track
+   itself. */
 .ws-body {
   flex: 1;
   min-height: 0;
-  display: flex;
+  grid-template-columns: auto var(--ws-list-w, 30ch) auto 1fr;
   align-items: stretch;
 }
 
-/* Zone 2: the list column. The nav rail (zone 1) sizes itself; this one is
-   dragged, so its width is the one layout value the desk owns. */
-.ws-list {
-  flex: 0 0 var(--ws-list-w);
-  width: var(--ws-list-w);
-  min-height: 0;
+.ws-body > * {
   min-width: 0;
+  min-height: 0;
+}
+
+/* The hairline on the right belongs to the mounted list's own `.rail`;
+   drawing a second one here would double it. */
+.ws-list {
   display: flex;
-  border-right: 1px solid var(--cs-line-2);
 }
 
 /* ── Zone 3: the stage ────────────────────────────────────────────────── */
 .ws-focus {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--cs-inset);
 }
 
 .ws-stage {
@@ -1328,36 +1334,30 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 16px;
+  padding: 0 2ch;
 }
 
 .ws-draft {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-width: 560px;
+  gap: var(--row);
+  max-width: 72ch;
   width: 100%;
-  margin: 48px auto 24px;
-  padding: 18px 20px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 12px;
-  background: var(--cs-surface);
+  margin: calc(var(--row) * 2) auto var(--row);
+  padding: var(--row) 2ch;
+  border: 1px solid var(--line);
 }
 
 .ws-draft-head {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: baseline;
+  gap: 1ch;
   min-width: 0;
 }
 
 .ws-draft-title {
-  margin: 0;
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-lg);
-  font-weight: 700;
-  color: var(--cs-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1365,92 +1365,52 @@ watch(
 
 .ws-draft-project {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .ws-draft-close {
   flex: none;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--fs-sm);
-  font-family: inherit;
-  line-height: 1;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--cs-muted);
-  cursor: pointer;
-}
-
-.ws-draft-close:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text);
+  padding: 0 1ch;
 }
 
 .ws-draft-modes {
-  display: inline-flex;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
-  overflow: hidden;
   align-self: flex-start;
 }
 
 .ws-draft-mode {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 5px 11px;
-  border: none;
-  background: var(--cs-surface);
-  color: var(--cs-muted);
+  font: inherit;
+  padding: 2px 2ch;
+  border: 0;
+  background: var(--bg);
+  color: var(--fg-dim);
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.ws-draft-mode + .ws-draft-mode {
-  border-left: 1px solid var(--cs-line-2);
-}
-
-/* The chosen mode is a state: green soft wash, per the doctrine. */
+/* The chosen mode is a state: it inverts, like every other segment. */
 .ws-draft-mode--on {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 700;
   cursor: default;
 }
 
 .ws-draft-warning {
-  margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-amber-text);
-  border: 1px solid var(--cs-amber-line);
-  border-radius: 8px;
-  background: var(--cs-amber-soft);
-  padding: 6px 10px;
+  color: var(--warn);
+  border-left: 3px solid var(--warn);
+  padding: calc(var(--row) / 2) 1ch;
 }
 
 .ws-draft-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 1ch;
 }
 
 /* Branch chips: the base to fork from, or the branch worked on (+ target). */
 .ws-draft-chip {
   align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-text-2);
-  padding: 2px 9px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 999px;
-  background: var(--cs-inset);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1463,15 +1423,11 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: var(--row) 2ch;
 }
 
 .ws-empty {
-  margin: 0;
-  text-align: center;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
-  max-width: 380px;
+  max-width: 56ch;
 }
 
 /* ── Review ───────────────────────────────────────────────────────────── */
@@ -1479,24 +1435,11 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px 24px 60px;
+  padding: var(--row) 2ch calc(var(--row) * 3);
 }
 
 .ws-review-back {
-  margin-bottom: 12px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
-  cursor: pointer;
-}
-
-.ws-review-back:hover {
-  border-color: var(--cs-muted);
+  margin-bottom: var(--row);
 }
 
 /* Both list components fill the column the desk gives them; `min-width: 0`

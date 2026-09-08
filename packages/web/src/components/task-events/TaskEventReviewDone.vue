@@ -40,24 +40,24 @@ const SEVERITY_KEY = {
 } as const
 
 // The verdict chip follows the semaphore: pass green, block red, comment amber.
-const verdictClass = computed(() => {
+const verdictValue = computed(() => {
   if (props.event.data.verdict === 'approve') {
-    return 'tvr-verdict--go'
+    return 'go'
   }
   if (props.event.data.verdict === 'request_changes') {
-    return 'tvr-verdict--stop'
+    return 'stop'
   }
-  return 'tvr-verdict--check'
+  return 'check'
 })
 
 const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === 'review_ko')
 </script>
 
 <template>
-  <div class="tvr-root">
+  <div class="tvr-root" :data-v="verdictValue">
     <div class="tvr-head">
       <span class="tvr-tag">{{ t('workspace.evReviewDone') }}</span>
-      <span v-if="verdictKey || verdictRaw" class="tvr-verdict" :class="verdictClass">
+      <span v-if="verdictKey || verdictRaw" class="tvr-verdict verdict" :data-v="verdictValue">
         {{ verdictKey ? t(verdictKey) : verdictRaw }}
       </span>
       <span class="tvr-time">{{ stamp }}</span>
@@ -68,15 +68,24 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
       {{ t('workspace.findingsCount', { n: count }, count) }}
     </p>
     <ul v-if="severities.length > 0" class="tvr-sev">
-      <li v-for="entry in severities" :key="entry.severity" :class="`tvr-sev--${entry.severity}`">
+      <li
+        v-for="entry in severities"
+        :key="entry.severity"
+        class="tvr-sev-item sev"
+        :data-v="entry.severity"
+      >
         {{ entry.n }} {{ t(SEVERITY_KEY[entry.severity]) }}
       </li>
     </ul>
     <div v-if="ctx.reviewAvailable || showFix" class="tvr-actions">
-      <button v-if="ctx.reviewAvailable" class="tvr-btn" @click="emit('open-review', reviewRef)">
+      <button
+        v-if="ctx.reviewAvailable"
+        class="tvr-btn btn"
+        @click="emit('open-review', reviewRef)"
+      >
         {{ t('workspace.openReview') }}
       </button>
-      <button v-if="showFix" class="tvr-btn" @click="emit('fix')">
+      <button v-if="showFix" class="tvr-btn btn" @click="emit('fix')">
         {{ t('workspace.fixFindings') }}
       </button>
     </div>
@@ -84,65 +93,53 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 </template>
 
 <style scoped>
-.tvr-root {
-  margin: 6px 0;
-  padding: 12px 14px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 11px;
-  background: var(--cs-surface);
+/* A verdict that passed asks nothing of the reader: it separates by
+   whitespace like the rest of the thread. Only a verdict that does not pass
+   keeps a rail, and only that one keeps the box around its own word. */
+.tvr-root[data-v='check'] {
+  padding-left: 1ch;
+  border-left: 2px solid var(--warn);
+}
+
+.tvr-root[data-v='stop'] {
+  padding-left: 1ch;
+  border-left: 2px solid var(--err);
+}
+
+.tvr-verdict {
+  border: 0;
+  padding: 0;
+}
+
+.tvr-root[data-v='check'] .tvr-verdict,
+.tvr-root[data-v='stop'] .tvr-verdict {
+  border: 1px solid currentColor;
+  padding: 0 1ch;
 }
 
 .tvr-head {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 2ch;
 }
 
 .tvr-tag {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-size: 12px;
   text-transform: uppercase;
-  color: var(--cs-muted);
-}
-
-.tvr-verdict {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  border-radius: 999px;
-  padding: 2px 10px;
-}
-
-.tvr-verdict--go {
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
-}
-
-.tvr-verdict--stop {
-  color: var(--cs-red-text);
-  background: var(--cs-red-soft);
-}
-
-.tvr-verdict--check {
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
+  color: var(--fg-dim);
 }
 
 .tvr-time {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 /* The review's own words: two lines max, the full text lives in the review. */
 .tvr-summary {
-  margin: 8px 0 0;
-  font-size: var(--fs-base);
-  line-height: 1.5;
-  color: var(--cs-text);
+  margin: calc(var(--row) / 2) 0 0;
+  color: var(--fg);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -151,65 +148,34 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 }
 
 .tvr-count {
-  margin: 7px 0 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  margin: calc(var(--row) / 2) 0 0;
+  color: var(--fg-dim);
 }
 
 /* Severity spread: counts only, the semaphore carries the weight. */
 .tvr-sev {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2ch;
   list-style: none;
-  margin: 7px 0 0;
+  margin: calc(var(--row) / 2) 0 0;
   padding: 0;
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
-}
-
-.tvr-sev li {
-  border-radius: 999px;
-  padding: 2px 9px;
-  color: var(--cs-muted);
-  background: var(--cs-panel);
-  border: 1px solid var(--cs-line-2);
-}
-
-/* Doubled specificity so the tone wins over the neutral chip above. */
-.tvr-sev li.tvr-sev--critical,
-.tvr-sev li.tvr-sev--major {
-  color: var(--cs-red-text);
-  border-color: var(--cs-red-line);
-  background: var(--cs-red-soft);
-}
-
-.tvr-sev li.tvr-sev--minor {
-  color: var(--cs-amber-text);
-  border-color: var(--cs-amber-line);
-  background: var(--cs-amber-soft);
 }
 
 .tvr-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 1ch;
+  margin-top: calc(var(--row) / 2);
 }
 
 .tvr-btn {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 5px 11px;
-  border-radius: 8px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface);
-  color: var(--cs-text-2);
-  cursor: pointer;
-  transition: border-color 0.12s ease;
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .tvr-btn:hover {
-  border-color: var(--cs-muted);
+  color: var(--fg);
 }
 </style>

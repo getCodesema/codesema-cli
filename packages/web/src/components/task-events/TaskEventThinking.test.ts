@@ -158,21 +158,33 @@ describe('TaskEventThinking chrome', () => {
 // Geometry cannot be read back from server-rendered HTML text (scoped
 // <style> never reaches the SSR string), so the exact measures the brief
 // specifies — fiche 12 section 3 — are checked directly on the component's
-// own source, the same technique style.test.ts uses for style.css.
-describe('TaskEventThinking geometry matches fiche 12 section 3, exactly', () => {
+// own source, the same technique styles.test.ts uses.
+describe('TaskEventThinking geometry follows the kit grid', () => {
   const source = readFileSync(
     fileURLToPath(new URL('./TaskEventThinking.vue', import.meta.url)),
     'utf-8',
   )
   const style = source.slice(source.indexOf('<style'))
 
-  test("the pilule's own padding and radius (8px sur 2px, rayon 8px)", () => {
-    expect(style).toContain('padding: 2px 8px;')
-    expect(style).toContain('border-radius: 8px;')
+  test("the pilule's padding sits on the character grid, with no radius", () => {
+    expect(style).toContain('padding: 2px 1ch;')
+    expect(style).not.toContain('border-radius')
   })
 
-  test('the chevron pivots in 200ms — NOT EventCard’s 150ms, a different gabarit', () => {
-    expect(style).toContain('transition: transform 200ms ease;')
+  test('the chevron pivots in the one transition the kit keeps', () => {
+    expect(style).toContain('transition: transform 150ms ease;')
+  })
+
+  test('the live dot blinks with the shared keyframes, no local animation', () => {
+    expect(style).toContain('animation: blink')
+    expect(style).not.toContain('@keyframes')
+    expect(style).not.toContain('forwards')
+  })
+
+  test('no hex literal, no raw rgba, no shadow: theme tokens only', () => {
+    expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(style).not.toContain('rgba(')
+    expect(style).not.toContain('box-shadow')
   })
 
   test('the fade is 36px wide', () => {
@@ -183,8 +195,8 @@ describe('TaskEventThinking geometry matches fiche 12 section 3, exactly', () =>
     expect(style).toContain('max-width: 65ch;')
   })
 
-  test('the unfolded box scrolls, capped at 360px', () => {
-    expect(style).toContain('max-height: 360px;')
+  test('the unfolded box scrolls, capped in whole text lines', () => {
+    expect(style).toContain('max-height: calc(var(--row) * 16);')
     expect(style).toContain('overflow-y: auto;')
   })
 

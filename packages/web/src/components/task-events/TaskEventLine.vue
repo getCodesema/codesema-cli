@@ -5,30 +5,34 @@
 // contract so the conversation can render them through <component :is>.
 import { computed } from 'vue'
 import { clockTime, eventSummary, eventTone } from '../../composables/useTaskBoard'
+import { G } from '../../glyphs'
+import { formatExactStamp } from '../../relative-time'
 import type { TaskEventCtx } from '../../task-event-registry'
 import type { TaskEvent, TaskRecord } from '../../types'
 
 const props = defineProps<{ event: TaskEvent; task: TaskRecord; ctx: TaskEventCtx }>()
 
-const TONE_COLOR = {
-  go: 'var(--cs-green)',
-  check: 'var(--cs-amber)',
-  stop: 'var(--cs-red)',
-  idle: 'var(--cs-dot-idle)',
+const EVENT_DATA_TONE = {
+  go: 'ok',
+  check: 'warn',
+  stop: 'err',
+  busy: 'info',
+  idle: 'idle',
 } as const
 
-const dotColor = computed(() => TONE_COLOR[eventTone(props.event)])
+const dataTone = computed(() => EVENT_DATA_TONE[eventTone(props.event)])
 const summary = computed(() => eventSummary(props.event))
 const stamp = computed(() => clockTime(props.event.at))
+const exact = computed(() => formatExactStamp(props.event.at))
 </script>
 
 <template>
-  <div class="tev-line">
-    <span class="tev-dot" :style="{ background: dotColor }" aria-hidden="true" />
+  <div class="tev-line" :data-tone="dataTone" :title="exact">
+    <span class="tev-dot" aria-hidden="true">{{ G.dot }}</span>
     <span class="tev-text" :class="{ 'tev-text--error': event.type === 'error' }">{{
       summary
     }}</span>
-    <span class="tev-time">{{ stamp }}</span>
+    <span v-if="ctx.showTime && stamp" class="tev-time">{{ stamp }}</span>
   </div>
 </template>
 
@@ -36,37 +40,29 @@ const stamp = computed(() => clockTime(props.event.at))
 .tev-line {
   display: flex;
   align-items: baseline;
-  gap: 9px;
-  padding: 3px 0;
-  font-size: var(--fs-base);
+  gap: 1ch;
 }
 
 .tev-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
   flex: none;
-  transform: translateY(-1px);
+  color: var(--tone);
 }
 
 .tev-text {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .tev-text--error {
-  color: var(--cs-red-text);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  color: var(--err);
 }
 
+/* Right after the text, never a column of its own: the stamp is an aside. */
 .tev-time {
-  margin-left: auto;
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 </style>

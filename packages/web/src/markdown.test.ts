@@ -58,4 +58,20 @@ describe('renderMarkdown', () => {
   test('hard-wrapped paragraph lines join with <br>', () => {
     expect(renderMarkdown('ligne 1\nligne 2')).toBe('<p>ligne 1<br>ligne 2</p>')
   })
+
+  test('blockquotes keep their lines, rules become <hr>', () => {
+    expect(renderMarkdown('> one\n> two\n\n---\n\nafter')).toBe(
+      '<blockquote>one<br>two</blockquote><hr><p>after</p>',
+    )
+  })
+
+  test('pipe tables render head and rows, cells inline-formatted', () => {
+    expect(renderMarkdown('| a | b |\n|---|:--:|\n| `x` | **y** |')).toBe(
+      '<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td><code>x</code></td><td><strong>y</strong></td></tr></tbody></table>',
+    )
+  })
+
+  test('a lone pipe line without a separator row stays a paragraph', () => {
+    expect(renderMarkdown('| not | a table |')).toBe('<p>| not | a table |</p>')
+  })
 })

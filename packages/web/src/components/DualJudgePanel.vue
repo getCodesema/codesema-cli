@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { G } from '../glyphs'
 import type { JudgeDecision, JudgeLive } from '../types'
 
 const props = defineProps<{
@@ -9,9 +10,9 @@ const props = defineProps<{
 type Stamp = 'merged' | 'rejected' | 'kept'
 
 const STAMP_GLYPH: Record<Stamp, string> = {
-  merged: '⟲',
-  rejected: '✗',
-  kept: '✓',
+  merged: G.retry,
+  rejected: G.fail,
+  kept: G.ok,
 }
 
 const STAMP_LABEL_KEY: Record<Stamp, string> = {
@@ -48,7 +49,7 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
       <div class="djp-bar-fill" :style="{ width: `${pct}%` }" />
     </div>
 
-    <TransitionGroup name="djp-fade" tag="div" class="djp-list">
+    <div class="djp-list">
       <div
         v-for="d in reversedDecisions"
         :key="d.id"
@@ -66,110 +67,85 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
           $t(STAMP_LABEL_KEY[stampFor(d)])
         }}</span>
       </div>
-    </TransitionGroup>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .djp-root {
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  border-radius: 12px;
-  padding: 14px 16px;
+  border: 1px solid var(--line);
+  padding: calc(var(--row) / 2) 1ch;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: calc(var(--row) / 2);
 }
 
 .djp-progress {
-  font-size: var(--fs-base);
-  font-weight: 600;
-  color: var(--codesema-ink-2);
-  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
 }
 
 .djp-bar {
-  height: 4px;
-  border-radius: 999px;
-  background: var(--codesema-line-2);
+  height: 2px;
+  background: var(--line);
   overflow: hidden;
 }
 
 .djp-bar-fill {
   height: 100%;
-  background: var(--codesema-accent);
-  border-radius: 999px;
-  transition: width 0.4s ease;
+  background: var(--accent);
 }
 
 .djp-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .djp-row {
   display: flex;
   align-items: baseline;
-  gap: 9px;
-  font-size: var(--fs-base);
-  padding: 4px 2px;
+  gap: 1ch;
 }
 
 .djp-stamp {
   flex-shrink: 0;
-  width: 16px;
+  width: 2ch;
   text-align: center;
   font-weight: 700;
 }
 
 .djp-row--kept .djp-stamp {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .djp-row--merged .djp-stamp {
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 .djp-row--rejected .djp-stamp {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
 .djp-id {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink);
+  font-size: 12px;
   flex-shrink: 0;
 }
 
 .djp-source {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   flex-shrink: 0;
 }
 
 .djp-detail {
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .djp-detail--muted {
-  color: var(--codesema-ink-3);
-  font-style: italic;
-}
-
-.djp-fade-enter-active {
-  transition:
-    opacity 0.3s ease,
-    transform 0.3s ease;
-}
-
-.djp-fade-enter-from {
-  opacity: 0;
-  transform: translateY(-4px);
+  color: var(--fg-muted);
 }
 </style>

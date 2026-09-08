@@ -1,0 +1,1464 @@
+/* Shared component classes, ported from design/ui-kit.html. A class lives here
+   when at least two SFCs use it; layout and BEM-prefixed rules stay scoped. */
+
+.seg {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 1px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.seg.palettes {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.seg button {
+  font: inherit;
+  color: var(--fg-dim);
+  background: var(--bg);
+  border: 0;
+  padding: 2px 2ch;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.seg button[aria-pressed='true'] {
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 700;
+}
+
+/* ---- text helpers ---- */
+
+.muted {
+  color: var(--fg-dim);
+}
+
+/* ---- panel: title sits in the border (fastfetch style) ---- */
+
+.panel {
+  position: relative;
+  border: 1px solid var(--line);
+  padding: var(--row) 2ch;
+  background: var(--bg);
+}
+
+.panel > .panel-title {
+  position: absolute;
+  top: calc(var(--row) / -2);
+  right: 2ch;
+  background: var(--bg);
+  padding: 0 1ch;
+  color: var(--fg-dim);
+}
+
+.panel > .panel-title.left {
+  right: auto;
+  left: 2ch;
+}
+
+/* ---- semantic tone: one attribute, read by every kit surface through --tone ---- */
+[data-tone='ok'] {
+  --tone: var(--ok);
+}
+[data-tone='warn'] {
+  --tone: var(--warn);
+}
+[data-tone='err'] {
+  --tone: var(--err);
+}
+[data-tone='info'] {
+  --tone: var(--info);
+}
+[data-tone='idle'] {
+  --tone: var(--fg-muted);
+}
+.status[data-tone]::before {
+  color: var(--tone);
+}
+.status[data-tone='info']::before {
+  animation: blink 1.2s steps(2) infinite;
+}
+.badge[data-tone] {
+  color: var(--tone);
+}
+.card[data-tone] {
+  --c: var(--tone);
+}
+
+/* ---- status ---- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 1ch;
+  color: var(--fg-dim);
+}
+
+.status::before {
+  content: '●';
+}
+
+.status[data-s='idle']::before {
+  color: var(--fg-dim);
+}
+
+.status[data-s='running']::before {
+  color: var(--info);
+  animation: blink 1.2s steps(2) infinite;
+}
+
+.status[data-s='waiting']::before {
+  color: var(--warn);
+}
+
+.status[data-s='done']::before {
+  color: var(--ok);
+}
+
+.status[data-s='error']::before {
+  color: var(--err);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0 1ch;
+  border: 1px solid currentColor;
+  color: var(--fg-dim);
+}
+
+.badge.ok {
+  color: var(--ok);
+}
+
+.badge.warn {
+  color: var(--warn);
+}
+
+.badge.err {
+  color: var(--err);
+}
+
+.badge.info {
+  color: var(--info);
+}
+
+.badge.alt {
+  color: var(--alt);
+}
+
+/* ---- buttons ---- */
+
+.btn {
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 2ch;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg);
+  border-radius: 0;
+}
+
+.btn:hover {
+  background: var(--bg-hover);
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 700;
+}
+
+.btn.primary:hover {
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.btn.danger {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.btn.danger:hover {
+  background: var(--err);
+  color: var(--bg);
+}
+
+.btn.ghost {
+  border-color: transparent;
+  color: var(--fg-dim);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn .key {
+  color: var(--fg-dim);
+  margin-left: 1ch;
+}
+
+.btn.primary .key {
+  color: var(--bg);
+  opacity: 0.6;
+}
+
+/* ---- key/value tree ---- */
+
+.kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 1ch;
+}
+
+.kv dt {
+  color: var(--fg-dim);
+}
+
+.kv dt::before {
+  content: '├─ ';
+  color: var(--fg-muted);
+}
+
+.kv dt:last-of-type::before {
+  content: '└─ ';
+}
+
+.kv dt.root::before {
+  content: '';
+}
+
+.kv dt.root {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- log ---- */
+
+.log {
+  margin: 0;
+  padding: calc(var(--row) / 2) 1ch;
+  background: var(--bg-raised);
+  border-left: 2px solid var(--line);
+  overflow-x: auto;
+  white-space: pre;
+  font: inherit;
+}
+
+.log .t {
+  color: var(--fg-dim);
+}
+
+.log .ok {
+  color: var(--ok);
+}
+
+.log .warn {
+  color: var(--warn);
+}
+
+.log .err {
+  color: var(--err);
+}
+
+.log .info {
+  color: var(--info);
+}
+
+/* ---- fields ---- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.field label {
+  color: var(--fg-dim);
+}
+
+.field .hint {
+  color: var(--fg-dim);
+}
+
+.field.invalid input {
+  border-color: var(--err);
+}
+
+.field.invalid .hint {
+  color: var(--err);
+}
+
+.check {
+  display: inline-flex;
+  gap: 1ch;
+  align-items: center;
+  cursor: pointer;
+}
+
+.check input {
+  min-width: 0;
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+/* ---- tabs ---- */
+
+.tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  padding: 2px 2ch;
+  color: var(--fg-dim);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.tab .n {
+  color: var(--fg-dim);
+  margin-right: 1ch;
+}
+
+/* ---- toast ---- */
+
+.toast {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 2ch;
+  align-items: baseline;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  padding: calc(var(--row) / 2) 2ch;
+  background: var(--bg-raised);
+  max-width: 64ch;
+}
+
+.toast.ok {
+  border-left-color: var(--ok);
+}
+
+.toast.err {
+  border-left-color: var(--err);
+}
+
+.toast.warn {
+  border-left-color: var(--warn);
+}
+
+.toast .k {
+  color: var(--fg-dim);
+}
+
+/* ================= application components ================= */
+
+/* ---- app bar + projects rail ---- */
+
+.appbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  height: calc(var(--row) + 8px);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+
+.appbar > * {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.appbar .brand {
+  padding: 0 2ch;
+  border-right: 1px solid var(--line);
+  font-weight: 700;
+}
+
+.appbar .brand i {
+  font-style: normal;
+  color: var(--ok);
+}
+
+.appbar .search {
+  gap: 1ch;
+  padding: 0 2ch;
+  color: var(--fg-dim);
+}
+
+.appbar .search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--fg);
+}
+
+.appbar .search input:focus {
+  outline: none;
+}
+
+.appbar .search kbd {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.appbar .cells {
+  padding: 0;
+}
+
+.cell {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  height: 100%;
+  padding: 0 2ch;
+  border-left: 1px solid var(--line);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.cell.warn {
+  color: var(--warn);
+}
+
+.cell.err {
+  color: var(--err);
+}
+
+.cell b {
+  font-weight: 400;
+  color: var(--fg);
+}
+
+button.cell {
+  font: inherit;
+  background: transparent;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  cursor: pointer;
+}
+
+button.cell:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+button.cell[aria-pressed='true'] {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 30ch 1fr;
+  border: 1px solid var(--line);
+  border-top: 0;
+}
+
+.rail {
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: calc(var(--row) + 4px);
+  padding: 0 1ch 0 2ch;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+
+.rail-h button {
+  font: inherit;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+
+.proj {
+  display: grid;
+  grid-template-columns: 1ch 1fr auto;
+  gap: 1ch;
+  padding: 2px 1ch 2px 2ch;
+  align-items: baseline;
+  cursor: pointer;
+}
+
+.proj:hover {
+  background: var(--bg-hover);
+}
+
+.proj[aria-current='true'] {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.proj[aria-current='true'] .name {
+  font-weight: 700;
+}
+
+.proj .dot {
+  color: var(--fg-muted);
+}
+
+.proj .dot.on {
+  color: var(--ok);
+}
+
+.proj .cnt {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.proj .cnt b {
+  color: var(--warn);
+  font-weight: 400;
+}
+
+.rail .sub {
+  padding: 0 1ch 4px 3ch;
+  color: var(--fg-dim);
+}
+
+.rail .sub div::before {
+  content: '├─ ';
+  color: var(--fg-muted);
+}
+
+.rail .sub div:last-child::before {
+  content: '└─ ';
+}
+
+/* ---- task card (work queue) ---- */
+
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row);
+}
+
+.queue-h {
+  display: flex;
+  justify-content: space-between;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 2px;
+}
+
+.queue-h.warn {
+  color: var(--warn);
+}
+
+.queue-h.ok {
+  color: var(--ok);
+}
+
+.queue-h .n {
+  color: var(--fg-muted);
+}
+
+.card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 2ch;
+  padding: calc(var(--row) / 2) 1ch;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  cursor: pointer;
+  --c: var(--line);
+  border-left-color: var(--c);
+}
+
+.card:hover {
+  background: var(--bg-hover);
+}
+
+.card[data-s='waiting_for_you'] {
+  --c: var(--warn);
+}
+
+.card[data-s='running'],
+.card[data-s='reviewing'] {
+  --c: var(--info);
+}
+
+.card[data-s='review_ok'],
+.card[data-s='shipped'] {
+  --c: var(--ok);
+}
+
+.card[data-s='review_ko'],
+.card[data-s='failed'] {
+  --c: var(--err);
+}
+
+.card[data-s='queued'],
+.card[data-s='interrupted'] {
+  --c: var(--fg-muted);
+}
+
+.card .title {
+  font-weight: 700;
+}
+
+.card .meta {
+  grid-column: 1 / -1;
+  color: var(--fg-dim);
+  display: flex;
+  gap: 2ch;
+  flex-wrap: wrap;
+}
+
+.card .meta .q {
+  color: var(--fg-muted);
+}
+
+.card .act {
+  display: flex;
+  gap: 1ch;
+  align-self: start;
+}
+
+.card .ask {
+  grid-column: 1 / -1;
+  color: var(--warn);
+}
+
+.bar {
+  grid-column: 1 / -1;
+  height: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--info);
+  animation: slide 1.6s linear infinite;
+}
+
+@keyframes slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.kvs {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 2ch;
+}
+
+.kvs dt {
+  color: var(--fg-dim);
+}
+
+.kvs dd {
+  margin: 0;
+}
+
+.st {
+  display: grid;
+  grid-template-columns: 3ch max-content 1fr;
+  gap: 0 1ch;
+}
+
+.st .g {
+  text-align: center;
+}
+
+.st .k {
+  color: var(--fg-dim);
+}
+
+/* ---- conversation ---- */
+
+.conv {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+}
+
+.conv-h {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1ch;
+  padding: 2px 1ch;
+  border-bottom: 1px solid var(--line);
+}
+
+.conv-h .chips {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 2ch;
+  color: var(--fg-dim);
+  flex-wrap: wrap;
+}
+
+.conv-h .act {
+  display: flex;
+  gap: 1ch;
+}
+
+.conv .tabs {
+  padding: 0 1ch;
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row);
+  padding: var(--row) 1ch;
+  max-height: calc(var(--row) * 26);
+  overflow: auto;
+}
+
+.msg {
+  display: grid;
+  grid-template-columns: 4ch 1fr;
+  gap: 1ch;
+}
+
+.msg .who {
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.msg .body {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The one filled surface of the thread: what the reader typed. Nothing else
+   here carries a background, a frame or a rail. */
+.msg.user .body {
+  color: var(--fg);
+  background: var(--bg-raised);
+  padding: calc(var(--row) / 2) 2ch;
+}
+
+.msg.live .body::after {
+  content: '▌';
+  color: var(--accent);
+  animation: blink 1s steps(2) infinite;
+}
+
+.msg .ts {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* A folded run is one dim line, not a framed block: the disclosure glyph and
+   the whitespace around it carry the grouping. */
+.tools summary {
+  cursor: pointer;
+  padding: 0;
+  color: var(--fg-dim);
+  list-style: none;
+}
+
+.tools summary::before {
+  content: '▸ ';
+  color: var(--fg-muted);
+}
+
+.tools[open] summary::before {
+  content: '▾ ';
+}
+
+.tools summary .status {
+  margin-right: 1ch;
+}
+
+.tool {
+  display: grid;
+  grid-template-columns: 2ch 1fr auto;
+  gap: 1ch;
+  padding: 0 1ch 0 3ch;
+  color: var(--fg-dim);
+}
+
+.tool .g {
+  color: var(--fg-muted);
+}
+
+.tool .g.ret {
+  color: var(--ok);
+}
+
+.tool code {
+  color: var(--fg);
+  background: none;
+  padding: 0;
+}
+
+.tool .d {
+  color: var(--fg-muted);
+}
+
+/* Amber on a rail, not a box: a question is the one block of the thread that
+   waits on the reader. The words themselves stay body text. */
+.question {
+  border-left: 2px solid var(--warn);
+  padding: 0 0 0 1ch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.question .q {
+  color: var(--fg);
+}
+
+.question .q::before {
+  content: '? ';
+  font-weight: 700;
+}
+
+.qr {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1ch;
+}
+
+.qr .btn {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.qr .btn::before {
+  content: '→ ';
+}
+
+.qr .btn.ghost {
+  color: var(--fg-dim);
+  border-color: transparent;
+}
+
+.qr .btn.ghost::before {
+  content: '';
+}
+
+.strip {
+  display: flex;
+  justify-content: space-between;
+  gap: 2ch;
+  padding: 2px 1ch;
+  border-top: 1px solid var(--line);
+  color: var(--fg-dim);
+}
+
+.strip button {
+  font: inherit;
+  background: none;
+  border: 0;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 1ch;
+  border-top: 1px solid var(--line);
+}
+
+.composer textarea {
+  min-width: 0;
+  width: 100%;
+  resize: vertical;
+  min-height: calc(var(--row) * 2);
+}
+
+.composer[data-mode='question'] textarea {
+  border-color: var(--warn);
+}
+
+.composer[data-mode='dead'] {
+  color: var(--fg-dim);
+}
+
+.composer .hint {
+  grid-column: 1 / -1;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* In flight is not a state to act on: the blinking status dot says it, the
+   block itself stays as quiet as any other. */
+.review-live {
+  padding: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 2ch;
+  color: var(--fg-dim);
+}
+
+.review-live b {
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+
+/* ---- task composer + plan ---- */
+
+.plan {
+  border: 1px dashed var(--line);
+  padding: calc(var(--row) / 2) 1ch;
+}
+
+.plan .kvs dd.warn {
+  color: var(--warn);
+}
+
+.toggle {
+  display: inline-flex;
+  gap: 1ch;
+  align-items: center;
+  cursor: pointer;
+  color: var(--fg-dim);
+}
+
+.toggle i {
+  display: inline-block;
+  width: 5ch;
+  border: 1px solid var(--line);
+  font-style: normal;
+  text-align: left;
+  padding: 0 0.5ch;
+}
+
+.toggle[aria-pressed='true'] {
+  color: var(--fg);
+}
+
+.toggle[aria-pressed='true'] i {
+  border-color: var(--ok);
+  color: var(--ok);
+  text-align: right;
+}
+
+/* ---- diff ---- */
+
+.diff {
+  border: 1px solid var(--line);
+}
+
+.diff-t {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2ch;
+  height: calc(var(--row) + 4px);
+  padding: 0 2ch;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-dim);
+}
+
+.diff-t .seg {
+  height: calc(var(--row) - 2px);
+}
+
+.diff-t .seg button {
+  padding: 0 1ch;
+}
+
+.diff-f {
+  display: grid;
+  grid-template-columns: 2ch 1fr auto auto;
+  gap: 2ch;
+  align-items: center;
+  height: calc(var(--row) + 4px);
+  padding: 0 2ch;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.diff-f:first-of-type {
+  border-top: 0;
+}
+
+.diff-f .chev {
+  color: var(--fg-muted);
+}
+
+.diff-f .path {
+  color: var(--fg);
+}
+
+.diff-f .notes {
+  color: var(--warn);
+}
+
+.diff-f .pm {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-f .pm .a {
+  color: var(--ok);
+}
+
+.diff-f .pm .d {
+  color: var(--err);
+}
+
+.diff-body {
+  overflow-x: auto;
+}
+
+.diff table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.diff col.n {
+  width: 6ch;
+}
+
+.diff td {
+  padding: 0 1ch;
+  border: 0;
+  line-height: var(--lh);
+  white-space: pre;
+}
+
+.diff tr:hover td {
+  background: transparent;
+}
+
+.diff td.n {
+  text-align: right;
+  color: var(--fg-muted);
+  user-select: none;
+  background: var(--bg-raised);
+}
+
+.diff td.n + td.n {
+  border-right: 1px solid var(--line);
+}
+
+.diff tr.add td.c {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+}
+
+.diff tr.add td.n:last-of-type {
+  color: var(--ok);
+}
+
+.diff tr.del td.c {
+  background: color-mix(in srgb, var(--err) 14%, transparent);
+}
+
+.diff tr.del td.n:first-of-type {
+  color: var(--err);
+}
+
+.diff tr.gap td.c {
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.diff tr.gap td.c::before {
+  content: '↕ ';
+}
+
+.diff tr.gap:hover td.c {
+  color: var(--accent);
+}
+
+.diff tr.note td.c {
+  white-space: normal;
+  padding: 6px 1ch;
+}
+
+.note {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--kind, var(--info));
+  padding: 4px 1ch 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 80ch;
+  background: var(--bg);
+}
+
+.note .h {
+  display: flex;
+  gap: 2ch;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.note .h .t {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.note .h .who {
+  color: var(--fg-muted);
+  margin-left: auto;
+}
+
+.note .kind {
+  color: var(--kind, var(--info));
+  border: 1px solid currentColor;
+  padding: 0 1ch;
+}
+
+.note[data-kind='security'] {
+  --kind: var(--err);
+}
+
+.note[data-kind='perf'] {
+  --kind: var(--warn);
+}
+
+.note[data-kind='convention'] {
+  --kind: var(--info);
+}
+
+.note[data-kind='design'] {
+  --kind: var(--alt);
+}
+
+.note[data-kind='praise'] {
+  --kind: var(--ok);
+}
+
+.note[data-kind='why'] {
+  --kind: var(--fg-dim);
+}
+
+.note p {
+  color: var(--fg-dim);
+}
+
+.note pre {
+  margin: 0;
+  background: var(--bg-raised);
+  border-left: 2px solid var(--line);
+  padding: 2px 1ch;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.note .a {
+  display: flex;
+  gap: 1ch;
+}
+
+.sev {
+  color: var(--fg-dim);
+}
+
+.sev[data-v='critical'] {
+  color: var(--err);
+  font-weight: 700;
+}
+
+.sev[data-v='major'] {
+  color: var(--err);
+}
+
+.sev[data-v='minor'] {
+  color: var(--warn);
+}
+
+.sev[data-v='info'] {
+  color: var(--info);
+}
+
+/* ---- checks ---- */
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--row) / 2);
+}
+
+.check-row {
+  display: grid;
+  grid-template-columns: 2ch 1fr auto auto;
+  gap: 2ch;
+  padding: 0;
+  align-items: baseline;
+}
+
+.check-row .g {
+  text-align: center;
+}
+
+.check-row[data-s='passed'] .g {
+  color: var(--ok);
+}
+
+.check-row[data-s='failed'] .g {
+  color: var(--err);
+}
+
+.check-row[data-s='timeout'] .g {
+  color: var(--warn);
+}
+
+.check-row[data-s='skipped'] .g,
+.check-row[data-s='skipped'] {
+  color: var(--fg-dim);
+}
+
+.check-row .r {
+  color: var(--fg-dim);
+}
+
+.check-row details {
+  grid-column: 1 / -1;
+}
+
+.check-row summary {
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+/* ---- review verdict + step rail ---- */
+
+.verdict {
+  display: inline-flex;
+  gap: 1ch;
+  align-items: center;
+  padding: 0 1ch;
+  border: 1px solid currentColor;
+}
+
+.verdict[data-v='go'] {
+  color: var(--ok);
+}
+
+.verdict[data-v='check'] {
+  color: var(--warn);
+}
+
+.verdict[data-v='stop'] {
+  color: var(--err);
+}
+
+.verdict::before {
+  content: '●';
+}
+
+.steprail {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+
+.steprail .node {
+  padding: 0 1ch;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.steprail .node.done {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.steprail .node.cur {
+  color: var(--fg);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.steprail .node.risk {
+  border-color: var(--err);
+}
+
+.steprail .link {
+  width: 2ch;
+  border-top: 1px solid var(--line);
+}
+
+.stepcard {
+  display: grid;
+  grid-template-columns: 3ch 1fr auto;
+  gap: 1ch;
+  padding: 4px 1ch;
+  border: 1px solid var(--line);
+}
+
+.stepcard .i {
+  color: var(--fg-muted);
+}
+
+.stepcard .r {
+  color: var(--fg-dim);
+  grid-column: 2;
+}
+
+.stepcard .risk {
+  font-size: 12px;
+}
+
+.risk[data-r='high'] {
+  color: var(--err);
+}
+
+.risk[data-r='medium'] {
+  color: var(--warn);
+}
+
+.risk[data-r='low'] {
+  color: var(--ok);
+}
+
+/* ---- system states ---- */
+
+.empty {
+  border: 1px dashed var(--line);
+  padding: var(--row) 2ch;
+  color: var(--fg-dim);
+  text-align: center;
+}
+
+.empty b {
+  display: block;
+  color: var(--fg);
+  font-weight: 400;
+}
+
+.live {
+  display: flex;
+  gap: 1ch;
+  align-items: baseline;
+  padding: 2px 1ch;
+  border-left: 3px solid var(--warn);
+}
+
+.live.err {
+  border-left-color: var(--err);
+}
+
+.btn.armed {
+  background: var(--err);
+  border-color: var(--err);
+  color: var(--bg);
+}
+
+/* ── Rendered markdown (agent and user messages, live bubbles) ─────────── */
+.md {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote,
+.md table {
+  margin: 0 0 calc(var(--row) / 2);
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md h2,
+.md h3 {
+  margin: var(--row) 0 calc(var(--row) / 2);
+  font-size: var(--fs);
+  font-weight: 700;
+  color: var(--fg);
+}
+.md h2:first-child,
+.md h3:first-child {
+  margin-top: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 3ch;
+}
+.md li {
+  margin: 2px 0;
+}
+.md code {
+  white-space: pre-wrap;
+}
+.md pre {
+  padding: calc(var(--row) / 2) 1ch;
+  background: var(--bg-raised);
+  overflow-x: auto;
+}
+.md pre code {
+  color: var(--fg);
+  background: none;
+  padding: 0;
+}
+.md a {
+  color: var(--accent);
+}
+.md blockquote {
+  padding-left: 2ch;
+  border-left: 2px solid var(--line);
+  color: var(--fg-dim);
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: calc(var(--row) / 2) 0;
+}
+.md table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  padding: 0 1ch;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.md th {
+  color: var(--fg-dim);
+  font-weight: 700;
+}

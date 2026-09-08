@@ -15,7 +15,6 @@
 // rotated.
 import {
   ArrowUpDown,
-  ChevronDown,
   ChevronsLeft,
   CircleDot,
   Clock,
@@ -29,6 +28,7 @@ import {
 import { computed, nextTick, ref } from 'vue'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type { ForgeMr, ForgeMrStateFilter } from '../../types'
 import {
@@ -215,11 +215,12 @@ const mrsLabelCountsFiltered = computed(() =>
           >
             <CircleDot class="fcp-acc-icon" aria-hidden="true" />
             <span class="fcp-acc-label">{{ t('forge.issuesTitle') }}</span>
-            <ChevronDown
+            <span
               class="fcp-acc-chevron"
               :class="{ 'fcp-acc-chevron--closed': activeSection !== 'issues' }"
               aria-hidden="true"
-            />
+              >{{ activeSection === 'issues' ? G.expand : G.collapse }}</span
+            >
           </button>
           <div v-if="activeSection === 'issues'" id="fcp-body-issues" class="fcp-acc-body">
             <template v-if="issuesHasData">
@@ -230,7 +231,7 @@ const mrsLabelCountsFiltered = computed(() =>
                     {{ t('forge.sortLabel') }}
                   </span>
                 </h3>
-                <div class="fcp-row-list" role="radiogroup" :aria-label="t('forge.sortLabel')">
+                <div class="fcp-row-list seg" role="radiogroup" :aria-label="t('forge.sortLabel')">
                   <button
                     v-for="opt in SORT_OPTIONS"
                     :key="opt.value"
@@ -310,11 +311,12 @@ const mrsLabelCountsFiltered = computed(() =>
           >
             <GitPullRequest class="fcp-acc-icon" aria-hidden="true" />
             <span class="fcp-acc-label">{{ t('forge.mrsTitle') }}</span>
-            <ChevronDown
+            <span
               class="fcp-acc-chevron"
               :class="{ 'fcp-acc-chevron--closed': activeSection !== 'mrs' }"
               aria-hidden="true"
-            />
+              >{{ activeSection === 'mrs' ? G.expand : G.collapse }}</span
+            >
           </button>
           <div v-if="activeSection === 'mrs'" id="fcp-body-mrs" class="fcp-acc-body">
             <template v-if="mrsHasData">
@@ -325,7 +327,7 @@ const mrsLabelCountsFiltered = computed(() =>
                     {{ t('forge.sortLabel') }}
                   </span>
                 </h3>
-                <div class="fcp-row-list" role="radiogroup" :aria-label="t('forge.sortLabel')">
+                <div class="fcp-row-list seg" role="radiogroup" :aria-label="t('forge.sortLabel')">
                   <button
                     v-for="opt in SORT_OPTIONS"
                     :key="opt.value"
@@ -360,7 +362,11 @@ const mrsLabelCountsFiltered = computed(() =>
                   </button>
                 </h3>
                 <div class="fcp-row-list">
-                  <div role="radiogroup" :aria-label="t('forge.stateAria')" class="fcp-row-group">
+                  <div
+                    role="radiogroup"
+                    :aria-label="t('forge.stateAria')"
+                    class="fcp-row-group seg"
+                  >
                     <button
                       v-for="s in MR_STATES"
                       :key="s.value"
@@ -377,16 +383,18 @@ const mrsLabelCountsFiltered = computed(() =>
                   <div class="fcp-filter-sep" role="none" />
                   <!-- Cumulative: a checkbox, never a radio, because it
                        combines with whichever state is selected above. -->
-                  <button
-                    type="button"
-                    class="fcp-row"
-                    :class="{ 'fcp-row--on': mrsDraftOnly }"
-                    role="checkbox"
-                    :aria-checked="mrsDraftOnly"
-                    @click="toggleMrDraftOnly"
-                  >
-                    {{ t('forge.filterDraftOnly') }}
-                  </button>
+                  <div class="fcp-row-group seg">
+                    <button
+                      type="button"
+                      class="fcp-row"
+                      :class="{ 'fcp-row--on': mrsDraftOnly }"
+                      role="checkbox"
+                      :aria-checked="mrsDraftOnly"
+                      @click="toggleMrDraftOnly"
+                    >
+                      {{ t('forge.filterDraftOnly') }}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -450,7 +458,7 @@ const mrsLabelCountsFiltered = computed(() =>
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px 0 0;
+  padding: calc(var(--row) / 2) 0 0;
 }
 
 .fcp-root--collapsed {
@@ -460,33 +468,31 @@ const mrsLabelCountsFiltered = computed(() =>
 .fcp-collapse {
   align-self: flex-end;
   flex: none;
-  width: 26px;
-  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-family: inherit;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 7px;
-  background: var(--cs-surface);
-  color: var(--cs-muted);
+  font: inherit;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-dim);
   cursor: pointer;
-  margin: 0 8px 8px 0;
+  padding: 2px 1ch;
+  margin: 0 1ch calc(var(--row) / 2) 0;
 }
 
 .fcp-collapse svg {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .fcp-collapse:hover {
-  border-color: var(--cs-line-3);
-  color: var(--cs-text-2);
+  border-color: var(--accent);
+  color: var(--fg);
 }
 
-/* Collapsed band: the whole 48px-wide strip is the reopen control, no
-   separate small button. Text runs vertically, top-to-bottom, truncated to
-   whatever height the band actually gets. */
+/* Collapsed band: the whole strip is the reopen control, no separate small
+   button. Text runs vertically, top-to-bottom, truncated to whatever height
+   the band actually gets. */
 .fcp-band {
   flex: 1;
   width: 100%;
@@ -494,16 +500,17 @@ const mrsLabelCountsFiltered = computed(() =>
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 12px 0;
+  padding: var(--row) 0;
   border: none;
   background: transparent;
-  color: var(--cs-muted);
+  font: inherit;
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .fcp-band:hover {
-  background: var(--cs-hover);
-  color: var(--cs-text-2);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .fcp-band-name {
@@ -512,8 +519,7 @@ const mrsLabelCountsFiltered = computed(() =>
   text-overflow: ellipsis;
   white-space: nowrap;
   max-height: 100%;
-  font-size: var(--fs-base);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 /* Below the shell's own 640px (the panels' own stacking breakpoint, see
@@ -523,7 +529,7 @@ const mrsLabelCountsFiltered = computed(() =>
   .fcp-band {
     width: 100%;
     height: 48px;
-    padding: 0 14px;
+    padding: 0 2ch;
     justify-content: flex-start;
   }
 
@@ -547,7 +553,7 @@ const mrsLabelCountsFiltered = computed(() =>
 /* Adapts the project menu to living INSIDE the rail rather than being its
    own column. Three overrides, all of them undoing "I am a standalone
    column" so it becomes "I am a block in a column that scrolls":
-   the fixed 236px track gives way to the rail's own width, and neither the
+   the fixed track gives way to the rail's own width, and neither the
    track nor its card scrolls or stretches on its own, since `.fcp-root` is
    the one scrolling. Scoped here rather than changed in ProjectsNav.vue,
    which still IS a standalone column everywhere the board is not shown. */
@@ -568,122 +574,120 @@ const mrsLabelCountsFiltered = computed(() =>
   min-height: 0;
 }
 
-/* Section container: 8px external margin, 16px radius, 1px neutral border,
-   elevated surface, discrete shadow. */
 .fcp-section {
-  margin: 8px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 16px;
-  background: var(--cs-surface-2);
-  box-shadow: var(--cs-shadow-card);
-  overflow: hidden;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.fcp-section:first-child {
+  border-top: none;
 }
 
 .fcp-acc-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
   width: 100%;
   text-align: left;
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  font: inherit;
+  font-size: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 10px 12px;
+  letter-spacing: 0.08em;
+  padding: calc(var(--row) / 2) 1ch 2px;
   border: none;
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .fcp-acc-head:hover {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .fcp-acc-icon {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .fcp-acc-chevron {
   flex: none;
-  width: 14px;
-  height: 14px;
   margin-left: auto;
-  transition: transform 150ms ease;
-}
-
-.fcp-acc-chevron--closed {
-  transform: rotate(-90deg);
+  color: var(--fg-muted);
 }
 
 .fcp-acc-body {
-  padding-bottom: 12px;
+  padding-bottom: calc(var(--row) / 2);
 }
 
 .fcp-block {
-  padding: 0 12px;
+  padding: 0 1ch;
+}
+
+.fcp-block + .fcp-block {
+  border-top: 1px solid var(--line);
 }
 
 .fcp-block-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin: 20px 0 6px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--cs-ghost);
+  gap: 1ch;
+  margin: var(--row) 0 calc(var(--row) / 2);
+  font-size: 12px;
 }
 
 .fcp-block-title-text {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .fcp-block-icon {
   flex: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .fcp-row-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(var(--row) / 2);
+}
+
+/* One hairline grid, the kit's segmented control, stacked instead of inline:
+   the rail is a column, the options are full width. */
+.fcp-row-list.seg,
+.fcp-row-group.seg {
+  display: grid;
+  grid-auto-flow: row;
+  gap: 1px;
 }
 
 .fcp-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 1ch;
   width: 100%;
   text-align: left;
-  font-family: inherit;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
-  padding: 6px 8px;
+  font: inherit;
+  color: var(--fg-dim);
+  padding: 2px 1ch;
   border: none;
-  border-radius: 8px;
-  background: transparent;
+  background: var(--bg);
   cursor: pointer;
 }
 
 .fcp-row:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
-/* Selected: an accent-weak fill and a heavier weight, per the doctrine.
-   Never a border -- a row's identity comes from its content and fill. */
+/* Selected reads like every other kit segment: inverted, never a border of
+   its own -- the segmented control already draws the hairlines. */
 .fcp-row--on {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
-  font-weight: 500;
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 700;
 }
 
 .fcp-row-icon {
@@ -695,33 +699,32 @@ const mrsLabelCountsFiltered = computed(() =>
 /* Between the mutually exclusive states and the cumulable toggles. */
 .fcp-filter-sep {
   height: 1px;
-  margin: 4px 0;
-  background: var(--cs-line-2);
+  margin: 0;
+  background: var(--line);
 }
 
 .fcp-reset {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 500;
+  gap: 1ch;
+  font: inherit;
+  font-size: 12px;
   text-transform: none;
   letter-spacing: normal;
-  color: var(--cs-ghost);
+  color: var(--fg-dim);
   background: transparent;
   border: none;
   cursor: pointer;
 }
 
 .fcp-reset:hover {
-  color: var(--cs-text-2);
+  color: var(--fg);
 }
 
 .fcp-reset svg {
-  width: 11px;
-  height: 11px;
+  width: 14px;
+  height: 14px;
 }
 
 .fcp-search-toggle {
@@ -729,67 +732,61 @@ const mrsLabelCountsFiltered = computed(() =>
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
   border: none;
-  border-radius: 6px;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
+  padding: 0 1ch;
 }
 
 .fcp-search-toggle svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .fcp-search-toggle:hover {
-  color: var(--cs-text-2);
+  color: var(--fg);
 }
 
 .fcp-search-toggle--on {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .fcp-label-search {
   position: relative;
-  margin: 0 0 8px;
+  margin: 0 0 calc(var(--row) / 2);
 }
 
 .fcp-label-search-input {
   width: 100%;
-  font-family: inherit;
-  font-size: var(--fs-base);
-  padding: 6px 28px 6px 12px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
-  background: var(--cs-inset);
-  color: var(--cs-text);
+  min-width: 0;
+  font: inherit;
+  padding: 2px 4ch 2px 1ch;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--fg);
 }
 
 .fcp-label-search-close {
   position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
+  right: 1ch;
+  top: 2px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
   border: none;
-  border-radius: 5px;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
+  padding: 0;
 }
 
 .fcp-label-search-close svg {
-  width: 11px;
-  height: 11px;
+  width: 14px;
+  height: 14px;
 }
 
 .fcp-label-search-close:hover {
-  color: var(--cs-text-2);
+  color: var(--fg);
 }
 </style>

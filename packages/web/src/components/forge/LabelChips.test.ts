@@ -77,9 +77,9 @@ describe('LabelChips', () => {
     expect(selected).toContain('#d73a4a')
   })
 
-  test('a null color falls back to the neutral --cs-* tokens, never an invented color', async () => {
+  test('a null color falls back to the neutral theme tokens, never an invented color', async () => {
     const html = await render([{ label: 'bug', color: null, count: 1 }], [])
-    expect(html).toContain('var(--cs-line-2)')
+    expect(html).toContain('var(--line)')
     expect(html).not.toContain('rgba(')
   })
 })

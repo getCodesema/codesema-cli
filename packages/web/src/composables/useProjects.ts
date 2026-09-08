@@ -6,6 +6,7 @@
 // bottom are the only impure parts and stay best-effort.
 
 import type { MessageKey } from '../i18n'
+import { readStorageItem, removeStorageItem, writeStorageItem } from '../storage'
 import type {
   ForgeMr,
   ForgeUnavailableReason,
@@ -26,20 +27,6 @@ import type { TaskState } from './useTasks'
  */
 export function shortBranch(name: string): string {
   return name.startsWith('origin/') ? name.slice('origin/'.length) : name
-}
-
-/**
- * Stable identity hue of a project, derived from its name alone (FNV-1a hash
- * spread by the golden angle): the same name always gets the same hue, two
- * neighbouring names land far apart on the wheel. Range: [0, 360).
- */
-export function nameColor(name: string): number {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < name.length; i++) {
-    hash ^= name.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return Math.round(((hash >>> 0) * 137.508) % 360)
 }
 
 /** localStorage key of the active project card (single id). */
@@ -334,26 +321,6 @@ export function resolveBranchClick(
   return { kind: 'draft-workon', branch: short, target: mr ? shortBranch(mr.targetBranch) : null }
 }
 
-// ── localStorage wrappers (best-effort: privacy modes can throw) ───────────
-
-function readStorageItem(key: string): string | null {
-  try {
-    return typeof localStorage === 'undefined' ? null : localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-function writeStorageItem(key: string, value: string): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(key, value)
-    }
-  } catch {
-    // Best-effort: the API's `current` re-seeds the choice next launch.
-  }
-}
-
 /** Reads the persisted active card, seeded from the retired composer key. */
 export function readPersistedActiveProject(): string | null {
   return migrateActiveProject(
@@ -369,13 +336,7 @@ export function persistActiveProject(id: string): void {
 
 /** Removes the retired keys; call once after readPersistedActiveProject. */
 export function purgeDeadStorageKeys(): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      for (const key of DEAD_STORAGE_KEYS) {
-        localStorage.removeItem(key)
-      }
-    }
-  } catch {
-    // Best-effort.
+  for (const key of DEAD_STORAGE_KEYS) {
+    removeStorageItem(key)
   }
 }

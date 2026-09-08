@@ -1,7 +1,8 @@
-// Pure "time ago" formatting for a fixed ISO timestamp: bucketed into just
-// now / minutes / hours / days / weeks / months / years, each unit wrapped
-// through i18n. `now` is an explicit parameter (defaulting to the wall
-// clock) so callers can render deterministically in tests.
+// Date formatting for a fixed ISO timestamp. Under a day the age reads as a
+// relative bucket (just now / minutes / hours); under a week it becomes a
+// weekday and a clock time; beyond that a numeric date. `now` is an explicit
+// parameter (defaulting to the wall clock) so callers can render
+// deterministically in tests.
 
 import { t } from './i18n'
 
@@ -9,8 +10,10 @@ const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 const WEEK = 7 * DAY
-const MONTH = 30 * DAY
-const YEAR = 365 * DAY
+
+function dateFormat(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(t('time.locale'), { hour12: false, ...options })
+}
 
 /**
  * A timestamp at or after `now` (clock skew, or a value that has not
@@ -34,15 +37,23 @@ export function formatRelativeAge(iso: string, now: number = Date.now()): string
   if (diffMs < DAY) {
     return t('time.hoursAgo', { n: Math.floor(diffMs / HOUR) })
   }
+  const date = new Date(then)
   if (diffMs < WEEK) {
-    return t('time.daysAgo', { n: Math.floor(diffMs / DAY) })
+    return dateFormat({ weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(date)
   }
-  if (diffMs < MONTH) {
-    return t('time.weeksAgo', { n: Math.floor(diffMs / WEEK) })
+  return dateFormat({
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+/** Full date and time, for the `title` of a line that shows an abridged one. */
+export function formatExactStamp(iso: string): string {
+  const then = Date.parse(iso)
+  if (Number.isNaN(then)) {
+    return ''
   }
-  if (diffMs < YEAR) {
-    return t('time.monthsAgo', { n: Math.floor(diffMs / MONTH) })
-  }
-  const n = Math.floor(diffMs / YEAR)
-  return t('time.yearsAgo', { n }, n)
+  return dateFormat({ dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(then))
 }

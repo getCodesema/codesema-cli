@@ -5,7 +5,7 @@
 // mounted as-is — ForgeDetailPanel for a merge request (body, labels,
 // reviewers, checks), PreviewPanel for a branch (commits, files, per-file
 // diff, computed by git alone).
-import { GitBranch, Loader, Play } from '@lucide/vue'
+import { GitBranch, Play } from '@lucide/vue'
 import { computed } from 'vue'
 import { sameReviewSource } from '../../composables/useWorkspaceNav'
 import { t, type MessageKey } from '../../i18n'
@@ -94,22 +94,31 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 
       <div class="rtp-actions">
         <template v-if="runningHere">
-          <button class="rtp-run rtp-run--live" type="button" @click="emit('open-running')">
-            <Loader class="rtp-spin" aria-hidden="true" />
-            {{ t('codeReview.running') }}
+          <button class="rtp-run rtp-run--live btn" type="button" @click="emit('open-running')">
+            <span class="rtp-live status" data-s="running">{{ t('codeReview.running') }}</span>
           </button>
         </template>
         <template v-else-if="running">
-          <button class="rtp-run" type="button" @click="emit('open-running')">
+          <button class="rtp-run btn" type="button" @click="emit('open-running')">
             {{ t('codeReview.busyElsewhere') }}
           </button>
         </template>
         <template v-else>
-          <button class="rtp-run" type="button" :disabled="starting" @click="emit('run', 'simple')">
+          <button
+            class="rtp-run btn"
+            type="button"
+            :disabled="starting"
+            @click="emit('run', 'simple')"
+          >
             <Play class="rtp-glyph" aria-hidden="true" />
             {{ t('codeReview.runSimple') }}
           </button>
-          <button class="rtp-run" type="button" :disabled="starting" @click="emit('run', 'dual')">
+          <button
+            class="rtp-run btn"
+            type="button"
+            :disabled="starting"
+            @click="emit('run', 'dual')"
+          >
             {{ t('codeReview.runDual') }}
           </button>
         </template>
@@ -120,8 +129,12 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
     <section class="rtp-history">
       <h2 class="rtp-history-title">{{ t('codeReview.historyTitle') }}</h2>
       <p v-if="historyError" class="rtp-error" role="alert">{{ t('codeReview.historyError') }}</p>
-      <p v-else-if="history === null" class="rtp-muted">{{ t('codeReview.historyLoading') }}</p>
-      <p v-else-if="history.length === 0" class="rtp-muted">{{ t('codeReview.historyEmpty') }}</p>
+      <p v-else-if="history === null" class="rtp-muted muted">
+        {{ t('codeReview.historyLoading') }}
+      </p>
+      <p v-else-if="history.length === 0" class="rtp-muted muted">
+        {{ t('codeReview.historyEmpty') }}
+      </p>
       <ul v-else class="rtp-archives">
         <li v-for="entry in history" :key="entry.ref">
           <button class="rtp-archive" type="button" @click="emit('open-archive', entry.ref)">
@@ -156,28 +169,24 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  background: var(--cs-panel);
 }
 
 .rtp-head {
   flex: none;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--cs-line);
+  padding: calc(var(--row) / 2) 2ch;
+  border-bottom: 1px solid var(--line);
 }
 
 .rtp-project {
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .rtp-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 2px 0 0;
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  color: var(--cs-text);
+  gap: 1ch;
+  font-size: 18px;
 }
 
 .rtp-glyph {
@@ -187,101 +196,58 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
 }
 
 .rtp-number {
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .rtp-hint {
-  margin: 6px 0 0;
-  font-size: var(--fs-xs);
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .rtp-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 1ch;
+  margin-top: calc(var(--row) / 2);
 }
 
 .rtp-run {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border: 1px solid var(--cs-line-3);
-  border-radius: 6px;
-  background: var(--cs-surface);
-  color: var(--cs-text);
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-
-.rtp-run:hover:not(:disabled) {
-  background: var(--cs-hover);
-}
-
-.rtp-run:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.rtp-run:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
-  outline-offset: 1px;
+  gap: 1ch;
+  font-size: 12px;
 }
 
 /* Amber, not the strong attention amber: an agent is at work and nothing is
    asked of the human. */
 .rtp-run--live {
-  border-color: var(--cs-amber-line);
-  color: var(--cs-amber-text);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
-.rtp-spin {
-  width: 13px;
-  height: 13px;
-  animation: rtp-spin 1.2s linear infinite;
-}
-
-@keyframes rtp-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rtp-spin {
-    animation: none;
-  }
+.rtp-live {
+  color: inherit;
 }
 
 .rtp-error {
-  margin: 8px 0 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-red-text);
+  font-size: 12px;
+  color: var(--err);
 }
 
 .rtp-history {
   flex: none;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--cs-line);
+  padding: calc(var(--row) / 2) 2ch;
+  border-bottom: 1px solid var(--line);
 }
 
 .rtp-history-title {
-  margin: 0 0 8px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
+  font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .rtp-muted {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  font-size: 12px;
 }
 
 .rtp-archives {
@@ -290,56 +256,49 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .rtp-archive {
   width: 100%;
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 5px 6px;
+  gap: 2ch;
+  padding: 0 1ch;
   border: none;
-  border-radius: 6px;
   background: transparent;
-  color: var(--cs-text-2);
-  font-family: inherit;
-  font-size: var(--fs-sm);
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
 
 .rtp-archive:hover {
-  background: var(--cs-hover);
-}
-
-.rtp-archive:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
-  outline-offset: -2px;
+  background: var(--bg-hover);
 }
 
 .rtp-verdict {
   flex: none;
-  min-width: 128px;
-  font-weight: 600;
+  min-width: 18ch;
+  font-weight: 700;
 }
 
 .rtp-verdict--approve {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .rtp-verdict--request_changes {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .rtp-verdict--comment {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .rtp-archive-age,
 .rtp-archive-mode,
 .rtp-archive-findings {
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .rtp-body {

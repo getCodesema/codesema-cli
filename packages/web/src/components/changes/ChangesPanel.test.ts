@@ -76,7 +76,7 @@ describe('no pull request (fiche §7)', () => {
 
   test('the close button is still there: the panel stays closable with nothing to show', async () => {
     const html = await render({ mr: null })
-    expect(html).toContain('class="cp-close"')
+    expect(html).toContain('class="btn ghost cp-close"')
     expect(html).toContain(t('changes.close'))
   })
 })
@@ -109,10 +109,10 @@ describe('the state badge (fiche §4: green/open, lavender/merged, our own draft
   })
 
   test('each variant has its own distinct color rule', () => {
-    expect(SOURCE).toMatch(/\.cp-badge--open\s*\{[^}]*background: var\(--cs-green\);/)
-    expect(SOURCE).toMatch(/\.cp-badge--draft\s*\{[^}]*background: var\(--cs-ghost\);/)
-    expect(SOURCE).toMatch(/\.cp-badge--merged\s*\{[^}]*background: var\(--cs-lavender\);/)
-    expect(SOURCE).toMatch(/\.cp-badge--closed\s*\{[^}]*background: var\(--cs-red\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--open\s*\{[^}]*color: var\(--ok\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--draft\s*\{[^}]*color: var\(--fg-dim\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--merged\s*\{[^}]*color: var\(--alt\);/)
+    expect(SOURCE).toMatch(/\.cp-badge--closed\s*\{[^}]*color: var\(--err\);/)
   })
 })
 
@@ -167,9 +167,10 @@ describe('the title block (fiche §4)', () => {
     expect(html).not.toContain('class="cp-del"')
   })
 
-  test('the title is one step above the base size, semi-bold, tight line-height', () => {
-    expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-size: var\(--fs-lg\);/)
-    expect(SOURCE).toMatch(/\.cp-title\s*\{[^}]*font-weight: 600;/)
+  test('the title takes its size and weight from the h2 element, never its own', () => {
+    expect(SOURCE).toContain('<h2 class="cp-title">')
+    expect(SOURCE).not.toMatch(/\.cp-title\s*\{[^}]*font-size:/)
+    expect(SOURCE).not.toMatch(/\.cp-title\s*\{[^}]*font-weight:/)
   })
 })
 
@@ -190,18 +191,17 @@ describe('row 1: the envelope tab (fiche §3)', () => {
     expect(html).not.toContain('cp-tab1-counter')
   })
 
-  test('row 1 geometry: 8px padding, 6px gap, 28px tab height, 8px radius, 12px text, 16px icon', () => {
-    expect(SOURCE).toMatch(/\.cp-row1\s*\{[^}]*padding: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-row1\s*\{[^}]*gap: 6px;/)
-    expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*height: 28px;/)
-    expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*border-radius: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-tab1\s*\{[^}]*font-size: var\(--fs-sm\);/)
-    expect(SOURCE).toMatch(/\.cp-tab1-icon\s*\{[^}]*width: 16px;/)
+  test('row 1 geometry: one line of padding, 1ch gaps, kit tab, 14px icon', () => {
+    expect(SOURCE).toMatch(/\.cp-row1\s*\{[^}]*padding: 2px 1ch;/)
+    expect(SOURCE).toMatch(/\.cp-row1\s*\{[^}]*gap: 1ch;/)
+    expect(SOURCE).toContain('class="tabs cp-row1-tabs"')
+    expect(SOURCE).toContain('class="tab cp-tab1 cp-tab1--active"')
+    expect(SOURCE).toMatch(/\.cp-tab1-icon\s*\{[^}]*width: 14px;/)
   })
 
-  test('the active tab uses a line-colored fill and accent text', () => {
-    expect(SOURCE).toMatch(/\.cp-tab1--active\s*\{[^}]*background: var\(--cs-line-2\);/)
-    expect(SOURCE).toMatch(/\.cp-tab1--active\s*\{[^}]*color: var\(--cs-green-text\);/)
+  test('the active tab is marked selected and carries the ok tone', () => {
+    expect(SOURCE).toContain('aria-selected="true"')
+    expect(SOURCE).toMatch(/\.cp-tab1--active\s*\{[^}]*color: var\(--ok\);/)
   })
 })
 
@@ -239,15 +239,15 @@ describe('row 2: section tabs (fiche §3)', () => {
     expect(html).not.toContain('cp-tab2-icon')
   })
 
-  test('row 2 geometry: 8px padding, 4px gap, 8px radius, 11px text', () => {
-    expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*padding: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*gap: 4px;/)
-    expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*border-radius: 8px;/)
-    expect(SOURCE).toMatch(/\.cp-tab2\s*\{[^}]*font-size: var\(--fs-xs\);/)
+  test('row 2 geometry: 1ch padding and gaps, kit tabs', () => {
+    expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*padding: 0 1ch;/)
+    expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*gap: 1ch;/)
+    expect(SOURCE).toContain('class="tab cp-tab2"')
   })
 
-  test('row 2 sits on a bottom hairline, distinct from row 1', () => {
-    expect(SOURCE).toMatch(/\.cp-row2\s*\{[^}]*border-bottom: 1px solid var\(--cs-line\);/)
+  test('row 2 sits on the kit tab strip hairline, distinct from row 1', () => {
+    expect(SOURCE).toContain('class="tabs cp-row2"')
+    expect(SOURCE).toMatch(/\.cp-row1\s*\{[^}]*border-bottom: 1px solid var\(--line\);/)
   })
 })
 
@@ -273,8 +273,7 @@ describe('the envelope (fiche §2)', () => {
     expect(html).toContain('460px')
   })
 
-  test('rounded on the top-left corner only, no border and no radius on the right', () => {
-    expect(SOURCE).toMatch(/\.cp-root\s*\{[^}]*border-radius: 12px 0 0 0;/)
+  test('no border on the right: there is nothing after it', () => {
     expect(SOURCE).toMatch(/\.cp-root\s*\{[^}]*border-right: none;/)
   })
 
@@ -300,8 +299,9 @@ describe('the envelope (fiche §2)', () => {
     expect(html).toContain('aria-valuemin="320"')
   })
 
-  test('close is a real button, 15px glyph', () => {
-    expect(SOURCE).toMatch(/\.cp-close svg\s*\{[^}]*width: 15px;/)
+  test('close is a real button carrying the kit glyph, not an icon component', () => {
+    expect(SOURCE).toContain('{{ G.ko }}')
+    expect(SOURCE).not.toContain('<X ')
   })
 })
 

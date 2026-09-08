@@ -89,14 +89,14 @@ const railWidth = computed(() =>
   <div class="rv-root">
     <header class="rv-header">
       <h1 class="rv-title">{{ projectName }}</h1>
-      <div class="rv-tabs" role="tablist">
+      <div class="rv-tabs tabs" role="tablist">
         <button
           v-for="entry in TABS"
           :key="entry.value"
           :id="tabId(entry.value)"
           type="button"
           role="tab"
-          class="rv-tab"
+          class="rv-tab tab"
           :class="{ 'rv-tab--active': tab === entry.value }"
           :aria-selected="tab === entry.value"
           :aria-controls="panelId(entry.value)"
@@ -191,50 +191,33 @@ const railWidth = computed(() =>
 
 .rv-header {
   flex: none;
-  padding: 18px 20px 0;
-  border-bottom: 1px solid var(--cs-line-2);
+  padding: var(--row) 2ch 0;
 }
 
 .rv-title {
-  margin: 0 0 14px;
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  color: var(--cs-text);
-}
-
-.rv-tabs {
-  display: flex;
-  gap: 4px;
+  margin-bottom: calc(var(--row) / 2);
+  font-size: 18px;
+  color: var(--fg);
 }
 
 .rv-tab {
   display: inline-flex;
   align-items: center;
-  font-family: inherit;
-  font-size: var(--fs-base);
-  font-weight: 500;
-  color: var(--cs-muted);
-  padding: 8px 14px;
+  font: inherit;
   border: none;
-  border-radius: 8px 8px 0 0;
+  border-bottom: 2px solid transparent;
   background: transparent;
-  cursor: pointer;
 }
 
-.rv-tab:hover {
-  color: var(--cs-text-2);
-}
-
-/* Selected: an accent-weak fill and a heavier weight, per the doctrine.
-   Never a border -- a tab's identity comes from its content and fill. */
+/* Selected: the kit underline, never a fill — a tab's identity comes from
+   its content and its edge. */
 .rv-tab--active {
-  background: var(--cs-green-soft);
-  color: var(--cs-text);
-  font-weight: 600;
+  color: var(--fg);
+  border-bottom-color: var(--accent);
 }
 
 .rv-tab:focus-visible {
-  outline: 2px solid var(--cs-focus-ring);
+  outline: 1px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -258,10 +241,10 @@ const railWidth = computed(() =>
   flex: 0 0 var(--rv-rail-w);
   width: var(--rv-rail-w);
   min-height: 0;
-  border-right: 1px solid var(--cs-line-2);
+  border-right: 1px solid var(--line);
   transition:
-    flex-basis var(--cs-duration-base) var(--cs-ease-in),
-    width var(--cs-duration-base) var(--cs-ease-in);
+    flex-basis 150ms ease,
+    width 150ms ease;
 }
 
 .rv-forge-board {

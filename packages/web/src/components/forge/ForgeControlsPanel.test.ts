@@ -13,6 +13,7 @@ import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { ProjectIssuesState } from '../../composables/useIssues'
 import type { MrsLoadState } from '../../composables/useTasks'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type {
   ForgeIssue,
@@ -163,18 +164,16 @@ describe('both accordion headers always render; only the active section has a bo
 })
 
 /** The two accordion head buttons, in DOM order, as [ariaExpanded, closedChevron] pairs.
- * The chevron is a lucide icon: its rendered `class` carries the library's own
- * prefix classes ahead of ours, and both the section icon and the chevron are
- * `<svg>` elements inside the same header, so this reads every svg's class
- * list in the header and picks the one carrying the `fcp-acc-chevron` token
- * (an exact token match, not a substring one, since "fcp-acc-chevron--closed"
- * also contains "fcp-acc-chevron" as a substring). */
+ * The chevron is a glyph span: this reads every span's class list in the
+ * header and picks the one carrying the `fcp-acc-chevron` token (an exact
+ * token match, not a substring one, since "fcp-acc-chevron--closed" also
+ * contains "fcp-acc-chevron" as a substring). */
 function headsOf(html: string): Array<{ expanded: string; chevronClosed: boolean }> {
   const headPattern =
     /<button type="button" class="fcp-acc-head" aria-expanded="(true|false)"[^>]*>([\s\S]*?)<\/button>/g
   return [...html.matchAll(headPattern)].map((head) => {
-    const svgClasses = [...head[2]!.matchAll(/<svg[^>]*\bclass="([^"]*)"/g)].map((m) => m[1]!)
-    const chevronClass = svgClasses.find((cls) => cls.split(/\s+/).includes('fcp-acc-chevron'))
+    const spanClasses = [...head[2]!.matchAll(/<span[^>]*\bclass="([^"]*)"/g)].map((m) => m[1]!)
+    const chevronClass = spanClasses.find((cls) => cls.split(/\s+/).includes('fcp-acc-chevron'))
     return {
       expanded: head[1] ?? '',
       chevronClosed: (chevronClass?.split(/\s+/) ?? []).includes('fcp-acc-chevron--closed'),
@@ -202,34 +201,35 @@ describe('accordion headers: aria-expanded and the chevron follow the active sec
   })
 })
 
-// The rotation itself is CSS-only, unreachable through an SSR string render
-// (same limitation as ForgeControlsPanel's own former band-orientation test).
-describe('chevron rotation and the filter separator geometry: CSS-pinned', () => {
-  test('the chevron rotates 90 degrees when its section is closed, animated over 150ms', () => {
-    const chevron = SOURCE.slice(
-      SOURCE.indexOf('.fcp-acc-chevron {'),
-      SOURCE.indexOf('.fcp-acc-body {'),
-    )
-    expect(chevron).toContain('transition: transform 150ms ease;')
-    expect(chevron).toContain('transform: rotate(-90deg);')
+// The chevron is a glyph swap, not a rotation: the closed head carries the
+// collapsed glyph, the open one the expanded glyph.
+describe('chevron glyphs and the filter separator geometry', () => {
+  test('the open section shows the expanded glyph, the closed one the collapsed glyph', async () => {
+    const html = await render({ activeSection: 'issues' })
+    expect(html).toContain(`>${G.expand}</span>`)
+    expect(html).toContain(`>${G.collapse}</span>`)
   })
 
-  test('the separator sits 4px from the rows above and below, 1px tall', () => {
+  test('the separator is a plain hairline between the two filter groups', () => {
     const sep = SOURCE.slice(SOURCE.indexOf('.fcp-filter-sep {'), SOURCE.indexOf('.fcp-reset {'))
     expect(sep).toContain('height: 1px;')
-    expect(sep).toContain('margin: 4px 0;')
+    expect(sep).toContain('background: var(--line);')
   })
 
-  test('a selected row never gets a border, only an accent-soft fill and weight 500', () => {
+  test('a selected row reads as an inverted segment, never a border of its own', () => {
     const on = SOURCE.slice(SOURCE.indexOf('.fcp-row--on {'), SOURCE.indexOf('.fcp-row-icon {'))
-    expect(on).toContain('background: var(--cs-green-soft);')
-    expect(on).toContain('font-weight: 500;')
+    expect(on).toContain('background: var(--fg);')
+    expect(on).toContain('color: var(--bg);')
+    expect(on).toContain('font-weight: 700;')
     expect(on).not.toContain('border')
   })
 
   test('a row lights up on hover', () => {
-    const hover = SOURCE.slice(SOURCE.indexOf('.fcp-row:hover {'), SOURCE.indexOf('.fcp-row--on {'))
-    expect(hover).toContain('background: var(--cs-hover);')
+    const hover = SOURCE.slice(
+      SOURCE.indexOf('.fcp-row:hover {'),
+      SOURCE.indexOf('/* Selected reads'),
+    )
+    expect(hover).toContain('background: var(--bg-hover);')
   })
 })
 
@@ -404,9 +404,10 @@ describe('section and control glyphs', () => {
     expect(html).toContain('lucide-git-pull-request-icon')
   })
 
-  test('both accordion chevrons carry the chevron-down glyph', async () => {
+  test('both accordion chevrons carry a fold glyph from the shared set', async () => {
     const html = await render({ activeSection: 'issues' })
-    expect((html.match(/lucide-chevron-down/g) ?? []).length).toBeGreaterThanOrEqual(2)
+    const glyphs = [...html.matchAll(/class="fcp-acc-chevron[^"]*"[^>]*>(.)</g)].map((m) => m[1])
+    expect(glyphs).toEqual([G.expand, G.collapse])
   })
 
   test('the sort heading carries the up-down arrow glyph, updated carries a clock, title a list', async () => {

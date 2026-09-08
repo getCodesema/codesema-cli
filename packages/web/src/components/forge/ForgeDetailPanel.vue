@@ -220,6 +220,18 @@ const badge = computed<{ variant: BadgeVariant; labelKey: MessageKey } | null>((
   return { variant: 'closed', labelKey: 'mrs.card.stateClosed' }
 })
 
+/** The kit's semantic tone for the state badge. `merged` has no tone of its
+ * own (lavender is not a state colour): it keeps the idle tone and its own
+ * scoped colour. */
+const BADGE_TONE = {
+  open: 'ok',
+  draft: 'idle',
+  closed: 'err',
+  merged: 'idle',
+} as const
+
+const badgeTone = computed(() => (badge.value === null ? null : BADGE_TONE[badge.value.variant]))
+
 // ── Issue rail: labels + dates only, ForgeIssue has no reviewer/milestone
 // fields for MrMetaRail's other sections to render. ──────────────────────
 const issueLabels = computed(() => (props.item?.kind === 'issue' ? props.item.issue.labels : []))
@@ -270,7 +282,12 @@ const issueUpdatedAge = computed(() =>
                widths, static (scrolls with the body) once wide. -->
           <div class="fdp-toolbar">
             <div class="fdp-badge-row">
-              <span v-if="badge" class="fdp-state" :class="`fdp-state--${badge.variant}`">
+              <span
+                v-if="badge"
+                class="fdp-state badge"
+                :class="`fdp-state--${badge.variant}`"
+                :data-tone="badgeTone"
+              >
                 <GitPullRequest
                   v-if="item.kind === 'mr' && badge.variant === 'open'"
                   class="fdp-state-icon"
@@ -308,7 +325,7 @@ const issueUpdatedAge = computed(() =>
               >
             </div>
             <a
-              class="fdp-open"
+              class="fdp-open btn primary"
               :href="url ?? undefined"
               target="_blank"
               rel="noopener noreferrer"
@@ -376,7 +393,7 @@ const issueUpdatedAge = computed(() =>
         </div>
       </div>
     </div>
-    <p v-else class="fdp-empty">{{ t('forge.detailEmpty') }}</p>
+    <p v-else class="fdp-empty empty">{{ t('forge.detailEmpty') }}</p>
   </div>
 </template>
 
@@ -391,7 +408,7 @@ const issueUpdatedAge = computed(() =>
 .fdp-columns {
   display: flex;
   align-items: stretch;
-  gap: 24px;
+  gap: 2ch;
   height: 100%;
   min-height: 0;
 }
@@ -402,23 +419,24 @@ const issueUpdatedAge = computed(() =>
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 16px;
+  padding: var(--row) 2ch;
 }
 
 .fdp-rail {
-  flex: 0 0 236px;
-  width: 236px;
+  flex: 0 0 30ch;
+  width: 30ch;
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 16px;
+  padding: var(--row) 2ch;
+  border-left: 1px solid var(--line);
 }
 
 @container fb-shell (min-width: 900px) {
   .fdp-main,
   .fdp-rail {
-    padding-left: 24px;
-    padding-right: 24px;
+    padding-left: 3ch;
+    padding-right: 3ch;
   }
 }
 
@@ -430,6 +448,8 @@ const issueUpdatedAge = computed(() =>
   .fdp-rail {
     flex: none;
     width: 100%;
+    border-left: none;
+    border-top: 1px solid var(--line);
   }
 }
 
@@ -439,7 +459,7 @@ const issueUpdatedAge = computed(() =>
   /* Shared sticky offset: the nav band's own min-height, reused as the
      toolbar band's sticky top so it docks flush under the nav band rather
      than at a second, hand-picked number that could drift out of sync. */
-  --fdp-nav-h: 44px;
+  --fdp-nav-h: calc(var(--row) + 8px);
 }
 
 /* ── Band 1: sticky nav (back + title echo) ───────────────────────────── */
@@ -449,9 +469,9 @@ const issueUpdatedAge = computed(() =>
   z-index: 3;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 1ch;
   min-height: var(--fdp-nav-h);
-  background: var(--cs-bg);
+  background: var(--bg);
 }
 
 .fdp-back {
@@ -459,18 +479,17 @@ const issueUpdatedAge = computed(() =>
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-family: inherit;
-  padding: 4px 6px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 8px;
+  font: inherit;
+  padding: 2px 1ch;
+  border: 1px solid var(--line);
   background: transparent;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
   cursor: pointer;
 }
 
 .fdp-back:hover {
-  border-color: var(--cs-line-3);
-  color: var(--cs-text-2);
+  border-color: var(--accent);
+  color: var(--fg);
 }
 
 .fdp-back-icon {
@@ -481,7 +500,7 @@ const issueUpdatedAge = computed(() =>
 /* Hidden by default, faded in once the title band (band 2) has scrolled
    entirely out of view (see the IntersectionObserver in the script). A
    plain opacity transition, deliberately not a keyframe animation with a
-   fill mode: the global reduced-motion guard (style.css) clamps transition
+   fill mode: the global reduced-motion guard (base.css) clamps transition
    duration for users who asked for less motion, which only works because
    nothing here would freeze on a held keyframe. */
 .fdp-title-echo {
@@ -489,9 +508,8 @@ const issueUpdatedAge = computed(() =>
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: var(--fs-base);
-  font-weight: 600;
-  color: var(--cs-text);
+  font-weight: 700;
+  color: var(--fg);
   opacity: 0;
   transition: opacity 150ms ease;
 }
@@ -502,21 +520,20 @@ const issueUpdatedAge = computed(() =>
 
 /* ── Band 2: the title itself, scrolls normally ───────────────────────── */
 .fdp-title-band {
-  padding: 16px 0 12px;
+  padding: var(--row) 0 calc(var(--row) / 2);
 }
 
 @container fb-shell (min-width: 640px) {
   .fdp-title-band {
-    padding: 20px 0 0;
+    padding: var(--row) 0 0;
   }
 }
 
 .fdp-title {
   margin: 0;
-  font-size: var(--fs-3xl);
+  font-size: 24px;
   font-weight: 700;
-  line-height: 1.15;
-  color: var(--cs-text);
+  color: var(--fg);
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -531,15 +548,15 @@ const issueUpdatedAge = computed(() =>
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
-  background: var(--cs-bg);
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 0;
+  background: var(--bg);
 }
 
 @container fb-shell (min-width: 640px) {
   .fdp-toolbar {
     position: static;
-    padding: 16px 0;
+    padding: var(--row) 0;
   }
 }
 
@@ -547,139 +564,94 @@ const issueUpdatedAge = computed(() =>
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
+  gap: 1ch;
+  color: var(--fg-dim);
 }
 
+/* The kit badge carries the border and the tone; only the two tones the kit
+   has no attribute for are set here. */
 .fdp-state {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 999px;
+  gap: 1ch;
+  font-size: 12px;
 }
 
 .fdp-state-icon {
   flex: none;
-  width: 12px;
-  height: 12px;
-}
-
-.fdp-state--open {
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
+  width: 14px;
+  height: 14px;
 }
 
 .fdp-state--draft {
-  color: var(--cs-muted);
-  background: var(--cs-line-2);
-}
-
-.fdp-state--closed {
-  color: var(--cs-red-text);
-  background: var(--cs-red-soft);
+  color: var(--fg-dim);
 }
 
 .fdp-state--merged {
-  color: var(--cs-lavender);
-  background: var(--cs-lavender-soft);
+  color: var(--alt);
 }
 
 .fdp-number {
-  font-family: var(--font-mono);
-  color: var(--cs-ghost);
+  color: var(--fg-dim);
   text-decoration: none;
 }
 
 .fdp-number:hover {
-  color: var(--cs-green-text);
+  color: var(--fg);
 }
 
 .fdp-open {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  line-height: 1;
-  padding: 4px 10px;
-  border: none;
-  border-radius: 8px;
-  background: var(--cs-green);
-  color: var(--cs-on-green);
+  gap: 1ch;
+  font-size: 12px;
   text-decoration: none;
-  cursor: pointer;
   white-space: nowrap;
-}
-
-.fdp-open:hover {
-  background: var(--cs-green-hover);
 }
 
 .fdp-open-icon {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .fdp-md {
-  margin: 20px 0 0;
+  margin: var(--row) 0 0;
   overflow-wrap: anywhere;
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
 }
 
 .fdp-md p {
-  margin: 4px 0;
-  line-height: 24px;
+  margin: calc(var(--row) / 2) 0;
 }
 
-.fdp-md h1 {
-  font-size: var(--fs-xl);
-  font-weight: 700;
-}
-
-.fdp-md h2 {
-  font-size: var(--fs-xl);
-  font-weight: 700;
-}
-
+.fdp-md h1,
+.fdp-md h2,
 .fdp-md h3 {
-  font-size: var(--fs-lg);
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
 }
 
-.fdp-md h4 {
-  font-size: var(--fs-base);
-  font-weight: 600;
-}
-
-.fdp-md h5 {
-  font-size: var(--fs-base);
-  font-weight: 500;
+.fdp-md h4,
+.fdp-md h5,
+.fdp-md h6 {
+  font-weight: 700;
 }
 
 .fdp-md h6 {
-  font-size: var(--fs-base);
-  font-weight: 500;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .fdp-md code {
-  font-family: var(--font-mono);
-  background: var(--cs-surface);
-  color: var(--cs-green-text);
-  padding: 2px 6px;
-  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--ok);
+  padding: 0 0.5ch;
 }
 
 .fdp-md pre {
-  background: var(--cs-surface);
-  padding: 10px 12px;
-  border-radius: 8px;
+  background: var(--bg-raised);
+  border-left: 2px solid var(--line);
+  padding: calc(var(--row) / 2) 1ch;
   overflow-x: auto;
 }
 
@@ -687,26 +659,25 @@ const issueUpdatedAge = computed(() =>
   background: transparent;
   color: inherit;
   padding: 0;
-  border-radius: 0;
 }
 
 .fdp-md blockquote {
   margin: 0;
-  border-left: 3px solid var(--cs-green-text);
-  padding-left: 12px;
-  color: var(--cs-muted);
+  border-left: 2px solid var(--line);
+  padding-left: 1ch;
+  color: var(--fg-dim);
   font-style: italic;
 }
 
 .fdp-md a {
-  color: var(--cs-green-text);
+  color: var(--accent);
   text-decoration: underline;
   text-decoration-style: solid;
-  text-decoration-color: color-mix(in srgb, var(--cs-green-text) 40%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .fdp-md a:hover {
-  text-decoration-color: var(--cs-green-text);
+  text-decoration-color: var(--accent);
 }
 
 .fdp-md a.fdp-md-ref {
@@ -715,11 +686,7 @@ const issueUpdatedAge = computed(() =>
 
 .fdp-md ul,
 .fdp-md ol {
-  padding-left: 32px;
-}
-
-.fdp-md li + li {
-  margin-top: 4px;
+  padding-left: 4ch;
 }
 
 .fdp-md-fallback {
@@ -727,27 +694,23 @@ const issueUpdatedAge = computed(() =>
 }
 
 .fdp-md-truncated {
-  margin: 12px 0 0;
-  font-size: var(--fs-base);
-  color: var(--cs-ghost);
+  margin: calc(var(--row) / 2) 0 0;
+  color: var(--fg-dim);
 }
 
 .fdp-md-truncated a {
-  color: var(--cs-green-text);
+  color: var(--accent);
   text-decoration: underline;
 }
 
 .fdp-description-empty {
-  margin: 20px 0 0;
-  color: var(--cs-ghost);
+  margin: var(--row) 0 0;
+  color: var(--fg-dim);
 }
 
 .fdp-empty {
   margin: auto;
-  text-align: center;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
-  max-width: 220px;
+  max-width: 40ch;
 }
 
 /* ── Issue rail: same visual patron as MrMetaRail.vue's sections, kept as
@@ -756,13 +719,12 @@ const issueUpdatedAge = computed(() =>
 .fdp-issue-rail {
   display: flex;
   flex-direction: column;
-  font-size: var(--fs-base);
 }
 
 .fdp-issue-rail-section {
-  padding-bottom: 14px;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--cs-line-2);
+  padding-bottom: var(--row);
+  margin-bottom: var(--row);
+  border-bottom: 1px solid var(--line);
 }
 
 .fdp-issue-rail-section:last-child {
@@ -774,24 +736,19 @@ const issueUpdatedAge = computed(() =>
 .fdp-issue-rail-heading {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 0 8px;
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--cs-muted);
+  gap: 1ch;
+  margin: 0 0 calc(var(--row) / 2);
 }
 
 .fdp-issue-rail-heading-icon {
   flex: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .fdp-issue-rail-empty {
   margin: 0;
-  color: var(--cs-ghost);
+  color: var(--fg-dim);
 }
 
 .fdp-issue-rail-chips {
@@ -800,16 +757,16 @@ const issueUpdatedAge = computed(() =>
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .fdp-issue-rail-label-chip {
-  --lp-rest-bg: var(--cs-line-2);
+  --lp-rest-bg: var(--line);
 
-  font-weight: 500;
-  color: var(--cs-text-2);
-  padding: 2px 8px;
-  border-radius: 999px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  padding: 0 1ch;
+  border: 1px solid var(--line);
   background: var(--lp-rest-bg);
 }
 
@@ -817,10 +774,10 @@ const issueUpdatedAge = computed(() =>
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .fdp-issue-rail-def-row dt {
-  color: var(--cs-text);
+  color: var(--fg);
 }
 </style>

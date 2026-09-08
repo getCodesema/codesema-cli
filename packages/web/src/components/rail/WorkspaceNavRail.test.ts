@@ -73,22 +73,44 @@ describe('categories: all three render, the active one carries the tinted accent
     expect(buttons[2]?.[0]).toContain('wnr-cat--active')
   })
 
-  test('the active row uses the tinted fill token, no border', () => {
-    const block = SOURCE.slice(
-      SOURCE.indexOf('.wnr-cat--active {'),
-      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
-    )
-    expect(block).toContain('background: var(--cs-green-soft);')
-    expect(block).not.toContain('border-color')
+  test('the active row is named by aria-current, on the kit row class', async () => {
+    const buttons = catButtons(await render({ category: 'codeReview' }))
+    expect(buttons[2]?.[0]).toContain('proj')
+    expect(buttons[2]?.[1]).toContain('aria-current="true"')
+    expect(buttons[0]?.[1]).toContain('aria-current="false"')
   })
 
-  test('the active row accents its own icon on top of the tinted fill', () => {
+  test('the active row lifts its own icon out of the dim, on top of the tinted fill', () => {
     expect(SOURCE).toContain('.wnr-cat--active .wnr-row-icon {')
     const block = SOURCE.slice(
       SOURCE.indexOf('.wnr-cat--active .wnr-row-icon {'),
       SOURCE.indexOf('.wnr-icon-slot {'),
     )
-    expect(block).toContain('color: var(--cs-green-text);')
+    expect(block).toContain('color: var(--fg);')
+  })
+
+  test('the current row carries an accent edge, drawn transparent otherwise', () => {
+    const rows = SOURCE.slice(
+      SOURCE.indexOf('.wnr-cat,'),
+      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
+    )
+    expect(rows).toContain('border-left: 2px solid transparent;')
+    expect(rows).toContain('border-left-color: var(--accent);')
+  })
+
+  test('rows follow the kit .proj grammar: a 2ch glyph column, then the label', () => {
+    const rows = SOURCE.slice(
+      SOURCE.indexOf('.wnr-cat,'),
+      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
+    )
+    expect(rows).toContain('grid-template-columns: 2ch 1fr auto;')
+  })
+
+  test('row icons size on the text, in the dim colour', () => {
+    const icon = SOURCE.slice(SOURCE.indexOf('.wnr-row-icon {'), SOURCE.indexOf('.wnr-cat-label,'))
+    expect(icon).toContain('width: 1em;')
+    expect(icon).toContain('height: 1em;')
+    expect(icon).toContain('color: var(--fg-dim);')
   })
 })
 
@@ -134,8 +156,8 @@ describe('collapsed state: labels absent from markup, aria-label present', () =>
     }
   })
 
-  test('the collapsed track is 56px, the expanded track 215px', () => {
-    expect(SOURCE).toContain('width: 215px;')
+  test('the collapsed track is 56px, the expanded track 30ch', () => {
+    expect(SOURCE).toContain('width: 30ch;')
     expect(SOURCE).toContain('width: 56px;')
   })
 
@@ -175,7 +197,7 @@ describe('footer: settings sits below a hairline, set off from the categories', 
   test('the settings action emits on click semantics render (button present with the right label)', async () => {
     const html = await render()
     expect(html).toContain(t('nav.settings'))
-    expect(html).toContain('class="wnr-settings"')
+    expect(html).toContain('class="wnr-settings proj"')
   })
 
   test('the footer carries a hairline above it', () => {
@@ -183,28 +205,66 @@ describe('footer: settings sits below a hairline, set off from the categories', 
       SOURCE.indexOf('.wnr-footer {'),
       SOURCE.indexOf('.wnr-footer {') + 150,
     )
-    expect(block).toContain('border-top: 1px solid var(--cs-line);')
+    expect(block).toContain('border-top: 1px solid var(--line);')
   })
 })
 
 describe('rows carry no border: explicit, never a bare omission', () => {
   test('category and settings rows declare border: none', () => {
-    const block = SOURCE.slice(SOURCE.indexOf('.wnr-cat,'), SOURCE.indexOf('.wnr-cat:hover'))
+    const block = SOURCE.slice(
+      SOURCE.indexOf('.wnr-cat,'),
+      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
+    )
     expect(block).toContain('border: none;')
   })
 
-  test('no hex literal was introduced: every color is a --cs-* token', () => {
+  test('no hex literal was introduced: every colour is a theme token', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style scoped>'))
     expect(/#[0-9a-fA-F]{3,8}\b/.test(styleBlock)).toBe(false)
   })
 })
 
 describe('structure: brand header renders ahead of the categories', () => {
-  test('the brand name and both categories are present, in that order', async () => {
+  test('the brand renders in the kit two-tone form, ahead of the categories', async () => {
     const html = await render()
-    const brandAt = html.indexOf('codesema')
+    const brandAt = html.indexOf('code<i>sema</i>')
     const conversationsAt = html.indexOf(t('rail.conversations'))
     expect(brandAt).toBeGreaterThan(-1)
     expect(conversationsAt).toBeGreaterThan(brandAt)
+  })
+
+  test('the brand accent is the ok token, on the italic half only', () => {
+    const brand = SOURCE.slice(SOURCE.indexOf('.wnr-brand i {'), SOURCE.indexOf('.wnr-toggle {'))
+    expect(brand).toContain('color: var(--ok);')
+  })
+
+  test('collapsed: the brand steps aside, the band keeps its height', async () => {
+    const html = await render({ collapsed: true })
+    expect(html).not.toContain('code<i>sema</i>')
+    expect(html).toContain('wnr-header rail-h wnr-header--collapsed')
+  })
+})
+
+describe('the theme picker sits in the bottom zone, above settings', () => {
+  test('a compact picker renders between the hairline and the settings row', async () => {
+    const html = await render()
+    const themeAt = html.indexOf('tp-compact')
+    const settingsAt = html.indexOf('wnr-settings')
+    expect(themeAt).toBeGreaterThan(-1)
+    expect(settingsAt).toBeGreaterThan(themeAt)
+  })
+
+  test('collapsed: only the swap button is offered, expanding the rail', async () => {
+    const html = await render({ collapsed: true })
+    expect(html).toContain('tp-swap')
+    expect(html).not.toContain('tp-compact')
+  })
+
+  test('the settings row is set off from the picker by its own hairline', () => {
+    const block = SOURCE.slice(
+      SOURCE.indexOf('.wnr-footer .wnr-settings {'),
+      SOURCE.indexOf('.wnr-footer .wnr-settings {') + 120,
+    )
+    expect(block).toContain('border-top: 1px solid var(--line);')
   })
 })

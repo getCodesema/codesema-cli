@@ -24,6 +24,7 @@ import {
 } from '../composables/useTaskPlan'
 import type { CreateTaskInput } from '../composables/useTasks'
 import { draftBranch, type DraftTarget } from '../composables/useWorkspaceNav'
+import { G } from '../glyphs'
 import { t } from '../i18n'
 import type { AgentOption, Project, TaskIsolation, TaskPlan } from '../types'
 
@@ -178,32 +179,78 @@ function applyRetarget(): void {
   }
 }
 
+/** A plan row's semantic weight: a degraded or uncertain fact reads as a
+ * warning, an absent one as muted, everything else as plain text. */
+type PlanRowTone = 'warn' | 'muted' | undefined
+
 /** The plan, as rows. Built here so the panel never renders a field raw. */
-const planRows = computed(() => {
-  const plan = props.plan
-  if (!plan) {
-    return []
-  }
-  return [
-    { key: 'repo', label: t('workspace.planRepo'), value: plan.repo },
-    { key: 'branch', label: t('workspace.planBranch'), value: planBranchLine(plan) },
-    { key: 'worktree', label: t('workspace.planWorktree'), value: planWorktreeLine(plan) },
-    // Only a fork branches FROM something: a work-on conversation continues
-    // its own branch, and an empty "Starts from" row would say nothing.
-    ...(plan.mode === 'fork'
-      ? [{ key: 'base', label: t('workspace.planBase'), value: planBaseLine(plan) }]
-      : []),
-    {
-      key: 'target',
-      label: t('workspace.planTarget'),
-      value: plan.target || t('workspace.planNone'),
-    },
-    { key: 'isolation', label: t('workspace.planIsolation'), value: planIsolationLine(plan) },
-    { key: 'agent', label: t('workspace.planAgent'), value: plan.agent },
-    { key: 'queue', label: t('workspace.planQueue'), value: planQueueLine(plan) },
-    { key: 'issue', label: t('workspace.planIssue'), value: planIssueLine(plan) },
-  ]
-})
+const planRows = computed<{ key: string; label: string; value: string; tone: PlanRowTone }[]>(
+  () => {
+    const plan = props.plan
+    if (!plan) {
+      return []
+    }
+    const caged = plan.isolation === 'container' || plan.isolation === 'microvm'
+    return [
+      { key: 'repo', label: t('workspace.planRepo'), value: plan.repo, tone: undefined },
+      {
+        key: 'branch',
+        label: t('workspace.planBranch'),
+        value: planBranchLine(plan),
+        tone: plan.branch_certain ? undefined : 'warn',
+      },
+      {
+        key: 'worktree',
+        label: t('workspace.planWorktree'),
+        value: planWorktreeLine(plan),
+        tone: undefined,
+      },
+      // Only a fork branches FROM something: a work-on conversation continues
+      // its own branch, and an empty "Starts from" row would say nothing.
+      ...(plan.mode === 'fork'
+        ? [
+            {
+              key: 'base',
+              label: t('workspace.planBase'),
+              value: planBaseLine(plan),
+              tone: undefined,
+            },
+          ]
+        : []),
+      {
+        key: 'target',
+        label: t('workspace.planTarget'),
+        value: plan.target || t('workspace.planNone'),
+        tone: plan.target ? undefined : ('muted' as const),
+      },
+      {
+        key: 'isolation',
+        label: t('workspace.planIsolation'),
+        value: planIsolationLine(plan),
+        tone: caged ? undefined : ('warn' as const),
+      },
+      { key: 'agent', label: t('workspace.planAgent'), value: plan.agent, tone: undefined },
+      {
+        key: 'queue',
+        label: t('workspace.planQueue'),
+        value: planQueueLine(plan),
+        tone: undefined,
+      },
+      {
+        key: 'issue',
+        label: t('workspace.planIssue'),
+        value: planIssueLine(plan),
+        tone: plan.issue ? undefined : ('muted' as const),
+      },
+    ]
+  },
+)
+
+/** A branch name the field no longer carries is not a target anything could
+ * be applied to: the field says so rather than the button failing silently. */
+const retargetInvalid = computed(
+  () => draftBranchOrEmpty(props.draft) !== '' && retargetInput.value.trim() === '',
+)
 
 /** Called by the parent once the task is actually created. */
 function reset(): void {
@@ -216,7 +263,7 @@ defineExpose({ reset })
 </script>
 
 <template>
-  <form class="tc-root" :class="{ 'tc-root--compact': compact }" @submit.prevent="submit">
+  <form class="tc-root composer" :class="{ 'tc-root--compact': compact }" @submit.prevent="submit">
     <textarea
       v-model="prompt"
       class="tc-input"
@@ -238,38 +285,47 @@ defineExpose({ reset })
           </option>
         </select>
       </label>
-      <label class="tc-autoship" :title="t('workspace.autoShipHint')">
-        <input v-model="autoShip" type="checkbox" class="tc-check" />
+      <button
+        class="tc-autoship toggle"
+        type="button"
+        :aria-pressed="autoShip"
+        :title="t('workspace.autoShipHint')"
+        @click="autoShip = !autoShip"
+      >
+        <i aria-hidden="true">{{ autoShip ? G.ok : G.minus }}</i>
         <span>{{ t('workspace.autoShip') }}</span>
-      </label>
-      <button class="tc-launch" type="submit" :disabled="creating || !prompt.trim()">
-        {{ creating ? t('workspace.launching') : t('workspace.launch') }}
+      </button>
+      <button class="tc-launch btn primary" type="submit" :disabled="creating || !prompt.trim()">
+        {{ creating ? t('workspace.launching') : t('workspace.launch')
+        }}<span class="key" aria-hidden="true">^{{ G.reply }}</span>
       </button>
     </div>
-    <p v-if="showBuildHint" class="tc-hint">{{ t('workspace.agentBuildHint') }}</p>
-    <p v-if="error" class="tc-error">{{ t('workspace.createError') }} ({{ error }})</p>
+    <p v-if="showBuildHint" class="tc-hint hint">{{ t('workspace.agentBuildHint') }}</p>
+    <p v-if="error" class="tc-error live err">{{ t('workspace.createError') }} ({{ error }})</p>
 
     <!-- T2.6: what WILL be created, and the one field that changes it. Only
          inside a draft column — the standalone queue composer targets no
          branch, so it has no plan to show. -->
-    <section v-if="draft" class="tc-plan">
-      <h4 class="tc-plan-title">{{ t('workspace.planTitle') }}</h4>
+    <section v-if="draft" class="tc-plan plan">
+      <h3 class="tc-plan-title">{{ t('workspace.planTitle') }}</h3>
       <!-- No repository: no branch is ever forked, so neither the retarget
            field nor a plan would describe anything real. -->
-      <p v-if="noRepo" class="tc-plan-state">{{ t('workspace.draftNoRepo') }}</p>
+      <p v-if="noRepo" class="tc-plan-state muted">{{ t('workspace.draftNoRepo') }}</p>
       <template v-else>
         <div class="tc-plan-edit">
-          <label class="tc-plan-label" :for="'tc-retarget'">{{ retargetFieldLabel }}</label>
-          <input
-            id="tc-retarget"
-            v-model="retargetInput"
-            class="tc-plan-input"
-            type="text"
-            spellcheck="false"
-            @keydown.enter.prevent="applyRetarget"
-          />
+          <div class="tc-plan-field field" :class="{ invalid: retargetInvalid }">
+            <label class="tc-plan-label" :for="'tc-retarget'">{{ retargetFieldLabel }}</label>
+            <input
+              id="tc-retarget"
+              v-model="retargetInput"
+              class="tc-plan-input"
+              type="text"
+              spellcheck="false"
+              @keydown.enter.prevent="applyRetarget"
+            />
+          </div>
           <button
-            class="tc-plan-apply"
+            class="tc-plan-apply btn"
             type="button"
             :disabled="!retargetChanged"
             @click="applyRetarget"
@@ -277,21 +333,21 @@ defineExpose({ reset })
             {{ t('workspace.planRetarget') }}
           </button>
         </div>
-        <p v-if="planPending" class="tc-plan-state">{{ t('workspace.planLoading') }}</p>
-        <p v-else-if="planError" class="tc-plan-state tc-plan-state--bad">
+        <p v-if="planPending" class="tc-plan-state muted">{{ t('workspace.planLoading') }}</p>
+        <p v-else-if="planError" class="tc-plan-state live err">
           {{ t('workspace.planError', { error: planError }) }}
         </p>
         <template v-else-if="plan">
-          <dl class="tc-plan-rows">
+          <dl class="tc-plan-rows kvs">
             <div v-for="row in planRows" :key="row.key" class="tc-plan-row">
               <dt class="tc-plan-key">{{ row.label }}</dt>
-              <dd class="tc-plan-value">{{ row.value }}</dd>
+              <dd class="tc-plan-value" :class="row.tone">{{ row.value }}</dd>
             </div>
           </dl>
-          <p v-if="plan.mode === 'fork'" class="tc-plan-hint">
+          <p v-if="plan.mode === 'fork'" class="tc-plan-hint hint">
             {{ t('workspace.planBranchDerived') }}
           </p>
-          <p class="tc-plan-hint">{{ t('workspace.planIndicative') }}</p>
+          <p class="tc-plan-hint hint">{{ t('workspace.planIndicative') }}</p>
         </template>
       </template>
     </section>
@@ -300,204 +356,91 @@ defineExpose({ reset })
 
 <style scoped>
 .tc-root {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 13px;
-  background: var(--cs-surface);
-  box-shadow: var(--cs-shadow-panel);
+  grid-template-columns: 1fr;
+  border: 1px solid var(--line);
 }
 
 /* Inside a draft column the column already draws the card. */
 .tc-root--compact {
+  border: 0;
   padding: 0;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
 }
 
 .tc-input {
-  border: 1px solid var(--cs-line);
-  border-radius: 9px;
-  background: var(--cs-bg);
-  color: var(--cs-text);
-  font-family: inherit;
-  font-size: var(--fs-base);
-  line-height: 1.55;
-  padding: 10px 12px;
-  resize: vertical;
-  min-height: 62px;
-}
-
-.tc-input::placeholder {
-  color: var(--cs-ghost);
+  min-height: calc(var(--row) * 3);
 }
 
 .tc-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 2ch;
   flex-wrap: wrap;
 }
 
 .tc-agent {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+  gap: 1ch;
+  color: var(--fg-dim);
 }
 
 .tc-agent-select {
-  font-family: inherit;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
-  background: var(--cs-bg);
-  border: 1px solid var(--cs-line);
-  border-radius: 7px;
-  padding: 4px 8px;
-}
-
-.tc-hint {
-  margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
-}
-
-.tc-autoship {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
-  cursor: pointer;
-}
-
-.tc-check {
-  accent-color: var(--cs-green);
+  min-width: 0;
 }
 
 .tc-launch {
   margin-left: auto;
-  font-size: var(--fs-base);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 8px 18px;
-  border-radius: 9px;
-  border: 1px solid var(--cs-green);
-  background: var(--cs-green);
-  color: var(--cs-on-green);
-  cursor: pointer;
-  transition: opacity 0.12s ease;
-}
-
-.tc-launch:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 
 .tc-error {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-red-text);
 }
 
 /* ── T2.6 plan panel ──────────────────────────────────────────────────── */
 .tc-plan {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--cs-line);
+  gap: calc(var(--row) / 2);
 }
 
 .tc-plan-title {
   margin: 0;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--cs-text-2);
 }
 
 .tc-plan-edit {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end;
+  gap: 1ch;
   flex-wrap: wrap;
 }
 
-.tc-plan-label {
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
+.tc-plan-field {
+  flex: 1;
+  min-width: 24ch;
 }
 
 .tc-plan-input {
-  flex: 1;
-  min-width: 140px;
-  font-family: inherit;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
-  background: var(--cs-bg);
-  border: 1px solid var(--cs-line);
-  border-radius: 7px;
-  padding: 4px 8px;
-}
-
-.tc-plan-apply {
-  font-family: inherit;
-  font-size: var(--fs-base);
-  padding: 4px 12px;
-  border-radius: 7px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface);
-  color: var(--cs-text);
-  cursor: pointer;
-}
-
-.tc-plan-apply:disabled {
-  opacity: 0.45;
-  cursor: default;
+  width: 100%;
+  min-width: 0;
 }
 
 .tc-plan-state {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text-2);
-}
-
-.tc-plan-state--bad {
-  color: var(--cs-red-text);
 }
 
 .tc-plan-rows {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 12px;
-  margin: 0;
-  font-size: var(--fs-base);
+  align-items: baseline;
 }
 
 .tc-plan-row {
   display: contents;
 }
 
-.tc-plan-key {
-  color: var(--cs-text-2);
-}
-
 .tc-plan-value {
-  margin: 0;
-  color: var(--cs-text);
   overflow-wrap: anywhere;
 }
 
 .tc-plan-hint {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
 }
 </style>

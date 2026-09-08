@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
+import { G } from '../glyphs'
 import { t } from '../i18n'
 import type { JudgeLive, LiveStatus, PartialReview } from '../types'
 import DualConsensusMap from './DualConsensusMap.vue'
@@ -73,21 +74,12 @@ const hiddenFilesCount = computed(() =>
   Math.max(0, (input.value?.files.length ?? 0) - FILE_PREVIEW_MAX),
 )
 
-const VERDICT_META: Record<string, { labelKey: string; cls: string }> = {
-  approve: { labelKey: 'verdict.approve', cls: 'live-verdict--approve' },
-  request_changes: { labelKey: 'verdict.request_changes', cls: 'live-verdict--changes' },
-  comment: { labelKey: 'verdict.comment', cls: 'live-verdict--comment' },
-}
+type VerdictTone = 'go' | 'check' | 'stop'
 
-const SEVERITY_DOT: Record<string, string> = {
-  critical: 'var(--codesema-risk-high)',
-  major: 'var(--codesema-accent)',
-  minor: 'var(--codesema-risk-med)',
-  info: 'var(--codesema-risk-low)',
-}
-
-function severityDot(severity?: string): string {
-  return SEVERITY_DOT[severity ?? ''] ?? 'var(--codesema-ink-3)'
+const VERDICT_META: Record<string, { labelKey: string; v: VerdictTone }> = {
+  approve: { labelKey: 'verdict.approve', v: 'go' },
+  request_changes: { labelKey: 'verdict.request_changes', v: 'stop' },
+  comment: { labelKey: 'verdict.comment', v: 'check' },
 }
 </script>
 
@@ -95,7 +87,7 @@ function severityDot(severity?: string): string {
   <div class="live-root">
     <header class="live-head">
       <div class="live-head-row">
-        <span v-if="status.phase !== 'error'" class="live-pulse" aria-hidden="true" />
+        <span v-if="status.phase !== 'error'" class="live-pulse status" data-s="running" />
         <h1 class="live-title">{{ headerTitle }}</h1>
         <span class="live-elapsed">{{ elapsed }}</span>
       </div>
@@ -107,7 +99,7 @@ function severityDot(severity?: string): string {
       <p v-if="status.agent" class="live-agent">{{ status.agent }}</p>
     </header>
 
-    <div v-if="status.phase === 'error'" class="live-error">
+    <div v-if="status.phase === 'error'" class="live-error live err">
       {{ status.error }}
     </div>
 
@@ -144,38 +136,42 @@ function severityDot(severity?: string): string {
 
     <template v-else>
       <template v-if="hasPartialContent && partial">
-        <section v-if="partial.verdict || partial.summary || partial.intent" class="live-panel">
+        <section
+          v-if="partial.verdict || partial.summary || partial.intent"
+          class="live-panel panel"
+        >
           <div class="live-panel-tag">
             {{ $t('live.summary') }}
             <span
               v-if="partial.verdict"
-              class="live-verdict"
-              :class="VERDICT_META[partial.verdict]?.cls"
+              class="live-verdict verdict"
+              :data-v="VERDICT_META[partial.verdict]?.v"
             >
               {{ $t(VERDICT_META[partial.verdict]?.labelKey ?? 'verdict.comment') }}
             </span>
           </div>
           <p v-if="partial.summary || partial.intent" class="live-summary">
             {{ partial.summary ?? partial.intent
-            }}<span v-if="status.phase !== 'error'" class="live-caret" aria-hidden="true" />
+            }}<span v-if="status.phase !== 'error'" class="live-caret" aria-hidden="true">{{
+              G.cursor
+            }}</span>
           </p>
         </section>
 
-        <section v-if="partial.findings.length" class="live-panel">
+        <section v-if="partial.findings.length" class="live-panel panel">
           <div class="live-panel-tag">
             {{ $t('live.findings') }}
             <span class="live-count">{{ partial.findings.length }}</span>
           </div>
-          <TransitionGroup name="live-fade" tag="div" class="live-findings">
+          <div class="live-findings">
             <div
               v-for="(finding, i) in partial.findings"
               :key="`${finding.file}:${finding.line ?? i}:${finding.title ?? ''}`"
               class="live-finding"
             >
-              <span
-                class="live-finding-dot"
-                :style="{ background: severityDot(finding.severity) }"
-              />
+              <span class="live-finding-dot sev" :data-v="finding.severity" aria-hidden="true">{{
+                G.dot
+              }}</span>
               <div class="live-finding-body">
                 <span class="live-finding-title">{{ finding.title ?? finding.message }}</span>
                 <span class="live-finding-file"
@@ -184,10 +180,10 @@ function severityDot(severity?: string): string {
                 >
               </div>
             </div>
-          </TransitionGroup>
+          </div>
         </section>
 
-        <section v-if="partial.stepTitles.length" class="live-panel">
+        <section v-if="partial.stepTitles.length" class="live-panel panel">
           <div class="live-panel-tag">{{ $t('live.steps') }}</div>
           <div class="live-steps">
             <span v-for="(title, i) in partial.stepTitles" :key="i" class="live-step-pill">
@@ -198,7 +194,7 @@ function severityDot(severity?: string): string {
         </section>
       </template>
 
-      <section v-else-if="input" class="live-panel">
+      <section v-else-if="input" class="live-panel panel">
         <div class="live-panel-tag">{{ $t('app.tabFiles') }}</div>
         <div class="live-files">
           <div v-for="file in previewFiles" :key="file.path" class="live-file">
@@ -214,9 +210,10 @@ function severityDot(severity?: string): string {
         </div>
       </section>
 
-      <p v-if="status.phase === 'reviewing'" class="live-waiting">
-        <span class="app-spinner live-spinner" aria-hidden="true" />
-        {{ hasPartialContent ? $t('live.streaming') : $t('live.reading') }}
+      <p v-if="status.phase === 'reviewing'" class="live-waiting review-live">
+        <span class="live-waiting-label status" data-s="running">
+          {{ hasPartialContent ? $t('live.streaming') : $t('live.reading') }}
+        </span>
         <span class="live-phase">{{ phase }}</span>
       </p>
     </template>
@@ -225,342 +222,190 @@ function severityDot(severity?: string): string {
 
 <style scoped>
 .live-root {
-  max-width: 760px;
+  max-width: 100ch;
   margin: 0 auto;
-  padding: 48px 24px 80px;
+  padding: var(--row) 2ch;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: var(--row);
 }
 
 .live-head {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .live-head-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.live-pulse {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--codesema-amber);
-  animation: live-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes live-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(247, 144, 9, 0.55);
-  }
-  50% {
-    box-shadow: 0 0 0 7px rgba(247, 144, 9, 0);
-  }
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .live-title {
-  font-size: var(--fs-xl);
-  font-weight: 700;
-  margin: 0;
-  font-family: var(--font-display);
+  font-size: 18px;
 }
 
 .live-elapsed {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-3);
-  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
 }
 
 .live-branch {
-  margin: 0;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
+  color: var(--fg-dim);
   display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.live-branch-name {
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-}
-
-.live-branch-arrow {
-  color: var(--codesema-ink-3);
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .live-agent {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .live-error {
-  border: 1px solid var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
-  color: var(--codesema-ink);
-  border-radius: 10px;
-  padding: 12px 14px;
-  font-size: var(--fs-base);
-  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 
 .live-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 1ch;
 }
 
 .live-chip {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  border-radius: 999px;
-  padding: 4px 12px;
+  color: var(--fg-dim);
+  border: 1px solid currentColor;
+  padding: 0 1ch;
 }
 
 .live-chip--accent {
-  color: var(--codesema-accent);
-  border-color: var(--codesema-accent);
-  background: var(--codesema-accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .live-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .live-del {
-  color: var(--codesema-risk-high);
-}
-
-.live-panel {
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  border-radius: 12px;
-  padding: 14px 16px;
+  color: var(--err);
 }
 
 .live-panel-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--codesema-ink-3);
-  margin-bottom: 10px;
+  color: var(--fg-dim);
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .live-count {
-  font-family: var(--font-mono);
-  color: var(--codesema-accent);
+  color: var(--accent);
 }
 
 .live-verdict {
-  font-size: var(--fs-xs);
-  border-radius: 999px;
-  padding: 2px 10px;
-  border: 1px solid var(--codesema-line);
+  font-size: 12px;
   text-transform: none;
   letter-spacing: normal;
 }
 
-.live-verdict--approve {
-  color: var(--codesema-risk-low);
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
-}
-
-.live-verdict--changes {
-  color: var(--codesema-risk-high);
-  border-color: var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
-}
-
-.live-verdict--comment {
-  color: var(--codesema-risk-med);
-  border-color: var(--codesema-risk-med);
-  background: var(--codesema-risk-med-soft);
-}
-
 .live-summary {
-  margin: 0;
-  font-size: var(--fs-base);
-  line-height: 1.6;
-  color: var(--codesema-ink);
   white-space: pre-wrap;
 }
 
 .live-caret {
-  display: inline-block;
-  width: 7px;
-  height: 15px;
-  margin-left: 3px;
-  vertical-align: text-bottom;
-  background: var(--codesema-accent);
-  animation: live-caret 0.9s steps(2) infinite;
-}
-
-@keyframes live-caret {
-  50% {
-    opacity: 0;
-  }
+  color: var(--accent);
+  animation: blink 1s steps(2) infinite;
 }
 
 .live-findings {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .live-finding {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 1ch;
 }
 
 .live-finding-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
   flex: none;
-  transform: translateY(-1px);
 }
 
 .live-finding-body {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   min-width: 0;
 }
 
-.live-finding-title {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink);
-  line-height: 1.45;
-}
-
 .live-finding-file {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
   overflow-wrap: anywhere;
-}
-
-.live-fade-enter-active {
-  transition:
-    opacity 0.35s ease,
-    transform 0.35s ease;
-}
-
-.live-fade-enter-from {
-  opacity: 0;
-  transform: translateY(4px);
 }
 
 .live-steps {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 2ch;
 }
 
 .live-step-pill {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
-  border: 1px solid var(--codesema-line);
-  border-radius: 999px;
-  padding: 4px 12px;
+  color: var(--fg-dim);
   display: inline-flex;
-  align-items: center;
-  gap: 7px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .live-step-index {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--codesema-accent);
+  font-size: 12px;
+  color: var(--accent);
 }
 
 .live-files {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .live-file {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: 2ch;
 }
 
 .live-file-path {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-2);
+  font-size: 12px;
+  color: var(--fg-dim);
   overflow-wrap: anywhere;
 }
 
 .live-file-delta {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-size: 12px;
   flex: none;
 }
 
 .live-file-more {
-  margin: 4px 0 0;
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .live-waiting {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 4px 0 0;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-3);
-}
-
-.live-spinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--codesema-line);
-  border-top-color: var(--codesema-accent);
-  animation: live-spin 0.8s linear infinite;
-}
-
-@keyframes live-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  align-items: baseline;
 }
 
 .live-phase {
-  color: var(--codesema-ink-2);
-  font-style: italic;
+  color: var(--fg-dim);
 }
 
 .live-dual-lanes {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
-
-.live-dual-lanes--dim {
-  gap: 10px;
+  gap: 2ch;
 }
 
 @media (max-width: 800px) {

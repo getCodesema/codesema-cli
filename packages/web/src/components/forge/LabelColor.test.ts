@@ -40,19 +40,19 @@ describe('contrastTextColor', () => {
 })
 
 describe('labelPillStyle', () => {
-  test('a null color falls back to the neutral --cs-* tokens, never an invented color', () => {
+  test('a null color falls back to the neutral theme tokens, never an invented color', () => {
     expect(labelPillStyle(null)).toEqual({
-      '--lp-rest-bg': 'var(--cs-line-2)',
-      '--lp-selected-bg': 'var(--cs-green)',
-      '--lp-selected-text': 'var(--cs-on-green)',
+      '--lp-rest-bg': 'var(--line)',
+      '--lp-selected-bg': 'var(--ok)',
+      '--lp-selected-text': 'var(--bg)',
     })
   })
 
   test('a malformed color that slipped past validation falls back to the same neutral tokens', () => {
     expect(labelPillStyle('not-a-color')).toEqual({
-      '--lp-rest-bg': 'var(--cs-line-2)',
-      '--lp-selected-bg': 'var(--cs-green)',
-      '--lp-selected-text': 'var(--cs-on-green)',
+      '--lp-rest-bg': 'var(--line)',
+      '--lp-selected-bg': 'var(--ok)',
+      '--lp-selected-text': 'var(--bg)',
     })
   })
 

@@ -2,6 +2,7 @@
 // tab label semaphore, pass/fail aggregates, the queue mini-badge and the
 // 'checks' journal line. Components only compose these functions (bun:test).
 
+import { G } from '../glyphs'
 import { t, type MessageKey } from '../i18n'
 import type {
   TaskCheck,
@@ -30,13 +31,13 @@ export function checksTone(checks: Pick<TaskChecks, 'status'> | null): ChecksTon
 
 const TAB_SUFFIX: Record<ChecksTone, string> = {
   none: '',
-  run: ' …',
-  pass: ' ✓',
-  fail: ' ✗',
-  warn: ' ⚠',
+  run: ` ${G.ellipsis}`,
+  pass: ` ${G.ok}`,
+  fail: ` ${G.fail}`,
+  warn: ` ${G.attention}`,
 }
 
-/** The tab IS the semaphore: "Checks ✓" green / "Checks ✗" red / "Checks …"
+/** The tab IS the semaphore: "Checks ✓" green / "Checks ×" red / "Checks …"
  * while running; bare "Checks" when nothing ran or nothing is configured. */
 export function checksTabLabel(checks: Pick<TaskChecks, 'status'> | null): string {
   return `${t('workspace.tabChecks')}${TAB_SUFFIX[checksTone(checks)]}`
@@ -101,10 +102,10 @@ export const CHECKS_STATUS_KEY: Record<TaskChecks['status'], MessageKey> = {
 
 /** Per-check row: status glyph + localized word. */
 export const CHECK_GLYPH: Record<TaskCheckStatus, string> = {
-  passed: '✓',
-  failed: '✗',
-  timeout: '⏱',
-  skipped: '–',
+  passed: G.ok,
+  failed: G.fail,
+  timeout: G.timeout,
+  skipped: G.minus,
 }
 
 export const CHECK_STATUS_KEY: Record<TaskCheckStatus, MessageKey> = {
@@ -309,7 +310,7 @@ export type CommandDiffRow = { command: string; state: CommandDiffState }
 export const COMMAND_DIFF_GLYPH: Record<CommandDiffState, string> = {
   kept: '=',
   added: '+',
-  removed: '−',
+  removed: G.minus,
 }
 
 /**

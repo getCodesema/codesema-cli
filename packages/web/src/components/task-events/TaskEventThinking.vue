@@ -10,6 +10,7 @@
 // back to the team lead.
 import { Brain, ChevronRight } from '@lucide/vue'
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import { previewTail, THINKING_IDLE_MS } from './TaskEventThinking'
 
@@ -99,7 +100,7 @@ onUnmounted(clearIdleTimer)
     >
       <Brain class="tvth-icon" aria-hidden="true" />
       <span class="tvth-label">{{ t('workspace.evThinking') }}</span>
-      <span v-if="active" class="tvth-dot" aria-hidden="true" />
+      <span v-if="active" class="tvth-dot" aria-hidden="true">{{ G.dot }}</span>
       <ChevronRight
         class="tvth-chevron"
         :class="{ 'tvth-chevron--open': open }"
@@ -128,68 +129,54 @@ onUnmounted(clearIdleTimer)
   display: flex;
   flex-direction: column;
   max-width: 85%;
-  margin: 4px 0;
 }
 
 .tvth-head {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 2px 8px;
-  margin: -2px -8px;
+  gap: 1ch;
+  padding: 2px 1ch;
+  margin: -2px -1ch;
   border: none;
-  border-radius: 8px;
   background: transparent;
   color: inherit;
-  font-family: inherit;
+  font: inherit;
   cursor: pointer;
 }
 
 .tvth-head:hover {
-  background: var(--cs-hover);
+  background: var(--bg-hover);
 }
 
 .tvth-icon {
   flex: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   margin-top: 4px;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .tvth-label {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  line-height: 20px;
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 /* Live signal while the block is still filling in (fiche 12 section 3's
-   "toujours en cours"), same small pulsing dot used elsewhere in the thread
-   for an in-progress state (TaskConversation.vue's own tools/review dots). */
+   "toujours en cours"), the one blink the kit allows on an in-progress dot. */
 .tvth-dot {
   align-self: center;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--cs-amber);
-  animation: tvth-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes tvth-pulse {
-  50% {
-    opacity: 0.35;
-  }
+  color: var(--info);
+  animation: blink 1.2s steps(2) infinite;
 }
 
 .tvth-chevron {
   flex: none;
   margin-left: auto;
-  width: 13px;
-  height: 13px;
-  color: var(--cs-ghost);
-  transition: transform 200ms ease;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-muted);
+  transition: transform 150ms ease;
 }
 
 .tvth-chevron--open {
@@ -201,14 +188,12 @@ onUnmounted(clearIdleTimer)
    its END rather than its start — "défilé vers la droite" (fiche 12 section
    3): the reader sees the thought by how it currently ends. */
 .tvth-preview {
-  margin: 2px 0 0 20px;
+  margin: 2px 0 0 3ch;
   overflow: hidden;
   white-space: nowrap;
   direction: rtl;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  line-height: 20px;
-  color: var(--cs-muted);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .tvth-preview-text {
@@ -221,20 +206,16 @@ onUnmounted(clearIdleTimer)
 }
 
 .tvth-body {
-  margin: 6px 0 0 20px;
-  padding-left: 12px;
-  border-left: 2px solid color-mix(in srgb, var(--cs-green) 70%, transparent);
-  max-height: 360px;
+  margin: calc(var(--row) / 2) 0 0 3ch;
+  max-height: calc(var(--row) * 16);
   overflow-y: auto;
 }
 
 .tvth-prose {
   margin: 0;
   max-width: 65ch;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  line-height: 20px;
-  color: var(--cs-text-2);
+  font-size: 12px;
+  color: var(--fg-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

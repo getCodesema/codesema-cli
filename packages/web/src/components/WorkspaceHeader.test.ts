@@ -140,12 +140,73 @@ describe('and stays silent when there is nothing to state', () => {
   })
 })
 
-describe('the pilot shell toggle sits with the other header actions', () => {
-  test('a discreet button offers the grid shell, always visible', async () => {
+describe('the band segment says nothing the rail already says', () => {
+  test('no brand: it is printed once, in the rail header', async () => {
     const html = await renderHeader(info({}))
-    const match = html.match(/<button[^>]*class="wh-pilot-toggle"[^>]*>/)
-    expect(match).not.toBeNull()
-    expect(html).toContain(t('pilot.toggle.grid'))
+    expect(html).not.toContain('codesema')
+    expect(html).not.toContain('wh-brand')
+    expect(html).not.toContain(t('workspace.title'))
+  })
+
+  test('no settings cell: the one entry is the rail footer row', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).not.toContain('wh-settings')
+    expect(html).not.toContain(t('nav.settings'))
+  })
+
+  test('the agents counter is what remains, with its status dot', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).toContain('wh-agents')
+    expect(html).toContain('class="wh-agents-dot status"')
+    expect(html).toContain(t('workspace.agentsCount', { n: 0 }))
+  })
+
+  test('a live run turns the dot on, an idle desk leaves it off', async () => {
+    const WorkspaceHeader = (await import('./WorkspaceHeader.vue')).default
+    const busy = await renderToString(createSSRApp(WorkspaceHeader, { needsYou: 0, agents: 2 }))
+    expect(busy).toContain('data-s="running"')
+    const idle = await renderHeader(info({}))
+    expect(idle).toContain('data-s="idle"')
+  })
+
+  // An idle desk is not a state: the counter and its dot drop to the quietest
+  // grey, and only a running agent brings the dot's colour back.
+  test('a zero counter is muted, a live one is not', async () => {
+    const idle = await renderHeader(info({}))
+    expect(idle).toContain('wh-agents--none')
+    const WorkspaceHeader = (await import('./WorkspaceHeader.vue')).default
+    const busy = await renderToString(createSSRApp(WorkspaceHeader, { needsYou: 0, agents: 2 }))
+    expect(busy).not.toContain('wh-agents--none')
+  })
+
+  test('the band carries no cell hairlines: identity is text, never a box', () => {
+    const SOURCE = readFileSync(join(import.meta.dir, 'WorkspaceHeader.vue'), 'utf8')
+    expect(SOURCE).toContain('.wh-right .cell {')
+    expect(SOURCE.slice(SOURCE.indexOf('.wh-right .cell {'))).toContain('border-left: 0;')
+  })
+
+  // The bell is the ONE amber in the band, and only while it counts someone.
+  test('no needs-you bell at all when nobody is waited on', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).not.toContain('wh-bell')
+  })
+
+  test('the segment is one band line under one hairline, never a frame', () => {
+    const SOURCE = readFileSync(join(import.meta.dir, 'WorkspaceHeader.vue'), 'utf8')
+    const rule = SOURCE.slice(SOURCE.indexOf('.wh-root {'), SOURCE.indexOf('.wh-gap {'))
+    expect(rule).toContain('height: calc(var(--row) + 4px);')
+    expect(rule).toContain('border: 0;')
+    expect(rule).toContain('border-bottom: 1px solid var(--line);')
+    expect(SOURCE).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(SOURCE).not.toContain('border-radius')
+    expect(SOURCE).not.toContain('box-shadow')
+  })
+})
+
+describe('the header offers no shell switch: the classic shell is the only one', () => {
+  test('no grid-shell toggle is rendered', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).not.toContain('wh-pilot-toggle')
   })
 })
 

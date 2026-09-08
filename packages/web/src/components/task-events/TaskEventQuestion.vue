@@ -1,12 +1,13 @@
 <script setup lang="ts">
-// Question card, maquette form: mono meta line, then an amber bubble — the
+// Question card, maquette form: mono meta line, then an amber-railed block — the
 // state the semaphore doctrine reserves for "the human is the bottleneck".
 // Opens BY ITSELF when it is the live question of a task in waiting_for_you
 // (ctx.active). The reply field (and the quick-reply buttons) live in the
 // conversation, which focuses the composer when the task waits.
 import { computed } from 'vue'
-import { firstString, splitInlineCode, timeAgo } from '../../composables/useTaskBoard'
+import { firstString, splitInlineCode } from '../../composables/useTaskBoard'
 import { t } from '../../i18n'
+import { formatExactStamp, formatRelativeAge } from '../../relative-time'
 import type { TaskEventCtx } from '../../task-event-registry'
 import type { TaskEvent, TaskRecord } from '../../types'
 
@@ -16,22 +17,25 @@ const question = computed(
   () => firstString(props.event.data, ['question', 'text', 'summary']) ?? t('workspace.evQuestion'),
 )
 const segments = computed(() => splitInlineCode(question.value))
-const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
+const ago = computed(() => formatRelativeAge(props.event.at, props.ctx.now))
+const exact = computed(() => formatExactStamp(props.event.at))
 </script>
 
 <template>
-  <div class="tvq-root">
+  <div class="tvq-root" :title="exact">
     <p class="tvq-meta">
       <span
         >{{ t('workspace.agentLabel') }}<template v-if="ago"> · {{ ago }}</template></span
       >
       <span class="tvq-tag">{{ t('workspace.evQuestion') }}</span>
     </p>
-    <p class="tvq-bubble" :class="{ 'tvq-bubble--active': ctx.active }">
-      <template v-for="(segment, i) in segments" :key="i">
-        <code v-if="segment.code" class="tvq-code">{{ segment.text }}</code>
-        <template v-else>{{ segment.text }}</template>
-      </template>
+    <p class="tvq-bubble question" :class="{ 'tvq-bubble--active': ctx.active }">
+      <span class="tvq-text q">
+        <template v-for="(segment, i) in segments" :key="i">
+          <code v-if="segment.code" class="tvq-code">{{ segment.text }}</code>
+          <template v-else>{{ segment.text }}</template>
+        </template>
+      </span>
     </p>
     <p v-if="ctx.active" class="tvq-hint">{{ t('workspace.questionHint') }}</p>
   </div>
@@ -41,63 +45,50 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 .tvq-root {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: calc(var(--row) / 2);
   max-width: 85%;
-  margin: 4px 0;
 }
 
 .tvq-meta {
   margin: 0;
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  gap: 1ch;
+  font-size: 12px;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
+/* The kit's `.question` draws the amber rail; amber is the state here — this
+   question blocks the task — and the tag beside it says so in words. */
 .tvq-tag {
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--cs-amber-text);
-  background: var(--cs-amber-soft);
-  padding: 2px 6px;
-  border-radius: 4px;
+  color: var(--warn);
 }
 
-/* Amber carries the state: this question blocks the task. */
 .tvq-bubble {
   margin: 0;
-  padding: 12px 14px;
-  border: 1px solid var(--cs-amber-line);
-  border-radius: 3px 10px 10px 10px;
-  background: var(--cs-amber-card);
-  font-size: var(--fs-base);
-  line-height: 1.55;
-  color: var(--cs-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-width: 0;
 }
 
+/* The live question — the one the composer is waiting on — thickens its rail;
+   answered ones keep the thin one. */
 .tvq-bubble--active {
-  box-shadow: 0 0 18px rgba(232, 196, 106, 0.07);
+  border-left-width: 3px;
 }
 
 .tvq-code {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
+  font-size: 12px;
+  color: var(--fg);
+  background: none;
+  padding: 0;
   white-space: pre-wrap;
 }
 
 .tvq-hint {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-amber-text);
+  font-size: 12px;
+  color: var(--warn);
 }
 </style>

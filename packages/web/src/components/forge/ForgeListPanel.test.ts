@@ -470,42 +470,14 @@ describe('matchesForgeSearch: title or number, case-insensitive, empty query mat
   })
 })
 
-describe('skeleton geometry: five cards, a diagonal stagger, no comb effect', () => {
+describe('loading placeholder geometry: five static card-shaped rows', () => {
   test('five cards, matching the geometry the panel actually renders', async () => {
     const { SKELETON_CARD_COUNT } = await import('./ForgeListPanel.vue')
     expect(SKELETON_CARD_COUNT).toBe(5)
   })
-
-  test('the first card, first element carries no delay at all', async () => {
-    const { skeletonDelay, SKELETON_ELEMENT_OFFSETS } = await import('./ForgeListPanel.vue')
-    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.icon)).toBe('0.00s')
-  })
-
-  test('elements within one card stagger by the documented per-element offsets', async () => {
-    const { skeletonDelay, SKELETON_ELEMENT_OFFSETS } = await import('./ForgeListPanel.vue')
-    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.number)).toBe('0.04s')
-    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.author)).toBe('0.08s')
-    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.age)).toBe('0.12s')
-    expect(skeletonDelay(0, SKELETON_ELEMENT_OFFSETS.title)).toBe('0.16s')
-  })
-
-  test('later cards stagger further, compounding with the element offset (diagonal sweep)', async () => {
-    const { skeletonDelay, SKELETON_ELEMENT_OFFSETS } = await import('./ForgeListPanel.vue')
-    expect(skeletonDelay(1, SKELETON_ELEMENT_OFFSETS.icon)).toBe('0.06s')
-    expect(skeletonDelay(2, SKELETON_ELEMENT_OFFSETS.title)).toBe('0.28s')
-    expect(skeletonDelay(4, SKELETON_ELEMENT_OFFSETS.title)).toBe('0.40s')
-  })
-
-  test('title widths cycle across consecutive cards rather than repeating one width', async () => {
-    const { skeletonTitleWidth } = await import('./ForgeListPanel.vue')
-    const widths = [0, 1, 2, 3, 4].map((i) => skeletonTitleWidth(i))
-    expect(new Set(widths.slice(0, 3)).size).toBe(3)
-    // The cycle wraps: the 4th card reuses the 1st card's width.
-    expect(skeletonTitleWidth(3)).toBe(skeletonTitleWidth(0))
-  })
 })
 
-describe('loading skeleton: replaces the plain loading text with card-shaped placeholders', () => {
+describe('loading placeholder: replaces the plain loading text with card-shaped rows', () => {
   test('renders five skeleton cards, still carrying the loading text for assistive tech', async () => {
     const html = await render({ issuesState: issuesState({ loading: true }) })
     expect(html).toContain(t('forge.loading'))

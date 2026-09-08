@@ -27,14 +27,14 @@ describe('checksTabLabel', () => {
     expect(checksTabLabel({ status: 'unconfigured' })).toBe('Checks')
   })
 
-  test('the label is the semaphore: … while running, ✓ green, ✗ red', () => {
+  test('the label is the semaphore: … while running, ✓ green, × red', () => {
     expect(checksTabLabel({ status: 'running' })).toBe('Checks …')
     expect(checksTabLabel({ status: 'passed' })).toBe('Checks ✓')
-    expect(checksTabLabel({ status: 'failed' })).toBe('Checks ✗')
+    expect(checksTabLabel({ status: 'failed' })).toBe('Checks ×')
   })
 
   test('a broken runner is a warning, never a pass or a fail', () => {
-    expect(checksTabLabel({ status: 'error' })).toBe('Checks ⚠')
+    expect(checksTabLabel({ status: 'error' })).toBe('Checks !')
     expect(checksTone({ status: 'error' })).toBe('warn')
   })
 })
@@ -48,8 +48,8 @@ describe('checksBadge', () => {
   test('one glyph per state', () => {
     expect(checksBadge({ status: 'running' })).toBe('…')
     expect(checksBadge({ status: 'passed' })).toBe('✓')
-    expect(checksBadge({ status: 'failed' })).toBe('✗')
-    expect(checksBadge({ status: 'error' })).toBe('⚠')
+    expect(checksBadge({ status: 'failed' })).toBe('×')
+    expect(checksBadge({ status: 'error' })).toBe('!')
   })
 })
 

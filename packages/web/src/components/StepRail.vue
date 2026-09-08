@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Finding } from '../composables/useDiff'
-import { stepTone } from '../composables/useStepTone'
+import { stepTone, type StepTone } from '../composables/useStepTone'
+import { G } from '../glyphs'
 import type { StepView } from '../types'
 
 const props = defineProps<{
@@ -26,7 +27,7 @@ function stateOf(index: number): RailState {
   return 'pending'
 }
 
-function toneOf(index: number): string {
+function toneOf(index: number): StepTone {
   const step = props.steps[index]
   return step ? stepTone(step, props.findings) : 'low'
 }
@@ -44,26 +45,33 @@ function allPassed(): boolean {
 </script>
 
 <template>
-  <nav class="rail-root" :aria-label="$t('rail.aria')">
-    <span class="rail-edge">{{ $t('rail.mr') }}</span>
+  <nav class="rail-root steprail" :aria-label="$t('rail.aria')">
+    <span class="rail-edge muted">{{ $t('rail.mr') }}</span>
 
     <template v-for="(step, i) in steps" :key="i">
-      <span class="rail-link" :class="{ 'rail-link--passed': linkPassed(i) }" />
+      <span class="rail-link link" :class="{ 'rail-link--passed': linkPassed(i) }" />
       <button
-        class="rail-node"
-        :class="`rail-node--${stateOf(i)}`"
+        class="rail-node node"
+        :class="[
+          `rail-node--${stateOf(i)}`,
+          {
+            done: stateOf(i) === 'passed',
+            cur: stateOf(i) === 'active',
+            risk: toneOf(i) === 'high',
+          },
+        ]"
         :title="step.title"
         @click="emit('select', i)"
       >
-        <span class="rail-dot" :class="[`rail-dot--tone-${toneOf(i)}`, `rail-dot--${stateOf(i)}`]">
-          <template v-if="stateOf(i) === 'passed'">✓</template>
+        <span class="rail-dot" :data-r="toneOf(i)">
+          <template v-if="stateOf(i) === 'passed'">{{ G.ok }}</template>
           <template v-else>{{ i + 1 }}</template>
         </span>
         <span class="rail-label">{{ step.title }}</span>
       </button>
     </template>
 
-    <span class="rail-link" :class="{ 'rail-link--passed': allPassed() }" />
+    <span class="rail-link link" :class="{ 'rail-link--passed': allPassed() }" />
     <span class="rail-edge" :class="{ 'rail-edge--merged': allPassed() }">{{
       $t('rail.merge')
     }}</span>
@@ -72,115 +80,61 @@ function allPassed(): boolean {
 
 <style scoped>
 .rail-root {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 26px;
-  border-bottom: 1px solid var(--codesema-line);
-  overflow-x: auto;
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 2ch;
+  border-bottom: 1px solid var(--line);
 }
 
 .rail-edge {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: var(--codesema-ink-3);
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .rail-edge--merged {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .rail-link {
   flex: 1;
-  min-width: 14px;
-  border-top: 1.5px dashed var(--codesema-line-idle);
-  transition: border-color 0.5s ease;
+  min-width: 2ch;
 }
 
 .rail-link--passed {
-  border-top-color: var(--codesema-signal-go);
+  border-top-color: var(--ok);
 }
 
 .rail-node {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 1ch;
   flex-shrink: 0;
-  max-width: 190px;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line-2);
-  border-radius: 11px;
-  padding: 5px 12px 5px 6px;
-  font-family: inherit;
-  cursor: pointer;
-  transition:
-    border-color 0.5s ease,
-    box-shadow 0.25s ease;
+  max-width: 30ch;
+  font: inherit;
+  background: transparent;
 }
 
 .rail-node:hover {
-  border-color: var(--codesema-ink-3);
-}
-
-.rail-node--passed {
-  border-color: var(--codesema-signal-go);
-}
-
-.rail-node--active {
-  border-color: var(--codesema-signal-check);
+  background: var(--bg-hover);
 }
 
 .rail-dot {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
   font-weight: 700;
-  background: var(--codesema-dot-idle);
-  color: #fff;
-  transition:
-    background 0.5s ease,
-    box-shadow 0.25s ease;
 }
 
-/* The dot carries the verdict tone; read state stays on the ✓ and node border. */
-.rail-dot--tone-low {
-  background: var(--codesema-risk-low);
+.rail-dot[data-r='low'] {
+  color: var(--ok);
 }
 
-.rail-dot--tone-medium {
-  background: var(--codesema-risk-med);
+.rail-dot[data-r='medium'] {
+  color: var(--warn);
 }
 
-.rail-dot--tone-high {
-  background: var(--codesema-risk-high);
-}
-
-.rail-dot--active.rail-dot--tone-low {
-  box-shadow: 0 0 8px var(--codesema-risk-low);
-}
-
-.rail-dot--active.rail-dot--tone-medium {
-  box-shadow: 0 0 8px var(--codesema-risk-med);
-}
-
-.rail-dot--active.rail-dot--tone-high {
-  box-shadow: 0 0 8px var(--codesema-risk-high);
+.rail-dot[data-r='high'] {
+  color: var(--err);
 }
 
 .rail-label {
-  font-size: var(--fs-base);
-  font-weight: 600;
-  color: var(--codesema-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

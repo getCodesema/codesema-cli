@@ -4,21 +4,21 @@
 // passed, amber = the machine works (pulse) or the human is needed (strong),
 // red = blocked, neutral = nothing is happening.
 
+import { G } from './glyphs'
 import type { MessageKey } from './i18n'
 import type { TaskStatus } from './types'
 
+export type StatusTone = 'ok' | 'warn' | 'err' | 'info' | 'idle'
+
 export type StatusVisual = {
-  /** Core signal color (dot, active border). Always a --cs-* token. */
-  color: string
-  /** Soft wash behind the status chip. */
-  soft: string
-  /** Text-legible variant of the signal color (AA on the soft wash). */
-  text: string
+  /** Semantic tone, rendered by CSS through `data-s`/`data-tone`: info = the
+   * machine works, warn = the human is awaited, ok/err = final, idle = nothing. */
+  tone: StatusTone
   /** Compact glyph for dense rows; never the only carrier of the state. */
   icon: string
   labelKey: MessageKey
   /** Sentence-length phrase for the conversation header ("paused — waiting
-   * for your answer"), colored with `text`. */
+   * for your answer"), in the tone colour. */
   phraseKey: MessageKey
   /** Discreet pulse: the agent itself is working right now (live signal). */
   pulse: boolean
@@ -26,31 +26,15 @@ export type StatusVisual = {
   attention: boolean
 }
 
-const green: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-green)',
-  soft: 'var(--cs-green-soft)',
-  text: 'var(--cs-green-text)',
-}
-const amber: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-amber)',
-  soft: 'var(--cs-amber-soft)',
-  text: 'var(--cs-amber-text)',
-}
-const red: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-red)',
-  soft: 'var(--cs-red-soft)',
-  text: 'var(--cs-red-text)',
-}
-const idle: Pick<StatusVisual, 'color' | 'soft' | 'text'> = {
-  color: 'var(--cs-dot-idle)',
-  soft: 'var(--cs-hover)',
-  text: 'var(--cs-muted)',
-}
+const green: Pick<StatusVisual, 'tone'> = { tone: 'ok' }
+const amber: Pick<StatusVisual, 'tone'> = { tone: 'warn' }
+const red: Pick<StatusVisual, 'tone'> = { tone: 'err' }
+const idle: Pick<StatusVisual, 'tone'> = { tone: 'idle' }
 
 export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   queued: {
     ...idle,
-    icon: '○',
+    icon: G.pending,
     labelKey: 'workspace.statusQueued',
     phraseKey: 'workspace.phaseQueued',
     pulse: false,
@@ -58,7 +42,8 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   running: {
     ...amber,
-    icon: '●',
+    tone: 'info',
+    icon: G.dot,
     labelKey: 'workspace.statusRunning',
     phraseKey: 'workspace.phaseRunning',
     pulse: true,
@@ -66,7 +51,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   waiting_for_you: {
     ...amber,
-    icon: '?',
+    icon: G.ask,
     labelKey: 'workspace.statusWaiting',
     phraseKey: 'workspace.phaseWaiting',
     pulse: false,
@@ -74,7 +59,8 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   reviewing: {
     ...amber,
-    icon: '◎',
+    tone: 'info',
+    icon: G.review,
     labelKey: 'workspace.statusReviewing',
     phraseKey: 'workspace.phaseReviewing',
     pulse: true,
@@ -82,7 +68,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   review_ok: {
     ...green,
-    icon: '✓',
+    icon: G.ok,
     labelKey: 'workspace.statusReviewOk',
     phraseKey: 'workspace.phaseReviewOk',
     pulse: false,
@@ -90,7 +76,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   review_ko: {
     ...red,
-    icon: '✕',
+    icon: G.ko,
     labelKey: 'workspace.statusReviewKo',
     phraseKey: 'workspace.phaseReviewKo',
     pulse: false,
@@ -98,7 +84,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   shipped: {
     ...green,
-    icon: '↗',
+    icon: G.shipped,
     labelKey: 'workspace.statusShipped',
     phraseKey: 'workspace.phaseShipped',
     pulse: false,
@@ -106,7 +92,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   },
   failed: {
     ...red,
-    icon: '✕',
+    icon: G.ko,
     labelKey: 'workspace.statusFailed',
     phraseKey: 'workspace.phaseFailed',
     pulse: false,
@@ -117,7 +103,7 @@ export const EXECUTION_STATUS: Record<TaskStatus, StatusVisual> = {
   // though: an unanswered question is louder than a paused turn.
   interrupted: {
     ...amber,
-    icon: '‖',
+    icon: G.paused,
     labelKey: 'workspace.statusInterrupted',
     phraseKey: 'workspace.phaseInterrupted',
     pulse: false,

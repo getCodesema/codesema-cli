@@ -97,41 +97,96 @@ describe('TaskEventUser stays safe on adversarial user text', () => {
 // Geometry cannot be read back from server-rendered HTML text (scoped
 // <style> never reaches the SSR string), so the exact measures the brief
 // specifies — fiche 12 section 2 — are checked directly on the component's
-// own source, the same technique style.test.ts uses for style.css.
-describe('TaskEventUser geometry matches fiche 12 section 2, exactly', () => {
+// own source, the same technique styles.test.ts uses.
+describe('TaskEventUser geometry follows the kit, not a bubble of its own', () => {
   const source = readFileSync(
     fileURLToPath(new URL('./TaskEventUser.vue', import.meta.url)),
     'utf-8',
   )
   const style = source.slice(source.indexOf('<style'))
+  const kit = readFileSync(fileURLToPath(new URL('../../styles/kit.css', import.meta.url)), 'utf-8')
+  const kitUserBody = () => {
+    const start = kit.indexOf('.msg.user .body {')
+    return kit.slice(start, kit.indexOf('}', start))
+  }
 
-  test('surface background, not the old green-tinted one', () => {
-    expect(style).toContain('background: var(--cs-surface);')
-    expect(style).not.toContain('--cs-green-soft')
+  const bubbleRule = () => {
+    const start = style.indexOf('.tvu-root .tvu-bubble {')
+    return style.slice(start, style.indexOf('}', start))
+  }
+
+  test('the component invents no surface of its own', () => {
+    expect(bubbleRule()).not.toContain('background')
+    expect(bubbleRule()).not.toContain('border: 1px solid')
+    expect(style).not.toContain('var(--ok) 12%')
   })
 
-  test('16px uniform radius, not the old asymmetric 10/10/3/10 one', () => {
-    expect(style).toContain('border-radius: 16px;')
+  // The prompt is the ONE filled block of the thread: everything else there
+  // separates by whitespace. The fill replaces the rail it used to carry, so
+  // the guard is that the kit gives it a surface and no border at all.
+  test('the kit fills the user prompt, and rails it no more', () => {
+    expect(kitUserBody()).toContain('background: var(--bg-raised);')
+    expect(kitUserBody()).toContain('padding: calc(var(--row) / 2) 2ch;')
+    expect(kitUserBody()).not.toContain('border')
   })
 
-  test('16px horizontal / 8px vertical padding ("16 px sur 8 px")', () => {
-    expect(style).toContain('padding: 8px 16px;')
+  test('no rail anywhere in the component either', () => {
+    expect(style).not.toContain('border-left')
   })
 
-  test('550px max width, fitted to content', () => {
-    expect(style).toContain('max-width: 550px;')
-    expect(style).toContain('width: fit-content;')
+  test('square corners: the kit has no radius anywhere', () => {
+    expect(style).not.toContain('border-radius')
   })
 
-  test('base size token on a 24px line height ("corps 14/24 px")', () => {
-    expect(style).toContain('font-size: var(--fs-base);')
-    expect(style).toContain('line-height: 24px;')
+  // The surface comes from the kit's own `.msg.user .body`, so the guard is
+  // on the classes that pull it in: losing them loses the filled block just
+  // the same.
+  test('the filled block comes from the kit message grammar', () => {
+    const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
+    expect(template).toContain('class="tvu-root msg user"')
+    expect(template).toContain('class="tvu-block body"')
+    expect(template).toContain('class="tvu-bubble tvu-md md"')
   })
 
-  test('right-aligned, and no avatar element anywhere in the template', () => {
-    expect(style).toContain('align-self: flex-end;')
+  test('the stamp sits at the right of the block, in the kit timestamp class', () => {
+    const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
+    expect(template).toContain('class="tvu-time ts"')
+    expect(style).toContain('margin-left: auto;')
+  })
+
+  test('the speaker sits in the kit gutter, named in words', () => {
+    const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
+    expect(template).toContain('class="tvu-who who you"')
+    expect(template).toContain("t('conversation.you')")
+  })
+
+  test('width capped in characters', () => {
+    expect(style).toContain('max-width: 72ch;')
+  })
+
+  test('the bubble pins neither a size nor a line height: both inherit the kit', () => {
+    const bubble = bubbleRule()
+    expect(bubble).not.toContain('font-size')
+    expect(bubble).not.toContain('line-height')
+    expect(style).not.toMatch(/line-height: \d+px;/)
+  })
+
+  test('no hex literal and no raw rgba: theme tokens only', () => {
+    expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(style).not.toContain('rgba(')
+  })
+
+  test('never right-aligned, and no avatar element anywhere in the template', () => {
+    expect(style).not.toContain('align-self: flex-end;')
+    expect(style).not.toContain('text-align: right;')
     const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
     expect(template).not.toMatch(/avatar/i)
     expect(template).not.toContain('<img')
+  })
+
+  // Green is the success colour of this UI; an inline `code` span is not a
+  // success. base.css already gives it --fg on --bg-raised.
+  test('inline code is never coloured by this component', () => {
+    expect(style).not.toContain('var(--ok)')
   })
 })

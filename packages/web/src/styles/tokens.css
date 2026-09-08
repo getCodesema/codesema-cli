@@ -1,0 +1,197 @@
+/* Ported verbatim from design/ui-kit.html. Palette and contrast are client-only:
+   <html data-palette="…" data-contrast="aaa">, driven by src/theme.ts. */
+:root {
+  /* ---- tokens: Tokyo Night (default palette) ---- */
+  --bg: #1a1b26;
+  --bg-raised: #1f2335;
+  --bg-hover: #292e42;
+  --line: #3b4261;
+  --fg: #c0caf5;
+  --fg-muted: #565f89; /* decorative only: tree lines, #, disabled. Never text meant to be read */
+  --fg-dim: #8a92bd; /* secondary text, AA >= 4.5 on --bg and --bg-raised */
+  --accent: #7dcfff; /* focus, links, primary action */
+  --ok: #9ece6a;
+  --warn: #e0af68;
+  --err: #f7768e;
+  --info: #7aa2f7;
+  --alt: #bb9af7;
+  /* ---- type ---- */
+  --font:
+    'CaskaydiaMono Nerd Font', 'CaskaydiaCove Nerd Font', 'Cascadia Mono', ui-monospace, monospace;
+  --fs: 14px;
+  --lh: 1.6;
+  /* ---- space: everything in multiples of 1ch / one line ---- */
+  --u: 1ch;
+  --row: calc(var(--fs) * var(--lh));
+}
+/* AAA variant (>= 7:1 on --bg and --bg-raised): same hues, lightened */
+:root[data-contrast='aaa'] {
+  --fg-dim: #a7adce;
+  --info: #8eb0f8;
+  --err: #f991a5;
+}
+/* alternative palettes: same roles, AA guaranteed (colors lightened where needed) */
+:root[data-palette='nord'] {
+  --bg: #2e3440;
+  --bg-raised: #353b49;
+  --bg-hover: #3b4252;
+  --line: #4c566a;
+  --fg: #d8dee9;
+  --fg-dim: #a5adbd;
+  --fg-muted: #616e88;
+  --accent: #88c0d0;
+  --info: #88a8c8;
+  --ok: #a3be8c;
+  --warn: #ebcb8b;
+  --err: #ce969b;
+  --alt: #bf99b8;
+}
+/* Nord: the background is too light to push state colors to 7:1 without greying them. AAA only lightens secondary text. */
+:root[data-palette='nord'][data-contrast='aaa'] {
+  --fg-dim: #c8ceda;
+}
+:root[data-palette='gruvbox'] {
+  --bg: #282828;
+  --bg-raised: #32302f;
+  --bg-hover: #3c3836;
+  --line: #504945;
+  --fg: #ebdbb2;
+  --fg-dim: #a89984;
+  --fg-muted: #7c6f64;
+  --accent: #8ec07c;
+  --info: #83a598;
+  --ok: #b8bb26;
+  --warn: #fabd2f;
+  --err: #fb6954;
+  --alt: #d3869b;
+}
+:root[data-palette='gruvbox'][data-contrast='aaa'] {
+  --fg-dim: #cbbca7;
+  --info: #a3c5b8;
+  --err: #fba59b;
+  --alt: #d3b5ca;
+  --accent: #99cb87;
+  --ok: #c1c438;
+}
+:root[data-palette='catppuccin'] {
+  --bg: #1e1e2e;
+  --bg-raised: #262638;
+  --bg-hover: #313244;
+  --line: #45475a;
+  --fg: #cdd6f4;
+  --fg-dim: #a6adc8;
+  --fg-muted: #6c7086;
+  --accent: #89dceb;
+  --info: #89b4fa;
+  --ok: #a6e3a1;
+  --warn: #f9e2af;
+  --err: #f38ba8;
+  --alt: #cba6f7;
+}
+:root[data-palette='catppuccin'][data-contrast='aaa'] {
+  --fg-dim: #abb2cd;
+  --err: #f398b5;
+}
+:root[data-palette='aamis'] {
+  --bg: #0f0f0f;
+  --bg-raised: #171515;
+  --bg-hover: #211e1e;
+  --line: #3a3535;
+  --fg: #eadccc;
+  --fg-dim: #b8a999;
+  --fg-muted: #706a6a;
+  --accent: #f4bb54;
+  --info: #d8c4a8;
+  --ok: #b8b36a;
+  --warn: #e07a3a;
+  --err: #e25d6c;
+  --alt: #a08a8a;
+}
+:root[data-palette='aamis'][data-contrast='aaa'] {
+  --err: #e28790;
+  --alt: #b29c9c;
+  --warn: #e08c5e;
+}
+:root[data-palette='artzen'] {
+  --bg: #181c1f;
+  --bg-raised: #1f2427;
+  --bg-hover: #2a3034;
+  --line: #3e4549;
+  --fg: #fdf9f8;
+  --fg-dim: #c4bcbb;
+  --fg-muted: #7a7270;
+  --accent: #ecbeb9;
+  --info: #9a8c8a;
+  --ok: #9fb08a;
+  --warn: #d7a06a;
+  --err: #ed555d;
+  --alt: #bb7872;
+}
+:root[data-palette='artzen'][data-contrast='aaa'] {
+  --info: #b9aba9;
+  --err: #ed969a;
+  --alt: #cea49e;
+  --ok: #a3b48e;
+  --warn: #d7a46e;
+}
+:root[data-palette='bauhaus'] {
+  --bg: #101318;
+  --bg-raised: #161b22;
+  --bg-hover: #2b3040;
+  --line: #3a3f4c;
+  --fg: #eaeff5;
+  --fg-dim: #a3ada7;
+  --fg-muted: #6c7c82;
+  --accent: #e37b66;
+  --info: #7fa3c8;
+  --ok: #789fa2;
+  --warn: #e9b95a;
+  --err: #ce634e;
+  --alt: #937b95;
+}
+:root[data-palette='bauhaus'][data-contrast='aaa'] {
+  --info: #85a9ce;
+  --err: #ce988e;
+  --alt: #b69eb8;
+  --accent: #e3907d;
+  --ok: #85acaf;
+}
+:root[data-palette='aetheria'] {
+  --bg: #0e091d;
+  --bg-raised: #150f28;
+  --bg-hover: #1f1738;
+  --line: #332a52;
+  --fg: #14b9b5;
+  --fg-dim: #5e9e9c;
+  --fg-muted: #4a3f66;
+  --accent: #c8e967;
+  --info: #04c5f0;
+  --ok: #7cd699;
+  --warn: #ffbe74;
+  --err: #e23c72;
+  --alt: #a167b8;
+}
+:root[data-palette='aetheria'][data-contrast='aaa'] {
+  --fg-dim: #70aaa8;
+  --err: #e282a1;
+  --alt: #c48bce;
+}
+:root[data-palette='arcblueberry'] {
+  --bg: #111422;
+  --bg-raised: #171b2e;
+  --bg-hover: #1e2440;
+  --line: #313b62;
+  --fg: #bcc1dc;
+  --fg-dim: #8a90b0;
+  --fg-muted: #4d5578;
+  --accent: #f38cec;
+  --info: #69c3ff;
+  --ok: #3cec85;
+  --warn: #eacd61;
+  --err: #e35535;
+  --alt: #22ecdb;
+}
+:root[data-palette='arcblueberry'][data-contrast='aaa'] {
+  --fg-dim: #9fa5c5;
+  --err: #e39181;
+}

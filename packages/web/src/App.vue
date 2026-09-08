@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import PilotView from './components/pilot/PilotView.vue'
 import RepoSettings from './components/RepoSettings.vue'
 import ReviewLive from './components/ReviewLive.vue'
 import ReviewShell from './components/ReviewShell.vue'
 import WorkspaceView from './components/WorkspaceView.vue'
-import { usePilotPrefs } from './composables/usePilotPrefs'
 import { useReviewSession } from './composables/useReviewSession'
 
 // The tasks token doubles as the mode detector: the server only injects it
@@ -18,12 +16,6 @@ const tasksToken =
     ? (window as { __CODESEMA_TASKS_TOKEN__?: string }).__CODESEMA_TASKS_TOKEN__
     : undefined
 const workspaceMode = typeof tasksToken === 'string' && tasksToken.length > 0
-
-// This instance is the switch's own source of truth: PilotView and
-// WorkspaceView each read their own usePilotPrefs() (two independent refs,
-// no shared reactivity), so the toggle travels as an event up to App rather
-// than through the composable.
-const { shell } = usePilotPrefs()
 
 const view = ref<'review' | 'settings'>('review')
 
@@ -40,14 +32,11 @@ onUnmounted(stop)
 </script>
 
 <template>
-  <template v-if="workspaceMode && tasksToken">
-    <PilotView v-if="shell === 'pilot'" :token="tasksToken" @switch-shell="shell = 'classic'" />
-    <WorkspaceView v-else :token="tasksToken" @switch-shell="shell = 'pilot'" />
-  </template>
+  <WorkspaceView v-if="workspaceMode && tasksToken" :token="tasksToken" />
   <div v-else class="app-layout">
     <div class="app-main">
       <nav class="app-nav">
-        <button class="app-nav-btn" @click="view = view === 'settings' ? 'review' : 'settings'">
+        <button class="btn ghost" @click="view = view === 'settings' ? 'review' : 'settings'">
           {{ view === 'settings' ? $t('nav.backToReview') : $t('nav.settings') }}
         </button>
       </nav>
@@ -65,12 +54,9 @@ onUnmounted(stop)
         <div v-else class="app-state">
           <template v-if="error">
             <p class="app-error">{{ $t('app.loadError') }} ({{ error }})</p>
-            <button class="app-retry" @click="load">{{ $t('app.retry') }}</button>
+            <button class="btn" @click="load">{{ $t('app.retry') }}</button>
           </template>
-          <template v-else>
-            <span class="app-spinner" aria-hidden="true" />
-            <p class="codesema-muted">{{ $t('app.loading') }}</p>
-          </template>
+          <p v-else class="status muted" data-s="running">{{ $t('app.loading') }}</p>
         </div>
       </template>
     </div>
@@ -92,24 +78,7 @@ onUnmounted(stop)
 .app-nav {
   display: flex;
   justify-content: flex-end;
-  padding: 14px 20px 0;
-}
-
-.app-nav-btn {
-  font-size: var(--fs-base);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  cursor: pointer;
-  transition: border-color 0.12s ease;
-}
-
-.app-nav-btn:hover {
-  border-color: var(--codesema-ink-3);
+  padding: var(--row) 2ch 0;
 }
 
 .app-state {
@@ -118,44 +87,10 @@ onUnmounted(stop)
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  font-size: var(--fs-base);
+  gap: var(--row);
 }
 
 .app-error {
-  color: var(--codesema-risk-high);
-  margin: 0;
-}
-
-.app-retry {
-  font-size: var(--fs-base);
-  font-weight: 600;
-  font-family: inherit;
-  padding: 7px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  cursor: pointer;
-  transition: border-color 0.12s ease;
-}
-
-.app-retry:hover {
-  border-color: var(--codesema-ink-3);
-}
-
-.app-spinner {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 2.5px solid var(--codesema-line);
-  border-top-color: var(--codesema-accent);
-  animation: app-spin 0.8s linear infinite;
-}
-
-@keyframes app-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  color: var(--err);
 }
 </style>

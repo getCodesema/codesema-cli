@@ -99,6 +99,16 @@ const CHECK_LABEL_KEYS: Record<CheckBucket, MessageKey> = {
   skipped: 'mrs.checks.skipped',
 }
 
+/** The kit's own status vocabulary, so the aggregate dot is the same dot every
+ * other running/done/failed signal uses. */
+const CHECK_DOT_STATE: Record<CheckAggregateStatus, string> = {
+  passed: 'done',
+  failed: 'error',
+  pending: 'running',
+  skipped: 'idle',
+  unknown: 'idle',
+}
+
 const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   passed: 'mrs.checks.aggregatePassed',
   failed: 'mrs.checks.aggregateFailed',
@@ -123,8 +133,9 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
       </p>
       <div v-else-if="autoReview.kind === 'aggregate'" class="mrr-checks-aggregate">
         <span
-          class="mrr-checks-dot"
+          class="mrr-checks-dot status"
           :class="`mrr-checks-dot--${autoReview.status}`"
+          :data-s="CHECK_DOT_STATE[autoReview.status]"
           aria-hidden="true"
         />
         <span
@@ -148,7 +159,8 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
           <h4 class="mrr-check-group-heading">{{ t('mrs.rail.autoReviewPassedGroup') }}</h4>
           <button
             type="button"
-            class="mrr-check-passed"
+            class="mrr-check-passed check-row"
+            data-s="passed"
             :aria-expanded="passedOpen"
             :aria-label="t('mrs.checks.passed', { n: autoReview.passed }, autoReview.passed)"
             @click="passedOpen = !passedOpen"
@@ -222,15 +234,11 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
         <GitBranch class="mrr-heading-icon" aria-hidden="true" />
         <span>{{ t('mrs.rail.branches') }}</span>
       </h3>
-      <dl class="mrr-defs">
-        <div class="mrr-def-row">
-          <dt>{{ t('mrs.detailSource') }}</dt>
-          <dd class="mrr-branch">{{ mr.sourceBranch }}</dd>
-        </div>
-        <div class="mrr-def-row">
-          <dt>{{ t('mrs.detailTarget') }}</dt>
-          <dd class="mrr-branch">{{ mr.targetBranch }}</dd>
-        </div>
+      <dl class="mrr-defs kvs">
+        <dt>{{ t('mrs.detailSource') }}</dt>
+        <dd class="mrr-branch">{{ mr.sourceBranch }}</dd>
+        <dt>{{ t('mrs.detailTarget') }}</dt>
+        <dd class="mrr-branch">{{ mr.targetBranch }}</dd>
       </dl>
     </section>
 
@@ -239,33 +247,25 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
         <FileDiff class="mrr-heading-icon" aria-hidden="true" />
         <span>{{ t('mrs.rail.changes') }}</span>
       </h3>
-      <dl class="mrr-defs">
-        <div class="mrr-def-row">
-          <dt>{{ t('mrs.rail.changesFiles') }}</dt>
-          <dd>{{ mr.changedFiles ?? UNKNOWN_METRIC }}</dd>
-        </div>
-        <div class="mrr-def-row">
-          <dt>{{ t('mrs.rail.changesAdditions') }}</dt>
-          <dd class="mrr-def-add">
-            {{ mr.additions !== null ? `+${mr.additions}` : UNKNOWN_METRIC }}
-          </dd>
-        </div>
-        <div class="mrr-def-row">
-          <dt>{{ t('mrs.rail.changesDeletions') }}</dt>
-          <dd class="mrr-def-del">
-            {{ mr.deletions !== null ? `−${mr.deletions}` : UNKNOWN_METRIC }}
-          </dd>
-        </div>
-        <div class="mrr-def-row">
-          <dt>{{ t('mrs.rail.changesCommits') }}</dt>
-          <dd>{{ mr.commits ?? UNKNOWN_METRIC }}</dd>
-        </div>
-        <div v-if="mergeable !== null" class="mrr-def-row">
+      <dl class="mrr-defs kvs">
+        <dt>{{ t('mrs.rail.changesFiles') }}</dt>
+        <dd>{{ mr.changedFiles ?? UNKNOWN_METRIC }}</dd>
+        <dt>{{ t('mrs.rail.changesAdditions') }}</dt>
+        <dd class="mrr-def-add">
+          {{ mr.additions !== null ? `+${mr.additions}` : UNKNOWN_METRIC }}
+        </dd>
+        <dt>{{ t('mrs.rail.changesDeletions') }}</dt>
+        <dd class="mrr-def-del">
+          {{ mr.deletions !== null ? `−${mr.deletions}` : UNKNOWN_METRIC }}
+        </dd>
+        <dt>{{ t('mrs.rail.changesCommits') }}</dt>
+        <dd>{{ mr.commits ?? UNKNOWN_METRIC }}</dd>
+        <template v-if="mergeable !== null">
           <dt>{{ t('mrs.rail.changesMergeable') }}</dt>
           <dd class="mrr-mergeable-text" :class="`mrr-mergeable-text--${mergeable}`">
             {{ t(MERGEABLE_LABEL_KEYS[mergeable]) }}
           </dd>
-        </div>
+        </template>
       </dl>
     </section>
 
@@ -283,13 +283,12 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrr-root {
   display: flex;
   flex-direction: column;
-  font-size: var(--fs-base);
 }
 
 .mrr-section {
-  padding-bottom: 14px;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--cs-line-2);
+  padding-bottom: var(--row);
+  margin-bottom: var(--row);
+  border-bottom: 1px solid var(--line);
 }
 
 .mrr-section:last-child {
@@ -301,29 +300,24 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 .mrr-heading {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 0 8px;
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--cs-muted);
+  gap: 1ch;
+  margin: 0 0 calc(var(--row) / 2);
 }
 
 .mrr-heading-icon {
   flex: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .mrr-empty {
   margin: 0;
-  color: var(--cs-ghost);
+  color: var(--fg-dim);
 }
 
 .mrr-value {
   margin: 0;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .mrr-chips {
@@ -332,53 +326,30 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .mrr-chip {
-  color: var(--cs-text-2);
-  background: var(--cs-surface);
-  border: 1px solid var(--cs-line-2);
-  border-radius: 999px;
-  padding: 3px 10px;
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
+  padding: 0 1ch;
 }
 
 /* Non-interactive compact pill: same fill family as LabelChips' rest state
-   (see LabelColor.ts), --cs-* tokens only. Kept apart from .mrr-chip above
+   (see LabelColor.ts), theme tokens only. Kept apart from .mrr-chip above
    (reviewers, assignees), which never carries a forge color. */
 .mrr-label-chip {
-  --lp-rest-bg: var(--cs-line-2);
+  --lp-rest-bg: var(--line);
 
-  font-weight: 500;
-  color: var(--cs-text-2);
-  padding: 2px 8px;
-  border-radius: 999px;
+  color: var(--fg-dim);
+  padding: 0 1ch;
+  border: 1px solid var(--line);
   background: var(--lp-rest-bg);
 }
 
-.mrr-defs {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.mrr-def-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.mrr-def-row dt {
-  color: var(--cs-muted);
-}
-
-.mrr-def-row dd {
-  margin: 0;
-  font-family: var(--font-mono);
+.mrr-defs dd {
   font-variant-numeric: tabular-nums;
-  color: var(--cs-text);
+  color: var(--fg);
   text-align: right;
 }
 
@@ -387,117 +358,96 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 }
 
 .mrr-def-add {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrr-def-del {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrr-mergeable-text--mergeable {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .mrr-mergeable-text--conflicting {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrr-mergeable-text--unknown {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .mrr-checks-aggregate {
   display: flex;
   align-items: center;
-  gap: 7px;
-  color: var(--cs-text-2);
+  gap: 1ch;
+  color: var(--fg-dim);
 }
 
 .mrr-checks-dot {
   flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.mrr-checks-dot--passed {
-  background: var(--cs-green-text);
-}
-
-.mrr-checks-dot--failed {
-  background: var(--cs-red-text);
-}
-
-.mrr-checks-dot--pending {
-  background: var(--cs-amber-text);
-}
-
-.mrr-checks-dot--skipped,
-.mrr-checks-dot--unknown {
-  background: var(--cs-dot-idle);
 }
 
 .mrr-checks-detailed {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: calc(var(--row) / 2);
 }
 
 .mrr-check-group-heading {
-  margin: 0 0 6px;
-  font-size: var(--fs-xs);
-  font-weight: 500;
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 400;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-ghost);
+  color: var(--fg-dim);
 }
 
 .mrr-check-entries {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  font-family: var(--font-mono);
+  gap: 2ch;
 }
 
 .mrr-check-entry--failed {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .mrr-check-entry--pending {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 
 .mrr-check-entry--skipped {
-  color: var(--cs-ghost);
+  color: var(--fg-dim);
 }
 
+/* The kit check row, sized to its content: one passed tally, not a full
+   width table row. */
 .mrr-check-passed {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  color: var(--cs-green-text);
-  background: var(--cs-green-soft);
-  border: none;
-  border-radius: 999px;
-  padding: 3px 10px;
+  display: inline-grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 1ch;
+  width: max-content;
+  font: inherit;
+  color: var(--ok);
+  background: transparent;
   cursor: pointer;
 }
 
 .mrr-check-passed:hover {
-  background: var(--cs-green-ring);
+  background: var(--bg-hover);
 }
 
 .mrr-check-passed-icon {
   flex: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .mrr-chevron {
   flex: none;
-  width: 11px;
-  height: 11px;
+  width: 14px;
+  height: 14px;
   transition: transform 150ms ease;
 }
 

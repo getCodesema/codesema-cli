@@ -4,6 +4,7 @@
 
 import { computed } from 'vue'
 import { sameFile, type ParsedDiff } from '../composables/useDiff'
+import { G } from '../glyphs'
 import { riskMeta } from '../risk'
 import type { StepView } from '../types'
 
@@ -54,14 +55,14 @@ function onCardClick(index: number) {
   <div class="steplist-root">
     <div class="steplist-header">
       <span class="steplist-title">{{ $t('reviews.stepsTitle') }}</span>
-      <span class="steplist-by">· {{ $t('reviews.stepsBy') }}</span>
+      <span class="steplist-by muted">{{ G.sep }} {{ $t('reviews.stepsBy') }}</span>
     </div>
 
     <div class="steplist-cards">
       <div
         v-for="(ch, i) in steps"
         :key="i"
-        class="steplist-card"
+        class="steplist-card stepcard"
         :class="{ 'steplist-card--read': isRead(i) }"
         role="button"
         tabindex="0"
@@ -69,58 +70,49 @@ function onCardClick(index: number) {
         @keydown.enter="onCardClick(i)"
         @keydown.space.prevent="onCardClick(i)"
       >
-        <div class="steplist-card-top">
-          <span class="steplist-radio" :class="{ 'steplist-radio--done': isRead(i) }">
-            <span v-if="isRead(i)" class="steplist-radio-check">✓</span>
-          </span>
+        <span class="steplist-radio i" :class="{ 'steplist-radio--done': isRead(i) }">
+          <span v-if="isRead(i)" class="steplist-radio-check" aria-hidden="true">{{ G.ok }}</span>
+          <span v-else class="steplist-card-num">{{ i + 1 }}</span>
+        </span>
 
-          <div class="steplist-card-main">
-            <div class="steplist-card-title">
-              <span class="steplist-card-num">{{ i + 1 }}</span>
-              <span>{{ ch.title }}</span>
-            </div>
+        <div class="steplist-card-main">
+          <div class="steplist-card-title">{{ ch.title }}</div>
 
-            <div class="steplist-card-meta">
-              <template v-if="ch.risk && riskMeta(ch.risk)">
-                <span
-                  class="steplist-risk-badge"
-                  :class="[riskMeta(ch.risk)!.textCls, riskMeta(ch.risk)!.bgCls]"
-                >
-                  <span
-                    class="steplist-risk-dot"
-                    :style="{ background: riskMeta(ch.risk)!.dotColor }"
-                  />
-                  {{ $t(riskMeta(ch.risk)!.label) }}
-                </span>
+          <div class="steplist-card-meta">
+            <template v-if="ch.risk && riskMeta(ch.risk)">
+              <span class="steplist-risk-badge risk" :data-r="riskMeta(ch.risk)!.r">
+                {{ $t(riskMeta(ch.risk)!.label) }}
+              </span>
+            </template>
+
+            <span class="steplist-delta">
+              <template v-if="stepDelta(ch).add > 0">
+                <span class="steplist-delta-add">+{{ stepDelta(ch).add }}</span>
               </template>
+              <template v-if="stepDelta(ch).del > 0">
+                <span class="steplist-delta-del">−{{ stepDelta(ch).del }}</span>
+              </template>
+            </span>
 
-              <span class="steplist-delta">
-                <template v-if="stepDelta(ch).add > 0">
-                  <span class="steplist-delta-add">+{{ stepDelta(ch).add }}</span>
-                </template>
-                <template v-if="stepDelta(ch).del > 0">
-                  <span class="steplist-delta-del">−{{ stepDelta(ch).del }}</span>
-                </template>
-              </span>
+            <span class="steplist-files-count">
+              <span aria-hidden="true">{{ G.file }}</span>
+              {{ $t('reviews.stepsFiles', { n: ch.files.length }) }}
+            </span>
 
-              <span class="steplist-files-count">
-                ▤ {{ $t('reviews.stepsFiles', { n: ch.files.length }) }}
-              </span>
-
-              <span v-if="ch.finding_refs.length > 0" class="steplist-findings-count">
-                💬 {{ $t('reviews.stepsFindings', { n: ch.finding_refs.length }) }}
-              </span>
-            </div>
+            <span v-if="ch.finding_refs.length > 0" class="steplist-findings-count">
+              <span aria-hidden="true">{{ G.note }}</span>
+              {{ $t('reviews.stepsFindings', { n: ch.finding_refs.length }) }}
+            </span>
           </div>
-
-          <button v-if="i === firstUnreadIndex" class="steplist-cta" @click.stop="onCardClick(i)">
-            {{ $t('reviews.stepsStart') }}
-          </button>
         </div>
+
+        <button v-if="i === firstUnreadIndex" class="steplist-cta btn" @click.stop="onCardClick(i)">
+          {{ $t('reviews.stepsStart') }}
+        </button>
       </div>
     </div>
 
-    <p v-if="steps.length === 0" class="steplist-empty codesema-muted">
+    <p v-if="steps.length === 0" class="steplist-empty empty">
       {{ $t('reviews.stepsEmpty') }}
     </p>
   </div>
@@ -130,228 +122,90 @@ function onCardClick(index: number) {
 .steplist-root {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 24px 22px;
+  gap: calc(var(--row) / 2);
+  padding: var(--row) 2ch;
 }
 
-/* header */
 .steplist-header {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .steplist-title {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .steplist-by {
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--codesema-ink-3);
+  font-size: 12px;
 }
 
-/* cards */
 .steplist-cards {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(var(--row) / 2);
 }
 
 .steplist-card {
-  border: 1px solid var(--codesema-line);
-  border-radius: 11px;
-  background: var(--codesema-panel);
-  padding: 14px 15px;
+  align-items: start;
   cursor: pointer;
-  transition:
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
-  outline: none;
 }
 
 .steplist-card:hover {
-  border-color: var(--codesema-ink-3);
-  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.05);
-}
-
-.steplist-card:focus-visible {
-  outline: 2px solid var(--codesema-accent);
-  outline-offset: 2px;
+  background: var(--bg-hover);
 }
 
 .steplist-card--read {
-  opacity: 0.6;
+  color: var(--fg-dim);
 }
 
-.steplist-card--read:hover {
-  opacity: 0.8;
-}
-
-/* main row */
-.steplist-card-top {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-/* radio check */
 .steplist-radio {
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 1.5px solid var(--codesema-line);
-  display: grid;
-  place-items: center;
-  margin-top: 1px;
-  background: transparent;
-  flex-shrink: 0;
+  text-align: center;
 }
 
 .steplist-radio--done {
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
-.steplist-radio-check {
-  font-size: var(--fs-xs);
-  color: #fff;
-  line-height: 1;
-  font-weight: 700;
-}
-
-/* body */
 .steplist-card-main {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0;
 }
 
 .steplist-card-title {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: var(--fs-base);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--codesema-ink);
-  line-height: 1.35;
+  font-weight: 700;
 }
 
-.steplist-card-num {
-  font-family: var(--font-display);
-  font-size: var(--fs-lg);
-  font-weight: 400;
-  color: var(--codesema-ink-3);
-  flex-shrink: 0;
-}
-
-/* meta */
 .steplist-card-meta {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   flex-wrap: wrap;
-  gap: 11px;
-  margin-top: 9px;
+  gap: 2ch;
+  color: var(--fg-dim);
+  font-size: 12px;
 }
 
-/* risk badge */
-.steplist-risk-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 999px;
-}
-
-.steplist-risk-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.step-risk--high {
-  color: var(--codesema-risk-high);
-}
-.step-risk-bg--high {
-  background: var(--codesema-risk-high-soft);
-}
-.step-risk--med {
-  color: var(--codesema-risk-med);
-}
-.step-risk-bg--med {
-  background: var(--codesema-risk-med-soft);
-}
-.step-risk--low {
-  color: var(--codesema-risk-low);
-}
-.step-risk-bg--low {
-  background: var(--codesema-risk-low-soft);
-}
-
-/* delta */
 .steplist-delta {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  align-items: baseline;
+  gap: 1ch;
 }
 
 .steplist-delta-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .steplist-delta-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
-/* files / notes */
-.steplist-files-count,
-.steplist-findings-count {
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
-}
-
-/* cta */
 .steplist-cta {
-  flex-shrink: 0;
-  align-self: center;
-  padding: 8px 13px;
-  border-radius: 8px;
-  border: 0;
-  background: var(--codesema-accent);
-  /* dark ink on orange: ~7.6:1 contrast, white capped at 2.6:1 (AA = 4.5:1) */
-  color: var(--codesema-bg);
-  font-size: var(--fs-base);
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
+  align-self: start;
   white-space: nowrap;
-  transition: filter 0.12s ease;
-}
-
-.steplist-cta:hover {
-  filter: brightness(1.05);
-}
-
-/* empty */
-.steplist-empty {
-  font-size: var(--fs-base);
-  padding: 16px 0;
-  text-align: center;
 }
 </style>

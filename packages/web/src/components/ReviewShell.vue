@@ -5,6 +5,7 @@ import { buildFixPrompt, isActionable } from '../composables/useFixPrompt'
 import { actionableFindings } from '../composables/useFocusList'
 import { buildNoteTour } from '../composables/useNoteTour'
 import { useReviewProgress } from '../composables/useReviewProgress'
+import { G } from '../glyphs'
 import type { ReviewRecord } from '../types'
 import DiffView from './DiffView.vue'
 import FileTree from './FileTree.vue'
@@ -47,10 +48,12 @@ const globalDelta = computed(() => {
   return { add, del }
 })
 
-const VERDICT_META_COMMENT = { labelKey: 'verdict.comment', cls: 'sr-verdict--comment' }
-const VERDICT_META: Record<string, { labelKey: string; cls: string }> = {
-  approve: { labelKey: 'verdict.approve', cls: 'sr-verdict--approve' },
-  request_changes: { labelKey: 'verdict.request_changes', cls: 'sr-verdict--changes' },
+type VerdictTone = 'go' | 'check' | 'stop'
+
+const VERDICT_META_COMMENT = { labelKey: 'verdict.comment', v: 'check' as VerdictTone }
+const VERDICT_META: Record<string, { labelKey: string; v: VerdictTone }> = {
+  approve: { labelKey: 'verdict.approve', v: 'go' },
+  request_changes: { labelKey: 'verdict.request_changes', v: 'stop' },
   comment: VERDICT_META_COMMENT,
 }
 
@@ -270,13 +273,6 @@ function setFileScrollRef(path: string, el: unknown) {
 function onFilePick(path: string) {
   fileScrollRefs.get(path)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
-
-const SEV_CLS: Record<string, string> = {
-  critical: 'sr-sev--high',
-  major: 'sr-sev--high',
-  minor: 'sr-sev--med',
-  info: 'sr-sev--info',
-}
 </script>
 
 <template>
@@ -289,7 +285,7 @@ const SEV_CLS: Record<string, string> = {
           <span class="sr-branch-arrow">→</span>
           <code>{{ meta.target }}</code>
         </div>
-        <p v-if="meta.dual" class="sr-dual-stat codesema-muted">
+        <p v-if="meta.dual" class="sr-dual-stat muted">
           {{
             $t('reviews.dualStat', {
               merged: meta.dual.merged,
@@ -301,7 +297,7 @@ const SEV_CLS: Record<string, string> = {
       </div>
       <button
         v-if="actionableCount > 0"
-        class="sr-copy-btn"
+        class="sr-copy-btn btn ghost"
         :class="{ 'sr-copy-btn--done': copied }"
         @click="copyFixPrompt"
       >
@@ -309,7 +305,7 @@ const SEV_CLS: Record<string, string> = {
       </button>
       <button
         v-if="actionableCount > 0 && viewMode === 'explain'"
-        class="sr-fix-btn"
+        class="sr-fix-btn btn"
         @click="setViewMode('focus')"
       >
         {{ $t('header.runFixes', { n: actionableCount }) }}
@@ -320,43 +316,53 @@ const SEV_CLS: Record<string, string> = {
           :class="`sr-semaphore--${record.review.verdict}`"
           aria-hidden="true"
         >
-          <span class="sr-sem-dot sr-sem-dot--stop" />
-          <span class="sr-sem-dot sr-sem-dot--check" />
-          <span class="sr-sem-dot sr-sem-dot--go" />
+          <span class="sr-sem-dot sr-sem-dot--stop">{{ G.dot }}</span>
+          <span class="sr-sem-dot sr-sem-dot--check">{{ G.dot }}</span>
+          <span class="sr-sem-dot sr-sem-dot--go">{{ G.dot }}</span>
         </span>
-        <span class="sr-verdict" :class="verdictMeta!.cls">{{ $t(verdictMeta!.labelKey) }}</span>
+        <span class="sr-verdict verdict" :data-v="verdictMeta!.v">{{
+          $t(verdictMeta!.labelKey)
+        }}</span>
       </span>
     </header>
 
-    <div class="sr-tabs" role="tablist">
+    <div class="sr-tabs tabs" role="tablist">
       <template v-if="viewMode === 'explain'">
         <button
           role="tab"
-          class="sr-tab"
+          class="sr-tab tab"
           :class="{ on: activeTab === 'steps' }"
           :aria-selected="activeTab === 'steps'"
           @click="selectStepsTab"
         >
           {{ $t('app.tabSteps') }}
-          <span v-if="steps.length > 0" class="sr-tab-n">{{ steps.length }}</span>
+          <span v-if="steps.length > 0" class="sr-tab-n n">{{ steps.length }}</span>
         </button>
         <button
           role="tab"
-          class="sr-tab"
+          class="sr-tab tab"
           :class="{ on: activeTab === 'files' }"
           :aria-selected="activeTab === 'files'"
           @click="selectFilesTab"
         >
           {{ $t('app.tabFiles') }}
-          <span v-if="filesCount > 0" class="sr-tab-n">{{ filesCount }}</span>
+          <span v-if="filesCount > 0" class="sr-tab-n n">{{ filesCount }}</span>
         </button>
       </template>
       <span class="sr-tabs-spacer" />
-      <div class="sr-mode">
-        <button :class="{ on: viewMode === 'explain' }" @click="setViewMode('explain')">
+      <div class="sr-mode seg">
+        <button
+          :class="{ on: viewMode === 'explain' }"
+          :aria-pressed="viewMode === 'explain'"
+          @click="setViewMode('explain')"
+        >
           {{ $t('mode.explain') }}
         </button>
-        <button :class="{ on: viewMode === 'focus' }" @click="setViewMode('focus')">
+        <button
+          :class="{ on: viewMode === 'focus' }"
+          :aria-pressed="viewMode === 'focus'"
+          @click="setViewMode('focus')"
+        >
           {{ $t('mode.focus') }}
           <span v-if="actionableCount > 0" class="sr-mode-n">{{ actionableCount }}</span>
         </button>
@@ -411,11 +417,9 @@ const SEV_CLS: Record<string, string> = {
               <div class="sr-general-tag">{{ $t('reviews.generalNotes') }}</div>
               <ul class="sr-general-list">
                 <li v-for="(f, i) in unmatched" :key="i" class="sr-general-item">
-                  <span class="sr-sev" :class="SEV_CLS[f.severity] ?? 'sr-sev--info'">{{
-                    f.severity
-                  }}</span>
+                  <span class="sr-sev sev" :data-v="f.severity">{{ f.severity }}</span>
                   <span v-if="f.consensus" class="sr-consensus" :title="$t('finding.consensus')">
-                    <span class="sr-consensus-dots" aria-hidden="true"><span /><span /></span>
+                    <span class="sr-consensus-dots" aria-hidden="true">{{ G.dot }}{{ G.dot }}</span>
                     {{ $t('finding.consensus') }}
                   </span>
                   <code v-if="f.file" class="sr-general-file"
@@ -456,17 +460,22 @@ const SEV_CLS: Record<string, string> = {
 
         <div class="sr-files-right">
           <div class="sr-files-toolbar">
-            <button class="sr-files-tbtn" @click="toggleFilesCollapse">
+            <button class="sr-files-tbtn btn" @click="toggleFilesCollapse">
               {{ filesAllCollapsed ? $t('fileTree.expandAll') : $t('fileTree.collapseAll') }}
             </button>
-            <div class="sr-files-seg">
+            <div class="sr-files-seg seg">
               <button
                 :class="{ on: filesDiffMode === 'unified' }"
+                :aria-pressed="filesDiffMode === 'unified'"
                 @click="setFilesDiffMode('unified')"
               >
                 {{ $t('diffView.modeUnified') }}
               </button>
-              <button :class="{ on: filesDiffMode === 'split' }" @click="setFilesDiffMode('split')">
+              <button
+                :class="{ on: filesDiffMode === 'split' }"
+                :aria-pressed="filesDiffMode === 'split'"
+                @click="setFilesDiffMode('split')"
+              >
                 {{ $t('diffView.modeSplit') }}
               </button>
             </div>
@@ -494,47 +503,47 @@ const SEV_CLS: Record<string, string> = {
           </div>
         </div>
       </div>
-      <p v-else class="codesema-muted sr-empty-msg">{{ $t('reviews.noDiff') }}</p>
+      <p v-else class="sr-empty-msg empty">{{ $t('reviews.noDiff') }}</p>
     </div>
 
     <div
       v-if="viewMode === 'explain' && activeTab === 'steps' && hasSteps && tour.length"
       class="sr-tour"
     >
-      <button v-if="tourIndex === null" class="sr-tour-start" @click="startTour">
-        <span class="sr-tour-mark">✦</span>
+      <button v-if="tourIndex === null" class="sr-tour-start btn ghost" @click="startTour">
+        <span class="sr-tour-mark" aria-hidden="true">{{ G.note }}</span>
         {{ $t('tour.start') }}
       </button>
       <template v-else>
         <button
-          class="sr-tour-btn"
+          class="sr-tour-btn btn"
           :disabled="!tourHasPrev"
           :title="$t('tour.prev')"
           :aria-label="$t('tour.prev')"
           @click="tourPrev"
         >
-          ‹
+          <span aria-hidden="true">{{ G.back }}</span>
         </button>
         <span class="sr-tour-count"
           >{{ tourIndex + 1 }}<span class="sr-tour-total"> / {{ tour.length }}</span></span
         >
         <button
           v-if="tourHasNext"
-          class="sr-tour-btn"
+          class="sr-tour-btn btn"
           :title="$t('tour.next')"
           :aria-label="$t('tour.next')"
           @click="tourNext"
         >
-          ›
+          <span aria-hidden="true">{{ G.arrow }}</span>
         </button>
         <button
           v-else
-          class="sr-tour-btn sr-tour-btn--done"
+          class="sr-tour-btn sr-tour-btn--done btn"
           :title="$t('tour.finish')"
           :aria-label="$t('tour.finish')"
           @click="tourNext"
         >
-          ✓
+          <span aria-hidden="true">{{ G.ok }}</span>
         </button>
       </template>
     </div>
@@ -543,17 +552,17 @@ const SEV_CLS: Record<string, string> = {
 
 <style scoped>
 .sr-root {
-  max-width: 1400px;
+  max-width: 180ch;
   margin: 0 auto;
-  padding: 0 0 60px;
+  padding-bottom: var(--row);
 }
 
-/* ── Header ─────────────────────────────────────────────────── */
 .sr-header {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 26px 26px 18px;
+  align-items: baseline;
+  gap: 2ch;
+  padding: var(--row) 2ch;
+  border-bottom: 1px solid var(--line);
 }
 
 .sr-header-main {
@@ -561,208 +570,108 @@ const SEV_CLS: Record<string, string> = {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
 }
 
 .sr-title {
-  font-family: var(--font-display);
-  font-size: var(--fs-2xl);
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  margin: 0;
-  line-height: 1.2;
   overflow-wrap: anywhere;
 }
 
 .sr-branches {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink-3);
+  align-items: baseline;
+  gap: 1ch;
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .sr-branches code {
-  background: var(--codesema-line-2);
-  border-radius: 6px;
-  padding: 2px 8px;
-  color: var(--codesema-ink-2);
-}
-
-.sr-branch-arrow {
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
 }
 
 .sr-dual-stat {
-  font-size: var(--fs-sm);
-  margin: 2px 0 0;
+  font-size: 12px;
 }
 
 .sr-verdict-group {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 4px;
+  gap: 1ch;
 }
 
 /* Miniature semaphore: exactly one light on, the off lights stay visible but dimmed. */
 .sr-semaphore {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  background: var(--codesema-ink);
-  border-radius: 7px;
-  padding: 4px;
+  line-height: 0.6;
+  border: 1px solid var(--line);
+  padding: 2px;
 }
 
 .sr-sem-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.sr-sem-dot--stop {
-  background: var(--codesema-signal-stop);
-  opacity: 0.28;
-}
-
-.sr-sem-dot--check {
-  background: var(--codesema-signal-check);
-  opacity: 0.32;
-}
-
-.sr-sem-dot--go {
-  background: var(--codesema-signal-go);
-  opacity: 0.3;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .sr-semaphore--request_changes .sr-sem-dot--stop {
-  opacity: 1;
-  box-shadow: 0 0 8px var(--codesema-signal-stop);
+  color: var(--err);
 }
 
 .sr-semaphore--comment .sr-sem-dot--check {
-  opacity: 1;
-  box-shadow: 0 0 8px var(--codesema-signal-check);
+  color: var(--warn);
 }
 
 .sr-semaphore--approve .sr-sem-dot--go {
-  opacity: 1;
-  box-shadow: 0 0 8px var(--codesema-signal-go);
+  color: var(--ok);
 }
 
 .sr-verdict {
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 700;
-  border-radius: 999px;
-  padding: 5px 13px;
-  border: 1px solid transparent;
 }
 
-.sr-verdict--approve {
-  color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
-}
-
-.sr-verdict--changes {
-  color: var(--codesema-risk-high);
-  background: var(--codesema-risk-high-soft);
-}
-
-.sr-verdict--comment {
-  color: var(--codesema-amber);
-  background: var(--codesema-amber-soft);
-}
-
-.sr-copy-btn {
+.sr-copy-btn,
+.sr-fix-btn {
   flex-shrink: 0;
-  margin-top: 4px;
-  font-size: var(--fs-sm);
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  font-family: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    border-color 0.12s ease,
-    color 0.12s ease;
-}
-
-.sr-copy-btn:hover {
-  border-color: var(--codesema-ink-3);
+  font-size: 12px;
 }
 
 .sr-copy-btn--done {
-  color: var(--codesema-risk-low);
-  border-color: var(--codesema-risk-low);
+  color: var(--ok);
+  border-color: var(--ok);
 }
 
 .sr-fix-btn {
-  flex-shrink: 0;
-  margin-top: 4px;
-  font-size: var(--fs-sm);
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--codesema-accent) 45%, transparent);
-  background: var(--codesema-accent-soft);
-  color: var(--codesema-accent);
-  font-family: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color 0.12s ease;
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
-.sr-fix-btn:hover {
-  border-color: var(--codesema-accent);
-}
-
-/* ── Onglets ────────────────────────────────────────────────── */
 .sr-tabs {
-  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 26px;
-  border-bottom: 1px solid var(--codesema-line);
+  padding: 0 2ch;
 }
 
 .sr-tab {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 1ch;
   background: none;
-  border: none;
+  border: 0;
   border-bottom: 2px solid transparent;
-  padding: 10px 12px;
-  margin-bottom: -1px;
-  font-family: inherit;
-  font-size: var(--fs-base);
-  font-weight: 600;
-  color: var(--codesema-ink-3);
-  cursor: pointer;
-  transition: color 0.12s ease;
+  font: inherit;
 }
 
 .sr-tab:hover {
-  color: var(--codesema-ink);
+  color: var(--fg);
 }
 
 .sr-tab.on {
-  color: var(--codesema-ink);
-  border-bottom-color: var(--codesema-accent);
+  color: var(--fg);
+  border-bottom-color: var(--accent);
 }
 
 .sr-tab-n {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  background: var(--codesema-line-2);
-  border-radius: 999px;
-  padding: 1px 7px;
-  color: var(--codesema-ink-3);
+  font-size: 12px;
 }
 
 .sr-tabs-spacer {
@@ -770,73 +679,46 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-mode {
-  display: inline-flex;
-  align-items: center;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
-  border-radius: 9px;
-  padding: 2px;
-  gap: 2px;
-  margin: 4px 12px 4px 0;
+  margin-right: 2ch;
 }
 
 .sr-mode button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: var(--fs-sm);
-  padding: 5px 10px;
-  border-radius: 7px;
-  color: var(--codesema-ink-2);
-  font-weight: 500;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-family: inherit;
-  transition:
-    background 0.12s,
-    color 0.12s;
-}
-
-.sr-mode button.on {
-  background: var(--codesema-ink);
-  color: var(--codesema-bg);
+  gap: 1ch;
+  font-size: 12px;
 }
 
 .sr-mode-n {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  background: var(--codesema-risk-high);
-  color: #fff;
-  border-radius: 999px;
-  padding: 0 6px;
+  font-size: 12px;
+  color: var(--err);
+}
+
+.sr-mode button[aria-pressed='true'] .sr-mode-n {
+  color: var(--bg);
 }
 
 .sr-tabs-delta {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-size: 12px;
   display: inline-flex;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .sr-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
 
 .sr-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
-/* ── Stage ──────────────────────────────────────────────────── */
 .sr-stage {
   min-height: 40vh;
 }
 
-/* Vue d'ensemble : 2 colonnes */
 .sr-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
-  gap: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(40ch, 56ch);
   align-items: start;
 }
 
@@ -845,7 +727,7 @@ const SEV_CLS: Record<string, string> = {
 }
 
 .sr-col-right {
-  border-left: 1px solid var(--codesema-line);
+  border-left: 1px solid var(--line);
   min-height: 100%;
 }
 
@@ -855,22 +737,20 @@ const SEV_CLS: Record<string, string> = {
   }
   .sr-col-right {
     border-left: none;
-    border-top: 1px solid var(--codesema-line);
+    border-top: 1px solid var(--line);
   }
 }
 
-/* general notes */
 .sr-general {
-  padding: 0 26px 24px;
+  padding: 0 2ch var(--row);
 }
 
 .sr-general-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--codesema-accent);
-  margin-bottom: 10px;
+  color: var(--accent);
 }
 
 .sr-general-list {
@@ -879,101 +759,62 @@ const SEV_CLS: Record<string, string> = {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: calc(var(--row) / 2);
 }
 
 .sr-general-item {
-  border-left: 2px solid var(--codesema-line);
-  padding-left: 12px;
-  font-size: var(--fs-base);
-  line-height: 1.55;
-  color: var(--codesema-ink-2);
+  border-left: 2px solid var(--line);
+  padding-left: 1ch;
+  color: var(--fg-dim);
 }
 
 .sr-sev {
-  font-size: var(--fs-xs);
-  font-weight: 700;
+  font-size: 12px;
   text-transform: uppercase;
-  margin-right: 8px;
-}
-
-.sr-sev--high {
-  color: var(--codesema-risk-high);
-}
-
-.sr-sev--med {
-  color: var(--codesema-risk-med);
-}
-
-.sr-sev--info {
-  color: var(--codesema-ink-3);
+  margin-right: 1ch;
 }
 
 .sr-consensus {
   display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: var(--fs-xs);
-  font-weight: 700;
+  align-items: baseline;
+  gap: 1ch;
+  font-size: 12px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  border-radius: 999px;
-  padding: 1px 8px;
-  margin-right: 8px;
-  color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low-soft);
+  border: 1px solid currentColor;
+  padding: 0 1ch;
+  margin-right: 1ch;
+  color: var(--ok);
 }
 
 .sr-consensus-dots {
-  position: relative;
-  width: 11px;
-  height: 8px;
   flex-shrink: 0;
-}
-
-.sr-consensus-dots span {
-  position: absolute;
-  top: 1px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.sr-consensus-dots span:first-child {
-  left: 0;
-}
-
-.sr-consensus-dots span:last-child {
-  left: 5px;
-  opacity: 0.65;
+  letter-spacing: -0.1em;
 }
 
 .sr-general-file {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  margin-right: 6px;
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  margin-right: 1ch;
+  color: var(--fg-dim);
+  background: none;
+  padding: 0;
 }
 
 .sr-general-sugg {
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  border-radius: 7px;
-  background: var(--codesema-risk-low-soft);
-  color: var(--codesema-risk-low);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  margin: 0;
+  padding: 2px 1ch;
+  background: var(--bg-raised);
+  border-left: 2px solid var(--ok);
+  color: var(--ok);
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* Diff plat (sans chapitres / autres fichiers) */
 .sr-flat-diff {
-  padding: 24px 26px 0;
+  padding: var(--row) 2ch 0;
 }
 
-/* ── Onglet Fichiers ────────────────────────────────────────── */
 .sr-files-stage {
   min-height: 60vh;
 }
@@ -981,7 +822,7 @@ const SEV_CLS: Record<string, string> = {
 .sr-files-layout {
   display: flex;
   align-items: stretch;
-  min-height: calc(100vh - 160px);
+  min-height: calc(100vh - var(--row) * 7);
 }
 
 .sr-files-right {
@@ -994,158 +835,77 @@ const SEV_CLS: Record<string, string> = {
 .sr-files-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--codesema-line);
+  gap: 1ch;
+  padding: calc(var(--row) / 2) 2ch;
+  border-bottom: 1px solid var(--line);
 }
 
 .sr-files-tbtn {
-  font-size: var(--fs-sm);
-  padding: 6px 11px;
-  border-radius: 8px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  font-family: inherit;
-  font-weight: 500;
-  cursor: pointer;
-  transition: border-color 0.12s ease;
-}
-
-.sr-files-tbtn:hover {
-  border-color: var(--codesema-ink-3);
-}
-
-.sr-files-seg {
-  display: inline-flex;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
-  border-radius: 9px;
-  padding: 2px;
-  gap: 2px;
+  font-size: 12px;
 }
 
 .sr-files-seg button {
-  font-size: var(--fs-sm);
-  padding: 5px 10px;
-  border-radius: 7px;
-  color: var(--codesema-ink-2);
-  font-weight: 500;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-family: inherit;
-  transition:
-    background 0.12s,
-    color 0.12s;
-}
-
-.sr-files-seg button.on {
-  background: var(--codesema-ink);
-  color: var(--codesema-bg);
+  font-size: 12px;
 }
 
 .sr-files-difflist {
-  padding: 18px;
+  padding: var(--row) 2ch;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--row);
 }
 
 .sr-empty-msg {
-  padding: 32px 26px;
-  font-size: var(--fs-base);
+  margin: var(--row) 2ch;
 }
 
-/* ── Guided note tour (floating pill) ───────────────────────── */
 .sr-tour {
   position: fixed;
-  bottom: 22px;
-  right: 22px;
+  bottom: var(--row);
+  right: 2ch;
   z-index: 40;
   display: flex;
   align-items: center;
-  gap: 8px;
-  background: var(--codesema-panel);
-  border: 1px solid var(--codesema-line);
-  border-radius: 999px;
-  padding: 7px 10px;
-  box-shadow: 0 6px 24px color-mix(in srgb, var(--codesema-ink) 14%, transparent);
+  gap: 1ch;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  padding: 2px 1ch;
 }
 
 .sr-tour-start {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  background: none;
-  border: none;
-  font-family: inherit;
-  font-size: var(--fs-base);
-  font-weight: 600;
-  color: var(--codesema-ink-2);
-  cursor: pointer;
-  padding: 2px 6px;
-  transition: color 0.12s ease;
+  gap: 1ch;
 }
 
 .sr-tour-start:hover {
-  color: var(--codesema-ink);
+  color: var(--fg);
+  background: transparent;
 }
 
 .sr-tour-mark {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  background: var(--codesema-accent);
-  color: #fff;
-  font-size: var(--fs-sm);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  color: var(--accent);
   flex-shrink: 0;
 }
 
 .sr-tour-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  font-size: var(--fs-lg);
-  font-family: inherit;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: border-color 0.1s ease;
-}
-
-.sr-tour-btn:hover:not(:disabled) {
-  border-color: var(--codesema-ink-3);
-}
-
-.sr-tour-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  padding: 0 1ch;
+  color: var(--fg-dim);
 }
 
 .sr-tour-btn--done {
-  border-color: var(--codesema-risk-low);
-  color: var(--codesema-risk-low);
+  border-color: var(--ok);
+  color: var(--ok);
 }
 
 .sr-tour-count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--codesema-ink);
-  min-width: 52px;
+  font-size: 12px;
+  min-width: 8ch;
   text-align: center;
 }
 
 .sr-tour-total {
-  color: var(--codesema-ink-3);
-  font-weight: 400;
+  color: var(--fg-dim);
 }
 
 @media (max-width: 900px) {

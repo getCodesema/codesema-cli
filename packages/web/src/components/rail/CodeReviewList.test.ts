@@ -16,6 +16,7 @@ import {
   type CodeReviewProjectInput,
   type CodeReviewRow,
 } from '../../composables/useCodeReview'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import { formatRelativeAge } from '../../relative-time'
 import type {
@@ -175,6 +176,15 @@ describe('header: title and a count that reflects the full corpus, not the filte
     const html = await render(props(rows, { visibleRows: [], query: 'nomatch' }))
     expect(html).toMatch(/class="crl-count">2</)
   })
+
+  test('the title sits at the rail weight, the count is the smaller muted size', () => {
+    const title = SOURCE.slice(SOURCE.indexOf('.crl-title {'), SOURCE.indexOf('.crl-count {'))
+    expect(title).toContain('font-weight: 400;')
+    expect(title).toContain('color: inherit;')
+    const count = SOURCE.slice(SOURCE.indexOf('.crl-count {'), SOURCE.indexOf('.crl-search {'))
+    expect(count).toContain('font-size: 12px;')
+    expect(count).toContain('color: var(--fg-muted);')
+  })
 })
 
 describe('search: placeholder and the computed clear-button padding', () => {
@@ -189,6 +199,23 @@ describe('search: placeholder and the computed clear-button padding', () => {
     const html = await render(props([], { query: 'x' }))
     expect(html).toContain('crl-search-clear')
     expect(html).toContain('padding-right:56px')
+    expect(html).toContain(G.ko)
+  })
+
+  test('the search glyph is the kit one, from G, never a lucide icon', async () => {
+    const html = await render(props([]))
+    expect(html).toContain(`class="crl-search-glyph" aria-hidden="true">${G.search}<`)
+    expect(SOURCE).not.toContain('<Search')
+  })
+
+  test('the input carries no frame of its own, the line does', () => {
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.crl-search-input {'),
+      SOURCE.indexOf('.crl-search-input:focus'),
+    )
+    expect(rule).toContain('border: 0;')
+    expect(rule).toContain('background: transparent;')
+    expect(SOURCE).toContain('height: calc(var(--row) + 4px);')
   })
 })
 
@@ -245,6 +272,16 @@ describe('rows: one merge request and one branch, told apart', () => {
     expect(rows).toHaveLength(2)
     const html = await render(props(rows))
     expect((html.match(/class="crl-row-wrap"/g) ?? []).length).toBe(2)
+  })
+
+  test('the repository is plain muted text; only the MR state stays a pastille', async () => {
+    const html = await render(props([oneMrRow()]))
+    expect(html).toContain('<span class="crl-project-tag">demo</span>')
+    expect(html).toContain('crl-mr-pastille badge')
+    const tag = SOURCE.slice(SOURCE.indexOf('.crl-project-tag {'), SOURCE.indexOf('.crl-badge {'))
+    expect(tag).toContain('color: var(--fg-muted);')
+    expect(tag).not.toContain('border')
+    expect(tag).not.toContain('background')
   })
 })
 
@@ -490,13 +527,13 @@ describe('selection: a tinted fill and aria-current, never a border', () => {
     expect(buttons[1]?.[1]).not.toContain('aria-current')
   })
 
-  test('the selected fill is a tint, not a border (doctrine, not decoration)', () => {
+  test('the selected row is a fill plus an accented edge, on theme tokens only', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.crl-select-btn--selected {'),
       SOURCE.indexOf('.crl-main {'),
     )
-    expect(rule).toContain('background: var(--cs-green-soft);')
-    expect(rule).not.toContain('border')
+    expect(rule).toContain('background: var(--bg-hover);')
+    expect(rule).toContain('border-left-color: var(--accent);')
   })
 })
 

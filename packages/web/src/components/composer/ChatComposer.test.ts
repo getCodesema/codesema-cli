@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 
 Bun.plugin({
@@ -71,18 +72,26 @@ describe('ChatComposer: structure', () => {
     expect(html).toContain('>fix the flaky test</textarea>')
   })
 
-  test('renders the send button, the attach button, and the two inert placeholder tools', async () => {
+  test('renders the attach button and the two inert placeholder tools', async () => {
     const html = await render(BASE)
-    expect(html).toContain('class="cc-send"')
     expect(html).toContain('cc-tool--attach')
     expect(html).toContain('cc-tool--placeholder')
+  })
+
+  test('the frame carries the prompt glyph next to the textarea', async () => {
+    const html = await render(BASE)
+    expect(html).toContain('cc-prompt')
+    expect(html).toContain(G.arrow)
   })
 })
 
 describe('ChatComposer: placeholder is a state display (fiche section 2)', () => {
-  test("default: the caller's message, then the shortcuts in parens", async () => {
+  // The shortcut left the placeholder for a hint line of its own under the
+  // field: the placeholder now says the caller's message and nothing else.
+  test("default: the caller's message alone", async () => {
     const html = await render({ ...BASE, placeholder: 'Answer the agent…' })
-    expect(html).toContain(`placeholder="Answer the agent… ${t('composer.hintShortcuts')}"`)
+    expect(html).toContain('placeholder="Answer the agent…"')
+    expect(html).toContain(t('composer.hintSend'))
   })
 
   test('offline replaces the placeholder entirely', async () => {
@@ -118,7 +127,32 @@ describe('ChatComposer: placeholder is a state display (fiche section 2)', () =>
   })
 })
 
-describe('ChatComposer: mode carries the filet color (fiche section 1)', () => {
+describe('ChatComposer: the box wears the shared kit surface', () => {
+  test('the root carries the kit composer class alongside its own', async () => {
+    const html = await render(BASE)
+    expect(html).toContain('cc-root composer')
+  })
+
+  test('the mode is exposed as a data attribute the kit can style', async () => {
+    expect(await render({ ...BASE, mode: 'clean' })).toContain('data-mode="clean"')
+    expect(await render({ ...BASE, mode: 'private' })).toContain('data-mode="private"')
+  })
+})
+
+describe('ChatComposer: the mode is a word on the hint line, not a coloured rail', () => {
+  test('clean mode adds no word to the hint line', async () => {
+    const html = await render({ ...BASE, mode: 'clean' })
+    expect(html).not.toContain('cc-mode')
+  })
+
+  test('a non-clean mode names itself next to the shortcut', async () => {
+    const html = await render({ ...BASE, mode: 'private' })
+    expect(html).toContain('cc-mode')
+    expect(html).toContain(`${G.sep} private`)
+  })
+})
+
+describe('ChatComposer: mode still marks the root for the caller', () => {
   test('clean mode adds neither modifier class', async () => {
     const html = await render({ ...BASE, mode: 'clean' })
     expect(html).not.toContain('cc-root--temporary')
@@ -138,30 +172,32 @@ describe('ChatComposer: mode carries the filet color (fiche section 1)', () => {
   })
 })
 
-describe('ChatComposer: the round send button (fiche section 3)', () => {
-  test('disabled with empty text', async () => {
+describe('ChatComposer: the send button only exists once there is text', () => {
+  test('absent with empty text', async () => {
     const html = await render({ ...BASE, modelValue: '' })
-    expect(openingTag(html, 'class="cc-send"')).toContain('disabled')
+    expect(html).not.toContain('cc-send')
   })
 
-  test('disabled with whitespace-only text', async () => {
+  test('absent with whitespace-only text', async () => {
     const html = await render({ ...BASE, modelValue: '   ' })
-    expect(openingTag(html, 'class="cc-send"')).toContain('disabled')
+    expect(html).not.toContain('cc-send')
   })
 
   test('enabled with real text and nothing in flight', async () => {
     const html = await render({ ...BASE, modelValue: 'ship it' })
-    expect(openingTag(html, 'class="cc-send"')).not.toContain('disabled')
+    expect(openingTag(html, 'class="cc-send btn primary"')).not.toContain('disabled')
   })
 
   test('disabled while a send is already in flight, even with text', async () => {
     const html = await render({ ...BASE, modelValue: 'ship it', sending: true })
-    expect(openingTag(html, 'class="cc-send"')).toContain('disabled')
+    expect(openingTag(html, 'class="cc-send btn primary"')).toContain('disabled')
   })
 
   test('carries the send aria-label', async () => {
-    const html = await render(BASE)
-    expect(openingTag(html, 'class="cc-send"')).toContain(`aria-label="${t('composer.sendAria')}"`)
+    const html = await render({ ...BASE, modelValue: 'ship it' })
+    expect(openingTag(html, 'class="cc-send btn primary"')).toContain(
+      `aria-label="${t('composer.sendAria')}"`,
+    )
   })
 })
 

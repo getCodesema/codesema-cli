@@ -2,7 +2,7 @@
 // writes prose with headings, emphasis, lists, code — showing the raw sigils
 // (##, **) in a bubble reads as a bug. Scope is deliberately small: headings,
 // bold/italic, inline code, fenced code blocks, unordered/ordered lists,
-// http(s) links, paragraphs. Everything is HTML-escaped BEFORE any transform,
+// blockquotes, pipe tables, rules, http(s) links, paragraphs. Everything is HTML-escaped BEFORE any transform,
 // so the output is safe to v-html by construction.
 
 const escapeHtml = (s: string): string =>
@@ -38,9 +38,39 @@ function renderInline(escaped: string): string {
 }
 
 type Block =
-  | { kind: 'p' | 'h2' | 'h3'; text: string }
+  | { kind: 'p' | 'h2' | 'h3' | 'blockquote'; text: string }
   | { kind: 'code'; text: string }
   | { kind: 'ul' | 'ol'; items: string[] }
+  | { kind: 'hr' }
+  | { kind: 'table'; head: string[]; rows: string[][] }
+
+const RULE = /^\s*([-*_])(\s*\1){2,}\s*$/
+const TABLE_ROW = /^\s*\|.*\|\s*$/
+const TABLE_SEPARATOR = /^\s*\|(\s*:?-+:?\s*\|)+\s*$/
+const BLOCK_START = /^\s*(&gt;|[-*]|\d+[.)])\s+|^\s*\|/
+
+const splitCells = (row: string): string[] =>
+  row
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+
+function readTable(lines: string[], start: number): { block: Block; next: number } | null {
+  const head = lines[start] ?? ''
+  const separator = lines[start + 1] ?? ''
+  if (!TABLE_ROW.test(head) || !TABLE_SEPARATOR.test(separator)) {
+    return null
+  }
+  const rows: string[][] = []
+  let i = start + 2
+  while (i < lines.length && TABLE_ROW.test(lines[i] ?? '')) {
+    rows.push(splitCells(lines[i] ?? ''))
+    i++
+  }
+  return { block: { kind: 'table', head: splitCells(head), rows }, next: i }
+}
 
 function parseBlocks(text: string): Block[] {
   const blocks: Block[] = []
@@ -61,6 +91,31 @@ function parseBlocks(text: string): Block[] {
       }
       i++ // closing fence (or EOF)
       blocks.push({ kind: 'code', text: body.join('\n') })
+      continue
+    }
+    if (RULE.test(line)) {
+      blocks.push({ kind: 'hr' })
+      i++
+      continue
+    }
+    const table = readTable(lines, i)
+    if (table) {
+      blocks.push(table.block)
+      i = table.next
+      continue
+    }
+    const quote = /^\s*&gt;\s?(.*)$/.exec(line)
+    if (quote) {
+      const body: string[] = []
+      while (i < lines.length) {
+        const m = /^\s*&gt;\s?(.*)$/.exec(lines[i] ?? '')
+        if (!m) {
+          break
+        }
+        body.push(m[1] ?? '')
+        i++
+      }
+      blocks.push({ kind: 'blockquote', text: body.join('\n') })
       continue
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line)
@@ -102,12 +157,8 @@ function parseBlocks(text: string): Block[] {
     const body: string[] = []
     while (i < lines.length) {
       const l = lines[i] ?? ''
-      if (
-        !l.trim() ||
-        l.startsWith('```') ||
-        /^#{1,6}\s/.test(l) ||
-        /^\s*([-*]|\d+[.)])\s+/.test(l)
-      ) {
+      const opensBlock = l.startsWith('```') || /^#{1,6}\s/.test(l) || BLOCK_START.test(l)
+      if (!l.trim() || (opensBlock && body.length > 0)) {
         break
       }
       body.push(l)
@@ -116,6 +167,13 @@ function parseBlocks(text: string): Block[] {
     blocks.push({ kind: 'p', text: body.join('\n') })
   }
   return blocks
+}
+
+function renderTable(head: string[], rows: string[][]): string {
+  const cells = (row: string[], tag: 'th' | 'td'): string =>
+    row.map((cell) => `<${tag}>${renderInline(cell)}</${tag}>`).join('')
+  const body = rows.map((row) => `<tr>${cells(row, 'td')}</tr>`).join('')
+  return `<table><thead><tr>${cells(head, 'th')}</tr></thead><tbody>${body}</tbody></table>`
 }
 
 /** Safe HTML for one agent message. Plain text (no markdown sigils) comes out
@@ -133,6 +191,12 @@ export function renderMarkdown(text: string): string {
         case 'ul':
         case 'ol':
           return `<${block.kind}>${block.items.map((item) => `<li>${renderInline(item)}</li>`).join('')}</${block.kind}>`
+        case 'hr':
+          return '<hr>'
+        case 'blockquote':
+          return `<blockquote>${renderInline(block.text).replaceAll('\n', '<br>')}</blockquote>`
+        case 'table':
+          return renderTable(block.head, block.rows)
         default:
           return `<p>${renderInline(block.text).replaceAll('\n', '<br>')}</p>`
       }

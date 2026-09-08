@@ -99,10 +99,10 @@ describe('a color per status (defect #1 fixed)', () => {
   })
 
   test('each status has its own distinct color rule, not a shared uniform one', () => {
-    expect(SOURCE).toMatch(/\.cfr-status--added\s*\{[^}]*color: var\(--cs-green-text\);/)
-    expect(SOURCE).toMatch(/\.cfr-status--modified\s*\{[^}]*color: var\(--cs-amber-text\);/)
-    expect(SOURCE).toMatch(/\.cfr-status--deleted\s*\{[^}]*color: var\(--cs-red-text\);/)
-    expect(SOURCE).toMatch(/\.cfr-status--renamed\s*\{[^}]*color: var\(--cs-water\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--added\s*\{[^}]*color: var\(--ok\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--modified\s*\{[^}]*color: var\(--warn\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--deleted\s*\{[^}]*color: var\(--err\);/)
+    expect(SOURCE).toMatch(/\.cfr-status--renamed\s*\{[^}]*color: var\(--info\);/)
   })
 
   test.each(['added', 'modified', 'deleted', 'renamed'] as const)(
@@ -127,7 +127,7 @@ describe('the last row (defect: no bottom hairline)', () => {
   })
 
   test('the --last modifier removes the bottom hairline in CSS', () => {
-    expect(SOURCE).toMatch(/\.cfr-root\s*\{[^}]*border-bottom: 1px solid var\(--cs-line\);/)
+    expect(SOURCE).toMatch(/\.cfr-root\s*\{[^}]*border-bottom: 1px solid var\(--line\);/)
     expect(SOURCE).toMatch(/\.cfr-root--last\s*\{[^}]*border-bottom: none;/)
   })
 })
@@ -146,25 +146,25 @@ describe('the expanded slot (fiche §6: top hairline, then the diff)', () => {
   })
 
   test('the wrapper carries a top hairline, not a bottom one', () => {
-    expect(SOURCE).toMatch(/\.cfr-expanded\s*\{[^}]*border-top: 1px solid var\(--cs-line\);/)
+    expect(SOURCE).toMatch(/\.cfr-expanded\s*\{[^}]*border-top: 1px solid var\(--line\);/)
   })
 })
 
 describe('geometry (fiche §5)', () => {
-  test('the button is full width, 12px horizontal / 10px vertical padding, 8px gap', () => {
+  test('the row is the kit file row, full width, one text line of padding', () => {
+    expect(SOURCE).toContain('class="diff-f cfr-button"')
     expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*width: 100%;/)
-    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*padding: 10px 12px;/)
-    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*gap: 8px;/)
+    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*padding: 2px 1ch;/)
+    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*gap: 2ch;/)
   })
 
-  test('defect #3 fixed: background, border and radius all explicitly neutralized', () => {
+  test('defect #3 fixed: background and border explicitly neutralized', () => {
     expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*background: none;/)
     expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*border: none;/)
-    expect(SOURCE).toMatch(/\.cfr-button\s*\{[^}]*border-radius: 0;/)
   })
 
-  test('the path uses the base size token', () => {
-    expect(SOURCE).toMatch(/\.cfr-path\s*\{[^}]*font-size: var\(--fs-base\);/)
+  test('the path inherits the base size, never a size of its own', () => {
+    expect(SOURCE).not.toMatch(/\.cfr-path\s*\{[^}]*font-size:/)
   })
 
   test('defect #4 fixed: the path truncates from the start (direction: rtl), never the end', () => {
@@ -174,19 +174,20 @@ describe('geometry (fiche §5)', () => {
   })
 
   test('the status text uses the smallest size token', () => {
-    expect(SOURCE).toMatch(/\.cfr-status\s*\{[^}]*font-size: var\(--fs-xs\);/)
+    expect(SOURCE).toMatch(/\.cfr-status\s*\{[^}]*font-size: 12px;/)
   })
 
   test('the counters use the smallest size token', () => {
-    expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-size: var\(--fs-xs\);/)
+    expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-size: 12px;/)
   })
 
   test('defect #2 fixed: the counters use tabular figures', () => {
     expect(SOURCE).toMatch(/\.cfr-counters\s*\{[^}]*font-variant-numeric: tabular-nums;/)
   })
 
-  test('the chevron rotates open, does not just swap glyph', () => {
-    expect(SOURCE).toMatch(/\.cfr-chevron--open\s*\{[^}]*transform: rotate\(90deg\);/)
+  test('the chevron swaps between the two kit glyphs, never rotates', () => {
+    expect(SOURCE).toContain('expanded ? G.expand : G.collapse')
+    expect(SOURCE).not.toContain('rotate(90deg)')
   })
 
   test('never uses animation-fill-mode (project-wide rule)', () => {

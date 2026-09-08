@@ -33,40 +33,35 @@ defineProps<{ tiles: RepositoryTiles }>()
 .rpt-root {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 1ch;
 }
 
 .rpt-tile {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 14px 16px;
-  border: 1px solid var(--cs-line);
-  border-radius: 10px;
-  background: var(--cs-panel);
+  padding: calc(var(--row) / 2) 2ch;
+  border: 1px solid var(--line);
 }
 
 .rpt-label {
-  font-size: var(--fs-xs);
-  font-weight: 500;
+  font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cs-muted);
+  color: var(--fg-dim);
 }
 
 .rpt-value {
-  font-size: var(--fs-3xl);
+  font-size: 24px;
   font-weight: 700;
-  line-height: 1.1;
   font-variant-numeric: tabular-nums;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .rpt-tile--attention {
-  border-color: var(--cs-amber-line);
+  border-color: var(--warn);
 }
 
 .rpt-tile--attention .rpt-value {
-  color: var(--cs-amber-text);
+  color: var(--warn);
 }
 </style>

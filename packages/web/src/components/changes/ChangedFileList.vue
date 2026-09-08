@@ -98,16 +98,21 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 
 <template>
   <div class="cfl-root">
-    <div v-if="filesState.phase === 'loading' || filesState.phase === 'idle'" class="cfl-state">
-      <span class="cfl-spinner" aria-hidden="true" />
-      <p class="cfl-state-text">{{ t('changes.fileList.loading') }}</p>
-    </div>
+    <p
+      v-if="filesState.phase === 'loading' || filesState.phase === 'idle'"
+      class="status cfl-state"
+      data-s="running"
+    >
+      {{ t('changes.fileList.loading') }}
+    </p>
 
     <div v-else-if="filesState.phase === 'error'" class="cfl-state">
-      <TriangleAlert class="cfl-error-icon" aria-hidden="true" />
-      <p class="cfl-error-title">{{ t('changes.fileList.loadError') }}</p>
-      <pre class="cfl-error-detail">{{ filesState.message }}</pre>
-      <button type="button" class="cfl-retry" @click="emit('retry')">
+      <p class="status cfl-error-title" data-s="error">
+        <TriangleAlert class="cfl-error-icon" aria-hidden="true" />
+        {{ t('changes.fileList.loadError') }}
+      </p>
+      <pre class="log cfl-error-detail">{{ filesState.message }}</pre>
+      <button type="button" class="btn cfl-retry" @click="emit('retry')">
         {{ t('changes.fileList.retry') }}
       </button>
     </div>
@@ -164,42 +169,20 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 32px 16px;
-  text-align: center;
-}
-
-.cfl-state-text {
+  gap: calc(var(--row) / 2);
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-muted);
-}
-
-.cfl-spinner {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2.5px solid var(--cs-line-2);
-  border-top-color: var(--cs-green);
-  animation: cfl-spin 0.8s linear infinite;
-}
-
-@keyframes cfl-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.cfl-error-icon {
-  width: 20px;
-  height: 20px;
-  color: var(--cs-red-text);
+  padding: var(--row) 2ch;
+  text-align: center;
 }
 
 .cfl-error-title {
   margin: 0;
-  font-size: var(--fs-base);
-  color: var(--cs-text);
+  color: var(--err);
+}
+
+.cfl-error-icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* fiche §7: the error detail sits in a capped, scrollable frame instead of
@@ -207,35 +190,12 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
    breaking the layout. */
 .cfl-error-detail {
   max-width: 100%;
-  max-height: 120px;
+  max-height: calc(var(--row) * 5);
   overflow-y: auto;
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-inset);
-  color: var(--cs-text-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+  font-size: 12px;
   white-space: pre-wrap;
   text-align: left;
-}
-
-.cfl-retry {
-  padding: 6px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--cs-line-2);
-  background: var(--cs-surface-2);
-  color: var(--cs-text);
-  font: inherit;
-  font-size: var(--fs-base);
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color var(--cs-duration-fast) var(--cs-ease-out);
-}
-
-.cfl-retry:hover {
-  border-color: var(--cs-line-3);
 }
 
 .cfl-summary {
@@ -244,26 +204,25 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--cs-line);
-  background: var(--cs-surface);
-  font-size: var(--fs-sm);
-  font-family: var(--font-mono);
+  gap: 2ch;
+  padding: 2px 1ch;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .cfl-summary-count {
-  color: var(--cs-text-2);
+  color: var(--fg-dim);
   margin-right: auto;
 }
 
 .cfl-summary-add {
-  color: var(--cs-green-text);
+  color: var(--ok);
 }
 
 .cfl-summary-del {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 
 .cfl-rows {
@@ -274,12 +233,12 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
 .cfl-diff-waiting,
 .cfl-diff-error {
   margin: 0;
-  padding: 12px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
+  padding: calc(var(--row) / 2) 1ch;
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .cfl-diff-error {
-  color: var(--cs-red-text);
+  color: var(--err);
 }
 </style>

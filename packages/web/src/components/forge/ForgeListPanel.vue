@@ -13,33 +13,11 @@ export function matchesForgeSearch(title: string, itemNumber: number, query: str
 }
 
 /**
- * Loading skeleton geometry: five cards, each element inside a card staggers
- * further than the previous element, and each card staggers further than the
- * previous card, so the shimmer sweeps the list diagonally rather than
- * pulsing as one block.
+ * Loading placeholder geometry: five card-shaped rows, each a muted line, so
+ * the list keeps its height while the fetch resolves. No motion: the row is a
+ * static placeholder, not an animated shimmer.
  */
 export const SKELETON_CARD_COUNT = 5
-const SKELETON_STAGGER_STEP = 0.06
-export const SKELETON_ELEMENT_OFFSETS = {
-  icon: 0,
-  number: 0.04,
-  author: 0.08,
-  age: 0.12,
-  title: 0.16,
-} as const
-
-export function skeletonDelay(cardIndex: number, elementOffset: number): string {
-  return `${(cardIndex * SKELETON_STAGGER_STEP + elementOffset).toFixed(2)}s`
-}
-
-/** Cycled (not repeated) across the five skeleton cards so the title bars
- * never all share the same width, which would read as a comb rather than
- * placeholder text. */
-const SKELETON_TITLE_WIDTHS = ['88%', '70%', '80%'] as const
-
-export function skeletonTitleWidth(cardIndex: number): string {
-  return SKELETON_TITLE_WIDTHS[cardIndex % SKELETON_TITLE_WIDTHS.length] ?? '80%'
-}
 </script>
 
 <script setup lang="ts">
@@ -315,35 +293,8 @@ function onFooterRefresh(): void {
           :aria-label="t('forge.loading')"
         >
           <div v-for="i in SKELETON_CARD_COUNT" :key="i" class="flp-skel-card">
-            <div class="flp-skel-head">
-              <span
-                class="flp-skel-bar flp-skel-icon"
-                :style="{ animationDelay: skeletonDelay(i - 1, SKELETON_ELEMENT_OFFSETS.icon) }"
-              />
-              <span
-                class="flp-skel-bar flp-skel-number"
-                :style="{ animationDelay: skeletonDelay(i - 1, SKELETON_ELEMENT_OFFSETS.number) }"
-              />
-              <span
-                class="flp-skel-bar flp-skel-author"
-                :style="{ animationDelay: skeletonDelay(i - 1, SKELETON_ELEMENT_OFFSETS.author) }"
-              />
-              <span
-                class="flp-skel-bar flp-skel-age"
-                :style="{ animationDelay: skeletonDelay(i - 1, SKELETON_ELEMENT_OFFSETS.age) }"
-              />
-            </div>
-            <span
-              class="flp-skel-bar flp-skel-title"
-              :style="{
-                animationDelay: skeletonDelay(i - 1, SKELETON_ELEMENT_OFFSETS.title),
-                width: skeletonTitleWidth(i - 1),
-              }"
-            />
-            <span
-              class="flp-skel-bar flp-skel-title flp-skel-title--second"
-              :style="{ animationDelay: skeletonDelay(i - 1, SKELETON_ELEMENT_OFFSETS.title) }"
-            />
+            <span class="flp-skel-line muted" />
+            <span class="flp-skel-line flp-skel-line--short muted" />
           </div>
         </div>
         <p v-else-if="issuesLoaded.length === 0" class="flp-empty">{{ t('forge.issuesEmpty') }}</p>
@@ -367,7 +318,7 @@ function onFooterRefresh(): void {
           v-for="issue in issuesSearched"
           :key="issue.number"
           type="button"
-          class="flp-item"
+          class="flp-item card"
           :class="{ 'flp-item--on': isSelected('issue', issue.number) }"
           :aria-current="isSelected('issue', issue.number) ? 'true' : undefined"
           :aria-label="t('forge.selectItemAria', { title: issue.title })"
@@ -409,7 +360,7 @@ function onFooterRefresh(): void {
           v-for="mr in mrsSearched"
           :key="mr.number"
           type="button"
-          class="flp-item"
+          class="flp-item card"
           :class="{ 'flp-item--on': isSelected('mr', mr.number) }"
           :aria-current="isSelected('mr', mr.number) ? 'true' : undefined"
           :aria-label="t('forge.selectItemAria', { title: mr.title })"
@@ -448,28 +399,27 @@ function onFooterRefresh(): void {
 
 .flp-search {
   flex: none;
-  padding: 8px 16px 6px;
+  padding: calc(var(--row) / 2) 2ch;
 }
 
 .flp-search-pill {
   display: flex;
   align-items: center;
-  gap: 8px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 12px;
-  padding: 0 10px;
-  background: var(--cs-inset);
+  gap: 1ch;
+  border: 1px solid var(--line);
+  padding: 0 1ch;
+  background: var(--bg-raised);
 }
 
 .flp-search-pill:focus-within {
-  border-color: var(--cs-green-ring);
+  border-color: var(--accent);
 }
 
 .flp-search-icon {
   flex: none;
   width: 14px;
   height: 14px;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
 }
 
 .flp-search-input {
@@ -478,32 +428,31 @@ function onFooterRefresh(): void {
   border: none;
   outline: none;
   background: transparent;
-  font-family: inherit;
-  font-size: var(--fs-base);
-  padding: 10px 0;
-  color: var(--cs-text);
+  font: inherit;
+  padding: 2px 0;
+  color: var(--fg);
 }
 
 .flp-search-input::placeholder {
-  color: var(--cs-ghost);
+  color: var(--fg-dim);
 }
 
 .flp-search-clear {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
 
 .flp-search-clear:hover {
-  color: var(--cs-text-2);
+  color: var(--fg);
 }
 
 .flp-search-clear svg {
@@ -517,94 +466,78 @@ function onFooterRefresh(): void {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 0 16px 8px;
+  gap: calc(var(--row) / 2);
+  padding: 0 2ch calc(var(--row) / 2);
 }
 
 .flp-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 1ch;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 2px;
 }
 
 .flp-heading {
-  font-size: var(--fs-base);
   font-weight: 700;
-  color: var(--cs-text);
+  color: var(--fg);
 }
 
 .flp-count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
 }
 
 .flp-truncated {
   margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--cs-ghost);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .flp-degraded {
   margin: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: var(--fs-sm);
-  color: var(--cs-muted);
-  background: var(--cs-inset);
-  border-radius: 8px;
-  padding: 10px 12px;
+  align-items: baseline;
+  gap: 2ch;
+  color: var(--warn);
+  border-left: 3px solid var(--warn);
+  padding: 2px 1ch;
 }
 
 .flp-retry {
   flex: none;
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  padding: 3px 10px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 6px;
+  font: inherit;
+  padding: 0 1ch;
+  border: 1px solid var(--line);
   background: transparent;
-  color: var(--cs-text-2);
+  color: var(--fg);
   cursor: pointer;
 }
 
 .flp-retry:hover {
-  border-color: var(--cs-line-3);
+  background: var(--bg-hover);
 }
 
 .flp-empty {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
-  padding: 4px 2px;
+  color: var(--fg-dim);
+  padding: calc(var(--row) / 2) 0;
 }
 
 .flp-item {
-  display: block;
   width: 100%;
   text-align: left;
-  font-family: inherit;
-  padding: 10px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 12px;
-  background: var(--cs-surface);
-  cursor: pointer;
-}
-
-.flp-item:hover {
-  border-color: var(--cs-line-3);
-  background: var(--cs-surface-2);
+  font: inherit;
+  color: var(--fg);
 }
 
 /* The selected item is a state: colored border, per the doctrine. The fill
    never changes on selection, only on hover -- selection and hover are two
    independent signals. */
 .flp-item--on {
-  border-color: var(--cs-green-ring);
+  --c: var(--ok);
+  border-color: var(--ok);
 }
 
 .flp-footer {
@@ -612,28 +545,29 @@ function onFooterRefresh(): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 16px 16px;
-  font-size: var(--fs-sm);
-  color: var(--cs-ghost);
+  gap: 2ch;
+  padding: calc(var(--row) / 2) 2ch;
+  font-size: 12px;
+  color: var(--fg-dim);
+  border-top: 1px solid var(--line);
 }
 
 .flp-footer-fresh {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 1ch;
 }
 
 .flp-footer-refresh {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--cs-ghost);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
@@ -644,91 +578,38 @@ function onFooterRefresh(): void {
 }
 
 .flp-footer-refresh:hover {
-  color: var(--cs-text-2);
+  color: var(--fg);
 }
 
+/* Same running signal as .status[data-s='running']: the shared blink, never a
+   spin of its own. */
 .flp-footer-refresh--spin {
-  animation: flp-spin 0.9s linear infinite;
-}
-
-@keyframes flp-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  color: var(--info);
+  animation: blink 1.2s steps(2) infinite;
 }
 
 .flp-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(var(--row) / 2);
 }
 
 .flp-skel-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--cs-line-2);
-  border-radius: 12px;
-  background: var(--cs-surface);
+  gap: 2px;
+  padding: calc(var(--row) / 2) 1ch;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
 }
 
-.flp-skel-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.flp-skel-bar {
-  border-radius: 4px;
-  background: linear-gradient(
-    90deg,
-    var(--cs-line-2) 25%,
-    var(--cs-line-3) 37%,
-    var(--cs-line-2) 63%
-  );
-  background-size: 400% 100%;
-  animation: flp-shimmer 1.4s ease-in-out infinite;
-}
-
-.flp-skel-icon {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-}
-
-.flp-skel-number {
-  width: 30px;
-  height: 11px;
-}
-
-.flp-skel-author {
-  width: 56px;
-  height: 11px;
-}
-
-.flp-skel-age {
-  width: 40px;
-  height: 11px;
-  margin-left: auto;
-}
-
-.flp-skel-title {
+.flp-skel-line {
+  height: 2px;
   width: 100%;
-  height: 13px;
-  margin-top: 2px;
+  background: var(--line);
 }
 
-.flp-skel-title--second {
+.flp-skel-line--short {
   width: 45%;
-}
-
-@keyframes flp-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: 0 0;
-  }
 }
 </style>

@@ -3,6 +3,7 @@
 
 import { computed, ref, watch } from 'vue'
 import { parseDiff, pickFiles, sameFile, type Finding } from '../composables/useDiff'
+import { G } from '../glyphs'
 import { riskMeta } from '../risk'
 import type { StepView } from '../types'
 import DiffView from './DiffView.vue'
@@ -126,18 +127,22 @@ function scrollToFile(filePath: string) {
 <template>
   <div v-if="step" class="steprev-root">
     <div class="steprev-left">
-      <button class="steprev-back" @click="emit('back')">
+      <button class="steprev-back btn ghost" @click="emit('back')">
+        <span aria-hidden="true">{{ G.back }}</span>
         {{ $t('reviews.guidedBack') }}
       </button>
 
       <div class="steprev-nav">
         <button
-          class="steprev-radio-btn"
+          class="steprev-radio-btn btn ghost"
           :class="{ 'steprev-radio-btn--done': isRead }"
           :title="isRead ? $t('reviews.guidedMarkUnread') : $t('reviews.guidedMarkRead')"
+          :aria-pressed="isRead"
           @click="emit('toggleRead', selectedIndex)"
         >
-          <span v-if="isRead" class="steprev-radio-check">✓</span>
+          <span class="steprev-radio-check" aria-hidden="true">{{
+            isRead ? G.ok : G.pending
+          }}</span>
         </button>
 
         <span class="steprev-which">
@@ -148,22 +153,22 @@ function scrollToFile(filePath: string) {
         <span class="steprev-spacer" />
 
         <button
-          class="steprev-arrow"
+          class="steprev-arrow btn"
           :disabled="!canPrev"
           :title="$t('reviews.guidedPrev')"
           :aria-label="$t('reviews.guidedPrev')"
           @click="goPrev"
         >
-          ‹
+          <span aria-hidden="true">{{ G.back }}</span>
         </button>
         <button
-          class="steprev-arrow"
+          class="steprev-arrow btn"
           :disabled="!canNext"
           :title="$t('reviews.guidedNext')"
           :aria-label="$t('reviews.guidedNext')"
           @click="goNext"
         >
-          ›
+          <span aria-hidden="true">{{ G.arrow }}</span>
         </button>
       </div>
 
@@ -171,11 +176,7 @@ function scrollToFile(filePath: string) {
 
       <div class="steprev-meta">
         <template v-if="step.risk && riskMeta(step.risk)">
-          <span
-            class="steprev-risk-badge"
-            :class="[riskMeta(step.risk)!.textCls, riskMeta(step.risk)!.bgCls]"
-          >
-            <span class="steprev-risk-dot" :style="{ background: riskMeta(step.risk)!.dotColor }" />
+          <span class="steprev-risk-badge risk" :data-r="riskMeta(step.risk)!.r">
             {{ $t(riskMeta(step.risk)!.label) }}
           </span>
         </template>
@@ -191,11 +192,14 @@ function scrollToFile(filePath: string) {
         <div class="steprev-towatch-tag">{{ $t('reviews.guidedToWatch') }}</div>
         <div class="steprev-towatch-row">
           <button
-            class="steprev-check-btn"
+            class="steprev-check-btn btn ghost"
             :class="{ 'steprev-check-btn--done': isChecked }"
+            :aria-pressed="isChecked"
             @click="emit('toggleChecked', selectedIndex)"
           >
-            <span v-if="isChecked" class="steprev-check-mark">✓</span>
+            <span class="steprev-check-mark" aria-hidden="true">{{
+              isChecked ? G.ok : G.pending
+            }}</span>
           </button>
           <span class="steprev-towatch-text" @click="emit('toggleChecked', selectedIndex)">{{
             step.check
@@ -224,11 +228,11 @@ function scrollToFile(filePath: string) {
             @click="scrollToFile(f)"
             @keydown.enter="scrollToFile(f)"
           >
-            <span class="steprev-fileicon">▤</span>
+            <span class="steprev-fileicon" aria-hidden="true">{{ G.file }}</span>
             <span class="steprev-filename" :title="f">{{ shortName(f) }}</span>
-            <span class="steprev-filepath codesema-muted">{{ f }}</span>
+            <span class="steprev-filepath muted">{{ f }}</span>
           </div>
-          <p v-if="filteredFiles.length === 0" class="steprev-files-empty codesema-muted">
+          <p v-if="filteredFiles.length === 0" class="steprev-files-empty muted">
             {{ $t('reviews.guidedFileEmpty') }}
           </p>
         </div>
@@ -237,7 +241,7 @@ function scrollToFile(filePath: string) {
 
     <div class="steprev-right">
       <div class="steprev-banner">
-        <span class="steprev-banner-mark">✦</span>
+        <span class="steprev-banner-mark" aria-hidden="true">{{ G.note }}</span>
         <div class="steprev-banner-body">
           <div class="steprev-banner-head">
             {{ $t('reviews.guidedBannerTitle') }}
@@ -252,99 +256,67 @@ function scrollToFile(filePath: string) {
       <div v-if="diff" class="steprev-diff">
         <DiffView :files="stepFiles" :reveal="reveal" />
       </div>
-      <p v-else class="codesema-muted steprev-nodiff">{{ $t('reviews.noDiff') }}</p>
+      <p v-else class="steprev-nodiff empty">{{ $t('reviews.noDiff') }}</p>
     </div>
   </div>
 
   <div v-else class="steprev-empty">
-    <p class="codesema-muted">{{ $t('reviews.stepsEmpty') }}</p>
+    <p class="empty">{{ $t('reviews.stepsEmpty') }}</p>
   </div>
 </template>
 
 <style scoped>
-/* 2-column layout */
 .steprev-root {
   display: flex;
   align-items: flex-start;
   min-height: 0;
 }
 
-/* left column */
 .steprev-left {
-  width: 384px;
+  width: 48ch;
   flex-shrink: 0;
-  border-right: 1px solid var(--codesema-line);
+  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 24px 26px 32px;
+  gap: calc(var(--row) / 2);
+  padding: var(--row) 2ch;
   position: sticky;
   top: 0;
   max-height: 100vh;
   overflow-y: auto;
-  background: color-mix(in srgb, var(--codesema-panel) 60%, var(--codesema-bg));
+  background: var(--bg);
 }
 
-/* back button */
 .steprev-back {
+  align-self: flex-start;
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-base);
-  font-weight: 400;
-  color: var(--codesema-ink-3);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  font-family: inherit;
-  transition: color 0.12s ease;
-}
-.steprev-back:hover {
-  color: var(--codesema-accent);
+  align-items: baseline;
+  gap: 1ch;
+  padding-left: 0;
 }
 
-/* nav toggle + arrows */
+.steprev-back:hover {
+  color: var(--accent);
+  background: transparent;
+}
+
 .steprev-nav {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 1ch;
 }
 
-/* big read toggle */
 .steprev-radio-btn {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 1.5px solid var(--codesema-line);
-  background: transparent;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
   flex-shrink: 0;
-  transition:
-    border-color 0.12s ease,
-    background 0.12s ease;
+  padding: 0 1ch;
 }
+
 .steprev-radio-btn--done {
-  border-color: var(--codesema-risk-low);
-  background: var(--codesema-risk-low);
-}
-.steprev-radio-check {
-  font-size: var(--fs-xs);
-  color: #fff;
-  line-height: 1;
-  font-weight: 700;
+  color: var(--ok);
 }
 
 .steprev-which {
-  font-size: var(--fs-base);
-  font-weight: 500;
-  color: var(--codesema-ink-2);
-}
-.steprev-which-total {
-  color: var(--codesema-ink-3);
-  font-weight: 400;
+  color: var(--fg-dim);
 }
 
 .steprev-spacer {
@@ -352,231 +324,140 @@ function scrollToFile(filePath: string) {
 }
 
 .steprev-arrow {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  border: 1px solid var(--codesema-line);
-  background: var(--codesema-panel);
-  color: var(--codesema-ink-2);
-  font-size: var(--fs-lg);
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: border-color 0.1s ease;
-  font-family: inherit;
-}
-.steprev-arrow:hover:not(:disabled) {
-  border-color: var(--codesema-ink-3);
-}
-.steprev-arrow:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  padding: 0 1ch;
+  color: var(--fg-dim);
 }
 
-/* step title */
 .steprev-title {
-  font-family: var(--font-display);
-  font-size: var(--fs-2xl);
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  color: var(--codesema-ink);
-  margin: 16px 0 0;
-  line-height: 1.15;
+  margin-top: var(--row);
 }
 
-/* risk + delta meta */
 .steprev-meta {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: baseline;
+  gap: 2ch;
   flex-wrap: wrap;
-  margin: 12px 0;
 }
 
 .steprev-risk-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 999px;
-}
-.steprev-risk-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.step-risk--high {
-  color: var(--codesema-risk-high);
-}
-.step-risk-bg--high {
-  background: var(--codesema-risk-high-soft);
-}
-.step-risk--med {
-  color: var(--codesema-risk-med);
-}
-.step-risk-bg--med {
-  background: var(--codesema-risk-med-soft);
-}
-.step-risk--low {
-  color: var(--codesema-risk-low);
-}
-.step-risk-bg--low {
-  background: var(--codesema-risk-low-soft);
+  font-size: 12px;
+  border: 1px solid currentColor;
+  padding: 0 1ch;
+  color: var(--fg-dim);
 }
 
 .steprev-delta {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  align-items: baseline;
+  gap: 1ch;
+  font-size: 12px;
 }
+
 .steprev-delta-add {
-  color: var(--codesema-risk-low);
+  color: var(--ok);
 }
+
 .steprev-delta-del {
-  color: var(--codesema-risk-high);
+  color: var(--err);
 }
 
-/* rationale */
 .steprev-rationale {
-  font-size: var(--fs-base);
-  color: var(--codesema-ink-2);
-  line-height: 1.6;
-  margin: 0;
-  text-wrap: pretty;
+  color: var(--fg-dim);
 }
 
-/* to-watch amber box */
 .steprev-towatch {
-  border: 1px solid color-mix(in srgb, var(--codesema-amber) 30%, transparent);
-  border-radius: 10px;
-  padding: 13px 14px;
-  background: var(--codesema-amber-soft);
-  margin-top: 18px;
+  border-left: 2px solid var(--warn);
+  padding: 0 1ch;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
+
 .steprev-towatch-tag {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--codesema-amber);
-  margin-bottom: 9px;
-}
-.steprev-towatch-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  cursor: pointer;
-  font-size: var(--fs-base);
-  color: var(--codesema-ink);
-  line-height: 1.5;
-}
-.steprev-check-btn {
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  border-radius: 4px;
-  border: 1.5px solid var(--codesema-amber);
-  background: transparent;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  transition: background 0.1s ease;
-}
-.steprev-check-btn--done {
-  background: var(--codesema-amber);
-}
-.steprev-check-mark {
-  font-size: var(--fs-xs);
-  color: #fff;
-  font-weight: 700;
+  color: var(--warn);
 }
 
-/* file list */
+.steprev-towatch-row {
+  display: flex;
+  align-items: baseline;
+  gap: 1ch;
+  cursor: pointer;
+}
+
+.steprev-check-btn {
+  flex-shrink: 0;
+  padding: 0 1ch;
+  color: var(--warn);
+}
+
+.steprev-check-btn--done {
+  color: var(--ok);
+}
+
 .steprev-files {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 22px;
+  gap: calc(var(--row) / 2);
 }
+
 .steprev-files-head {
-  font-size: var(--fs-xs);
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--codesema-ink-3);
+  color: var(--fg-dim);
   display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 2px;
+  align-items: baseline;
+  gap: 1ch;
 }
+
 .steprev-files-count {
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  background: var(--codesema-line-2);
-  border-radius: 99px;
-  padding: 0 6px;
-  color: var(--codesema-ink-3);
+  font-size: 12px;
+  color: var(--fg-dim);
 }
+
 .steprev-filter {
   width: 100%;
-  border: 1px solid var(--codesema-line);
-  border-radius: 8px;
-  padding: 8px 11px;
-  font-size: var(--fs-base);
-  font-family: inherit;
-  background: var(--codesema-panel);
-  color: var(--codesema-ink);
-  outline: none;
-  transition: border-color 0.12s ease;
-  box-sizing: border-box;
+  min-width: 0;
 }
-.steprev-filter:focus {
-  border-color: var(--codesema-accent);
-}
+
 .steprev-filelist {
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
+
 .steprev-filerow {
   display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 9px;
-  border-radius: 7px;
+  align-items: baseline;
+  gap: 1ch;
+  padding: 0 1ch;
   cursor: pointer;
-  outline: none;
-  transition: background 0.1s ease;
   min-width: 0;
 }
+
 .steprev-filerow:hover,
 .steprev-filerow:focus-visible {
-  background: color-mix(in srgb, var(--codesema-line-2) 80%, var(--codesema-bg));
+  background: var(--bg-hover);
 }
+
 .steprev-fileicon {
-  font-size: var(--fs-xs);
-  color: var(--codesema-ink-3);
+  color: var(--fg-muted);
   flex-shrink: 0;
 }
+
 .steprev-filename {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--codesema-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
   min-width: 0;
 }
+
 .steprev-filepath {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -584,96 +465,73 @@ function scrollToFile(filePath: string) {
   min-width: 0;
   display: none;
 }
+
 .steprev-files-empty {
-  font-size: var(--fs-sm);
-  padding: 6px 0;
+  font-size: 12px;
 }
 
-/* right column */
 .steprev-right {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0;
   overflow-y: auto;
 }
 
-/* review banner */
 .steprev-banner {
   display: flex;
-  align-items: flex-start;
-  gap: 13px;
-  padding: 14px 16px;
-  margin: 16px 20px 0;
-  border: 1px solid color-mix(in srgb, var(--codesema-accent) 30%, transparent);
-  border-radius: 12px;
-  background: var(--codesema-accent-soft);
+  align-items: baseline;
+  gap: 1ch;
+  padding: 0 1ch;
+  margin: var(--row) 2ch 0;
+  border-left: 2px solid var(--accent);
 }
+
 .steprev-banner-mark {
   flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: var(--codesema-accent);
-  color: #fff;
-  font-size: var(--fs-lg);
-  font-weight: 700;
-  font-family: var(--font-display);
-  display: grid;
-  place-items: center;
-  letter-spacing: -0.02em;
+  color: var(--accent);
 }
+
 .steprev-banner-body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
   min-width: 0;
 }
+
 .steprev-banner-head {
-  font-size: var(--fs-base);
   font-weight: 700;
-  color: var(--codesema-ink);
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: baseline;
+  gap: 2ch;
   flex-wrap: wrap;
 }
+
 .steprev-banner-count {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  background: var(--codesema-panel);
-  color: var(--codesema-accent);
-  border: 1px solid color-mix(in srgb, var(--codesema-accent) 30%, transparent);
-  border-radius: 999px;
-  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--accent);
+  border: 1px solid currentColor;
+  padding: 0 1ch;
   white-space: nowrap;
   flex-shrink: 0;
 }
+
 .steprev-banner-take {
-  font-size: var(--fs-base);
-  line-height: 1.55;
-  color: var(--codesema-ink);
-  margin: 6px 0 0;
-  text-wrap: pretty;
+  margin-top: calc(var(--row) / 2);
 }
 
-/* diff */
 .steprev-diff {
-  padding: 20px 20px 60px;
+  padding: var(--row) 2ch;
 }
+
 .steprev-nodiff {
-  padding: 24px;
-  font-size: var(--fs-base);
+  margin: var(--row) 2ch;
 }
 
-/* empty fallback */
 .steprev-empty {
-  padding: 32px 24px;
-  font-size: var(--fs-base);
+  padding: var(--row) 2ch;
 }
 
-/* responsive: stack below 900px */
 @media (max-width: 900px) {
   .steprev-root {
     flex-direction: column;
@@ -683,24 +541,16 @@ function scrollToFile(filePath: string) {
     position: static;
     max-height: none;
     border-right: none;
-    border-bottom: 1px solid var(--codesema-line);
+    border-bottom: 1px solid var(--line);
   }
 }
 
-/* mobile density (<= 640px) */
 @media (max-width: 640px) {
-  .steprev-left {
-    padding: 16px 14px 24px;
-  }
-  .steprev-title {
-    font-size: var(--fs-xl);
-  }
   .steprev-banner {
-    margin: 14px 12px 0;
-    padding: 12px 13px;
+    margin: var(--row) 1ch 0;
   }
   .steprev-diff {
-    padding: 14px 12px 48px;
+    padding: var(--row) 1ch;
   }
 }
 </style>

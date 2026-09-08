@@ -64,7 +64,7 @@ test('renders every label', async () => {
 
 test('an empty label list renders no label chip', async () => {
   const html = await renderCard(baseIssue({ labels: [] }))
-  expect(html).not.toContain('fic-label"')
+  expect(html).not.toContain('fic-label')
 })
 
 test('a labeled color drives the pill fill, a null color falls back to the neutral token', async () => {
@@ -72,7 +72,7 @@ test('a labeled color drives the pill fill, a null color falls back to the neutr
   expect(colored).toContain('rgba(215, 58, 74, 0.16)')
 
   const neutral = await renderCard(baseIssue({ labels: [{ name: 'bug', color: null }] }))
-  expect(neutral).toContain('var(--cs-line-2)')
+  expect(neutral).toContain('var(--line)')
   expect(neutral).not.toContain('rgba(')
 })
 
