@@ -169,7 +169,6 @@ function isSelected(state: TaskState): boolean {
   container-name: cvl-shell;
   width: 100%;
   min-height: 0;
-  background: var(--bg-raised);
   overflow: hidden;
 }
 

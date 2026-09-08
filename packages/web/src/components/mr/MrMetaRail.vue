@@ -331,7 +331,6 @@ const AGGREGATE_LABEL_KEYS: Record<CheckAggregateStatus, MessageKey> = {
 
 .mrr-chip {
   color: var(--fg-dim);
-  background: var(--bg-raised);
   border: 1px solid var(--line);
   padding: 0 1ch;
 }

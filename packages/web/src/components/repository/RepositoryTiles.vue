@@ -41,7 +41,6 @@ defineProps<{ tiles: RepositoryTiles }>()
   flex-direction: column;
   padding: calc(var(--row) / 2) 2ch;
   border: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 
 .rpt-label {

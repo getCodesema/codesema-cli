@@ -1305,16 +1305,16 @@ watch(
   min-height: 0;
 }
 
+/* The hairline on the right belongs to the mounted list's own `.rail`;
+   drawing a second one here would double it. */
 .ws-list {
   display: flex;
-  border-right: 1px solid var(--line);
 }
 
 /* ── Zone 3: the stage ────────────────────────────────────────────────── */
 .ws-focus {
   display: flex;
   flex-direction: column;
-  background: var(--bg-raised);
 }
 
 .ws-stage {
@@ -1342,7 +1342,6 @@ watch(
   margin: calc(var(--row) * 2) auto var(--row);
   padding: var(--row) 2ch;
   border: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 
 .ws-draft-head {
@@ -1395,7 +1394,7 @@ watch(
 
 .ws-draft-warning {
   color: var(--warn);
-  border: 1px solid var(--warn);
+  border-left: 3px solid var(--warn);
   padding: calc(var(--row) / 2) 1ch;
 }
 

@@ -306,7 +306,6 @@ function historyErrorOf(key: string): string | null {
 .crl-root {
   width: 100%;
   min-height: 0;
-  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -581,8 +580,7 @@ function historyErrorOf(key: string): string | null {
 .crl-panel {
   margin: 0 0 calc(var(--row) / 2) 4ch;
   padding: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
-  background: var(--bg);
+  border-top: 1px solid var(--line);
 }
 
 .crl-panel-title {

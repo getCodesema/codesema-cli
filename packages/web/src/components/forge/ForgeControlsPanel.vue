@@ -473,7 +473,7 @@ const mrsLabelCountsFiltered = computed(() =>
   justify-content: center;
   font: inherit;
   border: 1px solid var(--line);
-  background: var(--bg-raised);
+  background: transparent;
   color: var(--fg-dim);
   cursor: pointer;
   padding: 2px 1ch;
@@ -575,8 +575,12 @@ const mrsLabelCountsFiltered = computed(() =>
 }
 
 .fcp-section {
-  margin: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.fcp-section:first-child {
+  border-top: none;
 }
 
 .fcp-acc-head {
@@ -589,10 +593,9 @@ const mrsLabelCountsFiltered = computed(() =>
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  padding: 2px 1ch;
+  padding: calc(var(--row) / 2) 1ch 2px;
   border: none;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  background: transparent;
   color: var(--fg-dim);
   cursor: pointer;
 }
@@ -619,6 +622,10 @@ const mrsLabelCountsFiltered = computed(() =>
 
 .fcp-block {
   padding: 0 1ch;
+}
+
+.fcp-block + .fcp-block {
+  border-top: 1px solid var(--line);
 }
 
 .fcp-block-title {

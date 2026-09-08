@@ -508,7 +508,6 @@ function onSortChange(event: Event): void {
 .bt-th {
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  background: var(--bg-raised);
 }
 
 .bt-th-chevron {
@@ -632,7 +631,6 @@ function onSortChange(event: Event): void {
 
 .bt-expanded-cell {
   padding: calc(var(--row) / 2) 1ch calc(var(--row) / 2) 4ch;
-  background: var(--bg-raised);
   white-space: normal;
 }
 

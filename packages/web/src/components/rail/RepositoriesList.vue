@@ -278,7 +278,6 @@ function requestRemove(id: string): void {
 .rpl-root {
   width: 100%;
   min-height: 0;
-  background: var(--bg-raised);
   overflow: hidden;
 }
 
@@ -498,8 +497,8 @@ function requestRemove(id: string): void {
   font: inherit;
   text-align: left;
   padding: 2px 1ch;
-  border: 1px solid var(--line);
-  background: var(--bg);
+  border: none;
+  background: transparent;
   color: var(--fg);
   cursor: pointer;
 }

@@ -500,8 +500,7 @@ function onFooterRefresh(): void {
   display: flex;
   align-items: baseline;
   gap: 2ch;
-  color: var(--fg-dim);
-  background: var(--bg-raised);
+  color: var(--warn);
   border-left: 3px solid var(--warn);
   padding: 2px 1ch;
 }
@@ -531,7 +530,6 @@ function onFooterRefresh(): void {
   text-align: left;
   font: inherit;
   color: var(--fg);
-  background: var(--bg-raised);
 }
 
 /* The selected item is a state: colored border, per the doctrine. The fill
@@ -603,7 +601,6 @@ function onFooterRefresh(): void {
   padding: calc(var(--row) / 2) 1ch;
   border: 1px solid var(--line);
   border-left-width: 3px;
-  background: var(--bg-raised);
 }
 
 .flp-skel-line {
