@@ -9,6 +9,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { TaskState } from '../../composables/useTasks'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type { TaskRecord } from '../../types'
 
@@ -76,41 +77,31 @@ async function render(overrides: Partial<Props> = {}): Promise<string> {
   return renderToString(app)
 }
 
-describe('header: title, counter, and a primary create action', () => {
-  test('the title and the new-conversation action render', async () => {
+describe('header: the kit rail head, a title and a + action', () => {
+  test('the title renders and the create action is a plain + button, no icon', async () => {
     const html = await render()
+    expect(html).toContain('class="cvl-header rail-h"')
     expect(html).toContain(t('conversations.title'))
     expect(html).toContain(t('conversations.newAction'))
-    expect(html).toContain('lucide-plus')
+    expect(html).toContain('class="cvl-action"')
+    expect(html).not.toContain('lucide')
+    expect(html).not.toContain('btn')
   })
 
-  test('the counter reflects the total conversation count, not just a filtered one', async () => {
-    const html = await render({
-      states: [
-        taskState({ id: 'a' }, 'p1'),
-        taskState({ id: 'b' }, 'p1'),
-        taskState({ id: 'c' }, 'p2'),
-      ],
-    })
-    expect(html).toContain('class="cvl-count"')
-    expect(html).toMatch(/class="cvl-count">3</)
-  })
-
-  test('an empty column shows a zero counter', async () => {
-    const html = await render({ states: [] })
-    expect(html).toMatch(/class="cvl-count">0</)
-  })
-
-  test('the action button carries the accent, on the kit button', async () => {
-    const html = await render()
-    expect(html).toContain('class="cvl-action btn"')
+  test('the action is the kit rail-h button: accent, borderless, no fill', () => {
     const block = SOURCE.slice(SOURCE.indexOf('.cvl-action {'), SOURCE.indexOf('.cvl-action:hover'))
-    expect(block).toContain('border-color: var(--ok);')
-    expect(block).toContain('color: var(--ok);')
+    expect(block).toContain('color: var(--accent);')
+    expect(block).toContain('border: 0;')
+    expect(block).not.toContain('background: var(')
+  })
+
+  test('the total counter is gone: counting belongs to the project rows now', async () => {
+    const html = await render({ states: [taskState({ id: 'a' }, 'p1')] })
+    expect(html).not.toContain('cvl-count')
   })
 })
 
-describe('search field: present, its right padding is COMPUTED, not fixed', () => {
+describe('search field: borderless, glyph-led, its right padding still COMPUTED', () => {
   test('no query typed: no clear button, padding is the base clearance (36px, 0 icons)', async () => {
     const html = await render()
     expect(html).not.toContain('cvl-search-clear')
@@ -120,6 +111,20 @@ describe('search field: present, its right padding is COMPUTED, not fixed', () =
   test('placeholder text comes from i18n', async () => {
     const html = await render()
     expect(html).toContain(t('conversations.searchPlaceholder'))
+  })
+
+  test('the search glyph is the kit one, from G, never a lucide icon', async () => {
+    const html = await render()
+    expect(html).toContain(`class="cvl-search-glyph" aria-hidden="true">${G.search}<`)
+  })
+
+  test('the input carries no frame of its own', () => {
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.cvl-search-input {'),
+      SOURCE.indexOf('.cvl-search-input:focus'),
+    )
+    expect(rule).toContain('border: 0;')
+    expect(rule).toContain('background: transparent;')
   })
 })
 
@@ -145,8 +150,8 @@ describe('empty states: no conversation at all vs. a search matching nothing', (
   })
 })
 
-describe('grouping: by project, one group per registered project', () => {
-  test('one group per project, named from the project map, counting its own rows', async () => {
+describe('grouping: one kit .proj row per project, its lines underneath', () => {
+  test('one group per project, named from the project map', async () => {
     const html = await render({
       states: [
         taskState({ id: 'a' }, 'p1'),
@@ -160,13 +165,87 @@ describe('grouping: by project, one group per registered project', () => {
     })
     expect(html).toContain('Codesema')
     expect(html).toContain('Nolyra')
-    expect((html.match(/cvl-group-head/g) ?? []).length).toBe(2)
+    expect((html.match(/cvl-group-head proj/g) ?? []).length).toBe(2)
+  })
+
+  test('the project dot lights up when at least one conversation is running', async () => {
+    const running = await render({ states: [taskState({ id: 'a', status: 'running' }, 'p1')] })
+    expect(running).toContain('cvl-group-dot dot on')
+    expect(running).toContain(G.dot)
+
+    const idle = await render({ states: [taskState({ id: 'a', status: 'queued' }, 'p1')] })
+    expect(idle).not.toContain('cvl-group-dot dot on')
+    expect(idle).toContain(G.pending)
+  })
+
+  test('the counters read waiting-then-running, waiting emphasised', async () => {
+    const html = await render({
+      states: [
+        taskState({ id: 'a', status: 'waiting_for_you' }, 'p1'),
+        taskState({ id: 'b', status: 'waiting_for_you' }, 'p1'),
+        taskState({ id: 'c', status: 'running' }, 'p1'),
+        taskState({ id: 'd', status: 'reviewing' }, 'p1'),
+        taskState({ id: 'e', status: 'reviewing' }, 'p1'),
+      ],
+    })
+    const counter = html.slice(html.indexOf('cvl-group-count'))
+    expect(counter).toContain('<b>2</b>')
+    expect(counter).toContain(G.sep)
+    expect(counter).toContain('3')
+  })
+
+  test('a project with nothing waiting and nothing running shows a dash', async () => {
+    const html = await render({ states: [taskState({ id: 'a', status: 'shipped' }, 'p1')] })
+    expect(html.slice(html.indexOf('cvl-group-count'))).toContain(G.minus)
+  })
+
+  test('the waiting half is the warn tone, straight from the kit .cnt b rule', () => {
+    expect(SOURCE).toContain('class="cvl-group-count cnt"')
+    expect(SOURCE).not.toContain('var(--warn)')
   })
 
   test('groups are expanded by default: aria-expanded true, no closed body', async () => {
     const html = await render({ states: [taskState({ id: 'a' }, 'p1')] })
     expect(html).toContain('aria-expanded="true"')
     expect(html).not.toContain('cvl-group-body--closed')
+  })
+})
+
+describe('lines: one conversation, one tree line, no card', () => {
+  test('the lines sit in the kit .sub block and are drawn with tree glyphs', async () => {
+    const html = await render({ states: [taskState({ id: 'a' }, 'p1')] })
+    expect(html).toContain('class="cvl-group-body-inner sub"')
+    expect(SOURCE).toContain("content: '\u251c\u2500 ';")
+    expect(SOURCE).toContain("content: '\u2514\u2500 ';")
+  })
+
+  test('a line carries no frame and no background of its own', () => {
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.cvl-row-btn {'),
+      SOURCE.indexOf('.cvl-row-btn::before'),
+    )
+    expect(rule).toContain('border: none;')
+    expect(rule).toContain('background: transparent;')
+    expect(rule).toContain('padding: 2px 1ch 2px 3ch;')
+    expect(rule).not.toContain('border-radius')
+    expect(rule).not.toContain('box-shadow')
+  })
+
+  test('project rows are spaced by one text line, never by a gap of pixels', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvl-group {'), SOURCE.indexOf('.cvl-group-head {'))
+    expect(rule).toContain('margin-top: var(--row);')
+  })
+})
+
+describe('ordering: attention first, straight from the shared logic', () => {
+  test('a waiting conversation is listed before a shipped one', async () => {
+    const html = await render({
+      states: [
+        taskState({ id: 'zz', title: 'shipped one', status: 'shipped' }, 'p1'),
+        taskState({ id: 'aa', title: 'waiting one', status: 'waiting_for_you' }, 'p1'),
+      ],
+    })
+    expect(html.indexOf('waiting one')).toBeLessThan(html.indexOf('shipped one'))
   })
 })
 
@@ -202,13 +281,18 @@ describe('selection: highlighted rows come from the focus deck, not a single sel
     expect(rows.some((m) => m[1]?.includes('aria-current="true"'))).toBe(false)
   })
 
-  test('a selected row is a fill, never a border', () => {
-    const rule = SOURCE.slice(
-      SOURCE.indexOf('.cvl-row-btn--selected {'),
-      SOURCE.indexOf('.cvl-row-btn--selected :deep'),
-    )
+  test('a selected line is a fill, never a border', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvl-row-btn--selected {'), SOURCE.length)
     expect(rule).toContain('background: var(--bg-hover);')
     expect(rule).not.toContain('border')
+  })
+
+  test('hover is the same fill, nothing else', () => {
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.cvl-row-btn:hover {'),
+      SOURCE.indexOf('.cvl-row-btn--selected {'),
+    )
+    expect(rule).toContain('background: var(--bg-hover);')
   })
 })
 
@@ -220,24 +304,29 @@ describe('root: no fixed width, occupies the parent slot', () => {
     expect(root).not.toContain('max-width:')
     expect(root).toContain('width: 100%;')
   })
+
+  test('no colour is spelled out: only theme tokens, never a plain hex', () => {
+    expect(SOURCE).not.toMatch(/#[0-9a-fA-F]{3,8}/)
+    expect(SOURCE).not.toContain('rgba(')
+  })
+
+  test('no animation keeps a fill mode', () => {
+    expect(SOURCE).not.toMatch(/animation-fill-mode\s*:|animation\s*:[^;]*\b(forwards|both)\b/)
+  })
 })
 
-describe('header degradation thresholds: CSS-pinned, same values as the sheet', () => {
-  test('the action label hides under 256px', () => {
-    const rule = SOURCE.slice(
-      SOURCE.indexOf('@container cvl-shell (max-width: 256px)'),
-      SOURCE.indexOf('@container cvl-shell (max-width: 256px)') + 120,
-    )
-    expect(rule).toContain('.cvl-action-label')
+describe('degradation thresholds: CSS-pinned, same values as the sheet', () => {
+  test('the line age hides under 256px', () => {
+    const at = SOURCE.indexOf('@container cvl-shell (max-width: 256px)')
+    const rule = SOURCE.slice(at, at + 120)
+    expect(rule).toContain('.cvr-age')
     expect(rule).toContain('display: none;')
   })
 
-  test('the heading (title + counter) hides under 200px', () => {
-    const rule = SOURCE.slice(
-      SOURCE.indexOf('@container cvl-shell (max-width: 200px)'),
-      SOURCE.indexOf('@container cvl-shell (max-width: 200px)') + 100,
-    )
-    expect(rule).toContain('.cvl-heading')
+  test('the project counters hide under 200px', () => {
+    const at = SOURCE.indexOf('@container cvl-shell (max-width: 200px)')
+    const rule = SOURCE.slice(at, at + 120)
+    expect(rule).toContain('.cvl-group-count')
     expect(rule).toContain('display: none;')
   })
 
@@ -257,6 +346,12 @@ describe('group collapse: a 1fr/0fr grid track, inert when closed', () => {
     expect(closed).toContain('grid-template-rows: 0fr;')
     expect(closed).toContain('visibility: hidden;')
     expect(closed).not.toContain('height:')
+  })
+
+  test('the toggle is the project row itself, still announced as expandable', () => {
+    expect(SOURCE).toContain('@click="toggleGroup(group.projectId)"')
+    expect(SOURCE).toContain(':aria-expanded="isOpen(group.projectId)"')
+    expect(SOURCE).not.toContain('chevron')
   })
 
   test('the template binds `inert` to the closed state, not merely a CSS class', () => {

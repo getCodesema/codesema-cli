@@ -1,16 +1,17 @@
 <script setup lang="ts">
-// Zone 2a of the 3-zone workspace layout: an adaptation of
-// ConversationsColumn.vue for a rail slot the parent sizes (no own width,
-// no splitter — see the root style below), with a total counter added next
-// to the title and a primary create action instead of a discreet link.
-// Search, grouping, and row rendering are otherwise unchanged: still
-// groupConversationsByProject/searchRightPadding (ConversationsLogic.ts)
-// and ConversationRow.vue, imported one directory over rather than
+// Zone 2a of the 3-zone workspace layout: the kit's project rail
+// (`.rail/.rail-h/.proj/.sub`) fed by our conversations. A header line, one
+// `.proj` row per project, and under it one plain tree line per
+// conversation. The parent slot sizes it (no own width, no splitter).
+// Search, grouping and row rendering stay on
+// groupConversationsByProject/searchRightPadding (ConversationsLogic.ts) and
+// ConversationRow.vue, imported one directory over rather than
 // reimplemented.
-import { ChevronDown, Plus, Search, X } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { matchesQuery } from '../../composables/useTaskBoard'
 import { taskKey, type TaskState } from '../../composables/useTasks'
+import { EXECUTION_STATUS } from '../../execution-status'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import ConversationRow from '../conversations/ConversationRow.vue'
 import {
@@ -53,6 +54,14 @@ const isSearchEmpty = computed(() => props.states.length > 0 && filteredStates.v
 // typed): the padding is still COMPUTED, never a fixed number.
 const searchPaddingRight = computed(() => searchRightPadding(query.value !== '' ? 1 : 0))
 
+function waitingCount(states: readonly TaskState[]): number {
+  return states.filter((s) => EXECUTION_STATUS[s.record.status].attention).length
+}
+
+function runningCount(states: readonly TaskState[]): number {
+  return states.filter((s) => EXECUTION_STATUS[s.record.status].pulse).length
+}
+
 // Collapsed project ids; absence = open (every group starts expanded).
 const collapsedProjects = ref<ReadonlySet<string>>(new Set())
 function isOpen(projectId: string): boolean {
@@ -76,18 +85,20 @@ function isSelected(state: TaskState): boolean {
 <template>
   <section class="cvl-root rail" :aria-label="t('conversations.title')">
     <header class="cvl-header rail-h">
-      <div class="cvl-heading">
-        <h2 class="cvl-title">{{ t('conversations.title') }}</h2>
-        <span class="cvl-count">{{ states.length }}</span>
-      </div>
-      <button type="button" class="cvl-action btn" @click="emit('create')">
-        <Plus class="cvl-action-icon" aria-hidden="true" />
-        <span class="cvl-action-label">{{ t('conversations.newAction') }}</span>
+      <span class="cvl-title">{{ t('conversations.title') }}</span>
+      <button
+        type="button"
+        class="cvl-action"
+        :aria-label="t('conversations.newAction')"
+        :title="t('conversations.newAction')"
+        @click="emit('create')"
+      >
+        +
       </button>
     </header>
 
-    <div class="cvl-search">
-      <Search class="cvl-search-icon" aria-hidden="true" />
+    <label class="cvl-search">
+      <span class="cvl-search-glyph" aria-hidden="true">{{ G.search }}</span>
       <input
         ref="searchInput"
         v-model="query"
@@ -104,9 +115,9 @@ function isSelected(state: TaskState): boolean {
         :aria-label="t('conversations.searchClear')"
         @click="query = ''"
       >
-        <X aria-hidden="true" />
+        {{ G.ko }}
       </button>
-    </div>
+    </label>
 
     <div class="cvl-scroll">
       <p v-if="isEmpty" class="cvl-empty empty">{{ t('conversations.empty') }}</p>
@@ -117,19 +128,31 @@ function isSelected(state: TaskState): boolean {
       <div v-for="group in groups" :key="group.projectId" class="cvl-group">
         <button
           type="button"
-          class="cvl-group-head queue-h"
+          class="cvl-group-head proj"
           :aria-expanded="isOpen(group.projectId)"
           :aria-controls="`cvl-body-${group.projectId}`"
           :aria-label="t('conversations.groupToggleAria', { project: group.projectName })"
           @click="toggleGroup(group.projectId)"
         >
-          <ChevronDown
-            class="cvl-group-chevron"
-            :class="{ 'cvl-group-chevron--closed': !isOpen(group.projectId) }"
+          <span
+            class="cvl-group-dot dot"
+            :class="{ on: runningCount(group.states) > 0 }"
             aria-hidden="true"
-          />
-          <span class="cvl-group-name">{{ group.projectName }}</span>
-          <span class="cvl-group-count">{{ group.states.length }}</span>
+            >{{ runningCount(group.states) > 0 ? G.dot : G.pending }}</span
+          >
+          <span class="cvl-group-name name">{{ group.projectName }}</span>
+          <span class="cvl-group-count cnt">
+            <b v-if="waitingCount(group.states) > 0">{{ waitingCount(group.states) }}</b>
+            <template v-if="waitingCount(group.states) > 0 && runningCount(group.states) > 0">
+              {{ G.sep }}
+            </template>
+            <template v-if="runningCount(group.states) > 0">{{
+              runningCount(group.states)
+            }}</template>
+            <template v-if="waitingCount(group.states) === 0 && runningCount(group.states) === 0">{{
+              G.minus
+            }}</template>
+          </span>
         </button>
         <div
           :id="`cvl-body-${group.projectId}`"
@@ -137,7 +160,7 @@ function isSelected(state: TaskState): boolean {
           :class="{ 'cvl-group-body--closed': !isOpen(group.projectId) }"
           :inert="!isOpen(group.projectId)"
         >
-          <div class="cvl-group-body-inner">
+          <div class="cvl-group-body-inner sub">
             <button
               v-for="state in group.states"
               :key="taskKey(state.projectId, state.record.id)"
@@ -147,11 +170,7 @@ function isSelected(state: TaskState): boolean {
               :aria-current="isSelected(state) ? 'true' : undefined"
               @click="emit('select', state)"
             >
-              <ConversationRow
-                :state="state"
-                :project-name="group.projectName"
-                :selected="isSelected(state)"
-              />
+              <ConversationRow :state="state" />
             </button>
           </div>
         </div>
@@ -177,100 +196,59 @@ function isSelected(state: TaskState): boolean {
   gap: 1ch;
 }
 
-.cvl-heading {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 1ch;
-}
-
 .cvl-title {
   min-width: 0;
-  font-size: var(--fs);
-  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.cvl-count {
-  flex: none;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
-}
-
-/* Threshold 2: under 200px the heading (title + counter) goes, so the
-   header never collides with the action button. Same threshold as the
-   sheet ConversationsColumn.vue was built from, just scoped to cover the
-   counter added alongside the title. */
-@container cvl-shell (max-width: 200px) {
-  .cvl-heading {
-    display: none;
-  }
-}
-
 .cvl-action {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 1ch;
+  font: inherit;
+  background: none;
+  border: 0;
   padding: 0 1ch;
-  border-color: var(--ok);
-  color: var(--ok);
+  color: var(--accent);
+  cursor: pointer;
 }
 
 .cvl-action:hover {
-  background: var(--ok);
-  color: var(--bg);
+  color: var(--fg);
 }
 
-.cvl-action-icon {
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-
-/* Threshold 1: under 256px the action keeps only its icon. */
-@container cvl-shell (max-width: 256px) {
-  .cvl-action-label {
-    display: none;
-  }
-}
-
+/* The kit's borderless appbar search, on its own line under the header. */
 .cvl-search {
   flex: none;
-  position: relative;
-  padding: calc(var(--row) / 2) 1ch;
+  display: flex;
+  align-items: baseline;
+  gap: 1ch;
+  padding: 2px 1ch 2px 2ch;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-dim);
 }
 
-.cvl-search-icon {
-  position: absolute;
-  left: 2ch;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
+.cvl-search-glyph {
+  flex: none;
   color: var(--fg-muted);
-  pointer-events: none;
 }
 
 .cvl-search-input {
-  width: 100%;
+  flex: 1;
   min-width: 0;
-  padding-left: 4ch;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--fg);
+}
+
+.cvl-search-input:focus {
+  outline: none;
 }
 
 .cvl-search-clear {
-  position: absolute;
-  right: 2ch;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  flex: none;
+  font: inherit;
   border: none;
   background: transparent;
   color: var(--fg-muted);
@@ -278,13 +256,8 @@ function isSelected(state: TaskState): boolean {
   padding: 0;
 }
 
-.cvl-search-clear svg {
-  width: 100%;
-  height: 100%;
-}
-
 .cvl-search-clear:hover {
-  color: var(--fg-dim);
+  color: var(--fg);
 }
 
 .cvl-scroll {
@@ -294,55 +267,42 @@ function isSelected(state: TaskState): boolean {
 }
 
 .cvl-empty {
-  margin: 1ch;
+  margin: calc(var(--row) / 2) 2ch;
 }
 
 .cvl-group {
-  margin-top: calc(var(--row) / 2);
+  margin-top: var(--row);
 }
 
 .cvl-group-head {
-  display: flex;
-  align-items: center;
-  gap: 1ch;
   width: 100%;
   text-align: left;
   font: inherit;
-  padding: 0 1ch 2px;
-  border: none;
-  border-bottom: 1px solid var(--line);
+  border: 0;
   background: transparent;
   color: var(--fg-dim);
-  cursor: pointer;
-}
-
-.cvl-group-head:hover {
-  background: var(--bg-hover);
-}
-
-.cvl-group-chevron {
-  flex: none;
-  width: 14px;
-  height: 14px;
-  transition: transform 150ms ease;
-}
-
-.cvl-group-chevron--closed {
-  transform: rotate(-90deg);
 }
 
 .cvl-group-name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.cvl-group-count {
-  flex: none;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
+/* Threshold 1: under 256px each line drops its age column. */
+@container cvl-shell (max-width: 256px) {
+  .cvl-row-btn :deep(.cvr-age) {
+    display: none;
+  }
+}
+
+/* Threshold 2: under 200px the project counters go too, so the project name
+   never collides with them. */
+@container cvl-shell (max-width: 200px) {
+  .cvl-group-count {
+    display: none;
+  }
 }
 
 /* The 1fr/0fr grid track: animates toward an unmeasured height, never a
@@ -360,39 +320,46 @@ function isSelected(state: TaskState): boolean {
   visibility: hidden;
 }
 
+/* The kit's `.sub` indent is redrawn per line instead of on the block, so a
+   hovered or selected line fills the rail edge to edge. */
 .cvl-group-body-inner {
   overflow: hidden;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  padding: 0;
 }
 
-/* No gap between rows: each row's own padding carries the spacing. */
 .cvl-row-btn {
-  display: block;
+  display: flex;
+  align-items: baseline;
   width: 100%;
   text-align: left;
   font: inherit;
-  padding: 0;
+  padding: 2px 1ch 2px 3ch;
   border: none;
   background: transparent;
+  color: inherit;
   cursor: pointer;
 }
 
-.cvl-row-btn:hover:not(.cvl-row-btn--selected) {
-  background: var(--bg-hover);
+/* The kit's tree glyphs, drawn here because the kit hangs them off
+   `.rail .sub div` and our lines are buttons. */
+.cvl-row-btn::before {
+  content: '├─ ';
+  flex: none;
+  color: var(--fg-muted);
 }
 
-.cvl-row-btn:hover :deep(.cvr-title) {
-  color: var(--fg);
+.cvl-row-btn:last-child::before {
+  content: '└─ ';
+}
+
+.cvl-row-btn:hover {
+  background: var(--bg-hover);
 }
 
 .cvl-row-btn--selected {
   background: var(--bg-hover);
-}
-
-.cvl-row-btn--selected :deep(.cvr-title) {
-  color: var(--fg);
-  font-weight: 700;
 }
 </style>
