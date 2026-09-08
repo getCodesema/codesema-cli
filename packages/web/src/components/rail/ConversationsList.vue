@@ -333,26 +333,20 @@ function isSelected(state: TaskState): boolean {
 .cvl-row-btn {
   display: flex;
   align-items: baseline;
-  width: 100%;
+  width: calc(100% - 2ch);
+  margin: 0 1ch;
   text-align: left;
   font: inherit;
-  padding: 2px 1ch 2px 3ch;
+  padding: calc(var(--row) / 2) 1ch;
   border: none;
+  border-top: 1px solid var(--line);
   background: transparent;
   color: inherit;
   cursor: pointer;
 }
 
-/* The kit's tree glyphs, drawn here because the kit hangs them off
-   `.rail .sub div` and our lines are buttons. */
-.cvl-row-btn::before {
-  content: '├─ ';
-  flex: none;
-  color: var(--fg-muted);
-}
-
-.cvl-row-btn:last-child::before {
-  content: '└─ ';
+.cvl-row-btn:last-child {
+  border-bottom: 1px solid var(--line);
 }
 
 .cvl-row-btn:hover {

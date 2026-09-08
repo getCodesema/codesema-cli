@@ -11,9 +11,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { TaskState } from '../../composables/useTasks'
-import { EXECUTION_STATUS } from '../../execution-status'
-import { t } from '../../i18n'
-import type { TaskRecord, TaskStatus } from '../../types'
+import type { TaskRecord } from '../../types'
 
 Bun.plugin({
   name: 'vue-sfc-with-template',
@@ -69,32 +67,12 @@ async function render(state: TaskState): Promise<string> {
   return renderToString(app)
 }
 
-describe('one conversation is one line: glyph, title, age', () => {
-  test('the line is the title, the status glyph, and nothing else from the record', async () => {
+describe('one conversation is one line: title, age', () => {
+  test('the line is the title, the age, and nothing else from the record', async () => {
     const html = await render(taskState({ title: 'fix the retry loop' }))
     expect(html).toContain('fix the retry loop')
     expect(html).toContain('class="cvr-title"')
     expect(html).toContain('class="cvr-age"')
-  })
-
-  test('the glyph comes from the one status table, never from a local mapping', async () => {
-    for (const status of Object.keys(EXECUTION_STATUS) as TaskStatus[]) {
-      const html = await render(taskState({ status }))
-      expect(html).toContain(EXECUTION_STATUS[status].icon)
-    }
-  })
-
-  test('the glyph is labelled, so it is never the only carrier of the state', async () => {
-    const html = await render(taskState({ status: 'waiting_for_you' }))
-    expect(html).toContain('role="img"')
-    expect(html).toContain(t(EXECUTION_STATUS.waiting_for_you.labelKey))
-  })
-
-  test('a running conversation blinks, a waiting one does not', async () => {
-    const running = await render(taskState({ status: 'running' }))
-    const waiting = await render(taskState({ status: 'waiting_for_you' }))
-    expect(running).toContain('cvr-glyph--pulse')
-    expect(waiting).not.toContain('cvr-glyph--pulse')
   })
 
   test('the tone comes from the one status table, never from an inline style', async () => {
@@ -115,7 +93,7 @@ describe('one conversation is one line: glyph, title, age', () => {
 
 describe('nothing else is drawn: no card, no pill, no meta line', () => {
   test('the row has no card, no border, no background of its own', () => {
-    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-glyph {'))
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
     expect(rule).not.toContain('border')
     expect(rule).not.toContain('background')
     expect(rule).not.toContain('border-radius')
@@ -131,9 +109,9 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(SOURCE).not.toContain('resolveActivityLine')
   })
 
-  test('the line is the kit grid: one glyph column, the title, the age', () => {
-    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-glyph {'))
-    expect(rule).toContain('grid-template-columns: 1ch 1fr auto;')
+  test('the line is the kit grid: the title, the age', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
+    expect(rule).toContain('grid-template-columns: 1fr auto;')
     expect(rule).toContain('gap: 1ch;')
     expect(rule).toContain('align-items: baseline;')
   })
@@ -162,11 +140,6 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     const rule = SOURCE.slice(SOURCE.indexOf('.cvr-age {'), SOURCE.length)
     expect(rule).toContain('color: var(--fg-muted);')
     expect(rule).toContain('font-variant-numeric: tabular-nums;')
-  })
-
-  test('the running blink never keeps a fill mode', () => {
-    expect(SOURCE).toContain('animation: blink 1.2s steps(2) infinite;')
-    expect(SOURCE).not.toMatch(/animation-fill-mode\s*:|animation\s*:[^;]*\b(forwards|both)\b/)
   })
 
   test('no colour is spelled out: only theme tokens, never a plain hex', () => {

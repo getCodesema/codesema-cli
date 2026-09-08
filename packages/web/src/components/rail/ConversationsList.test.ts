@@ -211,22 +211,23 @@ describe('grouping: one kit .proj row per project, its lines underneath', () => 
   })
 })
 
-describe('lines: one conversation, one tree line, no card', () => {
-  test('the lines sit in the kit .sub block and are drawn with tree glyphs', async () => {
+describe('lines: one conversation, one inset line between two hairlines', () => {
+  test('the lines sit in the kit .sub block, without tree glyphs', async () => {
     const html = await render({ states: [taskState({ id: 'a' }, 'p1')] })
     expect(html).toContain('class="cvl-group-body-inner sub"')
-    expect(SOURCE).toContain("content: '\u251c\u2500 ';")
-    expect(SOURCE).toContain("content: '\u2514\u2500 ';")
+    expect(SOURCE).not.toContain("content: '\u251c\u2500 ';")
   })
 
-  test('a line carries no frame and no background of its own', () => {
+  test('a line is framed by a top hairline (and a bottom one on the last), inset from the rail edges', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.cvl-row-btn {'),
-      SOURCE.indexOf('.cvl-row-btn::before'),
+      SOURCE.indexOf('.cvl-row-btn:hover {'),
     )
-    expect(rule).toContain('border: none;')
+    expect(rule).toContain('border-top: 1px solid var(--line);')
+    expect(rule).toContain('.cvl-row-btn:last-child {\n  border-bottom: 1px solid var(--line);')
+    expect(rule).toContain('margin: 0 1ch;')
+    expect(rule).toContain('width: calc(100% - 2ch);')
     expect(rule).toContain('background: transparent;')
-    expect(rule).toContain('padding: 2px 1ch 2px 3ch;')
     expect(rule).not.toContain('border-radius')
     expect(rule).not.toContain('box-shadow')
   })
